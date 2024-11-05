@@ -18,48 +18,48 @@
  */
 package com.arcadedb.query.sql.method.collection;
 
-import java.util.List;
-import java.util.Optional;
-import java.util.stream.Collectors;
-
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
  * Joins a list of objects using a delimiter.
  */
 public class SQLMethodJoin extends AbstractSQLMethod {
 
-    public static final String NAME = "join";
+  public static final String NAME = "join";
 
-    public SQLMethodJoin() {
-        super(NAME, 1);
+  public SQLMethodJoin() {
+    super(NAME, 1);
+  }
+
+  @Override
+  public Object execute(final Object value,
+      final Identifiable record,
+      final CommandContext context,
+      final Object[] params) {
+
+    if (value == null) {
+      return null;
     }
 
-    @Override
-    public Object execute(final Object value,
-                          final Identifiable record,
-                          final CommandContext context,
-                          final Object[] params) {
+    if (value instanceof List<?> list) {
 
-        if (value == null) {
-            return null;
-        }
+      final String separator = Optional.ofNullable(params)
+          .filter(p -> p.length > 0)
+          .filter(p -> p[0] != null)
+          .map(p -> p[0].toString())
+          .orElse(",");
 
-        if (value instanceof List) {
+      return list.stream()
+          .map(Object::toString)
+          .collect(Collectors.joining(separator));
 
-            final String separator = Optional.ofNullable(params)
-                    .filter(p -> p.length > 0)
-                    .filter(p -> p[0] != null)
-                    .map(p -> p[0].toString())
-                    .orElse(",");
-
-            return ((List<?>) value).stream()
-                    .map(Object::toString)
-                    .collect(Collectors.joining(separator));
-
-        } else
-            return value.toString();
-    }
+    } else
+      return value.toString();
+  }
 }

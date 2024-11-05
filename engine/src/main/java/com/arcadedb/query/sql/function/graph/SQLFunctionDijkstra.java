@@ -22,7 +22,9 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.Map;
 
 /**
  * Dijkstra's algorithm describes how to find the cheapest path from one node to another node in a directed weighted graph.
@@ -41,20 +43,20 @@ public class SQLFunctionDijkstra extends SQLFunctionPathFinder {
     super(NAME);
   }
 
-  public LinkedList<Vertex> execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
-    return new SQLFunctionAstar().execute(this, iCurrentRecord, iCurrentResult, toAStarParams(iParams), iContext);
+  public LinkedList<Vertex> execute(final Object thisObj, final Identifiable currentRecord, final Object currentResult,
+      final Object[] params, final CommandContext context) {
+    return new SQLFunctionAstar().execute(thisObj, currentRecord, currentResult, toAStarParams(params), context);
   }
 
-  private Object[] toAStarParams(final Object[] iParams) {
+  private Object[] toAStarParams(final Object[] params) {
     final Object[] result = new Object[4];
-    result[0] = iParams[0];
-    result[1] = iParams[1];
-    result[2] = iParams[2];
-    final Map<String, Object> options = new HashMap<String, Object>();
+    result[0] = params[0];
+    result[1] = params[1];
+    result[2] = params[2];
+    final Map<String, Object> options = new HashMap<>();
     options.put("emptyIfMaxDepth", true);
-    if (iParams.length > 3) {
-      options.put("direction", iParams[3]);
+    if (params.length > 3) {
+      options.put("direction", params[3]);
     }
     result[3] = options;
     return result;

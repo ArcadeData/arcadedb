@@ -24,7 +24,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
-import java.util.*;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Returns the values of a map.
@@ -40,15 +41,16 @@ public class SQLMethodValues extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
-    if (value instanceof Map)
-      return ((Map<?, ?>) value).values();
-    else if (value instanceof Document)
-      return List.of(((Document) value).toMap().values());
-    else if (value instanceof Result) {
-      final Result res = (Result) value;
-      return res.toMap().values();
-    }
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
+      final Object[] iParams) {
+
+    if (value instanceof Map map)
+      return map.values();
+    else if (value instanceof Document document)
+      return List.of(document.toMap().values());
+    else if (value instanceof Result result)
+      return result.toMap().values();
+
     return null;
   }
 }

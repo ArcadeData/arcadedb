@@ -38,15 +38,16 @@ public abstract class SQLFunctionMoveFiltered extends SQLFunctionMove implements
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParameters,
-      final Iterable<Identifiable> iPossibleResults, final CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
+      final Object[] iParameters, final Iterable<Identifiable> iPossibleResults, final CommandContext iContext) {
     final String[] labels;
     if (iParameters != null && iParameters.length > 0 && iParameters[0] != null)
-      labels = MultiValue.array(iParameters, String.class, iArgument -> FileUtils.getStringContent(iArgument));
+      labels = MultiValue.array(iParameters, String.class, FileUtils::getStringContent);
     else
       labels = null;
 
-    return SQLQueryEngine.foreachRecord(iArgument -> move(iContext.getDatabase(), iArgument, labels, iPossibleResults), iThis, iContext);
+    return SQLQueryEngine.foreachRecord(iArgument -> move(iContext.getDatabase(), iArgument, labels, iPossibleResults), iThis,
+        iContext);
   }
 
   protected abstract Object move(Database graph, Identifiable iArgument, String[] labels, Iterable<Identifiable> iPossibleResults);

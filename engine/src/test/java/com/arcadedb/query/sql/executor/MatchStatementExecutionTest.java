@@ -19,9 +19,14 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.*;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import org.junit.jupiter.api.Test;
 
@@ -926,17 +931,18 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   private ResultSet getManagedByArrows(final String managerName) {
-    final StringBuilder query = new StringBuilder();
-    query.append("select expand(managed) from (");
-    query.append("  match {type:Employee, where: (name = '" + managerName + "')}");
-    query.append("  -ManagerOf->{}<-ParentDepartment-{");
-    query.append("      while: ($depth = 0 or in('ManagerOf').size() = 0),");
-    query.append("      where: ($depth = 0 or in('ManagerOf').size() = 0)");
-    query.append("  }<-WorksAt-{as: managed}");
-    query.append("  return managed");
-    query.append(")");
+    final String query = """
+        select expand(managed) from (
+          match {type:Employee, where: (name = '%s')}
+          -ManagerOf->{}<-ParentDepartment-{
+              while: ($depth = 0 or in('ManagerOf').size() = 0),
+              where: ($depth = 0 or in('ManagerOf').size() = 0)
+          }<-WorksAt-{as: managed}
+          return managed
+        )
+        """.formatted(managerName);
 
-    return database.query("sql", query.toString());
+    return database.query("sql", query);
   }
 
   @Test
@@ -969,19 +975,20 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   private ResultSet getManagedBy2(final String managerName) {
-    final StringBuilder query = new StringBuilder();
-    query.append("select expand(managed) from (");
-    query.append("  match {type:Employee, where: (name = '" + managerName + "')}");
-    query.append("  .out('ManagerOf')");
-    query.append("  .(inE('ParentDepartment').outV()){");
-    query.append("      while: ($depth = 0 or in('ManagerOf').size() = 0),");
-    query.append("      where: ($depth = 0 or in('ManagerOf').size() = 0)");
-    query.append("  }");
-    query.append("  .in('WorksAt'){as: managed}");
-    query.append("  return managed");
-    query.append(")");
+    final String query = """
+        select expand(managed) from (
+          match {type:Employee, where: (name = '%s')}
+          .out('ManagerOf')
+          .(inE('ParentDepartment').outV()){
+              while: ($depth = 0 or in('ManagerOf').size() = 0),
+              where: ($depth = 0 or in('ManagerOf').size() = 0)
+          }
+          .in('WorksAt'){as: managed}
+          return managed
+        )
+        """.formatted(managerName);
 
-    return database.query("sql", query.toString());
+    return database.query("sql", query);
   }
 
   @Test
@@ -1014,33 +1021,33 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   private ResultSet getManagedBy2Arrows(final String managerName) {
-    final StringBuilder query = new StringBuilder();
-    query.append("select expand(managed) from (");
-    query.append("  match {type:Employee, where: (name = '" + managerName + "')}");
-    query.append("  -ManagerOf->{}");
-    query.append("  .(inE('ParentDepartment').outV()){");
-    query.append("      while: ($depth = 0 or in('ManagerOf').size() = 0),");
-    query.append("      where: ($depth = 0 or in('ManagerOf').size() = 0)");
-    query.append("  }<-WorksAt-{as: managed}");
-    query.append("  return managed");
-    query.append(")");
+    final String query = """
+        select expand(managed) from (
+          match {type:Employee, where: (name = '%s')}
+          -ManagerOf->{}
+          .(inE('ParentDepartment').outV()){
+              while: ($depth = 0 or in('ManagerOf').size() = 0),
+              where: ($depth = 0 or in('ManagerOf').size() = 0)
+          }<-WorksAt-{as: managed}
+          return managed
+        )
+        """.formatted(managerName);
 
-    return database.query("sql", query.toString());
+    return database.query("sql", query);
   }
 
   @Test
   public void testTriangle1() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:TriangleV, as: friend1, where: (uid = 0)}");
-    query.append("  .out('TriangleE'){as: friend2}");
-    query.append("  .out('TriangleE'){as: friend3},");
-    query.append("{type:TriangleV, as: friend1}");
-    query.append("  .out('TriangleE'){as: friend3}");
-    query.append("return $matches");
+    final String query = """
+        match {type:TriangleV, as: friend1, where: (uid = 0)}
+          .out('TriangleE'){as: friend2}
+          .out('TriangleE'){as: friend3},
+        {type:TriangleV, as: friend1}
+          .out('TriangleE'){as: friend3}
+        return $matches
+        """;
 
-    final ResultSet result = database.query("sql", query.toString());
-
+    final ResultSet result = database.query("sql", query);
     assertThat(result.hasNext()).isTrue();
     result.next();
     assertThat(result.hasNext()).isFalse();
@@ -1049,13 +1056,14 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testTriangle1Arrows() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:TriangleV, as: friend1, where: (uid = 0)} -TriangleE-> {as: friend2} -TriangleE-> {as: friend3},");
-    query.append("{type:TriangleV, as: friend1} -TriangleE-> {as: friend3}");
-    query.append("return $matches");
+    final String query = """
+        match {type:TriangleV, as: friend1, where: (uid = 0)} -TriangleE-> {as: friend2} -TriangleE-> {as: friend3},
+        {type:TriangleV, as: friend1} -TriangleE-> {as: friend3}
+        return $matches
+        """;
 
-    final ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query);
+    assertThat(result.hasNext()).isTrue();
     assertThat(result.hasNext()).isTrue();
     result.next();
     assertThat(result.hasNext()).isFalse();
@@ -1064,17 +1072,16 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testTriangle2Old() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:TriangleV, as: friend1}");
-    query.append("  .out('TriangleE'){type:TriangleV, as: friend2, where: (uid = 1)}");
-    query.append("  .out('TriangleE'){as: friend3},");
-    query.append("{type:TriangleV, as: friend1}");
-    query.append("  .out('TriangleE'){as: friend3}");
-    query.append("return $matches");
+    final String query = """
+        match {type:TriangleV, as: friend1}
+          .out('TriangleE'){type:TriangleV, as: friend2, where: (uid = 1)}
+          .out('TriangleE'){as: friend3},
+        {type:TriangleV, as: friend1}
+          .out('TriangleE'){as: friend3}
+        return $matches
+        """;
 
-    final ResultSet result = database.query("sql", query.toString());
-
+    final ResultSet result = database.query("sql", query);
     assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
     final Document friend1 = doc.getProperty("friend1");
@@ -1088,16 +1095,17 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testTriangle2() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:TriangleV, as: friend1}");
-    query.append("  .out('TriangleE'){type:TriangleV, as: friend2, where: (uid = 1)}");
-    query.append("  .out('TriangleE'){as: friend3},");
-    query.append("{type:TriangleV, as: friend1}");
-    query.append("  .out('TriangleE'){as: friend3}");
-    query.append("return $patterns");
+    final String query = """
+        match {type:TriangleV, as: friend1}
+          .out('TriangleE'){type:TriangleV, as: friend2, where: (uid = 1)}
+          .out('TriangleE'){as: friend3},
+        {type:TriangleV, as: friend1}
+          .out('TriangleE'){as: friend3}
+        return $patterns
+        """;
 
-    final ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query);
+    assertThat(result.hasNext()).isTrue();
     assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
     assertThat(result.hasNext()).isFalse();
@@ -1112,16 +1120,17 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testTriangle2Arrows() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:TriangleV, as: friend1}");
-    query.append("  -TriangleE->{type:TriangleV, as: friend2, where: (uid = 1)}");
-    query.append("  -TriangleE->{as: friend3},");
-    query.append("{type:TriangleV, as: friend1}");
-    query.append("  -TriangleE->{as: friend3}");
-    query.append("return $matches");
+    final String query = """
+        match {type:TriangleV, as: friend1}
+          -TriangleE->{type:TriangleV, as: friend2, where: (uid = 1)}
+          -TriangleE->{as: friend3},
+        {type:TriangleV, as: friend1}
+          -TriangleE->{as: friend3}
+        return $matches
+        """;
 
-    final ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query);
+    assertThat(result.hasNext()).isTrue();
     assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
     assertThat(result.hasNext()).isFalse();
@@ -1136,16 +1145,16 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testTriangle3() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:TriangleV, as: friend1}");
-    query.append("  -TriangleE->{as: friend2}");
-    query.append("  -TriangleE->{as: friend3, where: (uid = 2)},");
-    query.append("{type:TriangleV, as: friend1}");
-    query.append("  -TriangleE->{as: friend3}");
-    query.append("return $matches");
+    final String query = """
+        match {type:TriangleV, as: friend1}
+          -TriangleE->{as: friend2}
+          -TriangleE->{as: friend3, where: (uid = 2)},
+        {type:TriangleV, as: friend1}
+          -TriangleE->{as: friend3}
+        return $matches
+        """;
 
-    final ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query);
     assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
     assertThat(result.hasNext()).isFalse();
@@ -1154,16 +1163,17 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testTriangle4() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:TriangleV, as: friend1}");
-    query.append("  .out('TriangleE'){as: friend2, where: (uid = 1)}");
-    query.append("  .out('TriangleE'){as: friend3},");
-    query.append("{type:TriangleV, as: friend1}");
-    query.append("  .out('TriangleE'){as: friend3}");
-    query.append("return $matches");
+    final String query = """
+        match {type:TriangleV, as: friend1}
+          .out('TriangleE'){as: friend2, where: (uid = 1)}
+          .out('TriangleE'){as: friend3},
+        {type:TriangleV, as: friend1}
+          .out('TriangleE'){as: friend3}
+        return $matches
+        """;
 
-    final ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query);
+    assertThat(result.hasNext()).isTrue();
     assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
     assertThat(result.hasNext()).isFalse();
@@ -1172,16 +1182,17 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testTriangle4Arrows() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:TriangleV, as: friend1}");
-    query.append("  -TriangleE->{as: friend2, where: (uid = 1)}");
-    query.append("  -TriangleE->{as: friend3},");
-    query.append("{type:TriangleV, as: friend1}");
-    query.append("  -TriangleE->{as: friend3}");
-    query.append("return $matches");
+    final String query = """
+        match {type:TriangleV, as: friend1}
+          -TriangleE->{as: friend2, where: (uid = 1)}
+          -TriangleE->{as: friend3},
+        {type:TriangleV, as: friend1}
+          -TriangleE->{as: friend3}
+        return $matches
+        """;
 
-    final ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query);
+    assertThat(result.hasNext()).isTrue();
     assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
     assertThat(result.hasNext()).isFalse();
@@ -1190,17 +1201,16 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testTriangleWithEdges4() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:TriangleV, as: friend1}");
-    query.append("  .outE('TriangleE').inV(){as: friend2, where: (uid = 1)}");
-    query.append("  .outE('TriangleE').inV(){as: friend3},");
-    query.append("{type:TriangleV, as: friend1}");
-    query.append("  .outE('TriangleE').inV(){as: friend3}");
-    query.append("return $matches");
+    final String query = """
+        match {type:TriangleV, as: friend1}
+          .outE('TriangleE').inV(){as: friend2, where: (uid = 1)}
+          .outE('TriangleE').inV(){as: friend3},
+        {type:TriangleV, as: friend1}
+          .outE('TriangleE').inV(){as: friend3}
+        return $matches
+        """;
 
-    final ResultSet result = database.query("sql", query.toString());
-
+    final ResultSet result = database.query("sql", query);
     assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
     assertThat(result.hasNext()).isFalse();
@@ -1209,14 +1219,13 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testCartesianProduct() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:TriangleV, as: friend1, where:(uid = 1)},");
-    query.append("{type:TriangleV, as: friend2, where:(uid = 2 or uid = 3)}");
-    query.append("return $matches");
+    final String query = """
+        match {type:TriangleV, as: friend1, where:(uid = 1)},
+        {type:TriangleV, as: friend2, where:(uid = 2 or uid = 3)}
+        return $matches
+        """;
 
-    final ResultSet result = database.query("sql", query.toString());
-
+    final ResultSet result = database.query("sql", query);
     for (int i = 0; i < 2; i++) {
       assertThat(result.hasNext()).isTrue();
       final Result doc = result.next();
@@ -1229,13 +1238,12 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testNoPrefetch() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:IndexedVertex, as: one}");
-    query.append("return $patterns");
+    final String query = """
+        match {type:IndexedVertex, as: one}
+        return $patterns
+        """;
 
-    final ResultSet result = database.query("sql", query.toString());
-
+    final ResultSet result = database.query("sql", query);
     result.getExecutionPlan()
         .ifPresent(x -> x.getSteps().stream().filter(y -> y instanceof MatchPrefetchStep).forEach(prefetchStepFound -> fail()));
 
@@ -1249,14 +1257,13 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testCartesianProductLimit() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:TriangleV, as: friend1, where:(uid = 1)},");
-    query.append("{type:TriangleV, as: friend2, where:(uid = 2 or uid = 3)}");
-    query.append("return $matches LIMIT 1");
+    final String query = """
+        match {type:TriangleV, as: friend1, where:(uid = 1)},
+        {type:TriangleV, as: friend2, where:(uid = 2 or uid = 3)}
+        return $matches LIMIT 1
+        """;
 
-    final ResultSet result = database.query("sql", query.toString());
-
+    final ResultSet result = database.query("sql", query);
     assertThat(result.hasNext()).isTrue();
     final Result d = result.next();
     final Document friend1 = d.getProperty("friend1");
@@ -1322,12 +1329,12 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testArrayRange2() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:TriangleV, as: friend1, where: (uid = 0)}");
-    query.append("return friend1.out('TriangleE')[0..2] as foo");
+    final String query = """
+        match {type:TriangleV, as: friend1, where: (uid = 0)}
+        return friend1.out('TriangleE')[0..2] as foo
+        """;
 
-    final ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query);
     assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
     assertThat(result.hasNext()).isFalse();
@@ -1341,12 +1348,12 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testArrayRange3() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:TriangleV, as: friend1, where: (uid = 0)}");
-    query.append("return friend1.out('TriangleE')[0..3] as foo");
+    final String query = """
+        match {type:TriangleV, as: friend1, where: (uid = 0)}
+        return friend1.out('TriangleE')[0..3] as foo
+        """;
 
-    final ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query);
     assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
     assertThat(result.hasNext()).isFalse();
@@ -1360,12 +1367,12 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testConditionInSquareBrackets() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:TriangleV, as: friend1, where: (uid = 0)}");
-    query.append("return friend1.out('TriangleE')[uid = 2] as foo");
+    final String query = """
+        match {type:TriangleV, as: friend1, where: (uid = 0)}
+        return friend1.out('TriangleE')[uid = 2] as foo
+        """;
 
-    final ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query);
     assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
     assertThat(result.hasNext()).isFalse();
@@ -1381,14 +1388,13 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testIndexedEdge() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:IndexedVertex, as: one, where: (uid = 0)}");
-    query.append(".out('IndexedEdge'){type:IndexedVertex, as: two, where: (uid = 1)}");
-    query.append("return one, two");
+    final String query = """
+        match {type:IndexedVertex, as: one, where: (uid = 0)}
+        .out('IndexedEdge'){type:IndexedVertex, as: two, where: (uid = 1)}
+        return one, two
+        """;
 
-    final ResultSet result = database.query("sql", query.toString());
-
+    final ResultSet result = database.query("sql", query);
     assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
     assertThat(result.hasNext()).isFalse();
@@ -1397,13 +1403,13 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testIndexedEdgeArrows() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:IndexedVertex, as: one, where: (uid = 0)}");
-    query.append("-IndexedEdge->{type:IndexedVertex, as: two, where: (uid = 1)}");
-    query.append("return one, two");
+    final String query = """
+        match {type:IndexedVertex, as: one, where: (uid = 0)}
+        -IndexedEdge->{type:IndexedVertex, as: two, where: (uid = 1)}
+        return one, two
+        """;
 
-    final ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query);
     assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
     assertThat(result.hasNext()).isFalse();
@@ -1412,12 +1418,11 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testJson() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:IndexedVertex, as: one, where: (uid = 0)} ");
-    query.append("return {'name':'foo', 'uuid':one.uid}");
+    final String query = """
+        match {type:IndexedVertex, as: one, where: (uid = 0)}
+        return {'name':'foo', 'uuid':one.uid}""";
 
-    final ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query);
     assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
     assertThat(result.hasNext()).isFalse();
@@ -1430,12 +1435,12 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testJson2() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:IndexedVertex, as: one, where: (uid = 0)} ");
-    query.append("return {'name':'foo', 'sub': {'uuid':one.uid}}");
+    final String query = """
+        match {type:IndexedVertex, as: one, where: (uid = 0)}
+        return {'name':'foo', 'sub': {'uuid':one.uid}}
+        """;
 
-    final ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query);
     assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
     assertThat(result.hasNext()).isFalse();
@@ -1447,12 +1452,12 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testJson3() {
-    final StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:IndexedVertex, as: one, where: (uid = 0)} ");
-    query.append("return {'name':'foo', 'sub': [{'uuid':one.uid}]}");
+    final String query = """
+        match {type:IndexedVertex, as: one, where: (uid = 0)}
+        return {'name':'foo', 'sub': [{'uuid':one.uid}]}
+        """;
 
-    final ResultSet result = database.query("sql", query.toString());
+    final ResultSet result = database.query("sql", query);
     assertThat(result.hasNext()).isTrue();
     final Result doc = result.next();
     assertThat(result.hasNext()).isFalse();
@@ -1465,42 +1470,41 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testUnique() {
-    StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:DiamondV, as: one, where: (uid = 0)}.out('DiamondE').out('DiamondE'){as: two} ");
-    query.append("return DISTINCT one, two");
+    String query = """
+        match {type:DiamondV, as: one, where: (uid = 0)}
+        .out('DiamondE').out('DiamondE'){as: two}
+        return DISTINCT one, two
+        """;
 
-    ResultSet result = database.query("sql", query.toString());
+    ResultSet result = database.query("sql", query);
 
     assertThat(result.hasNext()).isTrue();
     Result doc = result.next();
     assertThat(result.hasNext()).isFalse();
 
-    query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:DiamondV, as: one, where: (uid = 0)}.out('DiamondE').out('DiamondE'){as: two} ");
-    query.append("return DISTINCT one.uid, two.uid");
+    query = """
+        match {type:DiamondV, as: one, where: (uid = 0)}
+        .out('DiamondE').out('DiamondE'){as: two}
+        return DISTINCT one.uid, two.uid
+        """;
 
     result.close();
 
-    result = database.query("sql", query.toString());
+    result = database.query("sql", query);
     assertThat(result.hasNext()).isTrue();
     doc = result.next();
     assertThat(result.hasNext()).isFalse();
     result.close();
-    //    Document doc = result.get(0);
-    //    assertEquals("foo", doc.set("name");
-    //    assertEquals(0, doc.set("sub[0].uuid");
   }
 
   @Test
   public void testNotUnique() {
-    StringBuilder query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:DiamondV, as: one, where: (uid = 0)}.out('DiamondE').out('DiamondE'){as: two} ");
-    query.append("return one, two");
+    String query = """
+        match {type:DiamondV, as: one, where: (uid = 0)}.out('DiamondE').out('DiamondE'){as: two}
+        return one, two
+        """;
 
-    ResultSet result = database.query("sql", query.toString());
+    ResultSet result = database.query("sql", query);
 
     assertThat(result.hasNext()).isTrue();
     Result doc = result.next();
@@ -1509,21 +1513,18 @@ public class MatchStatementExecutionTest extends TestHelper {
     assertThat(result.hasNext()).isFalse();
     result.close();
 
-    query = new StringBuilder();
-    query.append("match ");
-    query.append("{type:DiamondV, as: one, where: (uid = 0)}.out('DiamondE').out('DiamondE'){as: two} ");
-    query.append("return one.uid, two.uid");
+    query = """
+        match {type:DiamondV, as: one, where: (uid = 0)}.out('DiamondE').out('DiamondE'){as: two}
+        return one.uid, two.uid
+        """;
 
-    result = database.query("sql", query.toString());
+    result = database.query("sql", query);
     assertThat(result.hasNext()).isTrue();
     doc = result.next();
     assertThat(result.hasNext()).isTrue();
     doc = result.next();
     assertThat(result.hasNext()).isFalse();
     result.close();
-    //    Document doc = result.get(0);
-    //    assertEquals("foo", doc.set("name");
-    //    assertEquals(0, doc.set("sub[0].uuid");
   }
 
   @Test
@@ -1550,15 +1551,16 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   private ResultSet getManagedElements(final String managerName) {
-    final StringBuilder query = new StringBuilder();
-    query.append("  match {type:Employee, as:boss, where: (name = '" + managerName + "')}");
-    query.append("  -ManagerOf->{}<-ParentDepartment-{");
-    query.append("      while: ($depth = 0 or in('ManagerOf').size() = 0),");
-    query.append("      where: ($depth = 0 or in('ManagerOf').size() = 0)");
-    query.append("  }<-WorksAt-{as: managed}");
-    query.append("  return distinct $elements");
+    final String query = """
+        match {type:Employee, as:boss, where: (name = '%s')}
+        -ManagerOf->{}<-ParentDepartment-{
+            while: ($depth = 0 or in('ManagerOf').size() = 0),
+            where: ($depth = 0 or in('ManagerOf').size() = 0)
+        }<-WorksAt-{as: managed}
+        return distinct $elements
+        """.formatted(managerName);
 
-    return database.query("sql", query.toString());
+    return database.query("sql", query);
   }
 
   @Test
@@ -1622,11 +1624,13 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testOptional3() {
-    final ResultSet qResult = database.query("sql", "select friend.name as name, b from ("
-        + "match {type:Person, as:a, where:(name = 'n1' and 1 + 1 = 2)}.out('Friend'){as:friend, where:(name = 'n2' and 1 + 1 = 2)},"
-        + "{as:a}.out(){as:b, where:(nonExisting = 12), optional:true}," + "{as:friend}.out(){as:b, optional:true}"
-        + " return friend, b)");
-
+    final ResultSet qResult = database.query("sql", """
+        select friend.name as name, b from (
+        match {type:Person, as:a, where:(name = 'n1' and 1 + 1 = 2)}.out('Friend'){as:friend, where:(name = 'n2' and 1 + 1 = 2)},
+        {as:a}.out(){as:b, where:(nonExisting = 12), optional:true},
+        {as:friend}.out(){as:b, optional:true}
+        return friend, b)
+        """);
     assertThat(qResult.hasNext()).isTrue();
     final Result doc = qResult.next();
     assertThat(doc.<String>getProperty("name")).isEqualTo("n2");
@@ -1841,7 +1845,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     for (int i = 0; i < 4; i++) {
       assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
-      sum +=  item.<Integer>getProperty("num");
+      sum += item.<Integer>getProperty("num");
     }
 
     assertThat(result.hasNext()).isFalse();
@@ -1960,20 +1964,23 @@ public class MatchStatementExecutionTest extends TestHelper {
       final List<Identifiable> thePath = (List<Identifiable>) path;
 
       final String bname = item.getProperty("bname");
-      if (bname.equals("aaa")) {
-        assertThat(thePath.size()).isEqualTo(0);
-      } else if (bname.equals("aaa")) {
+      switch (bname) {
+      case "aaa" -> assertThat(thePath.size()).isEqualTo(0);
+      case "bbb" -> {
         assertThat(thePath.size()).isEqualTo(1);
-        assertThat(((Document) thePath.get(0).getRecord()).getString("name")).isEqualTo("bbb");
-      } else if (bname.equals("ccc")) {
+        assertThat(thePath.get(0).getRecord().asDocument().getString("name")).isEqualTo("bbb");
+      }
+      case "ccc" -> {
         assertThat(thePath.size()).isEqualTo(2);
-        assertThat(((Document) thePath.get(0).getRecord()).getString("name")).isEqualTo("bbb");
-        assertThat(((Document) thePath.get(1).getRecord()).getString("name")).isEqualTo("ccc");
-      } else if (bname.equals("ddd")) {
+        assertThat(thePath.get(0).getRecord().asDocument().getString("name")).isEqualTo("bbb");
+        assertThat(thePath.get(1).getRecord().asDocument().getString("name")).isEqualTo("ccc");
+      }
+      case "ddd" -> {
         assertThat(thePath.size()).isEqualTo(3);
-        assertThat(((Document) thePath.get(0).getRecord()).getString("name")).isEqualTo("bbb");
-        assertThat(((Document) thePath.get(1).getRecord()).getString("name")).isEqualTo("ccc");
-        assertThat(((Document) thePath.get(2).getRecord()).getString("name")).isEqualTo("ddd");
+        assertThat(thePath.get(0).getRecord().asDocument().getString("name")).isEqualTo("bbb");
+        assertThat(thePath.get(1).getRecord().asDocument().getString("name")).isEqualTo("ccc");
+        assertThat(thePath.get(2).getRecord().asDocument().getString("name")).isEqualTo("ddd");
+      }
       }
     }
     assertThat(result.hasNext()).isFalse();
@@ -2024,49 +2031,49 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     assertThat(result.hasNext()).isFalse();
 
-    assertThat(database.getSchema().getIndexByName(clazz + "[name]").get(new String[]{"one"}).hasNext()).isTrue();
-    assertThat(database.getSchema().getIndexByName(clazz + "[name]").get(new String[]{"onex"}).hasNext()).isTrue();
-    assertThat(database.getSchema().getIndexByName(clazz + "[name]").get(new String[]{"two"}).hasNext()).isTrue();
-    assertThat(database.getSchema().getIndexByName(clazz + "[name]").get(new String[]{"three"}).hasNext()).isTrue();
+    assertThat(database.getSchema().getIndexByName(clazz + "[name]").get(new String[] { "one" }).hasNext()).isTrue();
+    assertThat(database.getSchema().getIndexByName(clazz + "[name]").get(new String[] { "onex" }).hasNext()).isTrue();
+    assertThat(database.getSchema().getIndexByName(clazz + "[name]").get(new String[] { "two" }).hasNext()).isTrue();
+    assertThat(database.getSchema().getIndexByName(clazz + "[name]").get(new String[] { "three" }).hasNext()).isTrue();
 
     //--------------------------------------------------------------------------------------------------------
     // CHECK THE SUB-INDEX EXISTS
     assertThat(Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
-      .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
-      .contains(database.getSchema().getBucketByName(clazz + "_one").getFileId())).isTrue();
+        .map(Index::getAssociatedBucketId).collect(Collectors.toSet())
+        .contains(database.getSchema().getBucketByName(clazz + "_one").getFileId())).isTrue();
 
     database.command("SQL", "ALTER TYPE " + clazz + " BUCKET -" + clazz + "_one").close();
 
     // CHECK THE SUB-INDEX HAS BEN REMOVED
     assertThat(Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
-      .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
-      .contains(database.getSchema().getBucketByName(clazz + "_one").getFileId())).isFalse();
+        .map(Index::getAssociatedBucketId).collect(Collectors.toSet())
+        .contains(database.getSchema().getBucketByName(clazz + "_one").getFileId())).isFalse();
 
     //--------------------------------------------------------------------------------------------------------
     // CHECK THE SUB-INDEX EXISTS
     assertThat(Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
-      .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
-      .contains(database.getSchema().getBucketByName(clazz + "_two").getFileId())).isTrue();
+        .map(Index::getAssociatedBucketId).collect(Collectors.toSet())
+        .contains(database.getSchema().getBucketByName(clazz + "_two").getFileId())).isTrue();
 
     database.command("SQL", "ALTER TYPE " + clazz + " BUCKET -" + clazz + "_two").close();
 
     // CHECK THE SUB-INDEX HAS BEN REMOVED
     assertThat(Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
-      .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
-      .contains(database.getSchema().getBucketByName(clazz + "_two").getFileId())).isFalse();
+        .map(Index::getAssociatedBucketId).collect(Collectors.toSet())
+        .contains(database.getSchema().getBucketByName(clazz + "_two").getFileId())).isFalse();
 
     //--------------------------------------------------------------------------------------------------------
     // CHECK THE SUB-INDEX EXISTS
     assertThat(Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
-      .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
-      .contains(database.getSchema().getBucketByName(clazz + "_three").getFileId())).isTrue();
+        .map(Index::getAssociatedBucketId).collect(Collectors.toSet())
+        .contains(database.getSchema().getBucketByName(clazz + "_three").getFileId())).isTrue();
 
     database.command("SQL", "ALTER TYPE " + clazz + " BUCKET -" + clazz + "_three").close();
 
     // CHECK THE SUB-INDEX HAS BEN REMOVED
     assertThat(Set.of(((TypeIndex) database.getSchema().getIndexByName(clazz + "[name]")).getIndexesOnBuckets()).stream()
-      .map((r) -> r.getAssociatedBucketId()).collect(Collectors.toSet())
-      .contains(database.getSchema().getBucketByName(clazz + "_three").getFileId())).isFalse();
+        .map(Index::getAssociatedBucketId).collect(Collectors.toSet())
+        .contains(database.getSchema().getBucketByName(clazz + "_three").getFileId())).isFalse();
 
     result.close();
   }
@@ -2218,15 +2225,16 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   private ResultSet getManagedPathElements(final String managerName) {
-    final StringBuilder query = new StringBuilder();
-    query.append("  match {type:Employee, as:boss, where: (name = '" + managerName + "')}");
-    query.append("  -ManagerOf->{}<-ParentDepartment-{");
-    query.append("      while: ($depth = 0 or in('ManagerOf').size() = 0),");
-    query.append("      where: ($depth = 0 or in('ManagerOf').size() = 0)");
-    query.append("  }<-WorksAt-{as: managed}");
-    query.append("  return distinct $pathElements");
+    final String query = """
+        match {type:Employee, as:boss, where: (name = '%s')}
+        -ManagerOf->{}<-ParentDepartment-{
+            while: ($depth = 0 or in('ManagerOf').size() = 0),
+            where: ($depth = 0 or in('ManagerOf').size() = 0)
+        }<-WorksAt-{as: managed}
+        return distinct $pathElements
+        """.formatted(managerName);
 
-    return database.query("sql", query.toString());
+    return database.query("sql", query);
   }
 
   @Test
@@ -2244,8 +2252,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 
   @Test
   public void testMatchInSubQuery() {
-    try (final ResultSet rs = database.query("SQL",
-        "SELECT $a LET $a=(MATCH{type:Person,as:Person_0}RETURN expand(Person_0))")) {
+    try (final ResultSet rs = database.query("SQL", "SELECT $a LET $a=(MATCH{type:Person,as:Person_0}RETURN expand(Person_0))")) {
       assertThat(rs.stream().count()).isEqualTo(1L);
     }
   }

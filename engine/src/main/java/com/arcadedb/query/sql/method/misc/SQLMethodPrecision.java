@@ -24,9 +24,14 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.DateUtils;
 
-import java.time.*;
-import java.time.temporal.*;
-import java.util.*;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
+import java.time.temporal.ChronoUnit;
+import java.util.Calendar;
+import java.util.Date;
+
+import static java.time.temporal.ChronoUnit.MILLIS;
 
 /**
  * Modifies the precision of a datetime.
@@ -42,26 +47,27 @@ public class SQLMethodPrecision extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
+      final Object[] iParams) {
     if (iParams == null || iParams.length == 0 || iParams[0] == null)
       throw new IllegalArgumentException("precision method was expecting the time unit");
 
     final ChronoUnit targetPrecision = DateUtils.parsePrecision(iParams[0].toString());
 
-    if (value instanceof LocalDateTime)
-      return ((LocalDateTime) value).truncatedTo(targetPrecision);
-    else if (value instanceof ZonedDateTime)
-      return ((ZonedDateTime) value).truncatedTo(targetPrecision);
-    else if (value instanceof Instant)
-      return ((Instant) value).truncatedTo(targetPrecision);
-    else if (value instanceof Date) {
-      if (targetPrecision == ChronoUnit.MILLIS)
+    if (value instanceof LocalDateTime localDateTime)
+      return localDateTime.truncatedTo(targetPrecision);
+    else if (value instanceof ZonedDateTime zonedDateTime)
+      return zonedDateTime.truncatedTo(targetPrecision);
+    else if (value instanceof Instant instant)
+      return instant.truncatedTo(targetPrecision);
+    else if (value instanceof Date date) {
+      if (targetPrecision == MILLIS)
         return value;
-      return DateUtils.dateTime(iContext.getDatabase(), ((Date) value).getTime(), ChronoUnit.MILLIS, LocalDateTime.class, targetPrecision);
-    } else if (value instanceof Calendar) {
-      if (targetPrecision == ChronoUnit.MILLIS)
-        return value;
-      return DateUtils.dateTime(iContext.getDatabase(), ((Calendar) value).getTimeInMillis(), ChronoUnit.MILLIS, LocalDateTime.class, targetPrecision);
+      return DateUtils.dateTime(iContext.getDatabase(), date.getTime(), MILLIS, LocalDateTime.class, targetPrecision);
+    } else if (value instanceof Calendar calendar) {
+      if (targetPrecision == MILLIS)
+        return calendar;
+      return DateUtils.dateTime(iContext.getDatabase(), calendar.getTimeInMillis(), MILLIS, LocalDateTime.class, targetPrecision);
     }
 
     throw new CommandExecutionException("Error on changing precision for unsupported type '" + value.getClass() + "'");

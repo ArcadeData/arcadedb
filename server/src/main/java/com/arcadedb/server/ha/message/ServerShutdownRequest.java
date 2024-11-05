@@ -21,16 +21,15 @@ package com.arcadedb.server.ha.message;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ha.HAServer;
 
-import java.util.logging.*;
+import java.util.logging.Level;
 
 public class ServerShutdownRequest extends HAAbstractCommand {
-  public ServerShutdownRequest() {
-  }
 
   @Override
   public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
-    LogManager.instance().log(this, Level.SEVERE, "Server '%s' requested the shutdown of the server '%s'. Shutdown in progress...", null, remoteServerName,
-        server.getServerName());
+    LogManager.instance()
+        .log(this, Level.SEVERE, "Server '%s' requested the shutdown of the server '%s'. Shutdown in progress...", null,
+            remoteServerName, server.getServerName());
     server.getServer().stop();
     return null;
   }

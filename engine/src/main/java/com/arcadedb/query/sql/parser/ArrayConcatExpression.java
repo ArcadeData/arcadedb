@@ -27,7 +27,11 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 
 public class ArrayConcatExpression extends SimpleNode {
 
@@ -69,7 +73,7 @@ public class ArrayConcatExpression extends SimpleNode {
 
     final List<Object> result = new ArrayList<>();
     if (MultiValue.isMultiValue(left)) {
-      final Iterator<Object> leftIter = MultiValue.getMultiValueIterator(left);
+      final Iterator<?> leftIter = MultiValue.getMultiValueIterator(left);
       while (leftIter.hasNext()) {
         result.add(leftIter.next());
       }
@@ -78,7 +82,7 @@ public class ArrayConcatExpression extends SimpleNode {
     }
 
     if (MultiValue.isMultiValue(right)) {
-      final Iterator<Object> rightIter = MultiValue.getMultiValueIterator(right);
+      final Iterator<?> rightIter = MultiValue.getMultiValueIterator(right);
       while (rightIter.hasNext()) {
         result.add(rightIter.next());
       }

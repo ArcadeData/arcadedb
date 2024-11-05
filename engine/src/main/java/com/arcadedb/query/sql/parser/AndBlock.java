@@ -25,7 +25,9 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
 public class AndBlock extends BooleanExpression {
   final List<BooleanExpression> subBlocks;
@@ -39,13 +41,13 @@ public class AndBlock extends BooleanExpression {
     super(-1);
 
     int total = 0;
-    for (int i = 0; i < expressions.length; i++)
-      total += expressions[i].size();
+    for (List<BooleanExpression> expression : expressions)
+      total += expression.size();
 
     this.subBlocks = new ArrayList<>(total);
 
-    for (int i = 0; i < expressions.length; i++)
-      subBlocks.addAll(expressions[i]);
+    for (List<BooleanExpression> expression : expressions)
+      subBlocks.addAll(expression);
   }
 
   @Override
@@ -81,7 +83,7 @@ public class AndBlock extends BooleanExpression {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    if (subBlocks == null || subBlocks.size() == 0)
+    if (subBlocks == null || subBlocks.isEmpty())
       return;
 
     boolean first = true;
@@ -101,11 +103,11 @@ public class AndBlock extends BooleanExpression {
     final List<BinaryCondition> result = new ArrayList<>();
     for (final BooleanExpression exp : subBlocks) {
       final List<BinaryCondition> sub = exp.getIndexedFunctionConditions(iSchemaClass, context);
-      if (sub != null && sub.size() > 0) {
+      if (sub != null && !sub.isEmpty()) {
         result.addAll(sub);
       }
     }
-    return result.size() == 0 ? null : result;
+    return result.isEmpty() ? null : result;
   }
 
   public List<AndBlock> flatten() {

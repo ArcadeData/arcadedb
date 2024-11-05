@@ -30,6 +30,7 @@ import com.arcadedb.utility.ResettableIterator;
 import java.lang.reflect.*;
 import java.util.*;
 import java.util.logging.*;
+import java.util.stream.StreamSupport;
 
 /**
  * Handles Multi-value types such as Arrays, Collections and Maps. It recognizes special Arcade collections.
@@ -48,8 +49,7 @@ public class MultiValue {
    */
   public static boolean isMultiValue(final Class<?> iType) {
     return Collection.class.isAssignableFrom(iType) || Map.class.isAssignableFrom(iType) || MultiIterator.class.isAssignableFrom(
-        iType) || (
-        Iterable.class.isAssignableFrom(iType) && !Identifiable.class.isAssignableFrom(iType)) || iType.isArray()
+        iType) || (Iterable.class.isAssignableFrom(iType) && !Identifiable.class.isAssignableFrom(iType)) || iType.isArray()
         || ResultSet.class.isAssignableFrom(iType);
   }
 
@@ -82,23 +82,18 @@ public class MultiValue {
     if (!isMultiValue(object))
       return 0;
 
-    if (object instanceof Collection<?>)
-      return ((Collection<Object>) object).size();
-    else if (object instanceof Map<?, ?>)
-      return ((Map<?, Object>) object).size();
+    if (object instanceof Collection<?> collection)
+      return collection.size();
+    else if (object instanceof Map<?, ?> map)
+      return map.size();
     else if (object.getClass().isArray())
       return Array.getLength(object);
-    else if ((object instanceof ResettableIterator))
-      return (int) ((ResettableIterator<?>) object).countEntries();
-    else if ((object instanceof Iterable)) {
-      int i = 0;
-      for (final Object o : (Iterable) object) {
-        i++;
-      }
-      return i;
-    } else if ((object instanceof Iterator)) {
-      return (int) CollectionUtils.countEntries((Iterator) object);
-    }
+    else if (object instanceof ResettableIterator<?> resettableIterator)
+      return (int) resettableIterator.countEntries();
+    else if (object instanceof Iterable<?> iterable)
+      return (int) StreamSupport.stream(iterable.spliterator(), false).count();
+    else if (object instanceof Iterator<?> iterator)
+      return (int) CollectionUtils.countEntries(iterator);
 
     return 0;
   }
@@ -114,10 +109,10 @@ public class MultiValue {
     if (object == null)
       return 0;
 
-    if (object instanceof Collection<?>)
-      return ((Collection<Object>) object).size();
-    else if (object instanceof Map<?, ?>)
-      return ((Map<?, Object>) object).size();
+    if (object instanceof Collection<?> collection)
+      return collection.size();
+    else if (object instanceof Map<?, ?> map)
+      return map.size();
     else if (object.getClass().isArray())
       return Array.getLength(object);
     return -1;
@@ -141,12 +136,12 @@ public class MultiValue {
       return null;
 
     try {
-      if (object instanceof List<?>)
-        return ((List<Object>) object).get(0);
-      else if (object instanceof Iterable<?>)
-        return ((Iterable<Object>) object).iterator().next();
-      else if (object instanceof Map<?, ?>)
-        return ((Map<?, Object>) object).values().iterator().next();
+      if (object instanceof List<?> list)
+        return list.get(0);
+      else if (object instanceof Iterable<?> iterable)
+        return iterable.iterator().next();
+      else if (object instanceof Map<?, ?> map)
+        return map.values().iterator().next();
       else if (object.getClass().isArray())
         return Array.get(object, 0);
     } catch (final RuntimeException e) {
@@ -176,16 +171,16 @@ public class MultiValue {
       return null;
 
     try {
-      if (object instanceof List<?>)
-        return ((List<Object>) object).get(((List<Object>) object).size() - 1);
-      else if (object instanceof Iterable<?>) {
+      if (object instanceof List<?> list)
+        return list.get(list.size() - 1);
+      else if (object instanceof Iterable<?> iterable) {
         Object last = null;
-        for (final Object o : (Iterable<Object>) object)
+        for (final Object o : iterable)
           last = o;
         return last;
-      } else if (object instanceof Map<?, ?>) {
+      } else if (object instanceof Map<?, ?> map) {
         Object last = null;
-        for (final Object o : ((Map<?, Object>) object).values())
+        for (final Object o : map.values())
           last = o;
         return last;
       } else if (object.getClass().isArray())
@@ -220,18 +215,18 @@ public class MultiValue {
       return null;
 
     try {
-      if (iObject instanceof List<?>)
-        return ((List<?>) iObject).get(iIndex);
-      else if (iObject instanceof Set<?>) {
+      if (iObject instanceof List<?> list)
+        return (list.get(iIndex));
+      else if (iObject instanceof Set<?> set) {
         int i = 0;
-        for (final Object o : ((Set<?>) iObject)) {
+        for (final Object o : set) {
           if (i++ == iIndex) {
             return o;
           }
         }
-      } else if (iObject instanceof Map<?, ?>) {
+      } else if (iObject instanceof Map<?, ?> map) {
         int i = 0;
-        for (final Object o : ((Map<?, ?>) iObject).values()) {
+        for (final Object o : map.values()) {
           if (i++ == iIndex) {
             return o;
           }
@@ -249,14 +244,14 @@ public class MultiValue {
           for (int i = 0; it.hasNext(); ++i) {
             final Object o = it.next();
             if (i == iIndex) {
-              if (it instanceof ResettableIterator)
-                ((ResettableIterator<Object>) it).reset();
+              if (it instanceof ResettableIterator<?> resettableIterator)
+                resettableIterator.reset();
               return o;
             }
           }
 
-          if (it instanceof ResettableIterator)
-            ((ResettableIterator<Object>) it).reset();
+          if (it instanceof ResettableIterator<?> resettableIterator)
+            resettableIterator.reset();
         }
       }
     } catch (final RuntimeException e) {
@@ -268,17 +263,17 @@ public class MultiValue {
   }
 
   /**
-   * Sets the value of the Multi-value object (array or collection) at iIndex
+   * Sets the value of the Multi-value object (array or collection) at index
    *
-   * @param iObject Multi-value object (array, collection)
-   * @param iValue  The value to set at this specified index.
-   * @param iIndex  integer as the position requested
+   * @param multiValue Multi-value object (array, collection)
+   * @param value      The value to set at this specified index.
+   * @param index      integer as the position requested
    */
-  public static void setValue(final Object iObject, final Object iValue, final int iIndex) {
-    if (iObject instanceof List<?>) {
-      ((List<Object>) iObject).set(iIndex, iValue);
-    } else if (iObject.getClass().isArray()) {
-      Array.set(iObject, iIndex, iValue);
+  public static void setValue(final Object multiValue, final Object value, final int index) {
+    if (multiValue instanceof List list) {
+      list.set(index, value);
+    } else if (multiValue.getClass().isArray()) {
+      Array.set(multiValue, index, value);
     } else {
       throw new IllegalArgumentException("Can only set positional indices for Lists and Arrays");
     }
@@ -289,21 +284,22 @@ public class MultiValue {
    *
    * @param iObject Multi-value object (array, collection or map)
    */
-  public static Iterable<Object> getMultiValueIterable(final Object iObject) {
+  public static Iterable<?> getMultiValueIterable(final Object iObject) {
     if (iObject == null)
       return null;
 
-    if (iObject instanceof Iterable<?>)
-      return (Iterable<Object>) iObject;
-    else if (iObject instanceof Collection<?>)
-      return ((Collection<Object>) iObject);
-    else if (iObject instanceof Map<?, ?>)
-      return ((Map<?, Object>) iObject).values();
+    if (iObject instanceof Iterable<?> iterable)
+      return iterable;
+    else if (iObject instanceof Collection<?> collection)
+      return collection;
+    else if (iObject instanceof Map<?, ?> map)
+      return map.values();
     else if (iObject.getClass().isArray())
       return new IterableObjectArray<>(iObject);
-    else if (iObject instanceof Iterator<?>) {
+    else if (iObject instanceof Iterator<?> iterator) {
+
       final List<Object> temp = new ArrayList<>();
-      for (final Iterator<Object> it = (Iterator<Object>) iObject; it.hasNext(); )
+      for (final Iterator<?> it = iterator; it.hasNext(); )
         temp.add(it.next());
       return temp;
     }
@@ -346,17 +342,17 @@ public class MultiValue {
    * @param iForceConvertRecord allow to force settings to convert RIDs to records while browsing.
    */
 
-  public static Iterator<Object> getMultiValueIterator(final Object iObject, final boolean iForceConvertRecord) {
+  public static Iterator<?> getMultiValueIterator(final Object iObject, final boolean iForceConvertRecord) {
     if (iObject == null)
       return null;
 
-    if (iObject instanceof Iterator<?>)
-      return (Iterator<Object>) iObject;
+    if (iObject instanceof Iterator<?> iterator)
+      return iterator;
 
-    if (iObject instanceof Iterable<?>)
-      return ((Iterable<Object>) iObject).iterator();
-    if (iObject instanceof Map<?, ?>)
-      return ((Map<?, Object>) iObject).values().iterator();
+    if (iObject instanceof Iterable<?> iterable)
+      return iterable.iterator();
+    if (iObject instanceof Map<?, ?> map)
+      return map.values().iterator();
     if (iObject.getClass().isArray())
       return new IterableObjectArray<>(iObject).iterator();
 
@@ -369,17 +365,17 @@ public class MultiValue {
    * @param iObject Multi-value object (array, collection or map)
    */
 
-  public static Iterator<Object> getMultiValueIterator(final Object iObject) {
+  public static Iterator<?> getMultiValueIterator(final Object iObject) {
     if (iObject == null)
       return null;
 
-    if (iObject instanceof Iterator<?>)
-      return (Iterator<Object>) iObject;
+    if (iObject instanceof Iterator<?> iterator)
+      return iterator;
 
-    if (iObject instanceof Iterable<?>)
-      return ((Iterable<Object>) iObject).iterator();
-    if (iObject instanceof Map<?, ?>)
-      return ((Map<?, Object>) iObject).values().iterator();
+    if (iObject instanceof Iterable<?> iterable)
+      return iterable.iterator();
+    if (iObject instanceof Map<?, ?> map)
+      return map.values().iterator();
     if (iObject.getClass().isArray())
       return new IterableObjectArray<>(iObject).iterator();
 
@@ -542,7 +538,7 @@ public class MultiValue {
             if (isMultiValue(o))
               remove(coll, o, iAllOccurrences);
             else
-              removeFromOCollection(iObject, coll, o, iAllOccurrences);
+              removeFromCollection(iObject, coll, o, iAllOccurrences);
           }
         } else if (iToRemove != null && iToRemove.getClass().isArray()) {
           // ARRAY - COLLECTION
@@ -551,7 +547,7 @@ public class MultiValue {
             if (isMultiValue(o))
               remove(coll, o, iAllOccurrences);
             else
-              removeFromOCollection(iObject, coll, o, iAllOccurrences);
+              removeFromCollection(iObject, coll, o, iAllOccurrences);
           }
 
         } else if (iToRemove instanceof Map<?, ?>) {
@@ -575,7 +571,7 @@ public class MultiValue {
             }
           }
         } else
-          removeFromOCollection(iObject, coll, iToRemove, iAllOccurrences);
+          removeFromCollection(iObject, coll, iToRemove, iAllOccurrences);
 
       } else if (iObject.getClass().isArray()) {
         // ARRAY - ?
@@ -622,7 +618,7 @@ public class MultiValue {
     return iObject;
   }
 
-  protected static void removeFromOCollection(final Object iObject, final Collection<Object> coll, final Object iToRemove,
+  protected static void removeFromCollection(final Object iObject, final Collection<Object> coll, final Object iToRemove,
       final boolean iAllOccurrences) {
     if (iAllOccurrences && !(iObject instanceof Set)) {
       // BROWSE THE COLLECTION ONE BY ONE TO REMOVE ALL THE OCCURRENCES

@@ -23,11 +23,22 @@ import com.arcadedb.exception.SerializationException;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryTypes;
 
-import java.time.*;
-import java.time.format.*;
-import java.time.temporal.*;
-import java.util.*;
-import java.util.concurrent.*;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.temporal.ChronoField;
+import java.time.temporal.ChronoUnit;
+import java.time.temporal.TemporalAccessor;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.Locale;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 public class DateUtils {
   public static final  String                                       DATE_TIME_ISO_8601_FORMAT = "yyyy-MM-dd'T'HH:mm:ssZ";
@@ -190,30 +201,19 @@ public class DateUtils {
   }
 
   public static ChronoUnit parsePrecision(final String precision) {
-    switch (precision) {
-    case "year":
-      return ChronoUnit.YEARS;
-    case "month":
-      return ChronoUnit.MONTHS;
-    case "week":
-      return ChronoUnit.WEEKS;
-    case "day":
-      return ChronoUnit.DAYS;
-    case "hour":
-      return ChronoUnit.HOURS;
-    case "minute":
-      return ChronoUnit.MINUTES;
-    case "second":
-      return ChronoUnit.SECONDS;
-    case "millisecond":
-      return ChronoUnit.MILLIS;
-    case "microsecond":
-      return ChronoUnit.MICROS;
-    case "nanosecond":
-      return ChronoUnit.NANOS;
-    default:
-      throw new SerializationException("Unsupported datetime precision '" + precision + "'");
-    }
+    return switch (precision.toLowerCase(Locale.ENGLISH)) {
+      case "year", "years" -> ChronoUnit.YEARS;
+      case "month", "months" -> ChronoUnit.MONTHS;
+      case "week", "weeks" -> ChronoUnit.WEEKS;
+      case "day", "days" -> ChronoUnit.DAYS;
+      case "hour", "hours" -> ChronoUnit.HOURS;
+      case "minute", "minutes" -> ChronoUnit.MINUTES;
+      case "second", "seconds" -> ChronoUnit.SECONDS;
+      case "millisecond", "milliseconds", "millis" -> ChronoUnit.MILLIS;
+      case "microsecond", "microseconds", "micros" -> ChronoUnit.MICROS;
+      case "nanosecond", "nanoseconds", "nanos" -> ChronoUnit.NANOS;
+      default -> throw new SerializationException("Unsupported datetime precision '" + precision + "'");
+    };
   }
 
   public static ChronoUnit getPrecision(final int nanos) {

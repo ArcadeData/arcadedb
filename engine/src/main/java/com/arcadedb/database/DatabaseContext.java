@@ -28,6 +28,8 @@ import java.util.*;
  * Thread local to store transaction data.
  */
 public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.DatabaseContextTL>> {
+  public static final DatabaseContext INSTANCE = new DatabaseContext();
+
   public DatabaseContextTL init(final DatabaseInternal database) {
     return init(database, null);
   }
@@ -198,5 +200,4 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
     }
   }
 
-  public static final DatabaseContext INSTANCE = new DatabaseContext();
 }

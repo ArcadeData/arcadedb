@@ -27,7 +27,12 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 
 public class ContainsAnyCondition extends BooleanExpression {
   protected Expression left;
@@ -85,7 +90,7 @@ public class ContainsAnyCondition extends BooleanExpression {
       if (!MultiValue.isMultiValue(leftValue))
         return false;
 
-      final Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
+      final Iterator<?> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         final Object item = iter.next();
         if (item instanceof Identifiable) {
@@ -111,7 +116,7 @@ public class ContainsAnyCondition extends BooleanExpression {
       if (!MultiValue.isMultiValue(leftValue))
         return false;
 
-      final Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
+      final Iterator<?> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         final Object item = iter.next();
         if (item instanceof Identifiable) {

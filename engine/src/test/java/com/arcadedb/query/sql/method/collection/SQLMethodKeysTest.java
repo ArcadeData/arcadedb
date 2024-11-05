@@ -23,7 +23,9 @@ import com.arcadedb.query.sql.executor.SQLMethod;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -43,6 +45,20 @@ public class SQLMethodKeysTest {
     resultInternal.setProperty("surname", "Bar");
 
     final Object result = function.execute(resultInternal, null, null, null);
-    assertThat(result).isEqualTo(new LinkedHashSet(Arrays.asList("name", "surname")));
+    assertThat(result).isEqualTo(Set.of("name", "surname"));
+  }
+
+  @Test
+  public void testWithCollection() {
+    List<Map<String, Object>> collection = List.of(Map.of("key1", "value1"), Map.of("key2", "value2"));
+
+    Object result = function.execute(collection, null, null, null);
+    assertThat(result).isEqualTo(List.of("key1", "key2"));
+  }
+
+  @Test
+  public void testWithNull() {
+    Object result = function.execute(null, null, null, null);
+    assertThat(result).isNull();
   }
 }

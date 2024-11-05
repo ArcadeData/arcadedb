@@ -38,21 +38,21 @@ public class WhileBlockExecutionTest extends TestHelper {
 
     database.getSchema().createDocumentType(className);
 
-    String script = "";
-    script += "LET $i = 0;";
-    script += "WHILE ($i < 3){\n";
-    script += "  insert into " + className + " set value = $i;\n";
-    script += "  LET $i = $i + 1;";
-    script += "}";
-    script += "SELECT FROM " + className + ";";
-
+    String script = """
+        LET $i = 0;
+        WHILE ($i < 3){
+          insert into %s set value = $i;
+          LET $i = $i + 1;
+        }
+        SELECT FROM %s;
+        """.formatted(className, className);
     final ResultSet results = database.command("sqlscript", script);
 
     int tot = 0;
     int sum = 0;
     while (results.hasNext()) {
       final Result item = results.next();
-      sum +=  item.<Integer>getProperty("value");
+      sum += item.<Integer>getProperty("value");
       tot++;
     }
     assertThat(tot).isEqualTo(3);
@@ -66,16 +66,16 @@ public class WhileBlockExecutionTest extends TestHelper {
 
     database.getSchema().createDocumentType(className);
 
-    String script = "";
-    script += "LET $i = 0;";
-    script += "WHILE ($i < 3){\n";
-    script += "  insert into " + className + " set value = $i;\n";
-    script += "  IF ($i = 1) {";
-    script += "    RETURN;";
-    script += "  }";
-    script += "  LET $i = $i + 1;";
-    script += "}";
-
+    String script = """
+        LET $i = 0;
+        WHILE ($i < 3){
+          insert into %s set value = $i;
+          IF ($i = 1) {
+            RETURN;
+          }
+          LET $i = $i + 1;
+        }
+        """.formatted(className);
     ResultSet results = database.command("sqlscript", script);
     results.close();
     results = database.query("sql", "SELECT FROM " + className);
@@ -84,7 +84,7 @@ public class WhileBlockExecutionTest extends TestHelper {
     int sum = 0;
     while (results.hasNext()) {
       final Result item = results.next();
-      sum +=  item.<Integer>getProperty("value");
+      sum += item.<Integer>getProperty("value");
       tot++;
     }
     assertThat(tot).isEqualTo(2);

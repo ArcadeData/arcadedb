@@ -28,7 +28,10 @@ import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 /**
  * Transform the element in a collections or map.
@@ -50,11 +53,13 @@ public class SQLMethodTransform extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
+      final Object[] iParams) {
     if (value == null || iParams == null || iParams.length == 0)
       return null;
 
-    final DefaultSQLMethodFactory methodFactory = ((SQLQueryEngine) iContext.getDatabase().getQueryEngine("SQL")).getMethodFactory();
+    final DefaultSQLMethodFactory methodFactory = ((SQLQueryEngine) iContext.getDatabase()
+        .getQueryEngine("SQL")).getMethodFactory();
     final List<SQLMethod> transformers = new ArrayList<>(iParams.length);
     for (Object o : iParams) {
       if (o == null)
@@ -62,9 +67,9 @@ public class SQLMethodTransform extends AbstractSQLMethod {
       transformers.add(methodFactory.createMethod(o.toString()));
     }
 
-    if (value instanceof List) {
-      final List<Object> newList = new ArrayList<>(((List) value).size());
-      for (Object o : (List) value) {
+    if (value instanceof List list) {
+      final List<Object> newList = new ArrayList<>(list.size());
+      for (Object o : list) {
         Object transformed = o;
 
         for (SQLMethod m : transformers)
@@ -73,9 +78,9 @@ public class SQLMethodTransform extends AbstractSQLMethod {
         newList.add(transformed);
       }
       return newList;
-    } else if (value instanceof Set) {
-      final Set<Object> newSet = new HashSet<>(((Set) value).size());
-      for (Object o : (Set) value) {
+    } else if (value instanceof Set set) {
+      final Set<Object> newSet = new HashSet<>(set.size());
+      for (Object o : set) {
         Object transformed = o;
 
         for (SQLMethod m : transformers)
