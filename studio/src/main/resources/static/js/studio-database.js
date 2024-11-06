@@ -52,6 +52,14 @@ function updateDatabases(callback) {
       },
     })
     .done(function (data) {
+      let version = data.version;
+      let pos = data.version.indexOf("(build");
+      if (pos > -1) {
+        version = version.substring(0, pos);
+      }
+
+      $("#version").html(version);
+
       let databases = "";
       for (let i in data.result) {
         let dbName = data.result[i];
