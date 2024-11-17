@@ -314,8 +314,12 @@ public enum GlobalConfiguration {
   SERVER_MODE("arcadedb.server.mode", SCOPE.SERVER, "Server mode between 'development', 'test' and 'production'", String.class,
       "development", Set.of((Object[]) new String[] { "development", "test", "production" })),
 
+  // Metrics
   SERVER_METRICS("arcadedb.serverMetrics", SCOPE.SERVER, "True to enable metrics", Boolean.class, true),
 
+  SERVER_METRICS_LOGGING("arcadedb.serverMetrics.logging", SCOPE.SERVER, "True to enable metrics logging", Boolean.class, false),
+
+  //paths
   SERVER_ROOT_PATH("arcadedb.server.rootPath", SCOPE.SERVER,
       "Root path in the file system where the server is looking for files. By default is the current directory", String.class,
       null),
@@ -396,7 +400,7 @@ public enum GlobalConfiguration {
       String.class, ""),
 
   HA_QUORUM("arcadedb.ha.quorum", SCOPE.SERVER,
-      "Default quorum between 'none', one, two, three, 'majority' and 'all' servers. Default is majority", String.class, "majority",
+      "Default quorum between 'none', one, two, three, 'majority' and 'all' servers. Default is majority",String.class  , "majority",
       Set.of(new String[] { "none", "one", "two", "three", "majority", "all" })),
 
   HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", SCOPE.SERVER, "Timeout waiting for the quorum", Long.class, 10000),

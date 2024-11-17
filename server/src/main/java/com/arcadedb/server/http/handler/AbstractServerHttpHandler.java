@@ -41,9 +41,10 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
 import io.undertow.util.StatusCodes;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.Base64;
+import java.util.Deque;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
 
 public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final String     AUTHORIZATION_BASIC = "Basic";

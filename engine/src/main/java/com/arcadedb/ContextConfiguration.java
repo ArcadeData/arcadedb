@@ -42,7 +42,7 @@ public class ContextConfiguration implements Serializable {
   };
 
   /**
-   * Empty constructor to create just a proxy for the OGlobalConfiguration. No values are set.
+   * Empty constructor to create just a proxy for the GlobalConfiguration. No values are set.
    */
   public ContextConfiguration() {
   }
@@ -145,7 +145,7 @@ public class ContextConfiguration implements Serializable {
   }
 
   @SuppressWarnings("unchecked")
-  public <T> T getValue(final String iName, final T iDefaultValue) {
+  public <T> T getValue(final String iName, final T defaultValue) {
     if (config.containsKey(iName))
       return (T) config.get(iName);
 
@@ -153,7 +153,7 @@ public class ContextConfiguration implements Serializable {
     if (sysProperty != null)
       return (T) sysProperty;
 
-    return iDefaultValue;
+    return defaultValue;
   }
 
   public boolean getValueAsBoolean(final GlobalConfiguration iConfig) {

@@ -116,6 +116,11 @@
         </dependency>
         <dependency>
             <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-metrics</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-studio</artifactId>
             <version>${project.parent.version}</version>
         </dependency>

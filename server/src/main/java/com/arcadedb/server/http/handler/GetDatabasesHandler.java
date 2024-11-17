@@ -22,6 +22,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
 import java.util.*;
@@ -42,7 +43,7 @@ public class GetDatabasesHandler extends AbstractServerHttpHandler {
 
     final JSONObject result = createResult(user, null).put("result", new JSONArray(installedDatabases));
 
-    httpServer.getServer().getServerMetrics().meter("http.list-databases").hit();
+    Metrics.counter("http.list-databases").increment(); ;
 
     return new ExecutionResponse(200, result.toString());
   }

@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
 import java.util.*;
@@ -48,7 +49,7 @@ public class DeleteDropUserHandler extends AbstractServerHttpHandler {
     if (userName == null)
       return new ExecutionResponse(400, "{ \"error\" : \"User name parameter is null\"}");
 
-    httpServer.getServer().getServerMetrics().meter("http.drop-user").hit();
+    Metrics.counter("http.drop-user").increment(); ;
 
     final boolean result = httpServer.getServer().getSecurity().dropUser(userName);
     if (!result)

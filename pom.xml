@@ -115,6 +115,7 @@
         <module>engine</module>
         <module>network</module>
         <module>server</module>
+        <module>metrics</module>
         <module>integration</module>
         <module>console</module>
         <module>gremlin</module>
