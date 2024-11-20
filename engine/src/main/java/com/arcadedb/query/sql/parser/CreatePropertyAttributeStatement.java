@@ -53,7 +53,15 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
 
   public Object setOnProperty(final Property internalProp, final CommandContext context) {
     final String attrName = settingName.getStringValue();
-    final Object attrValue = this.settingValue == null ? true : this.settingValue.execute((Identifiable) null, context);
+    final Object attrValue;
+    if (this.settingValue == null) {
+      attrValue = true;
+    } else if (attrName.equalsIgnoreCase("default")) {
+      attrValue = this.settingValue.toString();
+    } else {
+      attrValue = this.settingValue.execute((Identifiable) null, context);
+    }
+
     try {
       if (attrName.equalsIgnoreCase("readonly")) {
         internalProp.setReadonly((boolean) attrValue);
@@ -68,7 +76,7 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
       } else if (attrName.equalsIgnoreCase("default")) {
         if (this.settingValue == null)
           throw new CommandExecutionException("Default value not set");
-        internalProp.setDefaultValue(this.settingValue.toString());
+        internalProp.setDefaultValue("" + attrValue);
       } else if (attrName.equalsIgnoreCase("regexp")) {
         internalProp.setRegexp("" + attrValue);
       } else {
