@@ -996,9 +996,6 @@ Statement StatementInternal():
         LOOKAHEAD(2)
         result = DeleteStatement()
         |
-        LOOKAHEAD(2)
-        result = DeleteEdgeStatement()
-        |
         result = InsertStatement()
         |
         LOOKAHEAD(4)
@@ -1033,9 +1030,6 @@ Statement StatementInternal():
         |
         LOOKAHEAD(CreateEdgeStatement())
         result = CreateEdgeStatement()
-        |
-        LOOKAHEAD(UpdateEdgeStatement())
-        result = UpdateEdgeStatement()
         |
         LOOKAHEAD(UpdateStatement())
         result = UpdateStatement()
@@ -1279,131 +1273,6 @@ DeleteStatement DeleteStatement():
   [ <WHERE> jjtThis.whereClause = WhereClause() ]
   [ jjtThis.limit = Limit() ]
   [ <UNSAFE> { jjtThis.unsafe = true; }]
-  {return jjtThis;}
-}
-
-DeleteEdgeStatement DeleteEdgeStatement():
-{ DeleteEdgeStatement result; }
-{
-  (
-    LOOKAHEAD(DeleteEdgeByRidStatement())
-    result = DeleteEdgeByRidStatement()
-    |
-    LOOKAHEAD(DeleteEdgeFromToStatement())
-    result = DeleteEdgeFromToStatement()
-    |
-    LOOKAHEAD(DeleteEdgeVToStatement())
-    result = DeleteEdgeVToStatement()
-    |
-    LOOKAHEAD(DeleteEdgeToStatement())
-    result = DeleteEdgeToStatement()
-    |
-    LOOKAHEAD(DeleteEdgeWhereStatement())
-    result = DeleteEdgeWhereStatement()
-  )
-  {return result;}
-}
-
-DeleteEdgeStatement DeleteEdgeByRidStatement():
-{
-  Rid lastRid;
-}
-{
-  <DELETE> <EDGE>
-  (
-    jjtThis.rid = Rid()
-    |
-    (
-      <LBRACKET>
-      [
-        lastRid = Rid()
-        {
-          jjtThis.rids = new ArrayList();
-          jjtThis.rids.add(lastRid);
-        }
-        (
-          <COMMA>
-          lastRid = Rid() { jjtThis.rids.add(lastRid); }
-        )*
-      ] <RBRACKET>
-    )
-  )
-{return jjtThis;}
-}
-
-DeleteEdgeStatement DeleteEdgeFromToStatement():
-{
-  Rid lastRid;
-}
-{
-  <DELETE> <EDGE>
-  [ jjtThis.typeName = Identifier() ]
-  <FROM> jjtThis.leftExpression = Expression()
-  [
-    <TO>
-    jjtThis.rightExpression = Expression()
-  ]
-  [ <WHERE> jjtThis.whereClause = WhereClause() ]
-  [ jjtThis.limit = Limit() ]
-  {return jjtThis;}
-}
-
-DeleteEdgeStatement DeleteEdgeToStatement():
-{
-  Rid lastRid;
-}
-{
-  <DELETE> <EDGE>
-  jjtThis.typeName = Identifier()
-  <TO>
-  jjtThis.rightExpression = Expression()
-  [ <WHERE> jjtThis.whereClause = WhereClause() ]
-  [ jjtThis.limit = Limit() ]
-  {return jjtThis;}
-}
-
-DeleteEdgeStatement DeleteEdgeVToStatement():
-{
-  Rid lastRid;
-}
-{
-  <DELETE> <EDGE> <TO>
-  jjtThis.rightExpression = Expression()
-  [ <WHERE> jjtThis.whereClause = WhereClause() ]
-  [ jjtThis.limit = Limit() ]
-  {return jjtThis;}
-}
-
-DeleteEdgeStatement DeleteEdgeWhereStatement():
-{
-  Rid lastRid;
-}
-{
-  <DELETE> <EDGE>
-  [ jjtThis.typeName = Identifier() ]
-  [ <WHERE> jjtThis.whereClause = WhereClause() ]
-  [ jjtThis.limit = Limit() ]
-  {return jjtThis;}
-}
-
-UpdateEdgeStatement UpdateEdgeStatement():
-{ UpdateOperations lastOperations;
- Rid lastRid;}
-{
-  <UPDATE> <EDGE>
-  jjtThis.target = FromClause()
-  ( lastOperations = UpdateOperations() { jjtThis.operations.add(lastOperations); } )+
-  [ <UPSERT> { jjtThis.upsert = true; } ]
-  [
-    <RETURN>
-    ( <BEFORE> { jjtThis.returnBefore = true; } | <AFTER> { jjtThis.returnAfter = true; } )
-    [
-      jjtThis.returnProjection = Projection()
-    ]
-  ]
-  [ <WHERE> jjtThis.whereClause = WhereClause() ]
-  [ jjtThis.limit = Limit() ]
-  [ jjtThis.timeout = Timeout() ]
   {return jjtThis;}
 }
 
