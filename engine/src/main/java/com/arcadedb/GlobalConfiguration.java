@@ -26,10 +26,17 @@ import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.SystemVariableResolver;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
-import java.util.stream.*;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.PrintStream;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.logging.Level;
 
 /**
  * Keeps all configuration settings. At startup assigns the configuration values by reading system properties.
@@ -382,8 +389,8 @@ public enum GlobalConfiguration {
       String.class, ""),
 
   HA_QUORUM("arcadedb.ha.quorum", SCOPE.SERVER,
-      "Default quorum between 'none', 1, 2, 3, 'majority' and 'all' servers. Default is majority", String.class, "majority",
-      Set.of((Object[]) new String[] { "none", "1", "2", "3", "majority", "all" })),
+      "Default quorum between 'none', one, two, three, 'majority' and 'all' servers. Default is majority", String.class, "majority",
+      Set.of(new String[] { "none", "one", "two", "three", "majority", "all" })),
 
   HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", SCOPE.SERVER, "Timeout waiting for the quorum", Long.class, 10000),
 
@@ -520,8 +527,7 @@ public enum GlobalConfiguration {
     out.println(" configuration:");
 
     String lastSection = "";
-    for (final GlobalConfiguration v : Arrays.stream(values()).sorted(Comparator.comparing(Enum::name))
-        .collect(Collectors.toList())) {
+    for (final GlobalConfiguration v : Arrays.stream(values()).sorted(Comparator.comparing(Enum::name)).toList()) {
       final String section = v.key.substring(0, v.key.indexOf('.'));
 
       if (!lastSection.equals(section)) {

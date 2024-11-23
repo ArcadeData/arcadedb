@@ -163,29 +163,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
       final Binary bufferChanges) {
     final int configuredServers = server.getHA().getConfiguredServers();
 
-    final int reqQuorum;
-    switch (quorum) {
-    case NONE:
-      reqQuorum = 0;
-      break;
-    case ONE:
-      reqQuorum = 1;
-      break;
-    case TWO:
-      reqQuorum = 2;
-      break;
-    case THREE:
-      reqQuorum = 3;
-      break;
-    case MAJORITY:
-      reqQuorum = (configuredServers / 2) + 1;
-      break;
-    case ALL:
-      reqQuorum = configuredServers;
-      break;
-    default:
-      throw new IllegalArgumentException("Quorum " + quorum + " not managed");
-    }
+    final int reqQuorum = quorum.quorum(configuredServers);
 
     final TxRequest req = new TxRequest(getName(), tx.getBucketRecordDelta(), bufferChanges, reqQuorum > 1);
 
