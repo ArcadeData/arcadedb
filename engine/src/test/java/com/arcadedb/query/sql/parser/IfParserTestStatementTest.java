@@ -31,17 +31,22 @@ public class IfParserTestStatementTest extends AbstractParserTest {
 
     checkRightSyntax("if(1=1){\n" + "/* foo bar baz */" + "return foo;" + "\n}");
     checkRightSyntax(
-        "if(1=1){\n"
-            + "/* foo bar baz */"
-            + "update foo set name = 'bar';"
-            + "return foo;"
-            + "\n}");
+        """
+        if(1=1){
+        /* foo bar baz */\
+        update foo set name = 'bar';\
+        return foo;
+        }\
+        """);
 
     checkRightSyntax(
-        "if\n(1=1){\n"
-            + "/* foo bar baz */"
-            + "update foo set name = 'bar';"
-            + "return foo;"
-            + "\n}");
+        """
+        if
+        (1=1){
+        /* foo bar baz */\
+        update foo set name = 'bar';\
+        return foo;
+        }\
+        """);
   }
 }

@@ -64,9 +64,11 @@ public class ServerDatabaseSqlScriptIT extends BaseGraphServerTest {
 
       database.transaction(() -> {
         final ResultSet result = database.command("sqlscript",
-            "LET photo1 = CREATE vertex Photos SET id = \"3778f235a52d\", name = \"beach.jpg\", status = \"\";\n"
-                + "LET photo2 = CREATE vertex Photos SET id = \"23kfkd23223\", name = \"luca.jpg\", status = \"\";\n"
-                + "LET connected = Create edge Connected FROM $photo1 to $photo2 set type = \"User_Photos\";return $photo1;");
+            """
+            LET photo1 = CREATE vertex Photos SET id = "3778f235a52d", name = "beach.jpg", status = "";
+            LET photo2 = CREATE vertex Photos SET id = "23kfkd23223", name = "luca.jpg", status = "";
+            LET connected = Create edge Connected FROM $photo1 to $photo2 set type = "User_Photos";return $photo1;\
+            """);
         assertThat(result.hasNext()).isTrue();
         final Result response = result.next();
         assertThat(response.<String>getProperty("name")).isEqualTo("beach.jpg");

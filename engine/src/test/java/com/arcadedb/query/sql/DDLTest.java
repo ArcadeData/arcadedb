@@ -43,9 +43,18 @@ public class DDLTest extends TestHelper {
     final int numOfElements = 10;
     //create schema: script
     database.command("sqlscript",
-        "BEGIN;" + "CREATE VERTEX TYPE Person EXTENDS V; " + "CREATE PROPERTY Person.name STRING;" + "CREATE PROPERTY Person.id INTEGER;"
-            + "CREATE INDEX ON Person (id) UNIQUE NULL_STRATEGY SKIP;" + "CREATE VERTEX TYPE Car EXTENDS V; " + "CREATE PROPERTY Car.id INTEGER;"
-            + "CREATE PROPERTY Car.model STRING;" + "CREATE INDEX ON Car (id) UNIQUE;" + "CREATE EDGE TYPE Drives EXTENDS E;" + "COMMIT;  " + "");
+        """
+        BEGIN;\
+        CREATE VERTEX TYPE Person EXTENDS V; \
+        CREATE PROPERTY Person.name STRING;\
+        CREATE PROPERTY Person.id INTEGER;\
+        CREATE INDEX ON Person (id) UNIQUE NULL_STRATEGY SKIP;\
+        CREATE VERTEX TYPE Car EXTENDS V; \
+        CREATE PROPERTY Car.id INTEGER;\
+        CREATE PROPERTY Car.model STRING;\
+        CREATE INDEX ON Car (id) UNIQUE;\
+        CREATE EDGE TYPE Drives EXTENDS E;\
+        COMMIT;  """);
 
     //vertices
     database.transaction(() -> IntStream.range(0, numOfElements).forEach(i -> {

@@ -4,13 +4,12 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
-
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -27,36 +26,38 @@ public class SQLScriptTest extends TestHelper {
 
   @Test
   public void testQueryOnDeprecated() {
-    StringBuilder script = new StringBuilder();
-    script.append("begin;\n");
-    script.append("let $a = select from foo;\n");
-    script.append("commit;\n");
-    script.append("return $a;\n");
-    ResultSet qResult = database.command("sqlscript", script.toString());
+    String script = """
+        begin;
+        let $a = select from foo;
+        commit;
+        return $a;
+        """;
+    ResultSet qResult = database.command("sqlscript", script);
 
     assertThat(CollectionUtils.countEntries(qResult)).isEqualTo(3);
   }
 
   @Test
   public void testQuery() {
-    StringBuilder script = new StringBuilder();
-    script.append("begin;\n");
-    script.append("let $a = select from foo;\n");
-    script.append("commit;\n");
-    script.append("return $a;\n");
-    ResultSet qResult = database.command("SQLScript", script.toString());
-
+    String script = """
+        begin;
+        let $a = select from foo;
+        commit;
+        return $a;
+        """;
+    ResultSet qResult = database.command("SQLScript", script);
     assertThat(CollectionUtils.countEntries(qResult)).isEqualTo(3);
   }
 
   @Test
   public void testTx() {
-    StringBuilder script = new StringBuilder();
-    script.append("begin isolation REPEATABLE_READ;\n");
-    script.append("let $a = insert into V set test = 'sql script test';\n");
-    script.append("commit retry 10;\n");
-    script.append("return $a;\n");
-    Document qResult = database.command("SQLScript", script.toString()).next().toElement();
+    String script = """
+        begin isolation REPEATABLE_READ;
+        let $a = insert into V set test = 'sql script test';
+        commit retry 10;
+        return $a;
+        """;
+    Document qResult = database.command("SQLScript", script).next().toElement();
 
     assertThat(qResult).isNotNull();
   }
@@ -64,19 +65,20 @@ public class SQLScriptTest extends TestHelper {
   @Test
   public void testReturnExpanded() {
     database.transaction(() -> {
-      StringBuilder script = new StringBuilder();
-      script.append("let $a = insert into V set test = 'sql script test';\n");
-      script.append("return $a.asJSON();\n");
-      String qResult = database.command("SQLScript", script.toString()).next().getProperty("value").toString();
+      String script = """
+          let $a = insert into V set test = 'sql script test';
+          return $a.asJSON();
+          """;
+      String qResult = database.command("SQLScript", script).next().getProperty("value").toString();
       assertThat(qResult).isNotNull();
       // VALIDATE JSON
       new JSONObject(qResult);
 
-      script = new StringBuilder();
-      script.append("let $a = select from V limit 2;\n");
-      script.append("return $a.asJSON();\n");
-      String result = database.command("SQLScript", script.toString()).next().getProperty("value").toString();
-
+      script = """
+          let $a = select from V limit 2;
+          return $a.asJSON();
+          """;
+      String result = database.command("SQLScript", script).next().getProperty("value").toString();
 
       assertThat(result).isNotNull();
       result = result.trim();
@@ -92,42 +94,41 @@ public class SQLScriptTest extends TestHelper {
   public void testSleep() {
     long begin = System.currentTimeMillis();
 
-    StringBuilder script = new StringBuilder();
-    script.append("sleep 500");
-    database.command("SQLScript", script.toString());
+    database.command("SQLScript", "sleep 500");
 
     assertThat(System.currentTimeMillis() - begin >= 500).isTrue();
   }
 
   //@Test
   public void testConsoleLog() {
-    StringBuilder script = new StringBuilder();
-    script.append("LET $a = 'log'\n");
-    script.append("console.log 'This is a test of log for ${a}'");
-    database.command("SQLScript", script.toString());
+    String script = """
+        LET $a = 'log'
+        console.log 'This is a test of log for ${a}'
+        """;
+    database.command("SQLScript", script);
   }
 
   //@Test
   public void testConsoleOutput() {
-    StringBuilder script = new StringBuilder();
-    script.append("LET $a = 'output'\n");
-    script.append("console.output 'This is a test of log for ${a}'");
-    database.command("SQLScript", script.toString());
+    String script = """
+        LET $a = 'output'
+        console.output 'This is a test of log for ${a}'
+        """;
+    database.command("SQLScript", script);
   }
 
   //@Test
   public void testConsoleError() {
-    StringBuilder script = new StringBuilder();
-    script.append("LET $a = 'error';\n");
-    script.append("CONSOLE.ERROR 'This is a test of log for ${a}';");
-    database.command("SQLScript", script.toString());
+    String script = """
+        LET $a = 'error';
+        CONSOLE.ERROR 'This is a test of log for ${a}';
+        """;
+    database.command("SQLScript", script);
   }
 
   @Test
   public void testReturnObject() {
-    StringBuilder script = new StringBuilder();
-    script.append("return [{ a: 'b' }]");
-    ResultSet result = database.command("SQLScript", script.toString());
+    ResultSet result = database.command("SQLScript", "return [{ a: 'b' }]");
 
     assertThat(Optional.ofNullable(result)).isNotNull();
 
@@ -140,10 +141,11 @@ public class SQLScriptTest extends TestHelper {
     database.transaction(() -> {
       database.getSchema().createDocumentType("TestCounter");
 
-      StringBuilder script = new StringBuilder();
-      script.append("INSERT INTO TestCounter set weight = 3;\n");
-      script.append("LET counter = SELECT count(*) as count FROM TestCounter;\n");
-      script.append("UPDATE TestCounter SET weight += $counter[0].count RETURN AfTER @this;\n");
+      String script = """
+          INSERT INTO TestCounter set weight = 3;
+          LET counter = SELECT count(*) as count FROM TestCounter;
+          UPDATE TestCounter SET weight += $counter[0].count RETURN AFTER @this;
+          """;
       ResultSet qResult = database.command("SQLScript", script.toString());
 
       assertThat(qResult.hasNext()).isTrue();
@@ -154,13 +156,13 @@ public class SQLScriptTest extends TestHelper {
 
   @Test
   public void testIf1() {
-    StringBuilder script = new StringBuilder();
-
-    script.append("let $a = select 1 as one;\n");
-    script.append("if($a[0].one = 1){\n");
-    script.append(" return 'OK';\n");
-    script.append("}\n");
-    script.append("return 'FAIL';\n");
+    String script = """
+        let $a = select 1 as one;
+        if($a[0].one = 1){
+         return 'OK';
+        }
+        return 'FAIL';
+        """;
     ResultSet qResult = database.command("SQLScript", script.toString());
 
     assertThat(Optional.ofNullable(qResult)).isNotNull();
@@ -169,14 +171,14 @@ public class SQLScriptTest extends TestHelper {
 
   @Test
   public void testIf2() {
-    StringBuilder script = new StringBuilder();
-
-    script.append("let $a = select 1 as one;\n");
-    script.append("if    ($a[0].one = 1)   { \n");
-    script.append(" return 'OK';\n");
-    script.append("     }      \n");
-    script.append("return 'FAIL';\n");
-    ResultSet qResult = database.command("SQLScript", script.toString());
+    String script = """
+        let $a = select 1 as one;
+        if ($a[0].one = 1) {
+          return 'OK';
+        }
+        return 'FAIL';
+        """;
+    ResultSet qResult = database.command("SQLScript", script);
 
     assertThat(Optional.ofNullable(qResult)).isNotNull();
     assertThat(qResult.next().<String>getProperty("value")).isEqualTo("OK");
@@ -184,26 +186,32 @@ public class SQLScriptTest extends TestHelper {
 
   @Test
   public void testIf3() {
-    StringBuilder script = new StringBuilder();
-    script.append("let $a = select 1 as one; if($a[0].one = 1){return 'OK';}return 'FAIL';");
-    ResultSet qResult = database.command("SQLScript", script.toString());
+
+    String script = """
+        let $a = select 1 as one;
+        if ($a[0].one = 1) {
+          return 'OK';
+        }
+        return 'FAIL';
+        """;
+    ResultSet qResult = database.command("SQLScript", script);
     assertThat(Optional.ofNullable(qResult)).isNotNull();
     assertThat(qResult.next().<String>getProperty("value")).isEqualTo("OK");
   }
 
   @Test
   public void testNestedIf2() {
-    StringBuilder script = new StringBuilder();
-
-    script.append("let $a = select 1 as one;\n");
-    script.append("if($a[0].one = 1){\n");
-    script.append("    if($a[0].one = 'zz'){\n");
-    script.append("      return 'FAIL';\n");
-    script.append("    }\n");
-    script.append("  return 'OK';\n");
-    script.append("}\n");
-    script.append("return 'FAIL';\n");
-    ResultSet qResult = database.command("SQLScript", script.toString());
+    String script = """
+        let $a = select 1 as one;
+        if ($a[0].one = 1) {
+            if ($a[0].one = 'zz') {
+              return 'FAIL';
+            }
+          return 'OK';
+        }
+        return 'FAIL';
+        """;
+    ResultSet qResult = database.command("SQLScript", script);
 
     assertThat(Optional.ofNullable(qResult)).isNotNull();
     assertThat(qResult.next().<String>getProperty("value")).isEqualTo("OK");
@@ -211,16 +219,16 @@ public class SQLScriptTest extends TestHelper {
 
   @Test
   public void testNestedIf3() {
-    StringBuilder script = new StringBuilder();
-
-    script.append("let $a = select 1 as one;\n");
-    script.append("if($a[0].one = 'zz'){\n");
-    script.append("    if($a[0].one = 1){\n");
-    script.append("      return 'FAIL';\n");
-    script.append("    }\n");
-    script.append("  return 'FAIL';\n");
-    script.append("}\n");
-    script.append("return 'OK';\n");
+    String script = """
+        let $a = select 1 as one;
+        if ($a[0].one = 'zz') {
+            if ($a[0].one = 1) {
+              return 'FAIL';
+            }
+          return 'FAIL';
+        }
+        return 'OK';
+        """;
     ResultSet qResult = database.command("SQLScript", script.toString());
 
     assertThat(Optional.ofNullable(qResult)).isNotNull();
@@ -229,13 +237,13 @@ public class SQLScriptTest extends TestHelper {
 
   @Test
   public void testIfRealQuery() {
-    StringBuilder script = new StringBuilder();
-
-    script.append("let $a = select from foo;\n");
-    script.append("if($a is not null and $a.size() = 3){\n");
-    script.append("  return $a;\n");
-    script.append("}\n");
-    script.append("return 'FAIL';\n");
+    String script = """
+        let $a = select from foo;
+        if ($a is not null and $a.size() = 3 ){
+          return $a;
+        }
+        return 'FAIL';
+        """;
     ResultSet qResult = database.command("SQLScript", script.toString());
 
     assertThat(Optional.ofNullable(qResult)).isNotNull();
@@ -244,15 +252,16 @@ public class SQLScriptTest extends TestHelper {
 
   @Test
   public void testIfMultipleStatements() {
-    StringBuilder script = new StringBuilder();
-
-    script.append("let $a = select 1 as one;\n");
-    script.append("if($a[0].one = 1){\n");
-    script.append("  let $b = select 'OK' as ok;\n");
-    script.append("  return $b[0].ok;\n");
-    script.append("}\n");
-    script.append("return 'FAIL';\n");
-    ResultSet qResult = database.command("SQLScript", script.toString());
+    String script = """
+        let $a = select 1 as one;
+        -- this is a comment
+        if ($a[0].one = 1) {
+          let $b = select 'OK' as ok;
+          return $b[0].ok;
+        }
+        return 'FAIL';
+        """;
+    ResultSet qResult = database.command("SQLScript", script);
 
     assertThat(Optional.ofNullable(qResult)).isNotNull();
     assertThat(qResult.next().<String>getProperty("value")).isEqualTo("OK");
@@ -261,9 +270,7 @@ public class SQLScriptTest extends TestHelper {
   @Test
   public void testSemicolonInString() {
     // testing parsing problem
-    StringBuilder script = new StringBuilder();
-    script.append("let $a = select 'foo ; bar' as one\n");
-    ResultSet qResult = database.command("SQLScript", script.toString());
+    ResultSet qResult = database.command("SQLScript", "let $a = select 'foo ; bar' as one\n");
   }
 
   @Test
@@ -288,9 +295,14 @@ public class SQLScriptTest extends TestHelper {
     String className = "testParameters1";
     database.getSchema().createVertexType(className);
     database.getSchema().createEdgeType("E");
-    String script = "BEGIN;" + "LET $a = CREATE VERTEX " + className + " SET name = :name;" + "LET $b = CREATE VERTEX " + className
-        + " SET name = :_name2;"
-        + "LET $edge = CREATE EDGE E from $a to $b;" + "COMMIT;" + "RETURN $edge;";
+    String script = """
+        BEGIN;
+        LET $a = CREATE VERTEX %s SET name = :name;
+        LET $b = CREATE VERTEX %s SET name = :name;
+        LET $edge = CREATE EDGE E from $a to $b;
+        COMMIT;
+        RETURN $edge;
+        """.formatted(className, className);
 
     HashMap<String, Object> map = new HashMap<>();
     map.put("name", "bozo");
@@ -311,9 +323,14 @@ public class SQLScriptTest extends TestHelper {
     String className = "testPositionalParameters";
     database.getSchema().createVertexType(className);
     database.getSchema().createEdgeType("E");
-    String script = "BEGIN;" + "LET $a = CREATE VERTEX " + className + " SET name = ?;" + "LET $b = CREATE VERTEX " + className
-        + " SET name = ?;"
-        + "LET $edge = CREATE EDGE E from $a to $b;" + "COMMIT;" + "RETURN $edge;";
+    String script = """
+        BEGIN;
+        LET $a = CREATE VERTEX %s SET name = ?;
+        LET $b = CREATE VERTEX %s SET name = ?;
+        LET $edge = CREATE EDGE E from $a to $b;
+        COMMIT;
+        RETURN $edge;
+        """.formatted(className, className);
 
     ResultSet rs = database.command("SQLScript", script, "bozo", "bozi");
     rs.close();
@@ -330,34 +347,35 @@ public class SQLScriptTest extends TestHelper {
     database.transaction(() -> {
       database.getSchema().createDocumentType("doc");
 
-      final ResultSet result = database.command("sqlscript", "INSERT INTO doc CONTENT {\n" + //
-          "\"head\" : {\n" + //
-          "  \"vars\" : [ \"item\", \"itemLabel\" ]\n" + //
-          "},\n" + //
-          "\"results\" : {\n" + //
-          "  \"bindings\" : [ {\n" + //
-          "    \"item\" : {\n" + //
-          "          \"type\" : \"uri\",\n" + //
-          "              \"value\" : \"http://www.wikidata.org/entity/Q113997665\"\n" + //
-          "        },\n" + //
-          "        \"itemLabel\" : {\n" + //
-          "          \"xml:lang\" : \"en\",\n" + //
-          "              \"type\" : \"literal\",\n" + //
-          "              \"value\" : \"ArcadeDB\"\n" + //
-          "        }\n" + //
-          "      }, {\n" + //
-          "        \"item\" : {\n" + //
-          "          \"type\" : \"uri\",\n" + //
-          "              \"value\" : \"http://www.wikidata.org/entity/Q808716\"\n" + //
-          "        },\n" + //
-          "        \"itemLabel\" : {\n" + //
-          "          \"xml:lang\" : \"en\",\n" + //
-          "              \"type\" : \"literal\",\n" + //
-          "              \"value\" : \"OrientDB\"\n" + //
-          "        }\n" + //
-          "      } ]\n" + //
-          "    }\n" + //
-          "}");
+      final ResultSet result = database.command("sqlscript", """
+          INSERT INTO doc CONTENT {
+          "head" : {
+            "vars" : [ "item", "itemLabel" ]
+          },
+          "results" : {
+            "bindings" : [ {
+              "item" : {
+                    "type" : "uri",
+                        "value" : "http://www.wikidata.org/entity/Q113997665"
+                  },
+                  "itemLabel" : {
+                    "xml:lang" : "en",
+                        "type" : "literal",
+                        "value" : "ArcadeDB"
+                  }
+                }, {
+                  "item" : {
+                    "type" : "uri",
+                        "value" : "http://www.wikidata.org/entity/Q808716"
+                  },
+                  "itemLabel" : {
+                    "xml:lang" : "en",
+                        "type" : "literal",
+                        "value" : "OrientDB"
+                  }
+                } ]
+              }
+          }""");
 
       assertThat(result.hasNext()).isTrue();
       final Result res = result.next();

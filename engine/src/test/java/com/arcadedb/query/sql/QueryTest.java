@@ -25,12 +25,15 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Fail.fail;
@@ -60,7 +63,11 @@ public class QueryTest extends TestHelper {
   public void testScan() {
 
     database.transaction(() -> {
-      final ResultSet rs = database.command("SQL", "SELECT FROM V", new HashMap<>());
+      final ResultSet rs = database.command("SQL", """
+          SELECT
+          -- this is a comment
+          FROM V
+          """, new HashMap<>());
 
       final AtomicInteger total = new AtomicInteger();
       while (rs.hasNext()) {
@@ -78,8 +85,7 @@ public class QueryTest extends TestHelper {
 
       assertThat(total.get()).isEqualTo(TOT);
 
-    }
-    );
+    });
   }
 
   @Test
@@ -151,23 +157,29 @@ public class QueryTest extends TestHelper {
       assertThat(total.get()).isEqualTo(1);
 
       // CHECK STATEMENT CACHE
-      assertThat(((DatabaseInternal) database).getStatementCache().contains("SELECT FROM V WHERE name = :name AND surname = :surname")).isTrue();
+      assertThat(((DatabaseInternal) database).getStatementCache()
+          .contains("SELECT FROM V WHERE name = :name AND surname = :surname")).isTrue();
 
       // CHECK EXECUTION PLAN CACHE
-      assertThat(((DatabaseInternal) database).getExecutionPlanCache().contains("SELECT FROM V WHERE name = :name AND surname = :surname")).isTrue();
+      assertThat(((DatabaseInternal) database).getExecutionPlanCache()
+          .contains("SELECT FROM V WHERE name = :name AND surname = :surname")).isTrue();
 
       // EXECUTE THE 2ND TIME
-      rs = database.command("SQL", "SELECT FROM V WHERE name = :name AND surname = :surname", params);
+      rs = database.command("SQL", """
+          SELECT id,
+          -- this is a comment
+          name, surname
+          FROM V WHERE name = :name AND surname = :surname""", params);
 
       total = new AtomicInteger();
       while (rs.hasNext()) {
         final Result record = rs.next();
         assertThat(record).isNotNull();
-assertThat(record).isNotNull();
-assertThat(record.getPropertyNames().size()).isEqualTo(3);
-assertThat((int) record.<Integer>getProperty("id")).isEqualTo(123);
-assertThat(record.<String>getProperty("name")).isEqualTo("Jay");
-assertThat(record.<String>getProperty("surname")).isEqualTo("Miner123");
+        assertThat(record).isNotNull();
+        assertThat(record.getPropertyNames().size()).isEqualTo(3);
+        assertThat((int) record.<Integer>getProperty("id")).isEqualTo(123);
+        assertThat(record.<String>getProperty("name")).isEqualTo("Jay");
+        assertThat(record.<String>getProperty("surname")).isEqualTo("Miner123");
 
         total.incrementAndGet();
       }
@@ -224,7 +236,7 @@ assertThat(record.<String>getProperty("surname")).isEqualTo("Miner123");
       while (rs.hasNext()) {
         final Result record = rs.next();
         assertThat(record).isNotNull();
-        assertThat( record.<Integer>getProperty("id") < 10).isTrue();
+        assertThat(record.<Integer>getProperty("id") < 10).isTrue();
         total.incrementAndGet();
       }
       assertThat(total.get()).isEqualTo(10);
