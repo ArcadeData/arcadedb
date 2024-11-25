@@ -101,7 +101,7 @@ public class JSONObject {
 
   public JSONObject put(final String name, final Object value) {
     if (name == null)
-      return this;
+      throw new IllegalArgumentException("Property name is null");
 
     if (value == null || value instanceof JsonNull)
       object.add(name, NULL);
