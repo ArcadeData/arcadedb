@@ -100,6 +100,9 @@ public class JSONObject {
   }
 
   public JSONObject put(final String name, final Object value) {
+    if (name == null)
+      return this;
+
     if (value == null || value instanceof JsonNull)
       object.add(name, NULL);
     else if (value instanceof String)
