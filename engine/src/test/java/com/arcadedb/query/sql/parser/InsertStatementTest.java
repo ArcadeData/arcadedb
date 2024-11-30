@@ -90,37 +90,52 @@ public class InsertStatementTest {
 
   @Test
   public void testInsertEmbeddedDocs() {
-    checkRightSyntax(
-        "INSERT INTO Activity SET user = #14:1, story = #18:2, `like` = { \n" + "      count: 0, \n" + "      latest: [], \n"
-            + "      '@type': 'document', \n" + "      '@type': 'Like'\n" + "    }");
+    checkRightSyntax("""
+        INSERT INTO Activity SET user = #14:1, story = #18:2, `like` = {\s
+              count: 0,\s
+              latest: [],\s
+              '@type': 'document',\s
+              '@type': 'Like'
+            }\
+        """);
 
-    checkRightSyntax(
-        "INSERT INTO Activity SET user = #14:1, story = #18:2, `like` = { \n" + "      count: 0, \n" + "      latest: [], \n"
-            + "      '@type': 'document', \n" + "      '@type': 'Like'\n" + "    }");
+    checkRightSyntax("""
+        INSERT INTO Activity SET user = #14:1, story = #18:2, `like` = {\s
+              count: 0,\s
+              latest: [],\s
+              '@type': 'document',\s
+              '@type': 'Like'
+            }\
+        """);
   }
 
   @Test
   public void testJsonEscaping() {
     // issue #5911
-    checkRightSyntax("insert into Bookmark content {\"data\""
-        + ":\"DPl62xXzEqG3tIPv7jYYWK34IG4bwTUNk0UUnhYHOluUdPiMQOLSz3V\\/GraBuzbEbjDARS6X1wUh53Dh3\\/hFpSXVy74iw4K7\\/WvwtyvdDJ51\\/6qg8RgPyL8qByNXnqxLviMaZk+UZCNmJ+wPJ+\\/Jphtb\\/cNPw5HmbTIA2VxOq"
-        + "1OybZIuJaTRVD5tO8sVpMqJTa4IFjMb69vlIYpWctEYByp7gtBCRQOsBeLydnoW+DUOeG1jDyrMmA4hi5M+ctwdn9Vb5wqTjWw=\",\"isRead\":\"N\",\"id\":\"52013784-4e32-4e9b-9676-1814ca1256fb\",\"isPrivate\":\"F\",\"is"
-        + "Shared\":0}");
+    checkRightSyntax("""
+        insert into Bookmark content {"data"\
+        :"DPl62xXzEqG3tIPv7jYYWK34IG4bwTUNk0UUnhYHOluUdPiMQOLSz3V\\/GraBuzbEbjDARS6X1wUh53Dh3\\/hFpSXVy74iw4K7\\/WvwtyvdDJ51\\/6qg8RgPyL8qByNXnqxLviMaZk+UZCNmJ+wPJ+\\/Jphtb\\/cNPw5HmbTIA2VxOq\
+        1OybZIuJaTRVD5tO8sVpMqJTa4IFjMb69vlIYpWctEYByp7gtBCRQOsBeLydnoW+DUOeG1jDyrMmA4hi5M+ctwdn9Vb5wqTjWw=","isRead":"N","id":"52013784-4e32-4e9b-9676-1814ca1256fb","isPrivate":"F","is\
+        Shared":0}\
+        """);
   }
 
   @Test
   public void testJsonArrayEscaping() {
     // issue #5911
-    checkRightSyntax("insert into Bookmark content [{\"data\""
-        + ":\"DPl62xXzEqG3tIPv7jYYWK34IG4bwTUNk0UUnhYHOluUdPiMQOLSz3V\\/GraBuzbEbjDARS6X1wUh53Dh3\\/hFpSXVy74iw4K7\\/WvwtyvdDJ51\\/6qg8RgPyL8qByNXnqxLviMaZk+UZCNmJ+wPJ+\\/Jphtb\\/cNPw5HmbTIA2VxOq"
-        + "1OybZIuJaTRVD5tO8sVpMqJTa4IFjMb69vlIYpWctEYByp7gtBCRQOsBeLydnoW+DUOeG1jDyrMmA4hi5M+ctwdn9Vb5wqTjWw=\",\"isRead\":\"N\",\"id\":\"52013784-4e32-4e9b-9676-1814ca1256fb\",\"isPrivate\":\"F\",\"is"
-        + "Shared\":0}, {}]");
+    checkRightSyntax("""
+        insert into Bookmark content [{"data"\
+        :"DPl62xXzEqG3tIPv7jYYWK34IG4bwTUNk0UUnhYHOluUdPiMQOLSz3V\\/GraBuzbEbjDARS6X1wUh53Dh3\\/hFpSXVy74iw4K7\\/WvwtyvdDJ51\\/6qg8RgPyL8qByNXnqxLviMaZk+UZCNmJ+wPJ+\\/Jphtb\\/cNPw5HmbTIA2VxOq\
+        1OybZIuJaTRVD5tO8sVpMqJTa4IFjMb69vlIYpWctEYByp7gtBCRQOsBeLydnoW+DUOeG1jDyrMmA4hi5M+ctwdn9Vb5wqTjWw=","isRead":"N","id":"52013784-4e32-4e9b-9676-1814ca1256fb","isPrivate":"F","is\
+        Shared":0}, {}]""");
   }
 
   @Test
   public void testSlashInQuery() {
-    checkRightSyntax("insert into test content {\"node_id\": \"MFmqvmht//sYYWB8=\"}");
-    checkRightSyntax("insert into test content { \"node_id\": \"MFmqvmht\\/\\/GYsYYWB8=\"}");
+    checkRightSyntax("""
+        insert into test content {"node_id": "MFmqvmht//sYYWB8="}""");
+    checkRightSyntax("""
+        insert into test content { "node_id": "MFmqvmht\\/\\/GYsYYWB8="}""");
   }
 
   @Test
@@ -133,34 +148,35 @@ public class InsertStatementTest {
 
   @Test
   public void testInsertJsonNewLines() {
-    checkRightSyntax("INSERT INTO doc CONTENT {\n" + //
-        "\"head\" : {\n" + //
-        "  \"vars\" : [ \"item\", \"itemLabel\" ]\n" + //
-        "},\n" + //
-        "\"results\" : {\n" + //
-        "  \"bindings\" : [ {\n" + //
-        "    \"item\" : {\n" + //
-        "          \"type\" : \"uri\",\n" + //
-        "              \"value\" : \"http://www.wikidata.org/entity/Q113997665\"\n" + //
-        "        },\n" + //
-        "        \"itemLabel\" : {\n" + //
-        "          \"xml:lang\" : \"en\",\n" + //
-        "              \"type\" : \"literal\",\n" + //
-        "              \"value\" : \"ArcadeDB\"\n" + //
-        "        }\n" + //
-        "      }, {\n" + //
-        "        \"item\" : {\n" + //
-        "          \"type\" : \"uri\",\n" + //
-        "              \"value\" : \"http://www.wikidata.org/entity/Q808716\"\n" + //
-        "        },\n" + //
-        "        \"itemLabel\" : {\n" + //
-        "          \"xml:lang\" : \"en\",\n" + //
-        "              \"type\" : \"literal\",\n" + //
-        "              \"value\" : \"OrientDB\"\n" + //
-        "        }\n" + //
-        "      } ]\n" + //
-        "    }\n" + //
-        "}");
+    checkRightSyntax("""
+        INSERT INTO doc CONTENT {
+        "head" : {
+          "vars" : [ "item", "itemLabel" ]
+        },
+        "results" : {
+          "bindings" : [ {
+            "item" : {
+                  "type" : "uri",
+                      "value" : "http://www.wikidata.org/entity/Q113997665"
+                },
+                "itemLabel" : {
+                  "xml:lang" : "en",
+                      "type" : "literal",
+                      "value" : "ArcadeDB"
+                }
+              }, {
+                "item" : {
+                  "type" : "uri",
+                      "value" : "http://www.wikidata.org/entity/Q808716"
+                },
+                "itemLabel" : {
+                  "xml:lang" : "en",
+                      "type" : "literal",
+                      "value" : "OrientDB"
+                }
+              } ]
+            }
+        }""");
   }
 
   protected SqlParser getParserFor(final String string) {

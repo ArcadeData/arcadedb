@@ -596,15 +596,19 @@ public class InsertStatementExecutionTest extends TestHelper {
   @Test
   public void testInsertFromSelect() {
     database.command("sqlscript",
-        "CREATE DOCUMENT TYPE src;\n"
-            + "CREATE DOCUMENT TYPE dst;\n"
+        """
+        CREATE DOCUMENT TYPE src;
+        CREATE DOCUMENT TYPE dst;
+        """
     );
 
     final ResultSet result = database.command("sqlscript",
-        "INSERT INTO src SET a = 1;\n"
-            + "INSERT INTO src SET a = 2;\n"
-            + "INSERT INTO src SET a = 3;\n"
-            + "INSERT INTO dst FROM SELECT a FROM src;"
+        """
+        INSERT INTO src SET a = 1;
+        INSERT INTO src SET a = 2;
+        INSERT INTO src SET a = 3;
+        INSERT INTO dst FROM SELECT a FROM src;\
+        """
     );
     int i = 0;
     for (; result.hasNext(); i++)

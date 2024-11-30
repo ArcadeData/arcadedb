@@ -29,14 +29,12 @@ public abstract class ArcadeContainerTemplate {
   static final GenericContainer ARCADE;
 
   static {
-    ARCADE = new GenericContainer("arcadedata/arcadedb:latest")
-        .withExposedPorts(2480, 6379, 5432, 8182)
-        .withStartupTimeout(Duration.ofSeconds(90))
-        .withEnv("JAVA_OPTS", """
-            -Darcadedb.server.rootPassword=playwithdata \
-            -Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} \
-            -Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin"""
-        )
+    ARCADE = new GenericContainer("arcadedata/arcadedb:latest").withExposedPorts(2480, 6379, 5432, 8182)
+        .withStartupTimeout(Duration.ofSeconds(90)).withEnv("JAVA_OPTS", """
+            -Darcadedb.server.rootPassword=playwithdata
+            -Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}
+            -Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin
+            """)
         .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
     ARCADE.start();
   }

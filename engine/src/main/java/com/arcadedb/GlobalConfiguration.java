@@ -26,10 +26,18 @@ import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.SystemVariableResolver;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
-import java.util.stream.*;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.PrintStream;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 /**
  * Keeps all configuration settings. At startup assigns the configuration values by reading system properties.
@@ -253,10 +261,10 @@ public enum GlobalConfiguration {
   POLYGLOT_COMMAND_TIMEOUT("arcadedb.polyglotCommand.timeout", SCOPE.DATABASE, "Default timeout for polyglot commands (in ms)",
       Long.class, 10_000),
 
-  QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP("arcadedb.queryMaxHeapElementsAllowedPerOp", SCOPE.DATABASE,
-      "Maximum number of elements (records) allowed in a single query for memory-intensive operations (eg. ORDER BY in heap). "
-          + "If exceeded, the query fails with an OCommandExecutionException. Negative number means no limit."
-          + "This setting is intended as a safety measure against excessive resource consumption from a single query (eg. prevent OutOfMemory)",
+  QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP("arcadedb.queryMaxHeapElementsAllowedPerOp", SCOPE.DATABASE, """
+      Maximum number of elements (records) allowed in a single query for memory-intensive operations (eg. ORDER BY in heap). \
+      If exceeded, the query fails with an OCommandExecutionException. Negative number means no limit.\
+      This setting is intended as a safety measure against excessive resource consumption from a single query (eg. prevent OutOfMemory)""",
       Long.class, 500_000),
 
   // CYPHER
@@ -315,14 +323,14 @@ public enum GlobalConfiguration {
   SERVER_DATABASE_LOADATSTARTUP("arcadedb.server.databaseLoadAtStartup", SCOPE.SERVER,
       "Open all the available databases at server startup", Boolean.class, true),
 
-  SERVER_DEFAULT_DATABASES("arcadedb.server.defaultDatabases", SCOPE.SERVER,
-      "The default databases created when the server starts. The format is `(<database-name>[(<user-name>:<user-passwd>[:<user-group>])[,]*])[{import|restore:<URL>}][;]*'. Pay attention on using `;`"
-          + " to separate databases and `,` to separate credentials. The supported actions are `import` and `restore`. Example: `Universe[elon:musk:admin];Amiga[Jay:Miner,Jack:Tramiel]{import:/tmp/movies.tgz}`",
+  SERVER_DEFAULT_DATABASES("arcadedb.server.defaultDatabases", SCOPE.SERVER, """
+      The default databases created when the server starts. The format is `(<database-name>[(<user-name>:<user-passwd>[:<user-group>])[,]*])[{import|restore:<URL>}][;]*'. Pay attention on using `;`\
+       to separate databases and `,` to separate credentials. The supported actions are `import` and `restore`. Example: `Universe[elon:musk:admin];Amiga[Jay:Miner,Jack:Tramiel]{import:/tmp/movies.tgz}`""",
       String.class, ""),
 
-  SERVER_DEFAULT_DATABASE_MODE("arcadedb.server.defaultDatabaseMode", SCOPE.SERVER,
-      "The default mode to load pre-existing databases. The value must match a com.arcadedb.engine.PaginatedFile.MODE enum value: {READ_ONLY, READ_WRITE}"
-          + "Databases which are newly created will always be opened READ_WRITE.", String.class, "READ_WRITE",
+  SERVER_DEFAULT_DATABASE_MODE("arcadedb.server.defaultDatabaseMode", SCOPE.SERVER, """
+      The default mode to load pre-existing databases. The value must match a com.arcadedb.engine.PaginatedFile.MODE enum value: {READ_ONLY, READ_WRITE}\
+      Databases which are newly created will always be opened READ_WRITE.""", String.class, "READ_WRITE",
       Set.of((Object[]) new String[] { "read_only", "read_write" })),
 
   SERVER_PLUGINS("arcadedb.server.plugins", SCOPE.SERVER,

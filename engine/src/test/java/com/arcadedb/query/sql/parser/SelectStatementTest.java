@@ -356,9 +356,13 @@ public class SelectStatementTest {
 
   @Test
   public void testEval() {
-    checkRightSyntax("  select  sum(weight) , f.name as name from (\n"
-        + "      select weight, if(eval(\"out.name = 'one'\"),out,in) as f  from (\n" + "      select expand(bothE('E')) from V\n"
-        + "  )\n" + "      ) group by name\n");
+    checkRightSyntax("""
+          select  sum(weight) , f.name as name from (
+              select weight, if(eval("out.name = 'one'"),out,in) as f  from (
+              select expand(bothE('E')) from V
+          )
+              ) group by name
+        """);
   }
 
   @Test
@@ -583,13 +587,15 @@ public class SelectStatementTest {
   @Test
   public void testSkipLimitInQueryWithNoTarget() {
     // issue #5589
-    checkRightSyntax("SELECT eval('$TotalListsQuery[0].Count') AS TotalLists\n"
-        + "   LET $TotalListsQuery = ( SELECT Count(1) AS Count FROM ContactList WHERE Account=#20:1 AND EntityInfo.State=0)\n"
-        + " LIMIT 1");
+    checkRightSyntax("""
+        SELECT eval('$TotalListsQuery[0].Count') AS TotalLists
+           LET $TotalListsQuery = ( SELECT Count(1) AS Count FROM ContactList WHERE Account=#20:1 AND EntityInfo.State=0)
+         LIMIT 1""");
 
-    checkRightSyntax("SELECT eval('$TotalListsQuery[0].Count') AS TotalLists\n"
-        + "   LET $TotalListsQuery = ( SELECT Count(1) AS Count FROM ContactList WHERE Account=#20:1 AND EntityInfo.State=0)\n"
-        + " SKIP 10 LIMIT 1");
+    checkRightSyntax("""
+        SELECT eval('$TotalListsQuery[0].Count') AS TotalLists
+           LET $TotalListsQuery = ( SELECT Count(1) AS Count FROM ContactList WHERE Account=#20:1 AND EntityInfo.State=0)
+         SKIP 10 LIMIT 1""");
   }
 
   @Test
