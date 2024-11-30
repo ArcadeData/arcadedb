@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.DateUtils;
 
-import java.util.*;
+import java.util.Date;
 
 /**
  * Transforms a value to datetime. If the conversion is not possible, null is returned.
@@ -47,14 +47,15 @@ public class SQLMethodAsDateTime extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext context, final Object[] iParams) {
+  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext context,
+      final Object[] iParams) {
     if (value == null)
       return null;
 
     if (value instanceof Date)
       return value;
-    else if (value instanceof Number)
-      return new Date(((Number) value).longValue());
+    else if (value instanceof Number number)
+      return new Date(number.longValue());
 
     final String format = iParams.length > 0 ? iParams[0].toString() : context.getDatabase().getSchema().getDateTimeFormat();
     final Object date = DateUtils.parse(value.toString(), format);

@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.DateUtils;
 
-import java.util.*;
+import java.util.Date;
 
 /**
  * Transforms a value to date. If the conversion is not possible, null is returned.
@@ -47,16 +47,17 @@ public class SQLMethodAsDate extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext context, final Object[] iParams) {
+  public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
     if (value == null)
       return null;
 
     if (value instanceof Date)
       return value;
-    else if (value instanceof Number)
-      return new Date(((Number) value).longValue());
+    else if (value instanceof Number number)
+      return new Date(number.longValue());
 
-    final String format = iParams.length > 0 ? iParams[0].toString() : context.getDatabase().getSchema().getDateFormat();
-    return DateUtils.getDate(DateUtils.parse(value.toString(), format), context.getDatabase().getSerializer().getDateImplementation());
+    final String format = params.length > 0 ? params[0].toString() : context.getDatabase().getSchema().getDateFormat();
+    return DateUtils.getDate(DateUtils.parse(value.toString(), format),
+        context.getDatabase().getSerializer().getDateImplementation());
   }
 }

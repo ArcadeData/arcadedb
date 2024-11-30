@@ -26,8 +26,8 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DocumentCallback;
 import com.arcadedb.database.DocumentIndexer;
-import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.EmbeddedModifier;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
@@ -54,6 +54,7 @@ import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.select.Select;
@@ -77,6 +78,7 @@ import java.io.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class ReplicatedDatabase implements DatabaseInternal {
   private final ArcadeDBServer  server;
@@ -90,10 +92,21 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
     this.server = server;
     this.proxied = proxied;
-    this.quorum = HAServer.QUORUM.valueOf(
-        proxied.getConfiguration().getValueAsString(GlobalConfiguration.HA_QUORUM).toUpperCase(Locale.ENGLISH));
     this.timeout = proxied.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
     this.proxied.setWrappedDatabaseInstance(this);
+
+    HAServer.QUORUM quorum;
+    final String quorumValue = proxied.getConfiguration().getValueAsString(GlobalConfiguration.HA_QUORUM)
+        .toUpperCase(Locale.ENGLISH);
+    try {
+      quorum = HAServer.QUORUM.valueOf(quorumValue);
+    } catch (Exception e) {
+      LogManager.instance()
+          .log(this, Level.SEVERE, "Error on setting quorum to '%s' for database '%s'. Setting it to MAJORITY", e, quorumValue,
+              getName());
+      quorum = HAServer.QUORUM.MAJORITY;
+    }
+    this.quorum = quorum;
   }
 
   @Override

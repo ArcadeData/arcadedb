@@ -160,20 +160,22 @@ public class BatchTest extends TestHelper {
    */
   @Test
   public void testLetUSeRightScope() {
-    String script = "LET $list = [];\n"
-        + "\n"
-        + "FOREACH ($i IN [1, 2, 3]) {\n"
-        + "    IF ($i = 3) {\n"
-        + "        LET $list = ['HELLO'];\n"
-        + "    }\n"
-        + "    \n"
-        + "}\n"
-        + "\n"
-        + "IF ($list.size() > 0) {\n"
-        + "  RETURN \"List element detected\";\n"
-        + "}\n"
-        + "\n"
-        + "RETURN \"List is empty\";";
+    String script = """
+        LET $list = [];
+
+        FOREACH ($i IN [1, 2, 3]) {
+            IF ($i = 3) {
+                LET $list = ['HELLO'];
+            }
+           \s
+        }
+
+        IF ($list.size() > 0) {
+          RETURN "List element detected";
+        }
+
+        RETURN "List is empty";\
+        """;
 
     final ResultSet result = database.command("sqlscript", script);
     assertThat(result.hasNext()).isTrue();
@@ -185,15 +187,17 @@ public class BatchTest extends TestHelper {
    */
   @Test
   public void testBreakInsideForeach() {
-    final String script = "LET result = \"Return statement 0\";\n"
-        + "FOREACH ($i IN [1, 2, 3]) {\n"
-        + "\tLET result = \"Return statement \" + $i;\n"
-        + "\tIF( $i = 2 ) {\n"
-        + "\t\tBREAK;\n"
-        + "\t}\n"
-        + "}\n"
-        + "\n"
-        + "RETURN $result;";
+    final String script = """
+        LET result = "Return statement 0";
+        FOREACH ($i IN [1, 2, 3]) {
+        	LET result = "Return statement " + $i;
+        	IF( $i = 2 ) {
+        		BREAK;
+        	}
+        }
+
+        RETURN $result;\
+        """;
 
     final ResultSet result = database.command("sqlscript", script);
     assertThat(result.hasNext()).isTrue();
@@ -203,28 +207,30 @@ public class BatchTest extends TestHelper {
   // Isue https://github.com/ArcadeData/arcadedb/issues/1673
   @Test
   public void testNestedBreak() {
-    final String script = "LET $numbers = [1, 2, 3];\n"
-        + "LET $letters = ['A', 'B', 'C'];\n"
-        + "\n"
-        + "LET $counter = 0;\n"
-        + "\n"
-        + "FOREACH ($number IN $numbers) {\n"
-        + "  FOREACH ($letter IN $letters) {\n"
-        + "    IF ($number = 2) {\n"
-        + "      IF ($letter = 'B') {\n"
-        + "        BREAK;\n"
-        + "      }\n"
-        + "      \n"
-        + "      IF ($letter = 'B') {\n"
-        + "        CONSOLE.`error` map('ERROR', 'THIS SHOULD NEVER HAPPEN!!!');\n"
-        + "      }\n"
-        + "    }\n"
-        + "    \n"
-        + "    LET counter = $counter + 1;"
-        + "  }\n"
-        + "}\n"
-        + "\n"
-        + "RETURN $counter;";
+    final String script = """
+        LET $numbers = [1, 2, 3];
+        LET $letters = ['A', 'B', 'C'];
+
+        LET $counter = 0;
+
+        FOREACH ($number IN $numbers) {
+          FOREACH ($letter IN $letters) {
+            IF ($number = 2) {
+              IF ($letter = 'B') {
+                BREAK;
+              }
+             \s
+              IF ($letter = 'B') {
+                CONSOLE.`error` map('ERROR', 'THIS SHOULD NEVER HAPPEN!!!');
+              }
+            }
+           \s
+            LET counter = $counter + 1;\
+          }
+        }
+
+        RETURN $counter;\
+        """;
 
     final ResultSet result = database.command("sqlscript", script);
     assertThat(result.hasNext()).isTrue();
@@ -239,13 +245,15 @@ public class BatchTest extends TestHelper {
         database.command("sql", "INSERT INTO DocumentType set a = " + i);
     });
 
-    final String script = "LET counter = 0;\n "
-        + "\n"
-        + "FOREACH( $row IN (select from DocumentType) ) {\n"
-        + "  LET counter = $counter + 1;\n"
-        + "}\n"
-        + "\n"
-        + "RETURN $counter;";
+    final String script = """
+        LET counter = 0;
+        \s
+        FOREACH( $row IN (select from DocumentType) ) {
+          LET counter = $counter + 1;
+        }
+
+        RETURN $counter;\
+        """;
 
     final ResultSet result = database.command("sqlscript", script);
     assertThat(result.hasNext()).isTrue();

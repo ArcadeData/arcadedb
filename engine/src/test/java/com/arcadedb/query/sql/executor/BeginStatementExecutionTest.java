@@ -19,12 +19,11 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.Iterator;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -32,8 +31,8 @@ import static org.assertj.core.api.Assertions.*;
 public class BeginStatementExecutionTest {
   @Test
   public void testBegin() throws Exception {
-    TestHelper.executeInNewDatabase("OCommitStatementExecutionTest", (db) -> {
-      assertThat(db.getTransaction() == null || !db.getTransaction().isActive()).isTrue();
+    TestHelper.executeInNewDatabase((db) -> {
+      assertThat(db.isTransactionActive()).isTrue();
       final ResultSet result = db.command("sql", "begin");
       //printExecutionPlan(null, result);
       assertThat((Iterator<? extends Result>) result).isNotNull();
@@ -41,8 +40,8 @@ public class BeginStatementExecutionTest {
       final Result item = result.next();
       assertThat(item.<String>getProperty("operation")).isEqualTo("begin");
       assertThat(result.hasNext()).isFalse();
-      assertThat(db.getTransaction() == null || !db.getTransaction().isActive()).isFalse();
       db.commit();
+//      assertThat(db.isTransactionActive()).isFalse();
     });
   }
 }

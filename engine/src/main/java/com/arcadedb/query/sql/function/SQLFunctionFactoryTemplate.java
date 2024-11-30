@@ -62,8 +62,8 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
     if (obj == null)
       return null;
 
-    if (obj instanceof SQLFunction)
-      return (SQLFunction) obj;
+    if (obj instanceof SQLFunction sqlFunction)
+      return sqlFunction;
     else {
       // it's a class
       final Class<?> typez = (Class<?>) obj;

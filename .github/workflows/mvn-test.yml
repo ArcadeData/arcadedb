@@ -14,57 +14,62 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871 # v4.2.1
-      - uses: actions/setup-python@f677139bbe7f9c59b41e40162b753c062f5d49a3 # v5.2.0
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Ensure SHA pinned actions
+        uses: zgosalvez/github-actions-ensure-sha-pinned-actions@5d6ac37a4cef8b8df67f482a8e384987766f0213 # v3.0.17
+      - name: Run pre-commit
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: "3.13.0"
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@49b3bc8e6bdd4a60e6116a5414239cba5943d3cf # v3.2.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@8df1039502a15bceb9433410b1a100fbe190c53b # v4.5.0
         with:
           distribution: "temurin"
           java-version: 17
           cache: "maven"
 
       - name: Install jars
-        run: mvn --show-version clean install -DskipTests
+        run: ./mvnw --show-version clean install -DskipTests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Test
-        run: mvn verify  -Pintegration -Pcoverage -Pdocker --batch-mode  --errors --fail-never --show-version  -pl !e2e
+        run: ./mvnw verify  -Pintegration -Pcoverage -Pdocker --batch-mode  --errors --fail-never --show-version  -pl !e2e
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: E2E Test
         if: success()
-        run: mvn verify -pl e2e
+        run: ./mvnw verify -pl e2e
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Test Reporter
-        uses: dorny/test-reporter@v1
+        uses: dorny/test-reporter@31a54ee7ebcacc03a09ea97a7e5465a47b84aea5 # v1.9.1
         if: success() || failure()
         with:
           name: Test Report - ${{ matrix.os }}
-          path: "**/surefire-reports/TEST*.xml"
+          path: "**/surefire-reports/TEST*.xml, **/failsafe-reports/TEST*.xml"
           list-suites: "failed"
           list-tests: "failed"
           reporter: java-junit
 
       - name: Get coverage files
         id: coverage-files-generator
+        if: success() || failure()
         run: echo "COVERAGE_FILES=$(find . -path **/jacoco*.xml -printf '%p,')" >> "$GITHUB_OUTPUT"
 
       - name: Codacy coverage reporter
         uses: codacy/codacy-coverage-reporter-action@89d6c85cfafaec52c72b6c5e8b2878d33104c699 # v1.3.0
+        if: success() || failure()
         with:
           language: java
           project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}

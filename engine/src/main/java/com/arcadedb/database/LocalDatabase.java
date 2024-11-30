@@ -170,10 +170,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       queryEngineManager = new QueryEngineManager();
       graphEngine = new GraphEngine(this);
 
-    } catch (final Exception e) {
-      if (e instanceof DatabaseOperationException)
-        throw (DatabaseOperationException) e;
-
+    } catch (DatabaseOperationException e) {
+      throw e;
+    } catch (Exception e) {
       throw new DatabaseOperationException("Error on creating new database instance", e);
     }
   }
@@ -1608,8 +1607,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       return null;
     if (record instanceof Document) {
       final DocumentType type = ((Document) record).getType();
-      if (type != null)
-        return ((RecordEventsRegistry) type.getEvents()).onAfterRead(record);
+      if (type != null) {
+//        System.out.println("invokeAfterReadEvents for type = pre");
+
+        Record record1 = ((RecordEventsRegistry) type.getEvents()).onAfterRead(record);
+//        System.out.println("invokeAfterReadEvents for type = after");
+
+        return record1;
+      }
     }
     return record;
   }
@@ -1675,16 +1680,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
 
       try {
-        final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.removeContext(databasePath);
-        if (dbContext != null && !dbContext.transactions.isEmpty()) {
-          // ROLLBACK ALL THE TX FROM LAST TO FIRST
-          for (int i = dbContext.transactions.size() - 1; i > -1; --i) {
-            final TransactionContext tx = dbContext.transactions.get(i);
-            if (tx.isActive())
-              // ROLLBACK ANY PENDING OPERATION
-              tx.rollback();
+        final List<DatabaseContext.DatabaseContextTL> dbContexts = DatabaseContext.INSTANCE.removeAllContexts(databasePath);
+        for (DatabaseContext.DatabaseContextTL dbContext : dbContexts) {
+          if (!dbContext.transactions.isEmpty()) {
+            // ROLLBACK ALL THE TX FROM LAST TO FIRST
+            for (int i = dbContext.transactions.size() - 1; i > -1; --i) {
+              final TransactionContext tx = dbContext.transactions.get(i);
+              if (tx.isActive())
+                // ROLLBACK ANY PENDING OPERATION
+                tx.rollback();
+            }
+            dbContext.transactions.clear();
           }
-          dbContext.transactions.clear();
         }
       } catch (final Throwable e) {
         LogManager.instance()

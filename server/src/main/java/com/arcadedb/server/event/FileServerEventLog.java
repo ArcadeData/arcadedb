@@ -84,6 +84,7 @@ public class FileServerEventLog implements ServerEventLog {
         // REMOVE THE OLDEST FILES
         while (existentFiles.size() > KEEP_FILES) {
           final String removed = existentFiles.remove(existentFiles.size() - 1);
+          FileUtils.deleteFile(new File(logDirectory, removed));
           LogManager.instance().log(this, Level.FINE, "Deleted server event log file %s (keep max %d files)", removed, KEEP_FILES);
         }
       }
@@ -92,7 +93,8 @@ public class FileServerEventLog implements ServerEventLog {
     // ASSIGN THE NEXT NUMBER
     ++maxCounter;
 
-    newFileName = new File(logDirectory, FILE_PREFIX + new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date()) + "." + maxCounter + FILE_EXT);
+    newFileName = new File(logDirectory,
+        FILE_PREFIX + new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date()) + "." + maxCounter + FILE_EXT);
     try {
       if (!newFileName.createNewFile())
         throw new ServerException("Error on creating new server event log file " + newFileName);

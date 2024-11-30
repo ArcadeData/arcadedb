@@ -27,8 +27,12 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 public class ArraySingleValuesSelector extends SimpleNode {
 
@@ -65,7 +69,7 @@ public class ArraySingleValuesSelector extends SimpleNode {
         } else if (iResult instanceof Result && index instanceof String) {
           result.add(((Result) iResult).getProperty((String) index));
         } else if (MultiValue.isMultiValue(iResult)) {
-          final Iterator<Object> iter = MultiValue.getMultiValueIterator(iResult);
+          final Iterator<?> iter = MultiValue.getMultiValueIterator(iResult);
           while (iter.hasNext()) {
             result.add(calculateValue(iter.next(), index));
           }
@@ -97,7 +101,7 @@ public class ArraySingleValuesSelector extends SimpleNode {
         } else if (iResult instanceof Result && index instanceof String) {
           result.add(((Result) iResult).getProperty((String) index));
         } else if (MultiValue.isMultiValue(iResult)) {
-          final Iterator<Object> iter = MultiValue.getMultiValueIterator(iResult);
+          final Iterator<?> iter = MultiValue.getMultiValueIterator(iResult);
           while (iter.hasNext()) {
             result.add(calculateValue(iter.next(), index));
           }
@@ -121,7 +125,7 @@ public class ArraySingleValuesSelector extends SimpleNode {
     } else if (item instanceof Result && index instanceof String) {
       return ((Result) item).getProperty((String) index);
     } else if (MultiValue.isMultiValue(item)) {
-      final Iterator<Object> iter = MultiValue.getMultiValueIterator(item);
+      final Iterator<?> iter = MultiValue.getMultiValueIterator(item);
       final List<Object> result = new ArrayList<>();
       while (iter.hasNext()) {
         result.add(calculateValue(iter.next(), index));
@@ -198,7 +202,8 @@ public class ArraySingleValuesSelector extends SimpleNode {
         ((ResultInternal) currentValue).removeProperty("" + val);
       }
     } else {
-      throw new CommandExecutionException("Trying to remove elements from " + currentValue + " (" + currentValue.getClass().getSimpleName() + ")");
+      throw new CommandExecutionException(
+          "Trying to remove elements from " + currentValue + " (" + currentValue.getClass().getSimpleName() + ")");
     }
   }
 

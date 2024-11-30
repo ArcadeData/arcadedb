@@ -25,7 +25,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 import com.arcadedb.utility.DateUtils;
 
-import java.time.*;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 
 /**
  * Returns the current date time. If the `zoneid` parameter is passed, then a ZonedDateTime instance is returned, otherwise a LocalDateTime.
@@ -43,17 +44,17 @@ public class SQLFunctionSysdate extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
+  public Object execute(final Object thisObject, final Identifiable currentRecord, final Object currentResult,
+      final Object[] params, final CommandContext context) {
     final LocalDateTime now = LocalDateTime.now();
     Object result = now;
 
-    if (iParams.length > 0) {
-      if (iParams.length > 1)
-        result = now.atZone(ZoneId.of(iParams[1].toString()));
+    if (params.length > 0) {
+      if (params.length > 1)
+        result = now.atZone(ZoneId.of(params[1].toString()));
     }
 
-    return DateUtils.getDate(result, iContext.getDatabase().getSerializer().getDateTimeImplementation());
+    return DateUtils.getDate(result, context.getDatabase().getSerializer().getDateTimeImplementation());
   }
 
   public String getSyntax() {

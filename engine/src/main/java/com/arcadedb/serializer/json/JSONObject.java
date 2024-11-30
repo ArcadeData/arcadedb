@@ -100,6 +100,9 @@ public class JSONObject {
   }
 
   public JSONObject put(final String name, final Object value) {
+    if (name == null)
+      throw new IllegalArgumentException("Property name is null");
+
     if (value == null || value instanceof JsonNull)
       object.add(name, NULL);
     else if (value instanceof String)
@@ -115,10 +118,18 @@ public class JSONObject {
     else if (value instanceof String[])
       object.add(name, new JSONArray((String[]) value).getInternal());
     else if (value instanceof Iterable) {
-      final JSONArray array = new JSONArray();
-      for (Object o : (Iterable<?>) value)
-        array.put(o);
-      object.add(name, array.getInternal());
+      // RETRY UP TO 10 TIMES IN CASE OF CONCURRENT UPDATE
+      for (int i = 0; i < 10; i++) {
+        final JSONArray array = new JSONArray();
+        try {
+          for (Object o : (Iterable<?>) value)
+            array.put(o);
+          object.add(name, array.getInternal());
+          break;
+        } catch (ConcurrentModificationException e) {
+          // RETRY
+        }
+      }
     } else if (value instanceof Enum) {
       object.addProperty(name, ((Enum<?>) value).name());
     } else if (value instanceof Date) {

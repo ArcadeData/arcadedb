@@ -22,7 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
-import java.util.*;
+import java.util.UUID;
 
 /**
  * Generates a UUID as a 128-bits value using the Leach-Salz variant. For more information look at:
@@ -45,17 +45,8 @@ public class SQLFunctionUUID extends SQLFunctionAbstract {
     return UUID.randomUUID().toString();
   }
 
-  @Override
-  public boolean aggregateResults() {
-    return false;
-  }
-
   public String getSyntax() {
     return "uuid()";
   }
 
-  @Override
-  public Object getResult() {
-    return null;
-  }
 }

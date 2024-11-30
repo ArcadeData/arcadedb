@@ -81,7 +81,8 @@ public class RecordEncryptionTest extends TestHelper
   @Test
   public void testEncryption() {
     database.transaction(() -> {
-      final MutableVertex v1 = database.newVertex("BackAccount").set("secret", "Nobody must know Elon and Zuck are brothers")
+      final MutableVertex v1 = database.newVertex("BackAccount")
+          .set("secret", "Nobody must know Elon and Zuck are brothers")
           .save();
     });
 

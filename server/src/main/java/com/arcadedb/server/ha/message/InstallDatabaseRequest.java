@@ -39,7 +39,7 @@ public class InstallDatabaseRequest extends HAAbstractCommand {
   public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
     try {
       server.getLeader().requestInstallDatabase(new Binary(), databaseName);
-      return null;
+      return new OkResponse();
     } catch (IOException e) {
       throw new ReplicationException("Error on installing database '" + databaseName + "' on replica '" + server.getServerName() + "'", e);
     }

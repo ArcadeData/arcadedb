@@ -41,8 +41,8 @@ public class SQLMethodRemove extends AbstractSQLMethod {
   public Object execute(Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
     if (params != null && params.length > 0 && params[0] != null) {
       final Object[] arguments = MultiValue.array(params, Object.class, argument -> {
-        if (argument instanceof String && ((String) argument).startsWith("$")) {
-          return context.getVariable((String) argument);
+        if (argument instanceof String string && string.startsWith("$")) {
+          return context.getVariable(string);
         }
         return argument;
       });

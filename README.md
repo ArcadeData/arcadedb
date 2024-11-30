@@ -7,8 +7,6 @@
   &nbsp;
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-green.svg"></a>
   &nbsp;
-  <a href="https://docs.oracle.org/en/java/11/"><img src="https://img.shields.io/badge/Java-%3D11-green.svg"></a>
-  &nbsp;
   <a href="https://docs.oracle.org/en/java/17/"><img src="https://img.shields.io/badge/Java-%3D17-green.svg"></a>
   &nbsp;
   <a href="https://api.reuse.software/info/github.com/ArcadeData/arcadedb"><img src="https://api.reuse.software/badge/github.com/ArcadeData/arcadedb"></a>
@@ -53,7 +51,7 @@
 ArcadeDB is a Multi-Model DBMS (created originally as a fork
 from [OrientDB Open Source project](https://github.com/orientechnologies/orientdb) after the acquisition by SAP) with a brand-new
 engine made of Alien Technology, able to crunch millions of records per second on common hardware with the usage of
-minimal resources. ArcadeDB is written in LLJ: Low Level Java. It's still Java11+ but only using low level API to use advanced
+minimal resources. ArcadeDB is written in LLJ: Low Level Java. It's still Java17+ but only using low level API to use advanced
 mechanical sympathy techniques and a reduced pressure of the Garbage Collector. It's highly optimized for extreme performance. Runs
 from a Raspberry Pi to multiple servers on the cloud.
 

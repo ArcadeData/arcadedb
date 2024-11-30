@@ -111,7 +111,7 @@ public class InCondition extends BooleanExpression {
         return ((Set) iRight).contains(iLeft);
 
       for (final Object o : MultiValue.getMultiValueIterable(iRight, false)) {
-        if (QueryOperatorEquals.equals(iLeft, o))
+        if (QueryOperatorEquals.equals(iLeft, o) || (iLeft == null && o == null))
           return true;
         if (MultiValue.isMultiValue(iLeft) && MultiValue.getSize(iLeft) == 1) {
 
@@ -126,7 +126,7 @@ public class InCondition extends BooleanExpression {
       }
     } else if (iRight.getClass().isArray()) {
       for (final Object o : (Object[]) iRight) {
-        if (QueryOperatorEquals.equals(iLeft, o))
+        if (QueryOperatorEquals.equals(iLeft, o) || (iLeft == null && o == null))
           return true;
       }
     } else if (iRight instanceof ResultSet) {

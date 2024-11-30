@@ -60,7 +60,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       e.startBlocking();
 
     if (!mustExecuteOnWorkerThread())
-      LogManager.instance().log(this, Level.SEVERE, "Error: handler must return true at mustExecuteOnWorkerThread() to read payload from request");
+      LogManager.instance()
+          .log(this, Level.SEVERE, "Error: handler must return true at mustExecuteOnWorkerThread() to read payload from request");
 
     final AtomicReference<String> result = new AtomicReference<>();
     e.getRequestReceiver().receiveFullBytes(
@@ -90,7 +91,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       final HeaderValues authorization = exchange.getRequestHeaders().get("Authorization");
       if (isRequireAuthentication() && (authorization == null || authorization.isEmpty())) {
         exchange.setStatusCode(401);
-        exchange.getResponseHeaders().put(Headers.WWW_AUTHENTICATE,"Basic");
+        exchange.getResponseHeaders().put(Headers.WWW_AUTHENTICATE, "Basic");
         sendErrorResponse(exchange, 401, "", null, null);
         return;
       }
@@ -130,39 +131,56 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
     } catch (final ServerSecurityException e) {
       // PASS SecurityException TO THE CLIENT
-      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s)", e, SecurityException.class.getSimpleName());
+      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
+          SecurityException.class.getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 403, "Security error", e, null);
     } catch (final ServerIsNotTheLeaderException e) {
-      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
+      LogManager.instance()
+          .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+              e.getMessage());
       sendErrorResponse(exchange, 400, "Cannot execute command", e, e.getLeaderAddress());
     } catch (final NeedRetryException e) {
-      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
+      LogManager.instance()
+          .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+              e.getMessage());
       sendErrorResponse(exchange, 503, "Cannot execute command", e, null);
     } catch (final DuplicatedKeyException e) {
-      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
-      sendErrorResponse(exchange, 503, "Found duplicate key in index", e, e.getIndexName() + "|" + e.getKeys() + "|" + e.getCurrentIndexedRID());
+      LogManager.instance()
+          .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+              e.getMessage());
+      sendErrorResponse(exchange, 503, "Found duplicate key in index", e,
+          e.getIndexName() + "|" + e.getKeys() + "|" + e.getCurrentIndexedRID());
     } catch (final RecordNotFoundException e) {
-      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
+      LogManager.instance()
+          .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+              e.getMessage());
       sendErrorResponse(exchange, 404, "Record not found", e, null);
     } catch (final IllegalArgumentException e) {
-      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
+      LogManager.instance()
+          .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+              e.getMessage());
       sendErrorResponse(exchange, 400, "Cannot execute command", e, null);
     } catch (final CommandExecutionException | CommandParsingException e) {
       Throwable realException = e;
       if (e.getCause() != null)
         realException = e.getCause();
 
-      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
+      LogManager.instance()
+          .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+              e.getMessage());
       sendErrorResponse(exchange, 500, "Cannot execute command", realException, null);
     } catch (final TransactionException e) {
       Throwable realException = e;
       if (e.getCause() != null)
         realException = e.getCause();
 
-      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s)", e, getClass().getSimpleName());
+      LogManager.instance()
+          .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),
+              e.getMessage());
       sendErrorResponse(exchange, 500, "Error on transaction commit", realException, null);
     } catch (final Throwable e) {
-      LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
+      LogManager.instance()
+          .log(this, getErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 500, "Internal error", e, null);
     } finally {
       LogManager.instance().setContext(null);
@@ -189,7 +207,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final JSONObject json = new JSONObject();
     if (database != null)
       json.setDateFormat(database.getSchema().getDateTimeFormat());
-    json.put("user", user.getName()).put("version", Constants.getVersion()).put("serverName", httpServer.getServer().getServerName());
+    json.put("user", user.getName()).put("version", Constants.getVersion())
+        .put("serverName", httpServer.getServer().getServerName());
     return json;
   }
 
@@ -197,7 +216,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     return command.replace("&amp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#039;", "'");
   }
 
-  protected String error2json(final String error, final String detail, final Throwable exception, final String exceptionArgs, final String help) {
+  protected String error2json(final String error, final String detail, final Throwable exception, final String exceptionArgs,
+      final String help) {
     final JSONObject json = new JSONObject();
     json.put("error", error);
     if (detail != null)
@@ -232,14 +252,19 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   private Level getErrorLogLevel() {
-    return "development".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE)) ? Level.SEVERE : Level.FINE;
+    return "development".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE)) ?
+        Level.SEVERE :
+        Level.FINE;
   }
 
   private Level getUserSevereErrorLogLevel() {
-    return "development".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE)) ? Level.INFO : Level.FINE;
+    return "development".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE)) ?
+        Level.INFO :
+        Level.FINE;
   }
 
-  private void sendErrorResponse(final HttpServerExchange exchange, final int code, final String errorMessage, final Throwable e, final String exceptionArgs) {
+  private void sendErrorResponse(final HttpServerExchange exchange, final int code, final String errorMessage, final Throwable e,
+      final String exceptionArgs) {
     if (!exchange.isResponseStarted())
       exchange.setStatusCode(code);
     exchange.getResponseSender().send(error2json(errorMessage, e != null ? e.getMessage() : "", e, exceptionArgs, null));

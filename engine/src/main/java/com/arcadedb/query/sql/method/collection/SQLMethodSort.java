@@ -23,7 +23,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.serializer.BinaryComparator;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * @author Christian Himpe
@@ -41,9 +42,9 @@ public class SQLMethodSort extends AbstractSQLMethod {
   public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
       final Object[] iParams) {
 
-    if (value != null && value instanceof List) {
-      List<Object> result = new ArrayList((List) value);
-      if (iParams != null && iParams.length > 0 && iParams[0] != null && iParams[0] instanceof Boolean && !((Boolean) iParams[0]))
+    if (value != null && value instanceof List list) {
+      List<Object> result = new ArrayList(list);
+      if (iParams != null && iParams.length > 0 && iParams[0] != null && iParams[0] instanceof Boolean bool && !bool)
         result.sort((left, right) -> BinaryComparator.compareTo(right, left));
       else
         result.sort((left, right) -> BinaryComparator.compareTo(left, right));

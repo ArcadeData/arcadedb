@@ -32,18 +32,18 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
-
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class RemoteDatabaseIT extends BaseGraphServerTest {
   private static final String DATABASE_NAME = "remote-database";
@@ -56,9 +56,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
   @Test
   public void simpleTxDocuments() throws Exception {
     testEachServer((serverIndex) -> {
-      assertThat(
-          new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
-              DATABASE_NAME)).isTrue();
+      assertThat(new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
+          DATABASE_NAME)).isTrue();
 
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
@@ -325,9 +324,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       final int TOTAL_TRANSACTIONS = 100;
       final int BATCH_SIZE = 100;
 
-      assertThat(
-          new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
-              DATABASE_NAME)).isTrue();
+      assertThat(new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
+          DATABASE_NAME)).isTrue();
 
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
@@ -405,9 +403,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
   @Test
   public void testRIDAsParametersInSQL() throws Exception {
     testEachServer((serverIndex) -> {
-      assertThat(
-          new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
-              DATABASE_NAME)).isTrue();
+      assertThat(new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
+          DATABASE_NAME)).isTrue();
 
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
@@ -435,10 +432,12 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
-      database.command("sqlscript",//
-          "CREATE VERTEX TYPE AVtx;" + //
-              "CREATE VERTEX TYPE BVtx EXTENDS AVtx;" + //
-              "CREATE VERTEX TYPE CVtx EXTENDS BVtx;");
+      //
+      //
+      database.command("sqlscript", """
+          CREATE VERTEX TYPE AVtx;
+          CREATE VERTEX TYPE BVtx EXTENDS AVtx;
+          CREATE VERTEX TYPE CVtx EXTENDS BVtx;""");
 
       database.command("sql", "SELECT FROM AVtx;");
       database.command("sql", "DROP TYPE CVtx;");
@@ -449,9 +448,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
   @Test
   public void testTransactionWrongSessionId() throws Exception {
     testEachServer((serverIndex) -> {
-      assertThat(
-          new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
-              DATABASE_NAME)).isTrue();
+      assertThat(new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
+          DATABASE_NAME)).isTrue();
 
       final RemoteDatabase database1 = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);

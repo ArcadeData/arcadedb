@@ -21,10 +21,12 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONObject;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -42,9 +44,11 @@ public class AlterTypeExecutionTest extends TestHelper {
     database.command("sql", "ALTER TYPE Car SUPERTYPE +Vehicle");
 
     assertThat(database.getSchema().getType("Car").getSuperTypes().size()).isEqualTo(1);
-    assertThat(database.getSchema().getType("Car").getSuperTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()).contains("Vehicle")).isTrue();
+    assertThat(database.getSchema().getType("Car").getSuperTypes().stream().map(DocumentType::getName).collect(Collectors.toSet())
+        .contains("Vehicle")).isTrue();
     assertThat(database.getSchema().getType("Vehicle").getSubTypes().size()).isEqualTo(1);
-    assertThat(database.getSchema().getType("Vehicle").getSubTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()).contains("Car")).isTrue();
+    assertThat(database.getSchema().getType("Vehicle").getSubTypes().stream().map(DocumentType::getName).toList()
+        .contains("Car")).isTrue();
     assertThat(database.getSchema().getType("Vehicle").isSuperTypeOf("Car")).isTrue();
 
     database.command("sql", "CREATE VERTEX TYPE Suv");
@@ -54,7 +58,8 @@ public class AlterTypeExecutionTest extends TestHelper {
     assertThat(database.getSchema().getType("Suv").getSuperTypes().size()).isEqualTo(1);
     assertThat(database.getSchema().getType("Car").isSuperTypeOf("Suv")).isTrue();
     assertThat(database.getSchema().getType("Car").getSubTypes().size()).isEqualTo(1);
-    assertThat(database.getSchema().getType("Car").getSubTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()).contains("Suv")).isTrue();
+    assertThat(database.getSchema().getType("Car").getSubTypes().stream().map(DocumentType::getName).collect(Collectors.toSet())
+        .contains("Suv")).isTrue();
     assertThat(database.getSchema().getType("Car").isSuperTypeOf("Suv")).isTrue();
 
     database.command("sql", "ALTER TYPE Car SUPERTYPE -Vehicle");
@@ -67,7 +72,8 @@ public class AlterTypeExecutionTest extends TestHelper {
     assertThat(database.getSchema().getType("Vehicle").isSuperTypeOf("Suv")).isTrue();
     assertThat(database.getSchema().getType("Car").getSubTypes().size()).isEqualTo(1);
     assertThat(database.getSchema().getType("Vehicle").getSubTypes().size()).isEqualTo(1);
-    assertThat(database.getSchema().getType("Car").getSubTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()).contains("Suv")).isTrue();
+    assertThat(database.getSchema().getType("Car").getSubTypes().stream().map(DocumentType::getName).collect(Collectors.toSet())
+        .contains("Suv")).isTrue();
     assertThat(database.getSchema().getType("Car").isSuperTypeOf("Suv")).isTrue();
     assertThat(database.getSchema().getType("Vehicle").isSuperTypeOf("Suv")).isTrue();
   }
@@ -102,5 +108,40 @@ public class AlterTypeExecutionTest extends TestHelper {
     database.command("sql", "ALTER TYPE Suv CUSTOM age = null");
     assertThat(database.getSchema().getType("Suv").getCustomValue("age")).isNull();
     assertThat(database.getSchema().getType("Suv").getCustomKeys().contains("age")).isFalse();
+  }
+
+  @Test
+  public void sqlAlterTypeName() {
+    database.command("sql", "CREATE VERTEX TYPE Mpv");
+    database.command("sql", "CREATE PROPERTY Mpv.engine_number string");
+    database.command("sql", "CREATE INDEX ON Mpv(engine_number) UNIQUE");
+
+    database.begin();
+    database.getSchema().getType("Mpv").newRecord().set("vehicle_model", "Blista Compact").set("engine_number", "456").save();
+    database.commit();
+
+    Assertions.assertThrows(Exception.class, () -> {
+      database.begin();
+      database.getSchema().getType("Mpv").newRecord().set("vehicle_model", "Maibatsu Monstrosity").set("engine_number", "456")
+          .save();
+      database.commit();
+    });
+
+    database.command("sql", "ALTER TYPE Mpv NAME Sedan");
+    Assertions.assertNotNull(database.getSchema().getType("Sedan"));
+    // Assertions.assertNull fails, hence the use of database.command()
+    ResultSet result = database.command("sql", "SELECT FROM schema:types");
+    Assertions.assertFalse(result.stream().anyMatch(x -> x.getProperty("name").equals("Mpv")));
+
+    database.begin();
+    database.getSchema().getType("Sedan").newRecord().set("engine_number", "123").set("vehicle_model", "Diablo Stallion").save();
+    database.commit();
+
+    Assertions.assertThrows(Exception.class, () -> {
+      database.begin();
+      // insert a record with the same engine_number
+      database.getSchema().getType("Sedan").newRecord().set("engine_number", "123").set("vehicle_model", "Cartel Cruiser").save();
+      database.commit();
+    });
   }
 }

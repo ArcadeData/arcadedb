@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
@@ -110,6 +111,16 @@ public class AlterTypeStatement extends DDLStatement {
 
     if (property != null) {
       switch (property.toLowerCase(Locale.ENGLISH)) {
+      case "name":
+        final String newTypeName = identifierValue.getStringValue();
+        final int bucketSize = type.getInvolvedBuckets().size();
+        final int pageSize = GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getValueAsInteger();
+        // TODO: Update documentation with the details & performance penalties of this operation
+        // NOTE copyType() checks for type existence, no need to check it here
+        context.getDatabase().getSchema().copyType(name.getStringValue(), newTypeName, type.getClass(), bucketSize, pageSize, 0);
+        context.getDatabase().getSchema().dropType(name.getStringValue());
+        result.setProperty("name", newTypeName);
+        break;
       case "bucket":
         for (int i = 0; i < identifierListValue.size(); i++) {
           final Identifier identifierValue = identifierListValue.get(i);

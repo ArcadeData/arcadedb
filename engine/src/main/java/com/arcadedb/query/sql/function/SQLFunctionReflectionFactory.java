@@ -40,7 +40,8 @@ public class SQLFunctionReflectionFactory {
   }
 
   public void register(final String prefix, final Class<?> clazz) {
-    final Map<String, List<Method>> methodsMap = Arrays.stream(clazz.getMethods()).filter(m -> Modifier.isStatic(m.getModifiers()))
+    final Map<String, List<Method>> methodsMap = Arrays.stream(clazz.getMethods())
+        .filter(m -> Modifier.isStatic(m.getModifiers()))
         .collect(Collectors.groupingBy(Method::getName));
 
     for (final Map.Entry<String, List<Method>> entry : methodsMap.entrySet()) {
