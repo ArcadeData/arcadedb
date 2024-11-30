@@ -115,7 +115,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
           super.remove();
           CONTEXTS.remove(Thread.currentThread());
         }
-        result.add(tl);
+        Optional.ofNullable(tl).ifPresent(result::add);
       }
     }
     return result;
