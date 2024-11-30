@@ -23,12 +23,14 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.*;
+import java.util.concurrent.*;
 
 /**
  * Thread local to store transaction data.
  */
 public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.DatabaseContextTL>> {
-  public static final DatabaseContext INSTANCE = new DatabaseContext();
+  public static final  DatabaseContext                                           INSTANCE = new DatabaseContext();
+  private static final ConcurrentHashMap<Thread, Map<String, DatabaseContextTL>> CONTEXTS = new ConcurrentHashMap<>();
 
   public DatabaseContextTL init(final DatabaseInternal database) {
     return init(database, null);
@@ -44,6 +46,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
     if (map == null) {
       map = new HashMap<>();
       set(map);
+      CONTEXTS.put(Thread.currentThread(), map);
       current = new DatabaseContextTL();
       map.put(key, current);
     } else {
@@ -73,31 +76,6 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
     return current;
   }
 
-  /**
-   * Clear any database context in the thread local.
-   */
-  public void clear() {
-    Map<String, DatabaseContextTL> map = get();
-
-    if (map != null) {
-      for (DatabaseContextTL current : map.values()) {
-        if (current != null) {
-          if (!current.transactions.isEmpty()) {
-            // ROLLBACK PREVIOUS TXS
-            while (!current.transactions.isEmpty()) {
-              final Transaction tx = current.transactions.remove(current.transactions.size() - 1);
-              try {
-                tx.rollback();
-              } catch (final Exception e) {
-                // IGNORE ANY ERROR DURING ROLLBACK
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
   public DatabaseContextTL getContext(final String name) {
     final DatabaseContextTL ctx = getContextIfExists(name);
     if (ctx == null)
@@ -112,9 +90,35 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
 
   public DatabaseContextTL removeContext(final String name) {
     final Map<String, DatabaseContextTL> map = get();
-    if (map != null)
-      return map.remove(name);
+    if (map != null) {
+      final DatabaseContextTL tl = map.remove(name);
+      if (map.isEmpty()) {
+        // REMOVE THE THREAD LOCAL WHEN THE MAP IS EMPTY
+        super.remove();
+        CONTEXTS.remove(Thread.currentThread());
+      }
+      return tl;
+    }
     return null;
+  }
+
+  /**
+   * Remove the database instance from all the thread local contexts.
+   */
+  public List<DatabaseContextTL> removeAllContexts(final String databaseName) {
+    final List<DatabaseContextTL> result = new ArrayList<>();
+    for (Map<String, DatabaseContextTL> map : new ArrayList<>(CONTEXTS.values())) {
+      if (map != null) {
+        final DatabaseContextTL tl = map.remove(databaseName);
+        if (map.isEmpty()) {
+          // REMOVE THE THREAD LOCAL WHEN THE MAP IS EMPTY
+          super.remove();
+          CONTEXTS.remove(Thread.currentThread());
+        }
+        result.add(tl);
+      }
+    }
+    return result;
   }
 
   /**

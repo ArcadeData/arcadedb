@@ -120,7 +120,7 @@ public enum GlobalConfiguration {
   TEST("arcadedb.test", SCOPE.JVM,
       "Tells if it is running in test mode. This enables the calling of callbacks for testing purpose ", Boolean.class, false),
 
-  MAX_PAGE_RAM("arcadedb.maxPageRAM", SCOPE.DATABASE, "Maximum amount of pages (in MB) to keep in RAM", Long.class, 4 * 1024,
+  MAX_PAGE_RAM("arcadedb.maxPageRAM", SCOPE.DATABASE, "Maximum amount of pages (in MB) to keep in RAM", Long.class, 4 * 1024, // 4GB
       new Callable<>() {
         @Override
         public Object call(final Object value) {

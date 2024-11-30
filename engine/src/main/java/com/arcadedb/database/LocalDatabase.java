@@ -1680,16 +1680,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
 
       try {
-        final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.removeContext(databasePath);
-        if (dbContext != null && !dbContext.transactions.isEmpty()) {
-          // ROLLBACK ALL THE TX FROM LAST TO FIRST
-          for (int i = dbContext.transactions.size() - 1; i > -1; --i) {
-            final TransactionContext tx = dbContext.transactions.get(i);
-            if (tx.isActive())
-              // ROLLBACK ANY PENDING OPERATION
-              tx.rollback();
+        final List<DatabaseContext.DatabaseContextTL> dbContexts = DatabaseContext.INSTANCE.removeAllContexts(databasePath);
+        for (DatabaseContext.DatabaseContextTL dbContext : dbContexts) {
+          if (!dbContext.transactions.isEmpty()) {
+            // ROLLBACK ALL THE TX FROM LAST TO FIRST
+            for (int i = dbContext.transactions.size() - 1; i > -1; --i) {
+              final TransactionContext tx = dbContext.transactions.get(i);
+              if (tx.isActive())
+                // ROLLBACK ANY PENDING OPERATION
+                tx.rollback();
+            }
+            dbContext.transactions.clear();
           }
-          dbContext.transactions.clear();
         }
       } catch (final Throwable e) {
         LogManager.instance()
