@@ -19,10 +19,9 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
-
 import org.junit.jupiter.api.Test;
 
-import java.util.stream.*;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -42,19 +41,19 @@ public class DDLTest extends TestHelper {
 
     final int numOfElements = 10;
     //create schema: script
-    database.command("sqlscript",
-        """
-        BEGIN;\
-        CREATE VERTEX TYPE Person EXTENDS V; \
-        CREATE PROPERTY Person.name STRING;\
-        CREATE PROPERTY Person.id INTEGER;\
-        CREATE INDEX ON Person (id) UNIQUE NULL_STRATEGY SKIP;\
-        CREATE VERTEX TYPE Car EXTENDS V; \
-        CREATE PROPERTY Car.id INTEGER;\
-        CREATE PROPERTY Car.model STRING;\
-        CREATE INDEX ON Car (id) UNIQUE;\
-        CREATE EDGE TYPE Drives EXTENDS E;\
-        COMMIT;  """);
+    database.command("sqlscript", """
+        BEGIN;
+        CREATE VERTEX TYPE Person EXTENDS V;
+        CREATE PROPERTY Person.name STRING;
+        CREATE PROPERTY Person.id INTEGER;
+        CREATE INDEX ON Person (id) UNIQUE NULL_STRATEGY SKIP;
+        CREATE VERTEX TYPE Car EXTENDS V;
+        CREATE PROPERTY Car.id INTEGER;
+        CREATE PROPERTY Car.model STRING;
+        CREATE INDEX ON Car (id) UNIQUE;
+        CREATE EDGE TYPE Drives EXTENDS E;
+        COMMIT;
+        """);
 
     //vertices
     database.transaction(() -> IntStream.range(0, numOfElements).forEach(i -> {
@@ -62,11 +61,13 @@ public class DDLTest extends TestHelper {
       database.command("sql", "INSERT INTO Car set id=?,  brand=?, model=?", i, "Ferrari", "450" + i);
     }));
     //edges
-    database.transaction(() -> IntStream.range(0, numOfElements)
-        .forEach(i -> database.command("sql", "CREATE EDGE Drives FROM (SELECT FROM Person WHERE id=?) TO (SELECT FROM Car WHERE id=?)", i, i)));
+    database.transaction(() -> IntStream.range(0, numOfElements).forEach(
+        i -> database.command("sql", "CREATE EDGE Drives FROM (SELECT FROM Person WHERE id=?) TO (SELECT FROM Car WHERE id=?)", i,
+            i)));
 
-    database.transaction(() -> database.query("sql", "SELECT FROM Drives").stream().map(r -> r.getEdge().get()).peek(e -> assertThat(e.getIn()).isNotNull())
-        .peek(e -> assertThat(e.getOut()).isNotNull()).forEach(e -> assertThat(e.getTypeName()).isEqualTo("Drives")));
+    database.transaction(() -> database.query("sql", "SELECT FROM Drives").stream().map(r -> r.getEdge().get())
+        .peek(e -> assertThat(e.getIn()).isNotNull()).peek(e -> assertThat(e.getOut()).isNotNull())
+        .forEach(e -> assertThat(e.getTypeName()).isEqualTo("Drives")));
 
     database.transaction(() -> {
 

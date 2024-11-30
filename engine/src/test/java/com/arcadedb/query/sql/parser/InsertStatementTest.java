@@ -90,8 +90,7 @@ public class InsertStatementTest {
 
   @Test
   public void testInsertEmbeddedDocs() {
-    checkRightSyntax(
-        """
+    checkRightSyntax("""
         INSERT INTO Activity SET user = #14:1, story = #18:2, `like` = {\s
               count: 0,\s
               latest: [],\s
@@ -100,8 +99,7 @@ public class InsertStatementTest {
             }\
         """);
 
-    checkRightSyntax(
-        """
+    checkRightSyntax("""
         INSERT INTO Activity SET user = #14:1, story = #18:2, `like` = {\s
               count: 0,\s
               latest: [],\s
@@ -134,8 +132,10 @@ public class InsertStatementTest {
 
   @Test
   public void testSlashInQuery() {
-    checkRightSyntax("insert into test content {\"node_id\": \"MFmqvmht//sYYWB8=\"}");
-    checkRightSyntax("insert into test content { \"node_id\": \"MFmqvmht\\/\\/GYsYYWB8=\"}");
+    checkRightSyntax("""
+        insert into test content {"node_id": "MFmqvmht//sYYWB8="}""");
+    checkRightSyntax("""
+        insert into test content { "node_id": "MFmqvmht\\/\\/GYsYYWB8="}""");
   }
 
   @Test
@@ -148,34 +148,35 @@ public class InsertStatementTest {
 
   @Test
   public void testInsertJsonNewLines() {
-    checkRightSyntax("INSERT INTO doc CONTENT {\n" + //
-        "\"head\" : {\n" + //
-        "  \"vars\" : [ \"item\", \"itemLabel\" ]\n" + //
-        "},\n" + //
-        "\"results\" : {\n" + //
-        "  \"bindings\" : [ {\n" + //
-        "    \"item\" : {\n" + //
-        "          \"type\" : \"uri\",\n" + //
-        "              \"value\" : \"http://www.wikidata.org/entity/Q113997665\"\n" + //
-        "        },\n" + //
-        "        \"itemLabel\" : {\n" + //
-        "          \"xml:lang\" : \"en\",\n" + //
-        "              \"type\" : \"literal\",\n" + //
-        "              \"value\" : \"ArcadeDB\"\n" + //
-        "        }\n" + //
-        "      }, {\n" + //
-        "        \"item\" : {\n" + //
-        "          \"type\" : \"uri\",\n" + //
-        "              \"value\" : \"http://www.wikidata.org/entity/Q808716\"\n" + //
-        "        },\n" + //
-        "        \"itemLabel\" : {\n" + //
-        "          \"xml:lang\" : \"en\",\n" + //
-        "              \"type\" : \"literal\",\n" + //
-        "              \"value\" : \"OrientDB\"\n" + //
-        "        }\n" + //
-        "      } ]\n" + //
-        "    }\n" + //
-        "}");
+    checkRightSyntax("""
+        INSERT INTO doc CONTENT {
+        "head" : {
+          "vars" : [ "item", "itemLabel" ]
+        },
+        "results" : {
+          "bindings" : [ {
+            "item" : {
+                  "type" : "uri",
+                      "value" : "http://www.wikidata.org/entity/Q113997665"
+                },
+                "itemLabel" : {
+                  "xml:lang" : "en",
+                      "type" : "literal",
+                      "value" : "ArcadeDB"
+                }
+              }, {
+                "item" : {
+                  "type" : "uri",
+                      "value" : "http://www.wikidata.org/entity/Q808716"
+                },
+                "itemLabel" : {
+                  "xml:lang" : "en",
+                      "type" : "literal",
+                      "value" : "OrientDB"
+                }
+              } ]
+            }
+        }""");
   }
 
   protected SqlParser getParserFor(final String string) {
