@@ -115,7 +115,8 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
           super.remove();
           CONTEXTS.remove(Thread.currentThread());
         }
-        result.add(tl);
+        if (tl != null)
+          result.add(tl);
       }
     }
     return result;
