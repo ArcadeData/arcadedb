@@ -42,8 +42,12 @@ public class BinaryStructureTest {
     assertThat(blob.getShort()).isEqualTo((short) 10);
     assertThat(blob.getInt()).isEqualTo(10);
     assertThat(blob.getLong()).isEqualTo(10L);
+    assertThat(blob.getNumber()).isEqualTo(10L);
     assertThat(blob.getString()).isEqualTo("ciao");
     assertThat(new String(blob.getBytes())).isEqualTo("ciao");
+    final byte[] bytes = new byte[4];
+    blob.getByteArray(bytes);
+    assertThat(new String(bytes)).isEqualTo("ciao");
   }
 
   private void addValues(final BinaryStructure blob) {
@@ -66,7 +70,12 @@ public class BinaryStructureTest {
     size += Binary.LONG_SERIALIZED_SIZE;
     assertThat(blob.size()).isEqualTo(size);
 
-    int added = blob.putString("ciao");
+    int added = blob.putNumber(10);
+    assertThat(added).isEqualTo(1);
+    size += added;
+    assertThat(blob.size()).isEqualTo(size);
+
+    added = blob.putString("ciao");
     assertThat(added).isEqualTo(5);
     size += added;
     assertThat(blob.size()).isEqualTo(size);
@@ -74,6 +83,10 @@ public class BinaryStructureTest {
     added = blob.putBytes("ciao".getBytes());
     assertThat(added).isEqualTo(5);
     size += added;
+    assertThat(blob.size()).isEqualTo(size);
+
+    blob.putByteArray("ciao".getBytes());
+    size += 4;
     assertThat(blob.size()).isEqualTo(size);
   }
 }
