@@ -26,7 +26,9 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
+import java.util.Iterator;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * Vertex type used by {@link RemoteDatabase} class. The metadata are cached from the server until the schema is changed or
@@ -46,13 +48,14 @@ public class RemoteVertex {
   }
 
   public long countEdges(final Vertex.DIRECTION direction, final String edgeType) {
-    String query = "select " + direction.toString().toLowerCase(Locale.ENGLISH) + "(";
-    if (edgeType != null)
-      query += "'" + edgeType + "'";
 
-    query += ").size() as count from " + vertex.getIdentity();
-    final ResultSet resultSet = remoteDatabase.query("sql", query);
-    return ((Number) resultSet.next().getProperty("count")).longValue();
+    StringBuilder query = new StringBuilder("select " + direction.toString().toLowerCase(Locale.ENGLISH) + "(");
+    if (edgeType != null)
+      query.append("'").append(edgeType).append("'");
+
+    query.append(").size() as count from ").append(vertex.getIdentity());
+    final ResultSet resultSet = remoteDatabase.query("sql", query.toString());
+    return resultSet.next().<Number>getProperty("count").longValue();
   }
 
   public Iterable<Edge> getEdges() {
@@ -117,8 +120,7 @@ public class RemoteVertex {
   }
 
   public RID moveTo(final String targetType, final String targetBucket) {
-    final StringBuilder command = new StringBuilder(
-        "move vertex ").append(vertex.getIdentity()).append(" to");
+    final StringBuilder command = new StringBuilder("move vertex ").append(vertex.getIdentity()).append(" to");
 
     if (targetType != null)
       command.append(" TYPE:`").append(targetType).append("`");
@@ -132,11 +134,13 @@ public class RemoteVertex {
 
   public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
       Object... properties) {
-    if (!bidirectional)
-      throw new UnsupportedOperationException("Creating unidirectional edges is not supported from remote database");
-
     StringBuilder query = new StringBuilder(
         "create edge `" + edgeType + "` from " + vertex.getIdentity() + " to " + toVertex.getIdentity());
+
+    if (!bidirectional) {
+      query.append(" unidirectional ");
+    }
+
     if (properties != null && properties.length > 0) {
       query.append(" set ");
 
