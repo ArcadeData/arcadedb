@@ -53,11 +53,13 @@ import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
-import java.io.*;
-import java.net.*;
-import java.security.*;
-import java.security.cert.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.net.BindException;
+import java.security.KeyStore;
+import java.security.KeyStoreException;
+import java.security.NoSuchAlgorithmException;
+import java.security.cert.CertificateException;
+import java.util.logging.Level;
 
 import static com.arcadedb.GlobalConfiguration.NETWORK_SSL_KEYSTORE;
 import static com.arcadedb.GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD;
@@ -192,12 +194,10 @@ public class HttpServer implements ServerPlugin {
     httpPortListening = -1;
     final String msg = String.format("Unable to listen to a HTTP port in the configured port range %d - %d", httpPortRange[0],
         httpPortRange[1]);
-    LogManager.instance().
 
-        log(this, Level.SEVERE, msg);
-    throw new
+    LogManager.instance().log(this, Level.SEVERE, msg);
 
-        ServerException("Error on starting HTTP Server: " + msg);
+    throw new ServerException("Error on starting HTTP Server: " + msg);
   }
 
   private int[] extractPortRange(final Object configuredPort) {

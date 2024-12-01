@@ -50,12 +50,26 @@ import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RecordTableFormatter;
 import com.arcadedb.utility.TableFormatter;
 
-import java.io.*;
-import java.net.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
 
 public class HAServer implements ServerPlugin {
   public static final String                                         DEFAULT_PORT                      = "2424";
@@ -88,7 +102,18 @@ public class HAServer implements ServerPlugin {
   private             Thread                                         electionThread;
 
   public enum QUORUM {
-    NONE, ONE, TWO, THREE, MAJORITY, ALL
+    NONE, ONE, TWO, THREE, MAJORITY, ALL;
+
+    public int quorum(int numberOfServers) {
+      return switch (this) {
+        case NONE -> 0;
+        case ONE -> 1;
+        case TWO -> 2;
+        case THREE -> 3;
+        case MAJORITY -> numberOfServers / 2 + 1;
+        case ALL -> numberOfServers;
+      };
+    }
   }
 
   public enum ELECTION_STATUS {
