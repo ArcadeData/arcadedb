@@ -94,8 +94,7 @@ public class Projection extends SimpleNode {
     if (isExpand())
       throw new IllegalStateException("This is an expand projection, it cannot be calculated as a single result" + this);
 
-    if (items.isEmpty() ||//
-        (items.size() == 1 && (items.get(0).isAll() || items.get(0).getExpression().toString().equals("@this")))//
+    if (items.size() == 1 && items.get(0).getExpression().toString().equals("@this")
             && items.get(0).nestedProjection == null)
       return iRecord;
 
@@ -105,9 +104,10 @@ public class Projection extends SimpleNode {
         continue;
 
       if (item.isAll()) {
-        result.setElement(iRecord.toElement());
+        final Document doc = iRecord.getElement().get();
         for (final String alias : iRecord.getPropertyNames()) {
-          if (this.excludes.contains(alias)) {
+          if (this.excludes.contains(alias)
+                || (doc.getType().existsProperty(alias) && doc.getType().getProperty(alias).isHidden())) {
             continue;
           }
           Object val = item.convert(iRecord.getProperty(alias));
@@ -117,12 +117,11 @@ public class Projection extends SimpleNode {
           result.setProperty(alias, val);
         }
         if (iRecord.getElement().isPresent()) {
-          final Document x = iRecord.getElement().get();
           if (!this.excludes.contains("@rid")) {
-            result.setProperty("@rid", x.getIdentity());
+            result.setProperty("@rid", doc.getIdentity());
           }
           if (!this.excludes.contains("@type")) {
-            result.setProperty("@type", x.getType().getName());
+            result.setProperty("@type", doc.getType().getName());
           }
         }
       } else {
