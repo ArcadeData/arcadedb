@@ -369,7 +369,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     final PageId pageId = new PageId(database, file.getFileId(), txPageCounter);
     final MutablePage currentPage = database.isTransactionActive() ?
         database.getTransaction().addPage(pageId, pageSize) :
-        new MutablePage(database.getPageManager(), new PageId(database, getFileId(), txPageCounter), pageSize);
+        new MutablePage(new PageId(database, getFileId(), txPageCounter), pageSize);
 
     int pos = 0;
     currentPage.writeInt(pos, currentPage.getMaxContentSize());

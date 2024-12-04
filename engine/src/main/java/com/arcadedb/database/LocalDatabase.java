@@ -114,7 +114,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected final      QueryEngineManager                        queryEngineManager;
   protected final      DatabaseStats                             stats                                = new DatabaseStats();
   protected            FileManager                               fileManager;
-  protected            PageManager                               pageManager;
   protected            LocalSchema                               schema;
   protected            TransactionManager                        transactionManager;
   protected volatile   DatabaseAsyncExecutorImpl                 async                                = null;
@@ -251,7 +250,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     try {
       schema.close();
-      pageManager.kill();
+      PageManager.INSTANCE.simulateKillOfDatabase(this);
       fileManager.close();
       transactionManager.kill();
 
@@ -1127,7 +1126,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public PageManager getPageManager() {
     checkDatabaseIsOpen();
-    return pageManager;
+    return PageManager.INSTANCE;
   }
 
   @Override
@@ -1382,6 +1381,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return new Select(this);
   }
 
+  @Override
+  public int hashCode() {
+    return databasePath != null ? databasePath.hashCode() : 0;
+  }
+
   /**
    * Returns true if two databases are the same.
    */
@@ -1493,11 +1497,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public WALFileFactory getWALFileFactory() {
     return walFactory;
-  }
-
-  @Override
-  public int hashCode() {
-    return databasePath != null ? databasePath.hashCode() : 0;
   }
 
   @Override
@@ -1702,8 +1701,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         e.close();
 
       try {
+        PageManager.INSTANCE.flushAllPagesOfDatabase(this);
         schema.close();
-        pageManager.close();
         fileManager.close();
         transactionManager.close(drop);
         statementCache.clear();
@@ -1778,7 +1777,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       fileManager = new FileManager(databasePath, mode, SUPPORTED_FILE_EXT);
       transactionManager = new TransactionManager(wrappedDatabaseInstance);
-      pageManager = new PageManager(fileManager, transactionManager, configuration, name);
 
       open = true;
 
@@ -1803,11 +1801,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       } catch (final RuntimeException e) {
         open = false;
-        pageManager.close();
+        PageManager.INSTANCE.removeAllPagesOfDatabase(this);
         throw e;
       } catch (final Exception e) {
         open = false;
-        pageManager.close();
+        PageManager.INSTANCE.removeAllPagesOfDatabase(this);
         throw new DatabaseOperationException("Error on creating new database instance", e);
       }
     } catch (final Exception e) {

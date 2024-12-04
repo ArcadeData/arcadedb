@@ -359,7 +359,7 @@ public class TransactionContext implements Transaction {
     assureIsActive();
 
     // CREATE A PAGE ID BASED ON NEW PAGES IN TX. IN CASE OF ROLLBACK THEY ARE SIMPLY REMOVED AND THE GLOBAL PAGE COUNT IS UNCHANGED
-    final MutablePage page = new MutablePage(database.getPageManager(), pageId, pageSize);
+    final MutablePage page = new MutablePage(pageId, pageSize);
     newPages.put(pageId, page);
 
     final Integer indexCounter = newPageCounters.get(pageId.getFileId());

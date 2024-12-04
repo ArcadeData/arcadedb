@@ -36,15 +36,13 @@ public abstract class BasePage {
   protected static final int PAGE_CONTENTSIZE_OFFSET = Binary.INT_SERIALIZED_SIZE;
   public static final    int PAGE_HEADER_SIZE        = Binary.INT_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE;
 
-  protected final PageManager manager;
-
   protected final PageId pageId;
   protected       Binary content;
   protected final int    size;
   protected       int    version;
 
-  protected BasePage(final PageManager manager, final PageId pageId, final int size, final byte[] buffer, final int version, final int contentSize) {
-    this.manager = manager;
+  protected BasePage(final PageId pageId, final int size, final byte[] buffer, final int version,
+      final int contentSize) {
     this.pageId = pageId;
     this.size = size;
     this.content = new Binary(buffer, contentSize);

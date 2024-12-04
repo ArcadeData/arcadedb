@@ -51,7 +51,6 @@ public class Profiler {
     final JSONObject json = new JSONObject();
 
     long readCacheUsed = 0;
-    long writeCacheUsed = 0;
     long cacheMax = 0;
     long pagesRead = 0;
     long pagesWritten = 0;
@@ -109,7 +108,6 @@ public class Profiler {
 
       final PageManager.PPageManagerStats pStats = db.getPageManager().getStats();
       readCacheUsed += pStats.readCacheRAM;
-      writeCacheUsed += pStats.writeCacheRAM;
       cacheMax += pStats.maxRAM;
       pagesRead += pStats.pagesRead;
       pagesReadSize += pStats.pagesReadSize;
@@ -138,7 +136,6 @@ public class Profiler {
     }
 
     json.put("readCacheUsed", new JSONObject().put("space", readCacheUsed));
-    json.put("writeCacheUsed", new JSONObject().put("space", writeCacheUsed));
     json.put("cacheMax", new JSONObject().put("space", cacheMax));
     json.put("pagesRead", new JSONObject().put("count", pagesRead));
     json.put("pagesWritten", new JSONObject().put("count", pagesWritten));
@@ -243,7 +240,6 @@ public class Profiler {
     final long totalSpaceInMB = new File(".").getTotalSpace();
 
     long readCacheUsed = 0;
-    long writeCacheUsed = 0;
     long cacheMax = 0;
     long pagesRead = 0;
     long pagesWritten = 0;
@@ -278,7 +274,6 @@ public class Profiler {
     long evictionRuns = 0;
     long pagesEvicted = 0;
     int readCachePages = 0;
-    int writeCachePages = 0;
     long indexCompactions = 0;
 
     try {
@@ -302,7 +297,6 @@ public class Profiler {
 
         final PageManager.PPageManagerStats pStats = db.getPageManager().getStats();
         readCacheUsed += pStats.readCacheRAM;
-        writeCacheUsed += pStats.writeCacheRAM;
         cacheMax += pStats.maxRAM;
         pagesRead += pStats.pagesRead;
         pagesReadSize += pStats.pagesReadSize;
@@ -361,8 +355,8 @@ public class Profiler {
             String.format("%n JVM heap=%s/%s gc=%dms", FileUtils.getSizeAsString(runtime.totalMemory() - runtime.freeMemory()),
                 FileUtils.getSizeAsString(runtime.maxMemory()), gcTime));
 
-      buffer.append(String.format("%n PAGE-CACHE read=%s (pages=%d) write=%s (pages=%d) max=%s readOps=%d (%s) writeOps=%d (%s)",
-          FileUtils.getSizeAsString(readCacheUsed), readCachePages, FileUtils.getSizeAsString(writeCacheUsed), writeCachePages,
+      buffer.append(String.format("%n PAGE-CACHE read=%s (pages=%d) max=%s readOps=%d (%s) writeOps=%d (%s)",
+          FileUtils.getSizeAsString(readCacheUsed), readCachePages,
           FileUtils.getSizeAsString(cacheMax), pagesRead, FileUtils.getSizeAsString(pagesReadSize), pagesWritten,
           FileUtils.getSizeAsString(pagesWrittenSize)));
 

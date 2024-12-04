@@ -173,8 +173,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     // NEW FILE, CREATE HEADER PAGE
     final int txPageCounter = getTotalPages();
 
-    final MutablePage currentPage = new MutablePage(database.getPageManager(), new PageId(database, getFileId(), txPageCounter),
-        pageSize);
+    final MutablePage currentPage = new MutablePage(new PageId(database, getFileId(), txPageCounter), pageSize);
 
     int pos = 0;
     currentPage.writeInt(pos, currentPage.getMaxContentSize());

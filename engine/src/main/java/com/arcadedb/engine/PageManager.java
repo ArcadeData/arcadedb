@@ -20,6 +20,8 @@ package com.arcadedb.engine;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
@@ -39,14 +41,13 @@ import java.util.logging.*;
  * Manages pages from disk to RAM. Each page can have different size.
  */
 public class PageManager extends LockContext {
-  private final    FileManager                       fileManager;
+  public static final PageManager INSTANCE = new PageManager();
+
   private final    ConcurrentMap<PageId, CachedPage> readCache;
-  private final    TransactionManager                txManager;
   // MANAGE CONCURRENT ACCESS TO THE PAGES. THE VALUE IS TRUE FOR WRITE OPERATION AND FALSE FOR READ
   private final    ConcurrentMap<PageId, Boolean>    pendingFlushPages                     = new ConcurrentHashMap<>();
   private final    long                              maxRAM;
   private final    AtomicLong                        totalReadCacheRAM                     = new AtomicLong();
-  private final    AtomicLong                        totalWriteCacheRAM                    = new AtomicLong();
   private final    AtomicLong                        totalPagesRead                        = new AtomicLong();
   private final    AtomicLong                        totalPagesReadSize                    = new AtomicLong();
   private final    AtomicLong                        totalPagesWritten                     = new AtomicLong();
@@ -67,7 +68,6 @@ public class PageManager extends LockContext {
   public static class PPageManagerStats {
     public long maxRAM;
     public long readCacheRAM;
-    public long writeCacheRAM;
     public long pagesRead;
     public long pagesReadSize;
     public long pagesWritten;
@@ -81,10 +81,8 @@ public class PageManager extends LockContext {
     public int  readCachePages;
   }
 
-  public PageManager(final FileManager fileManager, final TransactionManager txManager, final ContextConfiguration configuration,
-      final String databaseName) {
-    this.fileManager = fileManager;
-    this.txManager = txManager;
+  private PageManager() {
+    final ContextConfiguration configuration = new ContextConfiguration();
 
     this.freePageRAM = configuration.getValueAsInteger(GlobalConfiguration.FREE_PAGE_RAM);
     this.readCache = new ConcurrentHashMap<>(configuration.getValueAsInteger(GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE));
@@ -93,8 +91,10 @@ public class PageManager extends LockContext {
     if (maxRAM < 0)
       throw new ConfigurationException(GlobalConfiguration.MAX_PAGE_RAM.getKey() + " configuration is invalid (" + maxRAM + " MB)");
 
-    flushThread = new PageManagerFlushThread(this, configuration, databaseName);
+    flushThread = new PageManagerFlushThread(this, configuration);
     flushThread.start();
+
+    Runtime.getRuntime().addShutdownHook(new Thread(() -> close()));
   }
 
   public void close() {
@@ -105,53 +105,55 @@ public class PageManager extends LockContext {
         Thread.currentThread().interrupt();
       }
     }
-
-    readCache.clear();
-    totalReadCacheRAM.set(0);
-    totalWriteCacheRAM.set(0);
   }
 
-  public void suspendFlushAndExecute(final CallableNoReturn callback) throws IOException, InterruptedException {
-    flushThread.flushPagesFromQueueToDisk(0L);
-    flushThread.setSuspended(true);
-    try {
-      CodeUtils.executeIgnoringExceptions(callback, "Error during suspend flush", true);
-    } finally {
-      flushThread.setSuspended(false);
+  public void removeAllPagesOfDatabase(final Database database) {
+    for (final Iterator<CachedPage> it = readCache.values().iterator(); it.hasNext(); ) {
+      final CachedPage p = it.next();
+      final PageId pageId = p.getPageId();
+      if (pageId.getDatabase().equals(database)) {
+        totalReadCacheRAM.addAndGet(-1L * p.getPhysicalSize());
+        it.remove();
+      }
     }
   }
 
-  public boolean isPageFlushingSuspended() {
-    return flushThread.isSuspended();
+  public void flushAllPagesOfDatabase(final Database database) {
+    if (flushThread != null)
+      flushThread.flushAllPagesOfDatabase(database);
+    removeAllPagesOfDatabase(database);
+  }
+
+  public void suspendFlushAndExecute(final Database database, final CallableNoReturn callback)
+      throws IOException, InterruptedException {
+    if (flushThread.setSuspended(database, true)) {
+      flushThread.flushPagesFromQueueToDisk(database, 0L);
+      try {
+        CodeUtils.executeIgnoringExceptions(callback, "Error during suspend flush", true);
+      } finally {
+        flushThread.setSuspended(database, false);
+      }
+    }
+  }
+
+  public boolean isPageFlushingSuspended(final Database database) {
+    return flushThread.isSuspended(database);
   }
 
   /**
    * Test only API.
    */
-  public void kill() {
-    if (flushThread != null) {
-      try {
-        flushThread.interrupt();
-        flushThread.closeAndJoin();
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-      }
-    }
-
-    readCache.clear();
-    totalReadCacheRAM.set(0);
-    totalWriteCacheRAM.set(0);
+  public void simulateKillOfDatabase(final Database database) {
+    removeAllPagesOfDatabase(database);
+    if (flushThread != null)
+      flushThread.removeAllPagesOfDatabase(database);
   }
 
-  public void clear() {
-    readCache.clear();
-    totalReadCacheRAM.set(0);
-  }
-
-  public void deleteFile(final int fileId) {
+  public void deleteFile(final Database database, final int fileId) {
     for (final Iterator<CachedPage> it = readCache.values().iterator(); it.hasNext(); ) {
       final CachedPage p = it.next();
-      if (p.getPageId().getFileId() == fileId) {
+      final PageId pageId = p.getPageId();
+      if (pageId.getDatabase().equals(database) && pageId.getFileId() == fileId) {
         totalReadCacheRAM.addAndGet(-1L * p.getPhysicalSize());
         it.remove();
       }
@@ -190,6 +192,8 @@ public class PageManager extends LockContext {
 
   public void checkPageVersion(final MutablePage page, final boolean isNew) throws IOException {
     final PageId pageId = page.getPageId();
+
+    final FileManager fileManager = ((DatabaseInternal) pageId.getDatabase()).getFileManager();
 
     if (!fileManager.existsFile(pageId.getFileId()))
       throw new ConcurrentModificationException(
@@ -234,6 +238,8 @@ public class PageManager extends LockContext {
     final int mostRecentPageVersion = getMostRecentVersionOfPage(pageId, page.getPhysicalSize());
     if (mostRecentPageVersion != page.getVersion()) {
       totalConcurrentModificationExceptions.incrementAndGet();
+
+      final FileManager fileManager = ((DatabaseInternal) pageId.getDatabase()).getFileManager();
       throw new ConcurrentModificationException(
           "Concurrent modification on page " + pageId + " in file '" + fileManager.getFile(pageId.getFileId()).getFileName()
               + "' (current v." + page.getVersion() + " <> database v." + mostRecentPageVersion
@@ -263,7 +269,6 @@ public class PageManager extends LockContext {
     final PPageManagerStats stats = new PPageManagerStats();
     stats.maxRAM = maxRAM;
     stats.readCacheRAM = totalReadCacheRAM.get();
-    stats.writeCacheRAM = totalWriteCacheRAM.get();
     stats.readCachePages = readCache.size();
     stats.pagesRead = totalPagesRead.get();
     stats.pagesReadSize = totalPagesReadSize.get();
@@ -303,6 +308,14 @@ public class PageManager extends LockContext {
   }
 
   protected void flushPage(final MutablePage page) throws IOException {
+    final DatabaseInternal database = (DatabaseInternal) page.getPageId().getDatabase();
+
+    if (!database.isOpen()) {
+      LogManager.instance().log(this, Level.SEVERE, "Cannot flush page %s because the database is closed", page);
+      return;
+    }
+
+    final FileManager fileManager = database.getFileManager();
     if (fileManager.existsFile(page.pageId.getFileId())) {
       final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getFile(page.pageId.getFileId());
       if (!file.isOpen())
@@ -319,7 +332,7 @@ public class PageManager extends LockContext {
 
       totalPagesWritten.incrementAndGet();
 
-      txManager.notifyPageFlushed(page);
+      database.getTransactionManager().notifyPageFlushed(page);
 
     } else
       LogManager.instance()
@@ -329,10 +342,12 @@ public class PageManager extends LockContext {
 
   private CachedPage loadPage(final PageId pageId, final int size, final boolean createIfNotExists, final boolean cache)
       throws IOException {
+    final DatabaseInternal database = (DatabaseInternal) pageId.getDatabase();
+
     // ASSURE THE PAGE IS NOT IN THE FLUSHING QUEUE
     CachedPage page = flushThread.getCachedPageFromMutablePageInQueue(pageId);
     if (page == null) {
-      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getFile(pageId.getFileId());
+      final PaginatedComponentFile file = (PaginatedComponentFile) database.getFileManager().getFile(pageId.getFileId());
 
       final boolean isNewPage = pageId.getPageNumber() >= file.getTotalPages();
       if (!createIfNotExists && isNewPage)

@@ -741,7 +741,7 @@ public class LocalSchema implements Schema {
                   + "'. Remove the association first");
       }
 
-      database.getPageManager().deleteFile(bucket.getFileId());
+      database.getPageManager().deleteFile(database, bucket.getFileId());
       try {
         database.getFileManager().dropFile(bucket.getFileId());
       } catch (final IOException e) {

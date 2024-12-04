@@ -20,13 +20,13 @@ package com.arcadedb.engine;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.log.LogManager;
 
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 /**
@@ -37,11 +37,10 @@ public class PageManagerFlushThread extends Thread {
   public final     ArrayBlockingQueue<List<MutablePage>> queue;
   private final    String                                logContext;
   private volatile boolean                               running   = true;
-  private final    AtomicBoolean                         suspended = new AtomicBoolean(false); // USED DURING BACKUP
+  private final    ConcurrentHashMap<Database, Boolean>  suspended = new ConcurrentHashMap<>(); // USED DURING BACKUP
 
-  public PageManagerFlushThread(final PageManager pageManager, final ContextConfiguration configuration,
-      final String databaseName) {
-    super("ArcadeDB AsyncFlush " + databaseName);
+  public PageManagerFlushThread(final PageManager pageManager, final ContextConfiguration configuration) {
+    super("ArcadeDB AsyncFlush");
     setDaemon(false);
     this.pageManager = pageManager;
     this.logContext = LogManager.instance().getContext();
@@ -69,13 +68,8 @@ public class PageManagerFlushThread extends Thread {
 
     while (running || !queue.isEmpty()) {
       try {
-        if (suspended.get()) {
-          // FLUSH SUSPENDED (BACKUP IN PROGRESS?)
-          Thread.sleep(100);
-          continue;
-        }
-
-        flushPagesFromQueueToDisk(1_000);
+        // FLUSH ALL THE PAGES
+        flushPagesFromQueueToDisk(null, 1_000);
 
       } catch (final InterruptedException e) {
         running = false;
@@ -85,7 +79,22 @@ public class PageManagerFlushThread extends Thread {
     }
   }
 
-  protected void flushPagesFromQueueToDisk(final long timeout) throws InterruptedException, IOException {
+  protected void flushAllPagesOfDatabase(final Database database) {
+    final int elements = queue.size();
+    for (int i = 0; i < elements; i++) {
+      try {
+        flushPagesFromQueueToDisk(database, 0L);
+      } catch (InterruptedException e) {
+        Thread.interrupted();
+        return;
+      } catch (Exception e) {
+        // IGNORE IT
+        LogManager.instance().log(this, Level.WARNING, "Error on flushing pages to disk for database '%s'", database.getName());
+      }
+    }
+  }
+
+  protected void flushPagesFromQueueToDisk(final Database database, final long timeout) throws InterruptedException, IOException {
     final List<MutablePage> pages = queue.poll(timeout, TimeUnit.MILLISECONDS);
 
     if (pages != null) {
@@ -93,22 +102,28 @@ public class PageManagerFlushThread extends Thread {
         // EMPTY PAGES IS A SPECIAL CONTENT FOR SHUTDOWN
         running = false;
       else
-        for (final MutablePage page : pages)
-          try {
-            pageManager.flushPage(page);
-          } catch (final DatabaseMetadataException e) {
-            // FILE DELETED, CONTINUE WITH THE NEXT PAGES
-            LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
-          }
+        for (final MutablePage page : pages) {
+          if (database == null || page.getPageId().getDatabase().equals(database))
+            try {
+              pageManager.flushPage(page);
+            } catch (final DatabaseMetadataException e) {
+              // FILE DELETED, CONTINUE WITH THE NEXT PAGES
+              LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
+            }
+        }
     }
   }
 
-  public void setSuspended(final boolean value) {
-    suspended.set(value);
+  public boolean setSuspended(final Database database, final boolean value) {
+    if (value)
+      return suspended.putIfAbsent(database, true) == null;
+    suspended.remove(database);
+    return true;
   }
 
-  public boolean isSuspended() {
-    return suspended.get();
+  public boolean isSuspended(final Database database) {
+    final Boolean s = suspended.get(database);
+    return s != null ? s : false;
   }
 
   public void closeAndJoin() throws InterruptedException {
@@ -130,5 +145,16 @@ public class PageManagerFlushThread extends Thread {
       }
     }
     return null;
+  }
+
+  public void removeAllPagesOfDatabase(final Database database) {
+    for (final Iterator<List<MutablePage>> itPages = queue.iterator(); itPages.hasNext(); ) {
+      final List<MutablePage> pages = itPages.next();
+      for (final Iterator<MutablePage> it = pages.iterator(); it.hasNext(); ) {
+        final MutablePage page = it.next();
+        if (page.getPageId().getDatabase().equals(database))
+          it.remove();
+      }
+    }
   }
 }

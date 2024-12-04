@@ -100,7 +100,7 @@ public class FileContentResponse extends HAAbstractCommand {
         for (int i = 0; i < totalPages; ++i) {
           final PageId pageId = new PageId(database, file.getFileId(), pageFromInclusive + i);
 
-          final MutablePage page = new MutablePage(pageManager, pageId, pageSize);
+          final MutablePage page = new MutablePage(pageId, pageSize);
           System.arraycopy(pagesContent.getContent(), i * pageSize, page.getTrackable().getContent(), 0, pageSize);
           page.loadMetadata();
           pageManager.overwritePage(page);

@@ -29,15 +29,13 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class CachedPage {
-  private final PageManager pageManager;
-  private final PageId      pageId;
-  private final Binary      content;
-  private final int         size;
-  private       int         version;
-  private       long        lastAccessed = System.currentTimeMillis();
+  private final PageId pageId;
+  private final Binary content;
+  private final int    size;
+  private       int    version;
+  private       long   lastAccessed = System.currentTimeMillis();
 
   public CachedPage(final MutablePage page, final boolean copyBuffer) {
-    this.pageManager = page.manager;
     this.pageId = page.pageId;
     this.content = copyBuffer ? page.content.copy() : page.content;
     this.size = page.size;
@@ -45,7 +43,6 @@ public class CachedPage {
   }
 
   public CachedPage(final PageManager pageManager, final PageId pageId, final int size) {
-    this.pageManager = pageManager;
     this.pageId = pageId;
     this.content = new Binary(size).setAutoResizable(false);
     this.size = size;
@@ -57,13 +54,13 @@ public class CachedPage {
   }
 
   public ImmutablePage useAsImmutable() {
-    return new ImmutablePage(pageManager, pageId, size, content.getContent(), version, content.size());
+    return new ImmutablePage(pageId, size, content.getContent(), version, content.size());
   }
 
   public MutablePage useAsMutable() {
     final byte[] array = this.content.getByteBuffer().array();
     // COPY THE CONTENT, SO CHANGES DOES NOT AFFECT IMMUTABLE COPY
-    return new MutablePage(pageManager, pageId, size, Arrays.copyOf(array, array.length), version, content.size());
+    return new MutablePage(pageId, size, Arrays.copyOf(array, array.length), version, content.size());
   }
 
   public long getLastAccessed() {

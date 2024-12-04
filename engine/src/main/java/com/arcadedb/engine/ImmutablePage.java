@@ -34,8 +34,8 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ImmutablePage extends BasePage {
-  public ImmutablePage(final PageManager manager, final PageId pageId, final int size, final byte[] content, final int version, final int contentSize) {
-    super(manager, pageId, size, content, version, contentSize);
+  public ImmutablePage(final PageId pageId, final int size, final byte[] content, final int version, final int contentSize) {
+    super(pageId, size, content, version, contentSize);
   }
 
   /**
@@ -52,6 +52,6 @@ public class ImmutablePage extends BasePage {
   public MutablePage modify() {
     final byte[] array = this.content.getByteBuffer().array();
     // COPY THE CONTENT, SO CHANGES DOES NOT AFFECT IMMUTABLE COPY
-    return new MutablePage(manager, pageId, size, Arrays.copyOf(array, array.length), version, content.size());
+    return new MutablePage(pageId, size, Arrays.copyOf(array, array.length), version, content.size());
   }
 }
