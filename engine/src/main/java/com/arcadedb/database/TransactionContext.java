@@ -492,7 +492,7 @@ public class TransactionContext implements Transaction {
         final PaginatedComponentFile file = (PaginatedComponentFile) database.getFileManager().getFile(p.fileId);
         final int pageSize = file.getPageSize();
 
-        final PageId pageId = new PageId(p.fileId, p.pageNumber);
+        final PageId pageId = new PageId(database, p.fileId, p.pageNumber);
 
         final boolean isNew = p.pageNumber >= file.getTotalPages();
 

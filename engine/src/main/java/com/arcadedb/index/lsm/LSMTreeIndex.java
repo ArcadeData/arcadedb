@@ -547,9 +547,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
         for (int i = 0; i < mutable.getTotalPages() - startingFromPage; ++i) {
           final BasePage currentPage = database.getTransaction()
-              .getPage(new PageId(mutable.getFileId(), i + startingFromPage), pageSize);
+              .getPage(new PageId(database, mutable.getFileId(), i + startingFromPage), pageSize);
 
-// COPY THE ENTIRE PAGE TO THE NEW INDEX
+          // COPY THE ENTIRE PAGE TO THE NEW INDEX
           final MutablePage newPage = newMutableIndex.createNewPage();
 
           final ByteBuffer pageContent = currentPage.getContent();

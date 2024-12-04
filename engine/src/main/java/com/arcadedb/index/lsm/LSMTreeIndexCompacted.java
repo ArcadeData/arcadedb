@@ -48,16 +48,19 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   /**
    * Called at cloning time.
    */
-  public LSMTreeIndexCompacted(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
+  public LSMTreeIndexCompacted(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name,
+      final boolean unique, final String filePath,
       final Type[] keyTypes, final byte[] binaryKeyTypes, final int pageSize) throws IOException {
-    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, binaryKeyTypes, pageSize,
+    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, binaryKeyTypes,
+        pageSize,
         LSMTreeIndexMutable.CURRENT_VERSION);
   }
 
   /**
    * Called at load time (1st page only).
    */
-  protected LSMTreeIndexCompacted(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
+  protected LSMTreeIndexCompacted(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name,
+      final boolean unique, final String filePath,
       final int id, final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
     super(mainIndex, database, name, unique, filePath, id, mode, pageSize, version);
   }
@@ -84,7 +87,8 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     }
   }
 
-  public MutablePage appendDuringCompaction(final Binary keyValueContent, MutablePage currentPage, final TrackableBinary currentPageBuffer,
+  public MutablePage appendDuringCompaction(final Binary keyValueContent, MutablePage currentPage,
+      final TrackableBinary currentPageBuffer,
       final int compactedPageNumberOfSeries, final Object[] keys, final RID[] rids) throws IOException, InterruptedException {
     if (keys == null)
       throw new IllegalArgumentException("Keys parameter is null");
@@ -107,7 +111,8 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
     int keyValueFreePosition = getValuesFreePosition(currentPage);
 
-    if (keyValueFreePosition - (getHeaderSize(pageNum) + (count * INT_SERIALIZED_SIZE) + INT_SERIALIZED_SIZE) < keyValueContent.size()) {
+    if (keyValueFreePosition - (getHeaderSize(pageNum) + (count * INT_SERIALIZED_SIZE) + INT_SERIALIZED_SIZE)
+        < keyValueContent.size()) {
       // NO SPACE LEFT, CREATE A NEW PAGE AND FLUSH TO THE DATABASE THE CURRENT ONE (NO WAL)
       database.getPageManager().updatePageVersion(currentPage, true);
       database.getPageManager().writePages(Collections.singletonList(currentPage), true);
@@ -133,7 +138,8 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     return currentPage;
   }
 
-  protected LookupResult compareKey(final Binary currentPageBuffer, final int startIndexArray, final Object[] convertedKeys, final int mid, final int count,
+  protected LookupResult compareKey(final Binary currentPageBuffer, final int startIndexArray, final Object[] convertedKeys,
+      final int mid, final int count,
       final int purpose) {
 
     final int result = compareKey(currentPageBuffer, startIndexArray, convertedKeys, mid, count);
@@ -148,13 +154,15 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       currentPageBuffer.position(currentPageBuffer.getInt(startIndexArray + (mid * INT_SERIALIZED_SIZE)));
       final int keySerializedSize = getSerializedKeySize(currentPageBuffer, convertedKeys.length);
 
-      return new LookupResult(true, false, mid, new int[] { currentPageBuffer.getInt(startIndexArray + (mid * INT_SERIALIZED_SIZE)) + keySerializedSize });
+      return new LookupResult(true, false, mid,
+          new int[] { currentPageBuffer.getInt(startIndexArray + (mid * INT_SERIALIZED_SIZE)) + keySerializedSize });
     } else if (purpose == 1) {
       // RETRIEVE
       currentPageBuffer.position(currentPageBuffer.getInt(startIndexArray + (mid * INT_SERIALIZED_SIZE)));
       final int keySerializedSize = getSerializedKeySize(currentPageBuffer, convertedKeys.length);
 
-      return new LookupResult(true, false, mid, new int[] { currentPageBuffer.getInt(startIndexArray + (mid * INT_SERIALIZED_SIZE)) + keySerializedSize });
+      return new LookupResult(true, false, mid,
+          new int[] { currentPageBuffer.getInt(startIndexArray + (mid * INT_SERIALIZED_SIZE)) + keySerializedSize });
     }
 
     // TODO: SET CORRECT VALUE POSITION FOR PARTIAL KEYS
@@ -165,7 +173,8 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     // NEW FILE, CREATE HEADER PAGE
     final int txPageCounter = getTotalPages();
 
-    final MutablePage currentPage = new MutablePage(database.getPageManager(), new PageId(getFileId(), txPageCounter), pageSize);
+    final MutablePage currentPage = new MutablePage(database.getPageManager(), new PageId(database, getFileId(), txPageCounter),
+        pageSize);
 
     int pos = 0;
     currentPage.writeInt(pos, currentPage.getMaxContentSize());
@@ -194,30 +203,33 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     return currentPage;
   }
 
-  public List<LSMTreeIndexUnderlyingCompactedSeriesCursor> newIterators(final boolean ascendingOrder, final Object[] fromKeys, final Object[] toKeys)
+  public List<LSMTreeIndexUnderlyingCompactedSeriesCursor> newIterators(final boolean ascendingOrder, final Object[] fromKeys,
+      final Object[] toKeys)
       throws IOException {
-    final BasePage mainPage = database.getTransaction().getPage(new PageId(file.getFileId(), 0), pageSize);
+    final BasePage mainPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), 0), pageSize);
     final int mainPageCount = getCompactedPageNumberOfSeries(mainPage);
 
     final int totalPages = getTotalPages();
 
     if (mainPageCount == 0) {
       // NO PAGES. THIS SHOULD NEVER HAPPEN
-      LogManager.instance().log(this, Level.WARNING, "Compacted index '%s' main page 0 has totalPages=%d", null, getName(), totalPages);
+      LogManager.instance()
+          .log(this, Level.WARNING, "Compacted index '%s' main page 0 has totalPages=%d", null, getName(), totalPages);
       return Collections.emptyList();
     }
 
     if (mainPageCount > totalPages) {
       // PAGES > TOTAL PAGES. THIS SHOULD NEVER HAPPEN
       LogManager.instance()
-          .log(this, Level.WARNING, "Compacted index '%s' main page 0 has an invalid pageNumber=%d totalPages=%d", null, getName(), mainPageCount, totalPages);
+          .log(this, Level.WARNING, "Compacted index '%s' main page 0 has an invalid pageNumber=%d totalPages=%d", null, getName(),
+              mainPageCount, totalPages);
       return Collections.emptyList();
     }
 
     final List<LSMTreeIndexUnderlyingCompactedSeriesCursor> iterators = new ArrayList<>();
 
     for (int rootPageNumber = mainPageCount - 1; rootPageNumber > 0; ) {
-      final BasePage lastPage = database.getTransaction().getPage(new PageId(file.getFileId(), rootPageNumber), pageSize);
+      final BasePage lastPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), rootPageNumber), pageSize);
 
       final int rootPageCount = getCompactedPageNumberOfSeries(lastPage);
 
@@ -229,14 +241,16 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
       rootPageNumber -= rootPageCount;
 
-      final PageId pageId = new PageId(file.getFileId(), rootPageNumber);
+      final PageId pageId = new PageId(database, file.getFileId(), rootPageNumber);
       final BasePage rootPage = database.getTransaction().getPage(pageId, pageSize);
 
       if (pageId.getPageNumber() > 0) {
         final int rootPageId = getCompactedPageNumberOfSeries(rootPage);
         if (rootPageId != 0) {
           // COMPACTED PAGE NUMBER IS NOT 0. THIS SHOULD NEVER HAPPEN
-          LogManager.instance().log(this, Level.WARNING, "Compacted index '%s' root page %s has an invalid pageNumber=%d", null, getName(), pageId, rootPageId);
+          LogManager.instance()
+              .log(this, Level.WARNING, "Compacted index '%s' root page %s has an invalid pageNumber=%d", null, getName(), pageId,
+                  rootPageId);
           return Collections.emptyList();
         }
       }
@@ -250,14 +264,17 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
         final Binary rootPageBuffer = new Binary(rootPage.slice());
 
         LookupResult resultInRootPage = lookupInPage(rootPageNumber, rootPageCount + 1, rootPageBuffer, fromKeys, 1);
-        iterator = searchInCurrentPage(ascendingOrder, fromKeys, rootPageNumber, rootPageCount, rootPage, lastPageNumber, resultInRootPage);
+        iterator = searchInCurrentPage(ascendingOrder, fromKeys, rootPageNumber, rootPageCount, rootPage, lastPageNumber,
+            resultInRootPage);
         if (iterator == null) {
           // LOOK FOR TO KEY IF ANY
           resultInRootPage = lookupInPage(rootPageNumber, rootPageCount + 1, rootPageBuffer, toKeys, 1);
-          iterator = searchInCurrentPage(ascendingOrder, toKeys, rootPageNumber, rootPageCount, rootPage, lastPageNumber, resultInRootPage);
+          iterator = searchInCurrentPage(ascendingOrder, toKeys, rootPageNumber, rootPageCount, rootPage, lastPageNumber,
+              resultInRootPage);
         }
       } else
-        iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, binaryKeyTypes, ascendingOrder, -1);
+        iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, binaryKeyTypes,
+            ascendingOrder, -1);
 
       if (iterator != null)
         iterators.add(iterator);
@@ -268,7 +285,8 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     return iterators;
   }
 
-  private LSMTreeIndexUnderlyingCompactedSeriesCursor searchInCurrentPage(boolean ascendingOrder, Object[] convertedFromKeys, int rootPageNumber,
+  private LSMTreeIndexUnderlyingCompactedSeriesCursor searchInCurrentPage(boolean ascendingOrder, Object[] convertedFromKeys,
+      int rootPageNumber,
       int rootPageCount, BasePage rootPage, int lastPageNumber, LookupResult resultInRootPage) throws IOException {
     LSMTreeIndexUnderlyingCompactedSeriesCursor iterator = null;
     if (!resultInRootPage.outside) {
@@ -285,10 +303,12 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
       final int firstPageNumber = rootPageNumber + 1 + pageInSeries;
 
-      final BasePage firstPage = database.getTransaction().getPage(new PageId(rootPage.getPageId().getFileId(), firstPageNumber), pageSize);
+      final BasePage firstPage = database.getTransaction()
+          .getPage(new PageId(database, rootPage.getPageId().getFileId(), firstPageNumber), pageSize);
       final Binary firstPageBuffer = new Binary(firstPage.slice());
 
-      final LookupResult result = lookupInPage(firstPageNumber, getCount(firstPage), firstPageBuffer, convertedFromKeys, ascendingOrder ? 2 : 3);
+      final LookupResult result = lookupInPage(firstPageNumber, getCount(firstPage), firstPageBuffer, convertedFromKeys,
+          ascendingOrder ? 2 : 3);
 
       int posInPage;
 
@@ -306,34 +326,38 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
           ++posInPage;
       }
 
-      iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, binaryKeyTypes, ascendingOrder, posInPage);
+      iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, binaryKeyTypes,
+          ascendingOrder, posInPage);
     }
     return iterator;
   }
 
-  protected void searchInCompactedIndex(final Object[] originalKeys, final Object[] convertedKeys, final int limit, final Set<IndexCursorEntry> set,
+  protected void searchInCompactedIndex(final Object[] originalKeys, final Object[] convertedKeys, final int limit,
+      final Set<IndexCursorEntry> set,
       final Set<RID> removedRIDs) throws IOException {
     // JUMP TO ROOT PAGES BEFORE LOADING THE PAGE WITH THE KEY/VALUES
-    final BasePage mainPage = database.getTransaction().getPage(new PageId(file.getFileId(), 0), pageSize);
+    final BasePage mainPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), 0), pageSize);
     final int mainPageCount = getCompactedPageNumberOfSeries(mainPage);
 
     final int totalPages = getTotalPages();
 
     if (mainPageCount == 0) {
       // NO PAGES. THIS SHOULD NEVER HAPPEN
-      LogManager.instance().log(this, Level.WARNING, "Compacted index '%s' main page 0 has totalPages=%d", null, getName(), totalPages);
+      LogManager.instance()
+          .log(this, Level.WARNING, "Compacted index '%s' main page 0 has totalPages=%d", null, getName(), totalPages);
       return;
     }
 
     if (mainPageCount > totalPages) {
       // PAGES > TOTAL PAGES. THIS SHOULD NEVER HAPPEN
       LogManager.instance()
-          .log(this, Level.WARNING, "Compacted index '%s' main page 0 has an invalid pageNumber=%d totalPages=%d", null, getName(), mainPageCount, totalPages);
+          .log(this, Level.WARNING, "Compacted index '%s' main page 0 has an invalid pageNumber=%d totalPages=%d", null, getName(),
+              mainPageCount, totalPages);
       return;
     }
 
     for (int pageNumber = mainPageCount - 1; pageNumber > 0; ) {
-      final BasePage lastPage = database.getTransaction().getPage(new PageId(file.getFileId(), pageNumber), pageSize);
+      final BasePage lastPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageNumber), pageSize);
 
       final int rootPageCount = getCompactedPageNumberOfSeries(lastPage);
 
@@ -345,20 +369,23 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
       pageNumber -= rootPageCount;
 
-      final PageId pageId = new PageId(file.getFileId(), pageNumber);
+      final PageId pageId = new PageId(database, file.getFileId(), pageNumber);
       final BasePage rootPage = database.getTransaction().getPage(pageId, pageSize);
 
       if (pageId.getPageNumber() > 0) {
         final int rootPageId = getCompactedPageNumberOfSeries(rootPage);
         if (rootPageId != 0) {
           // COMPACTED PAGE NUMBER IS NOT 0. THIS SHOULD NEVER HAPPEN
-          LogManager.instance().log(this, Level.WARNING, "Compacted index '%s' root page %s has an invalid pageNumber=%d", null, getName(), pageId, rootPageId);
+          LogManager.instance()
+              .log(this, Level.WARNING, "Compacted index '%s' root page %s has an invalid pageNumber=%d", null, getName(), pageId,
+                  rootPageId);
           return;
         }
       }
 
       final Binary rootPageBuffer = new Binary(rootPage.slice());
-      final LookupResult resultInRootPage = lookupInPage(rootPage.getPageId().getPageNumber(), rootPageCount + 1, rootPageBuffer, convertedKeys, 0);
+      final LookupResult resultInRootPage = lookupInPage(rootPage.getPageId().getPageNumber(), rootPageCount + 1, rootPageBuffer,
+          convertedKeys, 0);
 
       if (!resultInRootPage.outside) {
         // IT'S IN PAGE RANGE
@@ -373,11 +400,12 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
           --pageInSeries;
 
         final int pageNum = rootPage.getPageId().getPageNumber() + 1 + pageInSeries;
-        final BasePage currentPage = database.getTransaction().getPage(new PageId(file.getFileId(), pageNum), pageSize);
+        final BasePage currentPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageNum), pageSize);
         final Binary currentPageBuffer = new Binary(currentPage.slice());
         final int count = getCount(currentPage);
 
-        if (!lookupInPageAndAddInResultset(currentPage, currentPageBuffer, count, originalKeys, convertedKeys, limit, set, removedRIDs))
+        if (!lookupInPageAndAddInResultset(currentPage, currentPageBuffer, count, originalKeys, convertedKeys, limit, set,
+            removedRIDs))
           return;
       }
 
@@ -390,7 +418,8 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   }
 
   protected MutablePage setCompactedTotalPages() throws IOException {
-    final MutablePage mainPage = database.getPageManager().getMutablePage(new PageId(file.getFileId(), 0), pageSize, false, true);
+    final MutablePage mainPage = database.getPageManager()
+        .getMutablePage(new PageId(database, file.getFileId(), 0), pageSize, false, true);
     mainPage.writeInt(INT_SERIALIZED_SIZE + INT_SERIALIZED_SIZE + BYTE_SERIALIZED_SIZE, getTotalPages());
     return mainPage;
   }

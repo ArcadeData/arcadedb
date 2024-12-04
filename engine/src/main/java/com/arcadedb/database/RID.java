@@ -216,7 +216,7 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
   }
 
   public PageId getPageId() {
-    return new PageId(bucketId,
+    return new PageId(database, bucketId,
         (int) (getPosition() / ((LocalBucket) database.getSchema().getBucketById(bucketId)).getMaxRecordsInPage()));
   }
 }

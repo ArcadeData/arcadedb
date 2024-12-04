@@ -69,13 +69,13 @@ public class FileContentRequest extends HAAbstractCommand {
           toPageInclusive = totalPages - 1;
 
 //        db.getPageManager().suspendFlushAndExecute(() -> {
-          for (int i = fromPageInclusive; i <= toPageInclusive && pages.get() < CHUNK_MAX_PAGES; ++i) {
-            final PageId pageId = new PageId(fileId, i);
-            final ImmutablePage page = db.getPageManager().getImmutablePage(pageId, pageSize, false, false);
-            pagesContent.putByteArray(page.getContent().array(), pageSize);
+        for (int i = fromPageInclusive; i <= toPageInclusive && pages.get() < CHUNK_MAX_PAGES; ++i) {
+          final PageId pageId = new PageId(db, fileId, i);
+          final ImmutablePage page = db.getPageManager().getImmutablePage(pageId, pageSize, false, false);
+          pagesContent.putByteArray(page.getContent().array(), pageSize);
 
-            pages.incrementAndGet();
-          }
+          pages.incrementAndGet();
+        }
 //        });
 
         final boolean last = pages.get() > toPageInclusive;

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.lsm;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.PageId;
@@ -29,7 +30,8 @@ public class LSMTreeIndexUnderlyingCompactedSeriesCursor extends LSMTreeIndexUnd
   private final int                              lastPageNumber;
   private       LSMTreeIndexUnderlyingPageCursor pageCursor;
 
-  public LSMTreeIndexUnderlyingCompactedSeriesCursor(final LSMTreeIndexCompacted index, final int firstPageNumber, final int lastPageNumber,
+  public LSMTreeIndexUnderlyingCompactedSeriesCursor(final LSMTreeIndexCompacted index, final int firstPageNumber,
+      final int lastPageNumber,
       final byte[] keyTypes, final boolean ascendingOrder, final int posInPage) {
     super(index, keyTypes, keyTypes.length, ascendingOrder);
     this.lastPageNumber = lastPageNumber;
@@ -58,7 +60,9 @@ public class LSMTreeIndexUnderlyingCompactedSeriesCursor extends LSMTreeIndexUnd
         currentPageNumber <= lastPageNumber :
         currentPageNumber >= lastPageNumber; currentPageNumber += ascendingOrder ? 1 : -1) {
       try {
-        final BasePage page = index.getDatabase().getTransaction().getPage(new PageId(index.getFileId(), currentPageNumber), index.getPageSize());
+        final DatabaseInternal database = index.getDatabase();
+        final BasePage page = database.getTransaction()
+            .getPage(new PageId(database, index.getFileId(), currentPageNumber), index.getPageSize());
         final int count = index.getCount(page);
 
         pageCursor = new LSMTreeIndexUnderlyingPageCursor(index, page, posInPage == -1 ? ascendingOrder ? -1 : count : posInPage,

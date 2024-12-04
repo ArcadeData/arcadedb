@@ -86,22 +86,23 @@ public class DatabaseComparator {
       // AT THIS POINT BOTH BUCKETS HAVE THE SAME PAGES
       final int pageSize = bucket1.getPageSize();
       for (int i = 0; i < bucket1.getTotalPages(); ++i) {
-        final PageId pageId = new PageId(bucket1.getFileId(), i);
+        final PageId pageId1 = new PageId(bucket1.getDatabase(), bucket1.getFileId(), i);
+        final PageId pageId2 = new PageId(bucket2.getDatabase(), bucket2.getFileId(), i);
 
         final ImmutablePage page1;
         final ImmutablePage page2;
 
         try {
-          page1 = db1.getPageManager().getImmutablePage(pageId, pageSize, false, true);
+          page1 = db1.getPageManager().getImmutablePage(pageId1, pageSize, false, true);
         } catch (final IOException e) {
-          throw new DatabaseAreNotIdentical("Error on reading page %s from bucket '%s' DB1 (cause=%s)", pageId, bucket1.getName(),
+          throw new DatabaseAreNotIdentical("Error on reading page %s from bucket '%s' DB1 (cause=%s)", pageId1, bucket1.getName(),
               e.toString());
         }
 
         try {
-          page2 = db2.getPageManager().getImmutablePage(pageId, pageSize, false, true);
+          page2 = db2.getPageManager().getImmutablePage(pageId2, pageSize, false, true);
         } catch (final IOException e) {
-          throw new DatabaseAreNotIdentical("Error on reading page %s from bucket '%s' DB2 (cause=%s)", pageId, bucket2.getName(),
+          throw new DatabaseAreNotIdentical("Error on reading page %s from bucket '%s' DB2 (cause=%s)", pageId2, bucket2.getName(),
               e.toString());
         }
 
@@ -109,10 +110,10 @@ public class DatabaseComparator {
 
         if (page1.getVersion() != page2.getVersion())
           throw new DatabaseAreNotIdentical("Page %s has different versions on databases. DB1 %d <> DB2 %d (sameContent=%s)",
-              pageId, page1.getVersion(), page2.getVersion(), sameContent);
+              pageId1, page1.getVersion(), page2.getVersion(), sameContent);
 
         if (!sameContent)
-          throw new DatabaseAreNotIdentical("Page %s has different content on databases", pageId);
+          throw new DatabaseAreNotIdentical("Page %s has different content on databases", pageId1);
 
         db2.getPageManager().removePageFromCache(page2.getPageId());
       }

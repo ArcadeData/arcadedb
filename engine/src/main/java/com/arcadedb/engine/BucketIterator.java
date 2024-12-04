@@ -34,9 +34,9 @@ import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 
 public class BucketIterator implements Iterator<Record> {
   private final static int              PREFETCH_SIZE = 1_024;
-  private final DatabaseInternal database;
-  private final LocalBucket      bucket;
-  final         Record[]         nextBatch     = new Record[PREFETCH_SIZE];
+  private final        DatabaseInternal database;
+  private final        LocalBucket      bucket;
+  final                Record[]         nextBatch     = new Record[PREFETCH_SIZE];
   private              int              prefetchIndex = 0;
   final                long             limit;
   int      nextPageNumber      = 0;
@@ -67,7 +67,7 @@ public class BucketIterator implements Iterator<Record> {
     nextBatch[prefetchIndex] = position.getRecord();
     nextPageNumber = (int) (position.getPosition() / bucket.getMaxRecordsInPage());
     currentRecordInPage = (int) (position.getPosition() % bucket.getMaxRecordsInPage()) + 1;
-    currentPage = database.getTransaction().getPage(new PageId(position.getBucketId(), nextPageNumber), bucket.pageSize);
+    currentPage = database.getTransaction().getPage(new PageId(database, position.getBucketId(), nextPageNumber), bucket.pageSize);
     recordCountInCurrentPage = currentPage.readShort(LocalBucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
   }
 
@@ -104,7 +104,8 @@ public class BucketIterator implements Iterator<Record> {
           if (nextPageNumber > totalPages) {
             return null;
           }
-          currentPage = database.getTransaction().getPage(new PageId(bucket.file.getFileId(), nextPageNumber), bucket.pageSize);
+          currentPage = database.getTransaction()
+              .getPage(new PageId(database, bucket.file.getFileId(), nextPageNumber), bucket.pageSize);
           recordCountInCurrentPage = currentPage.readShort(LocalBucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
         }
 

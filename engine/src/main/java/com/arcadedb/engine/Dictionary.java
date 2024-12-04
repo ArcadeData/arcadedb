@@ -47,7 +47,8 @@ public class Dictionary extends PaginatedComponent {
 
   public static class PaginatedComponentFactoryHandler implements ComponentFactory.PaginatedComponentFactoryHandler {
     @Override
-    public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int fileId,
+    public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath,
+        final int fileId,
         final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
       return new Dictionary(database, name, filePath, fileId, mode, pageSize, version);
     }
@@ -56,12 +57,13 @@ public class Dictionary extends PaginatedComponent {
   /**
    * Called at creation time.
    */
-  public Dictionary(final DatabaseInternal database, final String name, final String filePath, final ComponentFile.MODE mode, final int pageSize)
+  public Dictionary(final DatabaseInternal database, final String name, final String filePath, final ComponentFile.MODE mode,
+      final int pageSize)
       throws IOException {
     super(database, name, filePath, DICT_EXT, mode, pageSize, CURRENT_VERSION);
     if (file.getSize() == 0) {
       // NEW FILE, CREATE HEADER PAGE
-      final MutablePage header = database.getTransaction().addPage(new PageId(file.getFileId(), 0), pageSize);
+      final MutablePage header = database.getTransaction().addPage(new PageId(database, file.getFileId(), 0), pageSize);
       updateCounters(header);
     }
   }
@@ -69,7 +71,8 @@ public class Dictionary extends PaginatedComponent {
   /**
    * Called at load time.
    */
-  public Dictionary(final DatabaseInternal database, final String name, final String filePath, final int id, final ComponentFile.MODE mode, final int pageSize,
+  public Dictionary(final DatabaseInternal database, final String name, final String filePath, final int id,
+      final ComponentFile.MODE mode, final int pageSize,
       final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
     reload();
@@ -165,9 +168,11 @@ public class Dictionary extends PaginatedComponent {
 
       for (final DocumentType t : database.getSchema().getTypes())
         if (oldName.equals(t.getName()))
-          throw new IllegalArgumentException("Cannot rename the item '" + oldName + "' in the dictionary because it has been used as a type name");
+          throw new IllegalArgumentException(
+              "Cannot rename the item '" + oldName + "' in the dictionary because it has been used as a type name");
 
-      final MutablePage header = database.getTransaction().getPageToModify(new PageId(file.getFileId(), 0), pageSize, false);
+      final MutablePage header = database.getTransaction()
+          .getPageToModify(new PageId(database, file.getFileId(), 0), pageSize, false);
 
       header.clearContent();
       updateCounters(header);
@@ -203,7 +208,7 @@ public class Dictionary extends PaginatedComponent {
 
     final MutablePage header;
     try {
-      header = database.getTransaction().getPageToModify(new PageId(file.getFileId(), 0), pageSize, false);
+      header = database.getTransaction().getPageToModify(new PageId(database, file.getFileId(), 0), pageSize, false);
 
       if (header.getAvailableContentSize() < Binary.SHORT_SERIALIZED_SIZE + property.length)
         throw new DatabaseMetadataException("No space left in dictionary file (items=" + dictionary.size() + ")");
@@ -224,12 +229,12 @@ public class Dictionary extends PaginatedComponent {
     if (file.getSize() == 0) {
       // NEW FILE, CREATE HEADER PAGE
       database.transaction(() -> {
-        final MutablePage header = database.getTransaction().addPage(new PageId(file.getFileId(), 0), pageSize);
+        final MutablePage header = database.getTransaction().addPage(new PageId(database, file.getFileId(), 0), pageSize);
         updateCounters(header);
       });
 
     } else {
-      final BasePage header = database.getTransaction().getPage(new PageId(file.getFileId(), 0), pageSize);
+      final BasePage header = database.getTransaction().getPage(new PageId(database, file.getFileId(), 0), pageSize);
 
       final List<String> newDictionary = new CopyOnWriteArrayList<>();
 
