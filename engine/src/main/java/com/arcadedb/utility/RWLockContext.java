@@ -24,9 +24,13 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.locks.*;
 
 public class RWLockContext {
-  private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock(true);
+  private final ReentrantReadWriteLock lock          = new ReentrantReadWriteLock(true);
+  private       boolean                enableLocking = true;
 
   protected ReentrantReadWriteLock.ReadLock readLock() {
+    if (!enableLocking)
+      return null;
+
     final ReentrantReadWriteLock.ReadLock rl = lock.readLock();
     rl.lock();
     return rl;
@@ -38,6 +42,9 @@ public class RWLockContext {
   }
 
   protected ReentrantReadWriteLock.WriteLock writeLock() {
+    if (!enableLocking)
+      return null;
+
     final ReentrantReadWriteLock.WriteLock wl = lock.writeLock();
     wl.lock();
     return wl;
@@ -86,5 +93,13 @@ public class RWLockContext {
     } finally {
       writeUnlock(wl);
     }
+  }
+
+  protected void setLockingEnabled(final boolean enabled) {
+    this.enableLocking = enabled;
+  }
+
+  protected boolean isLockingEnabled() {
+    return enableLocking;
   }
 }

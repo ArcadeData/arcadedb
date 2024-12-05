@@ -125,7 +125,7 @@ public enum GlobalConfiguration {
   }, null, Set.of("default", "high-performance", "low-ram", "low-cpu")),
 
   TEST("arcadedb.test", SCOPE.JVM,
-      "Tells if it is running in test mode. This enables the calling of callbacks for testing purpose ", Boolean.class, false),
+      "Tells if it is running in test mode. This enables the calling of callbacks for testing purpose", Boolean.class, false),
 
   MAX_PAGE_RAM("arcadedb.maxPageRAM", SCOPE.DATABASE, "Maximum amount of pages (in MB) to keep in RAM", Long.class, 4 * 1024, // 4GB
       new Callable<>() {
@@ -234,6 +234,10 @@ public enum GlobalConfiguration {
   TX_RETRY_DELAY("arcadedb.txRetryDelay", SCOPE.DATABASE,
       "Maximum amount of milliseconds to compute a random number to wait for the next retry. This setting is helpful in case of high concurrency on the same pages (multi-thread insertion over the same bucket)",
       Integer.class, 100),
+
+  BACKUP_ENABLED("arcadedb.backup.enabled", SCOPE.DATABASE,
+      "Allow a database to be backup. Disabling backup gives a huge boost in performance because no lock will be used for every operations",
+      Boolean.class, true),
 
   // SQL
   SQL_STATEMENT_CACHE("arcadedb.sqlStatementCache", SCOPE.DATABASE, "Maximum number of parsed statements to keep in cache",
