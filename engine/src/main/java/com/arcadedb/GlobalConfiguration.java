@@ -18,6 +18,7 @@
  */
 package com.arcadedb;
 
+import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinaryComparator;
@@ -112,6 +113,8 @@ public enum GlobalConfiguration {
         HA_REPLICATION_QUEUE_SIZE.setValue(8);
         ASYNC_OPERATIONS_QUEUE_IMPL.setValue("standard");
         SERVER_HTTP_IO_THREADS.setValue(cores > 8 ? 4 : 2);
+
+        PageManager.INSTANCE.configure();
 
       } else if (v.equalsIgnoreCase("low-cpu")) {
         ASYNC_WORKER_THREADS.setValue(1);

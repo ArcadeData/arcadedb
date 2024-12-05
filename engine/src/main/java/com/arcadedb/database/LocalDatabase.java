@@ -1668,8 +1668,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (!open)
         return null;
 
-      open = false;
-
       try {
         if (async != null)
           async.close();
@@ -1677,6 +1675,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         LogManager.instance()
             .log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database '%s'", e, name);
       }
+
+      PageManager.INSTANCE.flushAllPagesOfDatabase(this);
+
+      open = false;
+
+      PageManager.INSTANCE.removeAllReadPagesOfDatabase(this);
 
       try {
         final List<DatabaseContext.DatabaseContextTL> dbContexts = DatabaseContext.INSTANCE.removeAllContexts(databasePath);
@@ -1701,7 +1705,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         e.close();
 
       try {
-        PageManager.INSTANCE.flushAllPagesOfDatabase(this);
         schema.close();
         fileManager.close();
         transactionManager.close(drop);
@@ -1801,11 +1804,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       } catch (final RuntimeException e) {
         open = false;
-        PageManager.INSTANCE.removeAllPagesOfDatabase(this);
+        PageManager.INSTANCE.removeAllReadPagesOfDatabase(this);
         throw e;
       } catch (final Exception e) {
         open = false;
-        PageManager.INSTANCE.removeAllPagesOfDatabase(this);
+        PageManager.INSTANCE.removeAllReadPagesOfDatabase(this);
         throw new DatabaseOperationException("Error on creating new database instance", e);
       }
     } catch (final Exception e) {

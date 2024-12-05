@@ -38,6 +38,7 @@ public class PageManagerFlushThread extends Thread {
   private final    String                                logContext;
   private volatile boolean                               running   = true;
   private final    ConcurrentHashMap<Database, Boolean>  suspended = new ConcurrentHashMap<>(); // USED DURING BACKUP
+  private final    Object                                flushLock = new Object();
 
   public PageManagerFlushThread(final PageManager pageManager, final ContextConfiguration configuration) {
     super("ArcadeDB AsyncFlush");
@@ -79,38 +80,48 @@ public class PageManagerFlushThread extends Thread {
     }
   }
 
+  /**
+   * Browse all the pages and flush to disk the pages that belong to a specific database
+   *
+   * @param database
+   */
   protected void flushAllPagesOfDatabase(final Database database) {
-    final int elements = queue.size();
-    for (int i = 0; i < elements; i++) {
-      try {
-        flushPagesFromQueueToDisk(database, 0L);
-      } catch (InterruptedException e) {
-        Thread.interrupted();
-        return;
-      } catch (Exception e) {
-        // IGNORE IT
-        LogManager.instance().log(this, Level.WARNING, "Error on flushing pages to disk for database '%s'", database.getName());
+    synchronized (flushLock) {
+      for (final Iterator<List<MutablePage>> itPages = queue.iterator(); itPages.hasNext(); ) {
+        final List<MutablePage> pages = itPages.next();
+        for (final Iterator<MutablePage> it = pages.iterator(); it.hasNext(); ) {
+          final MutablePage page = it.next();
+          if (page.getPageId().getDatabase().equals(database))
+            try {
+              pageManager.flushPage(page);
+              it.remove();
+            } catch (final Exception e) {
+              LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
+            }
+        }
       }
     }
   }
 
   protected void flushPagesFromQueueToDisk(final Database database, final long timeout) throws InterruptedException, IOException {
-    final List<MutablePage> pages = queue.poll(timeout, TimeUnit.MILLISECONDS);
+    synchronized (flushLock) {
+      final List<MutablePage> pages = queue.poll(timeout, TimeUnit.MILLISECONDS);
 
-    if (pages != null) {
-      if (pages.isEmpty())
-        // EMPTY PAGES IS A SPECIAL CONTENT FOR SHUTDOWN
-        running = false;
-      else
-        for (final MutablePage page : pages) {
-          if (database == null || page.getPageId().getDatabase().equals(database))
-            try {
-              pageManager.flushPage(page);
-            } catch (final DatabaseMetadataException e) {
-              // FILE DELETED, CONTINUE WITH THE NEXT PAGES
-              LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
-            }
-        }
+      if (pages != null) {
+        if (pages.isEmpty())
+          // EMPTY PAGES IS A SPECIAL CONTENT FOR SHUTDOWN
+          running = false;
+        else
+          for (final MutablePage page : pages) {
+            if (database == null || page.getPageId().getDatabase().equals(database))
+              try {
+                pageManager.flushPage(page);
+              } catch (final DatabaseMetadataException e) {
+                // FILE DELETED, CONTINUE WITH THE NEXT PAGES
+                LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
+              }
+          }
+      }
     }
   }
 
@@ -148,12 +159,14 @@ public class PageManagerFlushThread extends Thread {
   }
 
   public void removeAllPagesOfDatabase(final Database database) {
-    for (final Iterator<List<MutablePage>> itPages = queue.iterator(); itPages.hasNext(); ) {
-      final List<MutablePage> pages = itPages.next();
-      for (final Iterator<MutablePage> it = pages.iterator(); it.hasNext(); ) {
-        final MutablePage page = it.next();
-        if (page.getPageId().getDatabase().equals(database))
-          it.remove();
+    synchronized (flushLock) {
+      for (final Iterator<List<MutablePage>> itPages = queue.iterator(); itPages.hasNext(); ) {
+        final List<MutablePage> pages = itPages.next();
+        for (final Iterator<MutablePage> it = pages.iterator(); it.hasNext(); ) {
+          final MutablePage page = it.next();
+          if (page.getPageId().getDatabase().equals(database))
+            it.remove();
+        }
       }
     }
   }

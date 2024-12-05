@@ -43,10 +43,10 @@ import java.util.logging.*;
 public class PageManager extends LockContext {
   public static final PageManager INSTANCE = new PageManager();
 
-  private final    ConcurrentMap<PageId, CachedPage> readCache;
+  private          ConcurrentMap<PageId, CachedPage> readCache;
   // MANAGE CONCURRENT ACCESS TO THE PAGES. THE VALUE IS TRUE FOR WRITE OPERATION AND FALSE FOR READ
   private final    ConcurrentMap<PageId, Boolean>    pendingFlushPages                     = new ConcurrentHashMap<>();
-  private final    long                              maxRAM;
+  private          long                              maxRAM;
   private final    AtomicLong                        totalReadCacheRAM                     = new AtomicLong();
   private final    AtomicLong                        totalPagesRead                        = new AtomicLong();
   private final    AtomicLong                        totalPagesReadSize                    = new AtomicLong();
@@ -58,8 +58,8 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        evictionRuns                          = new AtomicLong();
   private final    AtomicLong                        pagesEvicted                          = new AtomicLong();
   private volatile long                              lastCheckForRAM                       = 0;
-  private final    PageManagerFlushThread            flushThread;
-  private final    int                               freePageRAM;
+  private          PageManagerFlushThread            flushThread;
+  private          int                               freePageRAM;
 
   public interface ConcurrentPageAccessCallback {
     void access() throws IOException;
@@ -82,19 +82,24 @@ public class PageManager extends LockContext {
   }
 
   private PageManager() {
-    final ContextConfiguration configuration = new ContextConfiguration();
+    configure();
+    Runtime.getRuntime().addShutdownHook(new Thread(() -> close()));
+  }
 
+  public void configure() {
+    final ContextConfiguration configuration = new ContextConfiguration();
     this.freePageRAM = configuration.getValueAsInteger(GlobalConfiguration.FREE_PAGE_RAM);
     this.readCache = new ConcurrentHashMap<>(configuration.getValueAsInteger(GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE));
 
-    maxRAM = configuration.getValueAsLong(GlobalConfiguration.MAX_PAGE_RAM) * 1024 * 1024;
-    if (maxRAM < 0)
+    this.maxRAM = configuration.getValueAsLong(GlobalConfiguration.MAX_PAGE_RAM) * 1024 * 1024;
+    if (this.maxRAM < 0)
       throw new ConfigurationException(GlobalConfiguration.MAX_PAGE_RAM.getKey() + " configuration is invalid (" + maxRAM + " MB)");
+
+    if (flushThread != null)
+      close();
 
     flushThread = new PageManagerFlushThread(this, configuration);
     flushThread.start();
-
-    Runtime.getRuntime().addShutdownHook(new Thread(() -> close()));
   }
 
   public void close() {
@@ -107,7 +112,7 @@ public class PageManager extends LockContext {
     }
   }
 
-  public void removeAllPagesOfDatabase(final Database database) {
+  public void removeAllReadPagesOfDatabase(final Database database) {
     for (final Iterator<CachedPage> it = readCache.values().iterator(); it.hasNext(); ) {
       final CachedPage p = it.next();
       final PageId pageId = p.getPageId();
@@ -121,7 +126,6 @@ public class PageManager extends LockContext {
   public void flushAllPagesOfDatabase(final Database database) {
     if (flushThread != null)
       flushThread.flushAllPagesOfDatabase(database);
-    removeAllPagesOfDatabase(database);
   }
 
   public void suspendFlushAndExecute(final Database database, final CallableNoReturn callback)
@@ -144,7 +148,7 @@ public class PageManager extends LockContext {
    * Test only API.
    */
   public void simulateKillOfDatabase(final Database database) {
-    removeAllPagesOfDatabase(database);
+    removeAllReadPagesOfDatabase(database);
     if (flushThread != null)
       flushThread.removeAllPagesOfDatabase(database);
   }

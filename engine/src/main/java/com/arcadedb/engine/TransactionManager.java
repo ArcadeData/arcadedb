@@ -247,7 +247,7 @@ public class TransactionManager {
           }
         }
         createWALFilePool();
-        database.getPageManager().removeAllPagesOfDatabase(database);
+        database.getPageManager().removeAllReadPagesOfDatabase(database);
       }
     } finally {
       LogManager.instance().log(this, Level.WARNING, "Recovery of database '%s' completed", null, database);

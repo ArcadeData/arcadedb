@@ -33,7 +33,11 @@ public abstract class PerformanceTest {
   }
 
   public static void clean() {
-    GlobalConfiguration.PROFILE.setValue("high-performance");
+    clean("high-performance");
+  }
+
+  public static void clean(final String profile) {
+    GlobalConfiguration.PROFILE.setValue(profile);
 
     LogManager.instance().setLogger(NullLogger.INSTANCE);
 

@@ -39,8 +39,7 @@ public class PageManagerStressTest {
 
   @Test
   public void stressPageManagerFlush() {
-    GlobalConfiguration.PROFILE.setValue("low-ram");
-    PerformanceTest.clean();
+    PerformanceTest.clean("low-ram");
 
     final int parallel = 2;
 
