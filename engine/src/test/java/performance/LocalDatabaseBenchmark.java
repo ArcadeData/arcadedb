@@ -33,7 +33,7 @@ import java.util.concurrent.atomic.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class LocalDatabaseBenchmark {
-  private static final int TOTAL    = 1_000;
+  private static final int TOTAL    = 10_000_000;
   private static final int BATCH_TX = 200;
 
   private static final int                 PRINT_EVERY_MS       = 1_000;
@@ -62,9 +62,11 @@ public class LocalDatabaseBenchmark {
 
   private void endTest() {
     database.close();
+    GlobalConfiguration.resetAll();
   }
 
   private void beginTest() {
+    GlobalConfiguration.BACKUP_ENABLED.setValue(false);
     if (new DatabaseFactory(DATABASE_NAME).exists())
       new DatabaseFactory(DATABASE_NAME).open().drop();
     database = new DatabaseFactory(DATABASE_NAME).create();
@@ -153,8 +155,8 @@ public class LocalDatabaseBenchmark {
     long begin = System.currentTimeMillis();
     for (int i = 0; i < TOTAL * CONCURRENT_THREADS; i++) {
       assertThat(database.query("sql",
-        "select from User where id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ?",
-        i, i, i, i, i, i, i, i, i, i).toVertices().size()).isEqualTo(1);
+          "select from User where id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ? and id = ?",
+          i, i, i, i, i, i, i, i, i, i).toVertices().size()).isEqualTo(1);
     }
     System.out.println("SQL " + (System.currentTimeMillis() - begin) + "ms");
   }
