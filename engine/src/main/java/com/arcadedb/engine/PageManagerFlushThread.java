@@ -38,7 +38,6 @@ public class PageManagerFlushThread extends Thread {
   private final    String                                logContext;
   private volatile boolean                               running   = true;
   private final    ConcurrentHashMap<Database, Boolean>  suspended = new ConcurrentHashMap<>(); // USED DURING BACKUP
-  private final    Object                                flushLock = new Object();
 
   public PageManagerFlushThread(final PageManager pageManager, final ContextConfiguration configuration) {
     super("ArcadeDB AsyncFlush");
@@ -59,7 +58,9 @@ public class PageManagerFlushThread extends Thread {
         return;
     }
 
-    LogManager.instance().log(this, Level.SEVERE, "Error on flushing pages %s during shutdown of the database", pages);
+    LogManager.instance()
+        .log(this, Level.SEVERE, "Error on flushing pages %s during shutdown of the database (running=%s queue=%d)", pages,
+            running, queue.size());
   }
 
   @Override
@@ -70,7 +71,7 @@ public class PageManagerFlushThread extends Thread {
     while (running || !queue.isEmpty()) {
       try {
         // FLUSH ALL THE PAGES
-        flushPagesFromQueueToDisk(null, 1_000);
+        flushPagesFromQueueToDisk(null, 1_000L);
 
       } catch (final InterruptedException e) {
         running = false;
@@ -85,10 +86,12 @@ public class PageManagerFlushThread extends Thread {
    *
    * @param database
    */
-  protected void flushAllPagesOfDatabase(final Database database) {
-    synchronized (flushLock) {
-      for (final Iterator<List<MutablePage>> itPages = queue.iterator(); itPages.hasNext(); ) {
-        final List<MutablePage> pages = itPages.next();
+  protected void flushModifiedPagesOfDatabase(final Database database) {
+    if (queue.isEmpty())
+      return;
+
+    for (final List<MutablePage> pages : queue.stream().toList()) {
+      synchronized (pages) {
         for (final Iterator<MutablePage> it = pages.iterator(); it.hasNext(); ) {
           final MutablePage page = it.next();
           if (page.getPageId().getDatabase().equals(database))
@@ -104,23 +107,27 @@ public class PageManagerFlushThread extends Thread {
   }
 
   protected void flushPagesFromQueueToDisk(final Database database, final long timeout) throws InterruptedException, IOException {
-    synchronized (flushLock) {
-      final List<MutablePage> pages = queue.poll(timeout, TimeUnit.MILLISECONDS);
+    final List<MutablePage> pages = queue.poll(timeout, TimeUnit.MILLISECONDS);
 
-      if (pages != null) {
-        if (pages.isEmpty())
-          // EMPTY PAGES IS A SPECIAL CONTENT FOR SHUTDOWN
-          running = false;
-        else
-          for (final MutablePage page : pages) {
-            if (database == null || page.getPageId().getDatabase().equals(database))
+    if (pages != null) {
+      if (pages.isEmpty())
+        // EMPTY PAGES IS A SPECIAL CONTENT FOR SHUTDOWN
+        running = false;
+      else {
+        final PageId firstPage = pages.get(0).pageId;
+        if (database == null || firstPage.getDatabase().equals(database)) {
+          // EXECUTE THE FLUSH IN A DB READ LOCK TO PREVENT CONCURRENT CLOSING
+          synchronized (pages) {
+            for (final MutablePage page : pages) {
               try {
                 pageManager.flushPage(page);
               } catch (final DatabaseMetadataException e) {
                 // FILE DELETED, CONTINUE WITH THE NEXT PAGES
                 LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
               }
+            }
           }
+        }
       }
     }
   }
@@ -148,10 +155,12 @@ public class PageManagerFlushThread extends Thread {
     for (int i = 0; i < content.length; i++) {
       final List<MutablePage> pages = (List<MutablePage>) content[i];
       if (pages != null) {
-        for (int j = 0; j < pages.size(); j++) {
-          final MutablePage page = pages.get(j);
-          if (page.getPageId().equals(pageId))
-            return new CachedPage(page, true);
+        synchronized (pages) {
+          for (int j = 0; j < pages.size(); j++) {
+            final MutablePage page = pages.get(j);
+            if (page.getPageId().equals(pageId))
+              return new CachedPage(page, true);
+          }
         }
       }
     }
@@ -159,15 +168,9 @@ public class PageManagerFlushThread extends Thread {
   }
 
   public void removeAllPagesOfDatabase(final Database database) {
-    synchronized (flushLock) {
-      for (final Iterator<List<MutablePage>> itPages = queue.iterator(); itPages.hasNext(); ) {
-        final List<MutablePage> pages = itPages.next();
-        for (final Iterator<MutablePage> it = pages.iterator(); it.hasNext(); ) {
-          final MutablePage page = it.next();
-          if (page.getPageId().getDatabase().equals(database))
-            it.remove();
-        }
+    for (final List<MutablePage> pages : queue.stream().toList())
+      synchronized (pages) {
+        pages.removeIf(page -> page.getPageId().getDatabase().equals(database));
       }
-    }
   }
 }

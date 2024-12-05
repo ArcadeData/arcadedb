@@ -83,7 +83,7 @@ public class PageManager extends LockContext {
 
   private PageManager() {
     configure();
-    Runtime.getRuntime().addShutdownHook(new Thread(() -> close()));
+    Runtime.getRuntime().addShutdownHook(new Thread(this::close));
   }
 
   public void configure() {
@@ -123,9 +123,14 @@ public class PageManager extends LockContext {
     }
   }
 
-  public void flushAllPagesOfDatabase(final Database database) {
+  public void flushModifiedPagesOfDatabase(final Database database) {
     if (flushThread != null)
-      flushThread.flushAllPagesOfDatabase(database);
+      flushThread.flushModifiedPagesOfDatabase(database);
+  }
+
+  public void removeModifiedPagesOfDatabase(final Database database) {
+    if (flushThread != null)
+      flushThread.removeAllPagesOfDatabase(database);
   }
 
   public void suspendFlushAndExecute(final Database database, final CallableNoReturn callback)
