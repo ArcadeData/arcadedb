@@ -1409,7 +1409,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   @Override
   public <RET> RET executeInReadLock(final Callable<RET> callable) {
-    final ReentrantReadWriteLock.ReadLock stamp = readLock();
+    final ReentrantReadWriteLock.ReadLock readLock = readLock();
     try {
 
       return callable.call();
@@ -1426,7 +1426,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new DatabaseOperationException("Error during read lock", e);
 
     } finally {
-      readUnlock(stamp);
+      readUnlock(readLock);
     }
   }
 
@@ -1435,7 +1435,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   @Override
   public <RET> RET executeInWriteLock(final Callable<RET> callable) {
-    final ReentrantReadWriteLock.WriteLock stamp = writeLock();
+    final ReentrantReadWriteLock.WriteLock writeLock = writeLock();
     try {
 
       return callable.call();
@@ -1452,7 +1452,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new DatabaseOperationException("Error during write lock", e);
 
     } finally {
-      writeUnlock(stamp);
+      writeUnlock(writeLock);
     }
   }
 
@@ -1772,6 +1772,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private void openInternal() {
     try {
       DatabaseContext.INSTANCE.init(this);
+      setLockingEnabled(configuration.getValueAsBoolean(GlobalConfiguration.BACKUP_ENABLED));
 
       fileManager = new FileManager(databasePath, mode, SUPPORTED_FILE_EXT);
       transactionManager = new TransactionManager(wrappedDatabaseInstance);
@@ -1854,4 +1855,5 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
     }
   }
+
 }
