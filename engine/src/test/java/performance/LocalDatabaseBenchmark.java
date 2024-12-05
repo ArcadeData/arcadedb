@@ -33,7 +33,7 @@ import java.util.concurrent.atomic.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class LocalDatabaseBenchmark {
-  private static final int TOTAL    = 1_000;
+  private static final int TOTAL    = 10_000_000;
   private static final int BATCH_TX = 200;
 
   private static final int                 PRINT_EVERY_MS       = 1_000;

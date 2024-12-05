@@ -819,14 +819,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     setDefaultValues(record);
 
-    if (record instanceof MutableDocument)
-      ((MutableDocument) record).validate();
+    if (record instanceof MutableDocument doc)
+      doc.validate();
 
     // INVOKE EVENT CALLBACKS
     if (!events.onBeforeCreate(record))
       return;
-    if (record instanceof Document)
-      if (!((RecordEventsRegistry) ((Document) record).getType().getEvents()).onBeforeCreate(record))
+    if (record instanceof Document doc)
+      if (!((RecordEventsRegistry) doc.getType().getEvents()).onBeforeCreate(record))
         return;
 
     boolean success = false;
@@ -834,10 +834,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     try {
       final LocalBucket bucket;
 
-      if (bucketName == null && record instanceof Document) {
-        final Document doc = (Document) record;
+      if (bucketName == null && record instanceof Document doc)
         bucket = (LocalBucket) doc.getType().getBucketIdByRecord(doc, DatabaseContext.INSTANCE.getContext(databasePath).asyncMode);
-      } else
+      else
         bucket = (LocalBucket) schema.getBucketByName(bucketName);
 
       ((RecordInternal) record).setIdentity(bucket.createRecord(record, discardRecordAfter));
@@ -846,10 +845,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       transaction.updateRecordInCache(record);
       transaction.updateBucketRecordDelta(bucket.getFileId(), +1);
 
-      if (record instanceof MutableDocument) {
-        final MutableDocument doc = (MutableDocument) record;
+      if (record instanceof MutableDocument doc)
         indexer.createDocument(doc, doc.getType(), bucket);
-      }
 
       ((RecordInternal) record).unsetDirty();
 
@@ -857,8 +854,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       // INVOKE EVENT CALLBACKS
       events.onAfterCreate(record);
-      if (record instanceof Document)
-        ((RecordEventsRegistry) ((Document) record).getType().getEvents()).onAfterCreate(record);
+      if (record instanceof Document doc)
+        ((RecordEventsRegistry) doc.getType().getEvents()).onAfterCreate(record);
 
     } finally {
       if (implicitTransaction) {
@@ -1382,16 +1379,20 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return new Select(this);
   }
 
+  @Override
+  public int hashCode() {
+    return databasePath != null ? databasePath.hashCode() : 0;
+  }
+
   /**
    * Returns true if two databases are the same.
    */
   public boolean equals(final Object o) {
     if (this == o)
       return true;
-    if (!(o instanceof Database))
+    if (!(o instanceof Database other))
       return false;
 
-    final Database other = (Database) o;
     return Objects.equals(getDatabasePath(), other.getDatabasePath());
   }
 
@@ -1408,7 +1409,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   @Override
   public <RET> RET executeInReadLock(final Callable<RET> callable) {
-    final long stamp = readLock();
+    final ReentrantReadWriteLock.ReadLock stamp = readLock();
     try {
 
       return callable.call();
@@ -1434,7 +1435,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   @Override
   public <RET> RET executeInWriteLock(final Callable<RET> callable) {
-    final long stamp = writeLock();
+    final ReentrantReadWriteLock.WriteLock stamp = writeLock();
     try {
 
       return callable.call();
@@ -1493,11 +1494,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public WALFileFactory getWALFileFactory() {
     return walFactory;
-  }
-
-  @Override
-  public int hashCode() {
-    return databasePath != null ? databasePath.hashCode() : 0;
   }
 
   @Override
@@ -1669,15 +1665,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (!open)
         return null;
 
-      open = false;
-
       try {
         if (async != null)
           async.close();
       } catch (final Throwable e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database '%s'", e, name);
+            .log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database '%s'", e,
+                name);
       }
+
+      open = false;
 
       try {
         final List<DatabaseContext.DatabaseContextTL> dbContexts = DatabaseContext.INSTANCE.removeAllContexts(databasePath);
@@ -1828,8 +1825,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   private void setDefaultValues(final Record record) {
-    if (record instanceof MutableDocument) {
-      final MutableDocument doc = (MutableDocument) record;
+    if (record instanceof MutableDocument doc) {
       final DocumentType type = doc.getType();
 
       final Set<String> propertiesWithDefaultDefined = type.getPolymorphicPropertiesWithDefaultDefined();
