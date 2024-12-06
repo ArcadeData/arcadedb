@@ -19,7 +19,6 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.database.Binary;
-import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -39,19 +38,22 @@ public class BucketIterator implements Iterator<Record> {
   final                Record[]         nextBatch     = new Record[PREFETCH_SIZE];
   private              int              prefetchIndex = 0;
   final                long             limit;
-  int      nextPageNumber      = 0;
-  BasePage currentPage         = null;
+  int      nextPageNumber;
+  BasePage currentPage = null;
   short    recordCountInCurrentPage;
   int      totalPages;
-  int      currentRecordInPage = 0;
-  long     browsed             = 0;
-  private int writeIndex = 0;
+  int      currentRecordInPage;
+  long     browsed     = 0;
+  private int     writeIndex       = 0;
+  private boolean forwardDirection = true;
 
-  BucketIterator(final LocalBucket bucket, final Database db) {
-    ((DatabaseInternal) db).checkPermissionsOnFile(bucket.fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+  BucketIterator(final LocalBucket bucket, final boolean forwardDirection) {
+    final DatabaseInternal db = bucket.getDatabase();
+    db.checkPermissionsOnFile(bucket.fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
-    this.database = (DatabaseInternal) db;
+    this.database = db;
     this.bucket = bucket;
+    this.forwardDirection = forwardDirection;
     this.totalPages = bucket.pageCount.get();
 
     final Integer txPageCounter = database.getTransaction().getPageCounter(bucket.fileId);
@@ -59,6 +61,15 @@ public class BucketIterator implements Iterator<Record> {
       this.totalPages = txPageCounter;
 
     limit = database.getResultSetLimit();
+
+    if (forwardDirection) {
+      currentRecordInPage = 0;
+      nextPageNumber = 0;
+    } else {
+      nextPageNumber = this.totalPages - 1;
+      currentRecordInPage = Integer.MAX_VALUE;
+    }
+
     fetchNext();
   }
 
@@ -101,15 +112,28 @@ public class BucketIterator implements Iterator<Record> {
 
       for (writeIndex = 0; writeIndex < nextBatch.length; ) {
         if (currentPage == null) {
-          if (nextPageNumber > totalPages) {
-            return null;
+          if (forwardDirection) {
+            // MOVE FORWARD
+            if (nextPageNumber > totalPages)
+              return null;
+          } else {
+            // MOVE BACKWARDS
+            if (nextPageNumber < 0)
+              return null;
           }
+
           currentPage = database.getTransaction()
               .getPage(new PageId(database, bucket.file.getFileId(), nextPageNumber), bucket.pageSize);
           recordCountInCurrentPage = currentPage.readShort(LocalBucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+
+          if (!forwardDirection && currentRecordInPage == Integer.MAX_VALUE)
+            currentRecordInPage = recordCountInCurrentPage - 1;
         }
 
-        if (recordCountInCurrentPage > 0 && currentRecordInPage < recordCountInCurrentPage) {
+        if (recordCountInCurrentPage > 0 &&
+            (forwardDirection && currentRecordInPage < recordCountInCurrentPage) ||
+            (!forwardDirection && currentRecordInPage > -1)
+        ) {
           try {
             final int recordPositionInPage = (int) currentPage.readUnsignedInt(
                 LocalBucket.PAGE_RECORD_TABLE_OFFSET + currentRecordInPage * INT_SERIALIZED_SIZE);
@@ -147,15 +171,25 @@ public class BucketIterator implements Iterator<Record> {
                 (nextPageNumber * bucket.getMaxRecordsInPage()) + currentRecordInPage, e.getMessage());
             LogManager.instance().log(this, Level.SEVERE, msg);
           } finally {
-            currentRecordInPage++;
+            if (forwardDirection)
+              currentRecordInPage++;
+            else
+              currentRecordInPage--;
           }
 
-        } else if (currentRecordInPage == recordCountInCurrentPage) {
+        } else if (forwardDirection && currentRecordInPage == recordCountInCurrentPage) {
           currentRecordInPage = 0;
           currentPage = null;
           nextPageNumber++;
+        } else if (!forwardDirection && currentRecordInPage < 0) {
+          currentRecordInPage = Integer.MAX_VALUE;
+          currentPage = null;
+          nextPageNumber--;
         } else {
-          currentRecordInPage++;
+          if (forwardDirection)
+            currentRecordInPage++;
+          else
+            currentRecordInPage--;
         }
       }
       return null;

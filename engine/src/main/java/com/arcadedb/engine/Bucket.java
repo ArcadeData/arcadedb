@@ -40,6 +40,8 @@ public interface Bucket {
 
   Iterator<Record> iterator();
 
+  Iterator<Record> inverseIterator();
+
   long count();
 
   int getFileId();

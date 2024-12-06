@@ -84,6 +84,11 @@ public class RemoteBucket implements Bucket {
   }
 
   @Override
+  public Iterator<Record> inverseIterator() {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
   public long count() {
     throw new UnsupportedOperationException();
   }

@@ -27,6 +27,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.misc.IntegrationUtils;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -278,6 +280,47 @@ public class SelectOrderTest {
 
       } finally {
         arcadeDBServer.stop();
+      }
+    }
+  }
+
+  @Test
+  public void testRIDOrderingDesc() {
+    final ContextConfiguration serverConfiguration = new ContextConfiguration();
+    final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
+
+    try (DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/" + DATABASE_NAME)) {
+      if (databaseFactory.exists())
+        databaseFactory.open().drop();
+
+      try (Database db = databaseFactory.create()) {
+        db.transaction(() -> {
+          DocumentType dtProduct = db.getSchema().createVertexType("Product", 1);
+          dtProduct.createProperty("name", Type.STRING);
+        });
+
+        db.transaction(() -> {
+          for (int i = 0; i < 1_000; i++) {
+            final MutableVertex v = db.newVertex("Product");
+            v.set("id", i);
+            v.save();
+          }
+
+          for (int i = 0; i < 10; i++) {
+            int last = Integer.MAX_VALUE;
+            int total = 0;
+            final ResultSet resultset = db.query("sql", "select from Product order by @rid desc");
+            while (resultset.hasNext()) {
+              final Vertex v = resultset.next().getVertex().get();
+              final Integer id = v.getInteger("id");
+              assertThat(id).isLessThan(last);
+
+              last = id;
+              ++total;
+            }
+            assertThat(total).isEqualTo(1_000);
+          }
+        });
       }
     }
   }

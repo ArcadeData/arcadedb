@@ -122,7 +122,7 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
     sortBuckets(bucketIds);
     for (final int bucketId : bucketIds) {
       if (bucketId > 0) {
-        final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, planningInfo, context);
+        final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, planningInfo, null, context);
         if (orderByRidAsc)
           step.setOrder(FetchFromClusterExecutionStep.ORDER_ASC);
         else if (orderByRidDesc)

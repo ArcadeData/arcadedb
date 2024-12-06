@@ -38,13 +38,15 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
   private Iterator<Record> iterator;
 
   public FetchFromClusterExecutionStep(final int bucketId, final CommandContext context) {
-    this(bucketId, null, context);
+    this(bucketId, null, null, context);
   }
 
-  public FetchFromClusterExecutionStep(final int bucketId, final QueryPlanningInfo queryPlanning, final CommandContext context) {
+  public FetchFromClusterExecutionStep(final int bucketId, final QueryPlanningInfo queryPlanning, final Object order,
+      final CommandContext context) {
     super(context);
     this.bucketId = bucketId;
     this.queryPlanning = queryPlanning;
+    this.order = order;
   }
 
   @Override
@@ -53,16 +55,16 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       if (iterator == null) {
-        iterator = context.getDatabase().getSchema().getBucketById(bucketId).iterator();
+        if (order == ORDER_DESC)
+          iterator = context.getDatabase().getSchema().getBucketById(bucketId).inverseIterator();
+        else
+          iterator = context.getDatabase().getSchema().getBucketById(bucketId).iterator();
 
-        //TODO check how to support ranges and DESC
+        //TODO check how to support ranges
 //        long minClusterPosition = calculateMinClusterPosition();
 //        long maxClusterPosition = calculateMaxClusterPosition();
 //            new ORecordIteratorCluster((ODatabaseDocumentInternal) context.getDatabase(),
 //            (ODatabaseDocumentInternal) context.getDatabase(), bucketId, minClusterPosition, maxClusterPosition);
-//        if (ORDER_DESC == order) {
-//          iterator.last();
-//        }
       }
       return new ResultSet() {
         int nFetched = 0;
@@ -81,7 +83,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
             return iterator.hasNext();
 //            }
           } finally {
-            if( context.isProfiling() ) {
+            if (context.isProfiling()) {
               cost += (System.nanoTime() - begin1);
             }
           }
@@ -116,14 +118,14 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
             return result;
 
           } finally {
-            if( context.isProfiling() ) {
+            if (context.isProfiling()) {
               cost += (System.nanoTime() - begin1);
             }
           }
         }
       };
     } finally {
-      if( context.isProfiling() ) {
+      if (context.isProfiling()) {
         cost += (System.nanoTime() - begin);
       }
     }
@@ -192,9 +194,10 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     String result =
-        ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM BUCKET " + bucketId + " (" + context.getDatabase().getSchema().getBucketById(bucketId)
+        ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM BUCKET " + bucketId + " (" + context.getDatabase()
+            .getSchema().getBucketById(bucketId)
             .getName() + ") " + (ORDER_DESC.equals(order) ? "DESC" : "ASC" + " = " + totalFetched + " RECORDS");
-    if ( context.isProfiling() )
+    if (context.isProfiling())
       result += " (" + getCostFormatted() + ")";
     return result;
   }
@@ -210,6 +213,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new FetchFromClusterExecutionStep(this.bucketId, this.queryPlanning == null ? null : this.queryPlanning.copy(), context);
+    return new FetchFromClusterExecutionStep(this.bucketId, this.queryPlanning == null ? null : this.queryPlanning.copy(),
+        this.order, context);
   }
 }

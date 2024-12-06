@@ -260,7 +260,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   @Override
   public Iterator<Record> iterator() {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
-    return new BucketIterator(this, database);
+    return new BucketIterator(this, true);
+  }
+
+  @Override
+  public Iterator<Record> inverseIterator() {
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    return new BucketIterator(this, false);
   }
 
   @Override
