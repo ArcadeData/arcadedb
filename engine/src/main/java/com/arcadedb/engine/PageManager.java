@@ -82,7 +82,6 @@ public class PageManager extends LockContext {
   }
 
   private PageManager() {
-    Runtime.getRuntime().addShutdownHook(new Thread(this::close));
   }
 
   public void configure() {
