@@ -21,8 +21,6 @@ package com.arcadedb;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.schema.DocumentType;
-
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.*;
@@ -66,7 +64,7 @@ public class LargeRecordsTest extends TestHelper {
     database.transaction(() -> {
       final DocumentType type = database.getSchema().getOrCreateDocumentType("BigRecords");
 
-      final long pageOverSize = ((LocalBucket) type.getBuckets(true).get(0)).getPageSize() * 3;
+      final long pageOverSize = ((LocalBucket) type.getBuckets(true).get(0)).getPageSize() * 3L;
 
       final StringBuilder buffer = new StringBuilder();
       for (int k = 0; k < pageOverSize; ++k)

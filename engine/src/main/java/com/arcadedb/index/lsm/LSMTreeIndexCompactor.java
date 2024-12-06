@@ -50,7 +50,8 @@ public class LSMTreeIndexCompactor {
 
     final int totalPages = mutableIndex.getTotalPages();
     LogManager.instance()
-        .log(mainIndex, Level.INFO, "Compacting index '%s' (pages=%d pageSize=%d threadId=%d)...", null, mutableIndex, totalPages, mutableIndex.getPageSize(),
+        .log(mainIndex, Level.INFO, "Compacting index '%s' (pages=%d pageSize=%d threadId=%d)...", null, mutableIndex, totalPages,
+            mutableIndex.getPageSize(),
             Thread.currentThread().getId());
 
     if (totalPages < 2)
@@ -64,7 +65,8 @@ public class LSMTreeIndexCompactor {
       compactedIndex = mutableIndex.createNewForCompaction();
       mutableIndex.getDatabase().getSchema().getEmbedded().registerFile(compactedIndex);
       LogManager.instance()
-          .log(mainIndex, Level.WARNING, "- Creating sub-index '%s' with fileId=%d (threadId=%d)...", null, compactedIndex, compactedIndex.getFileId(),
+          .log(mainIndex, Level.WARNING, "- Creating sub-index '%s' with fileId=%d (threadId=%d)...", null, compactedIndex,
+              compactedIndex.getFileId(),
               Thread.currentThread().getId());
     }
 
@@ -75,7 +77,8 @@ public class LSMTreeIndexCompactor {
     final long maxUsableRAM = Runtime.getRuntime().maxMemory() * 30 / 100;
     if (indexCompactionRAM > maxUsableRAM) {
       LogManager.instance()
-          .log(mainIndex, Level.INFO, "Configured RAM for compaction (%dMB) is more than 1/3 of the max heap (%s). Forcing to %s", null, indexCompactionRAM,
+          .log(mainIndex, Level.INFO, "Configured RAM for compaction (%dMB) is more than 1/3 of the max heap (%s). Forcing to %s",
+              null, indexCompactionRAM,
               FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()), maxUsableRAM);
       indexCompactionRAM = maxUsableRAM;
     }
@@ -99,14 +102,16 @@ public class LSMTreeIndexCompactor {
     // FIND LAST IMMUTABLE PAGE TO COMPACT
     int lastImmutablePage = totalPages - 1;
     for (int pageIndex = totalPages - 1; pageIndex > -1; --pageIndex) {
-      final ImmutablePage page = database.getPageManager().getImmutablePage(new PageId(mutableIndex.getFileId(), pageIndex), mutableIndex.getPageSize(), false, true);
+      final ImmutablePage page = database.getPageManager()
+          .getImmutablePage(new PageId(database, mutableIndex.getFileId(), pageIndex), mutableIndex.getPageSize(), false, true);
       if (!mutableIndex.isMutable(page)) {
         lastImmutablePage = pageIndex;
         break;
       }
     }
 
-    LogManager.instance().log(mainIndex, Level.WARNING, "- Compacting pages 0-%d (threadId=%d)", null, lastImmutablePage, Thread.currentThread().getId());
+    LogManager.instance().log(mainIndex, Level.WARNING, "- Compacting pages 0-%d (threadId=%d)", null, lastImmutablePage,
+        Thread.currentThread().getId());
 
     for (int pageIndex = 0; pageIndex <= lastImmutablePage; ) {
       final long totalRAMNeeded = (lastImmutablePage - pageIndex + 1L) * mutableIndex.getPageSize();
@@ -114,8 +119,10 @@ public class LSMTreeIndexCompactor {
       if (totalRAMNeeded > indexCompactionRAM) {
         pagesToCompact = (int) (indexCompactionRAM / mutableIndex.getPageSize());
         LogManager.instance()
-            .log(mainIndex, Level.WARNING, "- Creating partial index with %d pages by using %s (totalRAMNeeded=%s, threadId=%d)", null, pagesToCompact,
-                FileUtils.getSizeAsString(indexCompactionRAM), FileUtils.getSizeAsString(totalRAMNeeded), Thread.currentThread().getId());
+            .log(mainIndex, Level.WARNING, "- Creating partial index with %d pages by using %s (totalRAMNeeded=%s, threadId=%d)",
+                null, pagesToCompact,
+                FileUtils.getSizeAsString(indexCompactionRAM), FileUtils.getSizeAsString(totalRAMNeeded),
+                Thread.currentThread().getId());
       } else
         pagesToCompact = lastImmutablePage - pageIndex + 1;
 
@@ -125,7 +132,8 @@ public class LSMTreeIndexCompactor {
       Object[] lastPageMaxKey = null;
 
       LogManager.instance()
-          .log(mainIndex, Level.WARNING, "- This turn compacting %d pages using root page %s v.%d (threadId=%d)", null, pagesToCompact, rootPage.getPageId(),
+          .log(mainIndex, Level.WARNING, "- This turn compacting %d pages using root page %s v.%d (threadId=%d)", null,
+              pagesToCompact, rootPage.getPageId(),
               rootPage.getVersion(), Thread.currentThread().getId());
 
       int compactedPageNumberInSeries = 1;
@@ -231,7 +239,8 @@ public class LSMTreeIndexCompactor {
           final RID[] ridsArray = new RID[rids.size()];
           rids.toArray(ridsArray);
 
-          final MutablePage newPage = compactedIndex.appendDuringCompaction(keyValueContent, lastPage, currentPageBuffer, compactedPageNumberInSeries, minorKey,
+          final MutablePage newPage = compactedIndex.appendDuringCompaction(keyValueContent, lastPage, currentPageBuffer,
+              compactedPageNumberInSeries, minorKey,
               ridsArray);
 
           if (newPage != lastPage) {
@@ -241,11 +250,13 @@ public class LSMTreeIndexCompactor {
               // NEW PAGE: STORE THE MIN KEY IN THE ROOT PAGE
               final int newPageNum = newPage.getPageId().getPageNumber();
 
-              final MutablePage newRootPage = compactedIndex.appendDuringCompaction(keyValueContent, rootPage, rootPageBuffer, compactedPageNumberInSeries,
+              final MutablePage newRootPage = compactedIndex.appendDuringCompaction(keyValueContent, rootPage, rootPageBuffer,
+                  compactedPageNumberInSeries,
                   minorKey, new RID[] { new RID(database, 0, newPageNum) });
 
               LogManager.instance()
-                  .log(mainIndex, Level.WARNING, "- Creating a new entry in index '%s' root page %s->%d (entry in page=%d threadId=%d)", null, mutableIndex,
+                  .log(mainIndex, Level.WARNING,
+                      "- Creating a new entry in index '%s' root page %s->%d (entry in page=%d threadId=%d)", null, mutableIndex,
                       Arrays.toString(minorKey), newPageNum, mutableIndex.getCount(rootPage) - 1, Thread.currentThread().getId());
 
               if (newRootPage != rootPage) {
@@ -275,17 +286,20 @@ public class LSMTreeIndexCompactor {
 
           if (totalKeys % 1_000_000 == 0)
             LogManager.instance()
-                .log(mainIndex, Level.WARNING, "- Keys %d values %d - iterations %d (entriesInRootPage=%d, threadId=%d)", null, totalKeys, totalValues,
+                .log(mainIndex, Level.WARNING, "- Keys %d values %d - iterations %d (entriesInRootPage=%d, threadId=%d)", null,
+                    totalKeys, totalValues,
                     iterations, compactedIndex.getCount(rootPage), Thread.currentThread().getId());
         }
       }
 
       if (rootPage != null && lastPageMaxKey != null) {
         // WRITE THE MAX KEY
-        compactedIndex.appendDuringCompaction(keyValueContent, rootPage, rootPageBuffer, compactedPageNumberInSeries, lastPageMaxKey,
+        compactedIndex.appendDuringCompaction(keyValueContent, rootPage, rootPageBuffer, compactedPageNumberInSeries,
+            lastPageMaxKey,
             new RID[] { new RID(database, 0, 0) });
         LogManager.instance()
-            .log(mainIndex, Level.WARNING, "- Creating last entry in index '%s' root page %s (entriesInRootPage=%d, threadId=%d)", null, mutableIndex,
+            .log(mainIndex, Level.WARNING, "- Creating last entry in index '%s' root page %s (entriesInRootPage=%d, threadId=%d)",
+                null, mutableIndex,
                 Arrays.toString(lastPageMaxKey), compactedIndex.getCount(rootPage), Thread.currentThread().getId());
       }
 
@@ -301,8 +315,10 @@ public class LSMTreeIndexCompactor {
       compactedPages += pagesToCompact;
 
       LogManager.instance().log(mainIndex, Level.WARNING,
-          "- compacted %d pages, remaining %d pages (totalKeys=%d totalValues=%d totalMergedKeys=%d totalMergedValues=%d, threadId=%d)", null, compactedPages,
-          (lastImmutablePage - compactedPages + 1), totalKeys, totalValues, totalMergedKeys, totalMergedValues, Thread.currentThread().getId());
+          "- compacted %d pages, remaining %d pages (totalKeys=%d totalValues=%d totalMergedKeys=%d totalMergedValues=%d, threadId=%d)",
+          null, compactedPages,
+          (lastImmutablePage - compactedPages + 1), totalKeys, totalValues, totalMergedKeys, totalMergedValues,
+          Thread.currentThread().getId());
 
       pageIndex += pagesToCompact;
     }
@@ -314,8 +330,10 @@ public class LSMTreeIndexCompactor {
 
     LogManager.instance().log(mainIndex, Level.WARNING, String.format(
         "Index '%s' compacted in %dms (keys=%d values=%d mutablePages=%d immutablePages=%d iterations=%d oldLevel0File=%s(%d) newLevel0File=%s(%d) newLevel1File=%s(%d) threadId=%d)",
-        mainIndex.getName(), (System.currentTimeMillis() - startTime), totalKeys, totalValues, newIndex.getTotalPages(), compactedIndex.getTotalPages(),
-        iterations, oldMutableFileName, oldMutableFileId, mainIndex.getMutableIndex().getName(), mainIndex.getMutableIndex().getFileId(),
+        mainIndex.getName(), (System.currentTimeMillis() - startTime), totalKeys, totalValues, newIndex.getTotalPages(),
+        compactedIndex.getTotalPages(),
+        iterations, oldMutableFileName, oldMutableFileId, mainIndex.getMutableIndex().getName(),
+        mainIndex.getMutableIndex().getFileId(),
         compactedIndex.getName(), compactedIndex.getFileId(), Thread.currentThread().getId()));
 
     if (debug) {

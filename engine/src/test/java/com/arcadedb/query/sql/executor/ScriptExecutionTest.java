@@ -2,8 +2,8 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
-import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponentFile;
@@ -11,7 +11,6 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
-
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -250,7 +249,7 @@ public class ScriptExecutionTest extends TestHelper {
 
     database.async().waitCompletion();
 
-    ImmutablePage page = ((LocalDatabase) database).getPageManager().getImmutablePage(new PageId(2, 0),
+    ImmutablePage page = ((LocalDatabase) database).getPageManager().getImmutablePage(new PageId(database, 2, 0),
         ((PaginatedComponentFile) ((LocalDatabase) database).getFileManager().getFile(2)).getPageSize(), false, false);
 
     assertThat(page.getVersion()).as("Page v." + page.getVersion()).isEqualTo(TOTAL + 1);
@@ -309,7 +308,7 @@ public class ScriptExecutionTest extends TestHelper {
 
     database.async().waitCompletion();
 
-    ImmutablePage page = ((LocalDatabase) database).getPageManager().getImmutablePage(new PageId(2, 0),
+    ImmutablePage page = ((LocalDatabase) database).getPageManager().getImmutablePage(new PageId(database, 2, 0),
         ((PaginatedComponentFile) ((LocalDatabase) database).getFileManager().getFile(2)).getPageSize(), false, false);
 
     assertThat(page.getVersion()).as("Page v." + page.getVersion()).isEqualTo(TOTAL + 1);

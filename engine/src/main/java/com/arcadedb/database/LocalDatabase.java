@@ -114,7 +114,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected final      QueryEngineManager                        queryEngineManager;
   protected final      DatabaseStats                             stats                                = new DatabaseStats();
   protected            FileManager                               fileManager;
-  protected            PageManager                               pageManager;
   protected            LocalSchema                               schema;
   protected            TransactionManager                        transactionManager;
   protected volatile   DatabaseAsyncExecutorImpl                 async                                = null;
@@ -224,7 +223,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot drop database");
 
-    internalClose(true);
+    closeInternal(true);
 
     executeInWriteLock(() -> {
       FileUtils.deleteRecursively(new File(databasePath));
@@ -234,7 +233,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void close() {
-    internalClose(false);
+    closeInternal(false);
   }
 
   /**
@@ -251,7 +250,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     try {
       schema.close();
-      pageManager.kill();
+      PageManager.INSTANCE.simulateKillOfDatabase(this);
       fileManager.close();
       transactionManager.kill();
 
@@ -1124,7 +1123,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public PageManager getPageManager() {
     checkDatabaseIsOpen();
-    return pageManager;
+    return PageManager.INSTANCE;
   }
 
   @Override
@@ -1649,7 +1648,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new IllegalArgumentException("Invalid characters used in database name '" + name + "'");
   }
 
-  private void internalClose(final boolean drop) {
+  private void closeInternal(final boolean drop) {
     if (async != null) {
       try {
         // EXECUTE OUTSIDE LOCK
@@ -1674,7 +1673,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
                 name);
       }
 
+      if (drop)
+        PageManager.INSTANCE.removeModifiedPagesOfDatabase(this);
+      else
+        PageManager.INSTANCE.flushModifiedPagesOfDatabase(this);
+
       open = false;
+
+      PageManager.INSTANCE.removeAllReadPagesOfDatabase(this);
 
       try {
         final List<DatabaseContext.DatabaseContextTL> dbContexts = DatabaseContext.INSTANCE.removeAllContexts(databasePath);
@@ -1700,7 +1706,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       try {
         schema.close();
-        pageManager.close();
         fileManager.close();
         transactionManager.close(drop);
         statementCache.clear();
@@ -1738,7 +1743,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       return null;
     });
 
-    DatabaseFactory.removeActiveDatabaseInstance(databasePath);
+    if (DatabaseFactory.removeActiveDatabaseInstance(databasePath))
+      PageManager.INSTANCE.close();
   }
 
   private void checkForRecovery() throws IOException {
@@ -1776,7 +1782,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       fileManager = new FileManager(databasePath, mode, SUPPORTED_FILE_EXT);
       transactionManager = new TransactionManager(wrappedDatabaseInstance);
-      pageManager = new PageManager(fileManager, transactionManager, configuration, name);
 
       open = true;
 
@@ -1801,11 +1806,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       } catch (final RuntimeException e) {
         open = false;
-        pageManager.close();
+        PageManager.INSTANCE.removeAllReadPagesOfDatabase(this);
         throw e;
       } catch (final Exception e) {
         open = false;
-        pageManager.close();
+        PageManager.INSTANCE.removeAllReadPagesOfDatabase(this);
         throw new DatabaseOperationException("Error on creating new database instance", e);
       }
     } catch (final Exception e) {

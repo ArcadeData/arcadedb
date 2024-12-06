@@ -20,6 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.security.SecurityManager;
@@ -73,6 +74,9 @@ public class DatabaseFactory implements AutoCloseable {
   public synchronized Database open(final ComponentFile.MODE mode) {
     checkForActiveInstance(databasePath);
 
+    if (ACTIVE_INSTANCES.isEmpty())
+      PageManager.INSTANCE.configure();
+
     final LocalDatabase database = new LocalDatabase(databasePath, mode, contextConfiguration, security, callbacks);
     database.setAutoTransaction(autoTransaction);
     database.open();
@@ -85,7 +89,11 @@ public class DatabaseFactory implements AutoCloseable {
   public synchronized Database create() {
     checkForActiveInstance(databasePath);
 
-    final LocalDatabase database = new LocalDatabase(databasePath, ComponentFile.MODE.READ_WRITE, contextConfiguration, security, callbacks);
+    if (ACTIVE_INSTANCES.isEmpty())
+      PageManager.INSTANCE.configure();
+
+    final LocalDatabase database = new LocalDatabase(databasePath, ComponentFile.MODE.READ_WRITE, contextConfiguration, security,
+        callbacks);
     database.setAutoTransaction(autoTransaction);
     database.create();
 
@@ -128,15 +136,15 @@ public class DatabaseFactory implements AutoCloseable {
     return Paths.get(path).toAbsolutePath().normalize();
   }
 
-
   public static Database getActiveDatabaseInstance(final String databasePath) {
     var normalizedPath = getNormalizedPath(databasePath);
     return ACTIVE_INSTANCES.get(normalizedPath);
   }
 
-  protected static void removeActiveDatabaseInstance(final String databasePath) {
+  protected static boolean removeActiveDatabaseInstance(final String databasePath) {
     var normalizedPath = getNormalizedPath(databasePath);
     ACTIVE_INSTANCES.remove(normalizedPath);
+    return ACTIVE_INSTANCES.isEmpty();
   }
 
   public static Collection<Database> getActiveDatabaseInstances() {

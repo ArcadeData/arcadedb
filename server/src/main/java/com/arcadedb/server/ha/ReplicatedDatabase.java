@@ -819,7 +819,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
     // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
     executeInReadLock(() -> {
       // AVOID FLUSHING OF DATA PAGES TO DISK
-      proxied.getPageManager().suspendFlushAndExecute(() -> {
+      proxied.getPageManager().suspendFlushAndExecute(this, () -> {
         final List<ComponentFile> files = proxied.getFileManager().getFiles();
 
         for (final ComponentFile file : files)

@@ -1,74 +1,33 @@
 package com.arcadedb.graph;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
-
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
-import java.nio.file.*;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class TestVertexDelete {
-  public static class DeleteOnClose implements AutoCloseable {
-    public DeleteOnClose(Path p) {
-      this.p = p;
-    }
-
-    public Path getPath() {
-      return p;
-    }
-
-    public void close() {
-      deleteDirectory(p.toFile());
-    }
-
-    private void deleteDirectory(File directory) {
-      if (directory.exists()) {
-        File[] files = directory.listFiles();
-        if (files != null) {
-          for (File file : files) {
-            if (file.isDirectory()) {
-              deleteDirectory(file);
-            } else {
-              if (!file.delete())
-                System.out.println("Could not delete file " + file);
-            }
-          }
-        }
-        if (!directory.delete())
-          System.out.println("Could not delete directory " + directory);
-      }
-    }
-
-    private final Path p;
-  }
+public class TestVertexDelete extends TestHelper {
 
   @Test
   public void testFullEdgeDeletion() throws IOException, InterruptedException {
-    try (var td = createTemporaryDirectory(); var df = new DatabaseFactory(td.getPath().toString()); var db = df.create()) {
-      createSchema(db);
-      for (int i = 0; i < 100; i++) {
-        List<Vertex> vlist = new ArrayList<>();
-        db.transaction(() -> {
-          vlist.addAll(createTree(db));
-          deleteTree(vlist);
-        });
+    createSchema(database);
+    for (int i = 0; i < 100; i++) {
+      List<Vertex> vlist = new ArrayList<>();
+      database.transaction(() -> {
+        vlist.addAll(createTree(database));
+        deleteTree(vlist);
+      });
 
-        db.transaction(() -> {
-          var v1c = db.countType("v1", false);
-          var pc = db.countType("hasParent", false);
-          assertThat(v1c).isEqualTo(0);
-          assertThat(pc).isEqualTo(0);
-        });
-      }
+      database.transaction(() -> {
+        var v1c = database.countType("v1", false);
+        var pc = database.countType("hasParent", false);
+        assertThat(v1c).isEqualTo(0);
+        assertThat(pc).isEqualTo(0);
+      });
     }
-  }
-
-  private static DeleteOnClose createTemporaryDirectory() throws IOException {
-    return new DeleteOnClose(Files.createTempDirectory("arcadedb"));
   }
 
   private static void createSchema(Database db) {

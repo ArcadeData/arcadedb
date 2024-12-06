@@ -35,7 +35,6 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
-
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -45,7 +44,6 @@ import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
 public class ACIDTransactionTest extends TestHelper {
@@ -279,12 +277,15 @@ public class ACIDTransactionTest extends TestHelper {
 
     db.async().onError(exception -> errors.incrementAndGet());
 
+    final Callable<Void> callback = () -> {
+      if (total.incrementAndGet() > TOT - 10)
+        throw new IOException("Test IO Exception");
+      return null;
+    };
+
     try {
-      ((DatabaseInternal) db).registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, () -> {
-        if (total.incrementAndGet() > TOT - 10)
-          throw new IOException("Test IO Exception");
-        return null;
-      });
+
+      ((DatabaseInternal) db).registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, callback);
 
       for (; total.get() < TOT; total.incrementAndGet()) {
         final MutableDocument v = db.newDocument("V");
@@ -303,6 +304,8 @@ public class ACIDTransactionTest extends TestHelper {
       assertThat(e.getCause() instanceof IOException).isTrue();
     }
     ((DatabaseInternal) db).kill();
+
+    ((DatabaseInternal) db).unregisterCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, callback);
 
     verifyWALFilesAreStillPresent();
 

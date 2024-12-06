@@ -19,6 +19,7 @@
 package com.arcadedb.index.lsm;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
@@ -76,7 +77,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
     this.serializedToKeys = index.convertKeys(this.toKeys, binaryKeyTypes);
     this.toKeysInclusive = endKeysInclusive;
 
-    final BinarySerializer serializer = index.getDatabase().getSerializer();
+    final DatabaseInternal database = index.getDatabase();
+    final BinarySerializer serializer = database.getSerializer();
     this.comparator = serializer.getComparator();
 
     final LSMTreeIndexCompacted compacted = index.getSubIndex();
@@ -118,8 +120,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
       if (serializedFromKeys != null) {
         // SEEK FOR THE FROM RANGE
-        final BasePage currentPage = index.getDatabase().getTransaction()
-            .getPage(new PageId(index.getFileId(), pageId), index.getPageSize());
+        final BasePage currentPage = database.getTransaction()
+            .getPage(new PageId(database, index.getFileId(), pageId), index.getPageSize());
         final Binary currentPageBuffer = new Binary(currentPage.slice());
         final int count = index.getCount(currentPage);
 
@@ -149,8 +151,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
         if (ascendingOrder) {
           pageCursors[cursorIdx] = index.newPageIterator(pageId, -1, true);
         } else {
-          final BasePage currentPage = index.getDatabase().getTransaction()
-              .getPage(new PageId(index.getFileId(), pageId), index.getPageSize());
+          final BasePage currentPage = database.getTransaction()
+              .getPage(new PageId(database, index.getFileId(), pageId), index.getPageSize());
           pageCursors[cursorIdx] = index.newPageIterator(pageId, index.getCount(currentPage), false);
         }
 

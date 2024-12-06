@@ -86,8 +86,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       super("AsyncExecutor-" + database.getName() + "-" + id);
       this.database = database;
 
-      final int queueSize =
+      int queueSize =
           database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE) / parallelLevel;
+      if (queueSize < 1)
+        queueSize = 1;
 
       final String cfgQueueImpl = database.getConfiguration().getValueAsString(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_IMPL);
       if ("fast".equalsIgnoreCase(cfgQueueImpl))
