@@ -223,7 +223,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot drop database");
 
-    internalClose(true);
+    closeInternal(true);
 
     executeInWriteLock(() -> {
       FileUtils.deleteRecursively(new File(databasePath));
@@ -233,7 +233,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void close() {
-    internalClose(false);
+    closeInternal(false);
   }
 
   /**
@@ -1648,7 +1648,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new IllegalArgumentException("Invalid characters used in database name '" + name + "'");
   }
 
-  private void internalClose(final boolean drop) {
+  private void closeInternal(final boolean drop) {
     if (async != null) {
       try {
         // EXECUTE OUTSIDE LOCK
@@ -1673,7 +1673,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
                 name);
       }
 
-      PageManager.INSTANCE.flushAllPagesOfDatabase(this);
+      if (drop)
+        PageManager.INSTANCE.removeModifiedPagesOfDatabase(this);
+      else
+        PageManager.INSTANCE.flushModifiedPagesOfDatabase(this);
 
       open = false;
 
@@ -1740,7 +1743,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       return null;
     });
 
-    DatabaseFactory.removeActiveDatabaseInstance(databasePath);
+    if (DatabaseFactory.removeActiveDatabaseInstance(databasePath))
+      PageManager.INSTANCE.close();
   }
 
   private void checkForRecovery() throws IOException {

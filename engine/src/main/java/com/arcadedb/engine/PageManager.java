@@ -82,7 +82,6 @@ public class PageManager extends LockContext {
   }
 
   private PageManager() {
-    configure();
     Runtime.getRuntime().addShutdownHook(new Thread(this::close));
   }
 
@@ -106,10 +105,14 @@ public class PageManager extends LockContext {
     if (flushThread != null) {
       try {
         flushThread.closeAndJoin();
+        flushThread = null;
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
       }
     }
+
+    readCache.clear();
+    totalReadCacheRAM.set(0L);
   }
 
   public void removeAllReadPagesOfDatabase(final Database database) {
@@ -125,7 +128,7 @@ public class PageManager extends LockContext {
 
   public void flushModifiedPagesOfDatabase(final Database database) {
     if (flushThread != null)
-      flushThread.flushModifiedPagesOfDatabase(database);
+      flushThread.flushAllPagesOfDatabase(database);
   }
 
   public void removeModifiedPagesOfDatabase(final Database database) {
