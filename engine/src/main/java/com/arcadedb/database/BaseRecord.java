@@ -51,6 +51,13 @@ public abstract class BaseRecord implements Record {
   }
 
   @Override
+  public int size() {
+    if (buffer == null)
+      reload();
+    return buffer != null ? buffer.size() : -1;
+  }
+
+  @Override
   public void reload() {
     if (rid != null && buffer == null && database.isOpen()) {
       try {
