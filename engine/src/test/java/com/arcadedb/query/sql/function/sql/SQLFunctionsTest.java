@@ -72,6 +72,17 @@ public class SQLFunctionsTest {
   }
 
   @Test
+  public void testSelectSize() {
+    final ResultSet result = database.query("sql", "select @this.size() as size from Account");
+    assertThat(result.hasNext()).isTrue();
+    for (final ResultSet it = result; it.hasNext(); ) {
+      final Result d = it.next();
+      assertThat(d.<Integer>getProperty("size")).isNotNull();
+      assertThat(d.<Integer>getProperty("size")).isGreaterThan(0);
+    }
+  }
+
+  @Test
   public void queryMaxInline() {
     final ResultSet result = database.command("sql", "select max(1,2,7,0,-2,3) as max");
     assertThat(result.hasNext()).isTrue();
