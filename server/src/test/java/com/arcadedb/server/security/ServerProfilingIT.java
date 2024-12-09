@@ -28,6 +28,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.network.HostUtil;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.schema.Schema;
@@ -39,9 +40,7 @@ import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterAll;
-
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -106,7 +105,8 @@ public class ServerProfilingIT {
   }
 
   private static void executeRemoteCommand(final String command, final String userName, final String userPassword) {
-    final String[] address = SERVER.getHttpServer().getListeningAddress().split(":");
+    final String[] address = HostUtil.parseHostAddress(SERVER.getHttpServer().getListeningAddress(),
+        HostUtil.CLIENT_DEFAULT_PORT);
     final RemoteDatabase remoteDatabase = new RemoteDatabase(address[0], Integer.parseInt(address[1]), DATABASE_NAME, userName,
         userPassword);
     remoteDatabase.command("sql", command);

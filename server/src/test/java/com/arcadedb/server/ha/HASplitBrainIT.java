@@ -20,6 +20,7 @@ package com.arcadedb.server.ha;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.HostUtil;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
 import org.junit.jupiter.api.AfterEach;
@@ -75,7 +76,7 @@ public class HASplitBrainIT extends ReplicationServerIT {
         } else if (type == TYPE.NETWORK_CONNECTION && split) {
           final String connectTo = (String) object;
 
-          final String[] parts = connectTo.split(":");
+          final String[] parts = HostUtil.parseHostAddress(connectTo, HostUtil.HA_DEFAULT_PORT);
           final int port = Integer.parseInt(parts[1]);
 
           if (server.getServerName().equals("ArcadeDB_3") || server.getServerName().equals("ArcadeDB_4")) {
