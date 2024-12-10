@@ -121,6 +121,9 @@ public class DateUtils {
   }
 
   public static Long dateTimeToTimestamp(final Object value, final ChronoUnit precisionToUse) {
+    if (value == null)
+      return null;
+
     final long timestamp;
     if (value instanceof Date) {
       // WRITE MILLISECONDS
