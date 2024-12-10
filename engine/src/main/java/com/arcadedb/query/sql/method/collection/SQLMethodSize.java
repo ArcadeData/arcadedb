@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.method.collection;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
@@ -40,13 +41,17 @@ public class SQLMethodSize extends AbstractSQLMethod {
   public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
       final Object[] iParams) {
 
-    final Number size;
+    final int size;
     if (value != null) {
       if (value instanceof Result result)
         size = result.getRecord().isPresent() ? result.getRecord().get().size() : -1;
-      else if (value instanceof Identifiable record)
-        size = record.getRecord(true).size();
-      else if (value instanceof String)
+      else if (value instanceof Identifiable rid) {
+        final Record record = rid.getRecord(true);
+        if (record != null)
+          size = record.size();
+        else
+          size = 0;
+      } else if (value instanceof String)
         size = value.toString().length();
       else
         size = MultiValue.getSize(value);

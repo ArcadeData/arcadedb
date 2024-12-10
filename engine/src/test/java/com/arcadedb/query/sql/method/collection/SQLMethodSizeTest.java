@@ -50,7 +50,7 @@ class SQLMethodSizeTest {
     final RID rid = new RID(db, 1, 1);
     final Object result = method.execute(rid, null, null, null);
     assertThat(result).isInstanceOf(Number.class);
-    assertThat(result).isEqualTo(1);
+    assertThat(result).isEqualTo(0);
   }
 
   @Test
