@@ -99,7 +99,10 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     super(database, name, filePath, ext, mode, pageSize, version);
 
     if (nullStrategy == null)
-      throw new IllegalArgumentException("Index null strategy is null ");
+      throw new IllegalArgumentException("Index null strategy is null");
+
+    if (keyTypes == null || keyTypes.length == 0)
+      throw new IllegalArgumentException("Key types empty ");
 
     this.mainIndex = mainIndex;
     this.serializer = database.getSerializer();
