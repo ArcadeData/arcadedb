@@ -32,6 +32,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.HostUtil;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONObject;
@@ -285,7 +286,9 @@ public class RemoteHttpComponent extends RWLockContext {
       final JSONObject ha = response.getJSONObject("ha");
 
       final String cfgLeaderServer = (String) ha.get("leaderAddress");
-      final String[] leaderServerParts = cfgLeaderServer.split(":");
+
+      final String[] leaderServerParts = HostUtil.parseHostAddress(cfgLeaderServer, HostUtil.HA_DEFAULT_PORT);
+
       leaderServer = new Pair<>(leaderServerParts[0], Integer.parseInt(leaderServerParts[1]));
 
       final String cfgReplicaServers = (String) ha.get("replicaAddresses");
@@ -297,10 +300,7 @@ public class RemoteHttpComponent extends RWLockContext {
         final String[] serverEntries = cfgReplicaServers.split(",");
         for (final String serverEntry : serverEntries) {
           try {
-            final String[] serverParts = serverEntry.split(":");
-            if (serverParts.length != 2)
-              LogManager.instance().log(this, Level.WARNING, "No port specified on remote server URL '%s'", null, serverEntry);
-
+            final String[] serverParts = HostUtil.parseHostAddress(serverEntry, HostUtil.CLIENT_DEFAULT_PORT);
             final String sHost = serverParts[0];
             final int sPort = Integer.parseInt(serverParts[1]);
 
@@ -417,12 +417,12 @@ public class RemoteHttpComponent extends RWLockContext {
       } else if (exception.equals(RecordNotFoundException.class.getName())) {
         final int begin = detail.indexOf("#");
         final int end = detail.indexOf(" ", begin);
-        return new RecordNotFoundException(detail, new RID( detail.substring(begin, end)));
+        return new RecordNotFoundException(detail, new RID(detail.substring(begin, end)));
       } else if (exception.equals(QuorumNotReachedException.class.getName())) {
         return new QuorumNotReachedException(detail);
       } else if (exception.equals(DuplicatedKeyException.class.getName()) && exceptionArgs != null) {
         final String[] exceptionArgsParts = exceptionArgs.split("\\|");
-        return new DuplicatedKeyException(exceptionArgsParts[0], exceptionArgsParts[1], new RID( exceptionArgsParts[2]));
+        return new DuplicatedKeyException(exceptionArgsParts[0], exceptionArgsParts[1], new RID(exceptionArgsParts[2]));
       } else if (exception.equals(ConcurrentModificationException.class.getName())) {
         return new ConcurrentModificationException(detail);
       } else if (exception.equals(TransactionException.class.getName())) {

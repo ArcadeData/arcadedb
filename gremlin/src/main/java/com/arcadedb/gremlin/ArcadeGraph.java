@@ -35,6 +35,7 @@ import com.arcadedb.gremlin.io.ArcadeIoRegistry;
 import com.arcadedb.gremlin.service.ArcadeServiceRegistry;
 import com.arcadedb.gremlin.service.VectorNeighborsFactory;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.HostUtil;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.schema.DocumentType;
@@ -187,10 +188,8 @@ public class ArcadeGraph implements Graph, Closeable {
         remoteAddresses.addAll(remoteDatabase.getReplicaAddresses());
 
         final String[] hosts = new String[remoteAddresses.size()];
-        for (int i = 0; i < remoteAddresses.size(); i++) {
-          final String host = remoteAddresses.get(0);
-          hosts[i] = host.substring(0, host.indexOf(":"));
-        }
+        for (int i = 0; i < remoteAddresses.size(); i++)
+          hosts[i] = HostUtil.parseHostAddress(remoteAddresses.get(0), "" + GREMLIN_SERVER_PORT)[0];
 
         final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
             new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));
