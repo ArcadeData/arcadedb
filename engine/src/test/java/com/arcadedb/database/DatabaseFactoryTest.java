@@ -22,6 +22,9 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.security.SecurityManager;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.DisabledOnOs;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -92,10 +95,8 @@ class DatabaseFactoryTest extends TestHelper {
   }
 
   @Test
+  @EnabledOnOs(OS.WINDOWS)
   void testDuplicatedDatabaseCreationWithDifferentPathTypes() {
-    if (!System.getProperty("os.name").toLowerCase().contains("windows"))
-      return;
-
     final DatabaseFactory f1 = new DatabaseFactory("path/to/database");
     final Database db = f1.create();
 

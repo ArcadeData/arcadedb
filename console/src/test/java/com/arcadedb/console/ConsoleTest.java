@@ -33,13 +33,17 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
-
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.DisabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 
-import java.io.*;
-import java.text.*;
-import java.util.*;
+import java.io.File;
+import java.io.IOException;
+import java.text.SimpleDateFormat;
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -68,10 +72,8 @@ public class ConsoleTest {
   }
 
   @Test
+  @DisabledOnOs({ OS.WINDOWS })
   public void testDropCreateWithLocalUrl() throws IOException {
-    if (System.getProperty("os.name").toLowerCase().contains("windows"))
-      return;
-
     String localUrl = "local:/" + absoluteDBPath + "/" + DB_NAME;
     assertThat(console.parse("drop database " + localUrl + "; close", false)).isTrue();
     assertThat(console.parse("create database " + localUrl + "; close", false)).isTrue();
@@ -113,9 +115,8 @@ public class ConsoleTest {
   }
 
   @Test
+  @DisabledOnOs({ OS.WINDOWS })
   public void testLocalConnect() throws IOException {
-    if (System.getProperty("os.name").toLowerCase().contains("windows"))
-      return;
     assertThat(console.parse("connect local:/" + absoluteDBPath + "/" + DB_NAME + ";info types", false)).isTrue();
   }
 
@@ -204,7 +205,8 @@ public class ConsoleTest {
     assertThat(console.parse("insert into D set name = 'Jay', lastname='Miner'")).isTrue();
     assertThat(console.parse("insert into V set name = 'Jay', lastname='Miner'")).isTrue();
     assertThat(console.parse("insert into V set name = 'Elon', lastname='Musk'")).isTrue();
-    assertThat(console.parse("create edge E from (select from V where name ='Jay') to (select from V where name ='Elon')")).isTrue();
+    assertThat(
+        console.parse("create edge E from (select from V where name ='Jay') to (select from V where name ='Elon')")).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(output -> buffer.append(output));
@@ -374,7 +376,7 @@ public class ConsoleTest {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
     assertThat(console.parse("create document type Order")).isTrue();
     assertThat(console.parse(
-      "insert into Order set processor = 'SIR1LRM-7.1', vstart = '20220319_002624.404379', vstop = '20220319_002826.525650', status = 'PENDING'")).isTrue();
+        "insert into Order set processor = 'SIR1LRM-7.1', vstart = '20220319_002624.404379', vstop = '20220319_002826.525650', status = 'PENDING'")).isTrue();
 
     {
       final StringBuilder buffer = new StringBuilder();
@@ -469,10 +471,10 @@ public class ConsoleTest {
     assertThat(console.getDatabase().getSchema().getType("doc").getProperty("prop").getCustomValue("test")).isEqualTo(true);
 
     assertThat(console.getDatabase().query("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next()
-      .<String>getProperty("type")).isEqualTo(Type.BOOLEAN.name().toUpperCase());
+        .<String>getProperty("type")).isEqualTo(Type.BOOLEAN.name().toUpperCase());
 
     assertThat(console.getDatabase().command("sql", "SELECT properties.custom.test[0].type() as type FROM schema:types").next()
-      .<String>getProperty("type")).isEqualTo(Type.BOOLEAN.name().toUpperCase());
+        .<String>getProperty("type")).isEqualTo(Type.BOOLEAN.name().toUpperCase());
   }
 
   /**
