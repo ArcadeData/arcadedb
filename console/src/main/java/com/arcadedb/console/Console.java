@@ -54,8 +54,18 @@ import org.jline.reader.impl.history.DefaultHistory;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 
-import java.io.*;
-import java.util.*;
+import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileReader;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 public class Console {
   private static final String               PROMPT                   = "%n%s> ";
@@ -95,7 +105,7 @@ public class Console {
 
     GlobalConfiguration.PROFILE.setValue("low-cpu");
 
-    terminal = TerminalBuilder.builder().system(system).streams(System.in, System.out).jansi(true).build();
+    terminal = TerminalBuilder.builder().system(system).streams(System.in, System.out).jni(true).build();
 
     output(3, "%s Console v.%s - %s (%s)", Constants.PRODUCT, Constants.getRawVersion(), Constants.COPYRIGHT, Constants.URL);
   }
@@ -163,9 +173,9 @@ public class Console {
         final String[] parts = value.substring(2).split("=");
         System.setProperty(parts[0], parts[1]);
         setGlobalConfiguration(parts[0], parts[1], true);
-      } else if (value.equalsIgnoreCase("-b"))
+      } else if (value.equalsIgnoreCase("-b")) {
         batchMode = true;
-      else {
+      } else {
         commands.append(value);
         if (!value.endsWith(";"))
           commands.append(";");
@@ -721,14 +731,15 @@ public class Console {
   }
 
   public boolean parse(final String line) throws IOException, RuntimeException {
-    return parse(line, false, true);
+    return parse(line, false, false);
   }
 
   public boolean parse(final String line, final boolean printCommand) throws IOException, RuntimeException {
-    return parse(line, printCommand, true);
+    return parse(line, printCommand, false);
   }
 
-  public boolean parse(final String line, final boolean printCommand, final boolean batchMode) throws IOException, RuntimeException {
+  public boolean parse(final String line, final boolean printCommand, final boolean batchMode)
+      throws IOException, RuntimeException {
 
     final ParsedLine parsedLine = parser.parse(line, 0);
 

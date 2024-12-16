@@ -21,15 +21,18 @@ package com.arcadedb.console;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
+import java.io.File;
+import java.io.IOException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class ConsoleBatchTest {
   @Test
@@ -37,6 +40,21 @@ public class ConsoleBatchTest {
     Console.execute(new String[] { "-b", "create database console; create vertex type ConsoleOnlyVertex;" });
     final Database db = new DatabaseFactory("./target/databases/console").open();
     assertThat(db.getSchema().existsType("ConsoleOnlyVertex")).isTrue();
+    db.drop();
+  }
+
+  @Test
+  public void batchModeWithError() throws IOException {
+
+    assertThatThrownBy(() -> Console.execute(
+        new String[] { "-b", """
+          create database console;
+          create vertex table WRONG_STATEMENT;
+          create vertex type ConsoleOnlyVertex;
+        """ }))
+        .isInstanceOf(CommandSQLParsingException.class);
+    final Database db = new DatabaseFactory("./target/databases/console").open();
+    assertThat(db.getSchema().existsType("ConsoleOnlyVertex")).isFalse();
     db.drop();
   }
 
@@ -51,7 +69,8 @@ public class ConsoleBatchTest {
   @Test
   public void swallowSettings() throws IOException {
     FileUtils.deleteRecursively(new File("./console"));
-    Console.execute(new String[] { "-Darcadedb.server.databaseDirectory=.", "create database console; create vertex type ConsoleOnlyVertex;exit;" });
+    Console.execute(new String[] { "-Darcadedb.server.databaseDirectory=.",
+        "create database console; create vertex type ConsoleOnlyVertex;exit;" });
     final Database db = new DatabaseFactory("./console").open();
     assertThat(db.getSchema().existsType("ConsoleOnlyVertex")).isTrue();
     db.drop();
