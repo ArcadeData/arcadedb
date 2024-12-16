@@ -22,7 +22,6 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.log.LogManager;
 
@@ -74,8 +73,8 @@ public class PageManagerFlushThread extends Thread {
     }
 
     LogManager.instance()
-        .log(this, Level.SEVERE, "Error on flushing pages %s during shutdown of the database (running=%s queue=%d)", pages,
-            running, queue.size());
+        .log(this, Level.SEVERE, "Error on flushing pages %s during shutdown of the database (running=%s queue=%d)", pages, running,
+            queue.size());
   }
 
   @Override
@@ -97,37 +96,46 @@ public class PageManagerFlushThread extends Thread {
   }
 
   /**
-   * Browse all the pages and flush to disk the pages that belong to a specific database
-   *
-   * @param database
+   * Waits until all the pages of a database are flushed.
    */
-  protected void flushAllPagesOfDatabase(final Database database) {
-    // FLUSH PENDING PAGES FROM THREAD
-    final PagesToFlush pending = nextPagesToFlush.get();
-    if (pending != null)
-      flushPagesOfDatabase(database, pending);
+  protected void waitAllPagesOfDatabaseAreFlushed(final Database database) {
+    // WAIT FOR PENDING THREAD
+    PagesToFlush pending = nextPagesToFlush.get();
+    while (true) {
+      if (pending == null || !database.equals(pending.database))
+        break;
+
+      // WAIT UNTIL
+      try {
+        Thread.sleep(10);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+
+      pending = nextPagesToFlush.get();
+    }
 
     if (queue.isEmpty())
       return;
 
-    for (final PagesToFlush pages : queue.stream().toList())
-      flushPagesOfDatabase(database, pages);
-  }
-
-  private void flushPagesOfDatabase(final Database database, final PagesToFlush pagesToFlush) {
-    if (pagesToFlush.database.equals(database))
-      if (!pagesToFlush.pages.isEmpty())
-        synchronized (pagesToFlush.pages) {
-          for (final Iterator<MutablePage> it = pagesToFlush.pages.iterator(); it.hasNext(); ) {
-            final MutablePage page = it.next();
-            try {
-              pageManager.flushPage(page);
-              it.remove();
-            } catch (final Exception e) {
-              LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
-            }
+    boolean foundPages;
+    do {
+      foundPages = false;
+      for (final PagesToFlush pages : queue.stream().toList()) {
+        if (database.equals(pages.database)) {
+          foundPages = true;
+          // WAIT UNTIL
+          try {
+            Thread.sleep(10);
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
           }
+          break;
         }
+      }
+    } while (foundPages);
   }
 
   protected void flushPagesFromQueueToDisk(final Database database, final long timeout) throws InterruptedException, IOException {
@@ -139,23 +147,22 @@ public class PageManagerFlushThread extends Thread {
         running = false;
       else if (!pagesToFlush.pages.isEmpty()) {
         if (database == null || pagesToFlush.database.equals(database)) {
+          if (!pagesToFlush.database.isOpen())
+            return;
+
           // SET THE PAGES TO FLUSH TO BE RETRIEVED BY A CONCURRENT DB CLOSE = FORCE FLUSH OF PAGES
           nextPagesToFlush.set(pagesToFlush);
           try {
-            // EXECUTE THE FLUSH IN A DB READ LOCK TO PREVENT CONCURRENT CLOSING
-            ((DatabaseInternal) pagesToFlush.database).executeInReadLock(() -> {
-              synchronized (pagesToFlush.pages) {
-                for (final MutablePage page : pagesToFlush.pages) {
-                  try {
-                    pageManager.flushPage(page);
-                  } catch (final DatabaseMetadataException e) {
-                    // FILE DELETED, CONTINUE WITH THE NEXT PAGES
-                    LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
-                  }
+            synchronized (pagesToFlush.pages) {
+              for (final MutablePage page : pagesToFlush.pages) {
+                try {
+                  pageManager.flushPage(page);
+                } catch (final DatabaseMetadataException e) {
+                  // FILE DELETED, CONTINUE WITH THE NEXT PAGES
+                  LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
                 }
               }
-              return null;
-            });
+            }
           } finally {
             nextPagesToFlush.set(null);
           }
@@ -201,8 +208,9 @@ public class PageManagerFlushThread extends Thread {
 
   public void removeAllPagesOfDatabase(final Database database) {
     for (final PagesToFlush pagesToFlush : queue.stream().toList())
-      synchronized (pagesToFlush.pages) {
-        pagesToFlush.pages.removeIf(page -> page.getPageId().getDatabase().equals(database));
-      }
+      if (database.equals(pagesToFlush.database))
+        synchronized (pagesToFlush.pages) {
+          pagesToFlush.pages.clear();
+        }
   }
 }

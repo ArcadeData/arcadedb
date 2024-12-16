@@ -125,9 +125,9 @@ public class PageManager extends LockContext {
     }
   }
 
-  public void flushModifiedPagesOfDatabase(final Database database) {
+  public void waitAllPagesOfDatabaseAreFlushed(final Database database) {
     if (flushThread != null)
-      flushThread.flushAllPagesOfDatabase(database);
+      flushThread.waitAllPagesOfDatabaseAreFlushed(database);
   }
 
   public void removeModifiedPagesOfDatabase(final Database database) {

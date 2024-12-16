@@ -1675,8 +1675,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       if (drop)
         PageManager.INSTANCE.removeModifiedPagesOfDatabase(this);
-      else
-        PageManager.INSTANCE.flushModifiedPagesOfDatabase(this);
+
+      PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(this);
 
       open = false;
 
