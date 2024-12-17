@@ -138,7 +138,7 @@ public class Console {
         }
 
         try {
-          if (!parse(line, false, false))
+          if (!parse(line, false))
             return;
         } catch (final Exception e) {
           // IGNORE (ALREADY PRINTED)
@@ -165,6 +165,7 @@ public class Console {
   public static void execute(final String[] args) throws IOException {
     final StringBuilder commands = new StringBuilder();
     boolean batchMode = false;
+    boolean failAtEnd = false;
     // PARSE ARGUMENT, EXTRACT SETTING AND BATCH MODE AND COMPILE THE LINES TO EXECUTE
     for (int i = 0; i < args.length; i++) {
       final String value = args[i].trim();
@@ -175,6 +176,8 @@ public class Console {
         setGlobalConfiguration(parts[0], parts[1], true);
       } else if (value.equalsIgnoreCase("-b")) {
         batchMode = true;
+      } else if (value.equalsIgnoreCase("-fae")) {
+        failAtEnd = true;
       } else {
         commands.append(value);
         if (!value.endsWith(";"))
@@ -185,12 +188,13 @@ public class Console {
     final Console console = new Console();
 
     try {
-      if (console.parse(commands.toString(), true, batchMode)) { // COMMANDLINE ARGUMENT COMMANDS
-        if (batchMode) { // BATCH MODE
-          console.executeClose();
-        } else { // INTERACTIVE MODE
+      if (batchMode) {
+        console.parse(commands.toString(), true, batchMode, failAtEnd);
+        console.parse("exit", true);
+      } else {
+        // INTERACTIVE MODE
+        if (console.parse(commands.toString(), true))
           console.interactiveMode();
-        }
       }
     } finally {
       // FORCE THE CLOSING
@@ -230,7 +234,7 @@ public class Console {
     return databaseProxy;
   }
 
-  private boolean execute(final String line) throws IOException, RuntimeException {
+  private boolean execute(final String line) throws IOException {
     try {
 
       if (line == null)
@@ -608,7 +612,8 @@ public class Console {
       try {
         resultSet = databaseProxy.command(language, line);
       } catch (Exception e) {
-        throw e;
+        outputError(e);
+        return;
       }
 
     if (transactionBatchSize > 0) {
@@ -702,7 +707,7 @@ public class Console {
       while (bufferedReader.ready()) {
         final String line = FileUtils.decodeFromFile(bufferedReader.readLine());
 
-        parse(line, true, false);
+        parse(line, true);
 
         ++executedLines;
         byteReadFromFile += line.length() + 1;
@@ -731,14 +736,14 @@ public class Console {
   }
 
   public boolean parse(final String line) throws IOException, RuntimeException {
-    return parse(line, false, false);
+    return parse(line, false);
   }
 
   public boolean parse(final String line, final boolean printCommand) throws IOException, RuntimeException {
-    return parse(line, printCommand, false);
+    return parse(line, printCommand, false, false);
   }
 
-  public boolean parse(final String line, final boolean printCommand, final boolean batchMode)
+  public boolean parse(final String line, final boolean printCommand, final boolean batchMode, boolean failAtEnd)
       throws IOException, RuntimeException {
 
     final ParsedLine parsedLine = parser.parse(line, 0);
@@ -750,12 +755,17 @@ public class Console {
       if (printCommand)
         output(3, getPrompt() + w);
 
-      try {
+      if (batchMode) {
+        try {
+          if (!execute(w))
+            return false;
+        } catch (final Exception e) {
+          if (!failAtEnd)
+            throw e;
+        }
+      } else {
         if (!execute(w))
           return false;
-      } catch (final IOException | RuntimeException e) {
-        if (batchMode)
-          throw e;
       }
     }
     return true;
