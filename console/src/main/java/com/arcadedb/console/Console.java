@@ -612,8 +612,9 @@ public class Console {
       try {
         resultSet = databaseProxy.command(language, line);
       } catch (Exception e) {
-        outputError(e);
-        return;
+//        outputError(e);
+//        return;
+        throw e;
       }
 
     if (transactionBatchSize > 0) {
@@ -764,8 +765,15 @@ public class Console {
             throw e;
         }
       } else {
-        if (!execute(w))
-          return false;
+        try {
+          if (!execute(w))
+            return false;
+        } catch (final Exception e) {
+            return true;
+
+//          throw e;
+        }
+
       }
     }
     return true;
