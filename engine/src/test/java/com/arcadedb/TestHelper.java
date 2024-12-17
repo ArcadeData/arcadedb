@@ -83,7 +83,7 @@ public abstract class TestHelper {
   }
 
   public static void executeInNewDatabase(final String testName, final DatabaseTest<Database> callback) throws Exception {
-    try (final DatabaseFactory factory = new DatabaseFactory("./target/databases" + testName)) {
+    try (final DatabaseFactory factory = new DatabaseFactory("./target/databases/" + testName)) {
       if (factory.exists()) {
         factory.open().drop();
         assertThat(DatabaseFactory.getActiveDatabaseInstance(factory.getDatabasePath())).isNull();
