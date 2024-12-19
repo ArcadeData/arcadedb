@@ -28,10 +28,16 @@ import com.arcadedb.server.ServerException;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.*;
-import java.text.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
+import java.io.IOException;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Date;
+import java.util.List;
+import java.util.logging.Level;
 
 public class FileServerEventLog implements ServerEventLog {
   private final static String           FILE_PREFIX = "server-event-log-";
@@ -108,15 +114,15 @@ public class FileServerEventLog implements ServerEventLog {
     if (newFileName == null)
       return;
 
-    final JSONObject json = new JSONObject();
     try {
+      final JSONObject json = new JSONObject();
       json.put("time", dateFormat.format(new Date()));
       json.put("type", eventType);
       json.put("component", component);
       json.put("db", databaseName);
       json.put("message", message);
 
-      FileUtils.appendContentToFile(newFileName, json.toString() + "\n");
+      FileUtils.appendContentToFile(newFileName, json + "\n");
     } catch (IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on writing into server event log file %s", e, newFileName);
     }

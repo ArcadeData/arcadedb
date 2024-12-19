@@ -131,18 +131,6 @@ public class HAServer implements ServerPlugin {
     }
   }
 
-//  private static class RemovedServerInfo {
-//    String serverName;
-//    long   joinedOn;
-//    long   leftOn;
-//
-//    public RemovedServerInfo(final String remoteServerName, final long joinedOn) {
-//      this.serverName = remoteServerName;
-//      this.joinedOn = joinedOn;
-//      this.leftOn = System.currentTimeMillis();
-//    }
-//  }
-
   public HAServer(final ArcadeDBServer server, final ContextConfiguration configuration) {
     if (!configuration.getValueAsBoolean(GlobalConfiguration.TX_WAL))
       throw new ConfigurationException("Cannot start HA service without using WAL. Please enable the TX_WAL setting.");

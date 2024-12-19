@@ -25,11 +25,14 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
+import java.util.logging.Level;
 
 public class PostCommandHandler extends AbstractQueryHandler {
 
@@ -119,7 +122,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
       if (qResult != null && profileExecution != null && qResult.getExecutionPlan().isPresent())
         qResult.getExecutionPlan().ifPresent(x -> response.put("explain", qResult.getExecutionPlan().get().prettyPrint(0, 2)));
 
-      httpServer.getServer().getServerMetrics().meter("http.command").hit();
+      Metrics.counter("http.command").increment(); ;
 
       return new ExecutionResponse(200, response.toString());
     }

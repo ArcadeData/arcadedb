@@ -21,6 +21,7 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
 public class GetReadyHandler extends AbstractServerHttpHandler {
@@ -30,7 +31,7 @@ public class GetReadyHandler extends AbstractServerHttpHandler {
 
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
-    httpServer.getServer().getServerMetrics().meter("http.ready").hit();
+    Metrics.counter("http.ready").increment(); ;
 
     if (httpServer.getServer().getStatus() == ArcadeDBServer.STATUS.ONLINE)
       return new ExecutionResponse(204, "");

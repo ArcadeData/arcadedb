@@ -27,12 +27,13 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSession;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
+import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.HttpString;
 
-import java.io.*;
-import java.util.*;
+import java.io.IOException;
+import java.util.Map;
 
 public class PostBeginHandler extends DatabaseAbstractHandler {
 
@@ -72,7 +73,7 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
 
     exchange.getResponseHeaders().put(new HttpString(HttpSessionManager.ARCADEDB_SESSION_ID), session.id);
 
-    httpServer.getServer().getServerMetrics().meter("http.begin").hit();
+    Metrics.counter("http.begin").increment(); ;
 
     return new ExecutionResponse(204, "");
   }

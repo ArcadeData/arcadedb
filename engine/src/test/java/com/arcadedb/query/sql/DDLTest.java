@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.stream.IntStream;
@@ -71,16 +72,21 @@ public class DDLTest extends TestHelper {
 
     database.transaction(() -> {
 
-      final Long persons = database.command("sql", "SELECT count(*) as persons FROM Person ").next().<Long>getProperty("persons");
-      assertThat(persons).isEqualTo(numOfElements);
-      final Long cars = database.command("sql", "SELECT count(*) as cars FROM Car").next().<Long>getProperty("cars");
+      assertThat(database.command("sql", "SELECT count(*) as persons FROM Person ")
+          .next().<Long>getProperty("persons"))
+          .isEqualTo(numOfElements);
 
-      assertThat(cars).isEqualTo(numOfElements);
-      final Long vs = database.command("sql", "SELECT count(*) as vs FROM V").next().<Long>getProperty("vs");
+      assertThat(database.command("sql", "SELECT count(*) as cars FROM Car")
+          .next().<Long>getProperty("cars"))
+          .isEqualTo(numOfElements);
 
-      assertThat(vs).isEqualTo(numOfElements * 2);
-      final Long edges = database.command("sql", "SELECT count(*) as edges FROM Drives").next().<Long>getProperty("edges");
+      assertThat(database.command("sql", "SELECT count(*) as vs FROM V")
+          .next().<Long>getProperty("vs"))
+          .isEqualTo(numOfElements * 2);
 
+      assertThat(database.command("sql", "SELECT count(*) as edges FROM Drives")
+          .next().<Long>getProperty("edges"))
+          .isEqualTo(numOfElements);
     });
 
   }

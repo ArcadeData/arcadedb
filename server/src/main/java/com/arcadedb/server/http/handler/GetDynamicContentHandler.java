@@ -25,6 +25,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.FileUtils;
+import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
 
@@ -90,7 +91,7 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
 
     exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, contentType);
 
-    httpServer.getServer().getServerMetrics().meter("http.static-content").hit();
+    Metrics.counter("http.static-content").increment(); ;
 
     LogManager.instance().log(this, Level.FINE, "Loading file %s ", "/static" + uri);
 

@@ -22,9 +22,10 @@ import com.arcadedb.database.Database;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
+import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.*;
+import java.io.IOException;
 
 public class PostRollbackHandler extends DatabaseAbstractHandler {
 
@@ -36,7 +37,8 @@ public class PostRollbackHandler extends DatabaseAbstractHandler {
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
     database.rollback();
     exchange.getResponseHeaders().remove(HttpSessionManager.ARCADEDB_SESSION_ID);
-    httpServer.getServer().getServerMetrics().meter("http.rollback").hit();
+    Metrics.counter("http.rollback").increment(); ;
+
     return new ExecutionResponse(204, "");
   }
 

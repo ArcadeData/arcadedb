@@ -22,9 +22,10 @@ import com.arcadedb.database.Database;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
+import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.*;
+import java.io.IOException;
 
 public class PostCommitHandler extends DatabaseAbstractHandler {
 
@@ -36,7 +37,8 @@ public class PostCommitHandler extends DatabaseAbstractHandler {
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
     database.commit();
     exchange.getResponseHeaders().remove(HttpSessionManager.ARCADEDB_SESSION_ID);
-    httpServer.getServer().getServerMetrics().meter("http.commit").hit();
+    Metrics.counter("http.commit").increment(); ;
+
     return new ExecutionResponse(204, "");
   }
 

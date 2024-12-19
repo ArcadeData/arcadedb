@@ -28,14 +28,23 @@ import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.monitor.ServerMetrics;
 import com.arcadedb.server.security.ServerSecurityUser;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.*;
-import java.net.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Scanner;
+import java.util.Set;
+import java.util.logging.Level;
 
 public class GetServerHandler extends AbstractServerHttpHandler {
   public GetServerHandler(final HttpServer httpServer) {
@@ -57,7 +66,7 @@ public class GetServerHandler extends AbstractServerHttpHandler {
       exportCluster(exchange, response);
     }
 
-    httpServer.getServer().getServerMetrics().meter("http.server-info").hit();
+    Metrics.counter("http.server-info").increment();
 
     return new ExecutionResponse(200, response.toString());
   }
@@ -139,14 +148,17 @@ public class GetServerHandler extends AbstractServerHttpHandler {
     final JSONObject metersJSON = new JSONObject();
     metricsJSON.put("meters", metersJSON);
 
-    for (Map.Entry<String, ServerMetrics.Meter> entry : httpServer.getServer().getServerMetrics().getMeters().entrySet()) {
-      final ServerMetrics.Meter meter = entry.getValue();
+    final MeterRegistry registry = Metrics.globalRegistry;
 
-      metersJSON.put(entry.getKey(), new JSONObject().put("count", meter.getTotalCounter())//
-          .put("reqPerSecLastMinute", meter.getRequestsPerSecondInLastMinute())//
-          .put("reqPerSecSinceLastTime", meter.getRequestsPerSecondSinceLastAsked())//
-      );
-    }
+    registry.getMeters().stream()
+        .filter(meter -> meter.getId().getName().startsWith("http."))
+        .forEach(meter -> {
+          metersJSON.put(meter.getId().getName(),
+              new JSONObject().put("count", meter.measure().iterator().next().getValue())
+                  .put("reqPerSecLastMinute", meter.measure().iterator().next().getValue())
+                  .put("reqPerSecSinceLastTime", meter.measure().iterator().next().getValue())
+          );
+        });
 
     int serverEventsSummaryErrors = 0;
     int serverEventsSummaryWarnings = 0;
@@ -157,31 +169,21 @@ public class GetServerHandler extends AbstractServerHttpHandler {
     for (int i = 0; i < events.length(); i++) {
       final JSONObject event = events.getJSONObject(i);
       switch (event.getString("type")) {
-      case "ERROR":
-        serverEventsSummaryErrors++;
-        break;
-
-      case "WARNING":
-        serverEventsSummaryWarnings++;
-        break;
-
-      case "INFO":
-        serverEventsSummaryInfo++;
-        break;
-
-      case "HINT":
-        serverEventsSummaryHints++;
-        break;
+      case "ERROR" -> serverEventsSummaryErrors++;
+      case "WARNING" -> serverEventsSummaryWarnings++;
+      case "INFO" -> serverEventsSummaryInfo++;
+      case "HINT" -> serverEventsSummaryHints++;
       }
     }
 
     final JSONObject eventsJSON = new JSONObject();
-    metricsJSON.put("events", eventsJSON);
-
     eventsJSON.put("errors", serverEventsSummaryErrors);
     eventsJSON.put("warnings", serverEventsSummaryWarnings);
     eventsJSON.put("info", serverEventsSummaryInfo);
     eventsJSON.put("hints", serverEventsSummaryHints);
+
+    metricsJSON.put("events", eventsJSON);
+
   }
 
   private void exportSettings(final JSONObject response) {
