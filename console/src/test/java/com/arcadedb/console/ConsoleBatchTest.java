@@ -45,7 +45,7 @@ public class ConsoleBatchTest {
 
   @Test
   public void batchModeWithError() throws IOException {
-
+    // This should fail
     assertThatThrownBy(() -> Console.execute(
         new String[] { "-b", """
           create database console;
@@ -53,8 +53,26 @@ public class ConsoleBatchTest {
           create vertex type ConsoleOnlyVertex;
         """ }))
         .isInstanceOf(CommandSQLParsingException.class);
+
     final Database db = new DatabaseFactory("./target/databases/console").open();
+    // the ConsoleOnlyVertex should not be created
     assertThat(db.getSchema().existsType("ConsoleOnlyVertex")).isFalse();
+    db.drop();
+  }
+
+  @Test
+  public void batchModeWithFailAtEnd() throws IOException {
+    // Error is only printed out
+    Console.execute(
+        new String[] { "-b", "-fae", """
+          create database console;
+          create vertex table WRONG_STATEMENT;
+          create vertex type ConsoleOnlyVertex;
+        """ });
+
+    final Database db = new DatabaseFactory("./target/databases/console").open();
+    // the ConsoleOnlyVertex is created
+    assertThat(db.getSchema().existsType("ConsoleOnlyVertex")).isTrue();
     db.drop();
   }
 

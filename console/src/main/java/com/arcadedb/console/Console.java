@@ -91,10 +91,18 @@ public class Console {
   private              long                 transactionBatchSize     = 0L;
   protected            long                 currentOperationsInBatch = 0L;
   private              RemoteServer         remoteServer;
+  private              boolean              batchMode                = false;
+  private              boolean              failAtEnd                = false;
 
   public Console(final DatabaseInternal database) throws IOException {
     this();
     this.databaseProxy = database;
+  }
+
+  public Console(boolean batchMode, boolean failAtEnd) throws IOException {
+    this();
+    this.batchMode = batchMode;
+    this.failAtEnd = failAtEnd;
   }
 
   public Console() throws IOException {
@@ -185,11 +193,11 @@ public class Console {
       }
     }
 
-    final Console console = new Console();
+    final Console console = new Console(batchMode, failAtEnd);
 
     try {
       if (batchMode) {
-        console.parse(commands.toString(), true, batchMode, failAtEnd);
+        console.parse(commands.toString(), true);
         console.parse("exit", true);
       } else {
         // INTERACTIVE MODE
@@ -298,10 +306,12 @@ public class Console {
     final String key = parts[0].trim();
     final String value = parts[1].trim();
 
-    if ("limit".equalsIgnoreCase(key)) {
+    switch (key.toLowerCase()) {
+    case "limit" -> {
       limit = Integer.parseInt(value);
       outputLine(3, "Set new limit to %d", limit);
-    } else if ("asyncMode".equalsIgnoreCase(key)) {
+    }
+    case "asyncmode" -> {
       asyncMode = Boolean.parseBoolean(value);
       if (asyncMode) {
         // ENABLE ASYNCHRONOUS PARALLEL MODE
@@ -314,27 +324,35 @@ public class Console {
           });
       }
       outputLine(3, "Set asyncMode to %s", asyncMode);
-    } else if ("transactionBatchSize".equalsIgnoreCase(key)) {
+    }
+    case "transactionbatchsize" -> {
       transactionBatchSize = Integer.parseInt(value);
       outputLine(3, "Set new transactionBatch to %d", transactionBatchSize);
-    } else if ("language".equalsIgnoreCase(key)) {
+    }
+    case "language" -> {
       language = value;
       outputLine(3, "Set language to %s", language);
-    } else if ("expandResultSet".equalsIgnoreCase(key)) {
+    }
+    case "expandresultset" -> {
       expandResultSet = value.equalsIgnoreCase("true");
       outputLine(3, "Set expanded result set to %s", expandResultSet);
-    } else if ("maxMultiValueEntries".equalsIgnoreCase(key)) {
+    }
+    case "maxmultivalueentries" -> {
       maxMultiValueEntries = Integer.parseInt(value);
       outputLine(3, "Set maximum multi value entries to %d", maxMultiValueEntries);
-    } else if ("verbose".equalsIgnoreCase(key)) {
+    }
+    case "verbose" -> {
       verboseLevel = Integer.parseInt(value);
       outputLine(3, "Set verbose level to %d", verboseLevel);
-    } else if ("maxWidth".equalsIgnoreCase(key)) {
+    }
+    case "maxwidth" -> {
       maxWidth = Integer.parseInt(value);
       outputLine(3, "Set maximum width to %d", maxWidth);
-    } else {
+    }
+    default -> {
       if (!setGlobalConfiguration(key, value, false))
         outputLine(3, "Setting '%s' is not supported by the console", key);
+    }
     }
 
     flushOutput();
@@ -343,10 +361,10 @@ public class Console {
   private void executeTransactionStatus() {
     checkDatabaseIsOpen();
 
-    if (databaseProxy instanceof DatabaseInternal) {
-      final TransactionContext tx = ((DatabaseInternal) databaseProxy).getTransaction();
+    if (databaseProxy instanceof DatabaseInternal db) {
+      final TransactionContext tx = db.getTransaction();
       if (tx.isActive()) {
-        final ResultInternal row = new ResultInternal((Database) databaseProxy);
+        final ResultInternal row = new ResultInternal(db);
         row.setPropertiesFromMap(tx.getStats());
         printRecord(row);
 
@@ -561,15 +579,14 @@ public class Console {
 
     final List<TableFormatter.TableRow> resultSet = new ArrayList<>();
 
-    Object value;
     for (final String fieldName : currentRecord.getPropertyNames()) {
-      value = currentRecord.getProperty(fieldName);
-      if (value instanceof byte[])
-        value = "byte[" + ((byte[]) value).length + "]";
-      else if (value instanceof Iterator<?>) {
+      Object value = currentRecord.getProperty(fieldName);
+      if (value instanceof byte[] bytes)
+        value = "byte[" + bytes.length + "]";
+      else if (value instanceof Iterator<?> iterator) {
         final List<Object> coll = new ArrayList<>();
-        while (((Iterator<?>) value).hasNext())
-          coll.add(((Iterator<?>) value).next());
+        while (iterator.hasNext())
+          coll.add(iterator.next());
         value = coll;
       } else if (MultiValue.isMultiValue(value)) {
         value = TableFormatter.getPrettyFieldMultiValue(MultiValue.getMultiValueIterator(value), maxMultiValueEntries);
@@ -608,14 +625,17 @@ public class Console {
           outputError(exception);
         }
       });
-    } else
+    } else {
       try {
         resultSet = databaseProxy.command(language, line);
       } catch (Exception e) {
-//        outputError(e);
-//        return;
-        throw e;
+        if (batchMode && !failAtEnd)
+          throw e;
+        else
+          outputError(e);
+        return;
       }
+    }
 
     if (transactionBatchSize > 0) {
       ++currentOperationsInBatch;
@@ -736,16 +756,11 @@ public class Console {
     flushOutput();
   }
 
-  public boolean parse(final String line) throws IOException, RuntimeException {
+  public boolean parse(final String line) throws IOException {
     return parse(line, false);
   }
 
-  public boolean parse(final String line, final boolean printCommand) throws IOException, RuntimeException {
-    return parse(line, printCommand, false, false);
-  }
-
-  public boolean parse(final String line, final boolean printCommand, final boolean batchMode, boolean failAtEnd)
-      throws IOException, RuntimeException {
+  public boolean parse(final String line, final boolean printCommand) throws IOException {
 
     final ParsedLine parsedLine = parser.parse(line, 0);
 
@@ -765,14 +780,8 @@ public class Console {
             throw e;
         }
       } else {
-        try {
           if (!execute(w))
             return false;
-        } catch (final Exception e) {
-            return true;
-
-//          throw e;
-        }
 
       }
     }
