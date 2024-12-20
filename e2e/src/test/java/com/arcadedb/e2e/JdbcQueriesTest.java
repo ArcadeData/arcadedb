@@ -23,8 +23,12 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.sql.*;
-import java.util.*;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.Properties;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -63,6 +67,19 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
         assertThat(rs.getString("name")).isNotBlank();
 
         assertThat(rs.next()).isFalse();
+      }
+    }
+  }
+
+  @Test
+  void bigResultSetSQLQuery() throws Exception {
+
+    try (final Statement st = conn.createStatement()) {
+
+      try (final ResultSet rs = st.executeQuery("SELECT * FROM Beer limit -1")) {
+        while (rs.next()) {
+          assertThat(rs.getString("name")).isNotBlank();
+        }
       }
     }
   }
