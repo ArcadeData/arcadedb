@@ -22,7 +22,9 @@ import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
+@ExcludeFromJacocoGeneratedReport
 public interface IndexableSQLFunction {
   boolean shouldExecuteAfterSearch(FromClause target, BinaryCompareOperator operator, Object right, CommandContext context, Expression[] oExpressions);
 

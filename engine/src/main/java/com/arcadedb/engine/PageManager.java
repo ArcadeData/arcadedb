@@ -28,6 +28,7 @@ import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.CodeUtils;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockContext;
 
@@ -61,6 +62,7 @@ public class PageManager extends LockContext {
   private          PageManagerFlushThread            flushThread;
   private          int                               freePageRAM;
 
+  @ExcludeFromJacocoGeneratedReport
   public interface ConcurrentPageAccessCallback {
     void access() throws IOException;
   }

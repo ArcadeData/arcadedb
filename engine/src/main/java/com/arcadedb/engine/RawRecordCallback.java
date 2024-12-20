@@ -20,7 +20,9 @@ package com.arcadedb.engine;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.RID;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
+@ExcludeFromJacocoGeneratedReport
 public interface RawRecordCallback {
   boolean onRecord(RID rid, Binary view);
 }

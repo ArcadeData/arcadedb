@@ -18,12 +18,15 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
 import java.util.*;
 import java.util.stream.*;
 
 /**
  * Created by luigidellaquila on 20/07/16.
  */
+@ExcludeFromJacocoGeneratedReport
 public interface ExecutionStep {
 
   String getName();

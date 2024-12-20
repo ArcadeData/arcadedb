@@ -19,7 +19,9 @@
 package com.arcadedb.database;
 
 import com.arcadedb.engine.WALFile;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
+@ExcludeFromJacocoGeneratedReport
 public interface Transaction {
   void begin(Database.TRANSACTION_ISOLATION_LEVEL isolationLevel);
 

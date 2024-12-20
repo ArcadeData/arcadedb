@@ -24,6 +24,9 @@ package com.arcadedb.query.sql.parser;
    machinery for constructing the parent and child relationships
    between nodes. */
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
+@ExcludeFromJacocoGeneratedReport
 public interface Node {
 
   /**

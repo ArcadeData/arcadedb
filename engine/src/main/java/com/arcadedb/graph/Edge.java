@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * An Edge represents the connection between two vertices in a Property Graph. The edge can have properties and point to the same vertex.
@@ -29,6 +30,7 @@ import com.arcadedb.database.RID;
  * @author Luca Garulli (l.garulli@arcadedata.it)
  * @see Vertex
  */
+@ExcludeFromJacocoGeneratedReport
 public interface Edge extends Document {
   byte RECORD_TYPE = 2;
 

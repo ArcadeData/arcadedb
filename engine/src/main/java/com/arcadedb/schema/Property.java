@@ -16,6 +16,7 @@ package com.arcadedb.schema;/*
 
 import com.arcadedb.index.Index;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.util.*;
 
@@ -24,6 +25,7 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@ExcludeFromJacocoGeneratedReport
 public interface Property {
   Index createIndex(Schema.INDEX_TYPE type, boolean unique);
 

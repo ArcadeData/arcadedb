@@ -26,6 +26,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.util.*;
 
@@ -35,6 +36,7 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  **/
+@ExcludeFromJacocoGeneratedReport
 public interface DatabaseAsyncExecutor {
   /**
    * Waits for the completion of all the pending tasks.

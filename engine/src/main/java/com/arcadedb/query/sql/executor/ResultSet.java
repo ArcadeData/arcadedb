@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.util.*;
 import java.util.function.*;
@@ -30,6 +31,7 @@ import java.util.stream.*;
 /**
  * Result set returned from queries. This class implements can be used as an Iterator of Result.
  */
+@ExcludeFromJacocoGeneratedReport
 public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCloseable {
   EmptyResult EMPTY_RESULT = new EmptyResult();
 

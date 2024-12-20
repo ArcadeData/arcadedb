@@ -16,12 +16,14 @@ package com.arcadedb.schema;/*
 
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * Schema Edge Type.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@ExcludeFromJacocoGeneratedReport
 public interface EdgeType extends DocumentType {
   @Override
   default MutableDocument newRecord() {

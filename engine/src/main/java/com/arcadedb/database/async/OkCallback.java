@@ -18,6 +18,9 @@
  */
 package com.arcadedb.database.async;
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
+@ExcludeFromJacocoGeneratedReport
 public interface OkCallback {
   void call();
 }

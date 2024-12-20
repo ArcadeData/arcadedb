@@ -25,9 +25,11 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.util.*;
 
+@ExcludeFromJacocoGeneratedReport
 public interface BasicDatabase extends AutoCloseable {
   String getName();
 

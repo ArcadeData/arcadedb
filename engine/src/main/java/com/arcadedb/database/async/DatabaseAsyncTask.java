@@ -19,11 +19,13 @@
 package com.arcadedb.database.async;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /***
  * Interface for asynchronous tasks.
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@ExcludeFromJacocoGeneratedReport
 public interface DatabaseAsyncTask {
 
   void execute(DatabaseAsyncExecutorImpl.AsyncThread async, DatabaseInternal database);

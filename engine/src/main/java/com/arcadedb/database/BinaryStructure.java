@@ -18,8 +18,11 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
 import java.nio.*;
 
+@ExcludeFromJacocoGeneratedReport
 public interface BinaryStructure {
   void append(Binary toCopy);
 

@@ -19,6 +19,7 @@
 package com.arcadedb.event;
 
 import com.arcadedb.database.Record;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * Listener to receive events before a new record (documents, vertices and edges) is created.
@@ -28,6 +29,7 @@ import com.arcadedb.database.Record;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  **/
+@ExcludeFromJacocoGeneratedReport
 public interface BeforeRecordCreateListener {
   /**
    * Callback invoked right before a new record (documents, vertices and edges) has been saved.

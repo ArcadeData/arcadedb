@@ -14,11 +14,14 @@ package com.arcadedb.function;/*
  * limitations under the License.
  */
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
 /**
  * Defines a function with a name and an entrypoint for execution.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@ExcludeFromJacocoGeneratedReport
 public interface FunctionDefinition {
   /**
    * Returns the name of the function.

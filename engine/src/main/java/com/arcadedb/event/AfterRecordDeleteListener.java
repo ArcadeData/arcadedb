@@ -19,6 +19,7 @@
 package com.arcadedb.event;
 
 import com.arcadedb.database.Record;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * Listener to receive events after a delete operation occurs on records (documents, vertices and edges).
@@ -28,6 +29,7 @@ import com.arcadedb.database.Record;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  **/
+@ExcludeFromJacocoGeneratedReport
 public interface AfterRecordDeleteListener {
   /**
    * Callback invoked right after a record (documents, vertices and edges) has been deleted. You can use this callback to implement a cascade deletion.

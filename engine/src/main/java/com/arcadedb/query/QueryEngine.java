@@ -21,9 +21,11 @@ package com.arcadedb.query;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.util.*;
 
+@ExcludeFromJacocoGeneratedReport
 public interface QueryEngine {
   interface AnalyzedQuery {
     boolean isIdempotent();
@@ -31,6 +33,7 @@ public interface QueryEngine {
     boolean isDDL();
   }
 
+  @ExcludeFromJacocoGeneratedReport
   interface QueryEngineFactory {
     String getLanguage();
 

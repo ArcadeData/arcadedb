@@ -18,8 +18,11 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
 import java.io.*;
 
+@ExcludeFromJacocoGeneratedReport
 public interface WALFileFactory {
   WALFile newInstance(final String filePath) throws FileNotFoundException;
 }

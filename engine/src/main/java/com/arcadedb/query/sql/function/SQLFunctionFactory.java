@@ -20,12 +20,14 @@ package com.arcadedb.query.sql.function;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.SQLFunction;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.util.*;
 
 /**
  * @author Johann Sorel (Geomatys)
  */
+@ExcludeFromJacocoGeneratedReport
 public interface SQLFunctionFactory {
 
   boolean hasFunction(String iName);

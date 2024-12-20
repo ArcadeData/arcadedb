@@ -19,6 +19,7 @@
 package com.arcadedb.event;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * Listener to receive events before reading records (documents, vertices and edges).
@@ -28,6 +29,7 @@ import com.arcadedb.database.RID;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  **/
+@ExcludeFromJacocoGeneratedReport
 public interface BeforeRecordReadListener {
   /**
    * Callback invoked right before a record (documents, vertices and edges) is read from the page.

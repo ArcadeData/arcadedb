@@ -19,9 +19,11 @@
 package com.arcadedb.database.async;
 
 import com.arcadedb.graph.Edge;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.util.*;
 
+@ExcludeFromJacocoGeneratedReport
 public interface NewEdgesCallback {
   void call(List<Edge> newEdges);
 }

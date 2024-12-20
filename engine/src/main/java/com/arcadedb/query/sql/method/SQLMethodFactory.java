@@ -20,10 +20,12 @@ package com.arcadedb.query.sql.method;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.SQLMethod;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * @author Johann Sorel (Geomatys)
  */
+@ExcludeFromJacocoGeneratedReport
 public interface SQLMethodFactory {
   /**
    * Create method for the given name. returned method may be a new instance each time or a constant.

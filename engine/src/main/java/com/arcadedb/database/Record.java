@@ -19,12 +19,14 @@
 package com.arcadedb.database;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * Generic interface representing a record as an entry in the database.
  *
  * @author Luca Garulli
  */
+@ExcludeFromJacocoGeneratedReport
 public interface Record extends Identifiable {
   RID getIdentity();
 

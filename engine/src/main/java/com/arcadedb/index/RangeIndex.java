@@ -18,9 +18,12 @@
  */
 package com.arcadedb.index;
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
 /**
  * Basic Range Index interface. Supports range queries and iterations.
  */
+@ExcludeFromJacocoGeneratedReport
 public interface RangeIndex extends Index {
   /**
    * The returning iterator does not skip deleted entries and it might contains duplicated entries.

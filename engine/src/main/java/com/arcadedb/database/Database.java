@@ -31,10 +31,12 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.select.Select;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.util.*;
 import java.util.concurrent.*;
 
+@ExcludeFromJacocoGeneratedReport
 public interface Database extends BasicDatabase {
   enum TRANSACTION_ISOLATION_LEVEL {
     READ_COMMITTED, REPEATABLE_READ

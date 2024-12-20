@@ -26,10 +26,12 @@ import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.time.*;
 import java.util.*;
 
+@ExcludeFromJacocoGeneratedReport
 public interface Schema {
 
   Component getFileById(int id);

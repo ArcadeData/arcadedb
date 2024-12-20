@@ -18,12 +18,15 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
 import java.io.*;
 import java.util.*;
 
 /**
  * Created by luigidellaquila on 06/07/16.
  */
+@ExcludeFromJacocoGeneratedReport
 public interface ExecutionPlan extends Serializable {
 
   List<ExecutionStep> getSteps();

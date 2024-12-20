@@ -19,6 +19,7 @@
 package com.arcadedb.event;
 
 import com.arcadedb.database.Record;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * Listener to receive events after new records (documents, vertices and edges) are saved.
@@ -28,6 +29,7 @@ import com.arcadedb.database.Record;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  **/
+@ExcludeFromJacocoGeneratedReport
 public interface AfterRecordCreateListener {
   /**
    * Callback invoked right after a new record (documents, vertices and edges) has been saved. You can use this callback to enrich the record with additional properties.

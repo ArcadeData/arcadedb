@@ -21,6 +21,7 @@ package com.arcadedb.utility;
 /**
  * Wake up at every variable found.
  */
+@ExcludeFromJacocoGeneratedReport
 public interface VariableParserListener {
   Object resolve(String variable);
 }

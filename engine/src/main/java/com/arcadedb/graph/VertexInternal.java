@@ -19,6 +19,7 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * Not intended to be used by the end-user. Internal only.
@@ -26,6 +27,7 @@ import com.arcadedb.database.RID;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  * @see Vertex
  */
+@ExcludeFromJacocoGeneratedReport
 public interface VertexInternal extends Vertex {
   RID getOutEdgesHeadChunk();
 

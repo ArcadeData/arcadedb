@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.util.*;
 
@@ -36,6 +37,7 @@ import java.util.*;
  *
  * @author Luigi Dell'Aquila luigi.dellaquila-(at)-gmail.com
  */
+@ExcludeFromJacocoGeneratedReport
 public interface ExecutionStepInternal extends ExecutionStep {
 
   static String getIndent(final int depth, final int indent) {

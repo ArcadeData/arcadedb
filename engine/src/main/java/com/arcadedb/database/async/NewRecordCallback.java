@@ -19,7 +19,9 @@
 package com.arcadedb.database.async;
 
 import com.arcadedb.database.Record;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
+@ExcludeFromJacocoGeneratedReport
 public interface NewRecordCallback {
   void call(Record newRecord);
 }

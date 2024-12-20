@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.util.*;
 
@@ -28,6 +29,7 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
+@ExcludeFromJacocoGeneratedReport
 public interface CommandContext {
   Object getVariablePath(String name);
 

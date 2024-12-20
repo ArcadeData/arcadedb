@@ -19,7 +19,9 @@
 package com.arcadedb.index;
 
 import com.arcadedb.schema.IndexBuilder;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
+@ExcludeFromJacocoGeneratedReport
 public interface IndexFactoryHandler {
   IndexInternal create(IndexBuilder builder);
 }

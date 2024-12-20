@@ -15,12 +15,14 @@ package com.arcadedb.schema;/*
  */
 
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * Schema Vertex Type.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@ExcludeFromJacocoGeneratedReport
 public interface VertexType extends DocumentType {
   @Override
   default byte getType() {

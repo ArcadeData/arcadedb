@@ -15,12 +15,14 @@ package com.arcadedb.function.polyglot;/*
  */
 
 import com.arcadedb.function.FunctionDefinition;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * Polyglot implementation of a function. It can be written in any of the supported language by the JVM.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@ExcludeFromJacocoGeneratedReport
 public interface PolyglotFunctionDefinition extends FunctionDefinition {
   void init(PolyglotFunctionLibraryDefinition library);
 }

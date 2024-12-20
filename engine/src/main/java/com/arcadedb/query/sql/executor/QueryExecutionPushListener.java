@@ -18,8 +18,11 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
 /**
  * Created by luigidellaquila on 06/07/16.
  */
+@ExcludeFromJacocoGeneratedReport
 public interface QueryExecutionPushListener {
 }
