@@ -45,14 +45,24 @@ import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 
-import java.io.*;
-import java.net.*;
-import java.nio.*;
-import java.nio.charset.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
-import java.util.regex.*;
+import java.io.EOFException;
+import java.io.IOException;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Postgres Reference for Protocol Messages: https://www.postgresql.org/docs/9.6/protocol-message-formats.html
@@ -453,14 +463,15 @@ public class PostgresNetworkExecutor extends Thread {
     if (columns == null)
       return;
 
-    final ByteBuffer bufferDescription = ByteBuffer.allocate(64 * 1024).order(ByteOrder.BIG_ENDIAN);
+//    final ByteBuffer bufferDescription = ByteBuffer.allocate(64 * 1024).order(ByteOrder.BIG_ENDIAN);
+    final Binary bufferDescription = new Binary();
 
     for (final Map.Entry<String, PostgresType> col : columns.entrySet()) {
       final String columnName = col.getKey();
       final PostgresType columnType = col.getValue();
 
-      bufferDescription.put(columnName.getBytes(DatabaseFactory.getDefaultCharset()));//The field name.
-      bufferDescription.put((byte) 0);
+      bufferDescription.putByteArray(columnName.getBytes(DatabaseFactory.getDefaultCharset()));//The field name.
+      bufferDescription.putByte((byte) 0);
 
       bufferDescription.putInt(
           0); //If the field can be identified as a column of a specific table, the object ID of the table; otherwise zero.
@@ -478,8 +489,8 @@ public class PostgresNetworkExecutor extends Thread {
     bufferDescription.flip();
     writeMessage("row description", () -> {
       channel.writeUnsignedShort((short) columns.size());
-      channel.writeBuffer(bufferDescription);
-    }, 'T', 4 + 2 + bufferDescription.limit());
+      channel.writeBuffer(bufferDescription.getByteBuffer());
+    }, 'T', 4 + 2 + bufferDescription.capacity());
   }
 
   private void writeDataRows(final List<Result> resultSet, final Map<String, PostgresType> columns) throws IOException {
