@@ -18,6 +18,7 @@
  */
 package com.arcadedb.postgres;
 
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 
 import java.nio.*;
@@ -110,7 +111,7 @@ public enum PostgresType {
 //    }
 //  }
 
-  public void serializeAsText(final long code, final ByteBuffer typeBuffer, Object value) {
+  public void serializeAsText(final long code, final Binary typeBuffer, Object value) {
     if (value == null) {
       if (code == BOOLEAN.code)
         value = "0";
@@ -122,7 +123,7 @@ public enum PostgresType {
 
     final byte[] str = value.toString().getBytes(DatabaseFactory.getDefaultCharset());
     typeBuffer.putInt(str.length);
-    typeBuffer.put(str);
+    typeBuffer.putByteArray(str);
   }
 
   public static Object deserialize(final long code, final int formatCode, final byte[] valueAsBytes) {

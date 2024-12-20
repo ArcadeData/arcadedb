@@ -20,6 +20,7 @@ package com.arcadedb.postgres;
 
 import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
@@ -44,26 +45,14 @@ import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 
-import java.io.EOFException;
-import java.io.IOException;
-import java.net.Socket;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Random;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.logging.Level;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.io.*;
+import java.net.*;
+import java.nio.*;
+import java.nio.charset.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.logging.*;
+import java.util.regex.*;
 
 /**
  * Postgres Reference for Protocol Messages: https://www.postgresql.org/docs/9.6/protocol-message-formats.html
@@ -497,8 +486,8 @@ public class PostgresNetworkExecutor extends Thread {
     if (resultSet.isEmpty())
       return;
 
-    final ByteBuffer bufferData = ByteBuffer.allocate(128 * 1024).order(ByteOrder.BIG_ENDIAN);
-    final ByteBuffer bufferValues = ByteBuffer.allocate(128 * 1024).order(ByteOrder.BIG_ENDIAN);
+    final Binary bufferData = new Binary();
+    final Binary bufferValues = new Binary();
 
     for (final Result row : resultSet) {
       bufferData.clear();
@@ -546,19 +535,19 @@ public class PostgresNetworkExecutor extends Thread {
       }
 
       bufferValues.flip();
-      bufferData.put((byte) 'D');
-      bufferData.putInt(4 + bufferValues.limit());
-      bufferData.put(bufferValues);
+      bufferData.putByte((byte) 'D');
+      bufferData.putInt(4 + bufferValues.getByteBuffer().limit());
+      bufferData.putBuffer(bufferValues.getByteBuffer());
 
       bufferData.flip();
-      channel.writeBuffer(bufferData);
+      channel.writeBuffer(bufferData.getByteBuffer());
     }
 
     channel.flush();
 
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row data (%s) (thread=%s)", resultSet.size(),
-          FileUtils.getSizeAsString(bufferData.limit()), Thread.currentThread().getId());
+          FileUtils.getSizeAsString(bufferData.getByteBuffer().limit()), Thread.currentThread().getId());
   }
 
   private void bindCommand() {
