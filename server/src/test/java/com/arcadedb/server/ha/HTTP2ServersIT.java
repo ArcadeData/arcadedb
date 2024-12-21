@@ -128,7 +128,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       });
 
       final String v2 = new JSONObject(
-          command(serverIndex, "create vertex V1 content {\"name\":\"Elon\",\"surname\":\"Musk\",\"age\":50}")).getJSONArray(
+          command(serverIndex, "create vertex V1 content {\"name\":\"John\",\"surname\":\"Red\",\"age\":50}")).getJSONArray(
           "result").getJSONObject(0).getString("@rid");
 
       if (!getServer(serverIndex).getHA().isLeader())

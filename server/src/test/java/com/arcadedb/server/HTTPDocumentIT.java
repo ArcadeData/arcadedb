@@ -375,7 +375,7 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
       schema.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id");
 
       for (int i = 0; i < 100; i++)
-        database.newDocument("Person").set("id", i).set("name", "Elon" + i).save();
+        database.newDocument("Person").set("id", i).set("name", "John" + i).save();
     });
   }
 }
