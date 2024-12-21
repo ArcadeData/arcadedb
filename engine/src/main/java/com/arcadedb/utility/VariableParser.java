@@ -60,7 +60,7 @@ public class VariableParser {
 
     if (resolved == null) {
       if (defaultValue == null)
-        LogManager.instance().log(null, Level.INFO, "Error on resolving property: %s", var);
+        LogManager.instance().log(null, Level.FINE, "Error on resolving property: %s", var);
       else
         resolved = defaultValue;
     }
