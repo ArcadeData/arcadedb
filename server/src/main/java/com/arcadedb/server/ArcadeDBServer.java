@@ -40,20 +40,37 @@ import com.arcadedb.server.event.ServerEventLog;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.monitor.DefaultServerMetrics;
-import com.arcadedb.server.monitor.ServerMetrics;
 import com.arcadedb.server.monitor.ServerMonitor;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
+import io.micrometer.core.instrument.Metrics;
+import io.micrometer.core.instrument.binder.jvm.ClassLoaderMetrics;
+import io.micrometer.core.instrument.binder.jvm.JvmGcMetrics;
+import io.micrometer.core.instrument.binder.jvm.JvmMemoryMetrics;
+import io.micrometer.core.instrument.binder.jvm.JvmThreadMetrics;
+import io.micrometer.core.instrument.binder.system.ProcessorMetrics;
+import io.micrometer.core.instrument.logging.LoggingMeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
-import java.io.*;
-import java.lang.reflect.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.lang.reflect.InvocationTargetException;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.logging.Level;
 
 import static com.arcadedb.engine.ComponentFile.MODE.READ_ONLY;
 import static com.arcadedb.engine.ComponentFile.MODE.READ_WRITE;
@@ -75,8 +92,7 @@ public class ArcadeDBServer {
   private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
-  private             ServerMetrics                         serverMetrics                        = new DefaultServerMetrics();
-  private             ServerMonitor                         serverMonitor;
+//  private             ServerMonitor                         serverMonitor;
 
   static {
     // must be called before any Logger method is used.
@@ -133,9 +149,18 @@ public class ArcadeDBServer {
 
     // START METRICS & CONNECTED JMX REPORTER
     if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS)) {
-      if (serverMetrics != null)
-        serverMetrics.stop();
-      serverMetrics = new DefaultServerMetrics();
+      Metrics.addRegistry(new SimpleMeterRegistry());
+
+      new ClassLoaderMetrics().bindTo(Metrics.globalRegistry);
+      new JvmMemoryMetrics().bindTo(Metrics.globalRegistry);
+      new JvmGcMetrics().bindTo(Metrics.globalRegistry);
+      new ProcessorMetrics().bindTo(Metrics.globalRegistry);
+      new JvmThreadMetrics().bindTo(Metrics.globalRegistry);
+
+      if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS_LOGGING)) {
+        LogManager.instance().log(this, Level.INFO, "- Logging metrics enabled...");
+        Metrics.addRegistry(new LoggingMeterRegistry());
+      }
       LogManager.instance().log(this, Level.INFO, "- Metrics Collection Started...");
     }
 
@@ -193,7 +218,7 @@ public class ArcadeDBServer {
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
 
-    serverMonitor.start();
+//    serverMonitor.start();
   }
 
   private void welcomeBanner() {
@@ -263,9 +288,6 @@ public class ArcadeDBServer {
 
     LogManager.instance().log(this, Level.INFO, "Shutting down ArcadeDB Server...");
 
-    if (serverMonitor != null)
-      serverMonitor.stop();
-
     try {
       lifecycleEvent(ReplicationCallback.TYPE.SERVER_SHUTTING_DOWN, null);
     } catch (final Exception e) {
@@ -295,8 +317,6 @@ public class ArcadeDBServer {
 
     CodeUtils.executeIgnoringExceptions(() -> {
       LogManager.instance().log(this, Level.INFO, "- Stop JMX Metrics");
-      serverMetrics.stop();
-      serverMetrics = new DefaultServerMetrics();
     }, "Error on stopping JMX Metrics", false);
 
     LogManager.instance().log(this, Level.INFO, "ArcadeDB Server is down");
@@ -317,10 +337,6 @@ public class ArcadeDBServer {
 
   public Collection<ServerPlugin> getPlugins() {
     return Collections.unmodifiableCollection(plugins.values());
-  }
-
-  public ServerMetrics getServerMetrics() {
-    return serverMetrics;
   }
 
   public ServerDatabase getDatabase(final String databaseName) {
@@ -670,7 +686,6 @@ public class ArcadeDBServer {
     }));
 
     hostAddress = assignHostAddress();
-    serverMonitor = new ServerMonitor(this);
   }
 
   private String assignHostAddress() {

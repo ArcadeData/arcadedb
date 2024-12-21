@@ -19,6 +19,7 @@
 package com.arcadedb.event;
 
 import com.arcadedb.database.Record;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * Listener to receive events before updating records (documents, vertices and edges).
@@ -28,6 +29,7 @@ import com.arcadedb.database.Record;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  **/
+@ExcludeFromJacocoGeneratedReport
 public interface BeforeRecordUpdateListener {
   /**
    * Callback invoked right before a record (documents, vertices and edges) is updated.

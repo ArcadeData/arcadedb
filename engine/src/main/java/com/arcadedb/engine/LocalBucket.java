@@ -157,7 +157,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     try {
-      final BasePage page = database.getTransaction().getPage(new PageId(file.getFileId(), pageId), pageSize);
+      final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
 
       final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
       if (positionInPage >= recordCountInPage)
@@ -191,7 +191,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     try {
       for (int pageId = 0; pageId < txPageCount; ++pageId) {
-        final BasePage page = database.getTransaction().getPage(new PageId(file.getFileId(), pageId), pageSize);
+        final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
         final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
         if (recordCountInPage > 0) {
@@ -261,13 +261,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       }
     }
 
-    database.getTransaction().getPageToModify(new PageId(file.getFileId(), pageId), pageSize, false);
+    database.getTransaction().getPageToModify(new PageId(database, file.getFileId(), pageId), pageSize, false);
   }
 
   @Override
   public Iterator<Record> iterator() {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
-    return new BucketIterator(this, database);
+    return new BucketIterator(this, true);
+  }
+
+  @Override
+  public Iterator<Record> inverseIterator() {
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    return new BucketIterator(this, false);
   }
 
   @Override
@@ -304,7 +310,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     try {
       for (int pageId = 0; pageId < txPageCount; ++pageId) {
-        final BasePage page = transaction.getPage(new PageId(file.getFileId(), pageId), pageSize);
+        final BasePage page = transaction.getPage(new PageId(database, file.getFileId(), pageId), pageSize);
         final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
         if (recordCountInPage > 0) {
@@ -357,7 +363,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     for (int pageId = 0; pageId < totalPages; ++pageId) {
       try {
-        final BasePage page = database.getTransaction().getPage(new PageId(file.getFileId(), pageId), pageSize);
+        final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
         final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
         int pageActiveRecords = 0;
@@ -528,7 +534,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     try {
-      final BasePage page = database.getTransaction().getPage(new PageId(file.getFileId(), pageId), pageSize);
+      final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
 
       final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
       if (positionInPage >= recordCountInPage)
@@ -613,7 +619,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       final MutablePage selectedPage;
       if (createNewPage) {
-        selectedPage = database.getTransaction().addPage(new PageId(file.getFileId(), txPageCounter), pageSize);
+        selectedPage = database.getTransaction().addPage(new PageId(database, file.getFileId(), txPageCounter), pageSize);
         newRecordPositionInPage = contentHeaderSize;
         availablePositionIndex = 0;
       } else
@@ -673,7 +679,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     try {
-      final MutablePage page = database.getTransaction().getPageToModify(new PageId(file.getFileId(), pageId), pageSize, false);
+      final MutablePage page = database.getTransaction()
+          .getPageToModify(new PageId(database, file.getFileId(), pageId), pageSize, false);
       final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
       if (positionInPage >= recordCountInPage)
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
@@ -850,7 +857,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     try {
-      final MutablePage page = database.getTransaction().getPageToModify(new PageId(file.getFileId(), pageId), pageSize, false);
+      final MutablePage page = database.getTransaction()
+          .getPageToModify(new PageId(database, file.getFileId(), pageId), pageSize, false);
       final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
       if (positionInPage >= recordCountInPage)
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
@@ -888,7 +896,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
             final int chunkPositionInPage = (int) (nextChunkPointer % maxRecordsInPage);
 
-            chunkPage = database.getTransaction().getPageToModify(new PageId(file.getFileId(), chunkPageId), pageSize, false);
+            chunkPage = database.getTransaction()
+                .getPageToModify(new PageId(database, file.getFileId(), chunkPageId), pageSize, false);
             chunkRecordPositionInPage = getRecordPositionInPage(chunkPage, chunkPositionInPage);
             if (chunkRecordPositionInPage == 0)
               throw new DatabaseOperationException("Error on fetching multi page record " + rid + " chunk " + chunkId);
@@ -1080,7 +1089,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           throw new DatabaseOperationException("Invalid pointer to a chunk for record " + originalRID);
       }
 
-      page = database.getTransaction().getPage(new PageId(file.getFileId(), chunkPageId), pageSize);
+      page = database.getTransaction().getPage(new PageId(database, file.getFileId(), chunkPageId), pageSize);
       recordPositionInPage = getRecordPositionInPage(page, chunkPositionInPage);
       if (recordPositionInPage == 0)
         throw new DatabaseOperationException("Chunk of record " + originalRID + " was deleted");
@@ -1152,7 +1161,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       if (nextPage == null) {
         // CREATE A NEW PAGE
-        nextPage = database.getTransaction().addPage(new PageId(file.getFileId(), txPageCounter++), pageSize);
+        nextPage = database.getTransaction().addPage(new PageId(database, file.getFileId(), txPageCounter++), pageSize);
         newPosition = contentHeaderSize;
         nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET, newPosition);
         nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) 1);
@@ -1233,7 +1242,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
         final int chunkPositionInPage = (int) (nextChunkPointer % maxRecordsInPage);
 
-        nextPage = database.getTransaction().getPageToModify(new PageId(file.getFileId(), chunkPageId), pageSize, false);
+        nextPage = database.getTransaction().getPageToModify(new PageId(database, file.getFileId(), chunkPageId), pageSize, false);
         final int recordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
         if (recordPositionInPage == 0)
           throw new DatabaseOperationException("Error on fetching multi page record " + originalRID);
@@ -1266,7 +1275,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         if (nextPage == null) {
           // CREATE A NEW PAGE
-          nextPage = database.getTransaction().addPage(new PageId(file.getFileId(), txPageCounter++), pageSize);
+          nextPage = database.getTransaction().addPage(new PageId(database, file.getFileId(), txPageCounter++), pageSize);
           newPosition = contentHeaderSize;
           nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET, newPosition);
           nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) 1);
@@ -1354,7 +1363,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       throws IOException {
     final AvailableSpace result = new AvailableSpace();
 
-    result.page = database.getTransaction().getPage(new PageId(file.getFileId(), pageNumber), pageSize);
+    result.page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageNumber), pageSize);
 
     result.totalRecordsInPage = result.page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
     if (result.totalRecordsInPage >= maxRecordsInPage)

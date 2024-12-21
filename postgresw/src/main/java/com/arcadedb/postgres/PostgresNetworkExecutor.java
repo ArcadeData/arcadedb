@@ -20,6 +20,7 @@ package com.arcadedb.postgres;
 
 import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
@@ -47,8 +48,6 @@ import com.arcadedb.utility.Pair;
 import java.io.EOFException;
 import java.io.IOException;
 import java.net.Socket;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -464,14 +463,15 @@ public class PostgresNetworkExecutor extends Thread {
     if (columns == null)
       return;
 
-    final ByteBuffer bufferDescription = ByteBuffer.allocate(64 * 1024).order(ByteOrder.BIG_ENDIAN);
+//    final ByteBuffer bufferDescription = ByteBuffer.allocate(64 * 1024).order(ByteOrder.BIG_ENDIAN);
+    final Binary bufferDescription = new Binary();
 
     for (final Map.Entry<String, PostgresType> col : columns.entrySet()) {
       final String columnName = col.getKey();
       final PostgresType columnType = col.getValue();
 
-      bufferDescription.put(columnName.getBytes(DatabaseFactory.getDefaultCharset()));//The field name.
-      bufferDescription.put((byte) 0);
+      bufferDescription.putByteArray(columnName.getBytes(DatabaseFactory.getDefaultCharset()));//The field name.
+      bufferDescription.putByte((byte) 0);
 
       bufferDescription.putInt(
           0); //If the field can be identified as a column of a specific table, the object ID of the table; otherwise zero.
@@ -489,16 +489,16 @@ public class PostgresNetworkExecutor extends Thread {
     bufferDescription.flip();
     writeMessage("row description", () -> {
       channel.writeUnsignedShort((short) columns.size());
-      channel.writeBuffer(bufferDescription);
-    }, 'T', 4 + 2 + bufferDescription.limit());
+      channel.writeBuffer(bufferDescription.getByteBuffer());
+    }, 'T', 4 + 2 + bufferDescription.capacity());
   }
 
   private void writeDataRows(final List<Result> resultSet, final Map<String, PostgresType> columns) throws IOException {
     if (resultSet.isEmpty())
       return;
 
-    final ByteBuffer bufferData = ByteBuffer.allocate(128 * 1024).order(ByteOrder.BIG_ENDIAN);
-    final ByteBuffer bufferValues = ByteBuffer.allocate(128 * 1024).order(ByteOrder.BIG_ENDIAN);
+    final Binary bufferData = new Binary();
+    final Binary bufferValues = new Binary();
 
     for (final Result row : resultSet) {
       bufferData.clear();
@@ -546,19 +546,19 @@ public class PostgresNetworkExecutor extends Thread {
       }
 
       bufferValues.flip();
-      bufferData.put((byte) 'D');
-      bufferData.putInt(4 + bufferValues.limit());
-      bufferData.put(bufferValues);
+      bufferData.putByte((byte) 'D');
+      bufferData.putInt(4 + bufferValues.getByteBuffer().limit());
+      bufferData.putBuffer(bufferValues.getByteBuffer());
 
       bufferData.flip();
-      channel.writeBuffer(bufferData);
+      channel.writeBuffer(bufferData.getByteBuffer());
     }
 
     channel.flush();
 
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row data (%s) (thread=%s)", resultSet.size(),
-          FileUtils.getSizeAsString(bufferData.limit()), Thread.currentThread().getId());
+          FileUtils.getSizeAsString(bufferData.getByteBuffer().limit()), Thread.currentThread().getId());
   }
 
   private void bindCommand() {

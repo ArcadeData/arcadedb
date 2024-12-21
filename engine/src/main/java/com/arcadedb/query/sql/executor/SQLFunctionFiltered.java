@@ -19,7 +19,9 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
+@ExcludeFromJacocoGeneratedReport
 public interface SQLFunctionFiltered {
   Object execute(Object targetObjects, Identifiable current, Object o, Object[] objects, Iterable<Identifiable> iPossibleResults, CommandContext context);
 }

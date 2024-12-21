@@ -23,12 +23,14 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.util.*;
 
 /**
  * Basic Index interface.
  */
+@ExcludeFromJacocoGeneratedReport
 public interface Index {
   interface BuildIndexCallback {
     void onDocumentIndexed(Document document, long totalIndexed);

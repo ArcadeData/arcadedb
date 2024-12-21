@@ -18,16 +18,28 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.database.BasicDatabase;
+
+import java.util.*;
+
 /**
  * Immutable.
  */
 public class PageId implements Comparable<PageId> {
-  private final int fileId;
-  private final int pageNumber;
+  private final BasicDatabase database;
+  private final int           fileId;
+  private final int           pageNumber;
 
-  public PageId(final int fileId, final int pageNumber) {
+  public PageId(final BasicDatabase database, final int fileId, final int pageNumber) {
+    if (database == null)
+      throw new IllegalArgumentException("database is null");
+    this.database = database;
     this.fileId = fileId;
     this.pageNumber = pageNumber;
+  }
+
+  public BasicDatabase getDatabase() {
+    return database;
   }
 
   public int getFileId() {
@@ -39,35 +51,32 @@ public class PageId implements Comparable<PageId> {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
+  public boolean equals(final Object value) {
+    if (this == value)
       return true;
-    if (o == null || getClass() != o.getClass())
+    if (!(value instanceof PageId pageId))
       return false;
-
-    final PageId pageId = (PageId) o;
-
-    if (fileId != pageId.fileId)
-      return false;
-    return pageNumber == pageId.pageNumber;
+    return fileId == pageId.fileId && pageNumber == pageId.pageNumber && Objects.equals(database, pageId.database);
   }
 
   @Override
   public int hashCode() {
-    int result = fileId;
-    result = 31 * result + pageNumber;
-    return result;
+    return Objects.hash(database, fileId, pageNumber);
   }
 
   @Override
   public String toString() {
-    return "PageId(" + fileId + "/" + pageNumber + ")";
+    return "PageId(" + database.getName() + "/" + fileId + "/" + pageNumber + ")";
   }
 
   @Override
   public int compareTo(final PageId o) {
     if (o == this)
       return 0;
+
+    final int cmp = database.getName().compareTo(o.database.getName());
+    if (cmp != 0)
+      return cmp;
 
     if (fileId > o.fileId)
       return 1;

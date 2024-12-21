@@ -19,12 +19,14 @@
 package com.arcadedb.database.async;
 
 import com.arcadedb.database.Record;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * Interface used in `async().updateRecord()` API.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@ExcludeFromJacocoGeneratedReport
 public interface UpdatedRecordCallback {
   void call(Record newRecord);
 }

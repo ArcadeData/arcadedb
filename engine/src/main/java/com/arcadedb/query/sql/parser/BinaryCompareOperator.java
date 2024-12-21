@@ -19,10 +19,12 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * Created by luigidellaquila on 12/11/14.
  */
+@ExcludeFromJacocoGeneratedReport
 public interface BinaryCompareOperator {
   boolean execute(DatabaseInternal database, Object left, Object right);
 

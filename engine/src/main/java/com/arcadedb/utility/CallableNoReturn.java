@@ -23,6 +23,7 @@ package com.arcadedb.utility;
  *
  * @author Luca Garulli
  */
+@ExcludeFromJacocoGeneratedReport
 public interface CallableNoReturn {
   void call() throws Throwable;
 }

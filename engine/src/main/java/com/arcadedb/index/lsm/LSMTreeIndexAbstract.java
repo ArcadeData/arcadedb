@@ -99,7 +99,10 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     super(database, name, filePath, ext, mode, pageSize, version);
 
     if (nullStrategy == null)
-      throw new IllegalArgumentException("Index null strategy is null ");
+      throw new IllegalArgumentException("Index null strategy is null");
+
+    if (keyTypes == null || keyTypes.length == 0)
+      throw new IllegalArgumentException("Key types empty ");
 
     this.mainIndex = mainIndex;
     this.serializer = database.getSerializer();
@@ -203,7 +206,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
   public void drop() throws IOException {
     if (database.isOpen()) {
-      database.getPageManager().deleteFile(file.getFileId());
+      database.getPageManager().deleteFile(database, file.getFileId());
       database.getFileManager().dropFile(file.getFileId());
       database.getSchema().getEmbedded().removeFile(file.getFileId());
     } else {

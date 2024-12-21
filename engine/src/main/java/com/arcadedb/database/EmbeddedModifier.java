@@ -18,11 +18,14 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
 /**
  * Allows to get the document owner. This is usually used for embedded objects.
  *
  * @author Luca Garulli
  */
+@ExcludeFromJacocoGeneratedReport
 public interface EmbeddedModifier {
   Document getOwner();
 

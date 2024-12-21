@@ -31,7 +31,6 @@ import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -249,7 +248,7 @@ public class CheckDatabaseTest extends TestHelper {
 
       try {
         final MutablePage page = ((DatabaseInternal) database).getTransaction()
-            .getPageToModify(new PageId(bucket.getFileId(), 0), bucket.getPageSize(), false);
+            .getPageToModify(new PageId(database, bucket.getFileId(), 0), bucket.getPageSize(), false);
         for (int i = 0; i < page.getAvailableContentSize(); i++) {
           page.writeByte(i, (byte) 4);
         }

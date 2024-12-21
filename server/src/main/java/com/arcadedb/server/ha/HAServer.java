@@ -28,6 +28,7 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryClient;
 import com.arcadedb.network.binary.ConnectionException;
+import com.arcadedb.network.HostUtil;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -58,7 +59,7 @@ import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public class HAServer implements ServerPlugin {
-  public static final String                                         DEFAULT_PORT                      = "2424";
+  public static final String                                         DEFAULT_PORT                      = HostUtil.HA_DEFAULT_PORT;
   private final       HAMessageFactory                               messageFactory;
   private final       ArcadeDBServer                                 server;
   private final       ContextConfiguration                           configuration;
@@ -88,7 +89,18 @@ public class HAServer implements ServerPlugin {
   private             Thread                                         electionThread;
 
   public enum QUORUM {
-    NONE, ONE, TWO, THREE, MAJORITY, ALL
+    NONE, ONE, TWO, THREE, MAJORITY, ALL;
+
+    public int quorum(int numberOfServers) {
+      return switch (this) {
+        case NONE -> 0;
+        case ONE -> 1;
+        case TWO -> 2;
+        case THREE -> 3;
+        case MAJORITY -> numberOfServers / 2 + 1;
+        case ALL -> numberOfServers;
+      };
+    }
   }
 
   public enum ELECTION_STATUS {
@@ -118,18 +130,6 @@ public class HAServer implements ServerPlugin {
       this.semaphore = new CountDownLatch(1);
     }
   }
-
-//  private static class RemovedServerInfo {
-//    String serverName;
-//    long   joinedOn;
-//    long   leftOn;
-//
-//    public RemovedServerInfo(final String remoteServerName, final long joinedOn) {
-//      this.serverName = remoteServerName;
-//      this.joinedOn = joinedOn;
-//      this.leftOn = System.currentTimeMillis();
-//    }
-//  }
 
   public HAServer(final ArcadeDBServer server, final ContextConfiguration configuration) {
     if (!configuration.getValueAsBoolean(GlobalConfiguration.TX_WAL))
@@ -213,13 +213,10 @@ public class HAServer implements ServerPlugin {
     if (serverAddress.equals(serverEntry))
       return true;
 
-    final String[] localServerParts = serverAddress.split(":");
+    final String[] localServerParts = HostUtil.parseHostAddress(serverAddress, DEFAULT_PORT);
 
     try {
-      String[] serverParts = serverEntry.split(":");
-      if (serverParts.length < 2)
-        serverParts = new String[] { serverParts[0], DEFAULT_PORT };
-
+      final String[] serverParts = HostUtil.parseHostAddress(serverEntry, DEFAULT_PORT);
       if (localServerParts[0].equals(serverParts[0]) && localServerParts[1].equals(serverParts[1]))
         return true;
 
@@ -303,7 +300,7 @@ public class HAServer implements ServerPlugin {
         continue;
 
       try {
-        final String[] parts = serverAddress.split(":");
+        final String[] parts = HostUtil.parseHostAddress(serverAddress, DEFAULT_PORT);
 
         LogManager.instance().log(this, Level.INFO, "- Sending new Leader to server '%s'...", serverAddress);
 
@@ -942,10 +939,7 @@ public class HAServer implements ServerPlugin {
   }
 
   public boolean connectToLeader(final String serverEntry, final Callable<Void, Exception> errorCallback) {
-    String[] serverParts = serverEntry.split(":");
-    if (serverParts.length == 1)
-      serverParts = new String[] { serverParts[0], DEFAULT_PORT };
-
+    final String[] serverParts = HostUtil.parseHostAddress(serverEntry, DEFAULT_PORT);
     try {
       connectToLeader(serverParts[0], Integer.parseInt(serverParts[1]));
 
@@ -957,7 +951,7 @@ public class HAServer implements ServerPlugin {
       LogManager.instance().log(this, Level.INFO, "Remote server %s:%d is not the Leader, connecting to %s", serverParts[0],
           Integer.parseInt(serverParts[1]), leaderAddress);
 
-      final String[] leader = leaderAddress.split(":");
+      final String[] leader = HostUtil.parseHostAddress(leaderAddress, DEFAULT_PORT);
 
       connectToLeader(leader[0], Integer.parseInt(leader[1]));
 
@@ -1109,9 +1103,7 @@ public class HAServer implements ServerPlugin {
 
           try {
 
-            String[] parts = serverAddressCopy.split(":");
-            if (parts.length == 1)
-              parts = new String[] { parts[0], DEFAULT_PORT };
+            final String[] parts = HostUtil.parseHostAddress(serverAddressCopy, DEFAULT_PORT);
 
             final ChannelBinaryClient channel = createNetworkConnection(parts[0], Integer.parseInt(parts[1]),
                 ReplicationProtocol.COMMAND_VOTE_FOR_ME);
@@ -1153,7 +1145,8 @@ public class HAServer implements ServerPlugin {
 
             channel.close();
           } catch (final Exception e) {
-            LogManager.instance().log(this, Level.INFO, "Error contacting server %s for election", e, serverAddressCopy);
+            LogManager.instance()
+                .log(this, Level.INFO, "Error contacting server %s for election: %s", serverAddressCopy, e.getMessage());
           }
         }
 

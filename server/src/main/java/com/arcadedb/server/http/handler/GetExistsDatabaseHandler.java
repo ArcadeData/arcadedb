@@ -22,6 +22,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
 import java.util.*;
@@ -38,7 +39,7 @@ public class GetExistsDatabaseHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is null\"}");
 
     final ArcadeDBServer server = httpServer.getServer();
-    server.getServerMetrics().meter("http.exists-database").hit();
+    Metrics.counter("http.exists-database").increment(); ;
 
     final Set<String> installedDatabases = new HashSet<>(server.getDatabaseNames());
     final Set<String> allowedDatabases = user.getAuthorizedDatabases();

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.lsm;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.PageId;
@@ -41,10 +42,12 @@ public class LSMTreeIndexDebugger {
     final int totalPages = index.getTotalPages();
 
     int lastImmutablePage = totalPages - 1;
+    final DatabaseInternal database = index.getDatabase();
     for (int pageIndex = totalPages - 1; pageIndex > -1; --pageIndex) {
       final BasePage page;
       try {
-        page = index.getDatabase().getPageManager().getImmutablePage(new PageId(index.getFileId(), pageIndex), index.getPageSize(), false, true);
+        page = database.getPageManager()
+            .getImmutablePage(new PageId(database, index.getFileId(), pageIndex), index.getPageSize(), false, true);
         if (!index.isMutable(page)) {
           lastImmutablePage = pageIndex;
           break;
@@ -54,11 +57,13 @@ public class LSMTreeIndexDebugger {
       }
     }
 
-    out(0, "MUTABLE INDEX " + index.getName() + " fileId=" + index.getFileId() + " lastImmutablePage = " + lastImmutablePage + "/" + totalPages);
+    out(0, "MUTABLE INDEX " + index.getName() + " fileId=" + index.getFileId() + " lastImmutablePage = " + lastImmutablePage + "/"
+        + totalPages);
     for (int pageIndex = 0; pageIndex < totalPages; ++pageIndex) {
       final BasePage page;
       try {
-        page = index.getDatabase().getPageManager().getImmutablePage(new PageId(index.getFileId(), pageIndex), index.getPageSize(), false, true);
+        page = database.getPageManager()
+            .getImmutablePage(new PageId(database, index.getFileId(), pageIndex), index.getPageSize(), false, true);
         LSMTreeIndexDebugger.out(1, LSMTreeIndexDebugger.printMutableIndexPage(index, page));
       } catch (IOException e) {
         throw new RuntimeException(e);
@@ -75,10 +80,12 @@ public class LSMTreeIndexDebugger {
     final int totalPages = index.getTotalPages();
 
     int lastImmutablePage = totalPages - 1;
+    final DatabaseInternal database = index.getDatabase();
     for (int pageIndex = totalPages - 1; pageIndex > -1; --pageIndex) {
       final ImmutablePage page;
       try {
-        page = index.getDatabase().getPageManager().getImmutablePage(new PageId(index.getFileId(), pageIndex), index.getPageSize(), false, true);
+        page = database.getPageManager()
+            .getImmutablePage(new PageId(database, index.getFileId(), pageIndex), index.getPageSize(), false, true);
         if (!index.isMutable(page)) {
           lastImmutablePage = pageIndex;
           break;
@@ -88,11 +95,13 @@ public class LSMTreeIndexDebugger {
       }
     }
 
-    out(0, "COMPACTED INDEX " + index.getName() + " fileId=" + index.getFileId() + " lastImmutablePage=" + lastImmutablePage + "/" + totalPages);
+    out(0, "COMPACTED INDEX " + index.getName() + " fileId=" + index.getFileId() + " lastImmutablePage=" + lastImmutablePage + "/"
+        + totalPages);
     for (int pageIndex = 0; pageIndex < totalPages; ++pageIndex) {
       final ImmutablePage page;
       try {
-        page = index.getDatabase().getPageManager().getImmutablePage(new PageId(index.getFileId(), pageIndex), index.getPageSize(), false, true);
+        page = database.getPageManager()
+            .getImmutablePage(new PageId(database, index.getFileId(), pageIndex), index.getPageSize(), false, true);
         LSMTreeIndexDebugger.out(1, LSMTreeIndexDebugger.printMutableIndexPage(index, page));
       } catch (IOException e) {
         throw new RuntimeException(e);
@@ -103,7 +112,8 @@ public class LSMTreeIndexDebugger {
   public static String printMutableIndexPage(final LSMTreeIndexAbstract index, final BasePage page) {
     String buffer = "";
     buffer +=
-        "MUTABLE INDEX - PAGE " + page.getPageId() + " v" + page.getVersion() + " mutable=" + index.isMutable(page) + " size=" + page.getPhysicalSize() + " "
+        "MUTABLE INDEX - PAGE " + page.getPageId() + " v" + page.getVersion() + " mutable=" + index.isMutable(page) + " size="
+            + page.getPhysicalSize() + " "
             + Arrays.toString(index.getKeyTypes());
     final Object[] pageKeyRange = index.getPageKeyRange(page);
     final int headerSize = index.getHeaderSize(page.getPageId().getPageNumber());
@@ -111,7 +121,8 @@ public class LSMTreeIndexDebugger {
     int availableSpace = index.getValuesFreePosition(page) - (headerSize + (totalEntries * INT_SERIALIZED_SIZE));
 
     buffer +=
-        " Keys: " + totalEntries + Arrays.toString((Object[]) pageKeyRange[0]) + "-" + Arrays.toString((Object[]) pageKeyRange[1]) + " - header: " + headerSize
+        " Keys: " + totalEntries + Arrays.toString((Object[]) pageKeyRange[0]) + "-" + Arrays.toString((Object[]) pageKeyRange[1])
+            + " - header: " + headerSize
             + " - availableSpace: " + availableSpace;
     return buffer;
   }

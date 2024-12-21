@@ -21,10 +21,12 @@ package com.arcadedb.graph;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
 
+@ExcludeFromJacocoGeneratedReport
 public interface EdgeSegment extends Record {
   byte RECORD_TYPE = 3;
 

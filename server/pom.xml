@@ -25,7 +25,7 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>24.11.2-SNAPSHOT</version>
+        <version>25.1.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -36,6 +36,7 @@
         <metrics.version>4.2.19</metrics.version>
         <slf4j.version>2.0.16</slf4j.version>
         <undertow-core.version>2.3.18.Final</undertow-core.version>
+        <micrometer.version>1.13.6</micrometer.version>
     </properties>
 
     <profiles>
@@ -96,5 +97,11 @@
             <artifactId>slf4j-jdk14</artifactId>
             <version>${slf4j.version}</version>
         </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <version>${micrometer.version}</version>
+        </dependency>
+
     </dependencies>
 </project>

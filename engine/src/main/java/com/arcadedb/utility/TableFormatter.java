@@ -56,10 +56,12 @@ public class TableFormatter {
   protected       TableRow                         footer;
   protected       boolean                          lastResultShrunk     = false;
 
+  @ExcludeFromJacocoGeneratedReport
   public interface TableOutput {
     void onMessage(String text, Object... args);
   }
 
+  @ExcludeFromJacocoGeneratedReport
   public interface TableRow {
     Object getField(String field);
 

@@ -19,12 +19,14 @@
 package com.arcadedb.database;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * Generic interface representing a record as an entry in the database.
  *
  * @author Luca Garulli
  */
+@ExcludeFromJacocoGeneratedReport
 public interface Record extends Identifiable {
   RID getIdentity();
 
@@ -36,9 +38,14 @@ public interface Record extends Identifiable {
 
   void delete();
 
-  default JSONObject toJSON(){
+  default JSONObject toJSON() {
     return toJSON(true);
   }
 
   JSONObject toJSON(boolean includeMetadata);
+
+  /**
+   * Returns the binary record size if known, otherwise -1
+   */
+  int size();
 }

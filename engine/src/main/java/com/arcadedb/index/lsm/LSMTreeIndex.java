@@ -128,7 +128,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
   public boolean scheduleCompaction() {
     checkIsValid();
-    if (getDatabase().getPageManager().isPageFlushingSuspended())
+    if (getDatabase().getPageManager().isPageFlushingSuspended(getDatabase()))
       return false;
     return status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.COMPACTION_SCHEDULED);
   }
@@ -216,10 +216,12 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   @Override
   public boolean compact() throws IOException, InterruptedException {
     checkIsValid();
-    if (getDatabase().getMode() == ComponentFile.MODE.READ_ONLY)
+    final DatabaseInternal database = getDatabase();
+
+    if (database.getMode() == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update the index '" + getName() + "'");
 
-    if (getDatabase().getPageManager().isPageFlushingSuspended())
+    if (database.getPageManager().isPageFlushingSuspended(database))
       // POSTPONE COMPACTING (DATABASE BACKUP IN PROGRESS?)
       return false;
 
@@ -547,9 +549,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
         for (int i = 0; i < mutable.getTotalPages() - startingFromPage; ++i) {
           final BasePage currentPage = database.getTransaction()
-              .getPage(new PageId(mutable.getFileId(), i + startingFromPage), pageSize);
+              .getPage(new PageId(database, mutable.getFileId(), i + startingFromPage), pageSize);
 
-// COPY THE ENTIRE PAGE TO THE NEW INDEX
+          // COPY THE ENTIRE PAGE TO THE NEW INDEX
           final MutablePage newPage = newMutableIndex.createNewPage();
 
           final ByteBuffer pageContent = currentPage.getContent();

@@ -19,7 +19,9 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
+@ExcludeFromJacocoGeneratedReport
 public interface ErrorRecordCallback {
   boolean onErrorLoading(RID rid, final Throwable exception);
 }

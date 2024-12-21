@@ -19,6 +19,7 @@
 package com.arcadedb.event;
 
 import com.arcadedb.database.Record;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * Listener to receive events after a record (documents, vertices and edges) is read from the page.
@@ -28,6 +29,7 @@ import com.arcadedb.database.Record;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  **/
+@ExcludeFromJacocoGeneratedReport
 public interface AfterRecordReadListener {
   /**
    * Callback invoked right after a record (documents, vertices and edges) is read from the page. You can use this callback to enrich the record with additional properties.

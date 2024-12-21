@@ -20,6 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.math.*;
 import java.time.*;
@@ -30,6 +31,7 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@ExcludeFromJacocoGeneratedReport
 public interface Document extends Record {
   byte RECORD_TYPE = 0;
 

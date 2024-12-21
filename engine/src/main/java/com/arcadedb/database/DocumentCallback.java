@@ -18,6 +18,9 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
+@ExcludeFromJacocoGeneratedReport
 public interface DocumentCallback {
   boolean onRecord(Document record);
 }

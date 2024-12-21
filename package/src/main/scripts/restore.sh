@@ -51,6 +51,7 @@ if [ -z "$JAVA_OPTS_SCRIPT" ] ; then
         --add-exports java.management/sun.management=ALL-UNNAMED \
         --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED \
         --add-opens java.base/java.nio.channels.spi=ALL-UNNAMED \
+        --add-opens java.base/java.lang=ALL-UNNAMED \
         -Dpolyglot.engine.WarnInterpreterOnly=false \
         -Djava.awt.headless=true -Dfile.encoding=UTF8 \
         -Djava.util.logging.config.file=config/arcadedb-log.properties"

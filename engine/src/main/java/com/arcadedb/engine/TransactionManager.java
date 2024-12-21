@@ -247,7 +247,7 @@ public class TransactionManager {
           }
         }
         createWALFilePool();
-        database.getPageManager().clear();
+        database.getPageManager().removeAllReadPagesOfDatabase(database);
       }
     } finally {
       LogManager.instance().log(this, Level.WARNING, "Recovery of database '%s' completed", null, database);
@@ -284,7 +284,7 @@ public class TransactionManager {
     for (final WALFile.WALPage txPage : tx.pages) {
       final PaginatedComponentFile file;
 
-      final PageId pageId = new PageId(txPage.fileId, txPage.pageNumber);
+      final PageId pageId = new PageId(database, txPage.fileId, txPage.pageNumber);
 
       if (!database.getFileManager().existsFile(txPage.fileId)) {
         LogManager.instance()

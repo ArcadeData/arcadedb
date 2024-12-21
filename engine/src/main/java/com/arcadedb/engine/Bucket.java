@@ -17,6 +17,7 @@ package com.arcadedb.engine;/*
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.util.*;
 
@@ -25,6 +26,7 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@ExcludeFromJacocoGeneratedReport
 public interface Bucket {
   RID createRecord(Record record, boolean discardRecordAfter);
 
@@ -39,6 +41,8 @@ public interface Bucket {
   void scan(RawRecordCallback callback, ErrorRecordCallback errorRecordCallback);
 
   Iterator<Record> iterator();
+
+  Iterator<Record> inverseIterator();
 
   long count();
 

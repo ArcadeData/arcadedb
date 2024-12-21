@@ -19,6 +19,7 @@
 package com.arcadedb.database.async;
 
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * Callback interface for asynchronous commands. If the command returns an exception, the {@link #onError(Exception)} method is invoked. Otherwise
@@ -26,6 +27,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@ExcludeFromJacocoGeneratedReport
 public interface AsyncResultsetCallback {
   /**
    * Invoked as soon as the command has been executed.

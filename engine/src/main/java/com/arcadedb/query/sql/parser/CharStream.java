@@ -20,6 +20,8 @@
 /* JavaCCOptions:STATIC=false,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
 import java.io.*;
 
 /**
@@ -37,6 +39,7 @@ import java.io.*;
  * operation.
  */
 
+@ExcludeFromJacocoGeneratedReport
 public interface CharStream {
 
   /**

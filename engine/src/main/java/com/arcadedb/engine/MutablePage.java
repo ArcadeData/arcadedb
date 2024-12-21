@@ -37,14 +37,14 @@ public class MutablePage extends BasePage implements TrackableContent {
   private int     modifiedRangeTo   = -1;
   private WALFile walFile;
 
-  public MutablePage(final PageManager manager, final PageId pageId, final int size) {
-    this(manager, pageId, size, new byte[size], 0, 0);
+  public MutablePage(final PageId pageId, final int size) {
+    this(pageId, size, new byte[size], 0, 0);
     updateModifiedRange(0, size - 1);
   }
 
-  public MutablePage(final PageManager manager, final PageId pageId, final int size, final byte[] array, final int version,
+  public MutablePage(final PageId pageId, final int size, final byte[] array, final int version,
       final int contentSize) {
-    super(manager, pageId, size, array, version, contentSize);
+    super(pageId, size, array, version, contentSize);
   }
 
   /**

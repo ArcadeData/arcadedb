@@ -20,12 +20,14 @@ package com.arcadedb.database;
 
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * Interface to identify an object in the database.
  *
  * @author Luca Garulli
  */
+@ExcludeFromJacocoGeneratedReport
 public interface Identifiable {
   /**
    * Returns the RID (Record ID) for the current object.

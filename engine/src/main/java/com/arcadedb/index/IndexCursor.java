@@ -21,12 +21,14 @@ package com.arcadedb.index;
 import com.arcadedb.database.Cursor;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * Cursor to browse an result set from an index.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@ExcludeFromJacocoGeneratedReport
 public interface IndexCursor extends Cursor {
   Object[] getKeys();
 

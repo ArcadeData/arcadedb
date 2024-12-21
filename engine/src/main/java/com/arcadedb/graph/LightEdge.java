@@ -18,6 +18,9 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
+@ExcludeFromJacocoGeneratedReport
 public interface LightEdge extends Edge {
   byte RECORD_TYPE = 6;
 }

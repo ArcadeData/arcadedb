@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.UnsignedBytesComparator;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.io.*;
 import java.nio.*;
@@ -51,6 +52,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   protected       FetchCallback fetchCallback;
   protected final boolean       reusable;
 
+  @ExcludeFromJacocoGeneratedReport
   public interface FetchCallback {
     void fetch(Binary newBuffer) throws IOException;
   }

@@ -21,6 +21,7 @@ package com.arcadedb.index;
 import com.arcadedb.engine.Component;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.io.*;
 import java.util.*;
@@ -28,6 +29,7 @@ import java.util.*;
 /**
  * Internal Index interface.
  */
+@ExcludeFromJacocoGeneratedReport
 public interface IndexInternal extends Index {
   public enum INDEX_STATUS {UNAVAILABLE, AVAILABLE, COMPACTION_SCHEDULED, COMPACTION_IN_PROGRESS}
 

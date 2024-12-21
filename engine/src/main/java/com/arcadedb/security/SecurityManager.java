@@ -19,12 +19,14 @@
 package com.arcadedb.security;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * Base security at server level. In the core package the default implementation throws unsupported exceptions, but if ArcadeDB is running on a server it uses the server security.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  **/
+@ExcludeFromJacocoGeneratedReport
 public interface SecurityManager {
   String ANY = "*";
 

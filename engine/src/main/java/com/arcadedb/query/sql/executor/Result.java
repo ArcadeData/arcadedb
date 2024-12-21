@@ -28,6 +28,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.lang.reflect.*;
 import java.text.*;
@@ -37,6 +38,7 @@ import java.util.*;
 /**
  * Created by luigidellaquila on 21/07/16.
  */
+@ExcludeFromJacocoGeneratedReport
 public interface Result {
 
   /**

@@ -82,7 +82,7 @@ public class RecordEncryptionTest extends TestHelper
   public void testEncryption() {
     database.transaction(() -> {
       final MutableVertex v1 = database.newVertex("BackAccount")
-          .set("secret", "Nobody must know Elon and Zuck are brothers")
+          .set("secret", "Nobody must know John and Zuck are brothers")
           .save();
     });
 
@@ -91,7 +91,7 @@ public class RecordEncryptionTest extends TestHelper
     database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
     database.transaction(() -> {
       final Vertex v1 = database.iterateType("BackAccount", true).next().asVertex();
-      assertThat(v1.getString("secret")).isEqualTo("Nobody must know Elon and Zuck are brothers");
+      assertThat(v1.getString("secret")).isEqualTo("Nobody must know John and Zuck are brothers");
     });
 
     assertThat(reads.get()).isEqualTo(1);

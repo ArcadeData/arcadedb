@@ -18,11 +18,14 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
 import java.util.*;
 
 /**
  * Created by luigidellaquila on 21/11/16.
  */
+@ExcludeFromJacocoGeneratedReport
 public interface SimpleBooleanExpression {
 
   /**

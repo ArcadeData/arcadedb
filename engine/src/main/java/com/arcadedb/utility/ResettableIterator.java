@@ -23,6 +23,7 @@ import java.util.*;
 /**
  * Iterator can be reset to start from the beginning. This is useful to count instances.
  */
+@ExcludeFromJacocoGeneratedReport
 public interface ResettableIterator<T> extends Iterator<T> {
   void reset();
 

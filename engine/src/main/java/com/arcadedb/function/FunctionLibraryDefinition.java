@@ -14,11 +14,14 @@ package com.arcadedb.function;/*
  * limitations under the License.
  */
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
 /**
  * A function library manages executable functions.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@ExcludeFromJacocoGeneratedReport
 public interface FunctionLibraryDefinition<T extends FunctionDefinition> {
   /**
    * Returns the name of the library.

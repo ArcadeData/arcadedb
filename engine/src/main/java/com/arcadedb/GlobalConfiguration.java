@@ -18,6 +18,7 @@
  */
 package com.arcadedb;
 
+import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinaryComparator;
@@ -37,7 +38,6 @@ import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.logging.Level;
-import java.util.stream.Collectors;
 
 /**
  * Keeps all configuration settings. At startup assigns the configuration values by reading system properties.
@@ -114,6 +114,8 @@ public enum GlobalConfiguration {
         ASYNC_OPERATIONS_QUEUE_IMPL.setValue("standard");
         SERVER_HTTP_IO_THREADS.setValue(cores > 8 ? 4 : 2);
 
+        PageManager.INSTANCE.configure();
+
       } else if (v.equalsIgnoreCase("low-cpu")) {
         ASYNC_WORKER_THREADS.setValue(1);
         ASYNC_OPERATIONS_QUEUE_IMPL.setValue("standard");
@@ -126,7 +128,7 @@ public enum GlobalConfiguration {
   }, null, Set.of("default", "high-performance", "low-ram", "low-cpu")),
 
   TEST("arcadedb.test", SCOPE.JVM,
-      "Tells if it is running in test mode. This enables the calling of callbacks for testing purpose ", Boolean.class, false),
+      "Tells if it is running in test mode. This enables the calling of callbacks for testing purpose", Boolean.class, false),
 
   MAX_PAGE_RAM("arcadedb.maxPageRAM", SCOPE.DATABASE, "Maximum amount of pages (in MB) to keep in RAM", Long.class, 4 * 1024, // 4GB
       new Callable<>() {
@@ -236,6 +238,10 @@ public enum GlobalConfiguration {
       "Maximum amount of milliseconds to compute a random number to wait for the next retry. This setting is helpful in case of high concurrency on the same pages (multi-thread insertion over the same bucket)",
       Integer.class, 100),
 
+  BACKUP_ENABLED("arcadedb.backup.enabled", SCOPE.DATABASE,
+      "Allow a database to be backup. Disabling backup gives a huge boost in performance because no lock will be used for every operations",
+      Boolean.class, true),
+
   // SQL
   SQL_STATEMENT_CACHE("arcadedb.sqlStatementCache", SCOPE.DATABASE, "Maximum number of parsed statements to keep in cache",
       Integer.class, 300),
@@ -308,8 +314,12 @@ public enum GlobalConfiguration {
   SERVER_MODE("arcadedb.server.mode", SCOPE.SERVER, "Server mode between 'development', 'test' and 'production'", String.class,
       "development", Set.of((Object[]) new String[] { "development", "test", "production" })),
 
+  // Metrics
   SERVER_METRICS("arcadedb.serverMetrics", SCOPE.SERVER, "True to enable metrics", Boolean.class, true),
 
+  SERVER_METRICS_LOGGING("arcadedb.serverMetrics.logging", SCOPE.SERVER, "True to enable metrics logging", Boolean.class, false),
+
+  //paths
   SERVER_ROOT_PATH("arcadedb.server.rootPath", SCOPE.SERVER,
       "Root path in the file system where the server is looking for files. By default is the current directory", String.class,
       null),
@@ -390,8 +400,8 @@ public enum GlobalConfiguration {
       String.class, ""),
 
   HA_QUORUM("arcadedb.ha.quorum", SCOPE.SERVER,
-      "Default quorum between 'none', 1, 2, 3, 'majority' and 'all' servers. Default is majority", String.class, "majority",
-      Set.of((Object[]) new String[] { "none", "1", "2", "3", "majority", "all" })),
+      "Default quorum between 'none', one, two, three, 'majority' and 'all' servers. Default is majority",String.class  , "majority",
+      Set.of(new String[] { "none", "one", "two", "three", "majority", "all" })),
 
   HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", SCOPE.SERVER, "Timeout waiting for the quorum", Long.class, 10000),
 
@@ -528,8 +538,7 @@ public enum GlobalConfiguration {
     out.println(" configuration:");
 
     String lastSection = "";
-    for (final GlobalConfiguration v : Arrays.stream(values()).sorted(Comparator.comparing(Enum::name))
-        .collect(Collectors.toList())) {
+    for (final GlobalConfiguration v : Arrays.stream(values()).sorted(Comparator.comparing(Enum::name)).toList()) {
       final String section = v.key.substring(0, v.key.indexOf('.'));
 
       if (!lastSection.equals(section)) {

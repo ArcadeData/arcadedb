@@ -46,7 +46,7 @@ public class SelectOrderByIT extends TestHelper {
 
     database.transaction(() -> {
       for (int i = 0; i < 100; i++)
-        database.newVertex("Vertex").set("id", i, "notIndexedId", i, "float", i + 3.14F, "name", "Elon").save();
+        database.newVertex("Vertex").set("id", i, "notIndexedId", i, "float", i + 3.14F, "name", "John").save();
       for (int i = 100; i < 110; i++)
         database.newVertex("Vertex").set("id", i, "notIndexedId", i, "name", "Jay").save();
     });

@@ -103,7 +103,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   public void onAfterLoad() {
     // RELOAD THE PAGE. THIS CAN BE CALLED AT CREATION OF THE OBJECT (CONSTRUCTOR) OR IN A TX WHEN DATABASE STRUCTURE CHANGES
     try {
-      final BasePage currentPage = this.database.getTransaction().getPage(new PageId(file.getFileId(), 0), pageSize);
+      final BasePage currentPage = this.database.getTransaction().getPage(new PageId(database, file.getFileId(), 0), pageSize);
 
       int pos = INT_SERIALIZED_SIZE + INT_SERIALIZED_SIZE + BYTE_SERIALIZED_SIZE + INT_SERIALIZED_SIZE;
 
@@ -203,7 +203,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
   public LSMTreeIndexUnderlyingPageCursor newPageIterator(final int pageId, final int currentEntryInPage,
       final boolean ascendingOrder) throws IOException {
-    final BasePage page = database.getTransaction().getPage(new PageId(file.getFileId(), pageId), pageSize);
+    final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
     return new LSMTreeIndexUnderlyingPageCursor(this, page, currentEntryInPage, getHeaderSize(pageId), binaryKeyTypes,
         getCount(page), ascendingOrder);
   }
@@ -366,10 +366,10 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     // NEW FILE, CREATE HEADER PAGE
     final int txPageCounter = getTotalPages();
 
-    final PageId pageId = new PageId(file.getFileId(), txPageCounter);
+    final PageId pageId = new PageId(database, file.getFileId(), txPageCounter);
     final MutablePage currentPage = database.isTransactionActive() ?
         database.getTransaction().addPage(pageId, pageSize) :
-        new MutablePage(database.getPageManager(), new PageId(getFileId(), txPageCounter), pageSize);
+        new MutablePage(new PageId(database, getFileId(), txPageCounter), pageSize);
 
     int pos = 0;
     currentPage.writeInt(pos, currentPage.getMaxContentSize());
@@ -404,7 +404,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     final int totalPages = getTotalPages();
 
     for (int p = totalPages - 1; p > -1; --p) {
-      final BasePage currentPage = database.getTransaction().getPage(new PageId(file.getFileId(), p), pageSize);
+      final BasePage currentPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), p), pageSize);
       final Binary currentPageBuffer = new Binary(currentPage.slice());
       final int count = getCount(currentPage);
 
@@ -447,7 +447,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     int pageNum = txPageCounter - 1;
 
     try {
-      MutablePage currentPage = database.getTransaction().getPageToModify(new PageId(file.getFileId(), pageNum), pageSize, false);
+      MutablePage currentPage = database.getTransaction()
+          .getPageToModify(new PageId(database, file.getFileId(), pageNum), pageSize, false);
 
       TrackableBinary currentPageBuffer = currentPage.getTrackable();
 
@@ -539,7 +540,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     int pageNum = txPageCounter - 1;
 
     try {
-      MutablePage currentPage = database.getTransaction().getPageToModify(new PageId(file.getFileId(), pageNum), pageSize, false);
+      MutablePage currentPage = database.getTransaction()
+          .getPageToModify(new PageId(database, file.getFileId(), pageNum), pageSize, false);
 
       assert isMutable(currentPage);
 

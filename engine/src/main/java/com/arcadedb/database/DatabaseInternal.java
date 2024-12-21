@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.BinarySerializer;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.io.*;
 import java.util.*;
@@ -36,6 +37,7 @@ import java.util.concurrent.*;
 /**
  * Internal API, do not use as an end user.
  */
+@ExcludeFromJacocoGeneratedReport
 public interface DatabaseInternal extends Database {
   enum CALLBACK_EVENT {
     TX_AFTER_WAL_WRITE, DB_NOT_CLOSED

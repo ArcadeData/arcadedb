@@ -18,11 +18,14 @@
  */
 package com.arcadedb.security;
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
 import java.util.*;
 
 /**
  * Security user at global level. The user can have access to multiple databases.
  */
+@ExcludeFromJacocoGeneratedReport
 public interface SecurityUser {
   /**
    * Returns the user's name.

@@ -18,9 +18,12 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
 /**
  * Created by luigidellaquila on 16/07/16.
  */
+@ExcludeFromJacocoGeneratedReport
 public interface AggregationContext {
   Object getFinalValue();
 

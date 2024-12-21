@@ -25,12 +25,12 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>24.11.2-SNAPSHOT</version>
+        <version>25.1.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
     <properties>
-        <jline.version>3.27.1</jline.version>
+        <jline.version>3.28.0</jline.version>
     </properties>
 
     <artifactId>arcadedb-console</artifactId>
@@ -73,7 +73,7 @@
         </dependency>
         <dependency>
             <groupId>org.jline</groupId>
-            <artifactId>jline-terminal-jansi</artifactId>
+            <artifactId>jline-terminal-jni</artifactId>
             <version>${jline.version}</version>
         </dependency>
         <dependency>

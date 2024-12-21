@@ -20,6 +20,7 @@ package com.arcadedb.server.ha;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.HostUtil;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
@@ -55,9 +56,10 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
     checkDatabases();
 
     final String server2Address = getServer(1).getHttpServer().getListeningAddress();
-    final String[] server1AddressParts = server2Address.split(":");
 
-    final RemoteDatabase db = new RemoteDatabase(server1AddressParts[0], Integer.parseInt(server1AddressParts[1]),
+    final String[] server2AddressParts = HostUtil.parseHostAddress(server2Address, HostUtil.CLIENT_DEFAULT_PORT);
+
+    final RemoteDatabase db = new RemoteDatabase(server2AddressParts[0], Integer.parseInt(server2AddressParts[1]),
         getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     LogManager.instance()

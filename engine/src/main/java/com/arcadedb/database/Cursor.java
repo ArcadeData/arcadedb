@@ -18,6 +18,8 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
 import java.util.*;
 
 /**
@@ -25,6 +27,7 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@ExcludeFromJacocoGeneratedReport
 public interface Cursor extends Iterable<Identifiable>, Iterator<Identifiable> {
   long estimateSize();
 }

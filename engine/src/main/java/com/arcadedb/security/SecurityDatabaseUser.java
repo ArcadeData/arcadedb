@@ -18,11 +18,14 @@
  */
 package com.arcadedb.security;
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
 /**
  * Security user for a database. It declares the authorized permissions against the database.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@ExcludeFromJacocoGeneratedReport
 public interface SecurityDatabaseUser {
   enum ACCESS {
     CREATE_RECORD("createRecord", "create records"),//

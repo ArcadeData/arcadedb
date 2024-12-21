@@ -18,12 +18,15 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
 /**
  * Provides methods to intercept serialization of data allowing encryption and decryption.
  *
  * @author Pawel Maslej
  * @since 27 Jun 2024
  */
+@ExcludeFromJacocoGeneratedReport
 public interface DataEncryption {
   public byte[] encrypt(byte[] data);
   public byte[] decrypt(byte[] data);

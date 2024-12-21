@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
 import java.io.*;
@@ -63,7 +64,7 @@ public class GetQueryHandler extends AbstractQueryHandler {
       serializeResultSet(database, serializer, limit, response, qResult);
 
     } finally {
-      httpServer.getServer().getServerMetrics().meter("http.query").hit();
+      Metrics.counter("http.query").increment();
     }
 
     return new ExecutionResponse(200, response.toString());

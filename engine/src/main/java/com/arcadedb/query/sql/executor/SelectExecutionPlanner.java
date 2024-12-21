@@ -1273,13 +1273,12 @@ public class SelectExecutionPlanner {
       return;
     }
 
-    Boolean orderByRidAsc = null;//null: no order. true: asc, false:desc
-    if (isOrderByRidAsc(info)) {
+    Boolean orderByRidAsc = null; // null: no order. true: asc, false:desc
+    if (isOrderByRidAsc(info))
       orderByRidAsc = true;
-    }
-//    else if (isOrderByRidDesc(info)) {
-//      orderByRidAsc = false;
-//    }
+    else if (isOrderByRidDesc(info))
+      orderByRidAsc = false;
+
     final FetchFromTypeExecutionStep fetcher = new FetchFromTypeExecutionStep(identifier.getStringValue(), filterClusters, info,
         context, orderByRidAsc);
     if (orderByRidAsc != null)
@@ -2255,8 +2254,9 @@ public class SelectExecutionPlanner {
     Boolean orderByRidAsc = null;//null: no order. true: asc, false:desc
     if (isOrderByRidAsc(info))
       orderByRidAsc = true;
-//    else if (isOrderByRidDesc(info))
-//      orderByRidAsc = false;
+    else if (isOrderByRidDesc(info))
+      orderByRidAsc = false;
+
     if (orderByRidAsc != null)
       info.orderApplied = true;
 
@@ -2310,21 +2310,18 @@ public class SelectExecutionPlanner {
   }
 
   private boolean isOrderByRidDesc(final QueryPlanningInfo info) {
+    if (!hasTargetWithSortedRids(info))
+      return false;
+
+    if (info.orderBy == null)
+      return false;
+
+    if (info.orderBy.getItems().size() == 1) {
+      OrderByItem item = info.orderBy.getItems().get(0);
+      String recordAttr = item.getRecordAttr();
+      return recordAttr != null && recordAttr.equalsIgnoreCase("@rid") && OrderByItem.DESC.equals(item.getType());
+    }
     return false;
-    //TODO buckets do not support reverse iteration, so order by rid desc cannot be optimised!
-//    if (!hasTargetWithSortedRids(info)) {
-//      return false;
-//    }
-//
-//    if (info.orderBy == null) {
-//      return false;
-//    }
-//    if (info.orderBy.getItems().size() == 1) {
-//      OrderByItem item = info.orderBy.getItems().get(0);
-//      String recordAttr = item.getRecordAttr();
-//      return recordAttr != null && recordAttr.equalsIgnoreCase("@rid") && OrderByItem.DESC.equals(item.getType());
-//    }
-//    return false;
   }
 
   private boolean isOrderByRidAsc(final QueryPlanningInfo info) {

@@ -26,6 +26,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryClient;
 import com.arcadedb.network.binary.ConnectionException;
+import com.arcadedb.network.HostUtil;
 import com.arcadedb.network.binary.NetworkProtocolException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.schema.LocalSchema;
@@ -212,8 +213,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
                   // SKIP LOCAL SERVER
                   continue;
 
-                final String[] parts = serverAddress.split(":");
-
+                final String[] parts = HostUtil.parseHostAddress(serverAddress, HostUtil.HA_DEFAULT_PORT);
                 host = parts[0];
                 port = Integer.parseInt(parts[1]);
 

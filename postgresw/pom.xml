@@ -25,7 +25,7 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>24.11.2-SNAPSHOT</version>
+        <version>25.1.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -34,7 +34,7 @@
 
     <properties>
         <postgres.version>42.7.4</postgres.version>
-        <tomcat-jdbc.version>11.0.1</tomcat-jdbc.version>
+        <tomcat-jdbc.version>11.0.2</tomcat-jdbc.version>
     </properties>
 
     <dependencies>
@@ -68,8 +68,7 @@
             <artifactId>arcadedb-gremlin</artifactId>
             <version>${project.parent.version}</version>
             <classifier>shaded</classifier>
-
-            <scope>test</scope>
+         <scope>test</scope>
         </dependency>
     </dependencies>
     <build>

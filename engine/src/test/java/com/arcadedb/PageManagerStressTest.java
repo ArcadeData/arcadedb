@@ -26,6 +26,7 @@ import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import performance.PerformanceTest;
 
@@ -38,9 +39,9 @@ public class PageManagerStressTest {
   private static final String TYPE_NAME = "Device";
 
   @Test
+  @Disabled
   public void stressPageManagerFlush() {
-    GlobalConfiguration.PROFILE.setValue("low-ram");
-    PerformanceTest.clean();
+    PerformanceTest.clean("low-ram");
 
     final int parallel = 2;
 

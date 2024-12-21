@@ -19,12 +19,14 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.util.*;
 
 /**
  * Created by luigidellaquila on 06/07/16.
  */
+@ExcludeFromJacocoGeneratedReport
 public interface InternalExecutionPlan extends ExecutionPlan {
 
   String JAVA_TYPE = "javaType";

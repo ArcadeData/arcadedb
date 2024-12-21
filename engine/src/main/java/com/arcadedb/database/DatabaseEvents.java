@@ -24,7 +24,9 @@ import com.arcadedb.event.AfterRecordUpdateListener;
 import com.arcadedb.event.BeforeRecordCreateListener;
 import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.event.BeforeRecordUpdateListener;
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
+@ExcludeFromJacocoGeneratedReport
 public interface DatabaseEvents {
   DatabaseEvents registerListener(final BeforeRecordCreateListener listener);
 

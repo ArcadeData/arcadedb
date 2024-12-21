@@ -83,26 +83,26 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         }
 
         // CREATE DOCUMENT VIA SQL
-        ResultSet result = database.command("SQL", "insert into Person set name = 'Elon'");
+        ResultSet result = database.command("SQL", "insert into Person set name = 'John'");
         assertThat((Iterator<? extends Result>) result).isNotNull();
         assertThat(result.hasNext()).isTrue();
         final Result rec = result.next();
-        assertThat(rec.toJSON().toString().contains("Elon")).isTrue();
-        assertThat(rec.toElement().toMap().get("name")).isEqualTo("Elon");
+        assertThat(rec.toJSON().toString().contains("John")).isTrue();
+        assertThat(rec.toElement().toMap().get("name")).isEqualTo("John");
         final RID rid = rec.toElement().getIdentity();
 
         // RETRIEVE DOCUMENT WITH QUERY
-        result = database.query("SQL", "select from Person where name = 'Elon'");
+        result = database.query("SQL", "select from Person where name = 'John'");
         assertThat(result.hasNext()).isTrue();
 
         // UPDATE DOCUMENT WITH COMMAND
-        result = database.command("SQL", "update Person set lastName = 'Musk' where name = 'Elon'");
+        result = database.command("SQL", "update Person set lastName = 'Red' where name = 'John'");
         assertThat(result.hasNext()).isTrue();
         assertThat(result.next().toJSON().getInt("count")).isEqualTo(1);
 
         final Document record = (Document) database.lookupByRID(rid);
         assertThat((Iterator<? extends Result>) result).isNotNull();
-        assertThat(record.getString("lastName")).isEqualTo("Musk");
+        assertThat(record.getString("lastName")).isEqualTo("Red");
 
         assertThat(database.countType("Person", true)).isEqualTo(1L);
         assertThat(database.countType("Person", false)).isEqualTo(1L);
@@ -120,9 +120,9 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       });
 
       // RETRIEVE DOCUMENT WITH QUERY AFTER COMMIT
-      final ResultSet result = database.query("SQL", "select from Person where name = 'Elon'");
+      final ResultSet result = database.query("SQL", "select from Person where name = 'John'");
       assertThat(result.hasNext()).isTrue();
-      assertThat(result.next().<String>getProperty("lastName")).isEqualTo("Musk");
+      assertThat(result.next().<String>getProperty("lastName")).isEqualTo("Red");
     });
   }
 
@@ -178,12 +178,12 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         }
 
         // CREATE VERTEX 1
-        result = database.command("SQL", "insert into Character set name = 'Elon'");
+        result = database.command("SQL", "insert into Character set name = 'John'");
         assertThat((Iterator<? extends Result>) result).isNotNull();
         assertThat(result.hasNext()).isTrue();
         Result rec = result.next();
-        assertThat(rec.toJSON().toString().contains("Elon")).isTrue();
-        assertThat(rec.toElement().toMap().get("name")).isEqualTo("Elon");
+        assertThat(rec.toJSON().toString().contains("John")).isTrue();
+        assertThat(rec.toElement().toMap().get("name")).isEqualTo("John");
         final RID rid1 = rec.getIdentity().get();
 
         // CREATE VERTEX 2
@@ -196,12 +196,12 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         final RID rid2 = rec.getIdentity().get();
 
         // RETRIEVE VERTEX WITH QUERY
-        result = database.query("SQL", "select from Character where name = 'Elon'");
+        result = database.query("SQL", "select from Character where name = 'John'");
         assertThat(result.hasNext()).isTrue();
         assertThat(result.next().isVertex()).isTrue();
 
         // UPDATE VERTEX WITH COMMAND
-        result = database.command("SQL", "update Character set lastName = 'Musk' where name = 'Elon' or name = 'Kimbal'");
+        result = database.command("SQL", "update Character set lastName = 'Red' where name = 'John' or name = 'Kimbal'");
         assertThat(result.hasNext()).isTrue();
         assertThat(result.next().toJSON().getInt("count")).isEqualTo(2);
 
@@ -219,8 +219,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
 
         Vertex record = (Vertex) database.lookupByRID(rid1);
         assertThat(record).isNotNull();
-        assertThat(record.getString("name")).isEqualTo("Elon");
-        assertThat(record.getString("lastName")).isEqualTo("Musk");
+        assertThat(record.getString("name")).isEqualTo("John");
+        assertThat(record.getString("lastName")).isEqualTo("Red");
 
         record.toMap();
         record.toJSON();
@@ -228,7 +228,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         record = (Vertex) database.lookupByRID(rid2);
         assertThat(record).isNotNull();
         assertThat(record.getString("name")).isEqualTo("Kimbal");
-        assertThat(record.getString("lastName")).isEqualTo("Musk");
+        assertThat(record.getString("lastName")).isEqualTo("Red");
 
         final MutableDocument mutable = record.modify();
         mutable.set("extra", 100);
@@ -242,7 +242,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       assertThat(record.isVertex()).isTrue();
 
       final Vertex kimbal = record.getVertex().get();
-      assertThat(kimbal.getString("lastName")).isEqualTo("Musk");
+      assertThat(kimbal.getString("lastName")).isEqualTo("Red");
       assertThat(kimbal.getInteger("extra")).isEqualTo(100);
 
       assertThat(kimbal.toMap().containsKey("@cat")).isTrue();
@@ -255,7 +255,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       final Iterator<Vertex> connected = kimbal.getVertices(Vertex.DIRECTION.IN).iterator();
       assertThat(connected.hasNext()).isTrue();
       final Vertex elon = connected.next();
-      assertThat(elon.getString("lastName")).isEqualTo("Musk");
+      assertThat(elon.getString("lastName")).isEqualTo("Red");
 
       assertThat(kimbal.countEdges(Vertex.DIRECTION.IN, null)).isEqualTo(1L);
       assertThat(kimbal.countEdges(Vertex.DIRECTION.IN, EDGE1_TYPE_NAME)).isEqualTo(1L);
@@ -468,7 +468,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       database1.setSessionId(sessionId + "1");
 
       try {
-        final MutableDocument elon = database1.newDocument("Person").set("name", "Elon").save();
+        final MutableDocument elon = database1.newDocument("Person").set("name", "John").save();
         fail();
       } catch (TransactionException e) {
         // EXPECTED

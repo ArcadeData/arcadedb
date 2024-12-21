@@ -18,6 +18,9 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
+
+@ExcludeFromJacocoGeneratedReport
 public interface TrackableContent {
   int[] getModifiedRange();
 

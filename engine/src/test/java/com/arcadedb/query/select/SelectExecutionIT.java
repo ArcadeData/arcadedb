@@ -56,8 +56,8 @@ public class SelectExecutionIT extends TestHelper {
 
     database.transaction(() -> {
       for (int i = 0; i < 100; i++) {
-        database.newDocument("Document").set("id", i, "float", 3.14F, "name", "Elon").save();
-        database.newVertex("Vertex").set("id", i, "float", 3.14F, "name", "Elon").save();
+        database.newDocument("Document").set("id", i, "float", 3.14F, "name", "John").save();
+        database.newVertex("Vertex").set("id", i, "float", 3.14F, "name", "John").save();
       }
 
       for (int i = 1; i < 100; i++) {
@@ -78,7 +78,7 @@ public class SelectExecutionIT extends TestHelper {
               database.getSchema().getType("Vertex").getBuckets(true).stream().map(Bucket::getName).collect(Collectors.toList())
                   .toArray(new String[database.getSchema().getType("Vertex").getBuckets(true).size()]))//
           .where().property("id").eq().parameter("value")//
-          .and().property("name").eq().value("Elon").compile();
+          .and().property("name").eq().value("John").compile();
 
       for (int i = 0; i < 100; i++)
         assertThat(select.parameter("value", i).vertices().nextOrNull().getInteger("id")).isEqualTo(i);
@@ -89,7 +89,7 @@ public class SelectExecutionIT extends TestHelper {
               database.getSchema().getType("Vertex").getBuckets(true).stream().map(Bucket::getFileId).collect(Collectors.toList())
                   .toArray(new Integer[database.getSchema().getType("Vertex").getBuckets(true).size()]))//
           .where().property("id").eq().parameter("value")//
-          .and().property("name").eq().value("Elon").compile();
+          .and().property("name").eq().value("John").compile();
 
       for (int i = 0; i < 100; i++)
         assertThat(select.parameter("value", i).vertices().nextOrNull().getInteger("id")).isEqualTo(i);
@@ -101,7 +101,7 @@ public class SelectExecutionIT extends TestHelper {
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
-          .and().property("name").eq().value("Elon").compile();
+          .and().property("name").eq().value("John").compile();
 
       for (int i = 0; i < 100; i++)
         assertThat(select.parameter("value", i).vertices().nextOrNull().getInteger("id")).isEqualTo(i);
@@ -110,7 +110,7 @@ public class SelectExecutionIT extends TestHelper {
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
-          .and().property("name").eq().value("Elon2").compile();
+          .and().property("name").eq().value("John2").compile();
 
       assertThat(select.parameter("value", 3).vertices().hasNext()).isFalse();
     }
@@ -118,7 +118,7 @@ public class SelectExecutionIT extends TestHelper {
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().value(-1)//
-          .and().property("name").eq().value("Elon").compile();
+          .and().property("name").eq().value("John").compile();
 
       assertThat(select.vertices().hasNext()).isFalse();
     }
@@ -126,9 +126,9 @@ public class SelectExecutionIT extends TestHelper {
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
-          .and().property("name").eq().value("Elon")//
+          .and().property("name").eq().value("John")//
           .and().property("id").eq().parameter("value")//
-          .and().property("name").eq().value("Elon").compile();
+          .and().property("name").eq().value("John").compile();
 
       for (int i = 0; i < 100; i++)
         assertThat(select.parameter("value", i).vertices().nextOrNull().getInteger("id")).isEqualTo(i);
@@ -140,33 +140,33 @@ public class SelectExecutionIT extends TestHelper {
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
-          .or().property("name").eq().value("Elon").compile();
+          .or().property("name").eq().value("John").compile();
 
       for (SelectIterator<Vertex> result = select.parameter("value", 3).vertices(); result.hasNext(); ) {
         final Vertex v = result.next();
-        assertThat(v.getInteger("id").equals(3) || v.getString("name").equals("Elon")).isTrue();
+        assertThat(v.getInteger("id").equals(3) || v.getString("name").equals("John")).isTrue();
       }
     }
 
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
-          .or().property("name").eq().value("Elon2").compile();
+          .or().property("name").eq().value("John2").compile();
 
       for (SelectIterator<Vertex> result = select.parameter("value", 3).vertices(); result.hasNext(); ) {
         final Vertex v = result.next();
-        assertThat(v.getInteger("id").equals(3) || v.getString("name").equals("Elon2")).isTrue();
+        assertThat(v.getInteger("id").equals(3) || v.getString("name").equals("John2")).isTrue();
       }
     }
 
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().value(-1)//
-          .or().property("name").eq().value("Elon").compile();
+          .or().property("name").eq().value("John").compile();
 
       for (SelectIterator<Vertex> result = select.parameter("value", 3).vertices(); result.hasNext(); ) {
         final Vertex v = result.next();
-        assertThat(v.getInteger("id").equals(-1) || v.getString("name").equals("Elon")).isTrue();
+        assertThat(v.getInteger("id").equals(-1) || v.getString("name").equals("John")).isTrue();
       }
     }
   }
@@ -176,26 +176,26 @@ public class SelectExecutionIT extends TestHelper {
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
-          .and().property("name").eq().value("Elon2")//
-          .or().property("name").eq().value("Elon").compile();
+          .and().property("name").eq().value("John2")//
+          .or().property("name").eq().value("John").compile();
 
       for (SelectIterator<Vertex> result = select.parameter("value", 3).vertices(); result.hasNext(); ) {
         final Vertex v = result.next();
-        assertThat(v.getInteger("id").equals(3) && v.getString("name").equals("Elon2") ||//
-            v.getString("name").equals("Elon")).isTrue();
+        assertThat(v.getInteger("id").equals(3) && v.getString("name").equals("John2") ||//
+            v.getString("name").equals("John")).isTrue();
       }
     }
 
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
-          .or().property("name").eq().value("Elon2")//
-          .and().property("name").eq().value("Elon").compile();
+          .or().property("name").eq().value("John2")//
+          .and().property("name").eq().value("John").compile();
 
       for (SelectIterator<Vertex> result = select.parameter("value", 3).vertices(); result.hasNext(); ) {
         final Vertex v = result.next();
         assertThat(v.getInteger("id").equals(3) ||//
-            v.getString("name").equals("Elon2") && v.getString("name").equals("Elon")).isTrue();
+            v.getString("name").equals("John2") && v.getString("name").equals("John")).isTrue();
       }
     }
   }
@@ -204,7 +204,7 @@ public class SelectExecutionIT extends TestHelper {
   public void okLimit() {
     final SelectCompiled select = database.select().fromType("Vertex")//
         .where().property("id").lt().value(10)//
-        .and().property("name").eq().value("Elon").limit(10).compile();
+        .and().property("name").eq().value("John").limit(10).compile();
 
     final SelectIterator<Vertex> iter = select.vertices();
     int browsed = 0;
@@ -219,7 +219,7 @@ public class SelectExecutionIT extends TestHelper {
   public void okSkip() {
     SelectCompiled select = database.select().fromType("Vertex")//
         .where().property("id").lt().value(10)//
-        .and().property("name").eq().value("Elon").skip(10).compile();
+        .and().property("name").eq().value("John").skip(10).compile();
 
     SelectIterator<Vertex> iter = select.vertices();
     int browsed = 0;
@@ -231,7 +231,7 @@ public class SelectExecutionIT extends TestHelper {
 
     select = database.select().fromType("Vertex")//
         .where().property("id").lt().value(10)//
-        .and().property("name").eq().value("Elon").skip(0).compile();
+        .and().property("name").eq().value("John").skip(0).compile();
 
     iter = select.vertices();
     browsed = 0;
@@ -243,7 +243,7 @@ public class SelectExecutionIT extends TestHelper {
 
     select = database.select().fromType("Vertex")//
         .where().property("id").lt().value(10)//
-        .and().property("name").eq().value("Elon").skip(2).compile();
+        .and().property("name").eq().value("John").skip(2).compile();
 
     iter = select.vertices();
     browsed = 0;
@@ -259,14 +259,14 @@ public class SelectExecutionIT extends TestHelper {
     database.transaction(() -> {
       database.select().fromType("Vertex")//
           .where().property("id").lt().value(10)//
-          .and().property("name").eq().value("Elon")//
+          .and().property("name").eq().value("John")//
           .limit(10).vertices()//
           .forEachRemaining(a -> a.modify().set("modified", true).save());
     });
 
     database.select().fromType("Vertex")//
         .where().property("id").lt().value(10)//
-        .and().property("name").eq().value("Elon").limit(10).vertices()
+        .and().property("name").eq().value("John").limit(10).vertices()
         .forEachRemaining(r -> assertTrue(r.getInteger("id") < 10 && r.getBoolean("modified")));
   }
 
@@ -275,7 +275,7 @@ public class SelectExecutionIT extends TestHelper {
     {
       expectingException(() -> {
         final SelectIterator<Vertex> iter = database.select().fromType("Vertex")//
-            .where().property("name").eq().value("Elon").timeout(1, TimeUnit.MILLISECONDS, true).vertices();
+            .where().property("name").eq().value("John").timeout(1, TimeUnit.MILLISECONDS, true).vertices();
 
         while (iter.hasNext()) {
           try {
@@ -291,7 +291,7 @@ public class SelectExecutionIT extends TestHelper {
     {
       final SelectIterator<Vertex> iter = database.select().fromType("Vertex")//
           .where().property("id").lt().value(10)//
-          .and().property("name").eq().value("Elon").timeout(1, TimeUnit.MILLISECONDS, false).vertices();
+          .and().property("name").eq().value("John").timeout(1, TimeUnit.MILLISECONDS, false).vertices();
     }
   }
 
@@ -385,8 +385,8 @@ public class SelectExecutionIT extends TestHelper {
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
-          .and().property("name").eq().value("Elon2")//
-          .or().property("name").eq().value("Elon").compile();
+          .and().property("name").eq().value("John2")//
+          .or().property("name").eq().value("John").compile();
 
       final JSONObject json = select.json();
 

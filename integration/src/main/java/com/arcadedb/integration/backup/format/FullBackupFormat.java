@@ -65,13 +65,14 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
     logger.logLine(0, "Executing full backup of database to '%s'...", backupFile);
 
-    try (final ZipOutputStream zipFile = new ZipOutputStream(new FileOutputStream(backupFile), DatabaseFactory.getDefaultCharset())) {
+    try (final ZipOutputStream zipFile = new ZipOutputStream(new FileOutputStream(backupFile),
+        DatabaseFactory.getDefaultCharset())) {
       zipFile.setLevel(9);
 
       // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
       database.executeInReadLock(() -> {
         // FORCE FLUSHING BEFORE THE BACKUP AND AVOID FLUSHING OF DATA PAGES TO DISK
-        database.getPageManager().suspendFlushAndExecute(() -> {
+        database.getPageManager().suspendFlushAndExecute(database, () -> {
 
           final long beginTime = System.currentTimeMillis();
 
@@ -91,7 +92,8 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
           final long databaseCompressedSize = backupFile.length();
 
-          logger.logLine(0, "Full backup completed in %d seconds %s -> %s (%,d%% compressed)", elapsedInSecs, FileUtils.getSizeAsString(databaseOrigSize),
+          logger.logLine(0, "Full backup completed in %d seconds %s -> %s (%,d%% compressed)", elapsedInSecs,
+              FileUtils.getSizeAsString(databaseOrigSize),
               FileUtils.getSizeAsString((databaseCompressedSize)),
               databaseOrigSize > 0 ? (databaseOrigSize - databaseCompressedSize) * 100 / databaseOrigSize : 0);
         });
@@ -114,7 +116,8 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
     final long compressedSize = zipEntry.getCompressedSize();
 
-    logger.logLine(2, " %s -> %s (%,d%% compressed)", FileUtils.getSizeAsString(origSize), FileUtils.getSizeAsString(compressedSize),
+    logger.logLine(2, " %s -> %s (%,d%% compressed)", FileUtils.getSizeAsString(origSize),
+        FileUtils.getSizeAsString(compressedSize),
         origSize > 0 ? (origSize - compressedSize) * 100 / origSize : 0);
 
     return origSize;
