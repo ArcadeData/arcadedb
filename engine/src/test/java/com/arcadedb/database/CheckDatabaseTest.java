@@ -213,16 +213,16 @@ public class CheckDatabaseTest extends TestHelper {
     assertThat(result.hasNext()).isTrue();
     Result row = result.next();
 
-    Assertions.assertEquals("check database", row.getProperty("operation"));
-    Assertions.assertEquals((TOTAL - 1L) * 2L, (Long) row.getProperty("autoFix"));
-    Assertions.assertEquals(TOTAL - 1L, (Long) row.getProperty("totalActiveVertices"));
-    Assertions.assertEquals(0L, (Long) row.getProperty("totalAllocatedEdges"));
-    Assertions.assertEquals(0L, (Long) row.getProperty("totalActiveEdges"));
-    Assertions.assertEquals(1, (Long) row.getProperty("totalDeletedRecords"));
-    Assertions.assertEquals(TOTAL - 1L, ((Collection) row.getProperty("corruptedRecords")).size());
-    Assertions.assertEquals(0L, (Long) row.getProperty("missingReferenceBack"));
-    Assertions.assertEquals((TOTAL - 1L) * 2L, (Long) row.getProperty("invalidLinks"));
-    Assertions.assertEquals((TOTAL - 1L) * 2L, ((Collection) row.getProperty("warnings")).size());
+    assertThat(row.<String>getProperty("operation")).isEqualTo("check database");
+    assertThat((Long) row.getProperty("autoFix")).isEqualTo((TOTAL - 1L) * 2L);
+    assertThat((Long) row.getProperty("totalActiveVertices")).isEqualTo(TOTAL - 1L);
+    assertThat((Long) row.getProperty("totalAllocatedEdges")).isEqualTo(0L);
+    assertThat((Long) row.getProperty("totalActiveEdges")).isEqualTo(0L);
+    assertThat((Long) row.getProperty("totalDeletedRecords")).isEqualTo(1L);
+    assertThat(((Collection) row.getProperty("corruptedRecords")).size()).isEqualTo(TOTAL - 1L);
+    assertThat((Long) row.getProperty("missingReferenceBack")).isEqualTo(0L);
+    assertThat((Long) row.getProperty("invalidLinks")).isEqualTo((TOTAL - 1) * 2L);
+    assertThat(((Collection) row.getProperty("warnings")).size()).isEqualTo((TOTAL - 1) * 2L);
 
     result = database.command("sql", "check database");
     assertThat(result.hasNext()).isTrue();

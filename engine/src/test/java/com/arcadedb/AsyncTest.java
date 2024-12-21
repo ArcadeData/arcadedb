@@ -86,7 +86,7 @@ public class AsyncTest extends TestHelper {
     assertThat(updatedRecords.get()).isEqualTo(TOT);
 
     ResultSet resultSet = database.query("sql", "select from " + TYPE_NAME + " where updated <> true");
-    Assertions.assertFalse(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isFalse();
 
     resultSet = database.query("sql", "select count(*) as count from " + TYPE_NAME + " where updated = true");
 
