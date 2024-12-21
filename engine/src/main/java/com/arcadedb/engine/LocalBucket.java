@@ -1324,7 +1324,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int chunkPositionInPage = (int) (chunkToDeletePointer % maxRecordsInPage);
 
       final MutablePage nextPage = database.getTransaction()
-          .getPageToModify(new PageId(file.getFileId(), chunkPageId), pageSize, false);
+          .getPageToModify(new PageId(database, file.getFileId(), chunkPageId), pageSize, false);
       final int recordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
 
       // DELETE THE CHUNK AS RECORD IN THE PAGE
