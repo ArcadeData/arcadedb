@@ -37,29 +37,29 @@ public class MultipleTypesIndexTest extends TestHelper {
   private static final int    TOT       = 100000;
   private static final String TYPE_NAME = "Profile";
 
-  //@Test
+  @Test
   public void testCollection() {
     database.transaction(() -> {
       final Index index = database.getSchema().getIndexByName(TYPE_NAME + "[keywords]");
 
       IndexCursor cursor = index.get(new Object[] { List.of("ceo", "tesla", "spacex", "boring", "neuralink", "twitter") });
       assertThat(cursor.hasNext()).isTrue();
-      assertThat(cursor.next().asVertex().getString("lastName")).isEqualTo("Musk");
+      assertThat(cursor.next().asVertex().getString("lastName")).isEqualTo("Red");
       assertThat(cursor.hasNext()).isFalse();
 
       ResultSet resultset = database.query("sql", "select from " + TYPE_NAME + " where keywords CONTAINS ?", "tesla");
       assertThat(resultset.hasNext()).isTrue();
-      assertThat(resultset.next().toElement().asVertex().getString("lastName")).isEqualTo("Musk");
+      assertThat(resultset.next().toElement().asVertex().getString("lastName")).isEqualTo("Red");
       assertThat(resultset.hasNext()).isFalse();
 
       resultset = database.query("sql", "select from " + TYPE_NAME + " where 'tesla' IN  keywords");
       assertThat(resultset.hasNext()).isTrue();
-      assertThat(resultset.next().toElement().asVertex().getString("lastName")).isEqualTo("Musk");
+      assertThat(resultset.next().toElement().asVertex().getString("lastName")).isEqualTo("Red");
       assertThat(resultset.hasNext()).isFalse();
 
       resultset = database.query("sql", "select from " + TYPE_NAME + " where ? IN keywords", "tesla");
       assertThat(resultset.hasNext()).isTrue();
-      assertThat(resultset.next().toElement().asVertex().getString("lastName")).isEqualTo("Musk");
+      assertThat(resultset.next().toElement().asVertex().getString("lastName")).isEqualTo("Red");
       assertThat(resultset.hasNext()).isFalse();
 
       cursor = index.get(new Object[] { List.of("inventor", "commodore", "amiga", "atari", "80s") });
@@ -85,8 +85,8 @@ public class MultipleTypesIndexTest extends TestHelper {
 
       MutableVertex v = database.newVertex(TYPE_NAME);
       v.set("id", TOT+1);
-      v.set("firstName", "Mark");
-      v.set("lastName", "Zuck");
+      v.set("firstName", "Jake");
+      v.set("lastName", "White");
 
       final List<Object> list = new ArrayList<>();
       list.add(null);
@@ -96,7 +96,7 @@ public class MultipleTypesIndexTest extends TestHelper {
 
       IndexCursor cursor = index.get(new Object[] { list });
       assertThat(cursor.hasNext()).isTrue();
-      assertThat(cursor.next().asVertex().getString("lastName")).isEqualTo("Zuck");
+      assertThat(cursor.next().asVertex().getString("lastName")).isEqualTo("White");
       assertThat(cursor.hasNext()).isFalse();
     });
   }
@@ -134,8 +134,8 @@ public class MultipleTypesIndexTest extends TestHelper {
 
       MutableVertex v = database.newVertex(TYPE_NAME);
       v.set("id", 0);
-      v.set("firstName", "Elon");
-      v.set("lastName", "Musk");
+      v.set("firstName", "John");
+      v.set("lastName", "Red");
       v.set("keywords", List.of("ceo", "tesla", "spacex", "boring", "neuralink", "twitter"));
       v.save();
 

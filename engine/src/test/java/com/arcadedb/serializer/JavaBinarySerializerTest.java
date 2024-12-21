@@ -39,7 +39,7 @@ public class JavaBinarySerializerTest extends TestHelper {
     final DocumentType type = database.getSchema().createDocumentType("Doc");
     type.createProperty("id", Type.LONG);
 
-    final MutableDocument doc1 = database.newDocument("Doc").set("id", 100L, "name", "Elon");
+    final MutableDocument doc1 = database.newDocument("Doc").set("id", 100L, "name", "John");
     try (final ByteArrayOutputStream arrayOut = new ByteArrayOutputStream(); final ObjectOutput buffer = new ObjectOutputStream(arrayOut)) {
       doc1.writeExternal(buffer);
       buffer.flush();
@@ -62,7 +62,7 @@ public class JavaBinarySerializerTest extends TestHelper {
     type.createProperty("id", Type.LONG);
 
     database.setAutoTransaction(true);
-    final MutableDocument doc1 = database.newDocument("Doc").set("id", 100L, "name", "Elon");
+    final MutableDocument doc1 = database.newDocument("Doc").set("id", 100L, "name", "John");
     doc1.save();
 
     try (final ByteArrayOutputStream arrayOut = new ByteArrayOutputStream(); final ObjectOutput buffer = new ObjectOutputStream(arrayOut)) {
@@ -86,7 +86,7 @@ public class JavaBinarySerializerTest extends TestHelper {
     final VertexType type = database.getSchema().createVertexType("Doc");
     type.createProperty("id", Type.LONG);
 
-    final MutableVertex doc1 = database.newVertex("Doc").set("id", 100L, "name", "Elon");
+    final MutableVertex doc1 = database.newVertex("Doc").set("id", 100L, "name", "John");
     try (final ByteArrayOutputStream arrayOut = new ByteArrayOutputStream(); final ObjectOutput buffer = new ObjectOutputStream(arrayOut)) {
       doc1.writeExternal(buffer);
       buffer.flush();
@@ -110,7 +110,7 @@ public class JavaBinarySerializerTest extends TestHelper {
     type.createProperty("id", Type.LONG);
 
     database.setAutoTransaction(true);
-    final MutableVertex v1 = database.newVertex("Doc").set("id", 100L, "name", "Elon");
+    final MutableVertex v1 = database.newVertex("Doc").set("id", 100L, "name", "John");
     v1.save();
     final MutableVertex v2 = database.newVertex("Doc").set("id", 101L, "name", "Jay");
     v2.save();
@@ -140,7 +140,7 @@ public class JavaBinarySerializerTest extends TestHelper {
     final EdgeType type = database.getSchema().createEdgeType("Edge");
 
     database.setAutoTransaction(true);
-    final MutableVertex v1 = database.newVertex("Doc").set("id", 100L, "name", "Elon");
+    final MutableVertex v1 = database.newVertex("Doc").set("id", 100L, "name", "John");
     v1.save();
     final MutableVertex v2 = database.newVertex("Doc").set("id", 101L, "name", "Jay");
     v2.save();

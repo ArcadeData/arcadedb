@@ -204,9 +204,9 @@ public class ConsoleTest {
 
     assertThat(console.parse("insert into D set name = 'Jay', lastname='Miner'")).isTrue();
     assertThat(console.parse("insert into V set name = 'Jay', lastname='Miner'")).isTrue();
-    assertThat(console.parse("insert into V set name = 'Elon', lastname='Musk'")).isTrue();
+    assertThat(console.parse("insert into V set name = 'John', lastname='Red'")).isTrue();
     assertThat(
-        console.parse("create edge E from (select from V where name ='Jay') to (select from V where name ='Elon')")).isTrue();
+        console.parse("create edge E from (select from V where name ='Jay') to (select from V where name ='John')")).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(output -> buffer.append(output));
@@ -215,7 +215,7 @@ public class ConsoleTest {
 
     assertThat(console.parse("select from V")).isTrue();
     assertThat(console.parse("select from E")).isTrue();
-    assertThat(buffer.toString().contains("Elon")).isTrue();
+    assertThat(buffer.toString().contains("John")).isTrue();
   }
 
   /**
@@ -415,7 +415,7 @@ public class ConsoleTest {
     assertThat(console.parse("set asyncMode = true")).isTrue();
 
     assertThat(console.parse("insert into V set name = 'Jay', lastname='Miner'")).isTrue();
-    assertThat(console.parse("insert into V set name = 'Elon', lastname='Musk'")).isTrue();
+    assertThat(console.parse("insert into V set name = 'John', lastname='Red'")).isTrue();
 
     assertThat(console.parse("set asyncMode = false")).isTrue();
 
@@ -440,7 +440,7 @@ public class ConsoleTest {
 
     assertThat(console.parse("insert into V set name = 'Jay', lastname='Miner'")).isTrue();
     assertThat(console.currentOperationsInBatch).isEqualTo(2);
-    assertThat(console.parse("insert into V set name = 'Elon', lastname='Musk'")).isTrue();
+    assertThat(console.parse("insert into V set name = 'John', lastname='Red'")).isTrue();
     assertThat(console.currentOperationsInBatch).isEqualTo(1);
 
     assertThat(console.parse("set transactionBatchSize = 0")).isTrue();

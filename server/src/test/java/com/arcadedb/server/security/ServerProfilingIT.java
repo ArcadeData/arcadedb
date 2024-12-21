@@ -63,7 +63,7 @@ public class ServerProfilingIT {
     try {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
 
-      checkElonUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("elon", database));
 
       createSchemaNotAllowed(database);
 
@@ -75,7 +75,7 @@ public class ServerProfilingIT {
       final RID validRID = createSomeRecords(database, true);
 
       // SWITCH BACK TO ELON
-      checkElonUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("elon", database));
 
       expectedSecurityException(() -> database.newVertex("Vertex1").save());
       expectedSecurityException(() -> database.newDocument("Document1").save());
@@ -120,7 +120,7 @@ public class ServerProfilingIT {
     try {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
 
-      checkElonUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("elon", database));
 
       createSchema(database);
 
@@ -148,7 +148,7 @@ public class ServerProfilingIT {
       setCurrentUser("root", database);
       createSchema(database);
 
-      checkElonUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("elon", database));
 
       final RID validRID = createSomeRecords(database, true);
 
@@ -176,7 +176,7 @@ public class ServerProfilingIT {
       setCurrentUser("root", database);
       createSchema(database);
 
-      checkElonUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("elon", database));
 
       expectedSecurityException(() -> database.newVertex("Vertex1").save());
       database.newDocument("Document1").save();
@@ -199,7 +199,7 @@ public class ServerProfilingIT {
     try {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
 
-      checkElonUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("elon", database));
 
       createSchemaNotAllowed(database);
 
@@ -209,7 +209,7 @@ public class ServerProfilingIT {
       createSchema(database);
 
       // SWITCH BACK TO ELON
-      checkElonUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("elon", database));
 
       final RID validRID = createSomeRecords(database, false);
 
@@ -240,7 +240,7 @@ public class ServerProfilingIT {
     try {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
 
-      checkElonUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("elon", database));
 
       createSchemaNotAllowed(database);
 
@@ -250,7 +250,7 @@ public class ServerProfilingIT {
       createSchema(database);
 
       // SWITCH BACK TO ELON
-      checkElonUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("elon", database));
 
       MutableVertex v1 = database.newVertex("Vertex1").save();
       MutableVertex v2 = database.newVertex("Vertex1").save();
@@ -275,7 +275,7 @@ public class ServerProfilingIT {
     try {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
 
-      checkElonUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("elon", database));
 
       createSchemaNotAllowed(database);
 
@@ -287,7 +287,7 @@ public class ServerProfilingIT {
       final RID validRID = createSomeRecords(database, true);
 
       // SWITCH BACK TO ELON
-      checkElonUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("elon", database));
 
       expectedSecurityException(() -> database.newVertex("Vertex1").save());
       expectedSecurityException(() -> database.newDocument("Document1").save());
@@ -311,7 +311,7 @@ public class ServerProfilingIT {
     try {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
 
-      checkElonUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("elon", database));
 
       createSchemaNotAllowed(database);
 
@@ -325,7 +325,7 @@ public class ServerProfilingIT {
       final Vertex v = validRID.getRecord(true).asVertex();
 
       // SWITCH BACK TO ELON
-      checkElonUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("elon", database));
 
       database.iterateType("Document1", true);
       database.lookupByRID(validRID, true);
@@ -353,7 +353,7 @@ public class ServerProfilingIT {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
 
       final ServerSecurityUser elon = setCurrentUser("elon", database);
-      checkElonUser(elon);
+      checkJohnUser(elon);
       assertThat(elon.getAuthorizedDatabases().contains(database.getName())).isTrue();
 
       createSchemaNotAllowed(database);
@@ -368,7 +368,7 @@ public class ServerProfilingIT {
       final Document doc = database.iterateType("Document1", true).next().asDocument();
 
       // SWITCH BACK TO ELON
-      checkElonUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("elon", database));
 
       expectedSecurityException(() -> database.newVertex("Vertex1").save());
       expectedSecurityException(() -> database.newDocument("Document1").save());
@@ -394,7 +394,7 @@ public class ServerProfilingIT {
     try {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
 
-      checkElonUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("elon", database));
 
       createSchemaNotAllowed(database);
 
@@ -409,7 +409,7 @@ public class ServerProfilingIT {
       }
 
       // SWITCH BACK TO ELON
-      checkElonUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("elon", database));
 
       expectedSecurityException(() -> database.newVertex("Vertex1").save());
       expectedSecurityException(() -> database.newDocument("Document1").save());
@@ -447,7 +447,7 @@ public class ServerProfilingIT {
     try {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
 
-      checkElonUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("elon", database));
 
       createSchemaNotAllowed(database);
 
@@ -463,7 +463,7 @@ public class ServerProfilingIT {
       });
 
       // SWITCH BACK TO ELON
-      checkElonUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("elon", database));
 
       expectedSecurityException(() -> database.newVertex("Vertex1").save());
       expectedSecurityException(() -> database.newDocument("Document1").save());
@@ -527,7 +527,7 @@ public class ServerProfilingIT {
 
     try {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
-      checkElonUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("elon", database));
       // SWITCH TO ROOT TO CREATE SOME TYPES FOR FURTHER TESTS
       setCurrentUser("root", database);
 
@@ -601,11 +601,11 @@ public class ServerProfilingIT {
     }
   }
 
-  private void checkElonUser(final ServerSecurityUser elon) {
+  private void checkJohnUser(final ServerSecurityUser elon) {
     assertThat(elon).isNotNull();
-    final ServerSecurityUser authElon = SECURITY.authenticate("elon", "musk", null);
-    assertThat(authElon).isNotNull();
-    assertThat(authElon.getName()).isEqualTo(elon.getName());
+    final ServerSecurityUser authJohn = SECURITY.authenticate("elon", "musk", null);
+    assertThat(authJohn).isNotNull();
+    assertThat(authJohn.getName()).isEqualTo(elon.getName());
 
     final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target/config");
     assertThat(repository.getUsers().size()).isEqualTo(2);

@@ -49,7 +49,7 @@ public class RemoteGremlinIT extends AbstractGremlinServerIT {
         graph.getDatabase().getSchema().createVertexType("inputstructure");
 
         for (int i = 0; i < 1_000; i++)
-          graph.addVertex(org.apache.tinkerpop.gremlin.structure.T.label, "inputstructure", "json", "{\"name\": \"Elon\"}");
+          graph.addVertex(org.apache.tinkerpop.gremlin.structure.T.label, "inputstructure", "json", "{\"name\": \"John\"}");
 
         try (final ResultSet list = graph.gremlin("g.V().hasLabel(\"inputstructure\")").execute()) {
           assertThat(list.stream().count()).isEqualTo(1_000);

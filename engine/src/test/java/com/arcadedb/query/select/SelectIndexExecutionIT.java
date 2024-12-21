@@ -49,7 +49,7 @@ public class SelectIndexExecutionIT extends TestHelper {
 
     database.transaction(() -> {
       for (int i = 0; i < 100; i++)
-        database.newVertex("Vertex").set("id", i, "float", 3.14F, "name", "Elon").save();
+        database.newVertex("Vertex").set("id", i, "float", 3.14F, "name", "John").save();
       for (int i = 100; i < 110; i++)
         database.newVertex("Vertex").set("id", i, "name", "Jay").save();
     });
@@ -61,7 +61,7 @@ public class SelectIndexExecutionIT extends TestHelper {
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
-          .and().property("name").eq().value("Elon").compile();
+          .and().property("name").eq().value("John").compile();
 
       for (int i = 0; i < 110; i++) {
         final int finalI = i;
@@ -70,7 +70,7 @@ public class SelectIndexExecutionIT extends TestHelper {
         final List<Vertex> list = result.toList();
         assertThat(list.size()).isEqualTo(i < 100 ? 1 : 0);
 
-        list.forEach(r -> assertThat(r.getInteger("id") == finalI && r.getString("name").equals("Elon")).isTrue());
+        list.forEach(r -> assertThat(r.getInteger("id") == finalI && r.getString("name").equals("John")).isTrue());
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
         assertThat(result.getMetrics().get("evaluatedRecords")).as("With id " + i).isEqualTo(1L);
@@ -85,13 +85,13 @@ public class SelectIndexExecutionIT extends TestHelper {
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
-          .or().property("name").eq().value("Elon").compile();
+          .or().property("name").eq().value("John").compile();
 
       for (int i = 0; i < 110; i++) {
         final int finalI = i;
         final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
 
-        result.forEachRemaining(r -> assertThat(r.getInteger("id") == finalI || r.getString("name").equals("Elon")).isTrue());
+        result.forEachRemaining(r -> assertThat(r.getInteger("id") == finalI || r.getString("name").equals("John")).isTrue());
 
         // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
         assertThat(result.getMetrics().get("evaluatedRecords")).as("" + finalI).isEqualTo(i < 100 ? 100L : 101L);
