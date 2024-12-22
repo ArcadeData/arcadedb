@@ -48,74 +48,68 @@ public class TextEmbeddingsImporter {
   private final    InputStream      inputStream;
   private final    ImporterSettings settings;
   private final    ConsoleLogger    logger;
-  private          int              m                    = 16;
-  private          int              ef                   = 256;
-  private          int              efConstruction       = 256;
-  private          boolean          normalizeVectors     = false;
+  private          int              m;
+  private          int              ef;
+  private          int              efConstruction;
+  private          boolean          normalizeVectors    = false;
   private          String           databasePath;
-  private          boolean          overwriteDatabase    = false;
-  private          long             errors               = 0L;
-  private          long             warnings             = 0L;
+  private          boolean          overwriteDatabase   = false;
+  private          long             errors              = 0L;
+  private          long             warnings            = 0L;
   private          DatabaseFactory  factory;
   private          Database         database;
   private          long             beginTime;
-  private          boolean          error                = false;
-  private          ImporterContext  context              = new ImporterContext();
-  private          String           vectorTypeName       = "Float";
-  private          String           distanceFunctionName = "InnerProduct";
-  private          String           vectorPropertyName   = "vector";
-  private          String           idPropertyName       = "name";
-  private          String           deletedPropertyName  = "deleted";
-  private volatile long             embeddingsParsed     = 0L;
-  private volatile long             indexedEmbedding     = 0L;
-  private volatile long             verticesCreated      = 0L;
-  private volatile long             verticesConnected    = 0L;
+  private          boolean          error               = false;
+  private          ImporterContext  context             = new ImporterContext();
+  private          String           vectorTypeName;
+  private          String           distanceFunctionName;
+  private          String           vectorPropertyName;
+  private          String           idPropertyName      = "name";
+  private          String           deletedPropertyName = "deleted";
+  private volatile long             embeddingsParsed    = 0L;
+  private volatile long             indexedEmbedding    = 0L;
+  private volatile long             verticesCreated     = 0L;
+  private volatile long             verticesConnected   = 0L;
 
-  public TextEmbeddingsImporter(final DatabaseInternal database, final InputStream inputStream, final ImporterSettings settings) throws ClassNotFoundException {
+  public TextEmbeddingsImporter(final DatabaseInternal database, final InputStream inputStream, final ImporterSettings settings)
+      throws ClassNotFoundException {
     this.settings = settings;
     this.database = database;
     this.databasePath = database.getDatabasePath();
     this.inputStream = inputStream;
     this.logger = new ConsoleLogger(settings.verboseLevel);
 
-    if (settings.options.containsKey("distanceFunction")) {
-      this.distanceFunctionName = settings.options.get("distanceFunction");
-      this.distanceFunctionName = Character.toUpperCase(this.distanceFunctionName.charAt(0)) + this.distanceFunctionName.substring(1).toLowerCase(Locale.ENGLISH);
-    }
+    distanceFunctionName = settings.getValue("distanceFunction", "InnerProduct");
+    distanceFunctionName =
+        Character.toUpperCase(distanceFunctionName.charAt(0)) + distanceFunctionName.substring(1).toLowerCase(Locale.ENGLISH);
 
-    if (settings.options.containsKey("vectorType")) {
-      this.vectorTypeName = settings.options.get("vectorType");
-      // USE CAMEL CASE FOR THE VECTOR TYPE
-      this.vectorTypeName = Character.toUpperCase(this.vectorTypeName.charAt(0)) + this.vectorTypeName.substring(1).toLowerCase(Locale.ENGLISH);
-    }
+    vectorTypeName = settings.getValue("vectorType", "Float");
+    // USE CAMEL CASE FOR THE VECTOR TYPE
+    vectorTypeName = Character.toUpperCase(vectorTypeName.charAt(0)) + vectorTypeName.substring(1).toLowerCase(Locale.ENGLISH);
 
     if (settings.options.containsKey("vectorProperty"))
-      this.vectorPropertyName = settings.options.get("vectorProperty");
+      this.vectorPropertyName = settings.getValue("vectorProperty", null);
 
     if (settings.options.containsKey("idProperty"))
-      this.idPropertyName = settings.options.get("idProperty");
+      this.idPropertyName = settings.getValue("idProperty", null);
 
     if (settings.options.containsKey("deletedProperty"))
-      this.deletedPropertyName = settings.options.get("deletedProperty");
+      this.deletedPropertyName = settings.getValue("deletedProperty", null);
 
-    if (settings.options.containsKey("m"))
-      this.m = Integer.parseInt(settings.options.get("m"));
-
-    if (settings.options.containsKey("ef"))
-      this.ef = Integer.parseInt(settings.options.get("ef"));
-
-    if (settings.options.containsKey("efConstruction"))
-      this.efConstruction = Integer.parseInt(settings.options.get("efConstruction"));
+    this.m = settings.getIntValue("m", 16);
+    this.ef = settings.getIntValue("ef", 256);
+    this.efConstruction = settings.getIntValue("efConstruction", 256);
 
     if (settings.options.containsKey("normalizeVectors"))
-      this.normalizeVectors = Boolean.parseBoolean(settings.options.get("normalizeVectors"));
+      this.normalizeVectors = Boolean.parseBoolean(settings.getValue("normalizeVectors", null));
   }
 
   public Database run() throws IOException, ClassNotFoundException, InterruptedException {
     if (!createDatabase())
       return null;
 
-    final DistanceFunction distanceFunction = DistanceFunctionFactory.getImplementationByName(vectorTypeName + distanceFunctionName);
+    final DistanceFunction distanceFunction = DistanceFunctionFactory.getImplementationByName(
+        vectorTypeName + distanceFunctionName);
 
     beginTime = System.currentTimeMillis();
 
@@ -131,7 +125,8 @@ public class TextEmbeddingsImporter {
 
       logger.logLine(2, "- Parsed %,d embeddings with %,d dimensions in RAM", texts.size(), dimensions);
 
-      final HnswVectorIndexRAM<String, float[], TextFloatsEmbedding, Float> hnswIndex = HnswVectorIndexRAM.newBuilder(dimensions, distanceFunction,
+      final HnswVectorIndexRAM<String, float[], TextFloatsEmbedding, Float> hnswIndex = HnswVectorIndexRAM.newBuilder(dimensions,
+          distanceFunction,
           texts.size()).withM(m).withEf(ef).withEfConstruction(efConstruction).build();
 
       hnswIndex.addAll(texts, Runtime.getRuntime().availableProcessors(), (workDone, max) -> ++indexedEmbedding, 1);
@@ -152,7 +147,8 @@ public class TextEmbeddingsImporter {
         throw new IllegalArgumentException("Type '" + vectorTypeName + "' not supported");
 
       hnswIndex.createPersistentIndex(database)//
-          .withVertexType(settings.vertexTypeName).withEdgeType(settings.edgeTypeName).withVectorProperty(vectorPropertyName, vectorPropertyType)
+          .withVertexType(settings.vertexTypeName).withEdgeType(settings.edgeTypeName)
+          .withVectorProperty(vectorPropertyName, vectorPropertyType)
           .withIdProperty(idPropertyName)//
           .withDeletedProperty(deletedPropertyName)//
           .withVertexCreationCallback((record, item, total) -> ++verticesCreated)//

@@ -1069,9 +1069,8 @@ public class OrientDBImporter {
 
     final DocumentType t;
 
-    int bucketsPerType = GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getValueAsInteger();
-    if (settings.options.containsKey(GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getKey()))
-      bucketsPerType = Integer.parseInt(settings.options.get(GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getKey()));
+    final int bucketsPerType = settings.getIntValue(GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getKey(),
+        GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getValueAsInteger());
 
     switch (type) {
     case 1:

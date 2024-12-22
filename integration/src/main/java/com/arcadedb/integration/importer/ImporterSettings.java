@@ -70,12 +70,28 @@ public class ImporterSettings {
   public int     commitEvery            = 5000;
   public String  mapping                = null;
 
-  public final Map<String, String> options = new HashMap<>();
+  public final Map<String, Object> options = new HashMap<>();
 
   public ImporterSettings() {
     parallel = Runtime.getRuntime().availableProcessors() / 2 - 1;
     if (parallel < 1)
       parallel = 1;
+  }
+
+  public <T> T getValue(final String name, final T defaultValue) {
+    final Object v = options.get(name);
+    return v != null ? (T) v : defaultValue;
+  }
+
+  public int getIntValue(final String name, final int defaultValue) {
+    final Object v = options.get(name);
+    if (v != null) {
+      if (v instanceof Number)
+        return ((Number) v).intValue();
+      else
+        return Integer.parseInt(v.toString());
+    }
+    return defaultValue;
   }
 
   protected void parseParameters(final String[] args) {
@@ -186,8 +202,8 @@ public class ImporterSettings {
       edgeToField = value;
     else if ("edgeBidirectional".equals(name))
       edgeBidirectional = Boolean.parseBoolean(value);
-    else
-      // ADDITIONAL OPTIONS
-      options.put(name, value);
+
+    // SAVE THE SETTING IN THE OPTIONS
+    options.put(name, value);
   }
 }
