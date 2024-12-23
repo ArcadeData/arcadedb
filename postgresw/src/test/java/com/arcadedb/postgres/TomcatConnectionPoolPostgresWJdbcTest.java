@@ -73,7 +73,7 @@ public class TomcatConnectionPoolPostgresWJdbcTest extends BaseGraphServerTest {
     try {
       con = datasource.getConnection();
       Statement st = con.createStatement();
-      ResultSet rs = st.executeQuery("select * from schema:database");
+      ResultSet rs = st.executeQuery("select from schema:database");
       int cnt = 1;
       while (rs.next()) {
         System.out.println((cnt++) + ". name:" + rs.getString("name"));

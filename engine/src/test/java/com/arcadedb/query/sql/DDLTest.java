@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.stream.IntStream;
@@ -47,6 +46,7 @@ public class DDLTest extends TestHelper {
         CREATE VERTEX TYPE Person EXTENDS V;
         CREATE PROPERTY Person.name STRING;
         CREATE PROPERTY Person.id INTEGER;
+        CREATE PROPERTY Person.secret STRING (HIDDEN);
         CREATE INDEX ON Person (id) UNIQUE NULL_STRATEGY SKIP;
         CREATE VERTEX TYPE Car EXTENDS V;
         CREATE PROPERTY Car.id INTEGER;

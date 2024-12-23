@@ -19,16 +19,17 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
-
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -212,5 +213,35 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
 
     assertThat(nameProperty.getName()).isEqualTo(PROP_NAME);
     assertThat(nameProperty.getType()).isEqualTo(Type.STRING);
+  }
+
+  @Test
+  void testCreateHiddenProperty() {
+    database.command("sql", "create document type testHiddenProperty").close();
+    database.command("sql", "CREATE property testHiddenProperty.name STRING (hidden)").close();
+
+    DocumentType clazz = database.getSchema().getType("testHiddenProperty");
+    Property nameProperty = clazz.getProperty(PROP_NAME);
+
+    assertThat(nameProperty.getName()).isEqualTo(PROP_NAME);
+    assertThat(nameProperty.getType()).isEqualTo(Type.STRING);
+    assertThat(nameProperty.isHidden()).isTrue();
+
+    database.transaction(() -> {
+
+      database.command("sql", "INSERT INTO testHiddenProperty SET name = 'hidden' , no_secret = 'seeme' ").close();
+    });
+
+    // check that the property is hidden when select *
+    ResultSet result = database.query("sql", "SELECT  FROM testHiddenProperty");
+    assertThat(result.hasNext()).isTrue();
+    Result doc = result.next();
+    assertThat(doc.getPropertyNames()).doesNotContain("name").contains("no_secret");
+    // check that the property is visibilw when selected directly
+    result = database.query("sql", "SELECT name FROM testHiddenProperty");
+    assertThat(result.hasNext()).isTrue();
+    doc = result.next();
+    assertThat(doc.getPropertyNames()).contains("name");
+
   }
 }

@@ -182,8 +182,7 @@ public class SelectStatement extends Statement {
     context.setInputParameters(params);
 
     final InternalExecutionPlan executionPlan = createExecutionPlan(context);
-    final LocalResultSet result = new LocalResultSet(executionPlan);
-    return result;
+    return new LocalResultSet(executionPlan);
   }
 
   @Override
