@@ -7,8 +7,8 @@ pull_request_rules:
       merge:
         method: merge
         commit_message_template: |
-          {{ title }}
-          {{ body }}
+          {{ title | markdownify }}
+          {{ body | markdownify }}
 
   - name: Merge Dependabot PRs on approval with [skip ci]
     conditions:
@@ -18,6 +18,6 @@ pull_request_rules:
       merge:
         method: merge
         commit_message_template: |
-          {{ title }}
-          {{ body }}
           [skip ci]
+          {{ title | markdownify }}
+          {{ body | markdownify }}
