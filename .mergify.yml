@@ -18,6 +18,5 @@ pull_request_rules:
       merge:
         method: merge
         commit_message_template: |
-          [skip ci]
-          {{ title | markdownify }}
+          {{ title | markdownify }} [skip ci]
           {{ body | markdownify }}
