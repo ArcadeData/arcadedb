@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.ValidationException;
@@ -233,11 +232,20 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
     });
 
     // check that the property is hidden when select *
-    ResultSet result = database.query("sql", "SELECT  FROM testHiddenProperty");
+    ResultSet result = database.query("sql", "SELECT * FROM testHiddenProperty");
     assertThat(result.hasNext()).isTrue();
     Result doc = result.next();
-    assertThat(doc.getPropertyNames()).doesNotContain("name").contains("no_secret");
-    // check that the property is visibilw when selected directly
+    assertThat(doc.getPropertyNames())
+        .doesNotContain("name")
+        .contains("no_secret");
+
+    // check that the property is not hidden when select without *
+    result = database.query("sql", "SELECT  FROM testHiddenProperty");
+    assertThat(result.hasNext()).isTrue();
+    doc = result.next();
+    assertThat(doc.getPropertyNames()).contains("name", "no_secret");
+
+    // check that the property is hot hidden when selected directly
     result = database.query("sql", "SELECT name FROM testHiddenProperty");
     assertThat(result.hasNext()).isTrue();
     doc = result.next();
