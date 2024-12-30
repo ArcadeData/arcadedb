@@ -105,7 +105,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
             properties.add(p);
           }
         }
-      } else {
+      } else if (entity != null) {
         // INCLUDE ALL THE PROPERTIES
         properties.addAll(entity.getProperties());
       }
@@ -450,10 +450,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     if ("\t".equals(delimiter) || "\\t".equals(delimiter)) {
       parserSettings = tsvParserSettings = new TsvParserSettings();
-      csvParser = new TsvParser(tsvParserSettings);
     } else {
       parserSettings = csvParserSettings = new CsvParserSettings();
-      csvParser = new CsvParser(csvParserSettings);
       csvParserSettings.setDelimiterDetectionEnabled(false);
       if (delimiter != null) {
         csvParserSettings.detectFormatAutomatically(delimiter.charAt(0));
@@ -461,13 +459,23 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       }
     }
 
+    parserSettings.setReadInputOnSeparateThread(false);
+
     final int maxProperties = settings.getIntValue("maxProperties", 0);
     if (maxProperties > 0)
       parserSettings.setMaxColumns(maxProperties);
 
     final int maxPropertySize = settings.getIntValue("maxPropertySize", 0);
-    if (maxPropertySize > 0)
+    if (maxPropertySize != 0) {
+      parserSettings.setAutoConfigurationEnabled(false);
       parserSettings.setMaxCharsPerColumn(maxPropertySize);
+    }
+
+    if ("\t".equals(delimiter) || "\\t".equals(delimiter)) {
+      csvParser = new TsvParser((TsvParserSettings) parserSettings);
+    } else {
+      csvParser = new CsvParser((CsvParserSettings) parserSettings);
+    }
 
     final List<String> fieldNames = new ArrayList<>();
 
@@ -588,7 +596,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       parserSettings.setMaxColumns(maxProperties);
 
     final int maxPropertySize = settings.getIntValue("maxPropertySize", 0);
-    if (maxPropertySize > 0)
+    if (maxPropertySize != 0)
       parserSettings.setMaxCharsPerColumn(maxPropertySize);
 
     return csvParser;

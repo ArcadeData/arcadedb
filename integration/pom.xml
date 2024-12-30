@@ -30,7 +30,7 @@
     </parent>
 
     <properties>
-        <univocity-parsers.version>2.9.1</univocity-parsers.version>
+        <univocity-parsers.version>2.10.1</univocity-parsers.version>
     </properties>
 
     <artifactId>arcadedb-integration</artifactId>
@@ -43,7 +43,7 @@
             <version>${project.parent.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.univocity</groupId>
+            <groupId>com.sonofab1rd</groupId>
             <artifactId>univocity-parsers</artifactId>
             <version>${univocity-parsers.version}</version>
             <type>jar</type>
