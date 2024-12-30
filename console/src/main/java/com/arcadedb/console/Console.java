@@ -879,6 +879,7 @@ public class Console {
           row.setField("MANDATORY", property.hasProperty("mandatory") ? property.getProperty("mandatory") : "false");
           row.setField("READONLY", property.hasProperty("readOnly") ? property.getProperty("readOnly") : "false");
           row.setField("NOT NULL", property.hasProperty("notNull") ? property.getProperty("notNull") : "false");
+          row.setField("HIDDEN", property.hasProperty("hidden") ? property.getProperty("hidden") : "false");
           row.setField("DEFAULT", property.hasProperty("default") ? property.getProperty("default") : null);
           row.setField("MIN", property.hasProperty("min") ? property.getProperty("min") : "");
           row.setField("MAX", property.hasProperty("max") ? property.getProperty("max") : "");

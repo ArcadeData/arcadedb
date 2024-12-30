@@ -40,6 +40,7 @@ public abstract class AbstractProperty implements Property {
   protected              boolean             readonly        = false;
   protected              boolean             mandatory       = false;
   protected              boolean             notNull         = false;
+  protected              boolean             hidden          = false;
   protected              String              max             = null;
   protected              String              min             = null;
   protected              String              regexp          = null;
@@ -139,6 +140,11 @@ public abstract class AbstractProperty implements Property {
   }
 
   @Override
+  public boolean isHidden() {
+    return hidden;
+  }
+
+  @Override
   public String getMax() {
     return max;
   }
@@ -182,6 +188,8 @@ public abstract class AbstractProperty implements Property {
       json.put("mandatory", mandatory);
     if (notNull)
       json.put("notNull", notNull);
+    if (hidden)
+      json.put("hidden", hidden);
     if (max != null)
       json.put("max", max);
     if (min != null)

@@ -95,20 +95,19 @@ public class StatementCache {
         is = new ByteArrayInputStream(statement.getBytes(StandardCharsets.UTF_8));
       }
 
-      SqlParser osql;
+      SqlParser parser;
       if (db == null) {
-        osql = new SqlParser(db, is);
+        parser = new SqlParser(db, is);
       } else {
         try {
-//          osql = new SqlParser(is, db.getStorage().getConfiguration().getCharset());
-          osql = new SqlParser(db, is, "UTF-8");
+          parser = new SqlParser(db, is, "UTF-8");
         } catch (final UnsupportedEncodingException e2) {
           LogManager.instance().log(this, Level.WARNING, "Unsupported charset for database " + db);
-          osql = new SqlParser(db, is);
+          parser = new SqlParser(db, is);
         }
       }
 
-      final Statement result = osql.Parse();
+      final Statement result = parser.Parse();
       result.originalStatementAsString = statement;
       return result;
 

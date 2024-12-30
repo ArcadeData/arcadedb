@@ -84,7 +84,11 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
           st.execute("create vertex V set id = " + i + ", name = 'Jay', lastName = 'Miner'");
         }
 
-        final ResultSet rs = st.executeQuery("{gremlin}g.V().limit(10)");
+        final ResultSet rs = st.executeQuery("{gremlin}g.V().hasLabel('V').order().by('id').limit(10)");
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getInt("id")).isEqualTo(0);
+        assertThat(rs.getString("name")).isEqualTo("Jay");
+        assertThat(rs.getString("lastName")).isEqualTo("Miner");
       }
     }
   }

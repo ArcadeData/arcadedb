@@ -89,15 +89,14 @@ public class Projection extends SimpleNode {
     }
   }
 
-  public Result calculateSingle(final CommandContext context, final Result iRecord) {
+  public Result calculateSingle(final CommandContext context, final Result record) {
     initExcludes();
     if (isExpand())
       throw new IllegalStateException("This is an expand projection, it cannot be calculated as a single result" + this);
 
-    if (items.isEmpty() ||//
-        (items.size() == 1 && (items.get(0).isAll() || items.get(0).getExpression().toString().equals("@this")))//
+    if (items.size() == 1 && items.get(0).getExpression().toString().equals("@this")
             && items.get(0).nestedProjection == null)
-      return iRecord;
+      return record;
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
     for (final ProjectionItem item : items) {
@@ -105,34 +104,34 @@ public class Projection extends SimpleNode {
         continue;
 
       if (item.isAll()) {
-        result.setElement(iRecord.toElement());
-        for (final String alias : iRecord.getPropertyNames()) {
-          if (this.excludes.contains(alias)) {
+        final Document doc = record.getElement().get();
+        for (final String alias : record.getPropertyNames()) {
+          if (this.excludes.contains(alias)
+                || (doc.getType().existsProperty(alias) && doc.getType().getProperty(alias).isHidden())) {
             continue;
           }
-          Object val = item.convert(iRecord.getProperty(alias));
+          Object val = item.convert(record.getProperty(alias));
           if (item.nestedProjection != null) {
             val = item.nestedProjection.apply(item.expression, val, context);
           }
           result.setProperty(alias, val);
         }
-        if (iRecord.getElement().isPresent()) {
-          final Document x = iRecord.getElement().get();
+        if (record.getElement().isPresent()) {
           if (!this.excludes.contains("@rid")) {
-            result.setProperty("@rid", x.getIdentity());
+            result.setProperty("@rid", doc.getIdentity());
           }
           if (!this.excludes.contains("@type")) {
-            result.setProperty("@type", x.getType().getName());
+            result.setProperty("@type", doc.getType().getName());
           }
         }
       } else {
-        result.setProperty(item.getProjectionAliasAsString(), item.execute(iRecord, context));
+        result.setProperty(item.getProjectionAliasAsString(), item.execute(record, context));
       }
     }
 
-    for (final String key : iRecord.getMetadataKeys()) {
+    for (final String key : record.getMetadataKeys()) {
       if (!result.getMetadataKeys().contains(key))
-        result.setMetadata(key, iRecord.getMetadata(key));
+        result.setMetadata(key, record.getMetadata(key));
     }
     return result;
   }

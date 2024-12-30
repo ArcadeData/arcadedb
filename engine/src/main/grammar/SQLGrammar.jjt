@@ -277,6 +277,8 @@ TOKEN:
   |
   <PROPERTY: ("p"|"P")("r"|"R")("o"|"O")("p"|"P")("e"|"E")("r"|"R")("t"|"T")("y"|"Y")>
   |
+  <HIDDEN: ("h"|"H")("i"|"I")("d"|"D")("d"|"D")("e"|"E")("n"|"N")>
+  |
   <FORCE: ("f"|"F")("o"|"O")("r"|"R")("c"|"C")("e"|"E")>
   |
   <SCHEMA: ("s"|"S")("c"|"C")("h"|"H")("e"|"E")("m"|"M")("a"|"A") >
@@ -818,6 +820,8 @@ Identifier Identifier():
   token = <DROP>
   |
   token = <PROPERTY>
+  |
+  token = <HIDDEN>
   |
   token = <FORCE>
   |

@@ -57,6 +57,10 @@ public interface Property {
 
   boolean isNotNull();
 
+  Property setHidden(boolean hidden);
+
+  boolean isHidden();
+
   Property setMax(String max);
 
   String getMax();

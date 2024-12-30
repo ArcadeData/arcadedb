@@ -67,6 +67,11 @@ public class RemoteProperty extends AbstractProperty {
   }
 
   @Override
+  public Property setHidden(boolean hidden) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
   public Property setMax(String max) {
     throw new UnsupportedOperationException();
   }
@@ -99,6 +104,8 @@ public class RemoteProperty extends AbstractProperty {
       min = (String) entry.get("min");
     if (entry.containsKey("max"))
       max = (String) entry.get("max");
+    if (entry.containsKey("hidden"))
+      hidden = (Boolean) entry.get("hidden");
     if (entry.containsKey("default"))
       defaultValue = entry.get("default");
     if (entry.containsKey("regexp"))
