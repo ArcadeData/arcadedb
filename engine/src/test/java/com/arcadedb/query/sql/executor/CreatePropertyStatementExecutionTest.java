@@ -233,7 +233,7 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
     });
 
     // check that the property is hidden when select *
-    ResultSet result = database.query("sql", "SELECT  FROM testHiddenProperty");
+    ResultSet result = database.query("sql", "SELECT * FROM testHiddenProperty");
     assertThat(result.hasNext()).isTrue();
     Result doc = result.next();
     assertThat(doc.getPropertyNames()).doesNotContain("name").contains("no_secret");
