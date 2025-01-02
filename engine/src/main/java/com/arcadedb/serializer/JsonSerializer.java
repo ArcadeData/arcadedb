@@ -26,9 +26,11 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.google.gson.JsonNull;
 
-import java.lang.reflect.*;
-import java.util.*;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
 
 public class JsonSerializer {
   private boolean useCollectionSize         = false;
@@ -38,7 +40,9 @@ public class JsonSerializer {
 
   public JSONObject serializeDocument(final Document document) {
     final Database database = document.getDatabase();
-    final JSONObject object = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat());
+    final JSONObject object = new JSONObject()
+        .setDateFormat(database.getSchema().getDateTimeFormat())
+        .setDateTimeFormat(database.getSchema().getDateTimeFormat());
 
     if (document.getIdentity() != null)
       object.put("@rid", document.getIdentity().toString());
@@ -53,9 +57,9 @@ public class JsonSerializer {
         value = JSONObject.NULL;
       else if (value instanceof Document)
         value = serializeDocument((Document) value);
-      else if (value instanceof Collection) {
+      else if (value instanceof Collection)
         serializeCollection(database, (Collection<?>) value);
-      } else if (value instanceof Map)
+      else if (value instanceof Map)
         value = serializeMap(database, (Map<Object, Object>) value);
 
       value = convertNonNumbers(value);
@@ -69,7 +73,9 @@ public class JsonSerializer {
   }
 
   public JSONObject serializeResult(final Database database, final Result result) {
-    final JSONObject object = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat());
+    final JSONObject object = new JSONObject()
+        .setDateFormat(database.getSchema().getDateFormat())
+        .setDateTimeFormat(database.getSchema().getDateTimeFormat());
 
     if (result.isElement()) {
       final Document document = result.toElement();
@@ -85,12 +91,12 @@ public class JsonSerializer {
 
       if (value == null)
         value = JSONObject.NULL;
-      else if (value instanceof Document)
-        value = serializeDocument((Document) value);
-      else if (value instanceof Result)
-        value = serializeResult(database, (Result) value);
-      else if (value instanceof Collection)
-        value = serializeCollection(database, (Collection<?>) value);
+      else if (value instanceof Document document)
+        value = serializeDocument(document);
+      else if (value instanceof Result res)
+        value = serializeResult(database, res);
+      else if (value instanceof Collection<?> coll)
+        value = serializeCollection(database, coll);
       else if (value instanceof Map)
         value = serializeMap(database, (Map<Object, Object>) value);
       else if (value.getClass().isArray())
@@ -147,7 +153,9 @@ public class JsonSerializer {
     if (useCollectionSize) {
       result = value.size();
     } else {
-      final JSONObject map = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat());
+      final JSONObject map = new JSONObject()
+          .setDateFormat(database.getSchema().getDateFormat())
+          .setDateTimeFormat(database.getSchema().getDateTimeFormat());
       for (final Map.Entry<Object, Object> entry : value.entrySet()) {
         Object o = entry.getValue();
         if (o instanceof Document)

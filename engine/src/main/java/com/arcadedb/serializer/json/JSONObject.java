@@ -28,15 +28,27 @@ import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
+import com.google.gson.Strictness;
 import com.google.gson.stream.JsonReader;
 
-import java.io.*;
-import java.math.*;
-import java.text.*;
-import java.time.*;
-import java.time.format.*;
-import java.time.temporal.*;
-import java.util.*;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.StringReader;
+import java.math.BigDecimal;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
+import java.time.temporal.TemporalAccessor;
+import java.util.Collection;
+import java.util.ConcurrentModificationException;
+import java.util.Date;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 
 /**
  * JSON object.<br>
@@ -50,6 +62,8 @@ public class JSONObject {
   private final       JsonObject        object;
   private             String            dateFormatAsString = null;
   private             DateTimeFormatter dateFormat         = null;
+  private             String            dateTimeFormatAsString;
+  private             DateTimeFormatter dateTimeFormat;
 
   public JSONObject() {
     this.object = new JsonObject();
@@ -62,7 +76,7 @@ public class JSONObject {
   public JSONObject(final String input) {
     try {
       final JsonReader reader = new JsonReader(new StringReader(input));
-      reader.setLenient(false);
+      reader.setStrictness(Strictness.LENIENT);
       object = (JsonObject) JsonParser.parseReader(reader);
     } catch (Exception e) {
       throw new JSONException("Invalid JSON object format", e);
@@ -105,14 +119,14 @@ public class JSONObject {
 
     if (value == null || value instanceof JsonNull)
       object.add(name, NULL);
-    else if (value instanceof String)
-      object.addProperty(name, (String) value);
-    else if (value instanceof Number)
-      object.addProperty(name, (Number) value);
-    else if (value instanceof Boolean)
-      object.addProperty(name, (Boolean) value);
-    else if (value instanceof Character)
-      object.addProperty(name, (Character) value);
+    else if (value instanceof String string)
+      object.addProperty(name, string);
+    else if (value instanceof Number number)
+      object.addProperty(name, number);
+    else if (value instanceof Boolean bool)
+      object.addProperty(name, bool);
+    else if (value instanceof Character character)
+      object.addProperty(name, character);
     else if (value instanceof JSONObject)
       object.add(name, ((JSONObject) value).getInternal());
     else if (value instanceof String[])
@@ -130,33 +144,42 @@ public class JSONObject {
           // RETRY
         }
       }
-    } else if (value instanceof Enum) {
-      object.addProperty(name, ((Enum<?>) value).name());
-    } else if (value instanceof Date) {
+    } else if (value instanceof Enum<?> enumValue) {
+      object.addProperty(name, enumValue.name());
+    } else if (value instanceof Date date) {
       if (dateFormatAsString == null)
         // SAVE AS TIMESTAMP
-        object.addProperty(name, ((Date) value).getTime());
+        object.addProperty(name, date.getTime());
       else
         // SAVE AS STRING
-        object.addProperty(name, new SimpleDateFormat(dateFormatAsString).format((Date) value));
-    } else if (value instanceof LocalDateTime || value instanceof ZonedDateTime || value instanceof Instant) {
-      if (dateFormat == null)
+        object.addProperty(name, dateFormat.format(date.toInstant().atZone(ZoneId.systemDefault())));
+    } else if (value instanceof LocalDate localDate) {
+      if (dateFormatAsString == null)
+        // SAVE AS TIMESTAMP
+        object.addProperty(name,
+            (localDate.atStartOfDay().toInstant(ZoneId.systemDefault().getRules().getOffset(Instant.now()))
+                .toEpochMilli()));
+      else
+        // SAVE AS STRING
+        object.addProperty(name, dateFormat.format(localDate.atStartOfDay()));
+    } else if (value instanceof TemporalAccessor temporalAccessor) {
+      if (dateFormatAsString == null)
         // SAVE AS TIMESTAMP
         object.addProperty(name,
             DateUtils.dateTimeToTimestamp(value, ChronoUnit.NANOS)); // ALWAYS USE NANOS TO AVOID PRECISION LOSS
       else
         // SAVE AS STRING
-        object.addProperty(name, dateFormat.format((TemporalAccessor) value));
-    } else if (value instanceof Duration) {
+        object.addProperty(name, dateTimeFormat.format(temporalAccessor));
+    } else if (value instanceof Duration duration) {
       object.addProperty(name,
-          Double.valueOf(String.format("%d.%d", ((Duration) value).toSeconds(), ((Duration) value).toNanosPart())));
-    } else if (value instanceof Identifiable) {
-      object.addProperty(name, ((Identifiable) value).getIdentity().toString());
+          Double.valueOf(String.format("%d.%d", duration.toSeconds(), duration.toNanosPart())));
+    } else if (value instanceof Identifiable identifiable) {
+      object.addProperty(name, identifiable.getIdentity().toString());
     } else if (value instanceof Map) {
       final JSONObject embedded = new JSONObject((Map<String, Object>) value);
       object.add(name, embedded.getInternal());
-    } else if (value instanceof Class) {
-      object.addProperty(name, ((Class<?>) value).getName());
+    } else if (value instanceof Class<?> clazz) {
+      object.addProperty(name, clazz.getName());
     } else
       // GENERIC CASE: TRANSFORM IT TO STRING
       object.addProperty(name, value.toString());
@@ -293,6 +316,16 @@ public class JSONObject {
     this.dateFormatAsString = dateFormat;
     try {
       this.dateFormat = DateTimeFormatter.ofPattern(dateFormat);
+    } catch (IllegalArgumentException e) {
+      throw new JSONException("Invalid date format: " + dateFormat, e);
+    }
+    return this;
+  }
+
+  public JSONObject setDateTimeFormat(final String dateFormat) {
+    this.dateTimeFormatAsString = dateFormat;
+    try {
+      this.dateTimeFormat = DateTimeFormatter.ofPattern(dateFormat);
     } catch (IllegalArgumentException e) {
       throw new JSONException("Invalid date format: " + dateFormat, e);
     }
