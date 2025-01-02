@@ -26,9 +26,9 @@ import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.HostUtil;
 import com.arcadedb.network.binary.ChannelBinaryClient;
 import com.arcadedb.network.binary.ConnectionException;
-import com.arcadedb.network.HostUtil;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -51,12 +51,26 @@ import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RecordTableFormatter;
 import com.arcadedb.utility.TableFormatter;
 
-import java.io.*;
-import java.net.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
 
 public class HAServer implements ServerPlugin {
   public static final String                                         DEFAULT_PORT                      = HostUtil.HA_DEFAULT_PORT;
@@ -822,9 +836,11 @@ public class HAServer implements ServerPlugin {
   public JSONObject getStats() {
     final String dateTimeFormat = GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
 
-    final JSONObject result = new JSONObject().setDateFormat(dateTimeFormat);
+    final JSONObject result = new JSONObject().setDateTimeFormat(dateTimeFormat)
+        .setDateFormat(GlobalConfiguration.DATE_FORMAT.getValueAsString());
 
-    final JSONObject current = new JSONObject().setDateFormat(dateTimeFormat);
+    final JSONObject current = new JSONObject().setDateTimeFormat(dateTimeFormat)
+        .setDateFormat(GlobalConfiguration.DATE_FORMAT.getValueAsString());
     current.put("name", getServerName());
     current.put("address", getServerAddress());
     current.put("role", isLeader() ? "Leader" : "Replica");
