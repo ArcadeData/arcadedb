@@ -42,9 +42,16 @@ import com.univocity.parsers.csv.CsvParserSettings;
 import com.univocity.parsers.tsv.TsvParser;
 import com.univocity.parsers.tsv.TsvParserSettings;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.EOFException;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+import java.util.logging.Level;
 
 public class CSVImporterFormat extends AbstractImporterFormat {
   private static final Object[] NO_PARAMS = new Object[] {};
@@ -57,24 +64,15 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     context.parsed.set(0);
 
     switch (entityType) {
-    case DOCUMENT:
-    case DATABASE:
-      loadDocuments(sourceSchema, parser, database, context, settings);
-      break;
-
-    case VERTEX:
-      loadVertices(sourceSchema, parser, database, context, settings);
-      break;
-
-    case EDGE:
-      loadEdges(sourceSchema, parser, database, context, settings);
-      break;
+    case DOCUMENT, DATABASE -> loadDocuments(sourceSchema, parser, database, context, settings);
+    case VERTEX -> loadVertices(sourceSchema, parser, database, context, settings);
+    case EDGE -> loadEdges(sourceSchema, parser, database, context, settings);
     }
   }
 
   private void loadDocuments(final SourceSchema sourceSchema, final Parser parser, final Database database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
-    final AbstractParser csvParser = createCSVParser(settings, ",");
+    final AbstractParser csvParser = createCSVParser(settings);
 
     LogManager.instance().log(this, Level.INFO, "Started importing documents from CSV source");
 
@@ -131,13 +129,6 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         }
 
         document.save();
-
-//        database.async().createRecord(document, new NewRecordCallback() {
-//          @Override
-//          public void call(final Record newDocument) {
-//            context.createdDocuments.incrementAndGet();
-//          }
-//        });
       }
 
       database.commit();
@@ -198,7 +189,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       throw new ImportException("Error on creating internal component", e);
     }
 
-    final AbstractParser csvParser = createCSVParser(settings, ",");
+    final AbstractParser csvParser = createCSVParser(settings);
 
     LogManager.instance().log(this, Level.INFO, "Started importing vertices from CSV source");
 
@@ -291,7 +282,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
   private void loadEdges(final SourceSchema sourceSchema, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
-    final AbstractParser csvParser = createCSVParser(settings, ",");
+    final AbstractParser csvParser = createCSVParser(settings);
 
     final long beginTime = System.currentTimeMillis();
 
@@ -572,33 +563,23 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     return "CSV";
   }
 
-  protected AbstractParser createCSVParser(final ImporterSettings settings, String delimiter) {
+  protected AbstractParser createCSVParser(final ImporterSettings settings) {
+    String delimiter = ",";
     if (settings.options.containsKey("delimiter"))
-      delimiter = settings.getValue("delimiter", null);
-
-    final CsvParserSettings csvParserSettings;
-    final TsvParserSettings tsvParserSettings;
-    final AbstractParser csvParser;
-    final CommonParserSettings parserSettings;
+      delimiter = settings.getValue("delimiter", ",");
 
     if ("\t".equals(delimiter) || "\\t".equals(delimiter)) {
-      parserSettings = tsvParserSettings = new TsvParserSettings();
-      csvParser = new TsvParser(tsvParserSettings);
+      final TsvParserSettings tsvParserSettings = new TsvParserSettings();
+      tsvParserSettings.setMaxColumns(settings.getIntValue("maxProperties", tsvParserSettings.getMaxColumns()));
+      tsvParserSettings.setMaxCharsPerColumn(settings.getIntValue("maxPropertySize", tsvParserSettings.getMaxCharsPerColumn()));
+      return new TsvParser(tsvParserSettings);
     } else {
-      parserSettings = csvParserSettings = new CsvParserSettings();
-      csvParser = new CsvParser(csvParserSettings);
-      if (delimiter != null)
-        csvParserSettings.getFormat().setDelimiter(delimiter.charAt(0));
+      final CsvParserSettings csvParserSettings = new CsvParserSettings();
+      csvParserSettings.getFormat().setDelimiter(delimiter);
+      csvParserSettings.setMaxColumns(settings.getIntValue("maxProperties", csvParserSettings.getMaxColumns()));
+      csvParserSettings.setMaxCharsPerColumn(settings.getIntValue("maxPropertySize", csvParserSettings.getMaxCharsPerColumn()));
+      return new CsvParser(csvParserSettings);
     }
 
-    final int maxProperties = settings.getIntValue("maxProperties", 0);
-    if (maxProperties > 0)
-      parserSettings.setMaxColumns(maxProperties);
-
-    final int maxPropertySize = settings.getIntValue("maxPropertySize", 0);
-    if (maxPropertySize != 0)
-      parserSettings.setMaxCharsPerColumn(maxPropertySize);
-
-    return csvParser;
   }
 }

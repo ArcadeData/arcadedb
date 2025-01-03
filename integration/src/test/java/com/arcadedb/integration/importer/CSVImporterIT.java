@@ -24,8 +24,10 @@ import com.arcadedb.integration.TestHelper;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class CSVImporterIT {
+
   @Test
   public void importDocuments() {
     final String databasePath = "target/databases/test-import-documents";
@@ -36,8 +38,42 @@ public class CSVImporterIT {
 
     final Database db = databaseFactory.create();
     try {
-      db.command("sql", "import database file://src/test/resources/importer-vertices.csv");
+      db.command("sql", """
+          IMPORT DATABASE file://src/test/resources/importer-vertices.csv
+          WITH maxProperties=1000, maxPropertySize=8192
+          """);
       assertThat(db.countType("Document", true)).isEqualTo(6);
+    } finally {
+      db.drop();
+    }
+    TestHelper.checkActiveDatabases();
+  }
+
+  @Test
+  public void importDocumentsWithBigTextColumns() {
+    final String databasePath = "target/databases/test-import-documents";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Database db = databaseFactory.create();
+
+    //Max property size is 1024: should fail
+    assertThatThrownBy(() -> {
+      db.command("sql", """
+          IMPORT DATABASE file://src/test/resources/importer-big-size.csv
+          WITH maxProperties=1000, maxPropertySize=1024
+          """);
+    }).isInstanceOf(Exception.class);
+
+    //Max property size is 8192: should succeed
+    try {
+      db.command("sql", """
+          IMPORT DATABASE file://src/test/resources/importer-big-size.csv
+          WITH maxProperties=1000, maxPropertySize=8192
+          """);
+      assertThat(db.countType("Document", true)).isEqualTo(3);
     } finally {
       db.drop();
     }
