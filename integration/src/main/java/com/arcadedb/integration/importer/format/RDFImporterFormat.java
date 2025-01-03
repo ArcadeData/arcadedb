@@ -36,7 +36,7 @@ public class RDFImporterFormat extends CSVImporterFormat {
   @Override
   public void load(final SourceSchema sourceSchema, final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
-    final AbstractParser csvParser = createCSVParser(settings, ",");
+    final AbstractParser csvParser = createCSVParser(settings);
 
     long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : 0;
     if (settings.edgesSkipEntries == null)
