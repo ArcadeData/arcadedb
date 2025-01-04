@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Copyright 2021 Arcade Data Ltd
+# Copyright 2021-present Arcade Data Ltd
 #
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
