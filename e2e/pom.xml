@@ -32,7 +32,7 @@
     <properties>
         <testcontainers.version>1.20.4</testcontainers.version>
         <postgresql.version>42.7.4</postgresql.version>
-        <logback-classic.version>1.5.15</logback-classic.version>
+        <logback-classic.version>1.5.16</logback-classic.version>
         <allowIncompleteProjects>true</allowIncompleteProjects>
     </properties>
 
