@@ -78,10 +78,10 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
 
   public void setSteps(final List<ExecutionStepInternal> steps) {
     this.steps = steps;
-    if (steps.size() > 0) {
-      lastStep = steps.get(steps.size() - 1);
-    } else {
+    if (steps.isEmpty()) {
       lastStep = null;
+    } else {
+      lastStep = steps.get(steps.size() - 1);
     }
   }
 
