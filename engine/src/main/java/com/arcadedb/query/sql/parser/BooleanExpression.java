@@ -184,6 +184,10 @@ public abstract class BooleanExpression extends SimpleNode {
     return false;
   }
 
+  public BooleanExpression rewriteIndexChainsAsSubqueries(CommandContext ctx, DocumentType clazz) {
+    return this;
+  }
+
   /**
    * returns true only if the expression does not need any further evaluation (eg. "true") and
    * always evaluates to true. It is supposed to be used as and optimization, and is allowed to

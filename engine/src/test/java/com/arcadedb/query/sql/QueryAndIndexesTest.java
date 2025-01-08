@@ -89,9 +89,7 @@ public class QueryAndIndexesTest extends TestHelper {
   public void testPartialMatchingFiltering() {
 
     database.transaction(() -> {
-      final Map<String, Object> params = new HashMap<>();
-      params.put(":name", "Jay");
-      params.put(":surname", "Miner123");
+      final var params = Map.of(":name", "Jay", ":surname", "Miner123");
       final ResultSet rs = database.command("SQL", "SELECT FROM V WHERE name = :name", params);
 
       final AtomicInteger total = new AtomicInteger();

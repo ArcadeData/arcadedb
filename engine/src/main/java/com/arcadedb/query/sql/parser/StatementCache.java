@@ -36,18 +36,19 @@ import java.util.logging.*;
  */
 public class StatementCache {
   private final Database               db;
-  private final Map<String, Statement> map;
-  private final int                    mapSize;
+  private final Map<String, Statement> cache;
+  private final int                    maxCacheSize;
 
   /**
    * @param size the size of the cache
    */
   public StatementCache(final Database db, final int size) {
     this.db = db;
-    this.mapSize = size;
-    this.map = new LinkedHashMap<>(size) {
+    this.maxCacheSize = size;
+    this.cache = new LinkedHashMap<>(size) {
+      @Override
       protected boolean removeEldestEntry(final Map.Entry<String, Statement> eldest) {
-        return super.size() > mapSize;
+        return super.size() > maxCacheSize;
       }
     };
   }
@@ -58,21 +59,21 @@ public class StatementCache {
    * @return the corresponding executor, taking it from the internal cache, if it exists
    */
   public Statement get(final String statement) {
-    Statement result;
-    synchronized (map) {
+    Statement parsedStatement;
+    synchronized (cache) {
       //LRU
-      result = map.remove(statement);
-      if (result != null) {
-        map.put(statement, result);
+      parsedStatement = cache.remove(statement);
+      if (parsedStatement != null) {
+        cache.put(statement, parsedStatement);
       }
     }
-    if (result == null) {
-      result = parse(statement);
-      synchronized (map) {
-        map.put(statement, result);
+    if (parsedStatement == null) {
+      parsedStatement = parse(statement);
+      synchronized (cache) {
+        cache.put(statement, parsedStatement);
       }
     }
-    return result;
+    return parsedStatement;
   }
 
   /**
@@ -108,6 +109,7 @@ public class StatementCache {
       }
 
       final Statement result = parser.Parse();
+
       result.originalStatementAsString = statement;
       return result;
 
@@ -130,14 +132,14 @@ public class StatementCache {
   }
 
   public boolean contains(final String statement) {
-    synchronized (map) {
-      return map.containsKey(statement);
+    synchronized (cache) {
+      return cache.containsKey(statement);
     }
   }
 
   public void clear() {
-    synchronized (map) {
-      map.clear();
+    synchronized (cache) {
+      cache.clear();
     }
   }
 }

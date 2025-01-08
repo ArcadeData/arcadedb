@@ -38,13 +38,7 @@ public class AndBlock extends BooleanExpression {
   }
 
   public AndBlock(final List<BooleanExpression>... expressions) {
-    super(-1);
-
-    int total = 0;
-    for (List<BooleanExpression> expression : expressions)
-      total += expression.size();
-
-    this.subBlocks = new ArrayList<>(total);
+    this(-1);
 
     for (List<BooleanExpression> expression : expressions)
       subBlocks.addAll(expression);

@@ -32,16 +32,21 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
-
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
-import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class TypeLSMTreeIndexTest extends TestHelper {
   private static final int    TOT       = 100000;
@@ -142,7 +147,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
           }
         }
 
-        assertThat(total).isEqualTo(2). withFailMessage("range " + i + "-" + (i - 1));
+        assertThat(total).isEqualTo(2).withFailMessage("range " + i + "-" + (i - 1));
       }
     });
   }
@@ -154,19 +159,21 @@ public class TypeLSMTreeIndexTest extends TestHelper {
         int total = 0;
 
         try {
-          final ResultSet iterator;
-          iterator = database.command("sql", "select from " + TYPE_NAME + " where id >= " + i + " and id <= " + (i + 1));
+          ResultSet iterator = database.command("sql",
+              "select from " + TYPE_NAME + " where id >= " + i + " and id <= " + (i + 1));
 
           assertThat((Iterator<? extends Result>) iterator).isNotNull();
 
           while (iterator.hasNext()) {
-            final Result value = iterator.next();
+            Result value = iterator.next();
 
             assertThat(value).isNotNull();
 
-            final int fieldValue = (int) value.getProperty("id");
-            assertThat(fieldValue >= i && fieldValue <= i + 1).isTrue();
+            int id = value.<Integer>getProperty("id");
 
+            assertThat(id)
+                .isGreaterThanOrEqualTo(i)
+                .isLessThanOrEqualTo(i + 1);
             total++;
           }
         } catch (final Exception e) {

@@ -184,7 +184,8 @@ public class WhereClause extends SimpleNode {
   public WhereClause copy() {
     final WhereClause result = new WhereClause(-1);
     result.baseExpression = baseExpression.copy();
-    result.flattened = flattened == null ? null : flattened.stream().map(x -> x.copy()).collect(Collectors.toList());
+    result.flattened = flattened == null ? null : flattened.stream()
+        .map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
