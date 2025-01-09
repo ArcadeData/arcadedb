@@ -201,7 +201,7 @@ public class ScriptExecutionTest extends TestHelper {
   @Test
   public void testCommitRetryMultiThreadsSQLIncrement() throws IOException {
     String className = "testCommitRetryMTSQLIncrement";
-    database.getSchema().createDocumentType(className);
+    database.getSchema().createDocumentType(className, 8);
 
     // AVOID RETRY, EXPECTING TO MISS SOME UPDATES
     database.transaction(() -> {
@@ -258,7 +258,7 @@ public class ScriptExecutionTest extends TestHelper {
   @Test
   public void testCommitRetryMultiThreadsSQLIncrementRepeatableRead() throws IOException {
     String className = "testCommitRetryMTSQLIncrement";
-    database.getSchema().createDocumentType(className);
+    database.getSchema().createDocumentType(className, 8);
 
     // AVOID RETRY, EXPECTING TO MISS SOME UPDATES
     database.transaction(() -> {

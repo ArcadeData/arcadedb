@@ -897,8 +897,7 @@ public class SelectExecutionPlanner {
       }
       info.fetchExecutionPlan.chain(new ParallelExecStep(plans, context));
     } else if (target.getIndex() != null) {
-      if (info.buckets.size() > 1)
-        handleIndexAsTarget(info.fetchExecutionPlan, info, target.getIndex(), null, context);
+      handleIndexAsTarget(info.fetchExecutionPlan, info, target.getIndex(), null, context);
     } else if (target.getSchema() != null) {
       handleSchemaAsTarget(info.fetchExecutionPlan, target.getSchema(), context);
     } else if (target.getRids() != null && !target.getRids().isEmpty()) {
@@ -1697,7 +1696,7 @@ public class SelectExecutionPlanner {
 
     final List<IndexSearchDescriptor> indexSearchDescriptors =
         info.flattenedWhereClause.stream()
-        .map(x -> findBestIndexFor(context, indexes, x, typez))
+            .map(x -> findBestIndexFor(context, indexes, x, typez))
             .filter(Objects::nonNull)
             .collect(Collectors.toList());
 
@@ -1705,9 +1704,9 @@ public class SelectExecutionPlanner {
       return null;
 
     // TODO
-        if (indexSearchDescriptors.size() != info.flattenedWhereClause.size()) {
-          return null; //some blocks could not be managed with an index
-        }
+    if (indexSearchDescriptors.size() != info.flattenedWhereClause.size()) {
+      return null; //some blocks could not be managed with an index
+    }
 
 //    // ARCADEDB: NOT APPLICABLE TO ORIENTDB
 //    // IF THERE ARE ANY CHANGES IN TX, AVOID IT

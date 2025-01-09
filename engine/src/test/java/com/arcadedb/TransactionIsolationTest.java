@@ -16,7 +16,7 @@ public class TransactionIsolationTest extends TestHelper {
     database.transaction(() -> {
       if (database.getSchema().existsType("Node"))
         database.getSchema().dropType("Node");
-      database.getSchema().createVertexType("Node");
+      database.getSchema().createVertexType("Node", 8);
     });
   }
 

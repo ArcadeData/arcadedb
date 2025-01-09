@@ -1070,7 +1070,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromSingleRid3() {
-    database.getSchema().createDocumentType("testFetchFromSingleRid3");
+    database.getSchema().createDocumentType("testFetchFromSingleRid3", 8);
     database.begin();
     MutableDocument doc = database.newDocument("testFetchFromSingleRid3");
     doc.save();
@@ -1089,7 +1089,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromSingleRid4() {
-    database.getSchema().createDocumentType("testFetchFromSingleRid4");
+    database.getSchema().createDocumentType("testFetchFromSingleRid4", 8);
     database.begin();
     MutableDocument doc = database.newDocument("testFetchFromSingleRid4");
     doc.save();
