@@ -200,7 +200,7 @@ public enum GlobalConfiguration {
       50),
 
   TYPE_DEFAULT_BUCKETS("arcadedb.typeDefaultBuckets", SCOPE.DATABASE, "Default number of buckets to create per type", Integer.class,
-      8),
+      1),
 
   BUCKET_DEFAULT_PAGE_SIZE("arcadedb.bucketDefaultPageSize", SCOPE.DATABASE,
       "Default page size in bytes for buckets. Default is 64KB", Integer.class, 65_536),
