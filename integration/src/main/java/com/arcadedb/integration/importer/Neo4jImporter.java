@@ -244,7 +244,7 @@ public class Neo4jImporter {
       Type currentType = typeProperties.get(propName);
       if (currentType == null) {
         Object propValue = properties.get(propName);
-        if (!propValue.equals(JSONObject.NULL)) {
+        if (propValue != null && !propValue.equals(JSONObject.NULL)) {
 
           if (propValue instanceof String) {
             // CHECK IF IT'S A DATE
