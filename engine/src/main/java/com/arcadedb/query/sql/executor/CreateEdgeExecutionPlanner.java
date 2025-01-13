@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.parser.CreateEdgeStatement;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -28,8 +29,10 @@ import com.arcadedb.query.sql.parser.InsertSetExpression;
 import com.arcadedb.query.sql.parser.JsonArray;
 import com.arcadedb.query.sql.parser.UpdateItem;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Created by luigidellaquila on 08/08/16.
@@ -85,7 +88,21 @@ public class CreateEdgeExecutionPlanner {
     handleGlobalLet(result, new Identifier("$__ARCADEDB_CREATE_EDGE_toV"), rightExpression, context);
 
     final String uniqueIndexName;
-    uniqueIndexName = null;
+    if (context.getDatabase().getSchema().existsType(targetClass.getStringValue())) {
+      final EdgeType type = (EdgeType) context.getDatabase().getSchema().getType(targetClass.getStringValue());
+      uniqueIndexName = type.getAllIndexes(true)
+
+          .stream()
+          .peek(x -> System.out.println("Index: " + x.getName()))
+          .filter(TypeIndex::isUnique)
+          .filter(x -> x.getPropertyNames().size() == 2
+              && x.getPropertyNames().contains("@out")
+              && x.getPropertyNames().contains("@in"))
+          .map(TypeIndex::getName)
+          .findFirst()
+          .orElse(null);
+    } else
+      uniqueIndexName = null;
 
     result.chain(
         new CreateEdgesStep(targetClass, targetBucketName, uniqueIndexName, new Identifier("$__ARCADEDB_CREATE_EDGE_fromV"),

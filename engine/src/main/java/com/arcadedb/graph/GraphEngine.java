@@ -552,7 +552,10 @@ public class GraphEngine {
     return false;
   }
 
-  public boolean isVertexConnectedTo(final VertexInternal vertex, final Identifiable toVertex, final Vertex.DIRECTION direction,
+  public boolean isVertexConnectedTo(
+      final VertexInternal vertex,
+      final Identifiable toVertex,
+      final Vertex.DIRECTION direction,
       final String edgeType) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
@@ -563,13 +566,17 @@ public class GraphEngine {
     if (edgeType == null)
       throw new IllegalArgumentException("Edge type is null");
 
-    final int[] bucketFilter = vertex.getDatabase().getSchema().getType(edgeType).getBuckets(true).stream()
-        .mapToInt(x -> x.getFileId()).toArray();
+    final int[] bucketFilter = vertex.getDatabase()
+        .getSchema()
+        .getType(edgeType)
+        .getBuckets(true)
+        .stream()
+        .mapToInt(x -> x.getFileId())
+        .toArray();
 
     if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
       final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
-      if (outEdges != null && outEdges.containsVertex(toVertex.getIdentity(), bucketFilter))
-        return true;
+      return outEdges != null && outEdges.containsVertex(toVertex.getIdentity(), bucketFilter);
     }
 
     if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
