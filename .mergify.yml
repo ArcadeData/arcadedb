@@ -1,14 +1,14 @@
 pull_request_rules:
-  - name: Merge regular PRs on approval
-    conditions:
-      - "#approved-reviews-by>=1"
-      - "author!=dependabot[bot]"
-    actions:
-      merge:
-        method: merge
-        commit_message_template: |
-          {{ title | markdownify }}
-          {{ body | markdownify }}
+  #  - name: Merge regular PRs on approval
+  #    conditions:
+  #      - "#approved-reviews-by>=1"
+  #      - "author!=dependabot[bot]"
+  #    actions:
+  #      merge:
+  #        method: merge
+  #        commit_message_template: |
+  #          {{ title | markdownify }}
+  #          {{ body | markdownify }}
 
   - name: Merge Dependabot PRs on approval with [skip ci]
     conditions:
