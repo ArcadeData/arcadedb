@@ -93,7 +93,6 @@ public class CreateEdgeExecutionPlanner {
       uniqueIndexName = type.getAllIndexes(true)
 
           .stream()
-          .peek(x -> System.out.println("Index: " + x.getName()))
           .filter(TypeIndex::isUnique)
           .filter(x -> x.getPropertyNames().size() == 2
               && x.getPropertyNames().contains("@out")
