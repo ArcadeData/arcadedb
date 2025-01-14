@@ -33,9 +33,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class SelectIndexExecutionIT extends TestHelper {
+public class SelectIndexExecutionTest extends TestHelper {
 
-  public SelectIndexExecutionIT() {
+  public SelectIndexExecutionTest() {
     autoStartTx = true;
   }
 

@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -95,5 +96,53 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
     } catch (CommandSQLParsingException e) {
       // EXPECTED
     }
+  }
+
+  @Test
+  @DisplayName("createEdgeIfNotExists - test Issue #1763")
+  void createEdgeIfNotExists() {
+    database.transaction(() -> {
+      database.command("sqlscript", """
+          CREATE VERTEX TYPE vex;
+          CREATE EDGE TYPE edg;
+          CREATE PROPERTY edg.label STRING;
+          CREATE VERTEX vex;
+          CREATE VERTEX vex;
+          CREATE VERTEX vex;
+          """);
+    });
+
+    database.transaction(() -> {
+      final ResultSet rs = database.query("SQL", """
+          select from vex
+          """);
+      assertThat(rs.stream().count()).isEqualTo(3);
+    });
+    // CREATE EDGES FROM #1:0 TO [#1:1,#1:2]
+    database.transaction(() -> {
+      final ResultSet rs = database.command("sql", """
+          CREATE EDGE edg FROM #1:0 TO [#1:1,#1:2] IF NOT EXISTS
+          """);
+      assertThat(rs.stream().count()).isEqualTo(2);
+    });
+
+    // CREATE AGAIN (should not create any edge)
+    database.transaction(() -> {
+      final ResultSet rs = database.command("sql", """
+          CREATE EDGE edg FROM #1:0 TO [#1:1,#1:2] IF NOT EXISTS
+          """);
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.stream().count()).isEqualTo(2);
+    });
+
+    // CREATE AGAIN (should create 1 edge)
+    database.transaction(() -> {
+      final ResultSet rs = database.command("sql", """
+          CREATE EDGE edg FROM #1:0 TO [#1:1,#1:2,#1:0] IF NOT EXISTS
+          """);
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.stream().count()).isEqualTo(3);
+    });
+
   }
 }
