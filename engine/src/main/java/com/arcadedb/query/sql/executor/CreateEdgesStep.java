@@ -32,11 +32,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.sql.parser.Identifier;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Iterator;
-import java.util.List;
-import java.util.NoSuchElementException;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 28/11/16.
@@ -62,14 +58,8 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
   private boolean initiated = false;
 
-  public CreateEdgesStep(
-      final Identifier targetClass,
-      final Identifier targetBucketName,
-      final String uniqueIndex,
-      final Identifier fromAlias,
-      final Identifier toAlias,
-      final boolean unidirectional,
-      final boolean ifNotExists,
+  public CreateEdgesStep(final Identifier targetClass, final Identifier targetBucketName, final String uniqueIndex,
+      final Identifier fromAlias, final Identifier toAlias, final boolean unidirectional, final boolean ifNotExists,
       final CommandContext context) {
     super(context);
     this.targetClass = targetClass;
@@ -113,20 +103,11 @@ public class CreateEdgesStep extends AbstractExecutionStep {
           if (currentTo == null)
             throw new CommandExecutionException("Invalid TO vertex for edge");
 
-          if (ifNotExists) {
+          if (ifNotExists)
             if (context.getDatabase().getGraphEngine()
-                .isVertexConnectedTo((VertexInternal) currentFrom, currentTo, Vertex.DIRECTION.OUT, targetClass.getStringValue())) {
-
-              for (Edge existingEdge : context.getDatabase().getGraphEngine()
-                  .getEdges((VertexInternal) currentFrom, Vertex.DIRECTION.OUT, targetClass.getStringValue())) {
-                if (existingEdge.getOut().equals(currentTo)) {
-                  currentTo = null;
-                  currentBatch++;
-                  return new UpdatableResult(existingEdge.modify());
-                }
-              }
-            }
-          }
+                .isVertexConnectedTo((VertexInternal) currentFrom, currentTo, Vertex.DIRECTION.OUT, targetClass.getStringValue()))
+              // SKIP CREATING EDGE
+              return null;
 
           final String target = targetBucket != null ? "bucket:" + targetBucket.getStringValue() : targetClass.getStringValue();
 
@@ -138,7 +119,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
           currentBatch++;
           return result;
         } finally {
-          if (context.isProfiling()) {
+          if( context.isProfiling() ) {
             cost += (System.nanoTime() - begin);
           }
         }
@@ -242,7 +223,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
         this.currentTo = null;
       }
     } finally {
-      if (context.isProfiling()) {
+      if( context.isProfiling() ) {
         cost += (System.nanoTime() - begin);
       }
     }
@@ -290,7 +271,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
     result += spaces + "    FOR EACH y in " + toAlias + "\n";
     result +=
         spaces + "       CREATE EDGE " + targetClass + " FROM x TO y " + (unidirectional ? "UNIDIRECTIONAL" : "BIDIRECTIONAL");
-    if (context.isProfiling())
+    if ( context.isProfiling() )
       result += " (" + getCostFormatted() + ")";
 
     if (targetBucket != null)
@@ -306,14 +287,8 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new CreateEdgesStep(
-        targetClass == null ? null : targetClass.copy(),
-        targetBucket == null ? null : targetBucket.copy(),
-        uniqueIndexName,
-        fromAlias == null ? null : fromAlias.copy(),
-        toAlias == null ? null : toAlias.copy(),
-        unidirectional,
-        ifNotExists,
-        context);
+    return new CreateEdgesStep(targetClass == null ? null : targetClass.copy(), targetBucket == null ? null : targetBucket.copy(),
+        uniqueIndexName, fromAlias == null ? null : fromAlias.copy(), toAlias == null ? null : toAlias.copy(), unidirectional,
+        ifNotExists, context);
   }
 }
