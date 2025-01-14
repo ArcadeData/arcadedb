@@ -340,27 +340,33 @@ public class SelectExecutionIT extends TestHelper {
 
   @Test
   public void okLike() {
-    final SelectCompiled select = database.select().fromType("Vertex")//
-        .where().property("name").like().value("E%").compile();
+    final SelectCompiled select = database.select()
+        .fromType("Vertex")//
+        .where()
+        .property("name").like().value("J%")
+        .compile();
 
     for (int i = 0; i < 100; i++) {
       final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
       final List<Vertex> list = result.toList();
       assertThat(list.size()).isEqualTo(100);
-      list.forEach(r -> assertTrue(r.getString("name").startsWith("E")));
+      list.forEach(r -> assertTrue(r.getString("name").startsWith("J")));
     }
   }
 
   @Test
   public void okILike() {
-    final SelectCompiled select = database.select().fromType("Vertex")//
-        .where().property("name").ilike().value("e%").compile();
+    final SelectCompiled select = database.select()
+        .fromType("Vertex")//
+        .where()
+        .property("name").ilike().value("j%")
+        .compile();
 
     for (int i = 0; i < 100; i++) {
       final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
       final List<Vertex> list = result.toList();
       assertThat(list.size()).isEqualTo(100);
-      list.forEach(r -> assertTrue(r.getString("name").startsWith("E")));
+      list.forEach(r -> assertTrue(r.getString("name").startsWith("J")));
     }
   }
 
