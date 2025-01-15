@@ -673,14 +673,7 @@ public class BasicGraphTest extends BaseGraphTest {
       // EXPECTED
     }
 
-    try {
-      database.transaction(
-          () -> database.command("sql", "create edge OnlyOneBetweenVertices from ? to ? IF NOT EXISTS", v1[0], v2[0]));
-      fail("");
-    } catch (final DuplicatedKeyException ex) {
-      // EXPECTED
-    }
-
+    database.transaction(() -> database.command("sql", "create edge OnlyOneBetweenVertices from ? to ? IF NOT EXISTS", v1[0], v2[0]));
   }
 
   @Test
