@@ -64,10 +64,10 @@ public class MatchReverseEdgeTraverser extends MatchEdgeTraverser {
       return Collections.emptyList();
     }
     if (qR instanceof ResultInternal internal) {
-      return Collections.singleton(internal);
+      return Set.of(internal);
     }
     if (qR instanceof Document document) {
-      return Collections.singleton(new ResultInternal(document));
+      return Set.of(new ResultInternal(document));
     }
     if (qR instanceof Iterable iterable) {
       final List<ResultInternal> result = new ArrayList<>();

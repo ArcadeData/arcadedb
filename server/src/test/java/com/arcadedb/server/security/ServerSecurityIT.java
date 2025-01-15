@@ -31,7 +31,7 @@ import org.junit.jupiter.api.Test;
 import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.*;
+import java.util.List;
 import java.util.concurrent.*;
 
 import static java.util.concurrent.TimeUnit.*;
@@ -106,7 +106,7 @@ public class ServerSecurityIT {
     final JSONObject json = new JSONObject().put("name", "providedUser").put("password", security.encodePassword("MyPassword12345"))
         .put("databases", new JSONObject());
 
-    repository.save(Collections.singletonList(json));
+    repository.save(List.of(json));
 
     //when
     security.startService();
@@ -131,7 +131,7 @@ public class ServerSecurityIT {
     final JSONObject json = new JSONObject().put("name", "providedUser").put("password", security.encodePassword("MyPassword12345"))
         .put("databases", new JSONObject().put("dbtest", new JSONObject()));
 
-    repository.save(Collections.singletonList(json));
+    repository.save(List.of(json));
 
     //when
     security.startService();

@@ -27,7 +27,10 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.Identifier;
 
-import java.util.*;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * Created by luigidellaquila on 21/02/17.
@@ -107,7 +110,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
       if (fromValues instanceof Iterable iterable && !(fromValues instanceof Identifiable))
         fromValues = iterable.iterator();
       else if (!(fromValues instanceof Iterator))
-        fromValues = Collections.singleton(fromValues).iterator();
+        fromValues = Set.of(fromValues).iterator();
 
     Object toValues;
 
@@ -116,7 +119,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
       if (toValues instanceof Iterable iterable && !(toValues instanceof Identifiable))
         toValues = iterable.iterator();
       else if (!(toValues instanceof Iterator))
-        toValues = Collections.singleton(toValues).iterator();
+        toValues = Set.of(toValues).iterator();
 
     fromIter = (Iterator) fromValues;
 

@@ -21,7 +21,9 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.LocalResultSet;
 
-import java.util.*;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * Created by luigidellaquila on 20/09/16.
@@ -119,7 +121,7 @@ public class MatchFirstStep extends AbstractExecutionStep {
     if (matchedNodes instanceof Iterable iterable) {
       possibleResults = iterable;
     } else {
-      possibleResults = Collections.singleton(matchedNodes);
+      possibleResults = Set.of(matchedNodes);
     }
     iterator = possibleResults.iterator();
   }

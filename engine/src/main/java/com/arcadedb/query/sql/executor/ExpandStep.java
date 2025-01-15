@@ -24,7 +24,10 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * Expands a result-set.
@@ -139,9 +142,9 @@ public class ExpandStep extends AbstractExecutionStep {
           final ResultInternal res = new ResultInternal();
           res.setElement((Document) rec);
 
-          nextSubsequence = Collections.singleton(res).iterator();
+          nextSubsequence = Set.of(res).iterator();
         } else if (projValue instanceof Result result) {
-          nextSubsequence = Collections.singleton(result).iterator();
+          nextSubsequence = Set.of(result).iterator();
         } else if (projValue instanceof Iterator iterator) {
           nextSubsequence = iterator;
         } else if (projValue instanceof Iterable iterable) {

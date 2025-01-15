@@ -22,7 +22,7 @@ package com.arcadedb.query.sql.executor;
  * Created by luigidellaquila on 08/08/16.
  */
 
-import java.util.*;
+import java.util.List;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -65,7 +65,7 @@ public class IfExecutionPlan implements InternalExecutionPlan {
   @Override
   public List<ExecutionStep> getSteps() {
     //TODO do a copy of the steps
-    return Collections.singletonList(step);
+    return List.of(step);
   }
 
   public void setSteps(final List<ExecutionStepInternal> steps) {
@@ -79,7 +79,7 @@ public class IfExecutionPlan implements InternalExecutionPlan {
     result.setProperty("javaType", getClass().getName());
     result.setProperty("cost", getCost());
     result.setProperty("prettyPrint", prettyPrint(0, 2));
-    result.setProperty("steps", Collections.singletonList(step.toResult()));
+    result.setProperty("steps", List.of(step.toResult()));
     return result;
   }
 

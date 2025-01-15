@@ -24,7 +24,9 @@ import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.*;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 /**
  * Created by luigidellaquila on 07/11/14.
@@ -146,7 +148,7 @@ public abstract class BooleanExpression extends SimpleNode {
   }
 
   public List<AndBlock> flatten() {
-    return Collections.singletonList(encapsulateInAndBlock(this));
+    return List.of(encapsulateInAndBlock(this));
   }
 
   protected AndBlock encapsulateInAndBlock(final BooleanExpression item) {

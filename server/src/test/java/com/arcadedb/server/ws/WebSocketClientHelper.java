@@ -41,7 +41,10 @@ import org.xnio.XnioWorker;
 
 import java.io.*;
 import java.net.*;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.*;
 import java.util.logging.*;
 
@@ -71,7 +74,7 @@ public class WebSocketClientHelper implements AutoCloseable {
       builder.setClientNegotiation(new WebSocketClientNegotiation(new ArrayList<>(), new ArrayList<>()) {
         @Override
         public void beforeRequest(final Map<String, List<String>> headers) {
-          headers.put("Authorization", Collections.singletonList("Basic " + Base64.getEncoder().encodeToString((user + ":" + pass).getBytes())));
+          headers.put("Authorization", List.of("Basic " + Base64.getEncoder().encodeToString((user + ":" + pass).getBytes())));
         }
       });
     }

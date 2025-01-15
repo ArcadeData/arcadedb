@@ -25,7 +25,8 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.logging.*;
 
 public class SecurityUserFileRepository {
@@ -88,7 +89,7 @@ public class SecurityUserFileRepository {
 
   public static List<JSONObject> createDefault() {
     // ROOT USER
-    return Collections.singletonList(new JSONObject().put("name", "root")
+    return List.of(new JSONObject().put("name", "root")
         .put("databases", new JSONObject().put(SecurityManager.ANY, new JSONArray(new String[] { "admin" }))));
   }
 

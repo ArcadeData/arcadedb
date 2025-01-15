@@ -122,7 +122,7 @@ public class Modifier extends SimpleNode {
       return result;
     }
     if (iResult instanceof Identifiable)
-      iResult = Collections.singleton(iResult);
+      iResult = Set.of(iResult);
 
     if (iResult instanceof Iterable iterable)
       iResult = iterable.iterator();

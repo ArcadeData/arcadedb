@@ -240,6 +240,6 @@ public class ArcadeGremlin extends ArcadeQuery {
     if (result instanceof GraphTraversal traversal)
       return traversal;
 
-    return Collections.singleton(result).iterator();
+    return Set.of(result).iterator();
   }
 }

@@ -23,7 +23,8 @@ import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.LocalResultSet;
 import com.arcadedb.query.sql.parser.Statement;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Created by luigidellaquila on 03/08/16.
@@ -76,7 +77,7 @@ public class GlobalLetQueryStep extends AbstractExecutionStep {
 
   @Override
   public List<ExecutionPlan> getSubExecutionPlans() {
-    return Collections.singletonList(this.subExecutionPlan);
+    return List.of(this.subExecutionPlan);
   }
 
   private String box(final String spaces, final String s) {

@@ -25,7 +25,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
 import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -47,7 +46,7 @@ public class SQLMethodKeys extends AbstractSQLMethod {
       return map.keySet();
 
     if (value instanceof Document document)
-      return Collections.singletonList(document.getPropertyNames());
+      return List.of(document.getPropertyNames());
 
     if (value instanceof Result result) {
       return result.getPropertyNames();

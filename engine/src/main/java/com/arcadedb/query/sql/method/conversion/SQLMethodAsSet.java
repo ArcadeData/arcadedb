@@ -64,6 +64,6 @@ public class SQLMethodAsSet extends AbstractSQLMethod {
     }
 
     // SINGLE ITEM: ADD IT AS UNIQUE ITEM
-    return Collections.singleton(value);
+    return Set.of(value);
   }
 }

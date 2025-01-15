@@ -327,7 +327,7 @@ public class MatchEdgeTraverser {
         if (matchedNodes instanceof Iterable iterable) {
           possibleResults = iterable;
         } else {
-          possibleResults = Collections.singleton(matchedNodes);
+          possibleResults = Set.of(matchedNodes);
         }
       }
     }
@@ -345,7 +345,7 @@ public class MatchEdgeTraverser {
       return Collections.emptyList();
     }
     if (qR instanceof Document document) {
-      return Collections.singleton(new ResultInternal(document));
+      return Set.of(new ResultInternal(document));
     }
     if (qR instanceof Iterable iterable) {
       final List<ResultInternal> result = new ArrayList<>();

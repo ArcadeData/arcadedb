@@ -40,7 +40,8 @@ import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.stream.*;
 
 /**
@@ -108,7 +109,7 @@ public class TraverseExecutionPlanner {
     } else if (target.getIdentifier() != null) {
       handleClassAsTarget(result, this.target, context);
     } else if (target.getBucket() != null) {
-      handleClustersAsTarget(result, Collections.singletonList(target.getBucket()), context);
+      handleClustersAsTarget(result, List.of(target.getBucket()), context);
     } else if (target.getBucketList() != null) {
       handleClustersAsTarget(result, target.getBucketList().toListOfClusters(), context);
     } else if (target.getStatement() != null) {
@@ -162,7 +163,7 @@ public class TraverseExecutionPlanner {
       rid.setBucket(bucket);
       rid.setPosition(position);
 
-      handleRidsAsTarget(result, Collections.singletonList(rid), context);
+      handleRidsAsTarget(result, List.of(rid), context);
     } else if (paramValue instanceof Iterable iterable) {
       //try list of RIDs
       final List<Rid> rids = new ArrayList<>();

@@ -405,7 +405,7 @@ public enum Type {
           final Set<Object> set = new HashSet<Object>(collection);
           return set;
         } else {
-          return Collections.singleton(value);
+          return Set.of(value);
         }
 
       } else if (List.class.isAssignableFrom(targetClass)) {
@@ -416,7 +416,7 @@ public enum Type {
           final List<Object> list = new ArrayList<Object>(collection);
           return list;
         } else {
-          return Collections.singletonList(value);
+          return List.of(value);
         }
 
       } else if (Collection.class.equals(targetClass)) {
@@ -427,7 +427,7 @@ public enum Type {
           final List<Object> set = new ArrayList<Object>(collection);
           return set;
         } else {
-          return Collections.singleton(value);
+          return Set.of(value);
         }
 
       } else if (targetClass.equals(Date.class)) {

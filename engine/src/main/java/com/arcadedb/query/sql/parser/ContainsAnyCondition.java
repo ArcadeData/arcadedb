@@ -27,12 +27,7 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class ContainsAnyCondition extends BooleanExpression {
   protected Expression left;
@@ -63,7 +58,7 @@ public class ContainsAnyCondition extends BooleanExpression {
 
     if (left instanceof Iterator<?> leftIterator) {
       if (!(right instanceof Iterable))
-        right = Collections.singleton(right);
+        right = Set.of(right);
 
       right = ((Iterable<?>) right).iterator();
 

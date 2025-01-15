@@ -32,11 +32,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.sql.parser.Identifier;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Iterator;
-import java.util.List;
-import java.util.NoSuchElementException;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 28/11/16.
@@ -165,7 +161,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
     if (fromValues instanceof Iterable iterable && !(fromValues instanceof Identifiable))
       fromValues = iterable.iterator();
     else if (!(fromValues instanceof Iterator))
-      fromValues = Collections.singleton(fromValues).iterator();
+      fromValues = Set.of(fromValues).iterator();
 
     if (fromValues instanceof InternalResultSet set)
       fromValues = set.copy();
@@ -174,7 +170,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
     if (toValues instanceof Iterable iterable && !(toValues instanceof Identifiable))
       toValues = iterable.iterator();
     else if (!(toValues instanceof Iterator))
-      toValues = Collections.singleton(toValues).iterator();
+      toValues = Set.of(toValues).iterator();
 
     if (toValues instanceof InternalResultSet set)
       toValues = set.copy();

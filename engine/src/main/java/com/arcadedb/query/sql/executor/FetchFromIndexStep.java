@@ -375,7 +375,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
   private List<PCollection> cartesianProduct(final PCollection head, final PCollection key) {
     if (key.getExpressions().isEmpty())
-      return Collections.singletonList(head);
+      return List.of(head);
 
     final Expression nextElementInKey = key.getExpressions().get(0);
     final Object value = nextElementInKey.execute(new ResultInternal(context.getDatabase()), context);

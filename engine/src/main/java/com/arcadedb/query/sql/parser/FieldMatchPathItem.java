@@ -25,7 +25,9 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.*;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 
 public class FieldMatchPathItem extends MatchPathItem {
   protected Identifier       field;
@@ -72,7 +74,7 @@ public class FieldMatchPathItem extends MatchPathItem {
     }
     // TODO check possible results!
     final Object qR = this.exp.execute(startingPoint, iCommandContext);
-    return (qR instanceof Iterable i && !(qR instanceof Document)) ? i : Collections.singleton((Identifiable) qR);
+    return (qR instanceof Iterable i && !(qR instanceof Document)) ? i : Set.of((Identifiable) qR);
   }
 
   @Override

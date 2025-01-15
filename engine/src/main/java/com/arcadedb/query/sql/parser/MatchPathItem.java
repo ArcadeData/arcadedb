@@ -140,7 +140,7 @@ public class MatchPathItem extends SimpleNode {
     if (filter != null) {
       final Identifiable matchedNode = matchContext.matched.get(filter.getAlias());
       if (matchedNode != null) {
-        possibleResults = Collections.singleton(matchedNode);
+        possibleResults = Set.of(matchedNode);
       } else if (matchContext.matched.containsKey(filter.getAlias())) {
         possibleResults = Collections.emptySet();//optional node, the matched element is a null value
       } else {
@@ -149,7 +149,7 @@ public class MatchPathItem extends SimpleNode {
     }
 
     final Object qR = this.method.execute(startingPoint, possibleResults, iCommandContext);
-    return (qR instanceof Iterable i && !(qR instanceof Record)) ? i : Collections.singleton((Identifiable) qR);
+    return (qR instanceof Iterable i && !(qR instanceof Record)) ? i : Set.of((Identifiable) qR);
   }
 
   @Override
