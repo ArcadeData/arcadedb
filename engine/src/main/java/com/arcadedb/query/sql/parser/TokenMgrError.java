@@ -20,6 +20,8 @@
 /* JavaCCOptions: */
 package com.arcadedb.query.sql.parser;
 
+import java.io.Serial;
+
 /**
  * Token Manager Error.
  */
@@ -30,6 +32,7 @@ public class TokenMgrError extends Error {
    * Increment only if the <i>serialized</i> form of the
    * class changes.
    */
+  @Serial
   private static final long serialVersionUID = 1L;
 
   /*

@@ -174,8 +174,8 @@ public class ArrayRangeSelector extends SimpleNode {
     }
     if (target.getClass().isArray()) {
       setArrayValue(target, value, context);
-    } else if (target instanceof List) {
-      setValue((List) target, value, context);
+    } else if (target instanceof List list) {
+      setValue(list, value, context);
     } else if (MultiValue.isMultiValue(value)) {
       //TODO
     }
@@ -297,8 +297,7 @@ public class ArrayRangeSelector extends SimpleNode {
       return;
     }
     final int range = to - from;
-    if (currentValue instanceof List) {
-      final List list = (List) currentValue;
+    if (currentValue instanceof List list) {
       for (int i = 0; i < range; i++) {
         if (list.size() > from) {
           list.remove(from);
@@ -306,8 +305,8 @@ public class ArrayRangeSelector extends SimpleNode {
           break;
         }
       }
-    } else if (currentValue instanceof Set) {
-      final Iterator iter = ((Set) currentValue).iterator();
+    } else if (currentValue instanceof Set set) {
+      final Iterator iter = set.iterator();
       int count = 0;
       while (iter.hasNext()) {
         iter.next();

@@ -148,12 +148,12 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
     }
 
     private boolean containersOfDifferentSize(final Object f, final Object s) {
-      if (f instanceof Collection && s instanceof Collection)
-        if (((Collection) f).size() != (((Collection) s).size()))
+      if (f instanceof Collection collection && s instanceof Collection collection1)
+        if (collection.size() != (collection1.size()))
           return true;
 
-      if (f instanceof Path && s instanceof Path)
-        if (((Path) f).size() != (((Path) s).size()))
+      if (f instanceof Path path && s instanceof Path path1)
+        if (path.size() != (path1.size()))
           return true;
 
       return false;
@@ -288,8 +288,8 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
    * for objects without a natural comparator.
    */
   private static int naturallyCompare(final Object f, final Object s) {
-    if (f instanceof Comparable && s instanceof Comparable)
-      return ((Comparable) f).compareTo(s);
+    if (f instanceof Comparable comparable && s instanceof Comparable)
+      return comparable.compareTo(s);
     return f.equals(s) ? 0 : throwTypeError();
   }
 

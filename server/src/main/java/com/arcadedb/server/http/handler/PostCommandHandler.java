@@ -132,8 +132,8 @@ public class PostCommandHandler extends AbstractQueryHandler {
       final Map<String, Object> paramMap) {
     final Object params = mapParams(paramMap);
 
-    if (params instanceof Object[])
-      return database.command(language, command, httpServer.getServer().getConfiguration(), (Object[]) params);
+    if (params instanceof Object[] objects)
+      return database.command(language, command, httpServer.getServer().getConfiguration(), objects);
     return database.command(language, command, httpServer.getServer().getConfiguration(), (Map<String, Object>) params);
   }
 
@@ -152,6 +152,6 @@ public class PostCommandHandler extends AbstractQueryHandler {
         LogManager.instance().log(this, Level.SEVERE, "Async command in database \"%s\" failed.", null, database.getName());
         LogManager.instance().log(this, Level.SEVERE, "", exception);
       }
-    }, params instanceof Object[] ? (Object[]) params : (Map<String, Object>) params);
+    }, params instanceof Object[] os ? os : (Map<String, Object>) params);
   }
 }

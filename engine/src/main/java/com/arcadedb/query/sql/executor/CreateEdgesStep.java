@@ -162,36 +162,36 @@ public class CreateEdgesStep extends AbstractExecutionStep {
       initiated = true;
     }
     Object fromValues = context.getVariable(fromAlias.getStringValue());
-    if (fromValues instanceof Iterable && !(fromValues instanceof Identifiable))
-      fromValues = ((Iterable) fromValues).iterator();
+    if (fromValues instanceof Iterable iterable && !(fromValues instanceof Identifiable))
+      fromValues = iterable.iterator();
     else if (!(fromValues instanceof Iterator))
       fromValues = Collections.singleton(fromValues).iterator();
 
-    if (fromValues instanceof InternalResultSet)
-      fromValues = ((InternalResultSet) fromValues).copy();
+    if (fromValues instanceof InternalResultSet set)
+      fromValues = set.copy();
 
     Object toValues = context.getVariable(toAlias.getStringValue());
-    if (toValues instanceof Iterable && !(toValues instanceof Identifiable))
-      toValues = ((Iterable) toValues).iterator();
+    if (toValues instanceof Iterable iterable && !(toValues instanceof Identifiable))
+      toValues = iterable.iterator();
     else if (!(toValues instanceof Iterator))
       toValues = Collections.singleton(toValues).iterator();
 
-    if (toValues instanceof InternalResultSet)
-      toValues = ((InternalResultSet) toValues).copy();
+    if (toValues instanceof InternalResultSet set)
+      toValues = set.copy();
 
     fromIter = (Iterator) fromValues;
-    if (fromIter instanceof ResultSet) {
+    if (fromIter instanceof ResultSet set) {
       try {
-        ((ResultSet) fromIter).reset();
+        set.reset();
       } catch (final Exception ignore) {
       }
     }
 
     final Iterator toIter = (Iterator) toValues;
 
-    if (toIter instanceof ResultSet) {
+    if (toIter instanceof ResultSet set) {
       try {
-        ((ResultSet) toIter).reset();
+        set.reset();
       } catch (final Exception ignore) {
       }
     }
@@ -271,19 +271,19 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   }
 
   private Vertex asVertex(Object currentFrom) {
-    if (currentFrom instanceof RID)
-      currentFrom = ((RID) currentFrom).getRecord();
+    if (currentFrom instanceof RID iD)
+      currentFrom = iD.getRecord();
 
-    if (currentFrom instanceof Result) {
+    if (currentFrom instanceof Result result) {
       final Object from = currentFrom;
-      currentFrom = ((Result) currentFrom).getVertex()
+      currentFrom = result.getVertex()
           .orElseThrow(() -> new CommandExecutionException("Invalid vertex for edge creation: " + from));
     }
 
-    if (currentFrom instanceof Vertex)
-      return (Vertex) currentFrom;
-    else if (currentFrom instanceof Document)
-      return ((Document) currentFrom).asVertex();
+    if (currentFrom instanceof Vertex vertex)
+      return vertex;
+    else if (currentFrom instanceof Document document)
+      return document.asVertex();
     else if (RID.is(currentFrom))
       return new RID(getContext().getDatabase(), currentFrom.toString()).asVertex();
 

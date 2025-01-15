@@ -444,8 +444,8 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   }
 
   private Vertex loadVertexFromRID(final Identifiable rid) {
-    if (rid instanceof Vertex)
-      return (Vertex) rid;
+    if (rid instanceof Vertex vertex)
+      return vertex;
 
     Vertex vertex = null;
     if (cache != null)

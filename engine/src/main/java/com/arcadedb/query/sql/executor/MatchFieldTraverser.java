@@ -61,11 +61,11 @@ public class MatchFieldTraverser extends MatchEdgeTraverser {
     if (qR == null) {
       return Collections.emptyList();
     }
-    if (qR instanceof Identifiable) {
-      return Collections.singleton(new ResultInternal((Document) ((Identifiable) qR).getRecord()));
+    if (qR instanceof Identifiable identifiable) {
+      return Collections.singleton(new ResultInternal((Document) identifiable.getRecord()));
     }
-    if (qR instanceof Iterable) {
-      final Iterator<Object> iter = ((Iterable) qR).iterator();
+    if (qR instanceof Iterable iterable) {
+      final Iterator<Object> iter = iterable.iterator();
 
       return () -> new Iterator<ResultInternal>() {
         private ResultInternal nextElement;
@@ -94,11 +94,11 @@ public class MatchFieldTraverser extends MatchEdgeTraverser {
         public void fetchNext() {
           while (iter.hasNext()) {
             final Object o = iter.next();
-            if (o instanceof Identifiable) {
-              nextElement = new ResultInternal((Identifiable) o);
+            if (o instanceof Identifiable identifiable) {
+              nextElement = new ResultInternal(identifiable);
               break;
-            } else if (o instanceof ResultInternal) {
-              nextElement = (ResultInternal) o;
+            } else if (o instanceof ResultInternal internal) {
+              nextElement = internal;
               break;
             } else if (o != null) {
               throw new UnsupportedOperationException();

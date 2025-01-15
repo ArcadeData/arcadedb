@@ -131,10 +131,10 @@ public class DefaultLogger implements Logger {
     //level = Level.SEVERE;
 
     final String requesterName;
-    if (requester instanceof String)
-      requesterName = (String) requester;
-    else if (requester instanceof Class<?>)
-      requesterName = ((Class<?>) requester).getName();
+    if (requester instanceof String string)
+      requesterName = string;
+    else if (requester instanceof Class<?> class1)
+      requesterName = class1.getName();
     else if (requester != null)
       requesterName = requester.getClass().getName();
     else
@@ -165,13 +165,13 @@ public class DefaultLogger implements Logger {
       try {
         String msg = message;
         if (hasParams)
-          msg = String.format(message, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
-              arg15, arg16, arg17);
+          msg = message.formatted(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
+            arg15, arg16, arg17);
 
         System.err.println(msg);
 
       } catch (final Exception e) {
-        System.err.print(String.format("Error on formatting message '%s'. Exception: %s", message, e));
+        System.err.print("Error on formatting message '%s'. Exception: %s".formatted(message, e));
       } finally {
         if (level == Level.SEVERE)
           System.err.flush();
@@ -184,8 +184,8 @@ public class DefaultLogger implements Logger {
 
         String msg = message;
         if (hasParams)
-          msg = String.format(message, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
-              arg15, arg16, arg17);
+          msg = message.formatted(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
+            arg15, arg16, arg17);
 
         if (exception != null)
           log.log(level, msg, exception);
@@ -206,10 +206,10 @@ public class DefaultLogger implements Logger {
       final Object... args) {
     if (message != null) {
       final String requesterName;
-      if (requester instanceof String)
-        requesterName = (String) requester;
-      else if (requester instanceof Class<?>)
-        requesterName = ((Class<?>) requester).getName();
+      if (requester instanceof String string)
+        requesterName = string;
+      else if (requester instanceof Class<?> class1)
+        requesterName = class1.getName();
       else if (requester != null)
         requesterName = requester.getClass().getName();
       else
@@ -234,7 +234,7 @@ public class DefaultLogger implements Logger {
         try {
           String msg = message;
           if (args.length > 0)
-            msg = String.format(message, args);
+            msg = message.formatted(args);
           System.err.println(msg);
 
         } catch (final Exception e) {
@@ -248,7 +248,7 @@ public class DefaultLogger implements Logger {
 
           String msg = message;
           if (args.length > 0)
-            msg = String.format(message, args);
+            msg = message.formatted(args);
 
           if (log.isLoggable(level)) {
             if (exception != null)

@@ -72,8 +72,8 @@ public class ManualIndexBuilder extends IndexBuilder<Index> {
 
         result.set(index);
 
-        if (index instanceof PaginatedComponent)
-          schema.registerFile((PaginatedComponent) index);
+        if (index instanceof PaginatedComponent component)
+          schema.registerFile(component);
 
         schema.indexMap.put(indexName, index);
 

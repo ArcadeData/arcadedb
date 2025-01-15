@@ -118,25 +118,24 @@ public interface Result {
 
   default Object toJson(final Object val) {
     if (val != null) {
-      if (val instanceof Result) {
-        return ((Result) val).toJSON();
-      } else if (val instanceof Record) {
-        return ((Record) val).getIdentity().toString();
-      } else if (val instanceof Iterable) {
+      if (val instanceof Result result) {
+        return result.toJSON();
+      } else if (val instanceof Record record) {
+        return record.getIdentity().toString();
+      } else if (val instanceof Iterable<?> iterable) {
         final JSONArray array = new JSONArray();
-        for (final Object o : (Iterable<?>) val)
+        for (final Object o : iterable)
           array.put(toJson(o));
         return array;
-      } else if (val instanceof Iterator) {
+      } else if (val instanceof Iterator<?> iterator) {
         final JSONArray array = new JSONArray();
-        final Iterator<?> iterator = (Iterator<?>) val;
         while (iterator.hasNext())
           array.put(toJson(iterator.next()));
         return array;
       } else if (val instanceof Map) {
         return new JSONObject((Map<String, Object>) val);
-      } else if (val instanceof byte[]) {
-        return Base64.getEncoder().encodeToString((byte[]) val);
+      } else if (val instanceof byte[] bytes) {
+        return Base64.getEncoder().encodeToString(bytes);
       } else if (val.getClass().isArray()) {
         final JSONArray array = new JSONArray();
         final int length = Array.getLength(val);
@@ -153,8 +152,8 @@ public interface Result {
         final Database database = getDatabase();
         if (database != null)
           return DateUtils.format(val, database.getSchema().getDateTimeFormat());
-      } else if (val instanceof Type)
-        return ((Type) val).name();
+      } else if (val instanceof Type type)
+        return type.name();
     }
 
     return val;

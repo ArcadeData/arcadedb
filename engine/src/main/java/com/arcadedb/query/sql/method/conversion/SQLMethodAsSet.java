@@ -50,8 +50,8 @@ public class SQLMethodAsSet extends AbstractSQLMethod {
 
     if (value instanceof Collection<?>) {
       return new HashSet<>((Collection<Object>) value);
-    } else if (value instanceof Iterable<?>) {
-      value = ((Iterable<?>) value).iterator();
+    } else if (value instanceof Iterable<?> iterable) {
+      value = iterable.iterator();
     }
 
     if (value instanceof Iterator<?>) {

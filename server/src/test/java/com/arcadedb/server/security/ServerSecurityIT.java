@@ -29,7 +29,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
-import java.nio.file.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -49,7 +50,7 @@ public class ServerSecurityIT {
     security.startService();
     security.loadUsers();
 
-    final Path securityConfPath = Paths.get("./target", SecurityUserFileRepository.FILE_NAME);
+    final Path securityConfPath = Path.of("./target", SecurityUserFileRepository.FILE_NAME);
     final File securityConf = securityConfPath.toFile();
 
     assertThat(securityConf.exists()).isTrue();
@@ -65,7 +66,7 @@ public class ServerSecurityIT {
 
   @Test
   void shouldCreateDefaultRootUserAndPersistsSecurityConfigurationFromUserInput() throws IOException {
-    final Path securityConfPath = Paths.get("./target", SecurityUserFileRepository.FILE_NAME);
+    final Path securityConfPath = Path.of("./target", SecurityUserFileRepository.FILE_NAME);
     Files.deleteIfExists(securityConfPath);
 
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);

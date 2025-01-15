@@ -278,10 +278,10 @@ public class MathExpression extends SimpleNode {
           result = null;
         } else if (left instanceof Number && right == null) {
           result = left;
-        } else if (right instanceof Number && left == null) {
-          result = apply(0, this, (Number) right);
-        } else if (left instanceof Number && right instanceof Number) {
-          result = apply((Number) left, this, (Number) right);
+        } else if (right instanceof Number number && left == null) {
+          result = apply(0, this, number);
+        } else if (left instanceof Number number && right instanceof Number number1) {
+          result = apply(number, this, number1);
         } else if (DateUtils.isDate(left) || DateUtils.isDate(right)) {
           final ChronoUnit highestPrecision = DateUtils.getHigherPrecision(left, right);
           final Long leftAsLong = DateUtils.dateTimeToTimestamp(left, highestPrecision);
@@ -491,15 +491,15 @@ public class MathExpression extends SimpleNode {
         if (left == null && right == null) {
           return null;
         }
-        if (left instanceof Number && right == null) {
-          return apply((Number) left, this, 0);
+        if (left instanceof Number number && right == null) {
+          return apply(number, this, 0);
         }
-        if (right instanceof Number && left == null) {
-          return apply(0, this, (Number) right);
+        if (right instanceof Number number && left == null) {
+          return apply(0, this, number);
         }
 
-        if (left instanceof Number && right instanceof Number) {
-          return apply((Number) left, this, (Number) right);
+        if (left instanceof Number number && right instanceof Number number1) {
+          return apply(number, this, number1);
         }
 
         return null;
@@ -595,8 +595,8 @@ public class MathExpression extends SimpleNode {
       if (right == null)
         return left;
 
-      if (left instanceof Number && right instanceof Number)
-        return apply((Number) left, this, (Number) right);
+      if (left instanceof Number number && right instanceof Number number1)
+        return apply(number, this, number1);
 
       return null;
     }
@@ -614,8 +614,8 @@ public class MathExpression extends SimpleNode {
           return operation.apply(a.floatValue(), b.floatValue());
         else if (b instanceof Double)
           return operation.apply(a.doubleValue(), b.doubleValue());
-        else if (b instanceof BigDecimal)
-          return operation.apply(new BigDecimal((Integer) a), (BigDecimal) b);
+        else if (b instanceof BigDecimal decimal)
+          return operation.apply(new BigDecimal((Integer) a), decimal);
       } else if (a instanceof Long) {
         if (b instanceof Integer || b instanceof Long || b instanceof Short)
           return operation.apply(a.longValue(), b.longValue());
@@ -623,35 +623,35 @@ public class MathExpression extends SimpleNode {
           return operation.apply(a.floatValue(), b.floatValue());
         else if (b instanceof Double)
           return operation.apply(a.doubleValue(), b.doubleValue());
-        else if (b instanceof BigDecimal)
-          return operation.apply(new BigDecimal((Long) a), (BigDecimal) b);
+        else if (b instanceof BigDecimal decimal)
+          return operation.apply(new BigDecimal((Long) a), decimal);
       } else if (a instanceof Float) {
         if (b instanceof Short || b instanceof Integer || b instanceof Long || b instanceof Float)
           return operation.apply(a.floatValue(), b.floatValue());
         else if (b instanceof Double)
           return operation.apply(a.doubleValue(), b.doubleValue());
-        else if (b instanceof BigDecimal)
-          return operation.apply(BigDecimal.valueOf((Float) a), (BigDecimal) b);
+        else if (b instanceof BigDecimal decimal)
+          return operation.apply(BigDecimal.valueOf((Float) a), decimal);
 
       } else if (a instanceof Double) {
         if (b instanceof Short || b instanceof Integer || b instanceof Long || b instanceof Float || b instanceof Double)
           return operation.apply(a.doubleValue(), b.doubleValue());
-        else if (b instanceof BigDecimal)
-          return operation.apply(BigDecimal.valueOf((Double) a), (BigDecimal) b);
+        else if (b instanceof BigDecimal decimal)
+          return operation.apply(BigDecimal.valueOf((Double) a), decimal);
 
       } else if (a instanceof BigDecimal) {
-        if (b instanceof Integer)
-          return operation.apply((BigDecimal) a, new BigDecimal((Integer) b));
-        else if (b instanceof Long)
-          return operation.apply((BigDecimal) a, new BigDecimal((Long) b));
-        else if (b instanceof Short)
-          return operation.apply((BigDecimal) a, new BigDecimal((Short) b));
-        else if (b instanceof Float)
-          return operation.apply((BigDecimal) a, BigDecimal.valueOf((Float) b));
-        else if (b instanceof Double)
-          return operation.apply((BigDecimal) a, BigDecimal.valueOf((Double) b));
-        else if (b instanceof BigDecimal)
-          return operation.apply((BigDecimal) a, (BigDecimal) b);
+        if (b instanceof Integer integer)
+          return operation.apply((BigDecimal) a, new BigDecimal(integer));
+        else if (b instanceof Long long1)
+          return operation.apply((BigDecimal) a, new BigDecimal(long1));
+        else if (b instanceof Short short1)
+          return operation.apply((BigDecimal) a, new BigDecimal(short1));
+        else if (b instanceof Float float1)
+          return operation.apply((BigDecimal) a, BigDecimal.valueOf(float1));
+        else if (b instanceof Double double1)
+          return operation.apply((BigDecimal) a, BigDecimal.valueOf(double1));
+        else if (b instanceof BigDecimal decimal)
+          return operation.apply((BigDecimal) a, decimal);
       }
 
       throw new IllegalArgumentException(
@@ -990,15 +990,14 @@ public class MathExpression extends SimpleNode {
           result.operators.add(operators.get(i - 1));
 
         final SimpleNode splitResult = expr.splitForAggregation(aggregateProj, context);
-        if (splitResult instanceof MathExpression) {
-          final MathExpression res = (MathExpression) splitResult;
+        if (splitResult instanceof MathExpression res) {
           if (res.isEarlyCalculated(context) || res.isAggregate(context)) {
             result.childExpressions.add(res);
           } else {
             throw new CommandExecutionException("Cannot mix aggregate and single record attribute values in the same projection");
           }
-        } else if (splitResult instanceof Expression) {
-          result.childExpressions.add(((Expression) splitResult).mathExpression);//this comes from a splitted aggregate function
+        } else if (splitResult instanceof Expression expression) {
+          result.childExpressions.add(expression.mathExpression);//this comes from a splitted aggregate function
         }
         i++;
       }

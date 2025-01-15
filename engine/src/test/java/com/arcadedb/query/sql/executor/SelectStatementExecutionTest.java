@@ -2971,9 +2971,9 @@ public class SelectStatementExecutionTest extends TestHelper {
       if (names == null) {
         fail("");
       }
-      if (names instanceof Collection) {
-        assertThat(((Collection) names).size()).isEqualTo(3);
-        final Iterator iter = ((Collection) names).iterator();
+      if (names instanceof Collection collection) {
+        assertThat(collection.size()).isEqualTo(3);
+        final Iterator iter = collection.iterator();
         assertThat(iter.next()).isEqualTo("a");
         assertThat(iter.next()).isEqualTo("b");
         assertThat(iter.next()).isEqualTo("c");
@@ -3008,9 +3008,9 @@ public class SelectStatementExecutionTest extends TestHelper {
       if (names == null) {
         fail("");
       }
-      if (names instanceof Collection) {
-        assertThat(((Collection) names).size()).isEqualTo(3);
-        final Iterator iter = ((Collection) names).iterator();
+      if (names instanceof Collection collection) {
+        assertThat(collection.size()).isEqualTo(3);
+        final Iterator iter = collection.iterator();
         assertThat(iter.next()).isEqualTo("a");
         assertThat(iter.next()).isEqualTo("b");
         assertThat(iter.next()).isEqualTo("c");
@@ -3048,9 +3048,9 @@ public class SelectStatementExecutionTest extends TestHelper {
       if (names == null) {
         fail("");
       }
-      if (names instanceof Collection) {
-        assertThat(((Collection) names).size()).isEqualTo(3);
-        final Iterator iter = ((Collection) names).iterator();
+      if (names instanceof Collection collection) {
+        assertThat(collection.size()).isEqualTo(3);
+        final Iterator iter = collection.iterator();
         assertThat(iter.next()).isEqualTo("a");
         assertThat(iter.next()).isEqualTo("b");
         assertThat(iter.next()).isEqualTo("c");
@@ -3085,9 +3085,9 @@ public class SelectStatementExecutionTest extends TestHelper {
       if (names == null) {
         fail("");
       }
-      if (names instanceof Collection) {
-        assertThat(((Collection) names).size()).isEqualTo(3);
-        final Iterator iter = ((Collection) names).iterator();
+      if (names instanceof Collection collection) {
+        assertThat(collection.size()).isEqualTo(3);
+        final Iterator iter = collection.iterator();
         assertThat(iter.next()).isEqualTo("a");
         assertThat(iter.next()).isEqualTo("b");
         assertThat(iter.next()).isEqualTo("c");

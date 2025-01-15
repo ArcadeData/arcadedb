@@ -50,11 +50,10 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
 
     if (iParams.length == 0 || iParams[0] == null)
       date = LocalDateTime.now();
-    else if (iParams[0] instanceof Number)
-      date = DateUtils.millisToLocalDateTime(((Number) iParams[0]).longValue(), null);
-    else if (iParams[0] instanceof String) {
+    else if (iParams[0] instanceof Number number)
+      date = DateUtils.millisToLocalDateTime(number.longValue(), null);
+    else if (iParams[0] instanceof String dateAsString) {
       try {
-        final String dateAsString = (String) iParams[0];
         final String format;
 
         if (iParams.length > 1)

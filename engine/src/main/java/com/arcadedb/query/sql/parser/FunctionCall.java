@@ -91,9 +91,9 @@ public class FunctionCall extends SimpleNode {
     Object record;
     if (targetObjects instanceof Identifiable) {
       record = targetObjects;
-    } else if (targetObjects instanceof Result) {
-      if (((Result) targetObjects).isElement())
-        record = ((Result) targetObjects).toElement();
+    } else if (targetObjects instanceof Result result) {
+      if (result.isElement())
+        record = result.toElement();
       else
         record = targetObjects;
     } else {
@@ -105,18 +105,18 @@ public class FunctionCall extends SimpleNode {
       if (current != null) {
         if (current instanceof Identifiable) {
           record = current;
-        } else if (current instanceof Result) {
-          record = ((Result) current).toElement();
+        } else if (current instanceof Result result) {
+          record = result.toElement();
         } else {
           record = current;
         }
       }
     }
     for (final Expression expr : this.params) {
-      if (record instanceof Identifiable) {
-        paramValues.add(expr.execute((Identifiable) record, context));
-      } else if (record instanceof Result) {
-        paramValues.add(expr.execute((Result) record, context));
+      if (record instanceof Identifiable identifiable) {
+        paramValues.add(expr.execute(identifiable, context));
+      } else if (record instanceof Result result) {
+        paramValues.add(expr.execute(result, context));
       } else if (record == null) {
         paramValues.add(expr.execute((Result) record, context));
       } else {
@@ -126,10 +126,10 @@ public class FunctionCall extends SimpleNode {
 
     final SQLFunction function = ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getFunction(name);
     if (function != null) {
-      if (record instanceof Identifiable) {
-        return function.execute(targetObjects, (Identifiable) record, null, paramValues.toArray(), context);
-      } else if (record instanceof Result) {
-        return function.execute(targetObjects, ((Result) record).getElement().orElse(null), null, paramValues.toArray(), context);
+      if (record instanceof Identifiable identifiable) {
+        return function.execute(targetObjects, identifiable, null, paramValues.toArray(), context);
+      } else if (record instanceof Result result) {
+        return function.execute(targetObjects, result.getElement().orElse(null), null, paramValues.toArray(), context);
       } else if (record == null) {
         return function.execute(targetObjects, null, null, paramValues.toArray(), context);
       } else {
@@ -158,8 +158,8 @@ public class FunctionCall extends SimpleNode {
   public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
       final Object rightValue) {
     final SQLFunction function = getFunction(context);
-    if (function instanceof IndexableSQLFunction)
-      return ((IndexableSQLFunction) function).searchFromTarget(target, operator, rightValue, context, this.getParams().toArray(new Expression[] {}));
+    if (function instanceof IndexableSQLFunction lFunction)
+      return lFunction.searchFromTarget(target, operator, rightValue, context, this.getParams().toArray(new Expression[] {}));
 
     return null;
   }
@@ -174,8 +174,8 @@ public class FunctionCall extends SimpleNode {
    */
   public long estimateIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object rightValue) {
     final SQLFunction function = getFunction(context);
-    if (function instanceof IndexableSQLFunction)
-      return ((IndexableSQLFunction) function).estimate(target, operator, rightValue, context, this.getParams().toArray(new Expression[] {}));
+    if (function instanceof IndexableSQLFunction lFunction)
+      return lFunction.estimate(target, operator, rightValue, context, this.getParams().toArray(new Expression[] {}));
 
     return -1;
   }
@@ -194,8 +194,8 @@ public class FunctionCall extends SimpleNode {
   public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
       final Object right) {
     final SQLFunction function = getCachedFunction(context);
-    if (function instanceof IndexableSQLFunction)
-      return ((IndexableSQLFunction) function).canExecuteInline(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
+    if (function instanceof IndexableSQLFunction lFunction)
+      return lFunction.canExecuteInline(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
 
     return false;
   }
@@ -213,8 +213,8 @@ public class FunctionCall extends SimpleNode {
   public boolean allowsIndexedFunctionExecutionOnTarget(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
       final Object right) {
     final SQLFunction function = getCachedFunction(context);
-    if (function instanceof IndexableSQLFunction)
-      return ((IndexableSQLFunction) function).allowsIndexedExecution(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
+    if (function instanceof IndexableSQLFunction lFunction)
+      return lFunction.allowsIndexedExecution(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
 
     return false;
   }
@@ -232,8 +232,8 @@ public class FunctionCall extends SimpleNode {
   public boolean executeIndexedFunctionAfterIndexSearch(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
       final Object right) {
     final SQLFunction function = getFunction(context);
-    if (function instanceof IndexableSQLFunction)
-      return ((IndexableSQLFunction) function).shouldExecuteAfterSearch(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
+    if (function instanceof IndexableSQLFunction lFunction)
+      return lFunction.shouldExecuteAfterSearch(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
 
     return false;
   }

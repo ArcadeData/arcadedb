@@ -68,10 +68,10 @@ public class RightBinaryCondition extends SimpleNode {
     final Iterator iterator;
     if (elementToFilter instanceof Identifiable) {
       iterator = Collections.singleton(elementToFilter).iterator();
-    } else if (elementToFilter instanceof Iterable) {
-      iterator = ((Iterable) elementToFilter).iterator();
-    } else if (elementToFilter instanceof Iterator) {
-      iterator = (Iterator) elementToFilter;
+    } else if (elementToFilter instanceof Iterable iterable) {
+      iterator = iterable.iterator();
+    } else if (elementToFilter instanceof Iterator iterator1) {
+      iterator = iterator1;
     } else {
       iterator = Collections.singleton(elementToFilter).iterator();
     }
@@ -93,10 +93,10 @@ public class RightBinaryCondition extends SimpleNode {
     final Iterator iterator;
     if (elementToFilter instanceof Identifiable) {
       iterator = Collections.singleton(elementToFilter).iterator();
-    } else if (elementToFilter instanceof Iterable) {
-      iterator = ((Iterable) elementToFilter).iterator();
-    } else if (elementToFilter instanceof Iterator) {
-      iterator = (Iterator) elementToFilter;
+    } else if (elementToFilter instanceof Iterable iterable) {
+      iterator = iterable.iterator();
+    } else if (elementToFilter instanceof Iterator iterator1) {
+      iterator = iterator1;
     } else {
       iterator = Collections.singleton(elementToFilter).iterator();
     }

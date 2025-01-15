@@ -56,14 +56,14 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
     if (databaseDirectory.exists()) {
       if (!settings.overwriteDestination)
         throw new RestoreException(
-            String.format("The database directory '%s' already exist and '-o' setting is false", settings.databaseDirectory));
+          "The database directory '%s' already exist and '-o' setting is false".formatted(settings.databaseDirectory));
 
       FileUtils.deleteRecursively(databaseDirectory);
     }
 
     if (!databaseDirectory.mkdirs())
       throw new RestoreException(
-          String.format("Error on restoring database: the database directory '%s' cannot be created", settings.databaseDirectory));
+        "Error on restoring database: the database directory '%s' cannot be created".formatted(settings.databaseDirectory));
 
     logger.logLine(0, "Executing full restore of database from file '%s' to '%s'...", settings.inputFileURL,
         settings.databaseDirectory);
@@ -137,8 +137,8 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
     final File file = new File(path);
     if (!file.exists())
-      throw new RestoreException(String.format("The backup file '%s' does not exist (local path=%s)",//
-          settings.inputFileURL, new File(".").getAbsolutePath()));
+      throw new RestoreException("The backup file '%s' does not exist (local path=%s)".formatted(//
+        settings.inputFileURL, new File(".").getAbsolutePath()));
 
     return new RestoreInputSource(new FileInputStream(file), file.length());
   }

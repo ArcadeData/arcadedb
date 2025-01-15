@@ -52,8 +52,8 @@ public class IndexSearchDescriptor {
     final int size = keyCondition.getSubBlocks().size();
     boolean range = false;
     final BooleanExpression lastOp = keyCondition.getSubBlocks().get(keyCondition.getSubBlocks().size() - 1);
-    if (lastOp instanceof BinaryCondition) {
-      final BinaryCompareOperator op = ((BinaryCondition) lastOp).getOperator();
+    if (lastOp instanceof BinaryCondition condition) {
+      final BinaryCompareOperator op = condition.getOperator();
       range = op.isRangeOperator();
     }
 

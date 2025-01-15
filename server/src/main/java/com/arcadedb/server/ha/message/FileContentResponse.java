@@ -85,8 +85,7 @@ public class FileContentResponse extends HAAbstractCommand {
       if (totalPages == 0)
         return null;
 
-      if (file instanceof PaginatedComponentFile) {
-        final PaginatedComponentFile pFile = (PaginatedComponentFile) file;
+      if (file instanceof PaginatedComponentFile pFile) {
         final int pageSize = pFile.getPageSize();
 
         if (pagesContent.size() != totalPages * pageSize) {
@@ -119,9 +118,9 @@ public class FileContentResponse extends HAAbstractCommand {
                     .getFile(file.getFileId())).getPageSize());
           }
 
-          if (component instanceof LocalBucket)
+          if (component instanceof LocalBucket bucket)
             // RESET CACHED RECORD COUNT
-            ((LocalBucket) component).setCachedRecordCount(-1);
+            bucket.setCachedRecordCount(-1);
         }
       } else
         LogManager.instance().log(this, Level.SEVERE, "Cannot write not paginated file %s from the leader", fileName);

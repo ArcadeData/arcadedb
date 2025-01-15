@@ -318,43 +318,43 @@ public enum Type {
     try {
       if (targetClass.equals(String.class))
         return value.toString();
-      else if (value instanceof Binary && targetClass.isAssignableFrom(byte[].class))
-        return ((Binary) value).toByteArray();
+      else if (value instanceof Binary binary && targetClass.isAssignableFrom(byte[].class))
+        return binary.toByteArray();
       else if (byte[].class.isAssignableFrom(valueClass)) {
         return value;
       } else if (targetClass.isEnum()) {
-        if (value instanceof Number)
-          return ((Class<Enum>) targetClass).getEnumConstants()[((Number) value).intValue()];
+        if (value instanceof Number number)
+          return ((Class<Enum>) targetClass).getEnumConstants()[number.intValue()];
         return Enum.valueOf((Class<Enum>) targetClass, value.toString());
       } else if (targetClass.equals(Byte.TYPE) || targetClass.equals(Byte.class)) {
         if (value instanceof Byte)
           return value;
-        else if (value instanceof String)
-          return Byte.parseByte((String) value);
+        else if (value instanceof String string)
+          return Byte.parseByte(string);
         else
           return ((Number) value).byteValue();
 
       } else if (targetClass.equals(Short.TYPE) || targetClass.equals(Short.class)) {
         if (value instanceof Short)
           return value;
-        else if (value instanceof String)
-          return ((String) value).isEmpty() ? 0 : Short.parseShort((String) value);
+        else if (value instanceof String string)
+          return string.isEmpty() ? 0 : Short.parseShort(string);
         else
           return ((Number) value).shortValue();
 
       } else if (targetClass.equals(Integer.TYPE) || targetClass.equals(Integer.class)) {
         if (value instanceof Integer)
           return value;
-        else if (value instanceof String)
-          return ((String) value).isEmpty() ? 0 : Integer.parseInt((String) value);
+        else if (value instanceof String string)
+          return string.isEmpty() ? 0 : Integer.parseInt(string);
         else
           return ((Number) value).intValue();
 
       } else if (targetClass.equals(Long.TYPE) || targetClass.equals(Long.class)) {
         if (value instanceof Long)
           return value;
-        else if (value instanceof String)
-          return ((String) value).isEmpty() ? 0L : Long.parseLong((String) value);
+        else if (value instanceof String string)
+          return string.isEmpty() ? 0L : Long.parseLong(string);
         else if (DateUtils.isDate(value))
           return DateUtils.dateTimeToTimestamp(value, ChronoUnit.MILLIS);
         else
@@ -363,22 +363,22 @@ public enum Type {
       } else if (targetClass.equals(Float.TYPE) || targetClass.equals(Float.class)) {
         if (value instanceof Float)
           return value;
-        else if (value instanceof String)
-          return ((String) value).isEmpty() ? 0f : Float.parseFloat((String) value);
+        else if (value instanceof String string)
+          return string.isEmpty() ? 0f : Float.parseFloat(string);
         else
           return ((Number) value).floatValue();
 
       } else if (targetClass.equals(BigDecimal.class)) {
-        if (value instanceof String)
-          return new BigDecimal((String) value);
+        if (value instanceof String string)
+          return new BigDecimal(string);
         else if (value instanceof Number)
           return new BigDecimal(value.toString());
 
       } else if (targetClass.equals(Double.TYPE) || targetClass.equals(Double.class)) {
         if (value instanceof Double)
           return value;
-        else if (value instanceof String)
-          return ((String) value).isEmpty() ? 0d : Double.parseDouble((String) value);
+        else if (value instanceof String string)
+          return string.isEmpty() ? 0d : Double.parseDouble(string);
         else if (value instanceof Float)
           // THIS IS NECESSARY DUE TO A BUG/STRANGE BEHAVIOR OF JAVA BY LOSING PRECISION
           return Double.parseDouble(value.toString());
@@ -388,21 +388,21 @@ public enum Type {
       } else if (targetClass.equals(Boolean.TYPE) || targetClass.equals(Boolean.class)) {
         if (value instanceof Boolean)
           return value;
-        else if (value instanceof String) {
-          if (((String) value).equalsIgnoreCase("true"))
+        else if (value instanceof String string) {
+          if (string.equalsIgnoreCase("true"))
             return Boolean.TRUE;
-          else if (((String) value).equalsIgnoreCase("false"))
+          else if (string.equalsIgnoreCase("false"))
             return Boolean.FALSE;
           throw new IllegalArgumentException("Value is not boolean. Expected true or false but received '" + value + "'");
-        } else if (value instanceof Number)
-          return ((Number) value).intValue() != 0;
+        } else if (value instanceof Number number)
+          return number.intValue() != 0;
 
       } else if (Set.class.isAssignableFrom(targetClass)) {
         // The caller specifically wants a Set.  If the value is a collection
         // we will add all of the items in the collection to a set.  Otherwise
         // we will create a singleton set with only the value in it.
-        if (value instanceof Collection<?>) {
-          final Set<Object> set = new HashSet<Object>((Collection<?>) value);
+        if (value instanceof Collection<?> collection) {
+          final Set<Object> set = new HashSet<Object>(collection);
           return set;
         } else {
           return Collections.singleton(value);
@@ -412,8 +412,8 @@ public enum Type {
         // The caller specifically wants a List.  If the value is a collection
         // we will add all of the items in the collection to a List.  Otherwise
         // we will create a singleton List with only the value in it.
-        if (value instanceof Collection<?>) {
-          final List<Object> list = new ArrayList<Object>((Collection<?>) value);
+        if (value instanceof Collection<?> collection) {
+          final List<Object> list = new ArrayList<Object>(collection);
           return list;
         } else {
           return Collections.singletonList(value);
@@ -423,8 +423,8 @@ public enum Type {
         // The caller specifically wants a Collection of any type.
         // we will return a list if the value is a collection or
         // a singleton set if the value is not a collection.
-        if (value instanceof Collection<?>) {
-          final List<Object> set = new ArrayList<Object>((Collection<?>) value);
+        if (value instanceof Collection<?> collection) {
+          final List<Object> set = new ArrayList<Object>(collection);
           return set;
         } else {
           return Collections.singleton(value);
@@ -437,16 +437,15 @@ public enum Type {
         cal.setTime(convertToDate(database, value));
         return cal;
       } else if (targetClass.equals(LocalDate.class)) {
-        if (value instanceof LocalDateTime)
-          return ((LocalDateTime) value).toLocalDate();
-        else if (value instanceof Number)
-          return DateUtils.date(database, ((Number) value).longValue(), LocalDate.class);
-        else if (value instanceof Date)
-          return DateUtils.date(database, ((Date) value).getTime() / DateUtils.MS_IN_A_DAY, LocalDate.class);
-        else if (value instanceof Calendar)
-          return DateUtils.date(database, ((Calendar) value).getTimeInMillis() / DateUtils.MS_IN_A_DAY, LocalDate.class);
-        else if (value instanceof String) {
-          final String valueAsString = (String) value;
+        if (value instanceof LocalDateTime time)
+          return time.toLocalDate();
+        else if (value instanceof Number number)
+          return DateUtils.date(database, number.longValue(), LocalDate.class);
+        else if (value instanceof Date date)
+          return DateUtils.date(database, date.getTime() / DateUtils.MS_IN_A_DAY, LocalDate.class);
+        else if (value instanceof Calendar calendar)
+          return DateUtils.date(database, calendar.getTimeInMillis() / DateUtils.MS_IN_A_DAY, LocalDate.class);
+        else if (value instanceof String valueAsString) {
           if (FileUtils.isLong(valueAsString))
             return DateUtils.date(database, Long.parseLong(value.toString()), LocalDate.class);
           else if (database != null)
@@ -462,19 +461,18 @@ public enum Type {
           }
         }
       } else if (targetClass.equals(LocalDateTime.class)) {
-        if (value instanceof LocalDateTime) {
+        if (value instanceof LocalDateTime time) {
           if (property != null)
-            return ((LocalDateTime) value).truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
-        } else if (value instanceof Number) {
-          return DateUtils.date(database, ((Number) value).longValue(), LocalDateTime.class);
-        } else if (value instanceof Date)
-          return DateUtils.dateTime(database, ((Date) value).getTime(), ChronoUnit.MILLIS, LocalDateTime.class,
+            return time.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+        } else if (value instanceof Number number) {
+          return DateUtils.date(database, number.longValue(), LocalDateTime.class);
+        } else if (value instanceof Date date)
+          return DateUtils.dateTime(database, date.getTime(), ChronoUnit.MILLIS, LocalDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
-        else if (value instanceof Calendar)
-          return DateUtils.dateTime(database, ((Calendar) value).getTimeInMillis(), ChronoUnit.MILLIS, LocalDateTime.class,
+        else if (value instanceof Calendar calendar)
+          return DateUtils.dateTime(database, calendar.getTimeInMillis(), ChronoUnit.MILLIS, LocalDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
-        else if (value instanceof String) {
-          final String valueAsString = (String) value;
+        else if (value instanceof String valueAsString) {
           if (!FileUtils.isLong(valueAsString)) {
             if (database != null)
               try {
@@ -499,17 +497,16 @@ public enum Type {
           }
         }
       } else if (targetClass.equals(ZonedDateTime.class)) {
-        if (value instanceof ZonedDateTime) {
+        if (value instanceof ZonedDateTime time) {
           if (property != null)
-            return ((ZonedDateTime) value).truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
-        } else if (value instanceof Date)
-          return DateUtils.dateTime(database, ((Date) value).getTime(), ChronoUnit.MILLIS, LocalDateTime.class,
+            return time.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+        } else if (value instanceof Date date)
+          return DateUtils.dateTime(database, date.getTime(), ChronoUnit.MILLIS, LocalDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
-        else if (value instanceof Calendar)
-          return DateUtils.dateTime(database, ((Calendar) value).getTimeInMillis(), ChronoUnit.MILLIS, ZonedDateTime.class,
+        else if (value instanceof Calendar calendar)
+          return DateUtils.dateTime(database, calendar.getTimeInMillis(), ChronoUnit.MILLIS, ZonedDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
-        if (value instanceof String) {
-          final String valueAsString = (String) value;
+        if (value instanceof String valueAsString) {
           if (!FileUtils.isLong(valueAsString)) {
             if (database != null)
               try {
@@ -529,21 +526,21 @@ public enum Type {
           }
         }
       } else if (targetClass.equals(Instant.class)) {
-        if (value instanceof Instant) {
+        if (value instanceof Instant instant) {
           if (property != null)
-            return ((Instant) value).truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
-        } else if (value instanceof Date)
-          return DateUtils.dateTime(database, ((Date) value).getTime(), ChronoUnit.MILLIS, LocalDateTime.class,
+            return instant.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+        } else if (value instanceof Date date)
+          return DateUtils.dateTime(database, date.getTime(), ChronoUnit.MILLIS, LocalDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
-        else if (value instanceof Calendar)
-          return DateUtils.dateTime(database, ((Calendar) value).getTimeInMillis(), ChronoUnit.MILLIS, Instant.class,
+        else if (value instanceof Calendar calendar)
+          return DateUtils.dateTime(database, calendar.getTimeInMillis(), ChronoUnit.MILLIS, Instant.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
       } else if (targetClass.equals(Identifiable.class) || targetClass.equals(RID.class)) {
         if (MultiValue.isMultiValue(value)) {
           final List<Identifiable> result = new ArrayList<>();
           for (final Object o : MultiValue.getMultiValueIterable(value)) {
-            if (o instanceof Identifiable) {
-              result.add((Identifiable) o);
+            if (o instanceof Identifiable identifiable) {
+              result.add(identifiable);
             } else if (o instanceof String) {
               try {
                 result.add(new RID(database, value.toString()));
@@ -554,9 +551,9 @@ public enum Type {
             }
           }
           return result;
-        } else if (value instanceof String) {
+        } else if (value instanceof String string) {
           try {
-            return new RID(database, (String) value);
+            return new RID(database, string);
           } catch (final Exception e) {
             LogManager.instance()
                 .log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
@@ -597,8 +594,8 @@ public enum Type {
         return Float.valueOf(a.intValue() + b.floatValue());
       else if (b instanceof Double)
         return Double.valueOf(a.intValue() + b.doubleValue());
-      else if (b instanceof BigDecimal)
-        return new BigDecimal(a.intValue()).add((BigDecimal) b);
+      else if (b instanceof BigDecimal decimal)
+        return new BigDecimal(a.intValue()).add(decimal);
 
     } else if (a instanceof Long) {
       if (b instanceof Integer)
@@ -611,8 +608,8 @@ public enum Type {
         return Float.valueOf(a.longValue() + b.floatValue());
       else if (b instanceof Double)
         return Double.valueOf(a.longValue() + b.doubleValue());
-      else if (b instanceof BigDecimal)
-        return new BigDecimal(a.longValue()).add((BigDecimal) b);
+      else if (b instanceof BigDecimal decimal)
+        return new BigDecimal(a.longValue()).add(decimal);
 
     } else if (a instanceof Short) {
       if (b instanceof Integer) {
@@ -633,8 +630,8 @@ public enum Type {
         return Float.valueOf(a.shortValue() + b.floatValue());
       else if (b instanceof Double)
         return Double.valueOf(a.shortValue() + b.doubleValue());
-      else if (b instanceof BigDecimal)
-        return new BigDecimal(a.shortValue()).add((BigDecimal) b);
+      else if (b instanceof BigDecimal decimal)
+        return new BigDecimal(a.shortValue()).add(decimal);
 
     } else if (a instanceof Float) {
       if (b instanceof Integer)
@@ -647,8 +644,8 @@ public enum Type {
         return Float.valueOf(a.floatValue() + b.floatValue());
       else if (b instanceof Double)
         return Double.valueOf(a.floatValue() + b.doubleValue());
-      else if (b instanceof BigDecimal)
-        return BigDecimal.valueOf(a.floatValue()).add((BigDecimal) b);
+      else if (b instanceof BigDecimal decimal)
+        return BigDecimal.valueOf(a.floatValue()).add(decimal);
 
     } else if (a instanceof Double) {
       if (b instanceof Integer)
@@ -661,8 +658,8 @@ public enum Type {
         return Double.valueOf(a.doubleValue() + b.floatValue());
       else if (b instanceof Double)
         return Double.valueOf(a.doubleValue() + b.doubleValue());
-      else if (b instanceof BigDecimal)
-        return BigDecimal.valueOf(a.doubleValue()).add((BigDecimal) b);
+      else if (b instanceof BigDecimal decimal)
+        return BigDecimal.valueOf(a.doubleValue()).add(decimal);
 
     } else if (a instanceof BigDecimal) {
       if (b instanceof Integer)
@@ -675,8 +672,8 @@ public enum Type {
         return ((BigDecimal) a).add(BigDecimal.valueOf(b.floatValue()));
       else if (b instanceof Double)
         return ((BigDecimal) a).add(BigDecimal.valueOf(b.doubleValue()));
-      else if (b instanceof BigDecimal)
-        return ((BigDecimal) a).add((BigDecimal) b);
+      else if (b instanceof BigDecimal decimal)
+        return ((BigDecimal) a).add(decimal);
 
     }
 
@@ -707,8 +704,8 @@ public enum Type {
         return Float.valueOf(a.intValue() - b.floatValue());
       else if (b instanceof Double)
         return Double.valueOf(a.intValue() - b.doubleValue());
-      else if (b instanceof BigDecimal)
-        return new BigDecimal(a.intValue()).subtract((BigDecimal) b);
+      else if (b instanceof BigDecimal decimal)
+        return new BigDecimal(a.intValue()).subtract(decimal);
 
     } else if (a instanceof Long) {
       if (b instanceof Integer)
@@ -721,8 +718,8 @@ public enum Type {
         return Float.valueOf(a.longValue() - b.floatValue());
       else if (b instanceof Double)
         return Double.valueOf(a.longValue() - b.doubleValue());
-      else if (b instanceof BigDecimal)
-        return new BigDecimal(a.longValue()).subtract((BigDecimal) b);
+      else if (b instanceof BigDecimal decimal)
+        return new BigDecimal(a.longValue()).subtract(decimal);
 
     } else if (a instanceof Short) {
       if (b instanceof Integer) {
@@ -743,8 +740,8 @@ public enum Type {
         return Float.valueOf(a.shortValue() - b.floatValue());
       else if (b instanceof Double)
         return Double.valueOf(a.shortValue() - b.doubleValue());
-      else if (b instanceof BigDecimal)
-        return new BigDecimal(a.shortValue()).subtract((BigDecimal) b);
+      else if (b instanceof BigDecimal decimal)
+        return new BigDecimal(a.shortValue()).subtract(decimal);
 
     } else if (a instanceof Float) {
       if (b instanceof Integer)
@@ -757,8 +754,8 @@ public enum Type {
         return Float.valueOf(a.floatValue() - b.floatValue());
       else if (b instanceof Double)
         return Double.valueOf(a.floatValue() - b.doubleValue());
-      else if (b instanceof BigDecimal)
-        return BigDecimal.valueOf(a.floatValue()).subtract((BigDecimal) b);
+      else if (b instanceof BigDecimal decimal)
+        return BigDecimal.valueOf(a.floatValue()).subtract(decimal);
 
     } else if (a instanceof Double) {
       if (b instanceof Integer)
@@ -771,8 +768,8 @@ public enum Type {
         return Double.valueOf(a.doubleValue() - b.floatValue());
       else if (b instanceof Double)
         return Double.valueOf(a.doubleValue() - b.doubleValue());
-      else if (b instanceof BigDecimal)
-        return BigDecimal.valueOf(a.doubleValue()).subtract((BigDecimal) b);
+      else if (b instanceof BigDecimal decimal)
+        return BigDecimal.valueOf(a.doubleValue()).subtract(decimal);
 
     } else if (a instanceof BigDecimal) {
       if (b instanceof Integer)
@@ -785,8 +782,8 @@ public enum Type {
         return ((BigDecimal) a).subtract(BigDecimal.valueOf(b.floatValue()));
       else if (b instanceof Double)
         return ((BigDecimal) a).subtract(BigDecimal.valueOf(b.doubleValue()));
-      else if (b instanceof BigDecimal)
-        return ((BigDecimal) a).subtract((BigDecimal) b);
+      else if (b instanceof BigDecimal decimal)
+        return ((BigDecimal) a).subtract(decimal);
 
     }
 
@@ -856,16 +853,16 @@ public enum Type {
 
     } else if (left instanceof BigDecimal) {
       // DOUBLE
-      if (right instanceof Integer)
-        right = new BigDecimal((Integer) right);
-      else if (right instanceof Float)
-        right = BigDecimal.valueOf((Float) right);
-      else if (right instanceof Double)
-        right = BigDecimal.valueOf((Double) right);
-      else if (right instanceof Short)
-        right = new BigDecimal((Short) right);
-      else if (right instanceof Byte)
-        right = new BigDecimal((Byte) right);
+      if (right instanceof Integer integer)
+        right = new BigDecimal(integer);
+      else if (right instanceof Float float1)
+        right = BigDecimal.valueOf(float1);
+      else if (right instanceof Double double1)
+        right = BigDecimal.valueOf(double1);
+      else if (right instanceof Short short1)
+        right = new BigDecimal(short1);
+      else if (right instanceof Byte byte1)
+        right = new BigDecimal(byte1);
     } else if (left instanceof Byte) {
       if (right instanceof Short)
         left = left.shortValue();
@@ -892,12 +889,12 @@ public enum Type {
    * @return The integer value if the conversion succeed, otherwise the IllegalArgumentException exception
    */
   public int asInt(final Object iValue) {
-    if (iValue instanceof Number)
-      return ((Number) iValue).intValue();
-    else if (iValue instanceof String)
-      return Integer.parseInt((String) iValue);
-    else if (iValue instanceof Boolean)
-      return ((Boolean) iValue) ? 1 : 0;
+    if (iValue instanceof Number number)
+      return number.intValue();
+    else if (iValue instanceof String string)
+      return Integer.parseInt(string);
+    else if (iValue instanceof Boolean boolean1)
+      return boolean1 ? 1 : 0;
 
     throw new IllegalArgumentException("Cannot convert value " + iValue + " to int for type: " + name);
   }
@@ -910,12 +907,12 @@ public enum Type {
    * @return The long value if the conversion succeed, otherwise the IllegalArgumentException exception
    */
   public long asLong(final Object iValue) {
-    if (iValue instanceof Number)
-      return ((Number) iValue).longValue();
-    else if (iValue instanceof String)
-      return Long.parseLong((String) iValue);
-    else if (iValue instanceof Boolean)
-      return ((Boolean) iValue) ? 1 : 0;
+    if (iValue instanceof Number number)
+      return number.longValue();
+    else if (iValue instanceof String string)
+      return Long.parseLong(string);
+    else if (iValue instanceof Boolean boolean1)
+      return boolean1 ? 1 : 0;
 
     throw new IllegalArgumentException("Cannot convert value " + iValue + " to long for type: " + name);
   }
@@ -928,10 +925,10 @@ public enum Type {
    * @return The float value if the conversion succeed, otherwise the IllegalArgumentException exception
    */
   public float asFloat(final Object iValue) {
-    if (iValue instanceof Number)
-      return ((Number) iValue).floatValue();
-    else if (iValue instanceof String)
-      return Float.parseFloat((String) iValue);
+    if (iValue instanceof Number number)
+      return number.floatValue();
+    else if (iValue instanceof String string)
+      return Float.parseFloat(string);
 
     throw new IllegalArgumentException("Cannot convert value " + iValue + " to float for type: " + name);
   }
@@ -944,10 +941,10 @@ public enum Type {
    * @return The double value if the conversion succeed, otherwise the IllegalArgumentException exception
    */
   public double asDouble(final Object iValue) {
-    if (iValue instanceof Number)
-      return ((Number) iValue).doubleValue();
-    else if (iValue instanceof String)
-      return Double.parseDouble((String) iValue);
+    if (iValue instanceof Number number)
+      return number.doubleValue();
+    else if (iValue instanceof String string)
+      return Double.parseDouble(string);
 
     throw new IllegalArgumentException("Cannot convert value " + iValue + " to double for type: " + name);
   }
@@ -998,24 +995,23 @@ public enum Type {
   }
 
   private static Date convertToDate(final Database database, final Object iValue) throws ParseException {
-    if (iValue instanceof Date)
-      return (Date) iValue;
-    if (iValue instanceof Number)
-      return new Date(((Number) iValue).longValue());
-    else if (iValue instanceof Calendar)
-      return ((Calendar) iValue).getTime();
-    else if (iValue instanceof LocalDateTime)
-      return new Date(TimeUnit.MILLISECONDS.convert(((LocalDateTime) iValue).toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) +//
-          ((LocalDateTime) iValue).getLong(ChronoField.MILLI_OF_SECOND));
-    else if (iValue instanceof Instant)
-      return new Date(((Instant) iValue).toEpochMilli());
-    else if (iValue instanceof ZonedDateTime)
-      return new Date(TimeUnit.MILLISECONDS.convert(((ZonedDateTime) iValue).toEpochSecond(), TimeUnit.SECONDS) +//
-          ((ZonedDateTime) iValue).getLong(ChronoField.MILLI_OF_SECOND));
-    else if (iValue instanceof LocalDate)
-      return new Date(((LocalDate) iValue).toEpochDay() * DateUtils.MS_IN_A_DAY);
-    else if (iValue instanceof String) {
-      final String valueAsString = (String) iValue;
+    if (iValue instanceof Date date)
+      return date;
+    if (iValue instanceof Number number)
+      return new Date(number.longValue());
+    else if (iValue instanceof Calendar calendar)
+      return calendar.getTime();
+    else if (iValue instanceof LocalDateTime time)
+      return new Date(TimeUnit.MILLISECONDS.convert(time.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) +//
+          time.getLong(ChronoField.MILLI_OF_SECOND));
+    else if (iValue instanceof Instant instant)
+      return new Date(instant.toEpochMilli());
+    else if (iValue instanceof ZonedDateTime time)
+      return new Date(TimeUnit.MILLISECONDS.convert(time.toEpochSecond(), TimeUnit.SECONDS) +//
+          time.getLong(ChronoField.MILLI_OF_SECOND));
+    else if (iValue instanceof LocalDate date)
+      return new Date(date.toEpochDay() * DateUtils.MS_IN_A_DAY);
+    else if (iValue instanceof String valueAsString) {
       if (FileUtils.isLong(valueAsString))
         return new Date(Long.parseLong(iValue.toString()));
       else if (database != null)

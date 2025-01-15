@@ -65,8 +65,8 @@ public class Json extends SimpleNode {
         continue;
       }
       final Object value;
-      if (item.right.value instanceof Json) {
-        value = ((Json) item.right.value).toDocument(source, context);
+      if (item.right.value instanceof Json json) {
+        value = json.toDocument(source, context);
       } else {
         value = item.right.execute(source, context);
       }

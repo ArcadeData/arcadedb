@@ -18,6 +18,7 @@
  */
 package com.arcadedb.utility;
 
+import java.io.Serial;
 import java.util.*;
 
 /**
@@ -25,6 +26,7 @@ import java.util.*;
  */
 public class LRUCache<K, V> extends LinkedHashMap<K, V> {
 
+  @Serial
   private static final long serialVersionUID = 0;
 
   final private int cacheSize;

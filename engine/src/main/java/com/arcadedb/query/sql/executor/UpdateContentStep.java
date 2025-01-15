@@ -66,9 +66,9 @@ public class UpdateContentStep extends AbstractExecutionStep {
       public Result next() {
         final Result result = upstream.next();
 
-        if (result instanceof ResultInternal) {
+        if (result instanceof ResultInternal internal) {
           if (!(result.getElement().get() instanceof Document))
-            ((ResultInternal) result).setElement((Document) result.getElement().get().getRecord());
+            internal.setElement((Document) result.getElement().get().getRecord());
 
           if (!(result.getElement().get() instanceof Document))
             return result;
@@ -96,8 +96,8 @@ public class UpdateContentStep extends AbstractExecutionStep {
       doc.fromMap(jsonItem.toMap(record, context));
     } else if (inputParameter != null) {
       final Object val = inputParameter.getValue(context.getInputParameters());
-      if (val instanceof Document) {
-        doc.fromMap(((Document) val).getRecord().toJSON().toMap());
+      if (val instanceof Document document) {
+        doc.fromMap(document.getRecord().toJSON().toMap());
       } else if (val instanceof Map) {
         doc.fromMap((Map<String, Object>) val);
       } else {

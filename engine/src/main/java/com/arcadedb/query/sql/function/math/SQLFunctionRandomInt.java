@@ -45,7 +45,7 @@ public class SQLFunctionRandomInt extends SQLFunctionAbstract {
     if (iParams == null || iParams.length < 1)
       throw new CommandSQLParsingException("Expected maximum value in function");
 
-    int bound = iParams[0] instanceof Number ? ((Number) iParams[0]).intValue() : Integer.parseInt(iParams[0].toString());
+    int bound = iParams[0] instanceof Number n ? n.intValue() : Integer.parseInt(iParams[0].toString());
 
     return new SecureRandom().nextInt(bound);
   }

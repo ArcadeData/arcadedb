@@ -92,12 +92,12 @@ public class BasicCommandContext implements CommandContext {
         firstPart = pos > -1 ? otherParts.substring(0, pos) : otherParts;
         otherParts = pos > -1 ? otherParts.substring(pos + 1) : "";
 
-        if (result instanceof Result)
-          result = ((Result) result).getProperty(firstPart);
-        else if (result instanceof Map)
-          result = ((Map) result).get(firstPart);
-        else if (result instanceof Document)
-          result = ((Document) result).get(firstPart);
+        if (result instanceof Result result1)
+          result = result1.getProperty(firstPart);
+        else if (result instanceof Map map)
+          result = map.get(firstPart);
+        else if (result instanceof Document document)
+          result = document.get(firstPart);
 
       }
     }
@@ -148,8 +148,8 @@ public class BasicCommandContext implements CommandContext {
     if (this.variables != null && variables.containsKey(varName)) {
       return variables.get(varName);
     }
-    if (parent != null && parent instanceof BasicCommandContext) {
-      return ((BasicCommandContext) parent).getVariableFromParentHierarchy(varName);
+    if (parent != null && parent instanceof BasicCommandContext context) {
+      return context.getVariableFromParentHierarchy(varName);
     }
     return null;
   }
@@ -183,8 +183,8 @@ public class BasicCommandContext implements CommandContext {
       final Object v = variables.get(name);
       if (v == null)
         variables.put(name, 1);
-      else if (v instanceof Number)
-        variables.put(name, ((Number) v).longValue() + 1);
+      else if (v instanceof Number number)
+        variables.put(name, number.longValue() + 1);
       else
         throw new IllegalArgumentException("Variable '" + name + "' is not a number, but: " + v.getClass());
     }
@@ -428,8 +428,8 @@ public class BasicCommandContext implements CommandContext {
   private StringBuilder printValue(final StringBuilder buffer, final Object value) {
     if (value == null)
       buffer.append("null");
-    else if (value instanceof InternalResultSet)
-      buffer.append("resultset ").append(((InternalResultSet) value).countEntries()).append(" entries");
+    else if (value instanceof InternalResultSet set)
+      buffer.append("resultset ").append(set.countEntries()).append(" entries");
     else
       buffer.append(value);
 

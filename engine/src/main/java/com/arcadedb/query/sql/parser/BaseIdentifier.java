@@ -177,8 +177,8 @@ public class BaseIdentifier extends SimpleNode {
       final BaseIdentifier result = new BaseIdentifier(-1);
       if (levelZero != null) {
         final SimpleNode splitResult = levelZero.splitForAggregation(aggregateProj, context);
-        if (splitResult instanceof LevelZeroIdentifier) {
-          result.levelZero = (LevelZeroIdentifier) splitResult;
+        if (splitResult instanceof LevelZeroIdentifier identifier) {
+          result.levelZero = identifier;
         } else {
           return splitResult;
         }

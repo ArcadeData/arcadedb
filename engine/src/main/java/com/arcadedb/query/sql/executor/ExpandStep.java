@@ -85,16 +85,16 @@ public class ExpandStep extends AbstractExecutionStep {
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           final Object nextElementObj = nextSubsequence.next();
-          if (nextElementObj instanceof Result) {
-            nextElement = (Result) nextElementObj;
-          } else if (nextElementObj instanceof Identifiable) {
-            final Record record = ((Identifiable) nextElementObj).getRecord();
+          if (nextElementObj instanceof Result result) {
+            nextElement = result;
+          } else if (nextElementObj instanceof Identifiable identifiable) {
+            final Record record = identifiable.getRecord();
             if (record == null) {
               continue;
             }
             nextElement = new ResultInternal(record);
-          } else if (nextElementObj instanceof Map) {
-            nextElement = new ResultInternal((Map) nextElementObj);
+          } else if (nextElementObj instanceof Map map) {
+            nextElement = new ResultInternal(map);
           } else {
             nextElement = new ResultInternal(context.getDatabase());
             ((ResultInternal) nextElement).setProperty("value", nextElementObj);
@@ -131,8 +131,8 @@ public class ExpandStep extends AbstractExecutionStep {
         if (projValue == null) {
           continue;
         }
-        if (projValue instanceof Identifiable) {
-          final Record rec = ((Identifiable) projValue).getRecord();
+        if (projValue instanceof Identifiable identifiable) {
+          final Record rec = identifiable.getRecord();
           if (rec == null) {
             continue;
           }
@@ -140,12 +140,12 @@ public class ExpandStep extends AbstractExecutionStep {
           res.setElement((Document) rec);
 
           nextSubsequence = Collections.singleton(res).iterator();
-        } else if (projValue instanceof Result) {
-          nextSubsequence = Collections.singleton((Result) projValue).iterator();
-        } else if (projValue instanceof Iterator) {
-          nextSubsequence = (Iterator) projValue;
-        } else if (projValue instanceof Iterable) {
-          nextSubsequence = ((Iterable) projValue).iterator();
+        } else if (projValue instanceof Result result) {
+          nextSubsequence = Collections.singleton(result).iterator();
+        } else if (projValue instanceof Iterator iterator) {
+          nextSubsequence = iterator;
+        } else if (projValue instanceof Iterable iterable) {
+          nextSubsequence = iterable.iterator();
         }
       } finally {
         if (context.isProfiling())

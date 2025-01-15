@@ -20,6 +20,8 @@
 /* JavaCCOptions:KEEP_LINE_COL=null */
 package com.arcadedb.query.sql.parser;
 
+import java.io.Serial;
+
 /**
  * This exception is thrown when parse errors are encountered.
  * You can explicitly create objects of this exception type by
@@ -57,6 +59,7 @@ public class ParseException extends Exception {
    * Increment only if the <i>serialized</i> form of the
    * class changes.
    */
+  @Serial
   private static final long serialVersionUID = 1L;
 
   /**

@@ -137,8 +137,8 @@ public class SQLQueryEngine implements QueryEngine {
     if (iCurrent == null)
       return null;
 
-    if (iCurrent instanceof Iterable) {
-      iCurrent = ((Iterable) iCurrent).iterator();
+    if (iCurrent instanceof Iterable iterable) {
+      iCurrent = iterable.iterator();
     }
     if (MultiValue.isMultiValue(iCurrent) || iCurrent instanceof Iterator) {
       final MultiIterator<Object> result = new MultiIterator<>();
@@ -148,19 +148,19 @@ public class SQLQueryEngine implements QueryEngine {
             result.addIterator(iCallable.call((Identifiable) inner));
           }
         } else {
-          if (o instanceof Identifiable)
-            result.addIterator(iCallable.call((Identifiable) o));
-          else if (o instanceof Result) {
-            if (((Result) o).getIdentity().isPresent())
-              result.addIterator(iCallable.call(((Result) o).getIdentity().get()));
+          if (o instanceof Identifiable identifiable)
+            result.addIterator(iCallable.call(identifiable));
+          else if (o instanceof Result result1) {
+            if (result1.getIdentity().isPresent())
+              result.addIterator(iCallable.call(result1.getIdentity().get()));
           }
         }
       }
       return result;
-    } else if (iCurrent instanceof Identifiable) {
-      return iCallable.call((Identifiable) iCurrent);
-    } else if (iCurrent instanceof Result) {
-      return iCallable.call(((Result) iCurrent).toElement());
+    } else if (iCurrent instanceof Identifiable identifiable) {
+      return iCallable.call(identifiable);
+    } else if (iCurrent instanceof Result result) {
+      return iCallable.call(result.toElement());
     }
 
     return null;

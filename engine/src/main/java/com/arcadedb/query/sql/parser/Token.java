@@ -33,6 +33,7 @@ public class Token implements Serializable {
    * Increment only if the <i>serialized</i> form of the
    * class changes.
    */
+  @Serial
   private static final long serialVersionUID = 1L;
 
   /**

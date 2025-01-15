@@ -182,8 +182,7 @@ public final class ArcadeCustomFunctions {
         return Tokens.NULL;
       }
 
-      if (container instanceof List) {
-        List list = (List) container;
+      if (container instanceof List list) {
         int size = list.size();
         int i = normalizeContainerIndex(index, size);
         if (i < 0 || i > size) {
@@ -192,22 +191,20 @@ public final class ArcadeCustomFunctions {
         return list.get(i);
       }
 
-      if (container instanceof Map) {
+      if (container instanceof Map map) {
         if (!(index instanceof String)) {
           String indexClass = index.getClass().getName();
           throw new IllegalArgumentException("Map element access by non-string: " + indexClass);
         }
-        Map map = (Map) container;
         String key = (String) index;
         return map.getOrDefault(key, Tokens.NULL);
       }
 
-      if (container instanceof Element) {
+      if (container instanceof Element element) {
         if (!(index instanceof String)) {
           String indexClass = index.getClass().getName();
           throw new IllegalArgumentException("Property access by non-string: " + indexClass);
         }
-        Element element = (Element) container;
         String key = (String) index;
         return element.property(key).orElse(Tokens.NULL);
       }
@@ -231,8 +228,7 @@ public final class ArcadeCustomFunctions {
         return Tokens.NULL;
       }
 
-      if (container instanceof List) {
-        List list = (List) container;
+      if (container instanceof List list) {
         int size = list.size();
         int f = normalizeRangeIndex(from, size);
         int t = normalizeRangeIndex(to, size);
@@ -312,7 +308,7 @@ public final class ArcadeCustomFunctions {
           .filter(Objects::nonNull)
           .map(o -> (Number) o)
           .sorted()
-          .collect(toList());
+          .toList();
 
       int size = data.size();
       if (size == 0) {
@@ -352,13 +348,13 @@ public final class ArcadeCustomFunctions {
 
       if (a instanceof List || b instanceof List) {
         List<Object> objects = new ArrayList<>();
-        if (a instanceof List) {
-          objects.addAll((List<?>) a);
+        if (a instanceof List<?> list) {
+          objects.addAll(list);
         } else {
           objects.add(a);
         }
-        if (b instanceof List) {
-          objects.addAll((List<?>) b);
+        if (b instanceof List<?> list) {
+          objects.addAll(list);
         } else {
           objects.add(b);
         }
@@ -370,12 +366,12 @@ public final class ArcadeCustomFunctions {
         throw new TypeException("Illegal use of plus operator");
       }
 
-      if (a instanceof Number && b instanceof Number) {
+      if (a instanceof Number number && b instanceof Number number1) {
         if (a instanceof Double || b instanceof Double ||
             a instanceof Float || b instanceof Float) {
-          return ((Number) a).doubleValue() + ((Number) b).doubleValue();
+          return number.doubleValue() + number1.doubleValue();
         } else {
-          return ((Number) a).longValue() + ((Number) b).longValue();
+          return number.longValue() + number1.longValue();
         }
       } else {
         return String.valueOf(a) + String.valueOf(b);
@@ -388,15 +384,15 @@ public final class ArcadeCustomFunctions {
       Object o = traverser.get();
       if (o == Tokens.NULL) {
         return Tokens.NULL;
-      } else if (o instanceof Collection) {
-        ArrayList result = new ArrayList((Collection) o);
+      } else if (o instanceof Collection collection) {
+        ArrayList result = new ArrayList(collection);
         Collections.reverse(result);
         return result;
-      } else if (o instanceof String) {
-        return new StringBuilder((String) o).reverse().toString();
+      } else if (o instanceof String string) {
+        return new StringBuilder(string).reverse().toString();
       } else {
-        throw new TypeException(format("Expected a string or list value for reverse, but got: %s(%s)",
-            o.getClass().getSimpleName(), o));
+        throw new TypeException("Expected a string or list value for reverse, but got: %s(%s)".formatted(
+          o.getClass().getSimpleName(), o));
       }
     };
   }
@@ -410,11 +406,11 @@ public final class ArcadeCustomFunctions {
       if (a == Tokens.NULL) {
         return Tokens.NULL;
       } else if (!(a instanceof String) || (!(b instanceof Number))) {
-        throw new TypeException(format("Expected substring(String, Integer, [Integer]), but got: (%s, %s)",
-            a, b));
+        throw new TypeException("Expected substring(String, Integer, [Integer]), but got: (%s, %s)".formatted(
+          a, b));
       } else if (args.size() == 3 && (!(args.get(2) instanceof Number))) {
-        throw new TypeException(format("Expected substring(String, Integer, [Integer]), but got: (%s, %s, %s)",
-            a, b, args.get(2)));
+        throw new TypeException("Expected substring(String, Integer, [Integer]), but got: (%s, %s, %s)".formatted(
+          a, b, args.get(2)));
       } else if (args.size() == 3) {
         String s = (String) a;
         int endIndex = ((Number) b).intValue() + ((Number) args.get(2)).intValue();
@@ -436,10 +432,10 @@ public final class ArcadeCustomFunctions {
         }
 
         if (!clazzes[i].isInstance(args.get(i))) {
-          throw new TypeException(format("Expected a %s value for <function1>, but got: %s(%s)",
-              clazzes[i].getSimpleName(),
-              args.get(i).getClass().getSimpleName(),
-              args.get(i)));
+          throw new TypeException("Expected a %s value for <function1>, but got: %s(%s)".formatted(
+            clazzes[i].getSimpleName(),
+            args.get(i).getClass().getSimpleName(),
+            args.get(i)));
         }
       }
 
@@ -488,8 +484,8 @@ public final class ArcadeCustomFunctions {
     if (clazz.isInstance(o)) {
       return clazz.cast(o);
     } else {
-      throw new TypeException(format("Expected %s to be %s, but it was %s",
-          o, clazz.getSimpleName(), o.getClass().getSimpleName()));
+      throw new TypeException("Expected %s to be %s, but it was %s".formatted(
+        o, clazz.getSimpleName(), o.getClass().getSimpleName()));
     }
   }
 }

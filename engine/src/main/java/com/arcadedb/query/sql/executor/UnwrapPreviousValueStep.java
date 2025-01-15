@@ -49,8 +49,8 @@ public class UnwrapPreviousValueStep extends AbstractExecutionStep {
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           Result prevResult = upstream.next();
-          if (prevResult instanceof UpdatableResult) {
-            prevResult = ((UpdatableResult) prevResult).previousValue;
+          if (prevResult instanceof UpdatableResult result) {
+            prevResult = result.previousValue;
             if (prevResult == null) {
               throw new CommandExecutionException("Invalid status of record: no previous value available");
             }

@@ -112,9 +112,9 @@ public class SourceDiscovery {
 
         if (source.inputStream instanceof GZIPInputStream)
           source.inputStream = new GZIPInputStream(connection1.getInputStream(), 2048);
-        else if (source.inputStream instanceof ZipInputStream) {
+        else if (source.inputStream instanceof ZipInputStream stream) {
           source.inputStream = new ZipInputStream(connection1.getInputStream());
-          ((ZipInputStream) source.inputStream).getNextEntry();
+          stream.getNextEntry();
         } else
           source.inputStream = new BufferedInputStream(connection1.getInputStream());
       } catch (final Exception e) {
@@ -155,9 +155,9 @@ public class SourceDiscovery {
         source.inputStream.close();
         if (source.inputStream instanceof GZIPInputStream)
           source.inputStream = new GZIPInputStream(new FileInputStream(file), 2048);
-        else if (source.inputStream instanceof ZipInputStream) {
+        else if (source.inputStream instanceof ZipInputStream stream) {
           source.inputStream = new ZipInputStream(new FileInputStream(file));
-          ((ZipInputStream) source.inputStream).getNextEntry();
+          stream.getNextEntry();
         } else
           source.inputStream = new BufferedInputStream(new FileInputStream(file));
       } catch (final IOException e) {

@@ -42,10 +42,10 @@ public class SQLMethodAsLong extends AbstractSQLMethod {
 
   @Override
   public Object execute(Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
-    if (value instanceof Number)
-      value = ((Number) value).longValue();
-    else if (value instanceof Date)
-      value = ((Date) value).getTime();
+    if (value instanceof Number number)
+      value = number.longValue();
+    else if (value instanceof Date date)
+      value = date.getTime();
     else if (DateUtils.isDate(value))
       value = DateUtils.dateTimeToTimestamp(value, ChronoUnit.MILLIS);
     else

@@ -44,22 +44,22 @@ public class ContainsAnyCondition extends BooleanExpression {
   }
 
   public boolean execute(Object left, Object right) {
-    if (left instanceof Collection) {
-      if (right instanceof Iterable)
-        right = ((Iterable<?>) right).iterator();
+    if (left instanceof Collection<?> collection) {
+      if (right instanceof Iterable<?> iterable)
+        right = iterable.iterator();
 
       if (right instanceof Iterator<?> iterator) {
         while (iterator.hasNext()) {
           final Object next = iterator.next();
-          if (((Collection<?>) left).contains(next))
+          if (collection.contains(next))
             return true;
         }
       }
-      return ((Collection<?>) left).contains(right);
+      return collection.contains(right);
     }
 
-    if (left instanceof Iterable)
-      left = ((Iterable<?>) left).iterator();
+    if (left instanceof Iterable<?> iterable)
+      left = iterable.iterator();
 
     if (left instanceof Iterator<?> leftIterator) {
       if (!(right instanceof Iterable))
@@ -93,11 +93,11 @@ public class ContainsAnyCondition extends BooleanExpression {
       final Iterator<?> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         final Object item = iter.next();
-        if (item instanceof Identifiable) {
-          if (!rightBlock.evaluate((Identifiable) item, context))
+        if (item instanceof Identifiable identifiable) {
+          if (!rightBlock.evaluate(identifiable, context))
             return false;
-        } else if (item instanceof Result) {
-          if (!rightBlock.evaluate((Result) item, context))
+        } else if (item instanceof Result result) {
+          if (!rightBlock.evaluate(result, context))
             return false;
         } else if (!rightBlock.evaluate(new ResultInternal(item), context))
           return false;
@@ -119,11 +119,11 @@ public class ContainsAnyCondition extends BooleanExpression {
       final Iterator<?> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         final Object item = iter.next();
-        if (item instanceof Identifiable) {
-          if (!rightBlock.evaluate((Identifiable) item, context))
+        if (item instanceof Identifiable identifiable) {
+          if (!rightBlock.evaluate(identifiable, context))
             return false;
-        } else if (item instanceof Result) {
-          if (!rightBlock.evaluate((Result) item, context))
+        } else if (item instanceof Result result) {
+          if (!rightBlock.evaluate(result, context))
             return false;
         } else if (!rightBlock.evaluate(new ResultInternal(item), context))
           return false;

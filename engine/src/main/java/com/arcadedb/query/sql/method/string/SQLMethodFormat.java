@@ -64,7 +64,7 @@ public class SQLMethodFormat extends AbstractSQLMethod {
     } else if (DateUtils.isDate(value)) {
       return DateUtils.format(value, format, iParams.length > 1 ? (String) iParams[1] : null);
     }
-    return value != null ? String.format(format, value) : null;
+    return value != null ? format.formatted(value) : null;
   }
 
   private boolean isCollectionOfDates(final Object value) {

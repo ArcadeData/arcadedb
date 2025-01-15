@@ -57,8 +57,8 @@ public class MultiMatchPathItem extends MatchPathItem {
       result = new HashSet<Identifiable>();
       for (final Identifiable sp : startingPoints) {
         final Iterable<Identifiable> subResult = subItem.executeTraversal(matchContext, iCommandContext, sp, 0);
-        if (subResult instanceof Collection) {
-          result.addAll((Collection) subResult);
+        if (subResult instanceof Collection collection) {
+          result.addAll(collection);
         } else {
           for (final Identifiable id : subResult) {
             result.add(id);

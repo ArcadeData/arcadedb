@@ -131,17 +131,17 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
               }
             }
 
-            if (finalVal instanceof RID) {
+            if (finalVal instanceof RID iD) {
               try {
-                nextItem = new ResultInternal(((RID) finalVal).asDocument());
+                nextItem = new ResultInternal(iD.asDocument());
               } catch (final RecordNotFoundException e) {
                 LogManager.instance().log(this, Level.WARNING, "Record %s not found. Skip it from the result set", null, finalVal);
                 continue;
               }
-            } else if (finalVal instanceof Document) {
-              nextItem = new ResultInternal((Document) finalVal);
-            } else if (finalVal instanceof Result) {
-              nextItem = (Result) finalVal;
+            } else if (finalVal instanceof Document document) {
+              nextItem = new ResultInternal(document);
+            } else if (finalVal instanceof Result result) {
+              nextItem = result;
             }
             break;
           } finally {

@@ -79,11 +79,11 @@ public class ResultInternal implements Result {
     if (temporaryContent == null)
       temporaryContent = new HashMap<>();
 
-    if (value instanceof Optional)
-      value = ((Optional) value).orElse(null);
+    if (value instanceof Optional optional)
+      value = optional.orElse(null);
 
-    if (value instanceof Result && ((Result) value).isElement())
-      temporaryContent.put(name, ((Result) value).getElement().get());
+    if (value instanceof Result result && result.isElement())
+      temporaryContent.put(name, result.getElement().get());
     else
       temporaryContent.put(name, value);
   }
@@ -99,14 +99,14 @@ public class ResultInternal implements Result {
   }
 
   public ResultInternal setProperty(final String name, Object value) {
-    if (value instanceof Optional)
-      value = ((Optional) value).orElse(null);
+    if (value instanceof Optional optional)
+      value = optional.orElse(null);
 
     if (content == null)
       throw new IllegalStateException("Impossible to mutate result set");
 
-    if (value instanceof Result && ((Result) value).isElement())
-      content.put(name, ((Result) value).getElement().get());
+    if (value instanceof Result result && result.isElement())
+      content.put(name, result.getElement().get());
     else
       content.put(name, value);
 
@@ -128,8 +128,8 @@ public class ResultInternal implements Result {
     else
       result = null;
 
-    if (!(result instanceof Record) && result instanceof Identifiable && ((Identifiable) result).getIdentity() != null)
-      result = (T) ((Identifiable) result).getIdentity();
+    if (!(result instanceof Record) && result instanceof Identifiable identifiable && identifiable.getIdentity() != null)
+      result = (T) identifiable.getIdentity();
 
     return result;
   }
@@ -143,8 +143,8 @@ public class ResultInternal implements Result {
     else
       result = (T) defaultValue;
 
-    if (!(result instanceof Record) && result instanceof Identifiable && ((Identifiable) result).getIdentity() != null)
-      result = (T) ((Identifiable) result).getIdentity();
+    if (!(result instanceof Record) && result instanceof Identifiable identifiable && identifiable.getIdentity() != null)
+      result = (T) identifiable.getIdentity();
     return result;
   }
 
@@ -156,13 +156,13 @@ public class ResultInternal implements Result {
     else if (element != null)
       result = element.get(name);
 
-    if (result instanceof Result)
-      result = ((Result) result).getRecord().orElse(null);
+    if (result instanceof Result result1)
+      result = result1.getRecord().orElse(null);
 
-    if (result instanceof RID)
-      result = ((RID) result).getRecord();
+    if (result instanceof RID iD)
+      result = iD.getRecord();
 
-    return result instanceof Record ? (Record) result : null;
+    return result instanceof Record r ? r : null;
   }
 
   /**
@@ -174,17 +174,17 @@ public class ResultInternal implements Result {
    * from OrientDB.
    */
   public static Object wrap(final Object input) {
-    if (input instanceof Document && ((Document) input).getIdentity() == null && !(input instanceof EmbeddedDocument)) {
-      final Document elem = ((Document) input);
+    if (input instanceof Document document && document.getIdentity() == null && !(input instanceof EmbeddedDocument)) {
+      final Document elem = document;
       final ResultInternal result = new ResultInternal(elem.toMap(false));
       if (elem.getTypeName() != null)
         result.setProperty("@type", elem.getTypeName());
       return result;
 
-    } else if (input instanceof List) {
-      return ((List) input).stream().map(ResultInternal::wrap).collect(Collectors.toList());
-    } else if (input instanceof Set) {
-      return ((Set) input).stream().map(ResultInternal::wrap).collect(Collectors.toSet());
+    } else if (input instanceof List list) {
+      return list.stream().map(ResultInternal::wrap).collect(Collectors.toList());
+    } else if (input instanceof Set set) {
+      return set.stream().map(ResultInternal::wrap).collect(Collectors.toSet());
     } else if (input instanceof Map) {
       final Map result = new HashMap();
       for (final Map.Entry<String, Object> o : ((Map<String, Object>) input).entrySet())

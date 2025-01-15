@@ -46,15 +46,15 @@ public class SQLFunctionMax extends SQLFunctionMathAbstract {
     // consider both collection of parameters and collection in each parameter
     Object max = null;
     for (Object item : iParams) {
-      if (item instanceof Collection<?>) {
-        for (final Object subitem : ((Collection<?>) item)) {
+      if (item instanceof Collection<?> collection) {
+        for (final Object subitem : collection) {
           if (max == null || subitem != null && ((Comparable) subitem).compareTo(max) > 0)
             max = subitem;
         }
       } else {
-        if (item instanceof Number && max instanceof Number &&//
+        if (item instanceof Number number && max instanceof Number number1 &&//
             !item.getClass().equals(max.getClass())) {
-          final Number[] converted = Type.castComparableNumber((Number) item, (Number) max);
+          final Number[] converted = Type.castComparableNumber(number, number1);
           item = converted[0];
           max = converted[1];
         }
@@ -70,8 +70,8 @@ public class SQLFunctionMax extends SQLFunctionMathAbstract {
         // FIRST TIME
         context = max;
       else {
-        if (context instanceof Number && max instanceof Number) {
-          final Number[] casted = Type.castComparableNumber((Number) context, (Number) max);
+        if (context instanceof Number number && max instanceof Number number1) {
+          final Number[] casted = Type.castComparableNumber(number, number1);
           context = casted[0];
           max = casted[1];
         }

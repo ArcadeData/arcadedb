@@ -132,10 +132,10 @@ public class TypeConversionTest extends TestHelper {
 
       String property = database.query("sql", "select decimal.format('%.1f') as d from " + doc.getIdentity()).nextIfAvailable()
           .getProperty("d");
-      assertThat(property).isEqualTo(String.format("%.1f", 33.3F));
+      assertThat(property).isEqualTo("%.1f".formatted(33.3F));
       property = database.query("sql", "select decimal.format('%.2f') as d from " + doc.getIdentity()).nextIfAvailable()
           .getProperty("d");
-      assertThat(property).isEqualTo(String.format("%.2f", 33.33F));
+      assertThat(property).isEqualTo("%.2f".formatted(33.33F));
 
       doc.delete();
     });

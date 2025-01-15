@@ -86,24 +86,24 @@ public class SQLMethodInclude extends AbstractSQLMethod {
   @Override
   public Object execute(Object current, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
     if (iParams[0] != null) {
-      if (current instanceof Identifiable)
-        current = ((Identifiable) current).getRecord();
-      else if (current instanceof Result)
-        return copy(((Result) current).toMap(), iParams);
+      if (current instanceof Identifiable identifiable)
+        current = identifiable.getRecord();
+      else if (current instanceof Result result)
+        return copy(result.toMap(), iParams);
 
-      if (current instanceof Document) {
+      if (current instanceof Document document) {
         // ACT ON SINGLE DOCUMENT
-        return copy((Document) current, iParams);
-      } else if (current instanceof Map) {
+        return copy(document, iParams);
+      } else if (current instanceof Map map) {
         // ACT ON MAP
-        return copy((Map) current, iParams);
+        return copy(map, iParams);
       } else if (MultiValue.isMultiValue(current)) {
         // ACT ON MULTIPLE DOCUMENTS
         final int size = MultiValue.getSizeIfAvailable(current);
         final List<Object> result = size > 0 ? new ArrayList<>(size) : new ArrayList<>();
         for (final Object o : MultiValue.getMultiValueIterable(current, false)) {
-          if (o instanceof Identifiable) {
-            result.add(copy((Document) ((Identifiable) o).getRecord(), iParams));
+          if (o instanceof Identifiable identifiable) {
+            result.add(copy((Document) identifiable.getRecord(), iParams));
           }
         }
         return result;

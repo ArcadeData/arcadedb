@@ -408,8 +408,8 @@ public class ReplicationLogFile extends LockContext {
 
   @Override
   protected RuntimeException manageExceptionInLock(final Throwable e) {
-    if (e instanceof ReplicationLogException)
-      throw (ReplicationLogException) e;
+    if (e instanceof ReplicationLogException exception)
+      throw exception;
 
     return new ReplicationLogException("Error in replication log", e);
   }

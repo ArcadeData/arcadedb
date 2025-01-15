@@ -70,13 +70,13 @@ public class SQLFunctionDefinition implements FunctionDefinition {
   }
 
   private static Object extractResult(Object first) {
-    if (first instanceof Result) {
-      if (((Result) first).isElement())
-        first = ((Result) first).toElement();
-      else if (((Result) first).isProjection()) {
-        final Set<String> properties = ((Result) first).getPropertyNames();
+    if (first instanceof Result result) {
+      if (result.isElement())
+        first = result.toElement();
+      else if (result.isProjection()) {
+        final Set<String> properties = result.getPropertyNames();
         if (properties.size() == 1)
-          first = ((Result) first).getProperty(properties.iterator().next());
+          first = result.getProperty(properties.iterator().next());
       }
     }
     return first;

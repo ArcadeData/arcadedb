@@ -55,7 +55,7 @@ public class BackupSettings {
       switch (format) {
       case "full":
         final DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd-HHmmssSSS");
-        file = String.format("%s-backup-%s.zip", databaseName, dateFormat.format(System.currentTimeMillis()));
+        file = "%s-backup-%s.zip".formatted(databaseName, dateFormat.format(System.currentTimeMillis()));
         break;
       }
   }

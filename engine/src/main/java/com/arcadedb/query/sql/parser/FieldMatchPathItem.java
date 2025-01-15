@@ -72,7 +72,7 @@ public class FieldMatchPathItem extends MatchPathItem {
     }
     // TODO check possible results!
     final Object qR = this.exp.execute(startingPoint, iCommandContext);
-    return (qR instanceof Iterable && !(qR instanceof Document)) ? (Iterable) qR : Collections.singleton((Identifiable) qR);
+    return (qR instanceof Iterable i && !(qR instanceof Document)) ? i : Collections.singleton((Identifiable) qR);
   }
 
   @Override

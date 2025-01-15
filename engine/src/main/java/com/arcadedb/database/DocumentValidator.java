@@ -140,8 +140,8 @@ public class DocumentValidator {
     }
     case BINARY -> {
       final int maxAsInteger = Integer.parseInt(max);
-      if (fieldValue instanceof Binary) {
-        if (((Binary) fieldValue).size() > maxAsInteger)
+      if (fieldValue instanceof Binary binary) {
+        if (binary.size() > maxAsInteger)
           throwValidationException(document.getType(), p, "contains more bytes than " + max + " requested");
       } else if (((byte[]) fieldValue).length > maxAsInteger)
         throwValidationException(document.getType(), p, "contains more bytes than " + max + " requested");
@@ -223,8 +223,8 @@ public class DocumentValidator {
       }
       case BINARY -> {
         final int minAsInteger = Integer.parseInt(min);
-        if (fieldValue instanceof Binary) {
-          if (((Binary) fieldValue).size() < minAsInteger)
+        if (fieldValue instanceof Binary binary) {
+          if (binary.size() < minAsInteger)
             yield new ValidationResult(true, "contains fewer bytes than " + min + " requested");
         } else if (((byte[]) fieldValue).length < minAsInteger)
           yield new ValidationResult(true, "contains fewer bytes than " + min + " requested");
@@ -285,8 +285,8 @@ public class DocumentValidator {
               "has been declared as EMBEDDED of '" + ofType + "' but a document of type '" + embSchemaType
                   + "' is used. Value: " + fieldValue);
       }
-      if (fieldValue instanceof MutableEmbeddedDocument)
-        ((MutableEmbeddedDocument) fieldValue).validate();
+      if (fieldValue instanceof MutableEmbeddedDocument embeddedDocument)
+        embeddedDocument.validate();
     }
     break;
 
@@ -304,13 +304,13 @@ public class DocumentValidator {
               throwValidationException(document.getType(), p,
                   "has been declared as LIST of '" + ofType + "' but a value of type '" + Type.getTypeByValue(item)
                       + "' is used. Value: " + fieldValue);
-          } else if (item instanceof EmbeddedDocument) {
-            if (!((EmbeddedDocument) item).getType().instanceOf(ofType))
+          } else if (item instanceof EmbeddedDocument embeddedDocument) {
+            if (!embeddedDocument.getType().instanceOf(ofType))
               throwValidationException(document.getType(), p,
                   "has been declared as LIST of '" + ofType + "' but an embedded document of type '"
-                      + ((EmbeddedDocument) item).getType().getName() + "' is used. Value: " + fieldValue);
-          } else if (item instanceof Identifiable) {
-            final RID rid = ((Identifiable) item).getIdentity();
+                      + embeddedDocument.getType().getName() + "' is used. Value: " + fieldValue);
+          } else if (item instanceof Identifiable identifiable) {
+            final RID rid = identifiable.getIdentity();
             final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
             if (!embSchemaType.instanceOf(ofType))
               throwValidationException(document.getType(), p,
@@ -320,8 +320,8 @@ public class DocumentValidator {
           }
         }
 
-        if (item instanceof MutableEmbeddedDocument)
-          ((MutableEmbeddedDocument) item).validate();
+        if (item instanceof MutableEmbeddedDocument embeddedDocument)
+          embeddedDocument.validate();
       }
     }
     break;
@@ -340,13 +340,13 @@ public class DocumentValidator {
               throwValidationException(document.getType(), p,
                   "has been declared as a MAP of <String,'" + ofType + "'> but a value of type '" + Type.getTypeByValue(item)
                       + "' is used. Value: " + fieldValue);
-          } else if (item instanceof EmbeddedDocument) {
-            if (!((EmbeddedDocument) item).getType().instanceOf(ofType))
+          } else if (item instanceof EmbeddedDocument embeddedDocument) {
+            if (!embeddedDocument.getType().instanceOf(ofType))
               throwValidationException(document.getType(), p,
                   "has been declared as a MAP of <String," + ofType + "> but an embedded document of type '"
-                      + ((EmbeddedDocument) item).getType().getName() + "' is used. Value: " + fieldValue);
-          } else if (item instanceof Identifiable) {
-            final RID rid = ((Identifiable) item).getIdentity();
+                      + embeddedDocument.getType().getName() + "' is used. Value: " + fieldValue);
+          } else if (item instanceof Identifiable identifiable) {
+            final RID rid = identifiable.getIdentity();
             final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
             if (!embSchemaType.instanceOf(ofType))
               throwValidationException(document.getType(), p,
@@ -355,8 +355,8 @@ public class DocumentValidator {
           }
         }
 
-        if (item instanceof MutableEmbeddedDocument)
-          ((MutableEmbeddedDocument) item).validate();
+        if (item instanceof MutableEmbeddedDocument embeddedDocument)
+          embeddedDocument.validate();
       }
     }
     break;

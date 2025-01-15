@@ -94,11 +94,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -226,11 +226,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -262,11 +262,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -297,11 +297,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -332,11 +332,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -526,11 +526,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -1036,11 +1036,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -1079,11 +1079,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -1230,11 +1230,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -1264,11 +1264,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -1470,11 +1470,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -1525,11 +1525,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -1632,11 +1632,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -1881,11 +1881,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -2085,11 +2085,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -2283,11 +2283,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -2368,11 +2368,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -2605,11 +2605,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -2771,11 +2771,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -2847,11 +2847,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -2893,11 +2893,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -2937,11 +2937,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -2975,11 +2975,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -3011,11 +3011,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -3243,11 +3243,11 @@ if (jjtc000) {
   } else {
     jjtree.popNode();
   }
-  if (jjte000 instanceof RuntimeException) {
-    {if (true) throw (RuntimeException)jjte000;}
+  if (jjte000 instanceof RuntimeException exception) {
+    {if (true) throw exception;}
   }
-  if (jjte000 instanceof ParseException) {
-    {if (true) throw (ParseException)jjte000;}
+  if (jjte000 instanceof ParseException exception) {
+    {if (true) throw exception;}
   }
   {if (true) throw (Error)jjte000;}
     } finally {
@@ -3413,11 +3413,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -3480,11 +3480,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -3548,11 +3548,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -3584,11 +3584,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -3662,11 +3662,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -3837,11 +3837,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -3884,11 +3884,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -4053,11 +4053,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -4136,11 +4136,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -4199,11 +4199,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -4264,11 +4264,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -4454,11 +4454,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -4497,11 +4497,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -4539,11 +4539,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -4589,11 +4589,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -4670,11 +4670,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -4704,11 +4704,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -4987,11 +4987,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -5152,11 +5152,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -5204,11 +5204,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -5254,11 +5254,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -5295,11 +5295,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -5370,11 +5370,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -5449,11 +5449,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -5500,11 +5500,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -5571,11 +5571,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -5682,11 +5682,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -5723,11 +5723,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -5879,11 +5879,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -6063,11 +6063,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -6097,11 +6097,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -6148,11 +6148,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -6199,11 +6199,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -6469,11 +6469,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -6650,11 +6650,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -6743,11 +6743,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -6777,11 +6777,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -6827,11 +6827,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -6877,11 +6877,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -7043,11 +7043,11 @@ if (jjtc000) {
   } else {
     jjtree.popNode();
   }
-  if (jjte000 instanceof RuntimeException) {
-    {if (true) throw (RuntimeException)jjte000;}
+  if (jjte000 instanceof RuntimeException exception) {
+    {if (true) throw exception;}
   }
-  if (jjte000 instanceof ParseException) {
-    {if (true) throw (ParseException)jjte000;}
+  if (jjte000 instanceof ParseException exception) {
+    {if (true) throw exception;}
   }
   {if (true) throw (Error)jjte000;}
     } finally {
@@ -7079,11 +7079,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -7167,11 +7167,11 @@ if (jjtc000) {
   } else {
     jjtree.popNode();
   }
-  if (jjte000 instanceof RuntimeException) {
-    {if (true) throw (RuntimeException)jjte000;}
+  if (jjte000 instanceof RuntimeException exception) {
+    {if (true) throw exception;}
   }
-  if (jjte000 instanceof ParseException) {
-    {if (true) throw (ParseException)jjte000;}
+  if (jjte000 instanceof ParseException exception) {
+    {if (true) throw exception;}
   }
   {if (true) throw (Error)jjte000;}
     } finally {
@@ -7259,11 +7259,11 @@ if (jjtc000) {
   } else {
     jjtree.popNode();
   }
-  if (jjte000 instanceof RuntimeException) {
-    {if (true) throw (RuntimeException)jjte000;}
+  if (jjte000 instanceof RuntimeException exception) {
+    {if (true) throw exception;}
   }
-  if (jjte000 instanceof ParseException) {
-    {if (true) throw (ParseException)jjte000;}
+  if (jjte000 instanceof ParseException exception) {
+    {if (true) throw exception;}
   }
   {if (true) throw (Error)jjte000;}
     } finally {
@@ -7627,11 +7627,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -7663,11 +7663,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -7708,11 +7708,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -7847,11 +7847,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -8302,11 +8302,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -8340,11 +8340,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -8376,11 +8376,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -8413,11 +8413,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -8449,11 +8449,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -8486,11 +8486,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -8531,11 +8531,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -8718,11 +8718,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -8886,11 +8886,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -8931,11 +8931,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -8976,11 +8976,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -9012,11 +9012,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -9072,11 +9072,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -9873,11 +9873,11 @@ if (jjtc000) {
   } else {
     jjtree.popNode();
   }
-  if (jjte000 instanceof RuntimeException) {
-    {if (true) throw (RuntimeException)jjte000;}
+  if (jjte000 instanceof RuntimeException exception) {
+    {if (true) throw exception;}
   }
-  if (jjte000 instanceof ParseException) {
-    {if (true) throw (ParseException)jjte000;}
+  if (jjte000 instanceof ParseException exception) {
+    {if (true) throw exception;}
   }
   {if (true) throw (Error)jjte000;}
     } finally {
@@ -9924,11 +9924,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -9975,11 +9975,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -10025,11 +10025,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -10104,11 +10104,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -10154,11 +10154,11 @@ if (jjtc000) {
       } else {
         jjtree.popNode();
       }
-      if (jjte000 instanceof RuntimeException) {
-        {if (true) throw (RuntimeException)jjte000;}
+      if (jjte000 instanceof RuntimeException exception) {
+        {if (true) throw exception;}
       }
-      if (jjte000 instanceof ParseException) {
-        {if (true) throw (ParseException)jjte000;}
+      if (jjte000 instanceof ParseException exception) {
+        {if (true) throw exception;}
       }
       {if (true) throw (Error)jjte000;}
     } finally {
@@ -10215,11 +10215,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -10250,11 +10250,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -10285,11 +10285,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -10448,11 +10448,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -10487,11 +10487,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -10860,11 +10860,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -10922,11 +10922,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -11004,11 +11004,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -11047,11 +11047,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -11091,11 +11091,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -11134,11 +11134,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -11191,11 +11191,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -11268,11 +11268,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -11340,11 +11340,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -11582,11 +11582,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -11733,11 +11733,11 @@ if (jjtc000) {
       } else {
         jjtree.popNode();
       }
-      if (jjte000 instanceof RuntimeException) {
-        {if (true) throw (RuntimeException)jjte000;}
+      if (jjte000 instanceof RuntimeException exception) {
+        {if (true) throw exception;}
       }
-      if (jjte000 instanceof ParseException) {
-        {if (true) throw (ParseException)jjte000;}
+      if (jjte000 instanceof ParseException exception) {
+        {if (true) throw exception;}
       }
       {if (true) throw (Error)jjte000;}
     } finally {
@@ -11884,11 +11884,11 @@ if (jjtc000) {
       } else {
         jjtree.popNode();
       }
-      if (jjte000 instanceof RuntimeException) {
-        {if (true) throw (RuntimeException)jjte000;}
+      if (jjte000 instanceof RuntimeException exception) {
+        {if (true) throw exception;}
       }
-      if (jjte000 instanceof ParseException) {
-        {if (true) throw (ParseException)jjte000;}
+      if (jjte000 instanceof ParseException exception) {
+        {if (true) throw exception;}
       }
       {if (true) throw (Error)jjte000;}
     } finally {
@@ -12034,11 +12034,11 @@ if (jjtc000) {
       } else {
         jjtree.popNode();
       }
-      if (jjte000 instanceof RuntimeException) {
-        {if (true) throw (RuntimeException)jjte000;}
+      if (jjte000 instanceof RuntimeException exception) {
+        {if (true) throw exception;}
       }
-      if (jjte000 instanceof ParseException) {
-        {if (true) throw (ParseException)jjte000;}
+      if (jjte000 instanceof ParseException exception) {
+        {if (true) throw exception;}
       }
       {if (true) throw (Error)jjte000;}
     } finally {
@@ -12193,11 +12193,11 @@ if (jjtc000) {
       } else {
         jjtree.popNode();
       }
-      if (jjte000 instanceof RuntimeException) {
-        {if (true) throw (RuntimeException)jjte000;}
+      if (jjte000 instanceof RuntimeException exception) {
+        {if (true) throw exception;}
       }
-      if (jjte000 instanceof ParseException) {
-        {if (true) throw (ParseException)jjte000;}
+      if (jjte000 instanceof ParseException exception) {
+        {if (true) throw exception;}
       }
       {if (true) throw (Error)jjte000;}
     } finally {
@@ -12352,11 +12352,11 @@ if (jjtc000) {
       } else {
         jjtree.popNode();
       }
-      if (jjte000 instanceof RuntimeException) {
-        {if (true) throw (RuntimeException)jjte000;}
+      if (jjte000 instanceof RuntimeException exception) {
+        {if (true) throw exception;}
       }
-      if (jjte000 instanceof ParseException) {
-        {if (true) throw (ParseException)jjte000;}
+      if (jjte000 instanceof ParseException exception) {
+        {if (true) throw exception;}
       }
       {if (true) throw (Error)jjte000;}
     } finally {
@@ -12510,11 +12510,11 @@ if (jjtc000) {
       } else {
         jjtree.popNode();
       }
-      if (jjte000 instanceof RuntimeException) {
-        {if (true) throw (RuntimeException)jjte000;}
+      if (jjte000 instanceof RuntimeException exception) {
+        {if (true) throw exception;}
       }
-      if (jjte000 instanceof ParseException) {
-        {if (true) throw (ParseException)jjte000;}
+      if (jjte000 instanceof ParseException exception) {
+        {if (true) throw exception;}
       }
       {if (true) throw (Error)jjte000;}
     } finally {
@@ -12566,11 +12566,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -12710,11 +12710,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -12792,11 +12792,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -12904,11 +12904,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -13016,11 +13016,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -13128,11 +13128,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -13314,11 +13314,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -13469,11 +13469,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -13557,11 +13557,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -13596,11 +13596,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -13736,11 +13736,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -13795,11 +13795,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -14782,11 +14782,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -14976,11 +14976,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -15121,11 +15121,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -15169,11 +15169,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -15217,11 +15217,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -15362,11 +15362,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -15399,11 +15399,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -15434,11 +15434,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -15469,11 +15469,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -15513,11 +15513,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -15557,11 +15557,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -15699,11 +15699,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -15885,11 +15885,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -16089,11 +16089,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -16124,11 +16124,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -16161,11 +16161,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -16367,11 +16367,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -16571,11 +16571,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -16648,11 +16648,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -16760,11 +16760,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -16852,11 +16852,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -16950,11 +16950,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -17052,11 +17052,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {
@@ -17091,11 +17091,11 @@ if (jjtc000) {
     } else {
       jjtree.popNode();
     }
-    if (jjte000 instanceof RuntimeException) {
-      {if (true) throw (RuntimeException)jjte000;}
+    if (jjte000 instanceof RuntimeException exception) {
+      {if (true) throw exception;}
     }
-    if (jjte000 instanceof ParseException) {
-      {if (true) throw (ParseException)jjte000;}
+    if (jjte000 instanceof ParseException exception) {
+      {if (true) throw exception;}
     }
     {if (true) throw (Error)jjte000;}
     } finally {

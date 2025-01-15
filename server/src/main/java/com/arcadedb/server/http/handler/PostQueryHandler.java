@@ -32,8 +32,8 @@ public class PostQueryHandler extends PostCommandHandler {
   protected ResultSet executeCommand(final Database database, final String language, final String command, final Map<String, Object> paramMap) {
     final Object params = mapParams(paramMap);
 
-    if (params instanceof Object[])
-      return database.query(language, command, (Object[]) params);
+    if (params instanceof Object[] objects)
+      return database.query(language, command, objects);
 
     return database.query(language, command, (Map<String, Object>) params);
   }

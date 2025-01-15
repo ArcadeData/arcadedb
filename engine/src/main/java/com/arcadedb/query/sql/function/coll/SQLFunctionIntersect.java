@@ -48,19 +48,19 @@ public class SQLFunctionIntersect extends SQLFunctionMultiValueAbstract<Object> 
       // AGGREGATION MODE (STATEFUL)
       if (context == null) {
         // ADD ALL THE ITEMS OF THE FIRST COLLECTION
-        if (value instanceof Collection) {
-          context = ((Collection) value).iterator();
+        if (value instanceof Collection collection) {
+          context = collection.iterator();
         } else if (value instanceof Iterator) {
           context = value;
-        } else if (value instanceof Iterable) {
-          context = ((Iterable) value).iterator();
+        } else if (value instanceof Iterable iterable) {
+          context = iterable.iterator();
         } else {
           context = Arrays.asList(value).iterator();
         }
       } else {
         Iterator contextIterator = null;
-        if (context instanceof Iterator) {
-          contextIterator = (Iterator) context;
+        if (context instanceof Iterator iterator) {
+          contextIterator = iterator;
         } else if (MultiValue.isMultiValue(context)) {
           contextIterator = MultiValue.getMultiValueIterator(context);
         }
@@ -104,8 +104,8 @@ public class SQLFunctionIntersect extends SQLFunctionMultiValueAbstract<Object> 
     for (final Iterator it = current; it.hasNext(); ) {
       final Object curr = it.next();
 
-      if (value instanceof Collection) {
-        if (((Collection) value).contains(curr))
+      if (value instanceof Collection collection) {
+        if (collection.contains(curr))
           tempSet.add(curr);
       }
     }
