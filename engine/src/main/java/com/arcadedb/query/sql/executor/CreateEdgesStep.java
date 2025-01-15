@@ -127,7 +127,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
               for (Edge existingEdge : context.getDatabase().getGraphEngine()
                   .getEdges((VertexInternal) currentFrom, Vertex.DIRECTION.OUT, targetClass.getStringValue())) {
 
-                if (existingEdge.getOut().equals(currentTo)) {
+                if (existingEdge.getIn().equals(currentTo)) {
                   currentTo = null;
                   currentBatch++;
                   return new UpdatableResult(existingEdge.modify());

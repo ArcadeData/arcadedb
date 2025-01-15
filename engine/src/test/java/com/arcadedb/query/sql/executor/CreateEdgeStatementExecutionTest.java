@@ -112,12 +112,6 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
           """);
     });
 
-    database.transaction(() -> {
-      final ResultSet rs = database.query("SQL", """
-          select from vex
-          """);
-      assertThat(rs.stream().count()).isEqualTo(3);
-    });
     // CREATE EDGES FROM #1:0 TO [#1:1,#1:2]
     database.transaction(() -> {
       final ResultSet rs = database.command("sql", """
@@ -131,18 +125,31 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
       final ResultSet rs = database.command("sql", """
           CREATE EDGE edg FROM #1:0 TO [#1:1,#1:2] IF NOT EXISTS
           """);
-      assertThat(rs.hasNext()).isTrue();
       assertThat(rs.stream().count()).isEqualTo(2);
     });
-
+    // CHECK THAT TOTAL  EDGES ARE STILL 2
+    database.transaction(() -> {
+      final ResultSet rs = database.query("SQL", """
+          select from edg
+          """);
+      assertThat(rs.stream().count()).isEqualTo(2);
+    });
     // CREATE AGAIN (should create 1 edge)
     database.transaction(() -> {
       final ResultSet rs = database.command("sql", """
           CREATE EDGE edg FROM #1:0 TO [#1:1,#1:2,#1:0] IF NOT EXISTS
           """);
-      assertThat(rs.hasNext()).isTrue();
       assertThat(rs.stream().count()).isEqualTo(3);
     });
+
+    // CHECK THAT TOTAL  EDGES ARE STILL 3
+    database.transaction(() -> {
+      final ResultSet rs = database.query("SQL", """
+          select from edg
+          """);
+      assertThat(rs.stream().count()).isEqualTo(3);
+    });
+
 
   }
 }
