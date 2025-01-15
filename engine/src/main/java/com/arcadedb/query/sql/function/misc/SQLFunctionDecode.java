@@ -42,7 +42,7 @@ public class SQLFunctionDecode extends SQLFunctionAbstract {
   }
 
   @Override
-  public Object execute( final Object iThis, final Identifiable currentRecord, final Object currentResult,
+  public Object execute( final Object self, final Identifiable currentRecord, final Object currentResult,
       final Object[] params, final CommandContext context) {
 
     final String candidate = params[0].toString();

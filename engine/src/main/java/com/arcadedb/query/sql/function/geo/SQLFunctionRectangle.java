@@ -36,7 +36,7 @@ public class SQLFunctionRectangle extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     if (params.length != 4)
       throw new IllegalArgumentException("rectangle() requires 4 parameters");

@@ -439,7 +439,7 @@ public class SQLFunctionsTest {
       }
 
       @Override
-      public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult,
+      public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult,
           final Object[] params, final CommandContext context) {
         if (params[0] == null || params[1] == null)
           // CHECK BOTH EXPECTED PARAMETERS

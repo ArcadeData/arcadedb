@@ -45,7 +45,7 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
     return "Syntax error: " + name + "([<labels>])";
   }
 
-  public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult,
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult,
       final Object[] iParameters, final CommandContext context) {
 
     final String[] labels;
@@ -54,7 +54,7 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
     else
       labels = null;
 
-    return SQLQueryEngine.foreachRecord(iArgument -> move(context.getDatabase(), iArgument, labels), iThis, context);
+    return SQLQueryEngine.foreachRecord(iArgument -> move(context.getDatabase(), iArgument, labels), self, context);
   }
 
   protected Object v2v(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection,

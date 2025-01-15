@@ -35,7 +35,7 @@ public class SQLFunctionFirst extends SQLFunctionConfigurableAbstract {
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     final Object value = params[0];
 

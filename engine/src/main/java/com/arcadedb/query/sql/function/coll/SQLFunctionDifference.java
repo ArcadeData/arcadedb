@@ -37,7 +37,7 @@ public class SQLFunctionDifference extends SQLFunctionMultiValueAbstract<Set<Obj
   }
 
   @SuppressWarnings("unchecked")
-  public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     if (params[0] == null)
       return null;

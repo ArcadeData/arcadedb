@@ -32,7 +32,7 @@ public class ScriptExecutionTest extends TestHelper {
       super(NAME);
     }
 
-    public Object execute(Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+    public Object execute(Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
         CommandContext context) {
       throw new ConcurrentModificationException("" + params[0]);
     }

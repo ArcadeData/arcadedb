@@ -39,7 +39,7 @@ public class SQLFunctionUnionAll extends SQLFunctionMultiValueAbstract<Collectio
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext ctx) {
     if (params.length == 1) {
       // AGGREGATION MODE (STATEFUL)

@@ -35,7 +35,7 @@ public class SQLFunctionCircle extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     if (params.length != 3)
       throw new IllegalArgumentException("circle() requires 3 parameters");

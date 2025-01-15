@@ -36,7 +36,7 @@ public class SQLFunctionMap extends SQLFunctionMultiValueAbstract<Map<String, Ob
   }
 
   @SuppressWarnings("unchecked")
-  public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext ctx) {
 
     if (params.length > 2)

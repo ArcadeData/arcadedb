@@ -4043,7 +4043,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //
 //                            @Override
 //                            public Object execute(
-//                                    Object iThis,
+//                                    Object self,
 //                                    Identifiable currentRecord,
 //                                    Object currentResult,
 //                                    Object[] params,

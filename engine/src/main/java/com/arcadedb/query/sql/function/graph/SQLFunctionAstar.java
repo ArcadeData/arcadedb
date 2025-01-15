@@ -66,7 +66,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     super(NAME);
   }
 
-  public LinkedList<Vertex> execute(final Object iThis, final Identifiable currentRecord, final Object currentResult,
+  public LinkedList<Vertex> execute(final Object self, final Identifiable currentRecord, final Object currentResult,
       final Object[] params, final CommandContext ctx) {
     context = ctx;
     final SQLFunctionAstar context = this;

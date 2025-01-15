@@ -42,7 +42,7 @@ public class SQLFunctionEval extends SQLFunctionMathAbstract {
     super(NAME);
   }
 
-  public Object execute(Object iThis, final Identifiable record, final Object currentResult, final Object[] params, CommandContext context) {
+  public Object execute(Object self, final Identifiable record, final Object currentResult, final Object[] params, CommandContext context) {
     if (params.length < 1)
       throw new CommandExecutionException("invalid expression");
 

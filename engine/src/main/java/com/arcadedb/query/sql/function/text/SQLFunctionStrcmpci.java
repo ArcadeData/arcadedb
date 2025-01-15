@@ -34,7 +34,7 @@ public class SQLFunctionStrcmpci extends SQLFunctionAbstract {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     String s1 = null;
     if (params[0] != null && params[0] instanceof String string)
