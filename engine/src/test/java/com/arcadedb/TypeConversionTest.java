@@ -489,6 +489,12 @@ public class TypeConversionTest extends TestHelper {
       ResultSet resultSet = database.command("sql", "insert into ConversionTest set datetime_micros = ?", date1);
       assertThat(resultSet.next().toElement().get("datetime_micros")).isEqualTo(date1.truncatedTo(ChronoUnit.MICROS));
 
+      try {
+        TimeUnit.MILLISECONDS.sleep(10);
+      } catch (InterruptedException e) {
+        throw new RuntimeException(e);
+      }
+
       resultSet = database.command("sql", "insert into ConversionTest set datetime_micros = ?", date2);
       assertThat(resultSet.next().toElement().get("datetime_micros")).isEqualTo(date2.truncatedTo(ChronoUnit.MICROS));
 
