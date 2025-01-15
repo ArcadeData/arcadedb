@@ -64,7 +64,7 @@ public class ArrayRangeSelector extends SimpleNode {
     }
   }
 
-  public Object execute(final Identifiable iCurrentRecord, final Object result, final CommandContext context) {
+  public Object execute(final Identifiable currentRecord, final Object result, final CommandContext context) {
     if (result == null) {
       return null;
     }
@@ -73,14 +73,14 @@ public class ArrayRangeSelector extends SimpleNode {
     }
     Integer lFrom = from;
     if (fromSelector != null) {
-      lFrom = fromSelector.getValue(iCurrentRecord, result, context);
+      lFrom = fromSelector.getValue(currentRecord, result, context);
     }
     if (lFrom == null) {
       lFrom = 0;
     }
     Integer lTo = to;
     if (toSelector != null) {
-      lTo = toSelector.getValue(iCurrentRecord, result, context);
+      lTo = toSelector.getValue(currentRecord, result, context);
     }
     if (included) {
       lTo++;
@@ -104,7 +104,7 @@ public class ArrayRangeSelector extends SimpleNode {
     return Arrays.asList(Arrays.copyOfRange(arrayResult, lFrom, lTo));
   }
 
-  public Object execute(final Result iCurrentRecord, final Object result, final CommandContext context) {
+  public Object execute(final Result currentRecord, final Object result, final CommandContext context) {
     if (result == null) {
       return null;
     }
@@ -113,14 +113,14 @@ public class ArrayRangeSelector extends SimpleNode {
     }
     Integer lFrom = from;
     if (fromSelector != null) {
-      lFrom = fromSelector.getValue(iCurrentRecord, result, context);
+      lFrom = fromSelector.getValue(currentRecord, result, context);
     }
     if (lFrom == null) {
       lFrom = 0;
     }
     Integer lTo = to;
     if (toSelector != null) {
-      lTo = toSelector.getValue(iCurrentRecord, result, context);
+      lTo = toSelector.getValue(currentRecord, result, context);
     }
     if (included) {
       lTo++;

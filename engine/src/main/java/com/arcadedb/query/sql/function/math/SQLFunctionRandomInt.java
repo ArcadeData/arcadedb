@@ -40,12 +40,12 @@ public class SQLFunctionRandomInt extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
-    if (iParams == null || iParams.length < 1)
+  public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
+    if (params == null || params.length < 1)
       throw new CommandSQLParsingException("Expected maximum value in function");
 
-    int bound = iParams[0] instanceof Number n ? n.intValue() : Integer.parseInt(iParams[0].toString());
+    int bound = params[0] instanceof Number n ? n.intValue() : Integer.parseInt(params[0].toString());
 
     return new SecureRandom().nextInt(bound);
   }

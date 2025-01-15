@@ -57,12 +57,12 @@ public class SQLFunctionIf extends SQLFunctionAbstract {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params, final CommandContext context) {
 
     final boolean result;
 
     try {
-      final Object condition = iParams[0];
+      final Object condition = params[0];
       if (condition instanceof Boolean boolean1)
         result = boolean1;
       else if (condition instanceof String)
@@ -72,7 +72,7 @@ public class SQLFunctionIf extends SQLFunctionAbstract {
       else
         return null;
 
-      return result ? iParams[1] : iParams[2];
+      return result ? params[1] : params[2];
 
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error during if execution", e);

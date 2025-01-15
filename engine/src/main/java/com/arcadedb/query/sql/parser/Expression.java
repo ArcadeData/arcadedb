@@ -58,19 +58,19 @@ public class Expression extends SimpleNode {
     mathExpression = new BaseExpression(attr, modifier);
   }
 
-  public Object execute(final Identifiable iCurrentRecord, final CommandContext context) {
+  public Object execute(final Identifiable currentRecord, final CommandContext context) {
     if (isNull)
       return null;
     else if (rid != null)
-      return rid.toRecordId(iCurrentRecord, context);
+      return rid.toRecordId(currentRecord, context);
     else if (mathExpression != null)
-      return mathExpression.execute(iCurrentRecord, context);
+      return mathExpression.execute(currentRecord, context);
     else if (whereCondition != null)
-      return whereCondition.matchesFilters(iCurrentRecord, context);
+      return whereCondition.matchesFilters(currentRecord, context);
     else if (arrayConcatExpression != null)
-      return arrayConcatExpression.execute(iCurrentRecord, context);
+      return arrayConcatExpression.execute(currentRecord, context);
     else if (json != null)
-      return json.toMap(iCurrentRecord, context);
+      return json.toMap(currentRecord, context);
     else if (booleanValue != null)
       return booleanValue;
     else if (value instanceof PNumber number)
@@ -79,19 +79,19 @@ public class Expression extends SimpleNode {
     return value;
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext context) {
+  public Object execute(final Result currentRecord, final CommandContext context) {
     if (isNull)
       return null;
     else if (rid != null)
-      return rid.toRecordId(iCurrentRecord, context);
+      return rid.toRecordId(currentRecord, context);
     else if (mathExpression != null)
-      return mathExpression.execute(iCurrentRecord, context);
+      return mathExpression.execute(currentRecord, context);
     else if (whereCondition != null)
-      return whereCondition.matchesFilters(iCurrentRecord, context);
+      return whereCondition.matchesFilters(currentRecord, context);
     else if (arrayConcatExpression != null)
-      return arrayConcatExpression.execute(iCurrentRecord, context);
+      return arrayConcatExpression.execute(currentRecord, context);
     else if (json != null)
-      return json.toMap(iCurrentRecord, context);
+      return json.toMap(currentRecord, context);
     else if (booleanValue != null)
       return booleanValue;
     else if (value instanceof PNumber number)

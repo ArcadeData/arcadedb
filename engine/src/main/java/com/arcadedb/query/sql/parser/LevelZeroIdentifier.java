@@ -47,28 +47,28 @@ public class LevelZeroIdentifier extends SimpleNode {
     }
   }
 
-  public Object execute(final Record iCurrentRecord, final CommandContext context) {
+  public Object execute(final Record currentRecord, final CommandContext context) {
     if (functionCall != null) {
-      return functionCall.execute(iCurrentRecord, context);
+      return functionCall.execute(currentRecord, context);
     }
     if (collection != null) {
-      return collection.execute(iCurrentRecord, context);
+      return collection.execute(currentRecord, context);
     }
     if (Boolean.TRUE.equals(self)) {
-      return iCurrentRecord;
+      return currentRecord;
     }
     throw new UnsupportedOperationException();
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext context) {
+  public Object execute(final Result currentRecord, final CommandContext context) {
     if (functionCall != null) {
-      return functionCall.execute(iCurrentRecord, context);
+      return functionCall.execute(currentRecord, context);
     }
     if (collection != null) {
-      return collection.execute(iCurrentRecord, context);
+      return collection.execute(currentRecord, context);
     }
     if (Boolean.TRUE.equals(self)) {
-      return iCurrentRecord;
+      return currentRecord;
     }
     throw new UnsupportedOperationException();
   }

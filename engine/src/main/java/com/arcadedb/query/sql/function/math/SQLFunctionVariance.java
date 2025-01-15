@@ -65,12 +65,12 @@ public class SQLFunctionVariance extends SQLFunctionAbstract {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
-    if (iParams[0] instanceof Number number) {
+  public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
+    if (params[0] instanceof Number number) {
       addValue(number);
-    } else if (MultiValue.isMultiValue(iParams[0])) {
-      for (final Object n : MultiValue.getMultiValueIterable(iParams[0])) {
+    } else if (MultiValue.isMultiValue(params[0])) {
+      for (final Object n : MultiValue.getMultiValueIterable(params[0])) {
         addValue((Number) n);
       }
     }

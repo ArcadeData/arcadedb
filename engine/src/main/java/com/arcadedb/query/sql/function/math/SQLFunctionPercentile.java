@@ -45,19 +45,19 @@ public class SQLFunctionPercentile extends SQLFunctionAbstract {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
 
     if (quantiles.isEmpty()) { // set quantiles once
-      for (int i = 1; i < iParams.length; ++i) {
-        this.quantiles.add(Double.parseDouble(iParams[i].toString()));
+      for (int i = 1; i < params.length; ++i) {
+        this.quantiles.add(Double.parseDouble(params[i].toString()));
       }
     }
 
-    if (iParams[0] instanceof Number number) {
+    if (params[0] instanceof Number number) {
       addValue(number);
-    } else if (MultiValue.isMultiValue(iParams[0])) {
-      for (final Object n : MultiValue.getMultiValueIterable(iParams[0])) {
+    } else if (MultiValue.isMultiValue(params[0])) {
+      for (final Object n : MultiValue.getMultiValueIterable(params[0])) {
         addValue((Number) n);
       }
     }

@@ -81,14 +81,14 @@ public class MethodCall extends SimpleNode {
     return execute(targetObjects, context, methodName.getStringValue(), params, iPossibleResults);
   }
 
-  private Object execute(final Object targetObjects, final CommandContext context, final String name, final List<Expression> iParams,
+  private Object execute(final Object targetObjects, final CommandContext context, final String name, final List<Expression> params,
       final Iterable<Identifiable> iPossibleResults) {
     final List<Object> paramValues = new ArrayList<Object>();
     Object val = context.getVariable("current");
     if (val == null && targetObjects == null) {
       return null;
     }
-    for (final Expression expr : iParams) {
+    for (final Expression expr : params) {
       if (val instanceof Identifiable identifiable) {
         paramValues.add(expr.execute(identifiable, context));
       } else if (val instanceof Result result) {

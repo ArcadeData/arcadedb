@@ -39,14 +39,14 @@ public class SQLFunctionPolygon extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
-    if (iParams.length != 1)
+  public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
+    if (params.length != 1)
       throw new IllegalArgumentException("polygon() requires array of points as parameters");
 
     final SpatialContext spatialContext = GeoUtils.getSpatialContext();
 
-    final List<Object> points = (List<Object>) iParams[0];
+    final List<Object> points = (List<Object>) params[0];
 
     ShapeFactory.PolygonBuilder polygon = spatialContext.getShapeFactory().polygon();
 

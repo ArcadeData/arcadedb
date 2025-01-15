@@ -94,26 +94,26 @@ public class BaseExpression extends MathExpression {
 
   }
 
-  public Object execute(final Identifiable iCurrentRecord, final CommandContext context) {
+  public Object execute(final Identifiable currentRecord, final CommandContext context) {
     Object result = null;
     if (isNull)
       result = null;
     else if (number != null)
       result = number.getValue();
     else if (identifier != null)
-      result = identifier.execute(iCurrentRecord != null ? iCurrentRecord.getRecord() : null, context);
+      result = identifier.execute(currentRecord != null ? currentRecord.getRecord() : null, context);
     else if (string != null && string.length() > 1)
       result = decode(string.substring(1, string.length() - 1));
     else if (inputParam != null)
       result = inputParam.getValue(context.getInputParameters());
 
     if (modifier != null)
-      result = modifier.execute(iCurrentRecord, result, context);
+      result = modifier.execute(currentRecord, result, context);
 
     return result;
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext context) {
+  public Object execute(final Result currentRecord, final CommandContext context) {
     Object result = null;
     if (isNull)
       result = null;
@@ -138,11 +138,11 @@ public class BaseExpression extends MathExpression {
               // POSTGRES PARAMETERS JDBC DRIVER START FROM 1
               result = params.get(String.valueOf(pos - 1));
             else
-              result = identifier.execute(iCurrentRecord, context);
+              result = identifier.execute(currentRecord, context);
           } else
-            result = identifier.execute(iCurrentRecord, context);
+            result = identifier.execute(currentRecord, context);
         } else
-          result = identifier.execute(iCurrentRecord, context);
+          result = identifier.execute(currentRecord, context);
       } else if (string != null && string.length() > 1) {
         result = decode(string.substring(1, string.length() - 1));
       } else if (inputParam != null) {
@@ -150,7 +150,7 @@ public class BaseExpression extends MathExpression {
       }
     }
     if (modifier != null) {
-      result = modifier.execute(iCurrentRecord, result, context);
+      result = modifier.execute(currentRecord, result, context);
     }
     return result;
   }

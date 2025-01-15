@@ -66,18 +66,18 @@ public class SQLFunctionIfNull extends SQLFunctionAbstract {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
     /*
      * iFuncParams [0] field/value to check for null [1] return value if [0] is null [2] optional return value if [0] is not null
      */
-    if (iParams[0] != null) {
-      if (iParams.length == 3) {
-        return iParams[2];
+    if (params[0] != null) {
+      if (params.length == 3) {
+        return params[2];
       }
-      return iParams[0];
+      return params[0];
     }
-    return iParams[1];
+    return params[1];
   }
 
   @Override

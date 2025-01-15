@@ -68,42 +68,42 @@ public class Modifier extends SimpleNode {
       next.toString(params, builder);
   }
 
-  public Object execute(final Identifiable iCurrentRecord, Object result, final CommandContext context) {
+  public Object execute(final Identifiable currentRecord, Object result, final CommandContext context) {
     if (methodCall != null)
       result = methodCall.execute(result, context);
     else if (suffix != null)
       result = suffix.execute(result, context);
     else if (arrayRange != null)
-      result = arrayRange.execute(iCurrentRecord, result, context);
+      result = arrayRange.execute(currentRecord, result, context);
     else if (condition != null)
       result = filterByCondition(result, context);
     else if (arraySingleValues != null)
-      result = arraySingleValues.execute(iCurrentRecord, result, context);
+      result = arraySingleValues.execute(currentRecord, result, context);
     else if (rightBinaryCondition != null)
-      result = rightBinaryCondition.execute(iCurrentRecord, result, context);
+      result = rightBinaryCondition.execute(currentRecord, result, context);
 
     if (next != null)
-      result = next.execute(iCurrentRecord, result, context);
+      result = next.execute(currentRecord, result, context);
 
     return result;
   }
 
-  public Object execute(final Result iCurrentRecord, Object result, final CommandContext context) {
+  public Object execute(final Result currentRecord, Object result, final CommandContext context) {
     if (methodCall != null)
       result = methodCall.execute(result, context);
     else if (suffix != null)
       result = suffix.execute(result, context);
     else if (arrayRange != null)
-      result = arrayRange.execute(iCurrentRecord, result, context);
+      result = arrayRange.execute(currentRecord, result, context);
     else if (condition != null)
       result = filterByCondition(result, context);
     else if (arraySingleValues != null)
-      result = arraySingleValues.execute(iCurrentRecord, result, context);
+      result = arraySingleValues.execute(currentRecord, result, context);
     else if (rightBinaryCondition != null)
-      result = rightBinaryCondition.execute(iCurrentRecord, result, context);
+      result = rightBinaryCondition.execute(currentRecord, result, context);
 
     if (next != null)
-      result = next.execute(iCurrentRecord, result, context);
+      result = next.execute(currentRecord, result, context);
 
     return result;
   }

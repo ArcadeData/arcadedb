@@ -41,13 +41,13 @@ public class SQLMethodFormat extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable iRecord, final CommandContext iContext, final Object[] iParams) {
+  public Object execute(final Object value, final Identifiable iRecord, final CommandContext context, final Object[] params) {
 
     // TRY TO RESOLVE AS DYNAMIC VALUE
-    String format = (String) getParameterValue(iRecord, iParams[0].toString());
+    String format = (String) getParameterValue(iRecord, params[0].toString());
     if (format == null)
       // USE STATIC ONE
-      format = iParams[0].toString();
+      format = params[0].toString();
 
     if (format == null)
       throw new IllegalArgumentException("Format was null");
@@ -62,7 +62,7 @@ public class SQLMethodFormat extends AbstractSQLMethod {
       return result;
 
     } else if (DateUtils.isDate(value)) {
-      return DateUtils.format(value, format, iParams.length > 1 ? (String) iParams[1] : null);
+      return DateUtils.format(value, format, params.length > 1 ? (String) params[1] : null);
     }
     return value != null ? format.formatted(value) : null;
   }

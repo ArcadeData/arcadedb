@@ -56,8 +56,8 @@ public class SQLMethodAsJSON extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object me, final Identifiable iCurrentRecord, final CommandContext iContext,
-      final Object[] iParams) {
+  public Object execute(final Object me, final Identifiable currentRecord, final CommandContext context,
+      final Object[] params) {
     if (me == null)
       return null;
 
@@ -77,7 +77,7 @@ public class SQLMethodAsJSON extends AbstractSQLMethod {
     } else if (MultiValue.isMultiValue(me)) {
       final JSONArray json = new JSONArray();
       for (final Object o : MultiValue.getMultiValueIterable(me, false))
-        json.put(execute(o, iCurrentRecord, iContext, iParams));
+        json.put(execute(o, currentRecord, context, params));
       return json;
     }
     return null;

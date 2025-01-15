@@ -34,12 +34,12 @@ public class SQLFunctionPoint extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
-    if (iParams.length != 2)
+  public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
+    if (params.length != 2)
       throw new IllegalArgumentException("point() requires X and Y as parameters");
 
-    return GeoUtils.getSpatialContext().getShapeFactory().pointXY(GeoUtils.getDoubleValue(iParams[0]), GeoUtils.getDoubleValue(iParams[1]));
+    return GeoUtils.getSpatialContext().getShapeFactory().pointXY(GeoUtils.getDoubleValue(params[0]), GeoUtils.getDoubleValue(params[1]));
   }
 
   public String getSyntax() {

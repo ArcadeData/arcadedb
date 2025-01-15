@@ -54,14 +54,14 @@ public class SQLFunctionSymmetricDifference extends SQLFunctionMultiValueAbstrac
   }
 
   @SuppressWarnings("unchecked")
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
-    if (iParams[0] == null)
+  public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
+    if (params[0] == null)
       return null;
 
-    final Object value = iParams[0];
+    final Object value = params[0];
 
-    if (iParams.length == 1) {
+    if (params.length == 1) {
       // AGGREGATION MODE (STATEFUL)
       if (context == null) {
         context = new HashSet<Object>();
@@ -79,7 +79,7 @@ public class SQLFunctionSymmetricDifference extends SQLFunctionMultiValueAbstrac
       final Set<Object> result = new HashSet<Object>();
       final Set<Object> rejected = new HashSet<Object>();
 
-      for (final Object iParameter : iParams) {
+      for (final Object iParameter : params) {
         if (iParameter instanceof Collection<?>) {
           addItemsToResult((Collection<Object>) iParameter, result, rejected);
         } else {

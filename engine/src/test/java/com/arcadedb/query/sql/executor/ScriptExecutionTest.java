@@ -32,9 +32,9 @@ public class ScriptExecutionTest extends TestHelper {
       super(NAME);
     }
 
-    public Object execute(Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-        CommandContext iContext) {
-      throw new ConcurrentModificationException("" + iParams[0]);
+    public Object execute(Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+        CommandContext context) {
+      throw new ConcurrentModificationException("" + params[0]);
     }
 
     public String getSyntax() {

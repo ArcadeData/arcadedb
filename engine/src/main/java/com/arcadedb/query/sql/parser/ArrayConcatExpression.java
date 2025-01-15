@@ -92,18 +92,18 @@ public class ArrayConcatExpression extends SimpleNode {
     return result;
   }
 
-  public Object execute(final Identifiable iCurrentRecord, final CommandContext context) {
-    Object result = childExpressions.get(0).execute(iCurrentRecord, context);
+  public Object execute(final Identifiable currentRecord, final CommandContext context) {
+    Object result = childExpressions.get(0).execute(currentRecord, context);
     for (int i = 1; i < childExpressions.size(); i++) {
-      result = apply(result, childExpressions.get(i).execute(iCurrentRecord, context));
+      result = apply(result, childExpressions.get(i).execute(currentRecord, context));
     }
     return result;
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext context) {
-    Object result = childExpressions.get(0).execute(iCurrentRecord, context);
+  public Object execute(final Result currentRecord, final CommandContext context) {
+    Object result = childExpressions.get(0).execute(currentRecord, context);
     for (int i = 1; i < childExpressions.size(); i++) {
-      result = apply(result, childExpressions.get(i).execute(iCurrentRecord, context));
+      result = apply(result, childExpressions.get(i).execute(currentRecord, context));
     }
     return result;
   }

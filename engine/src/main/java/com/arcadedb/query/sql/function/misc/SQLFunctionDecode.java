@@ -42,11 +42,11 @@ public class SQLFunctionDecode extends SQLFunctionAbstract {
   }
 
   @Override
-  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
-      final Object[] iParams, final CommandContext iContext) {
+  public Object execute( final Object iThis, final Identifiable currentRecord, final Object currentResult,
+      final Object[] params, final CommandContext context) {
 
-    final String candidate = iParams[0].toString();
-    final String format = iParams[1].toString();
+    final String candidate = params[0].toString();
+    final String format = params[1].toString();
 
     if (SQLFunctionEncode.FORMAT_BASE64.equalsIgnoreCase(format)) {
       return Base64.getDecoder().decode(candidate);

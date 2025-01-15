@@ -439,19 +439,19 @@ public class SQLFunctionsTest {
       }
 
       @Override
-      public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
-          final Object[] iParams, final CommandContext iContext) {
-        if (iParams[0] == null || iParams[1] == null)
+      public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult,
+          final Object[] params, final CommandContext context) {
+        if (params[0] == null || params[1] == null)
           // CHECK BOTH EXPECTED PARAMETERS
           return null;
 
-        if (!(iParams[0] instanceof Number) || !(iParams[1] instanceof Number))
+        if (!(params[0] instanceof Number) || !(params[1] instanceof Number))
           // EXCLUDE IT FROM THE RESULT SET
           return null;
 
         // USE DOUBLE TO AVOID LOSS OF PRECISION
-        final double v1 = ((Number) iParams[0]).doubleValue();
-        final double v2 = ((Number) iParams[1]).doubleValue();
+        final double v1 = ((Number) params[0]).doubleValue();
+        final double v2 = ((Number) params[1]).doubleValue();
 
         return Math.max(v1, v2);
       }

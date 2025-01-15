@@ -53,19 +53,19 @@ public class BaseIdentifier extends SimpleNode {
       suffix.toString(params, builder);
   }
 
-  public Object execute(final Record iCurrentRecord, final CommandContext context) {
+  public Object execute(final Record currentRecord, final CommandContext context) {
     if (levelZero != null)
-      return levelZero.execute(iCurrentRecord, context);
+      return levelZero.execute(currentRecord, context);
     if (suffix != null)
-      return suffix.execute(iCurrentRecord, context);
+      return suffix.execute(currentRecord, context);
     return null;
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext context) {
+  public Object execute(final Result currentRecord, final CommandContext context) {
     if (levelZero != null)
-      return levelZero.execute(iCurrentRecord, context);
+      return levelZero.execute(currentRecord, context);
     if (suffix != null)
-      return suffix.execute(iCurrentRecord, context);
+      return suffix.execute(currentRecord, context);
     return null;
   }
 

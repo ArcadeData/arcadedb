@@ -53,15 +53,15 @@ public class SQLMethodTransform extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
-      final Object[] iParams) {
-    if (value == null || iParams == null || iParams.length == 0)
+  public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context,
+      final Object[] params) {
+    if (value == null || params == null || params.length == 0)
       return null;
 
-    final DefaultSQLMethodFactory methodFactory = ((SQLQueryEngine) iContext.getDatabase()
+    final DefaultSQLMethodFactory methodFactory = ((SQLQueryEngine) context.getDatabase()
         .getQueryEngine("SQL")).getMethodFactory();
-    final List<SQLMethod> transformers = new ArrayList<>(iParams.length);
-    for (Object o : iParams) {
+    final List<SQLMethod> transformers = new ArrayList<>(params.length);
+    for (Object o : params) {
       if (o == null)
         throw new CommandSQLParsingException("Null argument in arguments for transform() method");
       transformers.add(methodFactory.createMethod(o.toString()));
@@ -73,7 +73,7 @@ public class SQLMethodTransform extends AbstractSQLMethod {
         Object transformed = o;
 
         for (SQLMethod m : transformers)
-          transformed = m.execute(transformed, null, iContext, EMPTY_ARGS);
+          transformed = m.execute(transformed, null, context, EMPTY_ARGS);
 
         newList.add(transformed);
       }
@@ -84,7 +84,7 @@ public class SQLMethodTransform extends AbstractSQLMethod {
         Object transformed = o;
 
         for (SQLMethod m : transformers)
-          transformed = m.execute(transformed, null, iContext, EMPTY_ARGS);
+          transformed = m.execute(transformed, null, context, EMPTY_ARGS);
 
         newSet.add(transformed);
       }

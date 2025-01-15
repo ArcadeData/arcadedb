@@ -67,13 +67,13 @@ public interface SQLMethod extends Comparable<SQLMethod> {
    * Process a record.
    *
    * @param iThis          current object
-   * @param iCurrentRecord : current record
-   * @param iContext       execution context
-   * @param iParams        : function parameters, number is ensured to be within minParams and maxParams.
+   * @param currentRecord : current record
+   * @param context       execution context
+   * @param params        : function parameters, number is ensured to be within minParams and maxParams.
    *
    * @return evaluation result
    */
-  Object execute(Object iThis, Identifiable iCurrentRecord, CommandContext iContext, Object[] iParams);
+  Object execute(Object iThis, Identifiable currentRecord, CommandContext context, Object[] params);
 
   boolean evaluateParameters();
 }

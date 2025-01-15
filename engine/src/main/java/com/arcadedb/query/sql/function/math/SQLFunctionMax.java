@@ -40,12 +40,12 @@ public class SQLFunctionMax extends SQLFunctionMathAbstract {
   }
 
   @SuppressWarnings({ "unchecked", "rawtypes" })
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
     // calculate max value for current record
     // consider both collection of parameters and collection in each parameter
     Object max = null;
-    for (Object item : iParams) {
+    for (Object item : params) {
       if (item instanceof Collection<?> collection) {
         for (final Object subitem : collection) {
           if (max == null || subitem != null && ((Comparable) subitem).compareTo(max) > 0)

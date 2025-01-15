@@ -673,49 +673,49 @@ public class MathExpression extends SimpleNode {
     return childExpressions.toArray(new MathExpression[childExpressions.size()]);
   }
 
-  public Object execute(final Identifiable iCurrentRecord, final CommandContext context) {
+  public Object execute(final Identifiable currentRecord, final CommandContext context) {
     if (childExpressions.isEmpty())
       return null;
 
     if (childExpressions.size() == 1)
-      return childExpressions.get(0).execute(iCurrentRecord, context);
+      return childExpressions.get(0).execute(currentRecord, context);
 
     if (childExpressions.size() == 2) {
-      final Object leftValue = childExpressions.get(0).execute(iCurrentRecord, context);
-      final Object rightValue = childExpressions.get(1).execute(iCurrentRecord, context);
+      final Object leftValue = childExpressions.get(0).execute(currentRecord, context);
+      final Object rightValue = childExpressions.get(1).execute(currentRecord, context);
       return operators.get(0).apply(leftValue, rightValue);
     }
 
-    return calculateWithOpPriority(iCurrentRecord, context);
+    return calculateWithOpPriority(currentRecord, context);
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext context) {
+  public Object execute(final Result currentRecord, final CommandContext context) {
     if (childExpressions.isEmpty())
       return null;
 
     if (childExpressions.size() == 1)
-      return childExpressions.get(0).execute(iCurrentRecord, context);
+      return childExpressions.get(0).execute(currentRecord, context);
 
     if (childExpressions.size() == 2) {
-      final Object leftValue = childExpressions.get(0).execute(iCurrentRecord, context);
-      final Object rightValue = childExpressions.get(1).execute(iCurrentRecord, context);
+      final Object leftValue = childExpressions.get(0).execute(currentRecord, context);
+      final Object rightValue = childExpressions.get(1).execute(currentRecord, context);
       return operators.get(0).apply(leftValue, rightValue);
     }
 
-    return calculateWithOpPriority(iCurrentRecord, context);
+    return calculateWithOpPriority(currentRecord, context);
   }
 
-  private Object calculateWithOpPriority(final Result iCurrentRecord, final CommandContext context) {
+  private Object calculateWithOpPriority(final Result currentRecord, final CommandContext context) {
     final Deque valuesStack = new ArrayDeque<>();
     final Deque<Operator> operatorsStack = new ArrayDeque<Operator>();
 
     final MathExpression nextExpression = childExpressions.get(0);
-    final Object val = nextExpression.execute(iCurrentRecord, context);
+    final Object val = nextExpression.execute(currentRecord, context);
     valuesStack.push(val == null ? NULL_VALUE : val);
 
     for (int i = 0; i < operators.size() && i + 1 < childExpressions.size(); i++) {
       final Operator nextOperator = operators.get(i);
-      final Object rightValue = childExpressions.get(i + 1).execute(iCurrentRecord, context);
+      final Object rightValue = childExpressions.get(i + 1).execute(currentRecord, context);
 
       if (!operatorsStack.isEmpty() && operatorsStack.peek().getPriority() <= nextOperator.getPriority()) {
         Object right = valuesStack.poll();
@@ -733,17 +733,17 @@ public class MathExpression extends SimpleNode {
     return iterateOnPriorities(valuesStack, operatorsStack);
   }
 
-  private Object calculateWithOpPriority(final Identifiable iCurrentRecord, final CommandContext context) {
+  private Object calculateWithOpPriority(final Identifiable currentRecord, final CommandContext context) {
     final Deque valuesStack = new ArrayDeque<>();
     final Deque<Operator> operatorsStack = new ArrayDeque<Operator>();
 
     final MathExpression nextExpression = childExpressions.get(0);
-    final Object val = nextExpression.execute(iCurrentRecord, context);
+    final Object val = nextExpression.execute(currentRecord, context);
     valuesStack.push(val == null ? NULL_VALUE : val);
 
     for (int i = 0; i < operators.size() && i + 1 < childExpressions.size(); i++) {
       final Operator nextOperator = operators.get(i);
-      final Object rightValue = childExpressions.get(i + 1).execute(iCurrentRecord, context);
+      final Object rightValue = childExpressions.get(i + 1).execute(currentRecord, context);
 
       if (!operatorsStack.isEmpty() && operatorsStack.peek().getPriority() <= nextOperator.getPriority()) {
         Object right = valuesStack.poll();

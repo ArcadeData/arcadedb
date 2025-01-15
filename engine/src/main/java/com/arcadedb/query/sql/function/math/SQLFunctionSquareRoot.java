@@ -32,8 +32,8 @@ public class SQLFunctionSquareRoot extends SQLFunctionMathAbstract {
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iRecord, final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
-    final Object inputValue = iParams[0];
+  public Object execute(final Object iThis, final Identifiable record, final Object currentResult, final Object[] params, final CommandContext context) {
+    final Object inputValue = params[0];
 
     if (inputValue == null) {
       result = null;

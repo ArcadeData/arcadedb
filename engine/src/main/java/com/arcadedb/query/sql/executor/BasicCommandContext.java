@@ -222,18 +222,18 @@ public class BasicCommandContext implements CommandContext {
   /**
    * Set the inherited context avoid to copying all the values every time.
    */
-  public CommandContext setChild(final CommandContext iContext) {
-    if (iContext == null) {
+  public CommandContext setChild(final CommandContext context) {
+    if (context == null) {
       if (child != null) {
         // REMOVE IT
         child.setParent(null);
         child = null;
       }
 
-    } else if (child != iContext) {
+    } else if (child != context) {
       // ADD IT
-      child = iContext;
-      iContext.setParent(this);
+      child = context;
+      context.setParent(this);
     }
     return this;
   }

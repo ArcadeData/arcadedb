@@ -35,13 +35,13 @@ public class TraverseProjectionItem extends SimpleNode {
     super(id);
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext context) {
+  public Object execute(final Result currentRecord, final CommandContext context) {
     if (isStar()) {
-      return handleStar(iCurrentRecord, context);
+      return handleStar(currentRecord, context);
     }
-    Object result = base.execute(iCurrentRecord, context);
+    Object result = base.execute(currentRecord, context);
     if (modifier != null) {
-      result = modifier.execute(iCurrentRecord, result, context);
+      result = modifier.execute(currentRecord, result, context);
     }
     return result;
   }
@@ -50,10 +50,10 @@ public class TraverseProjectionItem extends SimpleNode {
     return base.toString().equals("*") && modifier == null;
   }
 
-  private Object handleStar(final Result iCurrentRecord, final CommandContext context) {
+  private Object handleStar(final Result currentRecord, final CommandContext context) {
     final Set<Object> result = new HashSet<>();
-    for (final String prop : iCurrentRecord.getPropertyNames()) {
-      Object val = iCurrentRecord.getProperty(prop);
+    for (final String prop : currentRecord.getPropertyNames()) {
+      Object val = currentRecord.getProperty(prop);
       if (isOResult(val) || isValidIdentifiable(val)) {
         result.add(val);
 

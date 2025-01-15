@@ -488,9 +488,9 @@ public class BasicGraphTest extends BaseGraphTest {
     try {
       ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(new SQLFunctionAbstract("ciao") {
         @Override
-        public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
-            final Object[] iParams,
-            final CommandContext iContext) {
+        public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult,
+            final Object[] params,
+            final CommandContext context) {
           return "Ciao";
         }
 

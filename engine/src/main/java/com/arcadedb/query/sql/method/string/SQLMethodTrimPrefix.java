@@ -35,12 +35,12 @@ public class SQLMethodTrimPrefix extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute( final Object value, final Identifiable iRecord, final CommandContext iContext, final Object[] iParams) {
-    if (value == null || null == iParams || null == iParams[0])
+  public Object execute( final Object value, final Identifiable iRecord, final CommandContext context, final Object[] params) {
+    if (value == null || null == params || null == params[0])
       return value;
 
     final String strval = value.toString();
-    final String prefix = iParams[0].toString();
+    final String prefix = params[0].toString();
 
     if (strval.startsWith(prefix))
       return strval.substring(prefix.length());

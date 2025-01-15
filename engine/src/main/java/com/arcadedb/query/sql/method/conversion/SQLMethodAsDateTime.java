@@ -47,8 +47,8 @@ public class SQLMethodAsDateTime extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext context,
-      final Object[] iParams) {
+  public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context,
+      final Object[] params) {
     if (value == null)
       return null;
 
@@ -57,7 +57,7 @@ public class SQLMethodAsDateTime extends AbstractSQLMethod {
     else if (value instanceof Number number)
       return new Date(number.longValue());
 
-    final String format = iParams.length > 0 ? iParams[0].toString() : context.getDatabase().getSchema().getDateTimeFormat();
+    final String format = params.length > 0 ? params[0].toString() : context.getDatabase().getSchema().getDateTimeFormat();
     final Object date = DateUtils.parse(value.toString(), format);
 
     return DateUtils.getDate(date, context.getDatabase().getSerializer().getDateTimeImplementation());

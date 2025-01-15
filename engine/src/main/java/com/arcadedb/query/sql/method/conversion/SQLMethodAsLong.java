@@ -41,7 +41,7 @@ public class SQLMethodAsLong extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
+  public Object execute(Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
     if (value instanceof Number number)
       value = number.longValue();
     else if (value instanceof Date date)

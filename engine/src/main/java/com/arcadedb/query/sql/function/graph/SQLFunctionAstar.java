@@ -66,14 +66,14 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     super(NAME);
   }
 
-  public LinkedList<Vertex> execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
-      final Object[] iParams, final CommandContext iContext) {
-    context = iContext;
+  public LinkedList<Vertex> execute(final Object iThis, final Identifiable currentRecord, final Object currentResult,
+      final Object[] params, final CommandContext context) {
+    context = context;
     final SQLFunctionAstar context = this;
 
-    final Document record = iCurrentRecord != null ? (Document) iCurrentRecord.getRecord() : null;
+    final Document record = currentRecord != null ? (Document) currentRecord.getRecord() : null;
 
-    Object source = iParams[0];
+    Object source = params[0];
     if (MultiValue.isMultiValue(source)) {
       if (MultiValue.getSize(source) > 1)
         throw new IllegalArgumentException("Only one sourceVertex is allowed");
@@ -96,7 +96,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       throw new IllegalArgumentException("The sourceVertex must be a vertex record");
     }
 
-    Object dest = iParams[1];
+    Object dest = params[1];
     if (MultiValue.isMultiValue(dest)) {
       if (MultiValue.getSize(dest) > 1)
         throw new IllegalArgumentException("Only one destinationVertex is allowed");
@@ -119,20 +119,20 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       throw new IllegalArgumentException("The destinationVertex must be a vertex record");
     }
 
-    paramWeightFieldName = FileUtils.getStringContent(iParams[2]);
+    paramWeightFieldName = FileUtils.getStringContent(params[2]);
 
-    if (iParams.length > 3) {
-      bindAdditionalParams(iParams[3], context);
+    if (params.length > 3) {
+      bindAdditionalParams(params[3], context);
     }
-    iContext.setVariable("getNeighbors", 0);
+    context.setVariable("getNeighbors", 0);
     if (paramSourceVertex == null || paramDestinationVertex == null) {
       return new LinkedList<>();
     }
-    return internalExecute(iContext, iContext.getDatabase());
+    return internalExecute(context, context.getDatabase());
 
   }
 
-  private LinkedList<Vertex> internalExecute(final CommandContext iContext, final Database graph) {
+  private LinkedList<Vertex> internalExecute(final CommandContext context, final Database graph) {
 
     final Vertex start = paramSourceVertex;
     final Vertex goal = paramDestinationVertex;
@@ -142,7 +142,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     // The cost of going from start to start is zero.
     gScore.put(start, 0.0);
     // For the first node, that value is completely heuristic.
-    fScore.put(start, getHeuristicCost(start, null, goal, iContext));
+    fScore.put(start, getHeuristicCost(start, null, goal, context));
 
     while (!open.isEmpty()) {
       Vertex current = open.poll();
@@ -176,7 +176,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
 
         if (!contains || tentative_gScore < gScore.get(neighbor)) {
           gScore.put(neighbor, tentative_gScore);
-          fScore.put(neighbor, tentative_gScore + getHeuristicCost(neighbor, current, goal, iContext));
+          fScore.put(neighbor, tentative_gScore + getHeuristicCost(neighbor, current, goal, context));
 
           if (contains) {
             open.remove(neighbor);
@@ -317,7 +317,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
   }
 
   @Override
-  protected double getHeuristicCost(final Vertex node, Vertex parent, final Vertex target, final CommandContext iContext) {
+  protected double getHeuristicCost(final Vertex node, Vertex parent, final Vertex target, final CommandContext context) {
     double hresult = 0.0;
 
     if (paramVertexAxisNames.length == 0) {

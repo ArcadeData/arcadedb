@@ -81,7 +81,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
 
   protected abstract double getDistance(final Vertex node, final Vertex parent, final Vertex target);
 
-  protected abstract double getHeuristicCost(final Vertex node, final Vertex parent, final Vertex target, CommandContext iContext);
+  protected abstract double getHeuristicCost(final Vertex node, final Vertex parent, final Vertex target, CommandContext context);
 
   protected LinkedList<Vertex> getPath() {
     final LinkedList<Vertex> path = new LinkedList<Vertex>(route);

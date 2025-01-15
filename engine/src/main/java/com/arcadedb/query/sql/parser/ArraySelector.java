@@ -50,12 +50,12 @@ public class ArraySelector extends SimpleNode {
     }
   }
 
-  public Integer getValue(final Identifiable iCurrentRecord, final Object iResult, final CommandContext context) {
+  public Integer getValue(final Identifiable currentRecord, final Object iResult, final CommandContext context) {
     Object result = null;
     if (inputParam != null) {
       result = inputParam.getValue(context.getInputParameters());
     } else if (expression != null) {
-      result = expression.execute(iCurrentRecord, context);
+      result = expression.execute(currentRecord, context);
     } else if (integer != null) {
       result = integer;
     }
@@ -69,12 +69,12 @@ public class ArraySelector extends SimpleNode {
     return null;
   }
 
-  public Object getValue(final Result iCurrentRecord, final Object iResult, final CommandContext context) {
+  public Object getValue(final Result currentRecord, final Object iResult, final CommandContext context) {
     Object result = null;
     if (inputParam != null) {
       result = inputParam.getValue(context.getInputParameters());
     } else if (expression != null) {
-      result = expression.execute(iCurrentRecord, context);
+      result = expression.execute(currentRecord, context);
     } else if (integer != null) {
       result = integer;
     }

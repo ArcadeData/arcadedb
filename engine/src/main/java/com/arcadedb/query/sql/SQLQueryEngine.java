@@ -133,7 +133,7 @@ public class SQLQueryEngine implements QueryEngine {
   }
 
   public static Object foreachRecord(final Callable<Object, Identifiable> iCallable, Object iCurrent,
-      final CommandContext iContext) {
+      final CommandContext context) {
     if (iCurrent == null)
       return null;
 
@@ -187,10 +187,10 @@ public class SQLQueryEngine implements QueryEngine {
           // WRAP LIBRARY FUNCTION TO SQL FUNCTION TO BE EXECUTED BY SQL ENGINE
           sqlFunction = new SQLFunctionAbstract(name) {
             @Override
-            public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
-                final Object[] iParams,
-                final CommandContext iContext) {
-              return function.execute(iParams);
+            public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult,
+                final Object[] params,
+                final CommandContext context) {
+              return function.execute(params);
             }
 
             @Override

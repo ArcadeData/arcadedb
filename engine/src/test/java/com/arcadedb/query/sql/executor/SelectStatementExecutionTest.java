@@ -4044,10 +4044,10 @@ public class SelectStatementExecutionTest extends TestHelper {
 //                            @Override
 //                            public Object execute(
 //                                    Object iThis,
-//                                    Identifiable iCurrentRecord,
-//                                    Object iCurrentResult,
-//                                    Object[] iParams,
-//                                    CommandContext iContext) {
+//                                    Identifiable currentRecord,
+//                                    Object currentResult,
+//                                    Object[] params,
+//                                    CommandContext context) {
 //                                try {
 //                                    Thread.sleep(5);
 //                                } catch (InterruptedException e) {

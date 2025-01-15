@@ -32,7 +32,7 @@ public class ReturnMatchElementsStep extends AbstractUnrollStep {
   }
 
   @Override
-  protected Collection<Result> unroll(final Result doc, final CommandContext iContext) {
+  protected Collection<Result> unroll(final Result doc, final CommandContext context) {
     final List<Result> result = new ArrayList<>();
     for (final String s : doc.getPropertyNames()) {
       if (!s.startsWith(MatchExecutionPlanner.DEFAULT_ALIAS_PREFIX)) {

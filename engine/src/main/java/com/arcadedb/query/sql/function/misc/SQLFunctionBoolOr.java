@@ -37,20 +37,20 @@ public class SQLFunctionBoolOr extends SQLFunctionConfigurableAbstract {
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
-    if (iParams.length == 1) {
-      if (iParams[0] instanceof Boolean boolean1)
+  public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
+    if (params.length == 1) {
+      if (params[0] instanceof Boolean boolean1)
         or(boolean1);
-      else if (MultiValue.isMultiValue(iParams[0]))
-        for (final Object n : MultiValue.getMultiValueIterable(iParams[0])) {
+      else if (MultiValue.isMultiValue(params[0]))
+        for (final Object n : MultiValue.getMultiValueIterable(params[0])) {
           or((Boolean) n);
           if (or) break;
         }
     } else {
       or = null;
-      for (int i = 0; i < iParams.length; ++i) {
-        or((Boolean) iParams[i]);
+      for (int i = 0; i < params.length; ++i) {
+        or((Boolean) params[i]);
         if (or) break;
       }
     }

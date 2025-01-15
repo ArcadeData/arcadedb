@@ -39,7 +39,7 @@ public class SQLMethodAsSet extends AbstractSQLMethod {
 
   @SuppressWarnings("unchecked")
   @Override
-  public Object execute(Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
+  public Object execute(Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
     if (value instanceof Set)
       // ALREADY A SET
       return value;

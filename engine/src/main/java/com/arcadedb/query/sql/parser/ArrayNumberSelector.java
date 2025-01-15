@@ -45,12 +45,12 @@ public class ArrayNumberSelector extends SimpleNode {
     }
   }
 
-  public Integer getValue(final Identifiable iCurrentRecord, final Object iResult, final CommandContext context) {
+  public Integer getValue(final Identifiable currentRecord, final Object iResult, final CommandContext context) {
     Object result = null;
     if (inputValue != null) {
       result = inputValue.getValue(context.getInputParameters());
     } else if (expressionValue != null) {
-      result = expressionValue.execute(iCurrentRecord, context);
+      result = expressionValue.execute(currentRecord, context);
     } else if (integer != null) {
       result = integer;
     }
@@ -64,12 +64,12 @@ public class ArrayNumberSelector extends SimpleNode {
     return null;
   }
 
-  public Integer getValue(final Result iCurrentRecord, final Object iResult, final CommandContext context) {
+  public Integer getValue(final Result currentRecord, final Object iResult, final CommandContext context) {
     Object result = null;
     if (inputValue != null) {
       result = inputValue.getValue(context.getInputParameters());
     } else if (expressionValue != null) {
-      result = expressionValue.execute(iCurrentRecord, context);
+      result = expressionValue.execute(currentRecord, context);
     } else if (integer != null) {
       result = integer;
     }

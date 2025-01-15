@@ -37,14 +37,14 @@ public class SQLFunctionIntersect extends SQLFunctionMultiValueAbstract<Object> 
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
-    Object value = iParams[0];
+  public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
+    Object value = params[0];
 
     if (value == null)
       return Collections.emptySet();
 
-    if (iParams.length == 1) {
+    if (params.length == 1) {
       // AGGREGATION MODE (STATEFUL)
       if (context == null) {
         // ADD ALL THE ITEMS OF THE FIRST COLLECTION
@@ -72,8 +72,8 @@ public class SQLFunctionIntersect extends SQLFunctionMultiValueAbstract<Object> 
     // IN-LINE MODE (STATELESS)
     Iterator iterator = MultiValue.getMultiValueIterator(value, false);
 
-    for (int i = 1; i < iParams.length; ++i) {
-      value = iParams[i];
+    for (int i = 1; i < params.length; ++i) {
+      value = params[i];
 
       if (value != null) {
         value = intersectWith(iterator, value);
