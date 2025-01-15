@@ -51,8 +51,8 @@ public abstract class SQLFunctionPathFinder extends SQLFunctionMathAbstract {
     super(iName);
   }
 
-  protected LinkedList<Vertex> execute(final CommandContext context) {
-    context = context;
+  protected LinkedList<Vertex> execute(final CommandContext ctx) {
+    context = ctx;
     unSettledNodes = new HashSet<>();
     distance = new HashMap<>();
     predecessors = new HashMap<>();

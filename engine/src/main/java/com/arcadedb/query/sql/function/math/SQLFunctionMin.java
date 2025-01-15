@@ -41,7 +41,7 @@ public class SQLFunctionMin extends SQLFunctionMathAbstract {
 
   @SuppressWarnings({ "unchecked", "rawtypes" })
   public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
-      final CommandContext context) {
+      final CommandContext ctx) {
 
     // calculate min value for current record
     // consider both collection of parameters and collection in each parameter

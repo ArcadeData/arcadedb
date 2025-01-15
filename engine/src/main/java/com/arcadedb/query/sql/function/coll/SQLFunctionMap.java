@@ -37,7 +37,7 @@ public class SQLFunctionMap extends SQLFunctionMultiValueAbstract<Map<String, Ob
 
   @SuppressWarnings("unchecked")
   public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
-      final CommandContext context) {
+      final CommandContext ctx) {
 
     if (params.length > 2)
       // IN LINE MODE

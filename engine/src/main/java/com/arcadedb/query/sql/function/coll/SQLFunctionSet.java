@@ -39,7 +39,7 @@ public class SQLFunctionSet extends SQLFunctionMultiValueAbstract<Set<Object>> {
   }
 
   public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
-      final CommandContext context) {
+      final CommandContext ctx) {
     if (params.length > 1)
       // IN LINE MODE
       context = new HashSet<Object>();

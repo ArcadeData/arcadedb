@@ -40,7 +40,7 @@ public class SQLFunctionUnionAll extends SQLFunctionMultiValueAbstract<Collectio
   }
 
   public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
-      final CommandContext context) {
+      final CommandContext ctx) {
     if (params.length == 1) {
       // AGGREGATION MODE (STATEFUL)
       final Object value = params[0];

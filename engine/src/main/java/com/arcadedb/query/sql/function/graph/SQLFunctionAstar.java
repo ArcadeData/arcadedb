@@ -67,8 +67,8 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
   }
 
   public LinkedList<Vertex> execute(final Object iThis, final Identifiable currentRecord, final Object currentResult,
-      final Object[] params, final CommandContext context) {
-    context = context;
+      final Object[] params, final CommandContext ctx) {
+    context = ctx;
     final SQLFunctionAstar context = this;
 
     final Document record = currentRecord != null ? (Document) currentRecord.getRecord() : null;
@@ -124,15 +124,15 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     if (params.length > 3) {
       bindAdditionalParams(params[3], context);
     }
-    context.setVariable("getNeighbors", 0);
+    ctx.setVariable("getNeighbors", 0);
     if (paramSourceVertex == null || paramDestinationVertex == null) {
       return new LinkedList<>();
     }
-    return internalExecute(context, context.getDatabase());
+    return internalExecute(ctx, ctx.getDatabase());
 
   }
 
-  private LinkedList<Vertex> internalExecute(final CommandContext context, final Database graph) {
+  private LinkedList<Vertex> internalExecute(final CommandContext ctx, final Database graph) {
 
     final Vertex start = paramSourceVertex;
     final Vertex goal = paramDestinationVertex;
@@ -142,7 +142,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     // The cost of going from start to start is zero.
     gScore.put(start, 0.0);
     // For the first node, that value is completely heuristic.
-    fScore.put(start, getHeuristicCost(start, null, goal, context));
+    fScore.put(start, getHeuristicCost(start, null, goal, ctx));
 
     while (!open.isEmpty()) {
       Vertex current = open.poll();
@@ -176,7 +176,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
 
         if (!contains || tentative_gScore < gScore.get(neighbor)) {
           gScore.put(neighbor, tentative_gScore);
-          fScore.put(neighbor, tentative_gScore + getHeuristicCost(neighbor, current, goal, context));
+          fScore.put(neighbor, tentative_gScore + getHeuristicCost(neighbor, current, goal, ctx));
 
           if (contains) {
             open.remove(neighbor);
@@ -317,7 +317,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
   }
 
   @Override
-  protected double getHeuristicCost(final Vertex node, Vertex parent, final Vertex target, final CommandContext context) {
+  protected double getHeuristicCost(final Vertex node, Vertex parent, final Vertex target, final CommandContext ctx) {
     double hresult = 0.0;
 
     if (paramVertexAxisNames.length == 0) {

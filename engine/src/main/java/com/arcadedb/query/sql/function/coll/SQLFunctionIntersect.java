@@ -38,7 +38,7 @@ public class SQLFunctionIntersect extends SQLFunctionMultiValueAbstract<Object> 
   }
 
   public Object execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
-      final CommandContext context) {
+      final CommandContext ctx) {
     Object value = params[0];
 
     if (value == null)
