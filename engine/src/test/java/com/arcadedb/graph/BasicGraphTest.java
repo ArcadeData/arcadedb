@@ -32,14 +32,12 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
-
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.util.Iterator;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
-import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
@@ -490,7 +488,8 @@ public class BasicGraphTest extends BaseGraphTest {
     try {
       ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(new SQLFunctionAbstract("ciao") {
         @Override
-        public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+        public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
+            final Object[] iParams,
             final CommandContext iContext) {
           return "Ciao";
         }
@@ -575,7 +574,7 @@ public class BasicGraphTest extends BaseGraphTest {
   }
 
   @Test
-  public void reuseRollbackedTx() {
+  public void reuseRollBackedTx() {
     final AtomicReference<RID> v1RID = new AtomicReference<>();
 
     database.transaction(() -> {
@@ -655,6 +654,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
       v1[0] = database.newVertex(VERTEX1_TYPE_NAME).set("id", 1001).save();
       v2[0] = database.newVertex(VERTEX1_TYPE_NAME).set("id", 1002).save();
+
       final ResultSet result = database.command("sql", "create edge OnlyOneBetweenVertices from ? to ?", v1[0], v2[0]);
       assertThat(result.hasNext()).isTrue();
     });
@@ -673,7 +673,14 @@ public class BasicGraphTest extends BaseGraphTest {
       // EXPECTED
     }
 
-    database.transaction(() -> database.command("sql", "create edge OnlyOneBetweenVertices from ? to ? IF NOT EXISTS", v1[0], v2[0]));
+    try {
+      database.transaction(
+          () -> database.command("sql", "create edge OnlyOneBetweenVertices from ? to ? IF NOT EXISTS", v1[0], v2[0]));
+      fail("");
+    } catch (final DuplicatedKeyException ex) {
+      // EXPECTED
+    }
+
   }
 
   @Test

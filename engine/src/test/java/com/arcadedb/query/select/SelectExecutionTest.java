@@ -25,24 +25,25 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
-
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.stream.*;
+import java.util.List;
+import java.util.Spliterator;
+import java.util.Spliterators;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class SelectExecutionIT extends TestHelper {
+public class SelectExecutionTest extends TestHelper {
 
-  public SelectExecutionIT() {
+  public SelectExecutionTest() {
     autoStartTx = false;
   }
 
@@ -61,12 +62,17 @@ public class SelectExecutionIT extends TestHelper {
       }
 
       for (int i = 1; i < 100; i++) {
-        final Vertex root = database.select().fromType("Vertex").where().property("id").eq().value(0).vertices().nextOrNull();
-        assertNotNull(root);
-        assertEquals(0, root.getInteger("id"));
-
-        root.newEdge("Edge", database.select().fromType("Vertex").where().property("id").eq().value(i).vertices().nextOrNull(),
-            true).save();
+        final Vertex root = database.select()
+            .fromType("Vertex")
+            .where().property("id").eq().value(0).vertices()
+            .nextOrNull();
+        assertThat(root).isNotNull();
+        assertThat(root.getInteger("id")).isEqualTo(0);
+        root.newEdge("Edge", database.select()
+                .fromType("Vertex")
+                .where().property("id").eq().value(i)
+                .vertices().nextOrNull(), true)
+            .save();
       }
     });
   }
@@ -356,11 +362,8 @@ public class SelectExecutionIT extends TestHelper {
 
   @Test
   public void okILike() {
-    final SelectCompiled select = database.select()
-        .fromType("Vertex")//
-        .where()
-        .property("name").ilike().value("j%")
-        .compile();
+    final SelectCompiled select = database.select().fromType("Vertex")//
+        .where().property("name").ilike().value("j%").compile();
 
     for (int i = 0; i < 100; i++) {
       final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
@@ -409,13 +412,15 @@ public class SelectExecutionIT extends TestHelper {
       callback.run();
       failed = false;
     } catch (Throwable e) {
-      if (!expectedException.equals(e.getClass())) e.printStackTrace();
+      if (!expectedException.equals(e.getClass()))
+        e.printStackTrace();
 
       assertThat(e.getClass()).isEqualTo(expectedException);
       assertThat(e.getMessage().contains(mustContains)).as(
           "Expected '" + mustContains + "' in the error message. Error message is: " + e.getMessage()).isTrue();
     }
 
-    if (!failed) fail("Expected exception " + expectedException);
+    if (!failed)
+      fail("Expected exception " + expectedException);
   }
 }

@@ -176,9 +176,7 @@ public class GraphEngine {
     final List<Edge> edges = new ArrayList<>(connections.size());
     final List<Pair<Identifiable, Identifiable>> outEdgePairs = new ArrayList<>();
 
-    for (int i = 0; i < connections.size(); ++i) {
-      final CreateEdgeOperation connection = connections.get(i);
-
+    for (final CreateEdgeOperation connection : connections) {
       final MutableEdge edge;
 
       final Identifiable destinationVertex = connection.destinationVertex;
@@ -552,7 +550,10 @@ public class GraphEngine {
     return false;
   }
 
-  public boolean isVertexConnectedTo(final VertexInternal vertex, final Identifiable toVertex, final Vertex.DIRECTION direction,
+  public boolean isVertexConnectedTo(
+      final VertexInternal vertex,
+      final Identifiable toVertex,
+      final Vertex.DIRECTION direction,
       final String edgeType) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
@@ -563,8 +564,13 @@ public class GraphEngine {
     if (edgeType == null)
       throw new IllegalArgumentException("Edge type is null");
 
-    final int[] bucketFilter = vertex.getDatabase().getSchema().getType(edgeType).getBuckets(true).stream()
-        .mapToInt(x -> x.getFileId()).toArray();
+    final int[] bucketFilter = vertex.getDatabase()
+        .getSchema()
+        .getType(edgeType)
+        .getBuckets(true)
+        .stream()
+        .mapToInt(x -> x.getFileId())
+        .toArray();
 
     if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
       final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
