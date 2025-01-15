@@ -56,7 +56,7 @@ public class JsonGraphSerializer extends JsonSerializer {
       object.put("r", rid.toString());
     object.put("t", document.getTypeName());
 
-    for (final Map.Entry<String, Object> prop : document.toMap().entrySet()) {
+    for (final Map.Entry<String, Object> prop : document.toMap(false).entrySet()) {
       Object value = prop.getValue();
 
       if (value != null) {

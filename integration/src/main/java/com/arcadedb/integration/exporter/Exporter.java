@@ -86,8 +86,10 @@ public class Exporter {
       final long totalRecords = context.vertices.get() + context.edges.get() + context.documents.get();
 
       logger.logLine(0,//
-          "Database exported successfully: %,d records exported in %s secs (%,d records/secs %,d documents %,d vertices %,d edges)",//
-          totalRecords, elapsedInSecs, (totalRecords / elapsedInSecs), context.documents.get(), context.vertices.get(), context.edges.get());
+          "Database exported successfully: %,d records exported in %s secs (%,d records/secs %,d documents %,d vertices %,d edges)",
+//
+          totalRecords, elapsedInSecs, (totalRecords / elapsedInSecs), context.documents.get(), context.vertices.get(),
+          context.edges.get());
 
       // RETURN STATISTICS
       final Map<String, Object> result = new LinkedHashMap<>();
@@ -194,23 +196,24 @@ public class Exporter {
             "com.arcadedb.gremlin.integration.exporter.format.GraphMLExporterFormat");
         return clazz.getConstructor(DatabaseInternal.class, ExporterSettings.class, ExporterContext.class, ConsoleLogger.class)
             .newInstance(database, settings, context, logger);
-      } catch (final InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException | ClassNotFoundException e) {
+      } catch (final InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException |
+                     ClassNotFoundException e) {
         LogManager.instance().log(this, Level.SEVERE, "Impossible to find exporter for 'graphml' ", e);
-
       }
-
     }
+
     case "graphson": {
       try {
         final Class<AbstractExporterFormat> clazz = (Class<AbstractExporterFormat>) Class.forName(
             "com.arcadedb.gremlin.integration.exporter.format.GraphSONExporterFormat");
         return clazz.getConstructor(DatabaseInternal.class, ExporterSettings.class, ExporterContext.class, ConsoleLogger.class)
             .newInstance(database, settings, context, logger);
-      } catch (final InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException | ClassNotFoundException e) {
+      } catch (final InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException |
+                     ClassNotFoundException e) {
         LogManager.instance().log(this, Level.SEVERE, "Impossible to find exporter for 'graphson' ", e);
       }
-
     }
+
     default:
       throw new ExportException("Format '" + settings.format + "' not supported");
     }
