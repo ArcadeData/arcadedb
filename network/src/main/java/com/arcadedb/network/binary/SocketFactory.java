@@ -28,6 +28,7 @@ import javax.net.ssl.TrustManagerFactory;
 import java.io.*;
 import java.net.*;
 import java.security.*;
+import java.security.SecureRandom;
 
 public class SocketFactory {
   private       javax.net.SocketFactory socketFactory;
@@ -85,6 +86,7 @@ public class SocketFactory {
         final KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
 
         final KeyStore keyStore = KeyStore.getInstance(keyStoreType);
+        final SecureRandom secureRandom = new SecureRandom();
         final char[] keyStorePass = keyStorePassword.toCharArray();
         keyStore.load(getAsStream(keyStorePath), keyStorePass);
 
