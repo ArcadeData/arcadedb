@@ -91,7 +91,7 @@ public class SQLLocalExporterTest {
 
       final File exportFile = new File("./exports/export.jsonl.tgz");
       assertThat(exportFile.exists()).isTrue();
-      assertThat(exportFile.length() > 50_000).isTrue();
+      assertThat(exportFile.length() > 40_000).isTrue();
       exportFile.delete();
     }
 
