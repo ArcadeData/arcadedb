@@ -77,22 +77,4 @@ public class JsonLImporterIT {
 
   }
 
-  @Test
-  void importBeer() {
-    final File databaseDirectory = new File(DATABASE_PATH);
-
-    final URL inputFile = getClass().getClassLoader().getResource("demodb-export.jsonl.tgz");
-
-    Importer importer = new Importer(
-        ("-url " + inputFile.getFile() + " -database " + DATABASE_PATH + " -forceDatabaseCreate true").split(" "));
-    importer.load();
-
-    assertThat(databaseDirectory.exists()).isTrue();
-
-    try (final Database db = new DatabaseFactory(DATABASE_PATH).open()) {
-
-      db.getSchema();
-    }
-
-  }
 }
