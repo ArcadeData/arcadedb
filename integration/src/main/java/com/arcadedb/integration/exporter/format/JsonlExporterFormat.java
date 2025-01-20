@@ -33,9 +33,14 @@ import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.serializer.JsonGraphSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.io.*;
-import java.util.*;
-import java.util.zip.*;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.zip.GZIPOutputStream;
 
 public class JsonlExporterFormat extends AbstractExporterFormat {
   public static final  String             NAME       = "jsonl";
@@ -43,7 +48,11 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
   private              OutputStreamWriter writer;
   private final static int                VERSION    = 1;
 
-  public JsonlExporterFormat(final DatabaseInternal database, final ExporterSettings settings, final ExporterContext context, final ConsoleLogger logger) {
+  public JsonlExporterFormat(
+      final DatabaseInternal database,
+      final ExporterSettings settings,
+      final ExporterContext context,
+      final ConsoleLogger logger) {
     super(database, settings, context, logger);
   }
 
@@ -76,12 +85,19 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
         DatabaseFactory.getDefaultCharset())) {
       writer = fileWriter;
 
-      writeJsonLine("info", new JSONObject().put("description", "ArcadeDB Database Export").put("exporterVersion", VERSION)//
-          .put("dbVersion", Constants.getRawVersion()).put("dbBranch", Constants.getBranch()).put("dbBuild", Constants.getBuildNumber())
+      writeJsonLine("info", new JSONObject()
+          .put("description", "ArcadeDB Database Export")
+          .put("exporterVersion", VERSION)//
+          .put("dbVersion", Constants.getRawVersion())
+          .put("dbBranch", Constants.getBranch())
+          .put("dbBuild", Constants.getBuildNumber())
           .put("dbTimestamp", Constants.getTimestamp()));
 
       final long now = System.currentTimeMillis();
-      writeJsonLine("db", new JSONObject().put("name", database.getName()).put("executedOn", dateFormat.format(now)).put("executedOnTimestamp", now));
+      writeJsonLine("db", new JSONObject()
+          .put("name", database.getName())
+          .put("executedOn", dateFormat.format(now))
+          .put("executedOnTimestamp", now));
 
       writeJsonLine("schema", ((LocalSchema) database.getSchema()).toJSON());
 

@@ -465,10 +465,8 @@ public class Neo4jImporter {
   private void readFile(final Callable<Void, JSONObject> callback) throws IOException {
     database.begin();
 
-    final InputStream inputStream = openInputStream();
-    try {
-      final BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, DatabaseFactory.getDefaultCharset()));
-      try {
+    try (InputStream inputStream = openInputStream()) {
+      try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, DatabaseFactory.getDefaultCharset()))) {
         long lineNumberStartOfBatch = 0;
         final List<String> transactionBuffer = new ArrayList<>(batchSize);
 
@@ -523,11 +521,7 @@ public class Neo4jImporter {
             context.errors.incrementAndGet();
           }
         }
-      } finally {
-        reader.close();
       }
-    } finally {
-      inputStream.close();
     }
   }
 

@@ -26,23 +26,34 @@ import com.arcadedb.integration.importer.OrientDBImporterIT;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.net.*;
+import java.io.File;
+import java.net.URL;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class SQLLocalExporterTest {
+
+  public static final String DATABASE_PATH = "databases/importedFromOrientDB";
+
+  @BeforeEach
+  @AfterEach
+  public void beforeTests() {
+    TestHelper.checkActiveDatabases();
+    FileUtils.deleteRecursively(new File(DATABASE_PATH));
+  }
+
   @Test
   public void importAndExportDatabase() {
     final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
 
-    FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
-
     try (final Database database = new DatabaseFactory("databases/importedFromOrientDB").create()) {
       database.getConfiguration()
-          .setValue(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE, ((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()) * 10);
+          .setValue(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE,
+              ((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()) * 10);
 
       database.command("sql", "import database file://" + inputFile.getFile());
 
@@ -64,39 +75,39 @@ public class SQLLocalExporterTest {
 
     TestHelper.checkActiveDatabases();
 
-    FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
+    FileUtils.deleteRecursively(new File(DATABASE_PATH));
   }
 
   @Test
   public void importAndExportPartialDatabase() {
     final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
 
-    FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
-
     try (final Database database = new DatabaseFactory("databases/importedFromOrientDB").create()) {
       database.getConfiguration()
-          .setValue(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE, ((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()) * 10);
+          .setValue(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE,
+              ((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()) * 10);
 
       database.command("sql", "import database file://" + inputFile.getFile());
 
       assertThat(database.countType("Person", false)).isEqualTo(500);
       assertThat(database.countType("Friend", false)).isEqualTo(10000);
 
-      final ResultSet result = database.command("sql", "export database file://export.jsonl.tgz with `overwrite` = true, includeTypes = Person");
+      final ResultSet result = database.command("sql",
+          "export database file://export.jsonl.tgz with `overwrite` = true, includeTypes = Person");
 
       final Result stats = result.next();
-      assertThat((long) stats.getProperty("vertices")).isEqualTo(500L);
+      assertThat(stats.<Long>getProperty("vertices")).isEqualTo(500L);
       assertThat(stats.<Object>getProperty("edges")).isNull();
       assertThat(stats.<Object>getProperty("documents")).isNull();
 
       final File exportFile = new File("./exports/export.jsonl.tgz");
       assertThat(exportFile.exists()).isTrue();
-      assertThat(exportFile.length() > 40_000).isTrue();
+      assertThat(exportFile.length()).isGreaterThan(40_000);
       exportFile.delete();
     }
 
     TestHelper.checkActiveDatabases();
 
-    FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
+    FileUtils.deleteRecursively(new File(DATABASE_PATH));
   }
 }

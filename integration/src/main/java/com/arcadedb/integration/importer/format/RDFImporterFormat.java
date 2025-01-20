@@ -62,8 +62,16 @@ public class RDFImporterFormat extends CSVImporterFormat {
         final String v2Id = getStringContent(row[2], STRING_CONTENT_SKIP);
 
         // CREATE AN EDGE
-        database.newEdgeByKeys(settings.vertexTypeName, new String[] { settings.typeIdProperty }, new Object[] { v1Id }, settings.vertexTypeName,
-            new String[] { settings.typeIdProperty }, new Object[] { v2Id }, true, settings.edgeTypeName, true, "label", edgeLabel);
+        database.newEdgeByKeys(settings.vertexTypeName,
+            new String[] { settings.typeIdProperty },
+            new Object[] { v1Id },
+            settings.vertexTypeName,
+            new String[] { settings.typeIdProperty },
+            new Object[] { v2Id }, true,
+            settings.edgeTypeName,
+            true,
+            "label",
+            edgeLabel);
 
         context.createdEdges.incrementAndGet();
         context.parsed.incrementAndGet();
