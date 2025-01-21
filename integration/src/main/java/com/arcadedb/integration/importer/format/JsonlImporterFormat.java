@@ -5,16 +5,14 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.CompressedRID2RIDIndex;
-import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
-import com.arcadedb.integration.importer.AnalyzedEntity;
+import com.arcadedb.integration.importer.AnalyzedEntity.ENTITY_TYPE;
 import com.arcadedb.integration.importer.AnalyzedSchema;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -30,7 +28,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
   @Override
   public void load(SourceSchema sourceSchema,
-      AnalyzedEntity.ENTITY_TYPE entityType,
+      ENTITY_TYPE entityType,
       Parser parser,
       DatabaseInternal database,
       ImporterContext context,
@@ -39,32 +37,44 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     LogManager.instance().log(this, Level.INFO, "Start loading... ");
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
         DatabaseFactory.getDefaultCharset())) {
-
+      context.startedOn = System.currentTimeMillis();
       final BufferedReader reader = new BufferedReader(inputFileReader);
 
-      try {
-        ridIndex = new CompressedRID2RIDIndex(database, 1000, 1000);
-      } catch (ClassNotFoundException e) {
-        throw new RuntimeException(e);
-      }
+      ridIndex = new CompressedRID2RIDIndex(database, 1000, 1000);
+
+      if (!database.isTransactionActive()) database.begin();
 
       String line;
-
       while ((line = reader.readLine()) != null) {
+        context.parsed.incrementAndGet();
 
-        JSONObject jsonLine = new JSONObject(line);
+        var jsonLine = new JSONObject(line);
 
-        String type = jsonLine.getString("t");
-
-        switch (type) {
+        switch (jsonLine.getString("t")) {
         case "schema" -> loadSchema(database, context, settings, jsonLine.getJSONObject("c"));
-//        case "d" -> System.out.println("document = " + jsonObject);
-        case "v" -> loadVertices(database, context, settings, jsonLine.getJSONObject("c"));
-        case "e" -> loadEdges(database, context, settings, jsonLine.getJSONObject("c"));
+        case "d" -> loadDocument(database, context, settings, jsonLine.getJSONObject("c"));
+        case "v" -> loadVertex(database, context, settings, jsonLine.getJSONObject("c"));
+        case "e" -> loadEdge(database, context, settings, jsonLine.getJSONObject("c"));
+
         }
       }
+    } catch (ClassNotFoundException e) {
+      throw new RuntimeException(e);
+    } finally {
+      database.commit();
     }
+    context.lastLapOn = System.currentTimeMillis();
+  }
 
+  private void loadDocument(DatabaseInternal database, ImporterContext context, ImporterSettings settings,
+      JSONObject document) {
+    var properties = document.getJSONObject("p");
+    var imported = database.newDocument(document.getString("t"))
+        .fromJSON(properties)
+        .save();
+    var oldRid = new RID(database, document.getString("r"));
+    ridIndex.put(oldRid, imported.getIdentity());
+    context.createdDocuments.incrementAndGet();
   }
 
   private void loadSchema(DatabaseInternal database,
@@ -79,47 +89,52 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     databaseSchema.setZoneId(ZoneId.of(importedSettings.getString("zoneId")));
 
     var types = importedSchema.getJSONObject("types");
-    types.keySet().forEach(typeName -> {
-      var type = types.getJSONObject(typeName);
-      var typeType = type.getString("type");
-      var docType = switch (typeType) {
-        case "v" -> databaseSchema.createVertexType(typeName);
-        case "e" -> databaseSchema.createEdgeType(typeName);
-        case "d" -> databaseSchema.createDocumentType(typeName);
-        default -> throw new IllegalStateException("Unexpected value: " + typeType);
-      };
 
-      var properties = type.getJSONObject("properties");
-      properties.keySet().forEach(propertyName -> {
-        var property = properties.getJSONObject(propertyName);
-        var propType = property.getString("type");
-        docType.createProperty(propertyName, propType);
-      });
+    types.keySet()
+        .forEach(typeName -> {
+          var type = types.getJSONObject(typeName);
+          var typeType = type.getString("type");
+          var docType = switch (typeType) {
+            case "v" -> databaseSchema.createVertexType(typeName);
+            case "e" -> databaseSchema.createEdgeType(typeName);
+            case "d" -> databaseSchema.createDocumentType(typeName);
+            default -> throw new IllegalStateException("Unexpected value: " + typeType);
+          };
 
-      var indexes = type.getJSONObject("indexes");
-      indexes.keySet().forEach(index -> {
-        var idx = indexes.getJSONObject(index);
-        Schema.INDEX_TYPE idxType = Schema.INDEX_TYPE.valueOf(idx.getString("type"));
-        String[] idxFields = idx.getString("properties").split(",");
-        var typeIndex = docType.createTypeIndex(idxType, true, idxFields);
-        typeIndex.setNullStrategy(NULL_STRATEGY.valueOf(idx.getString("nullStrategy")));
-      });
-    });
+          var properties = type.getJSONObject("properties");
+          properties.keySet()
+              .forEach(propertyName -> {
+                var property = properties.getJSONObject(propertyName);
+                var propType = property.getString("type");
+                docType.createProperty(propertyName, propType);
+              });
+
+          var indexes = type.getJSONObject("indexes");
+          indexes.keySet()
+              .forEach(index -> {
+                var idx = indexes.getJSONObject(index);
+                var idxType = Schema.INDEX_TYPE.valueOf(idx.getString("type"));
+                var idxFields = idx.getString("properties").split(",");
+                var typeIndex = docType.createTypeIndex(idxType, idx.getBoolean("unique"), idxFields);
+                typeIndex.setNullStrategy(NULL_STRATEGY.valueOf(idx.getString("nullStrategy")));
+              });
+        });
 
   }
 
-  private void loadVertices(DatabaseInternal database, ImporterContext context, ImporterSettings settings, JSONObject vertex) {
+  private void loadVertex(DatabaseInternal database, ImporterContext context, ImporterSettings settings, JSONObject vertex) {
 
     var properties = vertex.getJSONObject("p");
     var imported = database.newVertex(vertex.getString("t"))
         .fromJSON(properties)
         .save();
-    var r = new RID(database, vertex.getString("r"));
-    ridIndex.put(r, imported.getIdentity());
+    var oldRid = new RID(database, vertex.getString("r"));
+    ridIndex.put(oldRid, imported.getIdentity());
+    context.createdVertices.incrementAndGet();
 
   }
 
-  private void loadEdges(DatabaseInternal database, ImporterContext context, ImporterSettings settings, JSONObject edge) {
+  private void loadEdge(DatabaseInternal database, ImporterContext context, ImporterSettings settings, JSONObject edge) {
     var properties = edge.getJSONObject("p");
     var edgeType = edge.getString("t");
 
@@ -130,12 +145,15 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     var newIn = ridIndex.get(in);
     var sourceVertex = (Vertex) database.lookupByRID(newOut, false);
 
-    sourceVertex.newEdge(edgeType, newIn, true).fromJSON(properties).save();
+    sourceVertex.newEdge(edgeType, newIn, true)
+        .fromJSON(properties)
+        .save();
+    context.createdEdges.incrementAndGet();
 
   }
 
   @Override
-  public SourceSchema analyze(AnalyzedEntity.ENTITY_TYPE entityType,
+  public SourceSchema analyze(ENTITY_TYPE entityType,
       Parser parser,
       ImporterSettings settings,
       AnalyzedSchema analyzedSchema) throws IOException {

@@ -247,6 +247,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     json.put("bucket", getDatabase().getSchema().getBucketById(getAssociatedBucketId()).getName());
     json.put("properties", getPropertyNames());
     json.put("nullStrategy", getNullStrategy());
+    json.put("unique", isUnique());
     return json;
   }
 
