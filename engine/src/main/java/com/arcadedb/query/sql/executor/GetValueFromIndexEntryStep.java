@@ -131,9 +131,9 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
               }
             }
 
-            if (finalVal instanceof RID iD) {
+            if (finalVal instanceof RID rid) {
               try {
-                nextItem = new ResultInternal(iD.asDocument());
+                nextItem = new ResultInternal(rid.asDocument());
               } catch (final RecordNotFoundException e) {
                 LogManager.instance().log(this, Level.WARNING, "Record %s not found. Skip it from the result set", null, finalVal);
                 continue;
