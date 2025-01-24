@@ -21,7 +21,10 @@ package com.arcadedb.integration.exporter.format;
 import com.arcadedb.Constants;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.exporter.ExportException;
 import com.arcadedb.integration.exporter.ExporterContext;
 import com.arcadedb.integration.exporter.ExporterSettings;
@@ -43,7 +46,8 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
   private              OutputStreamWriter writer;
   private final static int                VERSION    = 1;
 
-  public JsonlExporterFormat(final DatabaseInternal database, final ExporterSettings settings, final ExporterContext context, final ConsoleLogger logger) {
+  public JsonlExporterFormat(final DatabaseInternal database, final ExporterSettings settings, final ExporterContext context,
+      final ConsoleLogger logger) {
     super(database, settings, context, logger);
   }
 
@@ -77,11 +81,13 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
       writer = fileWriter;
 
       writeJsonLine("info", new JSONObject().put("description", "ArcadeDB Database Export").put("exporterVersion", VERSION)//
-          .put("dbVersion", Constants.getRawVersion()).put("dbBranch", Constants.getBranch()).put("dbBuild", Constants.getBuildNumber())
+          .put("dbVersion", Constants.getRawVersion()).put("dbBranch", Constants.getBranch())
+          .put("dbBuild", Constants.getBuildNumber())
           .put("dbTimestamp", Constants.getTimestamp()));
 
       final long now = System.currentTimeMillis();
-      writeJsonLine("db", new JSONObject().put("name", database.getName()).put("executedOn", dateFormat.format(now)).put("executedOnTimestamp", now));
+      writeJsonLine("db", new JSONObject().put("name", database.getName()).put("executedOn", dateFormat.format(now))
+          .put("executedOnTimestamp", now));
 
       writeJsonLine("schema", ((LocalSchema) database.getSchema()).toJSON());
 
@@ -123,7 +129,12 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
   private void exportVertices(final List<String> vertexTypes, final JsonGraphSerializer graphSerializer) throws IOException {
     for (final String type : vertexTypes) {
       for (final Iterator<Record> cursor = database.iterateType(type, false); cursor.hasNext(); ) {
-        writeJsonLine("v", graphSerializer.serializeGraphElement(cursor.next().asVertex(true)));
+        final Vertex record = cursor.next().asVertex(true);
+
+        if (settings.includeRecords != null && !settings.includeRecords.contains(record.getIdentity().toString()))
+          continue;
+
+        writeJsonLine("v", graphSerializer.serializeGraphElement(record));
         context.vertices.incrementAndGet();
       }
     }
@@ -132,7 +143,12 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
   private void exportEdges(final List<String> edgeTypes, final JsonGraphSerializer graphSerializer) throws IOException {
     for (final String type : edgeTypes) {
       for (final Iterator<Record> cursor = database.iterateType(type, false); cursor.hasNext(); ) {
-        writeJsonLine("e", graphSerializer.serializeGraphElement(cursor.next().asEdge(true)));
+        final Edge record = cursor.next().asEdge(true);
+
+        if (settings.includeRecords != null && !settings.includeRecords.contains(record.getIdentity().toString()))
+          continue;
+
+        writeJsonLine("e", graphSerializer.serializeGraphElement(record));
         context.edges.incrementAndGet();
       }
     }
@@ -141,7 +157,12 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
   private void exportDocuments(final List<String> documentTypes, final JsonGraphSerializer graphSerializer) throws IOException {
     for (final String type : documentTypes) {
       for (final Iterator<Record> cursor = database.iterateType(type, false); cursor.hasNext(); ) {
-        writeJsonLine("d", graphSerializer.serializeGraphElement(cursor.next().asDocument(true)));
+        final Document record = cursor.next().asDocument(true);
+
+        if (settings.includeRecords != null && !settings.includeRecords.contains(record.getIdentity().toString()))
+          continue;
+
+        writeJsonLine("d", graphSerializer.serializeGraphElement(record));
         context.documents.incrementAndGet();
       }
     }
