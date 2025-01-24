@@ -8430,19 +8430,19 @@
   DataTable.versionCheck = DataTable.fnVersionCheck = function (version) {
     var aThis = DataTable.version.split(".");
     var aThat = version.split(".");
-    var self, iThat;
+    var iThis, iThat;
 
     for (var i = 0, iLen = aThat.length; i < iLen; i++) {
-      self = parseInt(aThis[i], 10) || 0;
+      iThis = parseInt(aThis[i], 10) || 0;
       iThat = parseInt(aThat[i], 10) || 0;
 
       // Parts are the same, keep comparing
-      if (self === iThat) {
+      if (iThis === iThat) {
         continue;
       }
 
       // Parts are different, return immediately
-      return self > iThat;
+      return iThis > iThat;
     }
 
     return true;
