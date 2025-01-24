@@ -51,11 +51,11 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
   private              OutputStreamWriter writer;
   private final static int                VERSION    = 1;
 
-<<public JsonlExporterFormat(
+  public JsonlExporterFormat(
       final DatabaseInternal database,
       final ExporterSettings settings,
       final ExporterContext context,
->>    final ConsoleLogger logger) {
+      final ConsoleLogger logger) {
     super(database, settings, context, logger);
   }
 
