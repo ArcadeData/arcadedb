@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class OrientDBImporterIT {
 
-  private final static String DATABASE_PATH = "target/databases/performance";
+  private final static String DATABASE_PATH = "target/databases/oriendb-imported";
 
   @BeforeEach
   @AfterEach

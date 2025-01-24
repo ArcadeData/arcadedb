@@ -1,6 +1,8 @@
 package com.arcadedb.integration.importer;
 
+import com.arcadedb.database.DatabaseComparator;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.integration.exporter.Exporter;
@@ -13,6 +15,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.time.ZoneId;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -29,16 +32,35 @@ public class JsonLImporterIT {
   }
 
   @Test
-  void importDatabase() {
+  void testImportDatabaseProgrammatically() {
     var databaseDirectory = new File(DATABASE_PATH);
 
     var inputFile = getClass().getClassLoader().getResource("arcadedb-export.jsonl.tgz");
 
     var importer = new Importer(
         ("-url " + inputFile.getFile() + " -database " + DATABASE_PATH + " -forceDatabaseCreate true").split(" "));
-    importer.load();
+    Map<String, Object> loaded = importer.load();
 
     assertThat(databaseDirectory.exists()).isTrue();
+
+    checkImportedDatabase();
+
+  }
+
+  @Test
+  void testImportDatabaseBySql() {
+
+    var databaseDirectory = new File(DATABASE_PATH);
+
+    var inputFile = getClass().getClassLoader().getResource("arcadedb-export.jsonl.tgz");
+
+    var db = new DatabaseFactory(DATABASE_PATH).create();
+
+    db.command("sql", "import database file://" + inputFile.getFile());
+    checkImportedDatabase();
+  }
+
+  private static void checkImportedDatabase() {
     try (var db = new DatabaseFactory(DATABASE_PATH).open()) {
 
       var schema = db.getSchema();
@@ -78,24 +100,8 @@ public class JsonLImporterIT {
       assertThat(db.countType("Friend", true)).isEqualTo(10000);
 
     }
-
   }
 
-  @Test
-  void importWithSqlCommand() {
 
-    var databaseDirectory = new File(DATABASE_PATH);
 
-    var inputFile = getClass().getClassLoader().getResource("arcadedb-export.jsonl.tgz");
-
-    var db = new DatabaseFactory(DATABASE_PATH).create();
-
-    db.command("sql", "import database file://" + inputFile.getFile());
-    //check vertices
-    assertThat(db.countType("Person", true)).isEqualTo(500);
-
-    //check edges
-    assertThat(db.countType("Friend", true)).isEqualTo(10000);
-
-  }
 }

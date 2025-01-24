@@ -126,8 +126,8 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
       final JsonGraphSerializer graphSerializer = new JsonGraphSerializer().setSharedJson(recordJson).setExpandVertexEdges(true);
 
       exportVertices(vertexTypes, graphSerializer);
-      exportEdges(edgeTypes, graphSerializer);
       exportDocuments(documentTypes, graphSerializer);
+      exportEdges(edgeTypes, graphSerializer);
     }
   }
 

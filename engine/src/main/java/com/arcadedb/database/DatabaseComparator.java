@@ -151,6 +151,7 @@ public class DatabaseComparator {
     }
   }
 
+
   public void compareIndexes(final Database db1, final Database db2) {
     final Index[] indexes1 = db1.getSchema().getIndexes();
     final Index[] indexes2 = db2.getSchema().getIndexes();
