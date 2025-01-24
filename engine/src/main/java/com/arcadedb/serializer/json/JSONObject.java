@@ -77,7 +77,7 @@ public class JSONObject {
     try {
       final JsonReader reader = new JsonReader(new StringReader(input));
       reader.setStrictness(Strictness.LENIENT);
-      object = (JsonObject) JsonParser.parseReader(reader);
+      object = JsonParser.parseReader(reader).getAsJsonObject();
     } catch (Exception e) {
       throw new JSONException("Invalid JSON object format", e);
     }

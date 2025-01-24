@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
 public class Neo4jImporterIT {
-  private final static String DATABASE_PATH = "target/databases/neo4j";
+  private final static String DATABASE_PATH = "target/databases/neo4j-imported";
 
   @Test
   public void testImportNeo4jDirectOK() throws IOException {

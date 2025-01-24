@@ -25,7 +25,10 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
 
 public class JsonGraphSerializer extends JsonSerializer {
 
