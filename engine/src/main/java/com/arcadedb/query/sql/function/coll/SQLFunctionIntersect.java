@@ -37,30 +37,30 @@ public class SQLFunctionIntersect extends SQLFunctionMultiValueAbstract<Object> 
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
-    Object value = iParams[0];
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext ctx) {
+    Object value = params[0];
 
     if (value == null)
       return Collections.emptySet();
 
-    if (iParams.length == 1) {
+    if (params.length == 1) {
       // AGGREGATION MODE (STATEFUL)
       if (context == null) {
         // ADD ALL THE ITEMS OF THE FIRST COLLECTION
-        if (value instanceof Collection) {
-          context = ((Collection) value).iterator();
+        if (value instanceof Collection collection) {
+          context = collection.iterator();
         } else if (value instanceof Iterator) {
           context = value;
-        } else if (value instanceof Iterable) {
-          context = ((Iterable) value).iterator();
+        } else if (value instanceof Iterable iterable) {
+          context = iterable.iterator();
         } else {
           context = Arrays.asList(value).iterator();
         }
       } else {
         Iterator contextIterator = null;
-        if (context instanceof Iterator) {
-          contextIterator = (Iterator) context;
+        if (context instanceof Iterator iterator) {
+          contextIterator = iterator;
         } else if (MultiValue.isMultiValue(context)) {
           contextIterator = MultiValue.getMultiValueIterator(context);
         }
@@ -72,8 +72,8 @@ public class SQLFunctionIntersect extends SQLFunctionMultiValueAbstract<Object> 
     // IN-LINE MODE (STATELESS)
     Iterator iterator = MultiValue.getMultiValueIterator(value, false);
 
-    for (int i = 1; i < iParams.length; ++i) {
-      value = iParams[i];
+    for (int i = 1; i < params.length; ++i) {
+      value = params[i];
 
       if (value != null) {
         value = intersectWith(iterator, value);
@@ -104,8 +104,8 @@ public class SQLFunctionIntersect extends SQLFunctionMultiValueAbstract<Object> 
     for (final Iterator it = current; it.hasNext(); ) {
       final Object curr = it.next();
 
-      if (value instanceof Collection) {
-        if (((Collection) value).contains(curr))
+      if (value instanceof Collection collection) {
+        if (collection.contains(curr))
           tempSet.add(curr);
       }
     }

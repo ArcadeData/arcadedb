@@ -28,7 +28,6 @@ import com.arcadedb.security.SecurityManager;
 import java.io.*;
 import java.nio.charset.*;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -133,7 +132,7 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   private static Path getNormalizedPath(final String path) {
-    return Paths.get(path).toAbsolutePath().normalize();
+    return Path.of(path).toAbsolutePath().normalize();
   }
 
   public static Database getActiveDatabaseInstance(final String databasePath) {

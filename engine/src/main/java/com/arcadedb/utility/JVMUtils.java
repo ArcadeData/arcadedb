@@ -50,14 +50,14 @@ public class JVMUtils {
       output.append("\" ");
 
       output.append(
-          String.format("%nWaited %d times = %dms - Blocked %d times = %dms - Locked monitors=%d synchronizers=%d - InNative=%s",//
-              threadInfo.getWaitedCount(), threadInfo.getWaitedTime(), threadInfo.getBlockedCount(), threadInfo.getBlockedTime(),//
-              threadInfo.getLockedMonitors().length, threadInfo.getLockedSynchronizers().length, threadInfo.isInNative()));
+        "%nWaited %d times = %dms - Blocked %d times = %dms - Locked monitors=%d synchronizers=%d - InNative=%s".formatted(//
+          threadInfo.getWaitedCount(), threadInfo.getWaitedTime(), threadInfo.getBlockedCount(), threadInfo.getBlockedTime(),//
+          threadInfo.getLockedMonitors().length, threadInfo.getLockedSynchronizers().length, threadInfo.isInNative()));
 
       if (threadInfo.getLockInfo() != null) {
-        output.append(String.format("%nWaiting for lock %s", threadInfo.getLockName()));
+        output.append("%nWaiting for lock %s".formatted(threadInfo.getLockName()));
         if (threadInfo.getLockOwnerName() != null)
-          output.append(String.format(" owned by %s(%s)", threadInfo.getLockOwnerName(), threadInfo.getLockOwnerId()));
+          output.append(" owned by %s(%s)".formatted(threadInfo.getLockOwnerName(), threadInfo.getLockOwnerId()));
       }
 
       final Thread.State state = threadInfo.getThreadState();

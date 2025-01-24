@@ -27,7 +27,9 @@ import java.lang.management.*;
 import java.net.*;
 import java.nio.channels.*;
 import java.nio.file.FileSystem;
-import java.nio.file.*;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.logging.*;
 import java.util.zip.*;
@@ -85,8 +87,8 @@ public class FileUtils {
     if (iSize == null)
       throw new IllegalArgumentException("Size is null");
 
-    if (iSize instanceof Number)
-      return ((Number) iSize).longValue();
+    if (iSize instanceof Number number)
+      return number.longValue();
 
     String size = iSize.toString();
 
@@ -142,13 +144,13 @@ public class FileUtils {
 
   public static String getSizeAsString(final long iSize) {
     if (iSize > TERABYTE)
-      return String.format("%2.2fTB", (float) iSize / TERABYTE);
+      return "%2.2fTB".formatted((float) iSize / TERABYTE);
     if (iSize > GIGABYTE)
-      return String.format("%2.2fGB", (float) iSize / GIGABYTE);
+      return "%2.2fGB".formatted((float) iSize / GIGABYTE);
     if (iSize > MEGABYTE)
-      return String.format("%2.2fMB", (float) iSize / MEGABYTE);
+      return "%2.2fMB".formatted((float) iSize / MEGABYTE);
     if (iSize > KILOBYTE)
-      return String.format("%2.2fKB", (float) iSize / KILOBYTE);
+      return "%2.2fKB".formatted((float) iSize / KILOBYTE);
 
     return iSize + "b";
   }
@@ -167,14 +169,14 @@ public class FileUtils {
             if (files != null) {
               for (final File f : files) {
                 if (f.isFile()) {
-                  Files.delete(Paths.get(f.getAbsolutePath()));
+                  Files.delete(Path.of(f.getAbsolutePath()));
                 } else
                   deleteRecursively(f);
               }
             }
           }
 
-          Files.delete(Paths.get(rootFile.getAbsolutePath()));
+          Files.delete(Path.of(rootFile.getAbsolutePath()));
         }
 
         break;

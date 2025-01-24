@@ -136,7 +136,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public void setMetadata(final String typeName, final String[] propertyNames, final int associatedBucketId) {
     checkIsValid();
     this.typeName = typeName;
-    this.propertyNames = Collections.unmodifiableList(Arrays.asList(propertyNames));
+    this.propertyNames = List.of(propertyNames);
     this.associatedBucketId = associatedBucketId;
   }
 

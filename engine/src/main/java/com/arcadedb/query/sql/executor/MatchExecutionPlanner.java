@@ -505,7 +505,7 @@ public class MatchExecutionPlanner {
       } else if (bucket != null) {
         select.getTarget().getItem().setBucket(new Bucket(bucket));
       } else if (rid != null) {
-        select.getTarget().getItem().setRids(Collections.singletonList(rid));
+        select.getTarget().getItem().setRids(List.of(rid));
       }
       select.setWhereClause(where == null ? null : where.copy());
       final BasicCommandContext subContxt = new BasicCommandContext();
@@ -543,7 +543,7 @@ public class MatchExecutionPlanner {
     final FromClause from = new FromClause(-1);
     final FromItem fromItem = new FromItem(-1);
     if (targetRid != null) {
-      fromItem.setRids(Collections.singletonList(targetRid));
+      fromItem.setRids(List.of(targetRid));
     } else if (targetClass != null) {
       fromItem.setIdentifier(new Identifier(targetClass));
     } else if (targetCluster != null) {

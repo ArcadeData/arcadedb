@@ -81,7 +81,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
 
   protected abstract double getDistance(final Vertex node, final Vertex parent, final Vertex target);
 
-  protected abstract double getHeuristicCost(final Vertex node, final Vertex parent, final Vertex target, CommandContext iContext);
+  protected abstract double getHeuristicCost(final Vertex node, final Vertex parent, final Vertex target, CommandContext context);
 
   protected LinkedList<Vertex> getPath() {
     final LinkedList<Vertex> path = new LinkedList<Vertex>(route);
@@ -257,11 +257,11 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     if (fromObject == null) {
       return defaultValue;
     }
-    if (fromObject instanceof Boolean) {
-      return (Boolean) fromObject;
+    if (fromObject instanceof Boolean boolean1) {
+      return boolean1;
     }
-    if (fromObject instanceof String) {
-      return Boolean.parseBoolean((String) fromObject);
+    if (fromObject instanceof String string) {
+      return Boolean.parseBoolean(string);
     }
     return defaultValue;
   }
@@ -277,8 +277,8 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     if (fromObject == null) {
       return defaultValue;
     }
-    if (fromObject instanceof Number) {
-      return ((Number) fromObject).intValue();
+    if (fromObject instanceof Number number) {
+      return number.intValue();
     }
     if (fromObject instanceof String) {
       try {
@@ -293,8 +293,8 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     if (fromObject == null) {
       return defaultValue;
     }
-    if (fromObject instanceof Number) {
-      return ((Number) fromObject).longValue();
+    if (fromObject instanceof Number number) {
+      return number.longValue();
     }
     if (fromObject instanceof String) {
       try {
@@ -309,8 +309,8 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     if (fromObject == null) {
       return defaultValue;
     }
-    if (fromObject instanceof Number) {
-      return ((Number) fromObject).doubleValue();
+    if (fromObject instanceof Number number) {
+      return number.doubleValue();
     }
     if (fromObject instanceof String) {
       try {

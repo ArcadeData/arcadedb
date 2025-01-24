@@ -118,7 +118,7 @@ public class RemoteDocumentType implements DocumentType {
 
   @Override
   public boolean equals(final Object o) {
-    return o instanceof RemoteDocumentType && ((RemoteDocumentType) o).getName().equals(name);
+    return o instanceof RemoteDocumentType rdt && rdt.getName().equals(name);
   }
 
   @Override

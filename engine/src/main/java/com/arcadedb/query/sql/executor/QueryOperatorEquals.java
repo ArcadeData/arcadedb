@@ -38,33 +38,33 @@ public class QueryOperatorEquals {
       // SAME TYPE, NO CONVERSION
       BinaryComparator.equals(left, right);
 
-    if (left instanceof Result && !(right instanceof Result)) {
-      if (((Result) left).isElement()) {
-        left = ((Result) left).toElement();
+    if (left instanceof Result result && !(right instanceof Result)) {
+      if (result.isElement()) {
+        left = result.toElement();
       } else {
-        return comparesValues(right, (Result) left, true);
+        return comparesValues(right, result, true);
       }
     }
 
-    if (right instanceof Result && !(left instanceof Result)) {
-      if (((Result) right).isElement()) {
-        right = ((Result) right).toElement();
+    if (right instanceof Result result && !(left instanceof Result)) {
+      if (result.isElement()) {
+        right = result.toElement();
       } else {
-        return comparesValues(left, (Result) right, true);
+        return comparesValues(left, result, true);
       }
     }
 
     // RECORD & ORID
-    if (left instanceof Identifiable)
-      return comparesValues(right, (Identifiable) left, true);
-    else if (right instanceof Identifiable)
-      return comparesValues(left, (Identifiable) right, true);
-    else if (right instanceof Result)
-      return comparesValues(left, (Result) right, true);
+    if (left instanceof Identifiable identifiable)
+      return comparesValues(right, identifiable, true);
+    else if (right instanceof Identifiable identifiable)
+      return comparesValues(left, identifiable, true);
+    else if (right instanceof Result result)
+      return comparesValues(left, result, true);
 
     // NUMBERS
-    if (left instanceof Number && right instanceof Number) {
-      final Number[] couple = Type.castComparableNumber((Number) left, (Number) right);
+    if (left instanceof Number number && right instanceof Number number1) {
+      final Number[] couple = Type.castComparableNumber(number, number1);
       return couple[0].equals(couple[1]);
     }
 
@@ -73,8 +73,8 @@ public class QueryOperatorEquals {
       right = Type.convert(null, right, left.getClass());
       if (right == null)
         return false;
-      if (left instanceof byte[] && right instanceof byte[]) {
-        return Arrays.equals((byte[]) left, (byte[]) right);
+      if (left instanceof byte[] bytes && right instanceof byte[] bytes1) {
+        return Arrays.equals(bytes, bytes1);
       }
       return BinaryComparator.equals(left, right);
     } catch (final Exception ignore) {
@@ -86,11 +86,11 @@ public class QueryOperatorEquals {
     // ORID && RECORD
     final RID other = record.getIdentity();
 
-    if (record instanceof Document && record.getIdentity() == null) {
+    if (record instanceof Document document && record.getIdentity() == null) {
       // DOCUMENT AS RESULT OF SUB-QUERY: GET THE FIRST FIELD IF ANY
-      final Set<String> firstFieldName = ((Document) record).getPropertyNames();
+      final Set<String> firstFieldName = document.getPropertyNames();
       if (!firstFieldName.isEmpty()) {
-        final Object fieldValue = ((Document) record).get(firstFieldName.iterator().next());
+        final Object fieldValue = document.get(firstFieldName.iterator().next());
         if (fieldValue != null) {
           if (iConsiderIn && MultiValue.isMultiValue(fieldValue)) {
             for (final Object o : MultiValue.getMultiValueIterable(fieldValue, false)) {
@@ -105,8 +105,8 @@ public class QueryOperatorEquals {
       return false;
     }
 
-    if (value instanceof String && RID.is(value))
-      value = new RID(other.getDatabase(), (String) value);
+    if (value instanceof String string && RID.is(value))
+      value = new RID(other.getDatabase(), string);
 
     return other.equals(value);
   }

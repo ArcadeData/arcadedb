@@ -50,12 +50,12 @@ public class ArraySelector extends SimpleNode {
     }
   }
 
-  public Integer getValue(final Identifiable iCurrentRecord, final Object iResult, final CommandContext context) {
+  public Integer getValue(final Identifiable currentRecord, final Object iResult, final CommandContext context) {
     Object result = null;
     if (inputParam != null) {
       result = inputParam.getValue(context.getInputParameters());
     } else if (expression != null) {
-      result = expression.execute(iCurrentRecord, context);
+      result = expression.execute(currentRecord, context);
     } else if (integer != null) {
       result = integer;
     }
@@ -63,18 +63,18 @@ public class ArraySelector extends SimpleNode {
     if (result == null) {
       return null;
     }
-    if (result instanceof Number) {
-      return ((Number) result).intValue();
+    if (result instanceof Number number) {
+      return number.intValue();
     }
     return null;
   }
 
-  public Object getValue(final Result iCurrentRecord, final Object iResult, final CommandContext context) {
+  public Object getValue(final Result currentRecord, final Object iResult, final CommandContext context) {
     Object result = null;
     if (inputParam != null) {
       result = inputParam.getValue(context.getInputParameters());
     } else if (expression != null) {
-      result = expression.execute(iCurrentRecord, context);
+      result = expression.execute(currentRecord, context);
     } else if (integer != null) {
       result = integer;
     }
@@ -82,8 +82,8 @@ public class ArraySelector extends SimpleNode {
     if (result == null) {
       return null;
     }
-    if (result instanceof Number) {
-      return ((Number) result).intValue();
+    if (result instanceof Number number) {
+      return number.intValue();
     }
     return result;
   }
@@ -125,14 +125,14 @@ public class ArraySelector extends SimpleNode {
       idx = integer.getValue();
     }
 
-    if (target instanceof Set && idx instanceof Number) {
-      setValue((Set) target, ((Number) idx).intValue(), value, context);
-    } else if (target instanceof List && idx instanceof Number) {
-      setValue((List) target, ((Number) idx).intValue(), value, context);
-    } else if (target instanceof Map) {
-      setValue((Map) target, idx, value, context);
-    } else if (target.getClass().isArray() && idx instanceof Number) {
-      setArrayValue(target, ((Number) idx).intValue(), value, context);
+    if (target instanceof Set set && idx instanceof Number number) {
+      setValue(set, number.intValue(), value, context);
+    } else if (target instanceof List list && idx instanceof Number number) {
+      setValue(list, number.intValue(), value, context);
+    } else if (target instanceof Map map) {
+      setValue(map, idx, value, context);
+    } else if (target.getClass().isArray() && idx instanceof Number number) {
+      setArrayValue(target, number.intValue(), value, context);
     }
   }
 

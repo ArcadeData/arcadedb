@@ -36,9 +36,9 @@ public class SQLMethodIndexOf extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute( final Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
-    final String toFind = FileUtils.getStringContent(iParams[0].toString());
-    final int startIndex = iParams.length > 1 ? Integer.parseInt(iParams[1].toString()) : 0;
+  public Object execute( final Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
+    final String toFind = FileUtils.getStringContent(params[0].toString());
+    final int startIndex = params.length > 1 ? Integer.parseInt(params[1].toString()) : 0;
 
     return value != null ? value.toString().indexOf(toFind, startIndex) : null;
   }

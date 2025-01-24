@@ -46,20 +46,20 @@ public class ParenthesisExpression extends MathExpression {
   }
 
   @Override
-  public Object execute(final Identifiable iCurrentRecord, final CommandContext context) {
+  public Object execute(final Identifiable currentRecord, final CommandContext context) {
     if (expression != null)
-      return expression.execute(iCurrentRecord, context);
+      return expression.execute(currentRecord, context);
 
     if (statement != null)
       throw new UnsupportedOperationException("Execution of select in parentheses is not supported");
 
-    return super.execute(iCurrentRecord, context);
+    return super.execute(currentRecord, context);
   }
 
   @Override
-  public Object execute(final Result iCurrentRecord, final CommandContext context) {
+  public Object execute(final Result currentRecord, final CommandContext context) {
     if (expression != null)
-      return expression.execute(iCurrentRecord, context);
+      return expression.execute(currentRecord, context);
 
     if (statement != null) {
       final BasicCommandContext subCtx = new BasicCommandContext();
@@ -68,8 +68,8 @@ public class ParenthesisExpression extends MathExpression {
 
       executionPlan = statement.createExecutionPlan(subCtx);
 
-      if (executionPlan instanceof InsertExecutionPlan)
-        ((InsertExecutionPlan) executionPlan).executeInternal();
+      if (executionPlan instanceof InsertExecutionPlan plan)
+        plan.executeInternal();
 
       final LocalResultSet rs = new LocalResultSet(executionPlan);
       final List<Result> result = new ArrayList<>();
@@ -84,7 +84,7 @@ public class ParenthesisExpression extends MathExpression {
 
       return result;
     }
-    return super.execute(iCurrentRecord, context);
+    return super.execute(currentRecord, context);
   }
 
   public InternalExecutionPlan getExecutionPlan() {

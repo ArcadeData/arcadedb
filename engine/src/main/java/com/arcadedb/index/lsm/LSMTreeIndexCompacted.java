@@ -115,7 +115,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
         < keyValueContent.size()) {
       // NO SPACE LEFT, CREATE A NEW PAGE AND FLUSH TO THE DATABASE THE CURRENT ONE (NO WAL)
       database.getPageManager().updatePageVersion(currentPage, true);
-      database.getPageManager().writePages(Collections.singletonList(currentPage), true);
+      database.getPageManager().writePages(List.of(currentPage), true);
 
       currentPage = createNewPage(compactedPageNumberOfSeries);
       pageBuffer = currentPage.getTrackable();

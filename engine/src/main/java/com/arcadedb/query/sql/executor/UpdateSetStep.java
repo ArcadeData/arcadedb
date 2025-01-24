@@ -46,7 +46,7 @@ public class UpdateSetStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        if (upstream instanceof CreateRecordResultSet) {
+        if (upstream instanceof CreateRecordResultSet set) {
           final Object[] parameters = new Object[items.size() * 2];
           for (int i = 0; i < items.size(); ++i) {
             final UpdateItem item = items.get(i);
@@ -54,13 +54,13 @@ public class UpdateSetStep extends AbstractExecutionStep {
             parameters[i * 2 + 1] = item.getRight().execute((Identifiable) null, context);
           }
 
-          return ((CreateRecordResultSet) upstream).next(parameters);
+          return set.next(parameters);
         } else {
 
           final Result result = upstream.next();
-          if (result instanceof ResultInternal) {
+          if (result instanceof ResultInternal internal) {
             for (final UpdateItem item : items)
-              item.applyUpdate((ResultInternal) result, context);
+              item.applyUpdate(internal, context);
           }
           return result;
         }

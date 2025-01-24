@@ -45,16 +45,16 @@ public class SQLMethodIsWithin extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext context, final Object[] iParams) {
+  public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
     if (value == null)
       return null;
     else if (!(value instanceof Shape))
       return null;
 
-    if (iParams.length != 1 || iParams[0] == null)
+    if (params.length != 1 || params[0] == null)
       throw new IllegalArgumentException("isWithin() requires a shape as parameter");
 
-    final Shape shape = (Shape) iParams[0];
+    final Shape shape = (Shape) params[0];
 
     return ((Shape) value).relate(shape) == SpatialRelation.WITHIN;
   }

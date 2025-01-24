@@ -35,12 +35,12 @@ public class SQLMethodTrimSuffix extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute( final Object value, final Identifiable iRecord, final CommandContext iContext, final Object[] iParams) {
-    if (value == null || null == iParams || null == iParams[0])
+  public Object execute( final Object value, final Identifiable iRecord, final CommandContext context, final Object[] params) {
+    if (value == null || null == params || null == params[0])
       return value;
 
     final String strval = value.toString();
-    final String suffix = iParams[0].toString();
+    final String suffix = params[0].toString();
 
     if (strval.endsWith(suffix))
       return strval.substring(0,strval.length() - suffix.length());

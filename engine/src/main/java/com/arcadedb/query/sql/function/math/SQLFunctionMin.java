@@ -40,22 +40,22 @@ public class SQLFunctionMin extends SQLFunctionMathAbstract {
   }
 
   @SuppressWarnings({ "unchecked", "rawtypes" })
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext ctx) {
 
     // calculate min value for current record
     // consider both collection of parameters and collection in each parameter
     Object min = null;
-    for (Object item : iParams) {
-      if (item instanceof Collection<?>) {
-        for (final Object subitem : ((Collection<?>) item)) {
+    for (Object item : params) {
+      if (item instanceof Collection<?> collection) {
+        for (final Object subitem : collection) {
           if (min == null || subitem != null && ((Comparable) subitem).compareTo(min) < 0)
             min = subitem;
         }
       } else {
-        if (item instanceof Number && min instanceof Number &&//
+        if (item instanceof Number number && min instanceof Number number1 &&//
             !item.getClass().equals(min.getClass())) {
-          final Number[] converted = Type.castComparableNumber((Number) item, (Number) min);
+          final Number[] converted = Type.castComparableNumber(number, number1);
           item = converted[0];
           min = converted[1];
         }
@@ -71,8 +71,8 @@ public class SQLFunctionMin extends SQLFunctionMathAbstract {
         // FIRST TIME
         context = min;
       else {
-        if (context instanceof Number && min instanceof Number) {
-          final Number[] casted = Type.castComparableNumber((Number) context, (Number) min);
+        if (context instanceof Number number && min instanceof Number number1) {
+          final Number[] casted = Type.castComparableNumber(number, number1);
           context = casted[0];
           min = casted[1];
         }

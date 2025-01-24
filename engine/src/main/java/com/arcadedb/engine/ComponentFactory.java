@@ -44,7 +44,7 @@ public class ComponentFactory {
     final String fileName = file.getComponentName();
     final int fileId = file.getFileId();
     final String fileExt = file.getFileExtension();
-    final int pageSize = file instanceof PaginatedComponentFile ? ((PaginatedComponentFile) file).getPageSize() : 0;
+    final int pageSize = file instanceof PaginatedComponentFile pcf ? pcf.getPageSize() : 0;
     final int version = file.getVersion();
 
     final PaginatedComponentFactoryHandler handler = map.get(fileExt);

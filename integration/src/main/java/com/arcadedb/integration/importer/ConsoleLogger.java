@@ -47,7 +47,7 @@ public class ConsoleLogger {
     if (args.length == 0)
       System.out.print(text);
     else
-      System.out.print(String.format(text, args));
+      System.out.print(text.formatted(args));
   }
 
   public void errorLine(final String text, final Object... args) {

@@ -44,25 +44,25 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
-    if (iParams == null || iParams.length != 3)
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
+    if (params == null || params.length != 3)
       throw new CommandSQLParsingException(getSyntax());
 
-    final Index index = iContext.getDatabase().getSchema().getIndexByName(iParams[0].toString());
+    final Index index = context.getDatabase().getSchema().getIndexByName(params[0].toString());
     if (!(index instanceof HnswVectorIndex))
       throw new CommandSQLParsingException("Index '" + index.getName() + "' is not a vector index (found: " + index.getClass().getSimpleName() + ")");
 
     final HnswVectorIndex vIndex = (HnswVectorIndex) index;
 
-    Object key = iParams[1];
+    Object key = params[1];
     if (key == null)
       throw new CommandSQLParsingException("key is null");
 
-    if( key instanceof List)
-      key = ((List<?>) key).toArray();
+    if( key instanceof List<?> list)
+      key = list.toArray();
 
-    final int limit = iParams[2] instanceof Number ? ((Number) iParams[2]).intValue() : Integer.parseInt(iParams[2].toString());
+    final int limit = params[2] instanceof Number n ? n.intValue() : Integer.parseInt(params[2].toString());
 
     final List<Pair<Vertex, ? extends Number>> neighbors = vIndex.findNeighborsFromVector(key, limit, null);
 

@@ -26,7 +26,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 public class BinaryCondition extends BooleanExpression {
   protected Expression            left;
@@ -106,7 +109,7 @@ public class BinaryCondition extends BooleanExpression {
 
   public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final CommandContext context) {
     if (left.isIndexedFunctionCal(context)) {
-      return Collections.singletonList(this);
+      return List.of(this);
     }
     return null;
   }

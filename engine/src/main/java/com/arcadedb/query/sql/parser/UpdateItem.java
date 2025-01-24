@@ -159,12 +159,12 @@ public class UpdateItem extends SimpleNode {
       return newValue;
     }
 
-    if (newValue instanceof Collection) {
+    if (newValue instanceof Collection collection) {
       if (prop.getType() == Type.LINK) {
-        if (((Collection) newValue).isEmpty()) {
+        if (collection.isEmpty()) {
           newValue = null;
-        } else if (((Collection) newValue).size() == 1) {
-          newValue = ((Collection) newValue).iterator().next();
+        } else if (collection.size() == 1) {
+          newValue = collection.iterator().next();
         } else {
           throw new CommandExecutionException("Cannot assign a collection to a LINK property");
         }
@@ -174,13 +174,13 @@ public class UpdateItem extends SimpleNode {
   }
 
   private Object extractFromResult(final Object value) {
-    if (value instanceof Result) {
-      if (((Result) value).isElement())
-        return ((Result) value).toElement();
-      else if (((Result) value).getPropertyNames().size() == 1)
-        return ((Result) value).getProperty(((Result) value).getPropertyNames().iterator().next());
+    if (value instanceof Result result) {
+      if (result.isElement())
+        return result.toElement();
+      else if (result.getPropertyNames().size() == 1)
+        return result.getProperty(result.getPropertyNames().iterator().next());
       else
-        return ((Result) value).toMap();
+        return result.toMap();
     } else if (value instanceof Identifiable)
       return value;
     else if (value instanceof List && containsOResult((Collection) value))

@@ -50,10 +50,10 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
   public ResultSet executeSimple(final CommandContext context) {
     if (this.url == null) {
       // ASSIGN DEFAULT NAME
-      this.url = new Url(String.format("%s-export-%s.%s.tgz",//
-          context.getDatabase().getName(),//
-          DateTimeFormatter.ofPattern("yyyyMMdd-HHmmssSSS").format(LocalDateTime.now()),//
-          format.getStringValue())//
+      this.url = new Url("%s-export-%s.%s.tgz".formatted(//
+        context.getDatabase().getName(),//
+        DateTimeFormatter.ofPattern("yyyyMMdd-HHmmssSSS").format(LocalDateTime.now()),//
+        format.getStringValue())//
       );
     }
 

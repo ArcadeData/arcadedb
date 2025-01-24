@@ -37,17 +37,17 @@ public class SQLFunctionDistance extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
     double distance;
 
     final double[] values = new double[4];
 
-    for (int i = 0; i < iParams.length && i < 4; ++i) {
-      if (iParams[i] == null)
+    for (int i = 0; i < params.length && i < 4; ++i) {
+      if (params[i] == null)
         return null;
 
-      values[i] = (Double) Type.convert(iContext.getDatabase(), iParams[i], Double.class);
+      values[i] = (Double) Type.convert(context.getDatabase(), params[i], Double.class);
     }
 
     final double deltaLat = Math.toRadians(values[2] - values[0]);
@@ -57,8 +57,8 @@ public class SQLFunctionDistance extends SQLFunctionAbstract {
         Math.pow(Math.sin(deltaLat / 2), 2) + Math.cos(Math.toRadians(values[0])) * Math.cos(Math.toRadians(values[2])) * Math.pow(Math.sin(deltaLon / 2), 2);
     distance = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * EARTH_RADIUS;
 
-    if (iParams.length > 4) {
-      final String unit = iParams[4].toString();
+    if (params.length > 4) {
+      final String unit = params[4].toString();
       if (unit.equalsIgnoreCase("km"))
         // ALREADY IN KM
         ;

@@ -56,28 +56,28 @@ public class SQLMethodAsJSON extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object me, final Identifiable iCurrentRecord, final CommandContext iContext,
-      final Object[] iParams) {
+  public Object execute(final Object me, final Identifiable currentRecord, final CommandContext context,
+      final Object[] params) {
     if (me == null)
       return null;
 
-    if (me instanceof Result) {
-      return ((Result) me).toJSON();
-    } else if (me instanceof Document) {
-      return ((Document) me).toJSON();
-    } else if (me instanceof Map) {
-      return new JSONObject((Map) me);
-    } else if (me instanceof String) {
-      if (((String) me).isEmpty())
+    if (me instanceof Result result) {
+      return result.toJSON();
+    } else if (me instanceof Document document) {
+      return document.toJSON();
+    } else if (me instanceof Map map) {
+      return new JSONObject(map);
+    } else if (me instanceof String string) {
+      if (string.isEmpty())
         return new JSONObject();
-      if (((String) me).charAt(0) == '[')
-        return new JSONArray((String) me);
+      if (string.charAt(0) == '[')
+        return new JSONArray(string);
       else
-        return new JSONObject((String) me);
+        return new JSONObject(string);
     } else if (MultiValue.isMultiValue(me)) {
       final JSONArray json = new JSONArray();
       for (final Object o : MultiValue.getMultiValueIterable(me, false))
-        json.put(execute(o, iCurrentRecord, iContext, iParams));
+        json.put(execute(o, currentRecord, context, params));
       return json;
     }
     return null;

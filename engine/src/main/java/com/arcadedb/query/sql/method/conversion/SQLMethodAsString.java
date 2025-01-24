@@ -35,12 +35,12 @@ public class SQLMethodAsString extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
-      final Object[] iParams) {
+  public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context,
+      final Object[] params) {
     if (value == null)
       return null;
-    else if (value instanceof byte[])
-      return new String((byte[]) value);
+    else if (value instanceof byte[] bytes)
+      return new String(bytes);
     else
       return value.toString();
   }

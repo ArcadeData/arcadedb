@@ -798,7 +798,7 @@ public class Console {
 
     if (args.length > 0) {
       if (output != null)
-        output.onOutput(String.format(text, args));
+        output.onOutput(text.formatted(args));
       else
         terminal.writer().printf(text, args);
     } else {
@@ -1019,7 +1019,7 @@ public class Console {
 
   private String getPrompt() {
     final String databaseName = databaseProxy != null ? databaseProxy.getName() : null;
-    return String.format(PROMPT, databaseName != null ? "{" + databaseName + "}" : "");
+    return PROMPT.formatted(databaseName != null ? "{" + databaseName + "}" : "");
   }
 
   private static boolean setGlobalConfiguration(final String key, final String value, final boolean printError) {

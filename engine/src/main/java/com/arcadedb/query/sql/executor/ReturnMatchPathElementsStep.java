@@ -32,15 +32,15 @@ public class ReturnMatchPathElementsStep extends AbstractUnrollStep {
   }
 
   @Override
-  protected Collection<Result> unroll(final Result doc, final CommandContext iContext) {
+  protected Collection<Result> unroll(final Result doc, final CommandContext context) {
     final List<Result> result = new ArrayList<>();
     for (final String s : doc.getPropertyNames()) {
       Object elem = doc.getProperty(s);
-      if (elem instanceof Identifiable)
-        elem = new ResultInternal(((Identifiable) elem).asDocument());
+      if (elem instanceof Identifiable identifiable)
+        elem = new ResultInternal(identifiable.asDocument());
 
-      if (elem instanceof Result) {
-        result.add((Result) elem);
+      if (elem instanceof Result result1) {
+        result.add(result1);
       }
       //else...? TODO
     }

@@ -227,7 +227,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             } catch (final Exception e) {
               if (errorRecordCallback == null)
                 LogManager.instance()
-                    .log(this, Level.SEVERE, String.format("Error on loading record #%s (error: %s)", rid, e.getMessage()));
+                    .log(this, Level.SEVERE, "Error on loading record #%s (error: %s)".formatted(rid, e.getMessage()));
               else if (!errorRecordCallback.onErrorLoading(rid, e))
                 return;
             }
@@ -379,7 +379,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
           } else if (recordPositionInPage > page.getContentSize()) {
             ++totalErrors;
-            warning = String.format("invalid record offset %d in page for record %s", recordPositionInPage, rid);
+            warning = "invalid record offset %d in page for record %s".formatted(recordPositionInPage, rid);
             if (fix) {
               deleteRecord(rid);
               deletedRecordsAfterFix.add(rid);
@@ -420,7 +420,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               final long endPosition = recordPositionInPage + recordSize[1] + recordSize[0];
               if (endPosition > file.getPageSize()) {
                 ++totalErrors;
-                warning = String.format("wrong record size %d found for record %s", recordSize[1] + recordSize[0], rid);
+                warning = "wrong record size %d found for record %s".formatted(recordSize[1] + recordSize[0], rid);
                 if (fix) {
                   deleteRecord(rid);
                   deletedRecordsAfterFix.add(rid);
@@ -433,7 +433,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
             } catch (final Exception e) {
               ++totalErrors;
-              warning = String.format("unknown error on loading record %s: %s", rid, e.getMessage());
+              warning = "unknown error on loading record %s: %s".formatted(rid, e.getMessage());
             }
           }
 
@@ -455,7 +455,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       } catch (final Exception e) {
         ++totalErrors;
-        warning = String.format("unknown error on checking page %d: %s", pageId, e.getMessage());
+        warning = "unknown error on checking page %d: %s".formatted(pageId, e.getMessage());
       }
 
       if (warning != null) {

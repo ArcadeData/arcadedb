@@ -47,12 +47,12 @@ public class SQLMethodPrecision extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
-      final Object[] iParams) {
-    if (iParams == null || iParams.length == 0 || iParams[0] == null)
+  public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context,
+      final Object[] params) {
+    if (params == null || params.length == 0 || params[0] == null)
       throw new IllegalArgumentException("precision method was expecting the time unit");
 
-    final ChronoUnit targetPrecision = DateUtils.parsePrecision(iParams[0].toString());
+    final ChronoUnit targetPrecision = DateUtils.parsePrecision(params[0].toString());
 
     if (value instanceof LocalDateTime localDateTime)
       return localDateTime.truncatedTo(targetPrecision);
@@ -63,11 +63,11 @@ public class SQLMethodPrecision extends AbstractSQLMethod {
     else if (value instanceof Date date) {
       if (targetPrecision == MILLIS)
         return value;
-      return DateUtils.dateTime(iContext.getDatabase(), date.getTime(), MILLIS, LocalDateTime.class, targetPrecision);
+      return DateUtils.dateTime(context.getDatabase(), date.getTime(), MILLIS, LocalDateTime.class, targetPrecision);
     } else if (value instanceof Calendar calendar) {
       if (targetPrecision == MILLIS)
         return calendar;
-      return DateUtils.dateTime(iContext.getDatabase(), calendar.getTimeInMillis(), MILLIS, LocalDateTime.class, targetPrecision);
+      return DateUtils.dateTime(context.getDatabase(), calendar.getTimeInMillis(), MILLIS, LocalDateTime.class, targetPrecision);
     }
 
     throw new CommandExecutionException("Error on changing precision for unsupported type '" + value.getClass() + "'");

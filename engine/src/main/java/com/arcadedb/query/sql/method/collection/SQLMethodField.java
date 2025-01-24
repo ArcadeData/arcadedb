@@ -36,12 +36,12 @@ public class SQLMethodField extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
-      final Object[] iParams) {
-    if (iParams[0] == null)
+  public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context,
+      final Object[] params) {
+    if (params[0] == null)
       return null;
 
-    final String field = iParams[0].toString();
+    final String field = params[0].toString();
 
     if (value instanceof Identifiable identifiable) {
       final Document doc = (Document) identifiable.getRecord();

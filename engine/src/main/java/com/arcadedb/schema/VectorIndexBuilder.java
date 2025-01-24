@@ -102,10 +102,10 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
     final LocalSchema schema = database.getSchema().getEmbedded();
     if (ignoreIfExists) {
       Index index = schema.getIndexByName(indexName);
-      if (index instanceof HnswVectorIndex) {
+      if (index instanceof HnswVectorIndex vectorIndex) {
         if (!index.getTypeName().equalsIgnoreCase(vertexType))
           throw new IndexException("Index '" + indexName + "' is already defined but on type '" + index.getTypeName() + "'");
-        return (HnswVectorIndex) index;
+        return vectorIndex;
       }
     }
 

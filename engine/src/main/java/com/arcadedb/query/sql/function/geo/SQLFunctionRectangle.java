@@ -36,14 +36,14 @@ public class SQLFunctionRectangle extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
-    if (iParams.length != 4)
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
+    if (params.length != 4)
       throw new IllegalArgumentException("rectangle() requires 4 parameters");
 
     final SpatialContext spatialContext = GeoUtils.getSpatialContext();
-    final Point topLeft = spatialContext.getShapeFactory().pointXY(GeoUtils.getDoubleValue(iParams[0]), GeoUtils.getDoubleValue(iParams[1]));
-    final Point bottomRight = spatialContext.getShapeFactory().pointXY(GeoUtils.getDoubleValue(iParams[2]), GeoUtils.getDoubleValue(iParams[3]));
+    final Point topLeft = spatialContext.getShapeFactory().pointXY(GeoUtils.getDoubleValue(params[0]), GeoUtils.getDoubleValue(params[1]));
+    final Point bottomRight = spatialContext.getShapeFactory().pointXY(GeoUtils.getDoubleValue(params[2]), GeoUtils.getDoubleValue(params[3]));
     return spatialContext.getShapeFactory().rect(topLeft, bottomRight);
   }
 

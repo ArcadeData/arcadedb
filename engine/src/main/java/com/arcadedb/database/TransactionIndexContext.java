@@ -106,19 +106,17 @@ public class TransactionIndexContext {
           return 1;
         } else if (v2 == null) {
           return -1;
-        } else if (v1 instanceof List && v2 instanceof List) {
+        } else if (v1 instanceof List list && v2 instanceof List list1) {
 
-          return CollectionUtils.compare((List) v1, (List) v2);
+          return CollectionUtils.compare(list, list1);
 
-        } else if (v1 instanceof List) {
-          final List l1 = (List) v1;
+        } else if (v1 instanceof List l1) {
           for (int j = 0; j < l1.size(); j++) {
             cmp = j > 0 ? 1 : BinaryComparator.compareTo(l1.get(j), v2);
             if (cmp != 0)
               return cmp;
           }
-        } else if (v2 instanceof List) {
-          final List l2 = (List) v2;
+        } else if (v2 instanceof List l2) {
           for (int j = 0; j < l2.size(); j++) {
             cmp = j > 0 ? -1 : BinaryComparator.compareTo(v1, l2.get(j));
             if (cmp != 0)

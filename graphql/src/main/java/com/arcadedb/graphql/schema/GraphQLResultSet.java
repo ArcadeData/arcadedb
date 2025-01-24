@@ -191,16 +191,16 @@ public class GraphQLResultSet implements ResultSet {
       if (selectionSet != null) {
         if (projectionValue instanceof Map)
           projectionValue = mapBySelections(new ResultInternal((Map<String, Object>) projectionValue), selectionSet);
-        else if (projectionValue instanceof Result)
-          projectionValue = mapBySelections((Result) projectionValue, selectionSet);
-        else if (projectionValue instanceof Iterable) {
+        else if (projectionValue instanceof Result result)
+          projectionValue = mapBySelections(result, selectionSet);
+        else if (projectionValue instanceof Iterable iterable) {
           final List<Result> subResults = new ArrayList<>();
-          for (final Object o : ((Iterable) projectionValue)) {
+          for (final Object o : iterable) {
             final Result item;
-            if (o instanceof Document)
-              item = mapBySelections(new ResultInternal((Document) o), selectionSet);
-            else if (o instanceof Result)
-              item = mapBySelections((Result) o, selectionSet);
+            if (o instanceof Document document)
+              item = mapBySelections(new ResultInternal(document), selectionSet);
+            else if (o instanceof Result result)
+              item = mapBySelections(result, selectionSet);
             else
               continue;
 
@@ -212,16 +212,16 @@ public class GraphQLResultSet implements ResultSet {
       } else if (projectionType != null) {
         if (projectionValue instanceof Map)
           projectionValue = mapByReturnType(new ResultInternal((Map<String, Object>) projectionValue), projectionType);
-        else if (projectionValue instanceof Result)
-          projectionValue = mapByReturnType((Result) projectionValue, projectionType);
-        else if (projectionValue instanceof Iterable) {
+        else if (projectionValue instanceof Result result)
+          projectionValue = mapByReturnType(result, projectionType);
+        else if (projectionValue instanceof Iterable iterable) {
           final List<Result> subResults = new ArrayList<>();
-          for (final Object o : ((Iterable) projectionValue)) {
+          for (final Object o : iterable) {
             final Result item;
-            if (o instanceof Document)
-              item = mapByReturnType(new ResultInternal((Document) o), projectionType);
-            else if (o instanceof Result)
-              item = mapByReturnType((Result) o, projectionType);
+            if (o instanceof Document document)
+              item = mapByReturnType(new ResultInternal(document), projectionType);
+            else if (o instanceof Result result)
+              item = mapByReturnType(result, projectionType);
             else
               continue;
 

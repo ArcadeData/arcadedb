@@ -35,9 +35,9 @@ public class SQLFunctionLast extends SQLFunctionConfigurableAbstract {
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
-    final Object value = iParams[0];
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
+    final Object value = params[0];
 
     if (MultiValue.isMultiValue(value))
       return MultiValue.getLastValue(value);

@@ -61,62 +61,62 @@ public class RightBinaryCondition extends SimpleNode {
     }
   }
 
-  public Object execute(final Result iCurrentRecord, final Object elementToFilter, final CommandContext context) {
+  public Object execute(final Result currentRecord, final Object elementToFilter, final CommandContext context) {
     if (elementToFilter == null) {
       return null;
     }
     final Iterator iterator;
     if (elementToFilter instanceof Identifiable) {
-      iterator = Collections.singleton(elementToFilter).iterator();
-    } else if (elementToFilter instanceof Iterable) {
-      iterator = ((Iterable) elementToFilter).iterator();
-    } else if (elementToFilter instanceof Iterator) {
-      iterator = (Iterator) elementToFilter;
+      iterator = Set.of(elementToFilter).iterator();
+    } else if (elementToFilter instanceof Iterable iterable) {
+      iterator = iterable.iterator();
+    } else if (elementToFilter instanceof Iterator iterator1) {
+      iterator = iterator1;
     } else {
-      iterator = Collections.singleton(elementToFilter).iterator();
+      iterator = Set.of(elementToFilter).iterator();
     }
 
     final List result = new ArrayList();
     while (iterator.hasNext()) {
       final Object element = iterator.next();
-      if (matchesFilters(iCurrentRecord, element, context)) {
+      if (matchesFilters(currentRecord, element, context)) {
         result.add(element);
       }
     }
     return result;
   }
 
-  public Object execute(final Identifiable iCurrentRecord, final Object elementToFilter, final CommandContext context) {
+  public Object execute(final Identifiable currentRecord, final Object elementToFilter, final CommandContext context) {
     if (elementToFilter == null) {
       return null;
     }
     final Iterator iterator;
     if (elementToFilter instanceof Identifiable) {
-      iterator = Collections.singleton(elementToFilter).iterator();
-    } else if (elementToFilter instanceof Iterable) {
-      iterator = ((Iterable) elementToFilter).iterator();
-    } else if (elementToFilter instanceof Iterator) {
-      iterator = (Iterator) elementToFilter;
+      iterator = Set.of(elementToFilter).iterator();
+    } else if (elementToFilter instanceof Iterable iterable) {
+      iterator = iterable.iterator();
+    } else if (elementToFilter instanceof Iterator iterator1) {
+      iterator = iterator1;
     } else {
-      iterator = Collections.singleton(elementToFilter).iterator();
+      iterator = Set.of(elementToFilter).iterator();
     }
 
     final List result = new ArrayList();
     while (iterator.hasNext()) {
       final Object element = iterator.next();
-      if (matchesFilters(iCurrentRecord, element, context)) {
+      if (matchesFilters(currentRecord, element, context)) {
         result.add(element);
       }
     }
     return result;
   }
 
-  private boolean matchesFilters(final Identifiable iCurrentRecord, final Object element, final CommandContext context) {
+  private boolean matchesFilters(final Identifiable currentRecord, final Object element, final CommandContext context) {
     if (operator != null) {
-      operator.execute(context.getDatabase(), element, right.execute(iCurrentRecord, context));
+      operator.execute(context.getDatabase(), element, right.execute(currentRecord, context));
     } else if (inOperator != null) {
 
-      final Object rightVal = evaluateRight(iCurrentRecord, context);
+      final Object rightVal = evaluateRight(currentRecord, context);
       if (rightVal == null) {
         return false;
       }
@@ -129,12 +129,12 @@ public class RightBinaryCondition extends SimpleNode {
     return false;
   }
 
-  private boolean matchesFilters(final Result iCurrentRecord, final Object element, final CommandContext context) {
+  private boolean matchesFilters(final Result currentRecord, final Object element, final CommandContext context) {
     if (operator != null) {
-      return operator.execute(context.getDatabase(), element, right.execute(iCurrentRecord, context));
+      return operator.execute(context.getDatabase(), element, right.execute(currentRecord, context));
     } else if (inOperator != null) {
 
-      final Object rightVal = evaluateRight(iCurrentRecord, context);
+      final Object rightVal = evaluateRight(currentRecord, context);
       if (rightVal == null) {
         return false;
       }

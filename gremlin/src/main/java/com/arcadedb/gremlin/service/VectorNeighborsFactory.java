@@ -31,7 +31,10 @@ import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.service.Service;
 import org.apache.tinkerpop.gremlin.structure.util.CloseableIterator;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Uses the vector index HNSW to retrieve the top K neighbors from a key.
@@ -63,7 +66,7 @@ public class VectorNeighborsFactory extends ArcadeServiceRegistry.ArcadeServiceF
 
   @Override
   public Set<Type> getSupportedTypes() {
-    return Collections.singleton(Type.Start);
+    return Set.of(Type.Start);
   }
 
   @Override
@@ -84,7 +87,7 @@ public class VectorNeighborsFactory extends ArcadeServiceRegistry.ArcadeServiceF
     final List<Map> result = new ArrayList<>(neighbors.size());
     for (Pair<Identifiable, ? extends Number> n : neighbors)
       result.add(Map.of("vertex", graph.getVertexFromRecord(n.getFirst()), "distance", n.getSecond()));
-    return CloseableIterator.of(Collections.singletonList(result).iterator());
+    return CloseableIterator.of(List.of(result).iterator());
   }
 
   @Override

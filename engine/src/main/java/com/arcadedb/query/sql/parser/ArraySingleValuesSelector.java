@@ -53,10 +53,10 @@ public class ArraySingleValuesSelector extends SimpleNode {
     }
   }
 
-  public Object execute(final Identifiable iCurrentRecord, final Object iResult, final CommandContext context) {
+  public Object execute(final Identifiable currentRecord, final Object iResult, final CommandContext context) {
     final List<Object> result = new ArrayList<>();
     for (final ArraySelector item : items) {
-      final Object index = item.getValue(iCurrentRecord, iResult, context);
+      final Object index = item.getValue(currentRecord, iResult, context);
       if (index == null) {
         return null;
       }
@@ -85,10 +85,10 @@ public class ArraySingleValuesSelector extends SimpleNode {
     return result;
   }
 
-  public Object execute(final Result iCurrentRecord, final Object iResult, final CommandContext context) {
+  public Object execute(final Result currentRecord, final Object iResult, final CommandContext context) {
     final List<Object> result = new ArrayList<>();
     for (final ArraySelector item : items) {
-      final Object index = item.getValue(iCurrentRecord, iResult, context);
+      final Object index = item.getValue(currentRecord, iResult, context);
       if (index == null) {
         return null;
       }

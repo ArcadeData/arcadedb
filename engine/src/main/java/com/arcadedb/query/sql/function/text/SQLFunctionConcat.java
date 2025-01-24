@@ -31,15 +31,15 @@ public class SQLFunctionConcat extends SQLFunctionConfigurableAbstract {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
     if (sb == null) {
       sb = new StringBuilder();
     } else {
-      if (iParams.length > 1)
-        sb.append(iParams[1]);
+      if (params.length > 1)
+        sb.append(params[1]);
     }
-    sb.append(iParams[0]);
+    sb.append(params[0]);
     return null;
   }
 

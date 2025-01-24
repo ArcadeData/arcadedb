@@ -33,20 +33,20 @@ public abstract class SQLFunctionMathAbstract extends SQLFunctionConfigurableAbs
     super(iName);
   }
 
-  protected Number getContextValue(Object iContext, final Class<? extends Number> iClass) {
-    if (iClass != iContext.getClass()) {
+  protected Number getContextValue(Object context, final Class<? extends Number> iClass) {
+    if (iClass != context.getClass()) {
       // CHANGE TYPE
       if (iClass == Long.class)
-        iContext = Long.valueOf(((Number) iContext).longValue());
+        context = Long.valueOf(((Number) context).longValue());
       else if (iClass == Short.class)
-        iContext = Short.valueOf(((Number) iContext).shortValue());
+        context = Short.valueOf(((Number) context).shortValue());
       else if (iClass == Float.class)
-        iContext = Float.valueOf(((Number) iContext).floatValue());
+        context = Float.valueOf(((Number) context).floatValue());
       else if (iClass == Double.class)
-        iContext = Double.valueOf(((Number) iContext).doubleValue());
+        context = Double.valueOf(((Number) context).doubleValue());
     }
 
-    return (Number) iContext;
+    return (Number) context;
   }
 
   protected Class<? extends Number> getClassWithMorePrecision(final Class<? extends Number> iClass1, final Class<? extends Number> iClass2) {

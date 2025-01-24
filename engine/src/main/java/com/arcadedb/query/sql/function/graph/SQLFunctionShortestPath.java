@@ -82,7 +82,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     public Boolean edge;
   }
 
-  public List<RID> execute(final Object iThis, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+  public List<RID> execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
 
     final ShortestPathContext shortestPathContext = new ShortestPathContext();

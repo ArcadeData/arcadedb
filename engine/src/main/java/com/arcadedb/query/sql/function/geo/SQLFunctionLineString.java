@@ -39,24 +39,24 @@ public class SQLFunctionLineString extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
-    if (iParams.length != 1)
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
+    if (params.length != 1)
       throw new IllegalArgumentException("lineString() requires array of points as parameters");
 
     final SpatialContext spatialContext = GeoUtils.getSpatialContext();
 
-    final List<Object> points = (List<Object>) iParams[0];
+    final List<Object> points = (List<Object>) params[0];
 
     ShapeFactory.LineStringBuilder lineString = spatialContext.getShapeFactory().lineString();
 
     for (int i = 0; i < points.size(); i++) {
       final Object point = points.get(i);
 
-      if (point instanceof Point)
-        lineString.pointXY(((Point) point).getX(), ((Point) point).getY());
-      else if (point instanceof List)
-        lineString.pointXY(GeoUtils.getDoubleValue(((List) point).get(0)), GeoUtils.getDoubleValue(((List) point).get(1)));
+      if (point instanceof Point point1)
+        lineString.pointXY(point1.getX(), point1.getY());
+      else if (point instanceof List list)
+        lineString.pointXY(GeoUtils.getDoubleValue(list.get(0)), GeoUtils.getDoubleValue(list.get(1)));
     }
     return lineString.build();
   }

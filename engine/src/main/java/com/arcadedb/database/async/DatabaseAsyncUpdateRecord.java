@@ -43,16 +43,16 @@ public class DatabaseAsyncUpdateRecord implements DatabaseAsyncTask {
       // INVOKE EVENT CALLBACKS
       if (!((RecordEventsRegistry) database.getEvents()).onBeforeUpdate(record))
         return;
-      if (record instanceof Document)
-        if (!((RecordEventsRegistry) ((Document) record).getType().getEvents()).onBeforeUpdate(record))
+      if (record instanceof Document document)
+        if (!((RecordEventsRegistry) document.getType().getEvents()).onBeforeUpdate(record))
           return;
 
       database.updateRecordNoLock(record, onOkCallback == null);
 
       // INVOKE EVENT CALLBACKS
       ((RecordEventsRegistry) database.getEvents()).onAfterUpdate(record);
-      if (record instanceof Document)
-        ((RecordEventsRegistry) ((Document) record).getType().getEvents()).onAfterUpdate(record);
+      if (record instanceof Document document)
+        ((RecordEventsRegistry) document.getType().getEvents()).onAfterUpdate(record);
 
       if (onOkCallback != null)
         onOkCallback.call(record);

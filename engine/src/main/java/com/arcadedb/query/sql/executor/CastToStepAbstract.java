@@ -57,8 +57,8 @@ public abstract class CastToStepAbstract extends AbstractExecutionStep {
             return result;
 
           if (result.isVertex()) {
-            if (result instanceof ResultInternal) {
-              ((ResultInternal) result).setElement(result.getElement().get());
+            if (result instanceof ResultInternal internal) {
+              internal.setElement(result.getElement().get());
             } else {
               final ResultInternal r = new ResultInternal(context.getDatabase());
               r.setElement(result.getElement().get());

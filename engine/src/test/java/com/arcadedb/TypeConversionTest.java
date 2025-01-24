@@ -132,10 +132,10 @@ public class TypeConversionTest extends TestHelper {
 
       String property = database.query("sql", "select decimal.format('%.1f') as d from " + doc.getIdentity()).nextIfAvailable()
           .getProperty("d");
-      assertThat(property).isEqualTo(String.format("%.1f", 33.3F));
+      assertThat(property).isEqualTo("%.1f".formatted(33.3F));
       property = database.query("sql", "select decimal.format('%.2f') as d from " + doc.getIdentity()).nextIfAvailable()
           .getProperty("d");
-      assertThat(property).isEqualTo(String.format("%.2f", 33.33F));
+      assertThat(property).isEqualTo("%.2f".formatted(33.33F));
 
       doc.delete();
     });
@@ -488,6 +488,12 @@ public class TypeConversionTest extends TestHelper {
 
       ResultSet resultSet = database.command("sql", "insert into ConversionTest set datetime_micros = ?", date1);
       assertThat(resultSet.next().toElement().get("datetime_micros")).isEqualTo(date1.truncatedTo(ChronoUnit.MICROS));
+
+      try {
+        TimeUnit.MILLISECONDS.sleep(10);
+      } catch (InterruptedException e) {
+        throw new RuntimeException(e);
+      }
 
       resultSet = database.command("sql", "insert into ConversionTest set datetime_micros = ?", date2);
       assertThat(resultSet.next().toElement().get("datetime_micros")).isEqualTo(date2.truncatedTo(ChronoUnit.MICROS));

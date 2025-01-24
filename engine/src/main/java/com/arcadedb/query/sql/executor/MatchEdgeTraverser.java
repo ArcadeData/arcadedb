@@ -80,11 +80,11 @@ public class MatchEdgeTraverser {
   }
 
   protected boolean equals(Object prevValue, Identifiable nextElement) {
-    if (prevValue instanceof Result) {
-      prevValue = ((Result) prevValue).getElement().orElse(null);
+    if (prevValue instanceof Result result) {
+      prevValue = result.getElement().orElse(null);
     }
-    if (nextElement instanceof Result) {
-      nextElement = ((Result) nextElement).getElement().orElse(null);
+    if (nextElement instanceof Result result) {
+      nextElement = result.getElement().orElse(null);
     }
     return prevValue != null && prevValue.equals(nextElement);
   }
@@ -107,8 +107,8 @@ public class MatchEdgeTraverser {
   protected void init(final CommandContext context) {
     if (downstream == null) {
       Identifiable startingElem = sourceRecord.getElementProperty(getStartingPointAlias());
-      if (startingElem instanceof Result) {
-        startingElem = ((Result) startingElem).getElement().orElse(null);
+      if (startingElem instanceof Result result) {
+        startingElem = result.getElement().orElse(null);
       }
       downstream = executeTraversal(context, this.item, startingElem, 0, null).iterator();
     }
@@ -232,8 +232,8 @@ public class MatchEdgeTraverser {
           newPath.add(elem.getIdentity());
 
           final Iterable<ResultInternal> subResult = executeTraversal(iCommandContext, item, elem, depth + 1, newPath);
-          if (subResult instanceof Collection) {
-            ((List) result).addAll((Collection<? extends ResultInternal>) subResult);
+          if (subResult instanceof Collection<? extends ResultInternal> collection) {
+            ((List) result).addAll(collection);
           } else {
             for (final ResultInternal i : subResult) {
               ((List) result).add(i);
@@ -267,12 +267,12 @@ public class MatchEdgeTraverser {
       return true;
     }
     Document element = null;
-    if (origin instanceof Document) {
-      element = (Document) origin;
+    if (origin instanceof Document document) {
+      element = document;
     } else {
       final Object record = origin.getRecord();
-      if (record instanceof Document) {
-        element = (Document) record;
+      if (record instanceof Document document) {
+        element = document;
       }
     }
     if (element != null) {
@@ -324,10 +324,10 @@ public class MatchEdgeTraverser {
       final String alias = getEndpointAlias();
       final Object matchedNodes = iCommandContext.getVariable(MatchPrefetchStep.PREFETCHED_MATCH_ALIAS_PREFIX + alias);
       if (matchedNodes != null) {
-        if (matchedNodes instanceof Iterable) {
-          possibleResults = (Iterable) matchedNodes;
+        if (matchedNodes instanceof Iterable iterable) {
+          possibleResults = iterable;
         } else {
-          possibleResults = Collections.singleton(matchedNodes);
+          possibleResults = Set.of(matchedNodes);
         }
       }
     }
@@ -344,17 +344,16 @@ public class MatchEdgeTraverser {
     if (qR == null) {
       return Collections.emptyList();
     }
-    if (qR instanceof Document) {
-      return Collections.singleton(new ResultInternal((Document) qR));
+    if (qR instanceof Document document) {
+      return Set.of(new ResultInternal(document));
     }
-    if (qR instanceof Iterable) {
-      final Iterable iterable = (Iterable) qR;
+    if (qR instanceof Iterable iterable) {
       final List<ResultInternal> result = new ArrayList<>();
       for (final Object o : iterable) {
-        if (o instanceof Document) {
-          result.add(new ResultInternal((Document) o));
-        } else if (o instanceof ResultInternal) {
-          result.add((ResultInternal) o);
+        if (o instanceof Document document) {
+          result.add(new ResultInternal(document));
+        } else if (o instanceof ResultInternal internal) {
+          result.add(internal);
         } else if (o == null) {
         } else {
           throw new UnsupportedOperationException();

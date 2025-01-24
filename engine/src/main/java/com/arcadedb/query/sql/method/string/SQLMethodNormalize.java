@@ -39,18 +39,18 @@ public class SQLMethodNormalize extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
-      final Object[] iParams) {
+  public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context,
+      final Object[] params) {
 
     if (value != null) {
       final Normalizer.Form form =
-          iParams != null && iParams.length > 0 ?
-              Normalizer.Form.valueOf(FileUtils.getStringContent(iParams[0].toString())) :
+          params != null && params.length > 0 ?
+              Normalizer.Form.valueOf(FileUtils.getStringContent(params[0].toString())) :
               Normalizer.Form.NFD;
 
       final String normalized = Normalizer.normalize(value.toString(), form);
-      if (iParams != null && iParams.length > 1) {
-        return normalized.replaceAll(FileUtils.getStringContent(iParams[1].toString()), "");
+      if (params != null && params.length > 1) {
+        return normalized.replaceAll(FileUtils.getStringContent(params[1].toString()), "");
       }
       return PatternConst.PATTERN_DIACRITICAL_MARKS.matcher(normalized).replaceAll("");
     }

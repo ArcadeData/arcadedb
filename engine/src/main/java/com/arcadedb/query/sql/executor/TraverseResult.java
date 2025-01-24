@@ -44,8 +44,8 @@ public class TraverseResult extends ResultInternal {
   @Override
   public ResultInternal setProperty(final String name, final Object value) {
     if ("$depth".equalsIgnoreCase(name)) {
-      if (value instanceof Number) {
-        depth = ((Number) value).intValue();
+      if (value instanceof Number number) {
+        depth = number.intValue();
       }
     } else {
       super.setProperty(name, value);

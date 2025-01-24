@@ -39,7 +39,7 @@ public class SQLMethodAsList extends AbstractSQLMethod {
 
   @SuppressWarnings("unchecked")
   @Override
-  public Object execute(Object value, final Identifiable iCurrentRecord, final CommandContext iContext, final Object[] iParams) {
+  public Object execute(Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
     if (value instanceof List)
       // ALREADY A LIST
       return value;
@@ -50,8 +50,8 @@ public class SQLMethodAsList extends AbstractSQLMethod {
 
     if (value instanceof Collection<?>) {
       return new ArrayList<>((Collection<Object>) value);
-    } else if (value instanceof Iterable<?>) {
-      value = ((Iterable<?>) value).iterator();
+    } else if (value instanceof Iterable<?> iterable) {
+      value = iterable.iterator();
     }
 
     if (value instanceof Iterator<?>) {
@@ -64,6 +64,6 @@ public class SQLMethodAsList extends AbstractSQLMethod {
     }
 
     // SINGLE ITEM: ADD IT AS UNIQUE ITEM
-    return Collections.singletonList(value);
+    return List.of(value);
   }
 }

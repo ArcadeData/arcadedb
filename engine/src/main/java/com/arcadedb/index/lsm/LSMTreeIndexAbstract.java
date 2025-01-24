@@ -351,9 +351,9 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
       convertedKeys[i] = Type.convert(database, keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
 
-      if (convertedKeys[i] instanceof String)
+      if (convertedKeys[i] instanceof String string)
         // OPTIMIZATION: ALWAYS CONVERT STRINGS TO BYTE[]
-        convertedKeys[i] = ((String) convertedKeys[i]).getBytes(DatabaseFactory.getDefaultCharset());
+        convertedKeys[i] = string.getBytes(DatabaseFactory.getDefaultCharset());
     }
     return convertedKeys;
   }

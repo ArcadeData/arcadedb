@@ -49,9 +49,9 @@ public class UpdateMergeStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         final Result result = upstream.next();
-        if (result instanceof ResultInternal) {
+        if (result instanceof ResultInternal internal) {
           if (!(result.getElement().orElse(null) instanceof Document)) {
-            ((ResultInternal) result).setElement((Document) result.getElement().get().getRecord());
+            internal.setElement((Document) result.getElement().get().getRecord());
           }
           if (!(result.getElement().orElse(null) instanceof Document)) {
             return result;
