@@ -263,7 +263,7 @@ public class ConsoleTest {
     FileUtils.deleteRecursively(new File("databases/" + DATABASE_PATH));
 
     final Console newConsole = new Console();
-    newConsole.parse("create database " + DATABASE_PATH + ";import database file://src/test/resources/neo4j-export-mini.jsonl");
+    newConsole.parse("create database " + DATABASE_PATH + ";import database file://src/test/resources/neo4j-export-mini.neo");
     newConsole.close();
 
     try (final DatabaseFactory factory = new DatabaseFactory("./target/databases/" + DATABASE_PATH)) {
