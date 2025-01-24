@@ -41,7 +41,7 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   @Override
-  public  boolean has(final String propertyName) {
+  public boolean has(final String propertyName) {
     if (propertyName == null)
       return false;
 
@@ -50,7 +50,7 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   @Override
-  public  Object get(final String propertyName) {
+  public Object get(final String propertyName) {
     if (propertyName == null)
       return null;
 
@@ -60,7 +60,7 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   @Override
-  public  MutableDocument modify() {
+  public MutableDocument modify() {
     final Record recordInCache = database.getTransaction().getRecordFromCache(rid);
     if (recordInCache != null) {
       if (recordInCache instanceof MutableDocument)
@@ -85,7 +85,7 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   @Override
-  public  JSONObject toJSON(final boolean includeMetadata) {
+  public JSONObject toJSON(final boolean includeMetadata) {
     checkForLazyLoading();
     final Map<String, Object> map = database.getSerializer()
         .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
@@ -108,15 +108,15 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   @Override
-  public  Map<String, Object> toMap() {
+  public Map<String, Object> toMap() {
     return toMap(true);
   }
 
   @Override
-  public  Map<String, Object> toMap(final boolean includeMetadata) {
+  public Map<String, Object> toMap(final boolean includeMetadata) {
     checkForLazyLoading();
-    final Map<String, Object> result = database.getSerializer()
-        .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
+    final Map<String, Object> result = new HashMap<>(database.getSerializer()
+        .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid));
     if (includeMetadata) {
       result.put("@cat", "d");
       result.put("@type", type.getName());
@@ -127,7 +127,7 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   @Override
-  public  String toString() {
+  public String toString() {
     final StringBuilder output = new StringBuilder(256);
     if (rid != null)
       output.append(rid);
@@ -166,7 +166,7 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   @Override
-  public  Set<String> getPropertyNames() {
+  public Set<String> getPropertyNames() {
     checkForLazyLoading();
     return database.getSerializer().getPropertyNames(database, buffer, rid);
   }
