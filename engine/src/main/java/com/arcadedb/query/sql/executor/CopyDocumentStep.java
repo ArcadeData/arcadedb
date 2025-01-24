@@ -59,13 +59,13 @@ public class CopyDocumentStep extends AbstractExecutionStep {
           if (toCopy.isElement()) {
             final Record docToCopy = toCopy.getElement().get().getRecord();
 
-            if (docToCopy instanceof Document) {
+            if (docToCopy instanceof Document document) {
               if (targetType != null) {
                 resultDoc = getContext().getDatabase().newDocument(targetType);
               } else {
-                resultDoc = getContext().getDatabase().newDocument(((Document) docToCopy).getTypeName());
+                resultDoc = getContext().getDatabase().newDocument(document.getTypeName());
               }
-              ((MutableDocument) resultDoc).set(((Document) docToCopy).toMap(false));
+              ((MutableDocument) resultDoc).set(document.toMap(false));
             }
           } else {
             final DocumentType type = context.getDatabase().getSchema().getType(targetType);

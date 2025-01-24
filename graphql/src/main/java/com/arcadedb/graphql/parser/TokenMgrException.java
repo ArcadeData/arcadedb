@@ -20,6 +20,8 @@
 /* ParserGeneratorCCOptions: */
 package com.arcadedb.graphql.parser;
 
+import java.io.Serial;
+
 /** Token Manager Error. */
 public class TokenMgrException extends RuntimeException
 {
@@ -29,6 +31,7 @@ public class TokenMgrException extends RuntimeException
    * Increment only if the <i>serialized</i> form of the
    * class changes.
    */
+  @Serial
   private static final long serialVersionUID = 1L;
 
   /*

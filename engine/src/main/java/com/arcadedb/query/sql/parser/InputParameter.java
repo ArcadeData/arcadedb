@@ -49,17 +49,17 @@ public class InputParameter extends SimpleNode {
       result.isNull = true;
       return result;
     }
-    if (value instanceof Boolean) {
+    if (value instanceof Boolean boolean1) {
       final Expression result = new Expression(-1);
-      result.booleanValue = (Boolean) value;
+      result.booleanValue = boolean1;
       return result;
     }
-    if (value instanceof Integer) {
+    if (value instanceof Integer integer) {
       final PInteger result = new PInteger(-1);
-      result.setValue((Integer) value);
+      result.setValue(integer);
       return result;
     }
-    if (value instanceof BigDecimal) {
+    if (value instanceof BigDecimal decimal) {
       final Expression result = new Expression(-1);
       final FunctionCall funct = new FunctionCall(-1);
       result.mathExpression = new BaseExpression(-1);
@@ -68,14 +68,14 @@ public class InputParameter extends SimpleNode {
       ((BaseExpression) result.mathExpression).identifier.levelZero.functionCall = funct;
       funct.name = new Identifier("decimal");
       final Expression stringExp = new Expression(-1);
-      stringExp.mathExpression = new BaseExpression(((BigDecimal) value).toPlainString());
+      stringExp.mathExpression = new BaseExpression(decimal.toPlainString());
       funct.getParams().add(stringExp);
       return result;
     }
 
-    if (value instanceof Number) {
+    if (value instanceof Number number) {
       final FloatingPoint result = new FloatingPoint(-1);
-      result.sign = ((Number) value).doubleValue() >= 0 ? 1 : -1;
+      result.sign = number.doubleValue() >= 0 ? 1 : -1;
       result.stringValue = value.toString();
       if (result.stringValue.startsWith("-")) {
         result.stringValue = result.stringValue.substring(1);
@@ -97,10 +97,10 @@ public class InputParameter extends SimpleNode {
       }
       return coll;
     }
-    if (value instanceof Map) {
+    if (value instanceof Map map) {
       final Json json = new Json(-1);
       json.items = new ArrayList<JsonItem>();
-      for (final Object entry : ((Map) value).entrySet()) {
+      for (final Object entry : map.entrySet()) {
         final JsonItem item = new JsonItem();
         item.leftString = "" + ((Map.Entry) entry).getKey();
         final Expression exp = new Expression(-1);
@@ -110,10 +110,10 @@ public class InputParameter extends SimpleNode {
       }
       return json;
     }
-    if (value instanceof Identifiable) {
+    if (value instanceof Identifiable identifiable) {
       // TODO if invalid build a JSON
       final Rid rid = new Rid(-1);
-      final String stringVal = ((Identifiable) value).getIdentity().toString().substring(1);
+      final String stringVal = identifiable.getIdentity().toString().substring(1);
       final String[] splitted = stringVal.split(":");
       final PInteger c = new PInteger(-1);
       c.setValue(Integer.parseInt(splitted[0]));

@@ -216,8 +216,8 @@ public class RemoteHttpComponent extends RWLockContext {
       }
     }
 
-    if (lastException instanceof RuntimeException)
-      throw (RuntimeException) lastException;
+    if (lastException instanceof RuntimeException exception)
+      throw exception;
 
     throw new RemoteException(
         "Error on executing remote operation '" + operation + "' (server=" + server + " retry=" + maxRetry + ")", lastException);

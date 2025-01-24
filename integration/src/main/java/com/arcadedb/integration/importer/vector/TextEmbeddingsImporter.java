@@ -181,16 +181,16 @@ public class TextEmbeddingsImporter {
     else if (indexedEmbedding > 0)
       progressPerc = indexedEmbedding * 10F / embeddingsParsed; // 10% OF THE TOTAL PROCESS
 
-    String result = String.format("- %.2f%%", progressPerc);
+    String result = "- %.2f%%".formatted(progressPerc);
 
     if (embeddingsParsed > 0)
-      result += String.format(" - %,d embeddings parsed", embeddingsParsed);
+      result += " - %,d embeddings parsed".formatted(embeddingsParsed);
     if (indexedEmbedding > 0)
-      result += String.format(" - %,d embeddings indexed", indexedEmbedding);
+      result += " - %,d embeddings indexed".formatted(indexedEmbedding);
     if (verticesCreated > 0)
-      result += String.format(" - %,d vertices created", verticesCreated);
+      result += " - %,d vertices created".formatted(verticesCreated);
     if (verticesConnected > 0)
-      result += String.format(" - %,d vertices connected", verticesConnected);
+      result += " - %,d vertices connected".formatted(verticesConnected);
 
     result += " (elapsed " + DateUtils.formatElapsed(System.currentTimeMillis() - beginTime) + ")";
 

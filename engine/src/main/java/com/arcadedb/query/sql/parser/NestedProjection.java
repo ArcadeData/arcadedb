@@ -45,22 +45,22 @@ public class NestedProjection extends SimpleNode {
    * @param context
    */
   public Object apply(final Expression expression, final Object input, final CommandContext context) {
-    if (input instanceof Result)
-      return apply(expression, (Result) input, context, recursion == null ? 0 : recursion.getValue().intValue());
-    else if (input instanceof Identifiable)
-      return apply(expression, (Document) ((Identifiable) input).getRecord(), context,
+    if (input instanceof Result result)
+      return apply(expression, result, context, recursion == null ? 0 : recursion.getValue().intValue());
+    else if (input instanceof Identifiable identifiable)
+      return apply(expression, (Document) identifiable.getRecord(), context,
           recursion == null ? 0 : recursion.getValue().intValue());
-    else if (input instanceof Map)
-      return apply(expression, (Map) input, context, recursion == null ? 0 : recursion.getValue().intValue());
-    else if (input instanceof Collection)
-      return ((Collection) input).stream().map(x -> apply(expression, x, context)).collect(Collectors.toList());
+    else if (input instanceof Map map)
+      return apply(expression, map, context, recursion == null ? 0 : recursion.getValue().intValue());
+    else if (input instanceof Collection collection)
+      return collection.stream().map(x -> apply(expression, x, context)).collect(Collectors.toList());
 
     Iterator iter = null;
-    if (input instanceof Iterable)
-      iter = ((Iterable) input).iterator();
+    if (input instanceof Iterable iterable)
+      iter = iterable.iterator();
 
-    if (input instanceof Iterator)
-      iter = (Iterator) input;
+    if (input instanceof Iterator iterator)
+      iter = iterator;
 
     if (iter != null) {
       final List result = new ArrayList();

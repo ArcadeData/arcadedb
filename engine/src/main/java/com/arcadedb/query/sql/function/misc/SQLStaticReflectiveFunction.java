@@ -100,20 +100,20 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
 
-    final Supplier<String> paramsPrettyPrint = () -> Arrays.stream(iParams).map(p -> p + " [ " + p.getClass().getName() + " ]")
+    final Supplier<String> paramsPrettyPrint = () -> Arrays.stream(params).map(p -> p + " [ " + p.getClass().getName() + " ]")
         .collect(Collectors.joining(", ", "(", ")"));
 
-    final Method method = pickMethod(iParams);
+    final Method method = pickMethod(params);
 
     if (method == null) {
       throw new CommandParsingException("Unable to find a function for " + name + paramsPrettyPrint.get());
     }
 
     try {
-      return method.invoke(null, iParams);
+      return method.invoke(null, params);
     } catch (final ReflectiveOperationException e) {
       throw new CommandParsingException("Error executing function " + name + paramsPrettyPrint.get(), e);
     } catch (final IllegalArgumentException x) {
@@ -129,13 +129,13 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
     return this.getName();
   }
 
-  private Method pickMethod(final Object[] iParams) {
+  private Method pickMethod(final Object[] params) {
     for (final Method m : methods) {
       final Class<?>[] parameterTypes = m.getParameterTypes();
-      if (iParams.length == parameterTypes.length) {
+      if (params.length == parameterTypes.length) {
         boolean match = true;
         for (int i = 0; i < parameterTypes.length; i++) {
-          if (iParams[i] != null && !isAssignable(iParams[i].getClass(), parameterTypes[i])) {
+          if (params[i] != null && !isAssignable(params[i].getClass(), parameterTypes[i])) {
             match = false;
             break;
           }

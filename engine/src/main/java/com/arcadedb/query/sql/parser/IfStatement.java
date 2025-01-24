@@ -178,10 +178,10 @@ public class IfStatement extends Statement {
       if (stm instanceof ReturnStatement) {
         return true;
       }
-      if (stm instanceof ForEachBlock && ((ForEachBlock) stm).containsReturn()) {
+      if (stm instanceof ForEachBlock block && block.containsReturn()) {
         return true;
       }
-      if (stm instanceof IfStatement && ((IfStatement) stm).containsReturn()) {
+      if (stm instanceof IfStatement statement && statement.containsReturn()) {
         return true;
       }
     }
@@ -191,10 +191,10 @@ public class IfStatement extends Statement {
         if (stm instanceof ReturnStatement) {
           return true;
         }
-        if (stm instanceof ForEachBlock && ((ForEachBlock) stm).containsReturn()) {
+        if (stm instanceof ForEachBlock block && block.containsReturn()) {
           return true;
         }
-        if (stm instanceof IfStatement && ((IfStatement) stm).containsReturn()) {
+        if (stm instanceof IfStatement statement && statement.containsReturn()) {
           return true;
         }
       }

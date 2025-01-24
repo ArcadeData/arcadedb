@@ -99,7 +99,7 @@ public class HAMessageFactory {
       throw new IllegalArgumentException("Command with id " + type + " was not found");
 
     try {
-      return commands.get(type).newInstance();
+      return commands.get(type).getDeclaredConstructor().newInstance();
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on creating replication command", e);
       throw new ConfigurationException("Error on creating replication command", e);

@@ -33,8 +33,8 @@ public class LockContext {
   }
 
   protected RuntimeException manageExceptionInLock(final Throwable e) {
-    if (e instanceof RuntimeException)
-      throw (RuntimeException) e;
+    if (e instanceof RuntimeException exception)
+      throw exception;
 
     return new RuntimeException("Error in execution during lock", e);
   }

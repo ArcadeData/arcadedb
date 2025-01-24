@@ -66,10 +66,10 @@ public class OrBlock extends BooleanExpression {
   }
 
   public Boolean evaluate(final Object currentRecord, final CommandContext context) {
-    if (currentRecord instanceof Result) {
-      return evaluate((Result) currentRecord, context);
-    } else if (currentRecord instanceof Identifiable) {
-      return evaluate((Identifiable) currentRecord, context);
+    if (currentRecord instanceof Result result) {
+      return evaluate(result, context);
+    } else if (currentRecord instanceof Identifiable identifiable) {
+      return evaluate(identifiable, context);
     } else if (currentRecord instanceof Map) {
       final ResultInternal result = new ResultInternal((Map<String, Object>) currentRecord);
       return evaluate(result, context);

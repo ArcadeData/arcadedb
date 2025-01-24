@@ -25,7 +25,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
 import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -41,13 +40,13 @@ public class SQLMethodKeys extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
-      final Object[] iParams) {
+  public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context,
+      final Object[] params) {
     if (value instanceof Map map)
       return map.keySet();
 
     if (value instanceof Document document)
-      return Collections.singletonList(document.getPropertyNames());
+      return List.of(document.getPropertyNames());
 
     if (value instanceof Result result) {
       return result.getPropertyNames();
@@ -55,7 +54,7 @@ public class SQLMethodKeys extends AbstractSQLMethod {
 
     if (value instanceof Collection<?> collection) {
       final List<Object> result = collection.stream()
-          .flatMap(o -> ((Collection<Object>) execute(o, iCurrentRecord, iContext, iParams)).stream()).toList();
+          .flatMap(o -> ((Collection<Object>) execute(o, currentRecord, context, params)).stream()).toList();
       return result;
     }
     return null;

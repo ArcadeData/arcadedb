@@ -42,13 +42,13 @@ public class SQLFunctionEval extends SQLFunctionMathAbstract {
     super(NAME);
   }
 
-  public Object execute(Object iThis, final Identifiable iRecord, final Object iCurrentResult, final Object[] iParams, CommandContext iContext) {
-    if (iParams.length < 1)
+  public Object execute(Object self, final Identifiable record, final Object currentResult, final Object[] params, CommandContext context) {
+    if (params.length < 1)
       throw new CommandExecutionException("invalid expression");
 
     if (predicate == null) {
-      try (final ByteArrayInputStream is = new ByteArrayInputStream(iParams[0].toString().getBytes())) {
-        predicate = new SqlParser(iContext.getDatabase(), is).ParseCondition();
+      try (final ByteArrayInputStream is = new ByteArrayInputStream(params[0].toString().getBytes())) {
+        predicate = new SqlParser(context.getDatabase(), is).ParseCondition();
       } catch (IOException e) {
         throw new CommandSQLParsingException("Error on parsing expression in eval() function", e);
       } catch (ParseException e) {
@@ -56,7 +56,7 @@ public class SQLFunctionEval extends SQLFunctionMathAbstract {
       }
 
     }
-    return predicate.matchesFilters(iRecord, iContext);
+    return predicate.matchesFilters(record, context);
   }
 
   public boolean aggregateResults() {

@@ -131,8 +131,8 @@ public class JSONImporterFormat implements FormatImporter {
     JSONObject mappingObject;
 
     while (reader.peek() == BEGIN_OBJECT) {
-      if (mappingValue instanceof JSONObject) {
-        mappingObject = (JSONObject) mappingValue;
+      if (mappingValue instanceof JSONObject object) {
+        mappingObject = object;
         ignore = false;
       } else
         mappingObject = null;
@@ -190,8 +190,8 @@ public class JSONImporterFormat implements FormatImporter {
         JSONObject mappingObject = null;
         if (mapping != null && mapping.has(attributeName)) {
           final Object mappingValue = mapping.get(attributeName);
-          if (mappingValue instanceof JSONObject)
-            mappingObject = (JSONObject) mappingValue;
+          if (mappingValue instanceof JSONObject object)
+            mappingObject = object;
           else if (mappingValue instanceof String && mappingValue.toString().equals("@ignore"))
             ignoreObject = true;
         }
@@ -221,8 +221,8 @@ public class JSONImporterFormat implements FormatImporter {
     resolveProperties(mapping, attributes);
 
     final Document record = createRecord(database, context, attributes, mapping, settings);
-    if (record instanceof MutableDocument) {
-      ((MutableDocument) record).save();
+    if (record instanceof MutableDocument document) {
+      document.save();
       return record;
     }
 
@@ -237,8 +237,8 @@ public class JSONImporterFormat implements FormatImporter {
       if (entry.getKey().startsWith("@"))
         continue;
       final Object value = entry.getValue();
-      if (value instanceof String && ((String) value).startsWith("<") && ((String) value).endsWith(">")) {
-        final String copyFrom = ((String) value).substring(1, ((String) value).length() - 1);
+      if (value instanceof String string && string.startsWith("<") && string.endsWith(">")) {
+        final String copyFrom = string.substring(1, string.length() - 1);
         attributes.map.put(entry.getKey(), getAttribute(attributes, copyFrom));
       }
     }
@@ -396,7 +396,7 @@ public class JSONImporterFormat implements FormatImporter {
           // CONVERTED TO EDGE, REMOVE THE PROPERTY ENTIRELY
           attributes.map.remove(mappingName);
 
-      } else if (mappingValue instanceof JSONArray) {
+      } else if (mappingValue instanceof JSONArray array) {
         if (!(attributeValue instanceof Collection)) {
           LogManager.instance()
               .log(this, Level.WARNING,
@@ -406,7 +406,7 @@ public class JSONImporterFormat implements FormatImporter {
           continue;
         }
 
-        final Object subMapping = ((JSONArray) mappingValue).get(0);
+        final Object subMapping = array.get(0);
         for (Iterator<?> it = ((Collection<?>) attributeValue).iterator(); it.hasNext(); ) {
           final Object attributeArrayItem = it.next();
           Object result = convertMap(database, context, record, attributeArrayItem, subMapping, attributes, settings);
@@ -469,8 +469,7 @@ public class JSONImporterFormat implements FormatImporter {
   private Object convertMap(final Database database, final ImporterContext context, final MutableDocument record,
       final Object value, final Object mapping,
       final CascadingProperties attributes, final ImporterSettings settings) {
-    if (mapping instanceof JSONObject) {
-      final JSONObject mappingObject = (JSONObject) mapping;
+    if (mapping instanceof JSONObject mappingObject) {
 
       final Map<String, Object> attributeMap;
       if (value instanceof Map)
@@ -508,8 +507,8 @@ public class JSONImporterFormat implements FormatImporter {
             final String inVertex = inValue.toString();
             destVertexMappingObject = mappingObject.getJSONObject(inVertex);
             destVertexItem = attributeMap.get(inVertex);
-          } else if (inValue instanceof JSONObject) {
-            destVertexMappingObject = (JSONObject) inValue;
+          } else if (inValue instanceof JSONObject object) {
+            destVertexMappingObject = object;
             attributeMap.put((String) destVertexMappingObject.get("@id"), value);
             destVertexItem = attributeMap;
           } else {

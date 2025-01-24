@@ -65,14 +65,14 @@ public class MatchMultiEdgeTraverser extends MatchEdgeTraverser {
         final WhereClause whileCond = sub.getFilter() == null ? null : sub.getFilter().getWhileCondition();
 
         MethodCall method = sub.getMethod();
-        if (sub instanceof MatchPathItemFirst) {
-          method = ((MatchPathItemFirst) sub).getFunction().toMethod();
+        if (sub instanceof MatchPathItemFirst first) {
+          method = first.getFunction().toMethod();
         }
 
         if (whileCond != null) {
           Object current = o;
-          if (current instanceof Result) {
-            current = ((Result) current).getElement().orElse(null);
+          if (current instanceof Result result1) {
+            current = result1.getElement().orElse(null);
           }
           final MatchEdgeTraverser subtraverser = new MatchEdgeTraverser(null, sub);
           subtraverser.executeTraversal(iCommandContext, sub, (Identifiable) current, 0, null).forEach(x -> rightSide.add(x));
@@ -80,21 +80,20 @@ public class MatchMultiEdgeTraverser extends MatchEdgeTraverser {
         } else {
           iCommandContext.setVariable("current", o);
           final Object nextSteps = method.execute(o, possibleResults, iCommandContext);
-          if (nextSteps instanceof Collection) {
-            ((Collection) nextSteps).stream().map(x -> toOResultInternal(x)).filter(Objects::nonNull).forEach(i -> rightSide.add((ResultInternal) i));
-          } else if (nextSteps instanceof Document) {
-            rightSide.add(new ResultInternal((Document) nextSteps));
-          } else if (nextSteps instanceof ResultInternal) {
-            rightSide.add((ResultInternal) nextSteps);
-          } else if (nextSteps instanceof Iterable) {
-            for (final Object step : (Iterable) nextSteps) {
+          if (nextSteps instanceof Collection collection) {
+            collection.stream().map(x -> toOResultInternal(x)).filter(Objects::nonNull).forEach(i -> rightSide.add((ResultInternal) i));
+          } else if (nextSteps instanceof Document document) {
+            rightSide.add(new ResultInternal(document));
+          } else if (nextSteps instanceof ResultInternal internal) {
+            rightSide.add(internal);
+          } else if (nextSteps instanceof Iterable iterable) {
+            for (final Object step : iterable) {
               final ResultInternal converted = toOResultInternal(step);
               if (converted != null) {
                 rightSide.add(converted);
               }
             }
-          } else if (nextSteps instanceof Iterator) {
-            final Iterator iterator = (Iterator) nextSteps;
+          } else if (nextSteps instanceof Iterator iterator) {
             while (iterator.hasNext()) {
               final ResultInternal converted = toOResultInternal(iterator.next());
               if (converted != null) {
@@ -114,11 +113,11 @@ public class MatchMultiEdgeTraverser extends MatchEdgeTraverser {
   }
 
   private ResultInternal toOResultInternal(final Object x) {
-    if (x instanceof ResultInternal) {
-      return (ResultInternal) x;
+    if (x instanceof ResultInternal internal) {
+      return internal;
     }
-    if (x instanceof Document) {
-      return new ResultInternal((Document) x);
+    if (x instanceof Document document) {
+      return new ResultInternal(document);
     }
     throw new CommandExecutionException("Cannot execute traversal on " + x);
   }

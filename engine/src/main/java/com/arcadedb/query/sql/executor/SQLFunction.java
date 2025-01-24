@@ -35,16 +35,16 @@ public interface SQLFunction {
   /**
    * Process a record.
    *
-   * @param iThis
-   * @param iCurrentRecord : current record
-   * @param iCurrentResult TODO
-   * @param iParams        : function parameters, number is ensured to be within minParams and maxParams.
-   * @param iContext       : object calling this function
+   * @param self
+   * @param currentRecord : current record
+   * @param currentResult TODO
+   * @param params        : function parameters, number is ensured to be within minParams and maxParams.
+   * @param context       : object calling this function
    *
    * @return function result, can be null. Special cases : can be null if function aggregate results, can be null if function filter
    * results : this mean result is excluded
    */
-  Object execute(Object iThis, Identifiable iCurrentRecord, Object iCurrentResult, Object[] iParams, CommandContext iContext);
+  Object execute(Object self, Identifiable currentRecord, Object currentResult, Object[] params, CommandContext context);
 
   /**
    * Configure the function.

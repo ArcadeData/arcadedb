@@ -31,30 +31,30 @@ public class InOperator extends SimpleNode implements BinaryCompareOperator {
 
   @Override
   public boolean execute(final DatabaseInternal database, Object left, Object right) {
-    if (right instanceof Collection) {
-      if (left instanceof Collection<?>)
-        return ((Collection<?>) right).containsAll((Collection<?>) left);
+    if (right instanceof Collection<?> collection) {
+      if (left instanceof Collection<?> collection2)
+        return ((Collection<?>) right).containsAll(collection2);
 
-      if (left instanceof Iterable)
-        left = ((Iterable<?>) left).iterator();
+      if (left instanceof Iterable<?> iterable)
+        left = iterable.iterator();
 
       if (left instanceof Iterator<?> iterator) {
         while (iterator.hasNext()) {
           final Object next = iterator.next();
-          if (!((Collection<?>) right).contains(next)) {
+          if (!collection.contains(next)) {
             return false;
           }
         }
       }
-      return ((Collection<?>) right).contains(left);
+      return collection.contains(left);
     }
 
-    if (right instanceof Iterable)
-      right = ((Iterable<?>) right).iterator();
+    if (right instanceof Iterable<?> iterable)
+      right = iterable.iterator();
 
     if (right instanceof Iterator<?> rightIterator) {
-      if (left instanceof Iterable)
-        left = ((Iterable<?>) left).iterator();
+      if (left instanceof Iterable<?> iterable)
+        left = iterable.iterator();
 
       final Iterator<?> leftIterator = (Iterator<?>) left;
       while (leftIterator.hasNext()) {

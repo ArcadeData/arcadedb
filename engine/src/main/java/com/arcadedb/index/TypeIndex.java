@@ -104,7 +104,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       final IndexCursor cursor = index.get(keys, unique ? 1 : -1);
       while (cursor.hasNext()) {
         if (unique) {
-          result = Collections.singleton(cursor.next());
+          result = Set.of(cursor.next());
           return new IndexCursorCollection(result);
         }
 

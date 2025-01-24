@@ -50,8 +50,8 @@ public class Skip extends SimpleNode {
 
     if (inputParam != null) {
       final Object paramValue = inputParam.getValue(context.getInputParameters());
-      if (paramValue instanceof Number)
-        return ((Number) paramValue).intValue();
+      if (paramValue instanceof Number number)
+        return number.intValue();
       else
         throw new CommandExecutionException("Invalid value for SKIP: " + paramValue);
     }

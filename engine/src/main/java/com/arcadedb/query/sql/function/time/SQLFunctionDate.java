@@ -44,27 +44,26 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
     final LocalDateTime date;
 
-    if (iParams.length == 0 || iParams[0] == null)
+    if (params.length == 0 || params[0] == null)
       date = LocalDateTime.now();
-    else if (iParams[0] instanceof Number)
-      date = DateUtils.millisToLocalDateTime(((Number) iParams[0]).longValue(), null);
-    else if (iParams[0] instanceof String) {
+    else if (params[0] instanceof Number number)
+      date = DateUtils.millisToLocalDateTime(number.longValue(), null);
+    else if (params[0] instanceof String dateAsString) {
       try {
-        final String dateAsString = (String) iParams[0];
         final String format;
 
-        if (iParams.length > 1)
-          format = (String) iParams[1];
+        if (params.length > 1)
+          format = (String) params[1];
         else {
-          final String databaseDateFormat = iContext.getDatabase().getSchema().getDateFormat();
+          final String databaseDateFormat = context.getDatabase().getSchema().getDateFormat();
           if (dateAsString.length() == databaseDateFormat.length())
             format = databaseDateFormat;
           else {
-            final String databaseDateTimeFormat = iContext.getDatabase().getSchema().getDateTimeFormat();
+            final String databaseDateTimeFormat = context.getDatabase().getSchema().getDateTimeFormat();
             if (dateAsString.length() == databaseDateTimeFormat.length())
               format = databaseDateTimeFormat;
             else
@@ -73,7 +72,7 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
         }
 
         final DateTimeFormatter formatter = DateUtils.getFormatter(format)
-            .withZone(iParams.length > 2 ? ZoneId.of(iParams[2].toString()) : iContext.getDatabase().getSchema().getZoneId());
+            .withZone(params.length > 2 ? ZoneId.of(params[2].toString()) : context.getDatabase().getSchema().getZoneId());
 
         date = LocalDateTime.parse(dateAsString, formatter);
       } catch (DateTimeParseException e) {
@@ -83,7 +82,7 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
     } else
       return null;
 
-    return DateUtils.getDate(date, iContext.getDatabase().getSerializer().getDateTimeImplementation());
+    return DateUtils.getDate(date, context.getDatabase().getSerializer().getDateTimeImplementation());
   }
 
   public String getSyntax() {

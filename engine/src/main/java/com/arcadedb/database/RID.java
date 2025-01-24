@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.database.Record;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -80,8 +81,8 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
   public static boolean is(final Object value) {
     if (value instanceof RID)
       return true;
-    else if (value instanceof String)
-      return is((String) value);
+    else if (value instanceof String string)
+      return is(string);
     return false;
   }
 
@@ -176,10 +177,10 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
   @Override
   public int compareTo(final Object o) {
     RID otherRID;
-    if (o instanceof RID)
-      otherRID = (RID) o;
-    else if (o instanceof String)
-      otherRID = new RID(database, (String) o);
+    if (o instanceof RID iD)
+      otherRID = iD;
+    else if (o instanceof String string)
+      otherRID = new RID(database, string);
     else
       return -1;
 

@@ -114,8 +114,8 @@ public abstract class TestServerHelper {
         // EXPECTED
         return;
 
-      if (e instanceof Exception)
-        throw (Exception) e;
+      if (e instanceof Exception exception)
+        throw exception;
 
       throw new Exception(e);
     }

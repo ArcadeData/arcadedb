@@ -60,7 +60,7 @@ public class ExporterSettings {
       }
 
     final DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd-HHmmssSSS");
-    file = String.format(file, dateFormat.format(System.currentTimeMillis()));
+    file = file.formatted(dateFormat.format(System.currentTimeMillis()));
   }
 
   public int parseParameter(String name, final String value) {

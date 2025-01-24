@@ -41,8 +41,8 @@ public class SQLMethodValues extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
-      final Object[] iParams) {
+  public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context,
+      final Object[] params) {
 
     if (value instanceof Map map)
       return map.values();

@@ -17,7 +17,7 @@ package com.arcadedb.function.java;/*
 import com.arcadedb.function.FunctionLibraryDefinition;
 
 import java.lang.reflect.*;
-import java.util.*;
+import java.util.Set;
 
 /**
  * Function library that allows invocation of functions written in Java language.
@@ -48,7 +48,7 @@ public class JavaMethodFunctionLibraryDefinition implements FunctionLibraryDefin
 
   @Override
   public Iterable<JavaMethodFunctionDefinition> getFunctions() {
-    return Collections.singleton(function);
+    return Set.of(function);
   }
 
   @Override

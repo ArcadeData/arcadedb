@@ -865,7 +865,7 @@ public class SelectExecutionPlanner {
     } else if (target.getBucket() != null) {
       handleBucketsAsTarget(info.fetchExecutionPlan,
           info,
-          Collections.singletonList(target.getBucket()),
+          List.of(target.getBucket()),
           context);
     } else if (target.getBucketList() != null) {
       final List<Bucket> allBuckets = target.getBucketList().toListOfClusters();
@@ -1056,7 +1056,7 @@ public class SelectExecutionPlanner {
       rid.setPosition(position);
 
       if (filterClusters == null || isFromClusters(rid, filterClusters, context.getDatabase())) {
-        handleRidsAsTarget(result, Collections.singletonList(rid), context);
+        handleRidsAsTarget(result, List.of(rid), context);
       } else {
         result.chain(new EmptyStep(context));//nothing to return
       }

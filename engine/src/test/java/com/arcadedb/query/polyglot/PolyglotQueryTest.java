@@ -12,7 +12,7 @@ import org.graalvm.polyglot.PolyglotException;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
-import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -56,7 +56,7 @@ public class PolyglotQueryTest extends TestHelper {
 
     // ALLOW ACCESSING TO BIG DECIMAL CLASS
     ((LocalDatabase) database).registerReusableQueryEngine(
-        new PolyglotQueryEngine.PolyglotQueryEngineFactory("js").setAllowedPackages(Collections.singletonList("java.math.BigDecimal"))
+        new PolyglotQueryEngine.PolyglotQueryEngineFactory("js").setAllowedPackages(List.of("java.math.BigDecimal"))
             .getInstance((DatabaseInternal) database));
 
     final ResultSet result = database.command("js", "let BigDecimal = Java.type('java.math.BigDecimal'); new BigDecimal(1)");

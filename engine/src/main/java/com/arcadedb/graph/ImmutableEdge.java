@@ -63,8 +63,8 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   public synchronized MutableEdge modify() {
     final Record recordInCache = database.getTransaction().getRecordFromCache(rid);
     if (recordInCache != null) {
-      if (recordInCache instanceof MutableEdge)
-        return (MutableEdge) recordInCache;
+      if (recordInCache instanceof MutableEdge edge)
+        return edge;
       else if (!database.getTransaction().hasPageForRecord(rid.getPageId())) {
         // THE RECORD IS NOT IN TX, SO IT MUST HAVE BEEN LOADED WITHOUT A TX OR PASSED FROM ANOTHER TX
         // IT MUST BE RELOADED TO GET THE LATEST CHANGES. FORCE RELOAD

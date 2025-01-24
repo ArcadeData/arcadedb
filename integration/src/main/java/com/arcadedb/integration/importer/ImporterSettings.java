@@ -87,8 +87,8 @@ public class ImporterSettings {
   public int getIntValue(final String name, final int defaultValue) {
     final Object v = options.get(name);
     if (v != null) {
-      if (v instanceof Number)
-        return ((Number) v).intValue();
+      if (v instanceof Number number)
+        return number.intValue();
       else
         return Integer.parseInt(v.toString());
     }

@@ -107,8 +107,8 @@ public class DocumentIndexer {
         continue;
 
       final BucketSelectionStrategy bucketSelectionStrategy = modifiedRecord.getType().getBucketSelectionStrategy();
-      if (bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy) {
-        if (!List.of(((PartitionedBucketSelectionStrategy) bucketSelectionStrategy).getProperties())
+      if (bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy strategy) {
+        if (!List.of(strategy.getProperties())
             .equals(index.getPropertyNames()))
           throw new IndexException("Cannot modify primary key when the bucket selection is partitioned");
       }
@@ -132,9 +132,9 @@ public class DocumentIndexer {
 
     final List<IndexInternal> metadata = type.getPolymorphicBucketIndexByBucketId(bucketId, null);
     if (metadata != null && !metadata.isEmpty()) {
-      if (record instanceof RecordInternal)
+      if (record instanceof RecordInternal internal)
         // FORCE RESET OF ANY PROPERTY TEMPORARY SET
-        ((RecordInternal) record).unsetDirty();
+        internal.unsetDirty();
 
       final List<IndexInternal> allIndexes = new ArrayList(metadata);
       for (final IndexInternal index : metadata) {
@@ -156,12 +156,12 @@ public class DocumentIndexer {
   }
 
   private Object getPropertyValue(final Document record, final String propertyName) {
-    if (record instanceof Edge) {
+    if (record instanceof Edge edge) {
       // EDGE: CHECK FOR SPECIAL CASES @OUT AND @IN
       if ("@out".equals(propertyName))
-        return ((Edge) record).getOut();
+        return edge.getOut();
       else if ("@in".equals(propertyName))
-        return ((Edge) record).getIn();
+        return edge.getIn();
     }
     return record.get(propertyName);
   }

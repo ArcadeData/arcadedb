@@ -106,7 +106,7 @@ public class UnwindStep extends AbstractExecutionStep {
 
   }
 
-  private Collection<Result> unwind(final Result doc, final List<String> unwindFields, final CommandContext iContext) {
+  private Collection<Result> unwind(final Result doc, final List<String> unwindFields, final CommandContext context) {
     final List<Result> result = new ArrayList<>();
 
     if (unwindFields.isEmpty()) {
@@ -117,12 +117,12 @@ public class UnwindStep extends AbstractExecutionStep {
 
       final Object fieldValue = doc.getProperty(firstField);
       if (fieldValue == null || fieldValue instanceof Record) {
-        result.addAll(unwind(doc, nextFields, iContext));
+        result.addAll(unwind(doc, nextFields, context));
         return result;
       }
 
       if (!(fieldValue instanceof Iterable) && !fieldValue.getClass().isArray()) {
-        result.addAll(unwind(doc, nextFields, iContext));
+        result.addAll(unwind(doc, nextFields, context));
         return result;
       }
 
@@ -137,14 +137,14 @@ public class UnwindStep extends AbstractExecutionStep {
         copy(doc, unwindedDoc);
 
         unwindedDoc.setProperty(firstField, null);
-        result.addAll(unwind(unwindedDoc, nextFields, iContext));
+        result.addAll(unwind(unwindedDoc, nextFields, context));
       } else {
         do {
           final Object o = iterator.next();
           final ResultInternal unwindedDoc = new ResultInternal(context.getDatabase());
           copy(doc, unwindedDoc);
           unwindedDoc.setProperty(firstField, o);
-          result.addAll(unwind(unwindedDoc, nextFields, iContext));
+          result.addAll(unwind(unwindedDoc, nextFields, context));
         } while (iterator.hasNext());
       }
     }

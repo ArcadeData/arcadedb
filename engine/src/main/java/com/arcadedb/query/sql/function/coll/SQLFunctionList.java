@@ -36,15 +36,15 @@ public class SQLFunctionList extends SQLFunctionMultiValueAbstract<List<Object>>
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
-    if (iParams.length > 1)
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext ctx) {
+    if (params.length > 1)
       // IN LINE MODE
       context = new ArrayList<>();
 
-    for (final Object value : iParams) {
+    for (final Object value : params) {
       if (value != null) {
-        if (iParams.length == 1 && context == null)
+        if (params.length == 1 && context == null)
           // AGGREGATION MODE (STATEFULL)
           context = new ArrayList<Object>();
 

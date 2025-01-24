@@ -137,9 +137,9 @@ public class JavaQueryEngine implements QueryEngine {
         final InternalResultSet resultSet;
         if (result instanceof ResultSet)
           resultSet = (InternalResultSet) result;
-        else if (result instanceof Iterable) {
+        else if (result instanceof Iterable iterable) {
           resultSet = new InternalResultSet();
-          for (final Object o : (Iterable) result)
+          for (final Object o : iterable)
             resultSet.add(extractResult(o));
         } else {
           resultSet = new InternalResultSet();
@@ -274,8 +274,8 @@ public class JavaQueryEngine implements QueryEngine {
 
     try {
       final Object result = executionTimeoutMs > 0 ? future.get(executionTimeoutMs, TimeUnit.MILLISECONDS) : future.get();
-      if (result instanceof Exception)
-        throw (Exception) result;
+      if (result instanceof Exception exception)
+        throw exception;
 
       return (ResultSet) result;
 
@@ -286,12 +286,12 @@ public class JavaQueryEngine implements QueryEngine {
   }
 
   private ResultInternal extractResult(final Object o) {
-    if (o instanceof Document)
-      return new ResultInternal((Document) o);
-    else if (o instanceof Identifiable)
-      return new ResultInternal((Identifiable) o);
-    else if (o instanceof Map)
-      return new ResultInternal((Map) o);
+    if (o instanceof Document document)
+      return new ResultInternal(document);
+    else if (o instanceof Identifiable identifiable)
+      return new ResultInternal(identifiable);
+    else if (o instanceof Map map)
+      return new ResultInternal(map);
 
     return new ResultInternal().setProperty("value", o);
   }

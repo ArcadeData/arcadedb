@@ -100,7 +100,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
             .log(this, Level.SEVERE, "Received unsupported command from MongoDB client '%s', (document=%s)", null, command,
                 document);
         throw new UnsupportedOperationException(
-            String.format("Received unsupported command from MongoDB client '%s', (document=%s)", command, document));
+          "Received unsupported command from MongoDB client '%s', (document=%s)".formatted(command, document));
       }
     } catch (final Exception e) {
       throw new MongoServerException("Error on executing MongoDB '" + command + "' command", e);
@@ -138,15 +138,15 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     for (final String k : map.keySet()) {
       Object v = map.get(k);
-      if (v instanceof JSONObject)
-        v = json2Document((JSONObject) v);
-      else if (v instanceof JSONArray) {
-        final List<Object> array = new ArrayList<>(((JSONArray) v).length());
+      if (v instanceof JSONObject object)
+        v = json2Document(object);
+      else if (v instanceof JSONArray nArray) {
+        final List<Object> array = new ArrayList<>(nArray.length());
 
-        for (int i = 0; i < ((JSONArray) v).length(); i++) {
-          Object a = ((JSONArray) v).get(i);
-          if (a instanceof JSONObject)
-            a = json2Document((JSONObject) a);
+        for (int i = 0; i < nArray.length(); i++) {
+          Object a = nArray.get(i);
+          if (a instanceof JSONObject object)
+            a = json2Document(object);
 
           array.add(a);
         }
@@ -394,8 +394,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   private void putLastError(final Channel channel, final MongoServerException ex) {
     final Document error = new Document();
-    if (ex instanceof MongoServerError) {
-      final MongoServerError err = (MongoServerError) ex;
+    if (ex instanceof MongoServerError err) {
       error.put("err", err.getMessage());
       error.put("code", err.getCode());
       error.putIfNotNull("codeName", err.getCodeName());

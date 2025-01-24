@@ -36,35 +36,35 @@ public class SQLFunctionMap extends SQLFunctionMultiValueAbstract<Map<String, Ob
   }
 
   @SuppressWarnings("unchecked")
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext ctx) {
 
-    if (iParams.length > 2)
+    if (params.length > 2)
       // IN LINE MODE
       context = new HashMap<>();
 
-    if (iParams.length == 1) {
-      if (iParams[0] == null)
+    if (params.length == 1) {
+      if (params[0] == null)
         return null;
 
-      if (iParams[0] instanceof Map<?, ?>) {
+      if (params[0] instanceof Map<?, ?>) {
         if (context == null)
           // AGGREGATION MODE (STATEFUL)
           context = new HashMap<>();
 
         // INSERT EVERY SINGLE COLLECTION ITEM
-        context.putAll((Map<String, Object>) iParams[0]);
+        context.putAll((Map<String, Object>) params[0]);
       } else
         throw new IllegalArgumentException("Map function: expected a map or pairs of parameters as key, value");
-    } else if (iParams.length % 2 != 0)
+    } else if (params.length % 2 != 0)
       throw new IllegalArgumentException("Map function: expected a map or pairs of parameters as key, value");
     else
-      for (int i = 0; i < iParams.length; i += 2) {
-        final String key = (String) iParams[i];
-        final Object value = iParams[i + 1];
+      for (int i = 0; i < params.length; i += 2) {
+        final String key = (String) params[i];
+        final Object value = params[i + 1];
 
         if (value != null) {
-          if (iParams.length <= 2 && context == null)
+          if (params.length <= 2 && context == null)
             // AGGREGATION MODE (STATEFUL)
             context = new HashMap<>();
 

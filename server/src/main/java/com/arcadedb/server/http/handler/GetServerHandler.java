@@ -263,8 +263,8 @@ public class GetServerHandler extends AbstractServerHttpHandler {
       }
     }
 
-    if (value instanceof Class)
-      value = ((Class<?>) value).getName();
+    if (value instanceof Class<?> class1)
+      value = class1.getName();
 
     return value;
   }

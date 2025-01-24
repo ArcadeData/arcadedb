@@ -38,8 +38,8 @@ public class LeOperator extends SimpleNode implements BinaryCompareOperator {
       return false;
 
     if (!left.getClass().equals(right.getClass())) {
-      if (left instanceof Number && right instanceof Number) {
-        final Number[] couple = Type.castComparableNumber((Number) left, (Number) right);
+      if (left instanceof Number number && right instanceof Number number1) {
+        final Number[] couple = Type.castComparableNumber(number, number1);
         left = couple[0];
         right = couple[1];
       } else {

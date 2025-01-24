@@ -44,15 +44,15 @@ public class SQLMethodRight extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute( final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
-      final Object[] iParams) {
-    if (value == null || iParams[0] == null) {
+  public Object execute( final Object value, final Identifiable currentRecord, final CommandContext context,
+      final Object[] params) {
+    if (value == null || params[0] == null) {
       return null;
     }
 
     final String valueAsString = value.toString();
 
-    final int offset = Integer.parseInt(iParams[0].toString());
+    final int offset = Integer.parseInt(params[0].toString());
     return valueAsString.substring(offset < valueAsString.length() ? valueAsString.length() - offset : 0);
   }
 

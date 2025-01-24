@@ -57,12 +57,10 @@ public class GraphQLSchema {
     final List<Definition> definitions = ast.getDefinitions();
     if (!definitions.isEmpty()) {
       for (final Definition definition : definitions) {
-        if (definition instanceof TypeSystemDefinition) {
-          final TypeSystemDefinition typeSystemDefinition = (TypeSystemDefinition) definition;
+        if (definition instanceof TypeSystemDefinition typeSystemDefinition) {
 
           final TypeDefinition type = typeSystemDefinition.getTypeDefinition();
-          if (type instanceof ObjectTypeDefinition) {
-            final ObjectTypeDefinition obj = (ObjectTypeDefinition) type;
+          if (type instanceof ObjectTypeDefinition obj) {
             objectTypeDefinitionMap.put(obj.getName(), obj);
 
             if ("Query".equals(obj.getName()))
@@ -70,8 +68,8 @@ public class GraphQLSchema {
               queryDefinition = obj;
           }
 
-        } else if (definition instanceof OperationDefinition) {
-          final OperationDefinition op = ((OperationDefinition) definition);
+        } else if (definition instanceof OperationDefinition operationDefinition) {
+          final OperationDefinition op = operationDefinition;
           if (op.isQuery()) {
             return executeQuery(op);
           } else

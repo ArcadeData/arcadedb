@@ -52,18 +52,18 @@ public class PCollection extends SimpleNode {
     this.expressions.add(exp);
   }
 
-  public Object execute(final Record iCurrentRecord, final CommandContext context) {
+  public Object execute(final Record currentRecord, final CommandContext context) {
     final List<Object> result = new ArrayList<Object>();
     for (final Expression exp : expressions) {
-      result.add(exp.execute(iCurrentRecord, context));
+      result.add(exp.execute(currentRecord, context));
     }
     return result;
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext context) {
+  public Object execute(final Result currentRecord, final CommandContext context) {
     final List<Object> result = new ArrayList<Object>();
     for (final Expression exp : expressions) {
-      result.add(exp.execute(iCurrentRecord, context));
+      result.add(exp.execute(currentRecord, context));
     }
     return result;
   }

@@ -131,8 +131,8 @@ public class AndBlock extends BooleanExpression {
   }
 
   protected AndBlock encapsulateInAndBlock(final BooleanExpression item) {
-    if (item instanceof AndBlock) {
-      return (AndBlock) item;
+    if (item instanceof AndBlock block) {
+      return block;
     }
     final AndBlock result = new AndBlock(-1);
     result.subBlocks.add(item);

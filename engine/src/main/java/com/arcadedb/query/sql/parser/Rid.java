@@ -70,14 +70,14 @@ public class Rid extends SimpleNode {
       if (result == null)
         return null;
 
-      if (result instanceof Identifiable)
-        return ((Identifiable) result).getIdentity();
+      if (result instanceof Identifiable identifiable)
+        return identifiable.getIdentity();
 
-      if (result instanceof String) {
-        if (!(((String) result).startsWith("#") && (((String) result).contains(":"))))
+      if (result instanceof String string) {
+        if (!(string.startsWith("#") && (string.contains(":"))))
           throw new CommandExecutionException("Cannot convert to RID: " + result);
 
-        final List<String> parts = CodeUtils.split(((String) result).substring(1), ':', 3);
+        final List<String> parts = CodeUtils.split(string.substring(1), ':', 3);
         if (parts.size() != 2)
           throw new CommandExecutionException("Cannot convert to RID: " + result);
 
@@ -99,8 +99,8 @@ public class Rid extends SimpleNode {
       if (result == null)
         return null;
 
-      if (result instanceof Identifiable)
-        return ((Identifiable) result).getIdentity();
+      if (result instanceof Identifiable identifiable)
+        return identifiable.getIdentity();
 
       if (result instanceof String)
         throw new UnsupportedOperationException();

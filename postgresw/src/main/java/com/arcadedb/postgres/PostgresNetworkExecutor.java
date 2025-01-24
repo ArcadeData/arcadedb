@@ -516,18 +516,18 @@ public class PostgresNetworkExecutor extends Thread {
         else if (propertyName.equals("@out")) {
           if (row.isElement()) {
             final Document record = row.getElement().get();
-            if (record instanceof Vertex)
-              value = ((Vertex) record).countEdges(Vertex.DIRECTION.OUT, null);
-            else if (record instanceof Edge)
-              value = ((Edge) record).getOut();
+            if (record instanceof Vertex vertex)
+              value = vertex.countEdges(Vertex.DIRECTION.OUT, null);
+            else if (record instanceof Edge edge)
+              value = edge.getOut();
           }
         } else if (propertyName.equals("@in")) {
           if (row.isElement()) {
             final Document record = row.getElement().get();
-            if (record instanceof Vertex)
-              value = ((Vertex) record).countEdges(Vertex.DIRECTION.IN, null);
-            else if (record instanceof Edge)
-              value = ((Edge) record).getIn();
+            if (record instanceof Vertex vertex)
+              value = vertex.countEdges(Vertex.DIRECTION.IN, null);
+            else if (record instanceof Edge edge)
+              value = edge.getIn();
           }
         } else if (propertyName.equals("@cat")) {
           if (row.isElement()) {

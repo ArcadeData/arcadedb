@@ -45,11 +45,11 @@ public class GraphSONExporterFormat extends AbstractExporterFormat {
   public void exportDatabase() throws Exception {
     final File file = new File(settings.file);
     if (file.exists() && !settings.overwriteFile)
-      throw new ExportException(String.format("The export file '%s' already exist and '-o' setting is false", settings.file));
+      throw new ExportException("The export file '%s' already exist and '-o' setting is false".formatted(settings.file));
 
     if (file.getParentFile() != null && !file.getParentFile().exists()) {
       if (!file.getParentFile().mkdirs())
-        throw new ExportException(String.format("The export file '%s' cannot be created", settings.file));
+        throw new ExportException("The export file '%s' cannot be created".formatted(settings.file));
     }
 
     if (database.isTransactionActive())

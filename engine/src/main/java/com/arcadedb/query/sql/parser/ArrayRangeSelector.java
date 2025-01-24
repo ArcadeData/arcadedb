@@ -64,7 +64,7 @@ public class ArrayRangeSelector extends SimpleNode {
     }
   }
 
-  public Object execute(final Identifiable iCurrentRecord, final Object result, final CommandContext context) {
+  public Object execute(final Identifiable currentRecord, final Object result, final CommandContext context) {
     if (result == null) {
       return null;
     }
@@ -73,14 +73,14 @@ public class ArrayRangeSelector extends SimpleNode {
     }
     Integer lFrom = from;
     if (fromSelector != null) {
-      lFrom = fromSelector.getValue(iCurrentRecord, result, context);
+      lFrom = fromSelector.getValue(currentRecord, result, context);
     }
     if (lFrom == null) {
       lFrom = 0;
     }
     Integer lTo = to;
     if (toSelector != null) {
-      lTo = toSelector.getValue(iCurrentRecord, result, context);
+      lTo = toSelector.getValue(currentRecord, result, context);
     }
     if (included) {
       lTo++;
@@ -104,7 +104,7 @@ public class ArrayRangeSelector extends SimpleNode {
     return Arrays.asList(Arrays.copyOfRange(arrayResult, lFrom, lTo));
   }
 
-  public Object execute(final Result iCurrentRecord, final Object result, final CommandContext context) {
+  public Object execute(final Result currentRecord, final Object result, final CommandContext context) {
     if (result == null) {
       return null;
     }
@@ -113,14 +113,14 @@ public class ArrayRangeSelector extends SimpleNode {
     }
     Integer lFrom = from;
     if (fromSelector != null) {
-      lFrom = fromSelector.getValue(iCurrentRecord, result, context);
+      lFrom = fromSelector.getValue(currentRecord, result, context);
     }
     if (lFrom == null) {
       lFrom = 0;
     }
     Integer lTo = to;
     if (toSelector != null) {
-      lTo = toSelector.getValue(iCurrentRecord, result, context);
+      lTo = toSelector.getValue(currentRecord, result, context);
     }
     if (included) {
       lTo++;
@@ -174,8 +174,8 @@ public class ArrayRangeSelector extends SimpleNode {
     }
     if (target.getClass().isArray()) {
       setArrayValue(target, value, context);
-    } else if (target instanceof List) {
-      setValue((List) target, value, context);
+    } else if (target instanceof List list) {
+      setValue(list, value, context);
     } else if (MultiValue.isMultiValue(value)) {
       //TODO
     }
@@ -297,8 +297,7 @@ public class ArrayRangeSelector extends SimpleNode {
       return;
     }
     final int range = to - from;
-    if (currentValue instanceof List) {
-      final List list = (List) currentValue;
+    if (currentValue instanceof List list) {
       for (int i = 0; i < range; i++) {
         if (list.size() > from) {
           list.remove(from);
@@ -306,8 +305,8 @@ public class ArrayRangeSelector extends SimpleNode {
           break;
         }
       }
-    } else if (currentValue instanceof Set) {
-      final Iterator iter = ((Set) currentValue).iterator();
+    } else if (currentValue instanceof Set set) {
+      final Iterator iter = set.iterator();
       int count = 0;
       while (iter.hasNext()) {
         iter.next();
