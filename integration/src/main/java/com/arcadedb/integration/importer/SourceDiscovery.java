@@ -22,6 +22,7 @@ import com.arcadedb.integration.importer.format.CSVImporterFormat;
 import com.arcadedb.integration.importer.format.FormatImporter;
 import com.arcadedb.integration.importer.format.GloVeImporterFormat;
 import com.arcadedb.integration.importer.format.JSONImporterFormat;
+import com.arcadedb.integration.importer.format.JsonlImporterFormat;
 import com.arcadedb.integration.importer.format.Neo4jImporterFormat;
 import com.arcadedb.integration.importer.format.OrientDBImporterFormat;
 import com.arcadedb.integration.importer.format.RDFImporterFormat;
@@ -207,6 +208,8 @@ public class SourceDiscovery {
         return new CSVImporterFormat();
       } else if (knownFileType.equalsIgnoreCase("json")) {
         return new JSONImporterFormat();
+      } else if (knownFileType.equalsIgnoreCase("jsonl")) {
+        return new JsonlImporterFormat();
       } else if (knownFileType.equalsIgnoreCase("xml")) {
         return new XMLImporterFormat();
       } else if (knownFileType.equalsIgnoreCase("graphml")) {
@@ -325,15 +328,13 @@ public class SourceDiscovery {
   }
 
   private String getFileTypeByExtension(final String fileName) {
-    switch (getFormatFromExtension(fileName)) {
-    case "csv":
-      return "csv";
-    case "graphml":
-      return "graphml";
-    case "graphson":
-      return "graphson";
-    }
-    return null;
+    return switch (getFormatFromExtension(fileName)) {
+      case "csv" -> "csv";
+      case "graphml" -> "graphml";
+      case "graphson" -> "graphson";
+      case "jsonl" -> "jsonl";
+      default -> null;
+    };
   }
 
   private void skipLine(final Parser parser) throws IOException {

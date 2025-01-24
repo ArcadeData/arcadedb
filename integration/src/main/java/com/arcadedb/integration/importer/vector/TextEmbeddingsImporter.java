@@ -131,20 +131,14 @@ public class TextEmbeddingsImporter {
 
       hnswIndex.addAll(texts, Runtime.getRuntime().availableProcessors(), (workDone, max) -> ++indexedEmbedding, 1);
 
-      Type vectorPropertyType;
-
-      if (vectorTypeName.equals("Short"))
-        vectorPropertyType = Type.ARRAY_OF_SHORTS;
-      else if (vectorTypeName.equals("Integer"))
-        vectorPropertyType = Type.ARRAY_OF_INTEGERS;
-      else if (vectorTypeName.equals("Long"))
-        vectorPropertyType = Type.ARRAY_OF_LONGS;
-      else if (vectorTypeName.equals("Float"))
-        vectorPropertyType = Type.ARRAY_OF_FLOATS;
-      else if (vectorTypeName.equals("Double"))
-        vectorPropertyType = Type.ARRAY_OF_DOUBLES;
-      else
-        throw new IllegalArgumentException("Type '" + vectorTypeName + "' not supported");
+      Type vectorPropertyType = switch (vectorTypeName) {
+        case "Short" -> Type.ARRAY_OF_SHORTS;
+        case "Integer" -> Type.ARRAY_OF_INTEGERS;
+        case "Long" -> Type.ARRAY_OF_LONGS;
+        case "Float" -> Type.ARRAY_OF_FLOATS;
+        case "Double" -> Type.ARRAY_OF_DOUBLES;
+        default -> throw new IllegalArgumentException("Type '" + vectorTypeName + "' not supported");
+      };
 
       hnswIndex.createPersistentIndex(database)//
           .withVertexType(settings.vertexTypeName).withEdgeType(settings.edgeTypeName)

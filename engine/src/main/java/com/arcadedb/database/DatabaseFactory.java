@@ -41,7 +41,7 @@ public class DatabaseFactory implements AutoCloseable {
   private final        Map<DatabaseInternal.CALLBACK_EVENT, List<Callable<Void>>> callbacks            = new HashMap<>();
 
   public DatabaseFactory(final String path) {
-    if (path == null || path.isEmpty())
+    if (path == null || path.trim().isEmpty())
       throw new IllegalArgumentException("Missing path");
 
     if (path.endsWith(File.separator))
