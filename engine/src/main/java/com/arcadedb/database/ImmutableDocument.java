@@ -116,7 +116,7 @@ public class ImmutableDocument extends BaseDocument {
   @Override
   public Map<String, Object> toMap(final boolean includeMetadata) {
     checkForLazyLoading();
-    final Map<String, Object> result = new HashMap<>(database.getSerializer()
+    final Map<String, Object> result = new LinkedHashMap<>(database.getSerializer()
         .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid));
     if (includeMetadata) {
       result.put("@cat", "d");

@@ -566,12 +566,12 @@ public class BinarySerializer {
 
     if (dataEncryption != null) {
       switch (type) {
-        case BinaryTypes.TYPE_NULL:
-        case BinaryTypes.TYPE_COMPRESSED_RID:
-        case BinaryTypes.TYPE_RID:
-          break;
-        default:
-          serialized.putBytes(dataEncryption.encrypt(content.toByteArray()));
+      case BinaryTypes.TYPE_NULL:
+      case BinaryTypes.TYPE_COMPRESSED_RID:
+      case BinaryTypes.TYPE_RID:
+        break;
+      default:
+        serialized.putBytes(dataEncryption.encrypt(content.toByteArray()));
       }
     }
   }
@@ -662,7 +662,7 @@ public class BinarySerializer {
     }
     case BinaryTypes.TYPE_MAP: {
       final int count = (int) content.getUnsignedNumber();
-      final Map<Object, Object> map = new HashMap<>(count);
+      final Map<Object, Object> map = new LinkedHashMap<>(count);
       for (int i = 0; i < count; ++i) {
         final byte entryKeyType = content.getByte();
         final Object entryKey = deserializeValue(database, content, entryKeyType, embeddedModifier);
