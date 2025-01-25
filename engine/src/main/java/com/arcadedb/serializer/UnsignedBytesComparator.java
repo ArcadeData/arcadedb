@@ -1,29 +1,7 @@
-/*
- * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
- * SPDX-License-Identifier: Apache-2.0
- */
 package com.arcadedb.serializer;
 
-import com.arcadedb.exception.ArcadeDBException;
-import sun.misc.Unsafe;
-
-import java.lang.reflect.*;
-import java.nio.*;
-import java.security.*;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 /**
  * This class was inspired by Guava's UnsignedBytes, under Apache 2 license.
@@ -35,29 +13,13 @@ import java.security.*;
  */
 public final class UnsignedBytesComparator {
   private static final int                 UNSIGNED_MASK        = 0xFF;
-  private static final Unsafe              theUnsafe;
-  private static final int                 BYTE_ARRAY_BASE_OFFSET;
   public static final  PureJavaComparator  PURE_JAVA_COMPARATOR = new PureJavaComparator();
-  public static final  ByteArrayComparator BEST_COMPARATOR;
-
-  static {
-    theUnsafe = getUnsafe();
-    BYTE_ARRAY_BASE_OFFSET = theUnsafe.arrayBaseOffset(byte[].class);
-    // fall back to the safer pure java implementation unless we're in
-    // a 64-bit JVM with an 8-byte aligned field offset.
-    if (!("64".equals(System.getProperty("sun.arch.data.model")) && (BYTE_ARRAY_BASE_OFFSET % 8) == 0
-        // sanity check - this should never fail
-        && theUnsafe.arrayIndexScale(byte[].class) == 1)) {
-      BEST_COMPARATOR = PURE_JAVA_COMPARATOR;  // force fallback to PureJavaComparator
-    } else {
-      BEST_COMPARATOR = new UnsafeComparator();
-    }
-  }
+  public static final  ByteArrayComparator BEST_COMPARATOR      = new ByteBufferComparator();
 
   private UnsignedBytesComparator() {
   }
 
-  public static class UnsafeComparator implements ByteArrayComparator {
+  public static class ByteBufferComparator implements ByteArrayComparator {
     static final boolean BIG_ENDIAN = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN);
 
     @Override
@@ -67,13 +29,12 @@ public final class UnsignedBytesComparator {
       final int strideLimit = minLength & -stride;
       int i;
 
-      /*
-       * Compare 8 bytes at a time. Benchmarking on x86 shows a stride of 8 bytes is no slower
-       * than 4 bytes even on 32-bit. On the other hand, it is substantially faster on 64-bit.
-       */
+      ByteBuffer leftBuffer = ByteBuffer.wrap(left).order(ByteOrder.nativeOrder());
+      ByteBuffer rightBuffer = ByteBuffer.wrap(right).order(ByteOrder.nativeOrder());
+
       for (i = 0; i < strideLimit; i += stride) {
-        final long lw = theUnsafe.getLong(left, BYTE_ARRAY_BASE_OFFSET + (long) i);
-        final long rw = theUnsafe.getLong(right, BYTE_ARRAY_BASE_OFFSET + (long) i);
+        final long lw = leftBuffer.getLong(i);
+        final long rw = rightBuffer.getLong(i);
         if (lw != rw) {
           if (BIG_ENDIAN) {
             return unsignedLongsCompare(lw, rw);
@@ -83,7 +44,6 @@ public final class UnsignedBytesComparator {
         }
       }
 
-      // The epilogue to cover the last (minLength % stride) elements.
       for (; i < minLength; i++) {
         final int result = UnsignedBytesComparator.compare(left[i], right[i]);
         if (result != 0)
@@ -99,18 +59,16 @@ public final class UnsignedBytesComparator {
       final int strideLimit = length & -stride;
       int i;
 
-      /*
-       * Compare 8 bytes at a time. Benchmarking on x86 shows a stride of 8 bytes is no slower
-       * than 4 bytes even on 32-bit. On the other hand, it is substantially faster on 64-bit.
-       */
+      ByteBuffer leftBuffer = ByteBuffer.wrap(left).order(ByteOrder.nativeOrder());
+      ByteBuffer rightBuffer = ByteBuffer.wrap(right).order(ByteOrder.nativeOrder());
+
       for (i = 0; i < strideLimit; i += stride) {
-        final long lw = theUnsafe.getLong(left, BYTE_ARRAY_BASE_OFFSET + (long) i);
-        final long rw = theUnsafe.getLong(right, BYTE_ARRAY_BASE_OFFSET + (long) i);
+        final long lw = leftBuffer.getLong(i);
+        final long rw = rightBuffer.getLong(i);
         if (lw != rw)
           return false;
       }
 
-      // The epilogue to cover the last (minLength % stride) elements.
       for (; i < length; i++) {
         final int result = UnsignedBytesComparator.compare(left[i], right[i]);
         if (result != 0)
@@ -122,7 +80,7 @@ public final class UnsignedBytesComparator {
 
     @Override
     public String toString() {
-      return "UnsignedBytes.lexicographicalComparator() (sun.misc.Unsafe version)";
+      return "UnsignedBytes.lexicographicalComparator() (ByteBuffer version)";
     }
   }
 
@@ -141,7 +99,6 @@ public final class UnsignedBytesComparator {
 
     @Override
     public boolean equals(final byte[] left, final byte[] right, final int length) {
-      // OPTIMIZATION: TEST LAST BYTE FIRST
       int result = UnsignedBytesComparator.compare(left[length - 1], right[length - 1]);
       if (result != 0)
         return false;
@@ -169,34 +126,4 @@ public final class UnsignedBytesComparator {
     final long b2 = b ^ Long.MIN_VALUE;
     return Long.compare(a2, b2);
   }
-
-  /**
-   * Returns a sun.misc.Unsafe. Suitable for use in a 3rd party package. Replace with a simple
-   * call to Unsafe.getUnsafe when integrating into a jdk.
-   *
-   * @return a sun.misc.Unsafe
-   */
-  private static Unsafe getUnsafe() {
-    try {
-      return Unsafe.getUnsafe();
-    } catch (final SecurityException e) {
-      // that's okay; try reflection instead
-    }
-    try {
-      return AccessController.doPrivileged((PrivilegedExceptionAction<Unsafe>) () -> {
-        final Class<Unsafe> k = Unsafe.class;
-        for (final Field f : k.getDeclaredFields()) {
-          f.setAccessible(true);
-          final Object x = f.get(null);
-          if (k.isInstance(x)) {
-            return k.cast(x);
-          }
-        }
-        throw new NoSuchFieldError("the Unsafe");
-      });
-    } catch (final PrivilegedActionException e) {
-      throw new ArcadeDBException("Could not initialize intrinsics", e.getCause());
-    }
-  }
-
 }
