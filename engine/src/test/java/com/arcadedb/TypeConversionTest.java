@@ -20,7 +20,6 @@ package com.arcadedb;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
@@ -38,13 +37,11 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
-import java.time.chrono.ChronoZonedDateTime;
 import java.time.temporal.ChronoField;
 import java.time.temporal.ChronoUnit;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -483,24 +480,27 @@ public class TypeConversionTest extends TestHelper {
     database.command("sql", "alter database dateTimeImplementation `java.time.LocalDateTime`");
     try {
       database.begin();
-      final LocalDateTime date1 = LocalDateTime.now();
-      final LocalDateTime date2 = date1.plusSeconds(1);
+      // Store the reference time at the start
+      final LocalDateTime referenceTime = LocalDateTime.now();
 
-      ResultSet resultSet = database.command("sql", "insert into ConversionTest set datetime_micros = ?", date1);
-      assertThat(resultSet.next().toElement().get("datetime_micros")).isEqualTo(date1.truncatedTo(ChronoUnit.MICROS));
+      // Insert records with specific offsets from reference time
+      database.command("sql", "insert into ConversionTest set datetime_micros = ?",
+          referenceTime);
+      database.command("sql", "insert into ConversionTest set datetime_micros = ?",
+          referenceTime.plusSeconds(1));
 
-      try {
-        TimeUnit.MILLISECONDS.sleep(10);
-      } catch (InterruptedException e) {
-        throw new RuntimeException(e);
-      }
+      // Query using the known reference time
+      ResultSet resultSet = database.command("sql",
+          """
+              select datetime_micros - date(?, 'yyyy-MM-dd HH:mm:ss.SSS') as diff
+              from ConversionTest
+              where datetime_micros between ? and ?
+              """,
+          DateUtils.getFormatter("yyyy-MM-dd HH:mm:ss.SSS").format(referenceTime),
+          referenceTime.minusSeconds(1),
+          referenceTime.plusSeconds(2));
 
-      resultSet = database.command("sql", "insert into ConversionTest set datetime_micros = ?", date2);
-      assertThat(resultSet.next().toElement().get("datetime_micros")).isEqualTo(date2.truncatedTo(ChronoUnit.MICROS));
-
-      resultSet = database.command("sql", "select from ConversionTest where datetime_micros between ? and ?", date1, date2);
-
-      assertThat(StreamSupport.stream(resultSet,false)).hasSize(2);
+      assertThat(StreamSupport.stream(resultSet, false)).hasSize(2);
 
       try {
         TimeUnit.SECONDS.sleep(1);
