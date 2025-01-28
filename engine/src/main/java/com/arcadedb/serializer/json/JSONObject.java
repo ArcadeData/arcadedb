@@ -74,19 +74,23 @@ public class JSONObject {
   }
 
   public JSONObject(final String input) {
-    try {
-      final JsonReader reader = new JsonReader(new StringReader(input));
-      reader.setStrictness(Strictness.LENIENT);
-      object = JsonParser.parseReader(reader).getAsJsonObject();
-    } catch (Exception e) {
-      throw new JSONException("Invalid JSON object format", e);
-    }
+    if (input != null) {
+      try {
+        final JsonReader reader = new JsonReader(new StringReader(input));
+        reader.setStrictness(Strictness.LENIENT);
+        object = JsonParser.parseReader(reader).getAsJsonObject();
+      } catch (Exception e) {
+        throw new JSONException("Invalid JSON object format", e);
+      }
+    } else
+      object = new JsonObject();
   }
 
   public JSONObject(final Map<String, ?> map) {
     object = new JsonObject();
-    for (Map.Entry<String, ?> entry : map.entrySet())
-      put(entry.getKey(), entry.getValue());
+    if (map != null)
+      for (Map.Entry<String, ?> entry : map.entrySet())
+        put(entry.getKey(), entry.getValue());
   }
 
   public JSONObject copy() {
