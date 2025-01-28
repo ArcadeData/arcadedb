@@ -21,11 +21,11 @@ package com.arcadedb.server.http.handler;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
 
-import java.nio.*;
+import java.nio.ByteBuffer;
 
 public class ExecutionResponse {
-  public final  int    code;
-  public final  String response;
+  private final int    code;
+  private final String response;
   private final byte[] binary;
 
   public ExecutionResponse(final int code, final String response) {
