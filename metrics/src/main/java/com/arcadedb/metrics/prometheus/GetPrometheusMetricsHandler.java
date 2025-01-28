@@ -6,6 +6,8 @@ import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.util.Headers;
+import io.undertow.util.MimeMappings;
 
 public class GetPrometheusMetricsHandler extends AbstractServerHttpHandler {
 
@@ -20,7 +22,12 @@ public class GetPrometheusMetricsHandler extends AbstractServerHttpHandler {
 
   @Override
   public ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user) throws Exception {
+
     String response = registry.scrape();
+
+    exchange.getResponseHeaders()
+        .put(Headers.CONTENT_TYPE, MimeMappings.DEFAULT.getMimeType("txt"));
+
     return new ExecutionResponse(200, response);
   }
 
