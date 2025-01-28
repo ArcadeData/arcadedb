@@ -291,15 +291,16 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       return;
 
     lock.executeInWriteLock(() -> {
-      final LSMTreeIndexCompacted subIndex = mutable.getSubIndex();
-      if (subIndex != null)
-        subIndex.drop();
+      try {
+        final LSMTreeIndexCompacted subIndex = mutable.getSubIndex();
+        if (subIndex != null)
+          subIndex.drop();
 
-      mutable.drop();
-
-      valid = false;
-
-      return null;
+        mutable.drop();
+        return null;
+      } finally {
+        valid = false;
+      }
     });
   }
 
