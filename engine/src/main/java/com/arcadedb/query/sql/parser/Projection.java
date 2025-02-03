@@ -26,8 +26,13 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 public class Projection extends SimpleNode {
 
@@ -95,7 +100,7 @@ public class Projection extends SimpleNode {
       throw new IllegalStateException("This is an expand projection, it cannot be calculated as a single result" + this);
 
     if (items.size() == 1 && items.get(0).getExpression().toString().equals("@this")
-            && items.get(0).nestedProjection == null)
+        && items.get(0).nestedProjection == null)
       return record;
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
@@ -104,26 +109,32 @@ public class Projection extends SimpleNode {
         continue;
 
       if (item.isAll()) {
-        final Document doc = record.getElement().get();
         for (final String alias : record.getPropertyNames()) {
-          if (this.excludes.contains(alias)
-                || (doc.getType().existsProperty(alias) && doc.getType().getProperty(alias).isHidden())) {
+          if (this.excludes.contains(alias)) {
             continue;
+          } else if (record.getElement().isPresent()) {
+            final Document doc = record.getElement().get();
+            if (this.excludes.contains(alias) ||
+                (doc.getType().existsProperty(alias) &&
+                    doc.getType().getProperty(alias).isHidden())) {
+              continue;
+            }
           }
-          Object val = item.convert(record.getProperty(alias));
+          Object value = item.convert(record.getProperty(alias));
           if (item.nestedProjection != null) {
-            val = item.nestedProjection.apply(item.expression, val, context);
+            value = item.nestedProjection.apply(item.expression, value, context);
           }
-          result.setProperty(alias, val);
+          result.setProperty(alias, value);
         }
-        if (record.getElement().isPresent()) {
+
+        record.getElement().ifPresent(doc -> {
           if (!this.excludes.contains("@rid")) {
             result.setProperty("@rid", doc.getIdentity());
           }
           if (!this.excludes.contains("@type")) {
             result.setProperty("@type", doc.getType().getName());
           }
-        }
+        });
       } else {
         result.setProperty(item.getProjectionAliasAsString(), item.execute(record, context));
       }

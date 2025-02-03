@@ -33,13 +33,12 @@ public class PostgresPortal {
   public boolean                   ignoreExecution   = false;
   public List<Result>              cachedResultset;
   public Map<String, PostgresType> columns;
-  public boolean                   isExpectingResult = true;
+  public boolean                   isExpectingResult;
   public boolean                   executed          = false;
 
   public PostgresPortal(final String query) {
     this.query = query;
-    //final String queryUpperCase = query.toUpperCase();
-    this.isExpectingResult = true;//queryUpperCase.startsWith("SELECT") || queryUpperCase.startsWith("MATCH");
+    this.isExpectingResult = true;
   }
 
   @Override
