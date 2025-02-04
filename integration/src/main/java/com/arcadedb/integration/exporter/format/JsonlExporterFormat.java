@@ -29,6 +29,7 @@ import com.arcadedb.integration.exporter.ExportException;
 import com.arcadedb.integration.exporter.ExporterContext;
 import com.arcadedb.integration.exporter.ExporterSettings;
 import com.arcadedb.integration.importer.ConsoleLogger;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalSchema;
@@ -36,14 +37,10 @@ import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.serializer.JsonGraphSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.OutputStreamWriter;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.zip.GZIPOutputStream;
+import java.io.*;
+import java.util.*;
+import java.util.logging.*;
+import java.util.zip.*;
 
 public class JsonlExporterFormat extends AbstractExporterFormat {
   public static final  String             NAME       = "jsonl";
@@ -51,10 +48,7 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
   private              OutputStreamWriter writer;
   private final static int                VERSION    = 1;
 
-  public JsonlExporterFormat(
-      final DatabaseInternal database,
-      final ExporterSettings settings,
-      final ExporterContext context,
+  public JsonlExporterFormat(final DatabaseInternal database, final ExporterSettings settings, final ExporterContext context,
       final ConsoleLogger logger) {
     super(database, settings, context, logger);
   }
@@ -88,18 +82,12 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
         DatabaseFactory.getDefaultCharset())) {
       writer = fileWriter;
 
-      writeJsonLine("info", new JSONObject()
-          .put("description", "ArcadeDB Database Export")
-          .put("exporterVersion", VERSION)//
-          .put("dbVersion", Constants.getRawVersion())
-          .put("dbBranch", Constants.getBranch())
-          .put("dbBuild", Constants.getBuildNumber())
-          .put("dbTimestamp", Constants.getTimestamp()));
+      writeJsonLine("info", new JSONObject().put("description", "ArcadeDB Database Export").put("exporterVersion", VERSION)//
+          .put("dbVersion", Constants.getRawVersion()).put("dbBranch", Constants.getBranch())
+          .put("dbBuild", Constants.getBuildNumber()).put("dbTimestamp", Constants.getTimestamp()));
 
       final long now = System.currentTimeMillis();
-      writeJsonLine("db", new JSONObject()
-          .put("name", database.getName())
-          .put("executedOn", dateFormat.format(now))
+      writeJsonLine("db", new JSONObject().put("name", database.getName()).put("executedOn", dateFormat.format(now))
           .put("executedOnTimestamp", now));
 
       writeJsonLine("schema", ((LocalSchema) database.getSchema()).toJSON());
@@ -142,13 +130,19 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
   private void exportVertices(final List<String> vertexTypes, final JsonGraphSerializer graphSerializer) throws IOException {
     for (final String type : vertexTypes) {
       for (final Iterator<Record> cursor = database.iterateType(type, false); cursor.hasNext(); ) {
-        final Vertex record = cursor.next().asVertex(true);
+        Vertex record = null;
+        try {
+          record = cursor.next().asVertex(true);
 
-        if (settings.includeRecords != null && !settings.includeRecords.contains(record.getIdentity().toString()))
-          continue;
+          if (settings.includeRecords != null && !settings.includeRecords.contains(record.getIdentity().toString()))
+            continue;
 
-        writeJsonLine("v", graphSerializer.serializeGraphElement(record));
-        context.vertices.incrementAndGet();
+          writeJsonLine("v", graphSerializer.serializeGraphElement(record));
+          context.vertices.incrementAndGet();
+        } catch (Exception e) {
+          LogManager.instance()
+              .log(this, Level.SEVERE, "Error on exporting vertex %s", e, record != null ? record.getIdentity() : null);
+        }
       }
     }
   }
@@ -156,13 +150,19 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
   private void exportEdges(final List<String> edgeTypes, final JsonGraphSerializer graphSerializer) throws IOException {
     for (final String type : edgeTypes) {
       for (final Iterator<Record> cursor = database.iterateType(type, false); cursor.hasNext(); ) {
-        final Edge record = cursor.next().asEdge(true);
+        Edge record = null;
+        try {
+          record = cursor.next().asEdge(true);
 
-        if (settings.includeRecords != null && !settings.includeRecords.contains(record.getIdentity().toString()))
-          continue;
+          if (settings.includeRecords != null && !settings.includeRecords.contains(record.getIdentity().toString()))
+            continue;
 
-        writeJsonLine("e", graphSerializer.serializeGraphElement(record));
-        context.edges.incrementAndGet();
+          writeJsonLine("e", graphSerializer.serializeGraphElement(record));
+          context.edges.incrementAndGet();
+        } catch (Exception e) {
+          LogManager.instance()
+              .log(this, Level.SEVERE, "Error on exporting vertex %s", e, record != null ? record.getIdentity() : null);
+        }
       }
     }
   }
@@ -170,13 +170,19 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
   private void exportDocuments(final List<String> documentTypes, final JsonGraphSerializer graphSerializer) throws IOException {
     for (final String type : documentTypes) {
       for (final Iterator<Record> cursor = database.iterateType(type, false); cursor.hasNext(); ) {
-        final Document record = cursor.next().asDocument(true);
+        Document record = null;
+        try {
+          record = cursor.next().asDocument(true);
 
-        if (settings.includeRecords != null && !settings.includeRecords.contains(record.getIdentity().toString()))
-          continue;
+          if (settings.includeRecords != null && !settings.includeRecords.contains(record.getIdentity().toString()))
+            continue;
 
-        writeJsonLine("d", graphSerializer.serializeGraphElement(record));
-        context.documents.incrementAndGet();
+          writeJsonLine("d", graphSerializer.serializeGraphElement(record));
+          context.documents.incrementAndGet();
+        } catch (Exception e) {
+          LogManager.instance()
+              .log(this, Level.SEVERE, "Error on exporting vertex %s", e, record != null ? record.getIdentity() : null);
+        }
       }
     }
   }

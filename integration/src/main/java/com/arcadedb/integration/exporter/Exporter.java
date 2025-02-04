@@ -95,7 +95,7 @@ public class Exporter {
       final Map<String, Object> result = new LinkedHashMap<>();
       if (totalRecords > 0)
         result.put("totalRecords", totalRecords);
-      result.put("elapsedInSecs", totalRecords);
+      result.put("elapsedInSecs", elapsedInSecs);
       if (context.documents.get() > 0)
         result.put("documents", context.documents.get());
       if (context.vertices.get() > 0)
