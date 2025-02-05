@@ -80,7 +80,7 @@ public class JSONObject {
         reader.setStrictness(Strictness.LENIENT);
         object = JsonParser.parseReader(reader).getAsJsonObject();
       } catch (Exception e) {
-        throw new JSONException("Invalid JSON object format", e);
+        throw new JSONException("Invalid JSON object format: " + input, e);
       }
     } else
       object = new JsonObject();
