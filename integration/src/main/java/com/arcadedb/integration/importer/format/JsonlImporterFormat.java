@@ -17,6 +17,7 @@ import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Schema;
@@ -31,6 +32,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.logging.*;
 
 public class JsonlImporterFormat extends AbstractImporterFormat {
 
@@ -164,20 +166,24 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     // final report
     databaseSchema.getTypes()
-        .forEach(type -> logger.logLine(2, " - Created type %s: %s",type.getName(), type.toJSON()));
+        .forEach(type -> logger.logLine(2, " - Created type %s: %s", type.getName(), type.toJSON()));
   }
 
   private void loadDocument(DatabaseInternal database,
       ImporterContext context,
       ImporterSettings settings,
       JSONObject document) {
-    var properties = document.getJSONObject("p");
-    var imported = database.newDocument(document.getString("t"));
-    loadProperties(database, imported, properties);
-    imported.save();
-    var oldRid = new RID(database, document.getString("r"));
-    ridIndex.put(oldRid, imported.getIdentity());
-    context.createdDocuments.incrementAndGet();
+    try {
+      var properties = document.getJSONObject("p");
+      var imported = database.newDocument(document.getString("t"));
+      loadProperties(database, imported, properties);
+      imported.save();
+      var oldRid = new RID(database, document.getString("r"));
+      ridIndex.put(oldRid, imported.getIdentity());
+      context.createdDocuments.incrementAndGet();
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on importing document: %s", e, document);
+    }
   }
 
   private void loadVertex(DatabaseInternal database,
@@ -185,34 +191,52 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       ImporterSettings settings,
       JSONObject vertex) {
 
-    var properties = vertex.getJSONObject("p");
-    var imported = database.newVertex(vertex.getString("t"));
-    loadProperties(database, imported, properties);
-    imported.save();
-    var oldRid = new RID(database, vertex.getString("r"));
-    ridIndex.put(oldRid, imported.getIdentity());
-    context.createdVertices.incrementAndGet();
-
+    try {
+      var properties = vertex.getJSONObject("p");
+      var imported = database.newVertex(vertex.getString("t"));
+      loadProperties(database, imported, properties);
+      imported.save();
+      var oldRid = new RID(database, vertex.getString("r"));
+      ridIndex.put(oldRid, imported.getIdentity());
+      context.createdVertices.incrementAndGet();
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on importing vertex: %s", e, vertex);
+    }
   }
 
   private void loadEdge(DatabaseInternal database, ImporterContext context,
       ImporterSettings settings,
       JSONObject edge) {
-    var properties = edge.getJSONObject("p");
-    var edgeType = edge.getString("t");
+    try {
+      var properties = edge.getJSONObject("p");
+      var edgeType = edge.getString("t");
 
-    var out = new RID(database, edge.getString("o"));
-    var newOut = ridIndex.get(out);
+      var out = new RID(database, edge.getString("o"));
+      var newOut = ridIndex.get(out);
 
-    var in = new RID(database, edge.getString("i"));
-    var newIn = ridIndex.get(in);
-    var sourceVertex = (Vertex) database.lookupByRID(newOut, false);
+      if (newOut == null) {
+        LogManager.instance().log(this, Level.SEVERE, "Error on importing edge (out vertex not found): %s", edge);
+        return;
+      }
 
-    MutableEdge imported = sourceVertex.newEdge(edgeType, newIn, true);
-    loadProperties(database, imported, properties);
-    imported.save();
+      var in = new RID(database, edge.getString("i"));
+      var newIn = ridIndex.get(in);
 
-    context.createdEdges.incrementAndGet();
+      if (newIn == null) {
+        LogManager.instance().log(this, Level.SEVERE, "Error on importing edge (in vertex not found): %s", edge);
+        return;
+      }
+
+      var sourceVertex = (Vertex) database.lookupByRID(newOut, false);
+
+      MutableEdge imported = sourceVertex.newEdge(edgeType, newIn, true);
+      loadProperties(database, imported, properties);
+      imported.save();
+
+      context.createdEdges.incrementAndGet();
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on importing edge: %s", e, edge);
+    }
   }
 
   @Override
