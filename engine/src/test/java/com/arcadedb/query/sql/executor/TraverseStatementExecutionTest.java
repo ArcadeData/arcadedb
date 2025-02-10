@@ -20,13 +20,12 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
-
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -180,23 +179,20 @@ public class TraverseStatementExecutionTest extends TestHelper {
   @Test
   public void testTraverseInBatchTx() {
     database.transaction(() -> {
-      String script = "";
-      script += "";
-
-      script += "drop type testTraverseInBatchTx_V if exists unsafe;";
-      script += "create vertex type testTraverseInBatchTx_V;";
-      script += "create property testTraverseInBatchTx_V.name STRING;";
-      script += "drop type testTraverseInBatchTx_E if exists unsafe;";
-      script += "create edge type testTraverseInBatchTx_E;";
-
-      script += "begin;";
-      script += "insert into testTraverseInBatchTx_V(name) values ('a'), ('b'), ('c');";
-      script += "create edge testTraverseInBatchTx_E from (select from testTraverseInBatchTx_V where name = 'a') to (select from testTraverseInBatchTx_V where name = 'b');";
-      script += "create edge testTraverseInBatchTx_E from (select from testTraverseInBatchTx_V where name = 'b') to (select from testTraverseInBatchTx_V where name = 'c');";
-      script += "let top = (select * from (traverse in('testTraverseInBatchTx_E') from (select from testTraverseInBatchTx_V where name='c')) where in('testTraverseInBatchTx_E').size() == 0);";
-      script += "commit;";
-      script += "return $top;";
-
+      String script = """
+          drop type testTraverseInBatchTx_V if exists unsafe;
+          create vertex type testTraverseInBatchTx_V;
+          create property testTraverseInBatchTx_V.name STRING;
+          drop type testTraverseInBatchTx_E if exists unsafe;
+          create edge type testTraverseInBatchTx_E;
+          begin;
+          insert into testTraverseInBatchTx_V(name) values ('a'), ('b'), ('c');
+          create edge testTraverseInBatchTx_E from (select from testTraverseInBatchTx_V where name = 'a') to (select from testTraverseInBatchTx_V where name = 'b');
+          create edge testTraverseInBatchTx_E from (select from testTraverseInBatchTx_V where name = 'b') to (select from testTraverseInBatchTx_V where name = 'c');
+          let top = (select * from (traverse in('testTraverseInBatchTx_E') from (select from testTraverseInBatchTx_V where name='c')) where in('testTraverseInBatchTx_E').size() == 0);
+          commit;
+          return $top;
+          """;
       final ResultSet result = database.command("sqlscript", script);
       assertThat(result.hasNext()).isTrue();
       result.next();
