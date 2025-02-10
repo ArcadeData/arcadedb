@@ -99,8 +99,9 @@ public class Projection extends SimpleNode {
     if (isExpand())
       throw new IllegalStateException("This is an expand projection, it cannot be calculated as a single result" + this);
 
-    if (items.size() == 1 && items.get(0).getExpression().toString().equals("@this")
-        && items.get(0).nestedProjection == null)
+    if (items.size() == 1 &&
+        items.get(0).getExpression().toString().equals("@this") &&
+        items.get(0).nestedProjection == null)
       return record;
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
@@ -110,11 +111,11 @@ public class Projection extends SimpleNode {
 
       if (item.isAll()) {
         for (final String alias : record.getPropertyNames()) {
-          if (this.excludes.contains(alias)) {
+          if (excludes.contains(alias)) {
             continue;
           } else if (record.getElement().isPresent()) {
             final Document doc = record.getElement().get();
-            if (this.excludes.contains(alias) ||
+            if (excludes.contains(alias) ||
                 (doc.getType().existsProperty(alias) &&
                     doc.getType().getProperty(alias).isHidden())) {
               continue;
@@ -128,10 +129,10 @@ public class Projection extends SimpleNode {
         }
 
         record.getElement().ifPresent(doc -> {
-          if (!this.excludes.contains("@rid")) {
+          if (!excludes.contains("@rid")) {
             result.setProperty("@rid", doc.getIdentity());
           }
-          if (!this.excludes.contains("@type")) {
+          if (!excludes.contains("@type")) {
             result.setProperty("@type", doc.getType().getName());
           }
         });
@@ -149,7 +150,7 @@ public class Projection extends SimpleNode {
 
   private void initExcludes() {
     if (excludes == null) {
-      this.excludes = new HashSet<String>();
+      this.excludes = new HashSet<>();
       for (final ProjectionItem item : items) {
         if (item.exclude)
           this.excludes.add(item.getProjectionAliasAsString());

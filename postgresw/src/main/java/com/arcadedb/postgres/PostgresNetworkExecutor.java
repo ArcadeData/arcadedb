@@ -354,8 +354,6 @@ public class PostgresNetworkExecutor extends Thread {
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: query -> %s ", query);
 
-
-
       final ResultSet resultSet;
       if (query.query.startsWith("SET ")) {
         setConfiguration(query.query);
@@ -513,41 +511,43 @@ public class PostgresNetworkExecutor extends Thread {
       for (final Map.Entry<String, PostgresType> entry : columns.entrySet()) {
         final String propertyName = entry.getKey();
 
-        Object value = null;
-        switch (propertyName) {
-        case "@rid" -> value = row.isElement() ? row.getElement().get().getIdentity() : null;
-        case "@type" -> value = row.isElement() ? row.getElement().get().getTypeName() : null;
-        case "@out" -> {
-          if (row.isElement()) {
-            final Document record = row.getElement().get();
-            if (record instanceof Vertex vertex)
-              value = vertex.countEdges(Vertex.DIRECTION.OUT, null);
-            else if (record instanceof Edge edge)
-              value = edge.getOut();
+        Object value = switch (propertyName) {
+          case "@rid" -> row.isElement() ? row.getElement().get().getIdentity() : null;
+          case "@type" -> row.isElement() ? row.getElement().get().getTypeName() : null;
+          case "@out" -> {
+            if (row.isElement()) {
+              final Document record = row.getElement().get();
+              if (record instanceof Vertex vertex)
+                yield vertex.countEdges(Vertex.DIRECTION.OUT, null);
+              else if (record instanceof Edge edge)
+                yield edge.getOut();
+            }
+            yield null;
           }
-        }
-        case "@in" -> {
-          if (row.isElement()) {
-            final Document record = row.getElement().get();
-            if (record instanceof Vertex vertex)
-              value = vertex.countEdges(Vertex.DIRECTION.IN, null);
-            else if (record instanceof Edge edge)
-              value = edge.getIn();
+          case "@in" -> {
+            if (row.isElement()) {
+              final Document record = row.getElement().get();
+              if (record instanceof Vertex vertex)
+                yield vertex.countEdges(Vertex.DIRECTION.IN, null);
+              else if (record instanceof Edge edge)
+                yield edge.getIn();
+            }
+            yield null;
           }
-        }
-        case "@cat" -> {
-          if (row.isElement()) {
-            final Document record = row.getElement().get();
-            if (record instanceof Vertex)
-              value = "v";
-            else if (record instanceof Edge)
-              value = "e";
-            else
-              value = "d";
+          case "@cat" -> {
+            if (row.isElement()) {
+              final Document record = row.getElement().get();
+              if (record instanceof Vertex)
+                yield "v";
+              else if (record instanceof Edge)
+                yield "e";
+              else
+                yield "d";
+            }
+            yield null;
           }
-        }
-        default -> value = row.getProperty(propertyName);
-        }
+          default -> row.getProperty(propertyName);
+        };
 
         entry.getValue().serializeAsText(entry.getValue().code, bufferValues, value);
       }
