@@ -347,34 +347,37 @@ public class PostgresNetworkExecutor extends Thread {
         return;
       }
 
-      if (DEBUG)
-        LogManager.instance().log(this, Level.INFO, "PSQL: query -> %s (thread=%s)", queryText, Thread.currentThread().getId());
+//      if (DEBUG)
+//        LogManager.instance().log(this, Level.INFO, "PSQL: query -> %s (thread=%s)", queryText, Thread.currentThread().getId());
 
       final Query query = getLanguageAndQuery(queryText);
+      if (DEBUG)
+        LogManager.instance().log(this, Level.INFO, "PSQL: query -> %s ", query);
 
       final ResultSet resultSet;
-      if (queryText.startsWith("SET ")) {
-        setConfiguration(queryText);
+      if (query.query.startsWith("SET ")) {
+        setConfiguration(query.query);
         resultSet = new IteratorResultSet(createResultSet("STATUS", "Setting ignored").iterator());
-      } else if (queryText.equals("SELECT VERSION()"))
+      } else if (query.query.equals("SELECT VERSION()"))
         resultSet = new IteratorResultSet(createResultSet("VERSION", "11.0.0").iterator());
-      else if (queryText.equals("SELECT CURRENT_SCHEMA()"))
+      else if (query.query.equals("SELECT CURRENT_SCHEMA()"))
         resultSet = new IteratorResultSet(createResultSet("CURRENT_SCHEMA", database.getName()).iterator());
-      else if (queryText.equalsIgnoreCase("BEGIN") || queryText.equalsIgnoreCase("BEGIN TRANSACTION")) {
+      else if (query.query.equalsIgnoreCase("BEGIN") ||
+          query.query.equalsIgnoreCase("BEGIN TRANSACTION")) {
         explicitTransactionStarted = true;
         database.begin();
         resultSet = new IteratorResultSet(Collections.emptyIterator());
-      } else if (ignoreQueries.contains(queryText))
+      } else if (ignoreQueries.contains(query.query))
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       else
-        resultSet = database.command(query.language, query.query);
+        resultSet = database.query(query.language, query.query);
 
-      final List<Result> cachedResultset = browseAndCacheResultSet(resultSet, 0);
+      final List<Result> cachedResultSet = browseAndCacheResultSet(resultSet, 0);
 
-      final Map<String, PostgresType> columns = getColumns(cachedResultset);
+      final Map<String, PostgresType> columns = getColumns(cachedResultSet);
       writeRowDescription(columns);
-      writeDataRows(cachedResultset, columns);
-      writeCommandComplete(queryText, cachedResultset.size());
+      writeDataRows(cachedResultSet, columns);
+      writeCommandComplete(query.query, cachedResultSet.size());
 
     } catch (final CommandParsingException e) {
       setErrorInTx();
@@ -508,39 +511,43 @@ public class PostgresNetworkExecutor extends Thread {
       for (final Map.Entry<String, PostgresType> entry : columns.entrySet()) {
         final String propertyName = entry.getKey();
 
-        Object value = null;
-        if (propertyName.equals("@rid"))
-          value = row.isElement() ? row.getElement().get().getIdentity() : null;
-        else if (propertyName.equals("@type"))
-          value = row.isElement() ? row.getElement().get().getTypeName() : null;
-        else if (propertyName.equals("@out")) {
-          if (row.isElement()) {
-            final Document record = row.getElement().get();
-            if (record instanceof Vertex vertex)
-              value = vertex.countEdges(Vertex.DIRECTION.OUT, null);
-            else if (record instanceof Edge edge)
-              value = edge.getOut();
+        Object value = switch (propertyName) {
+          case "@rid" -> row.isElement() ? row.getElement().get().getIdentity() : null;
+          case "@type" -> row.isElement() ? row.getElement().get().getTypeName() : null;
+          case "@out" -> {
+            if (row.isElement()) {
+              final Document record = row.getElement().get();
+              if (record instanceof Vertex vertex)
+                yield vertex.countEdges(Vertex.DIRECTION.OUT, null);
+              else if (record instanceof Edge edge)
+                yield edge.getOut();
+            }
+            yield null;
           }
-        } else if (propertyName.equals("@in")) {
-          if (row.isElement()) {
-            final Document record = row.getElement().get();
-            if (record instanceof Vertex vertex)
-              value = vertex.countEdges(Vertex.DIRECTION.IN, null);
-            else if (record instanceof Edge edge)
-              value = edge.getIn();
+          case "@in" -> {
+            if (row.isElement()) {
+              final Document record = row.getElement().get();
+              if (record instanceof Vertex vertex)
+                yield vertex.countEdges(Vertex.DIRECTION.IN, null);
+              else if (record instanceof Edge edge)
+                yield edge.getIn();
+            }
+            yield null;
           }
-        } else if (propertyName.equals("@cat")) {
-          if (row.isElement()) {
-            final Document record = row.getElement().get();
-            if (record instanceof Vertex)
-              value = "v";
-            else if (record instanceof Edge)
-              value = "e";
-            else
-              value = "d";
+          case "@cat" -> {
+            if (row.isElement()) {
+              final Document record = row.getElement().get();
+              if (record instanceof Vertex)
+                yield "v";
+              else if (record instanceof Edge)
+                yield "e";
+              else
+                yield "d";
+            }
+            yield null;
           }
-        } else
-          value = row.getProperty(propertyName);
+          default -> row.getProperty(propertyName);
+        };
 
         entry.getValue().serializeAsText(entry.getValue().code, bufferValues, value);
       }
@@ -1120,20 +1127,25 @@ public class PostgresNetworkExecutor extends Thread {
 
   private void writeCommandComplete(final String queryText, final int resultSetCount) {
     final String upperCaseText = queryText.toUpperCase(Locale.ENGLISH);
-    String tag = "";
-    if (upperCaseText.startsWith("CREATE VERTEX") || upperCaseText.startsWith("INSERT INTO"))
-      tag = "INSERT 0 " + resultSetCount;
-    else if (upperCaseText.startsWith("SELECT") || upperCaseText.startsWith("MATCH"))
-      tag = "SELECT " + resultSetCount;
-    else if (upperCaseText.startsWith("UPDATE"))
-      tag = "UPDATE " + resultSetCount;
-    else if (upperCaseText.startsWith("DELETE"))
-      tag = "DELETE " + resultSetCount;
-    else if (upperCaseText.equals("BEGIN") || upperCaseText.equals("BEGIN TRANSACTION"))
-      tag = "BEGIN";
+    final String tag = getTag(upperCaseText, resultSetCount);
+    writeMessage("command complete",
+        () -> writeString(tag), 'C', 4 + tag.length() + 1);
+  }
 
-    final String finalTag = tag;
-    writeMessage("command complete", () -> writeString(finalTag), 'C', 4 + tag.length() + 1);
+  private String getTag(String upperCaseText, int resultSetCount) {
+    if (upperCaseText.startsWith("CREATE VERTEX") || upperCaseText.startsWith("INSERT INTO")) {
+      return "INSERT 0 " + resultSetCount;
+    } else if (upperCaseText.startsWith("SELECT") || upperCaseText.startsWith("MATCH")) {
+      return "SELECT " + resultSetCount;
+    } else if (upperCaseText.startsWith("UPDATE")) {
+      return "UPDATE " + resultSetCount;
+    } else if (upperCaseText.startsWith("DELETE")) {
+      return "DELETE " + resultSetCount;
+    } else if (upperCaseText.equals("BEGIN") || upperCaseText.equals("BEGIN TRANSACTION")) {
+      return "BEGIN";
+    } else {
+      return "";
+    }
   }
 
   private void writeNoData() {
@@ -1155,7 +1167,7 @@ public class PostgresNetworkExecutor extends Thread {
 
   private List<Result> createResultSet(final Object... elements) {
     if (elements.length % 2 != 0)
-      throw new IllegalArgumentException("Resultset elements must be in pairs");
+      throw new IllegalArgumentException("Result set elements must be in pairs");
 
     final List<Result> resultSet = new ArrayList<>();
     for (int i = 0; i < elements.length; i += 2) {
