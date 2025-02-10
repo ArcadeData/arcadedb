@@ -57,6 +57,9 @@ public class JsonLImporterIT {
     var db = new DatabaseFactory(DATABASE_PATH).create();
 
     db.command("sql", "import database file://" + inputFile.getFile());
+
+    db.close();
+
     checkImportedDatabase();
   }
 
