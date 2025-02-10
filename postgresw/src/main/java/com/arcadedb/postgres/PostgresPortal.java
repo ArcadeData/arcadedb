@@ -21,8 +21,7 @@ package com.arcadedb.postgres;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.parser.Statement;
 
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class PostgresPortal {
   public String                    query;
@@ -31,15 +30,16 @@ public class PostgresPortal {
   public List<Object>              parameterValues;
   public List<Integer>             resultFormats;
   public Statement                 sqlStatement;
-  public boolean                   ignoreExecution = false;
+  public boolean                   ignoreExecution   = false;
   public List<Result>              cachedResultset;
   public Map<String, PostgresType> columns;
-  public boolean                   isExpectingResult;
-  public boolean                   executed        = false;
+  public boolean                   isExpectingResult = true;
+  public boolean                   executed          = false;
 
   public PostgresPortal(final String query) {
     this.query = query;
-    this.isExpectingResult = true;
+    //final String queryUpperCase = query.toUpperCase();
+    this.isExpectingResult = true;//queryUpperCase.startsWith("SELECT") || queryUpperCase.startsWith("MATCH");
   }
 
   @Override
