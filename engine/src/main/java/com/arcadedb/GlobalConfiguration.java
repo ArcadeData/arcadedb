@@ -145,9 +145,9 @@ public enum GlobalConfiguration {
                       FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()), FileUtils.getSizeAsString(newValue));
             else
               System.out.println(
-                  String.format("Setting '%s=%s' is > than 80%% of maximum heap (%s). Decreasing it to %s", MAX_PAGE_RAM.key,
-                      FileUtils.getSizeAsString(maxRAM), FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()),
-                      FileUtils.getSizeAsString(newValue)));
+                "Setting '%s=%s' is > than 80%% of maximum heap (%s). Decreasing it to %s".formatted(MAX_PAGE_RAM.key,
+                  FileUtils.getSizeAsString(maxRAM), FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()),
+                  FileUtils.getSizeAsString(newValue)));
 
             return newValue;
           }
@@ -161,9 +161,9 @@ public enum GlobalConfiguration {
   DATE_IMPLEMENTATION("arcadedb.dateImplementation", SCOPE.DATABASE,
       "Default date implementation to use on deserialization. By default java.util.Date is used, but the following are supported: java.util.Calendar, java.time.LocalDate",
       Class.class, java.util.Date.class, value -> {
-    if (value instanceof String) {
+    if (value instanceof String string) {
       try {
-        return Class.forName((String) value);
+        return Class.forName(string);
       } catch (ClassNotFoundException e) {
         throw new ConfigurationException("Date implementation '" + value + "' not found", e);
       }
@@ -177,9 +177,9 @@ public enum GlobalConfiguration {
   DATE_TIME_IMPLEMENTATION("arcadedb.dateTimeImplementation", SCOPE.DATABASE,
       "Default datetime implementation to use on deserialization. By default java.util.Date is used, but the following are supported: java.util.Calendar, java.time.LocalDateTime, java.time.ZonedDateTime",
       Class.class, java.util.Date.class, value -> {
-    if (value instanceof String) {
+    if (value instanceof String string) {
       try {
-        return Class.forName((String) value);
+        return Class.forName(string);
       } catch (ClassNotFoundException e) {
         throw new ConfigurationException("Date implementation '" + value + "' not found", e);
       }
@@ -200,7 +200,7 @@ public enum GlobalConfiguration {
       50),
 
   TYPE_DEFAULT_BUCKETS("arcadedb.typeDefaultBuckets", SCOPE.DATABASE, "Default number of buckets to create per type", Integer.class,
-      8),
+      1),
 
   BUCKET_DEFAULT_PAGE_SIZE("arcadedb.bucketDefaultPageSize", SCOPE.DATABASE,
       "Default page size in bytes for buckets. Default is 64KB", Integer.class, 65_536),
@@ -576,8 +576,8 @@ public enum GlobalConfiguration {
 
     for (final GlobalConfiguration k : values()) {
       Object v = (Object) k.getValue();
-      if (v instanceof Class)
-        v = ((Class<?>) v).getName();
+      if (v instanceof Class<?> class1)
+        v = class1.getName();
       cfg.put(k.key.substring(PREFIX.length()), v);
     }
 
@@ -696,8 +696,7 @@ public enum GlobalConfiguration {
         if (type.isInstance(iValue)) {
           value = iValue;
           accepted = true;
-        } else if (iValue instanceof String) {
-          final String string = (String) iValue;
+        } else if (iValue instanceof String string) {
 
           for (final Object constant : type.getEnumConstants()) {
             final Enum<?> enumConstant = (Enum<?>) constant;
@@ -740,7 +739,7 @@ public enum GlobalConfiguration {
 
   public boolean getValueAsBoolean() {
     final Object v = value != nullValue && value != null ? value : defValue;
-    return v instanceof Boolean ? (Boolean) v : Boolean.parseBoolean(v.toString());
+    return v instanceof Boolean b ? b : Boolean.parseBoolean(v.toString());
   }
 
   public String getValueAsString() {
@@ -751,17 +750,17 @@ public enum GlobalConfiguration {
 
   public int getValueAsInteger() {
     final Object v = value != nullValue && value != null ? value : defValue;
-    return (int) (v instanceof Number ? ((Number) v).intValue() : FileUtils.getSizeAsNumber(v.toString()));
+    return (int) (v instanceof Number n ? n.intValue() : FileUtils.getSizeAsNumber(v.toString()));
   }
 
   public long getValueAsLong() {
     final Object v = value != nullValue && value != null ? value : defValue;
-    return v instanceof Number ? ((Number) v).longValue() : FileUtils.getSizeAsNumber(v.toString());
+    return v instanceof Number n ? n.longValue() : FileUtils.getSizeAsNumber(v.toString());
   }
 
   public float getValueAsFloat() {
     final Object v = value != nullValue && value != null ? value : defValue;
-    return v instanceof Float ? (Float) v : Float.parseFloat(v.toString());
+    return v instanceof Float f ? f : Float.parseFloat(v.toString());
   }
 
   public String getKey() {

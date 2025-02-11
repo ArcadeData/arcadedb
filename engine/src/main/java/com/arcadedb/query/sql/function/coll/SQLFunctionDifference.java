@@ -37,16 +37,16 @@ public class SQLFunctionDifference extends SQLFunctionMultiValueAbstract<Set<Obj
   }
 
   @SuppressWarnings("unchecked")
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
-    if (iParams[0] == null)
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
+    if (params[0] == null)
       return null;
 
     // IN-LINE MODE (STATELESS)
     final Set<Object> result = new HashSet<Object>();
 
     boolean first = true;
-    for (final Object iParameter : iParams) {
+    for (final Object iParameter : params) {
       if (first) {
         if (iParameter instanceof Collection<?>) {
           result.addAll((Collection<Object>) iParameter);

@@ -46,21 +46,21 @@ public class SQLFunctionEncode extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
 
-    final Object candidate = iParams[0];
-    final String format = iParams[1].toString();
+    final Object candidate = params[0];
+    final String format = params[1].toString();
 
     byte[] data = null;
-    if (candidate instanceof byte[]) {
-      data = (byte[]) candidate;
-    } else if (candidate instanceof String) {
-      data = ((String) candidate).getBytes();
-    } else if (candidate instanceof RID) {
-      final Record rec = ((RID) candidate).getRecord();
-      if (rec instanceof Binary) {
-        data = ((Binary) rec).toByteArray();
+    if (candidate instanceof byte[] bytes) {
+      data = bytes;
+    } else if (candidate instanceof String string) {
+      data = string.getBytes();
+    } else if (candidate instanceof RID iD) {
+      final Record rec = iD.getRecord();
+      if (rec instanceof Binary binary) {
+        data = binary.toByteArray();
       }
     }
 

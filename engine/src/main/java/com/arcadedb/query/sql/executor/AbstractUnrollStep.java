@@ -105,6 +105,6 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
 
   }
 
-  protected abstract Collection<Result> unroll(final Result doc, final CommandContext iContext);
+  protected abstract Collection<Result> unroll(final Result doc, final CommandContext context);
 
 }

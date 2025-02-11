@@ -105,8 +105,8 @@ public class MatchPathItem extends SimpleNode {
         for (final Identifiable origin : queryResult) {
           // TODO consider break strategies (eg. re-traverse nodes)
           final Iterable<Identifiable> subResult = executeTraversal(matchContext, iCommandContext, origin, depth + 1);
-          if (subResult instanceof Collection) {
-            result.addAll((Collection<? extends Identifiable>) subResult);
+          if (subResult instanceof Collection<? extends Identifiable> collection) {
+            result.addAll(collection);
           } else {
             for (final Identifiable i : subResult) {
               result.add(i);
@@ -127,8 +127,8 @@ public class MatchPathItem extends SimpleNode {
     if (record == null) {
       return false;
     }
-    if (record instanceof Document) {
-      return ((Document) record).getType().isSubTypeOf(oClass.getName());
+    if (record instanceof Document document) {
+      return document.getType().isSubTypeOf(oClass.getName());
     }
     return false;
   }
@@ -140,7 +140,7 @@ public class MatchPathItem extends SimpleNode {
     if (filter != null) {
       final Identifiable matchedNode = matchContext.matched.get(filter.getAlias());
       if (matchedNode != null) {
-        possibleResults = Collections.singleton(matchedNode);
+        possibleResults = Set.of(matchedNode);
       } else if (matchContext.matched.containsKey(filter.getAlias())) {
         possibleResults = Collections.emptySet();//optional node, the matched element is a null value
       } else {
@@ -149,7 +149,7 @@ public class MatchPathItem extends SimpleNode {
     }
 
     final Object qR = this.method.execute(startingPoint, possibleResults, iCommandContext);
-    return (qR instanceof Iterable && !(qR instanceof Record)) ? (Iterable) qR : Collections.singleton((Identifiable) qR);
+    return (qR instanceof Iterable i && !(qR instanceof Record)) ? i : Set.of((Identifiable) qR);
   }
 
   @Override

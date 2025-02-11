@@ -36,14 +36,14 @@ import org.apache.lucene.search.Sort;
 import org.apache.lucene.store.FSDirectory;
 
 import java.io.*;
-import java.nio.file.*;
+import java.nio.file.Path;
 import java.util.stream.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class PlainLuceneFullTextIndexTest {
   public static void main(String[] args) throws IOException, ParseException {
-    final Path path = Paths.get("./target/databases/testIndex");
+    final Path path = Path.of("./target/databases/testIndex");
 
     try {
       final String text =

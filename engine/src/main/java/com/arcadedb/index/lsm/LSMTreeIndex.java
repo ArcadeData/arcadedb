@@ -136,7 +136,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public void setMetadata(final String typeName, final String[] propertyNames, final int associatedBucketId) {
     checkIsValid();
     this.typeName = typeName;
-    this.propertyNames = Collections.unmodifiableList(Arrays.asList(propertyNames));
+    this.propertyNames = List.of(propertyNames);
     this.associatedBucketId = associatedBucketId;
   }
 
@@ -247,6 +247,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     json.put("bucket", getDatabase().getSchema().getBucketById(getAssociatedBucketId()).getName());
     json.put("properties", getPropertyNames());
     json.put("nullStrategy", getNullStrategy());
+    json.put("unique", isUnique());
     return json;
   }
 
@@ -290,15 +291,16 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       return;
 
     lock.executeInWriteLock(() -> {
-      final LSMTreeIndexCompacted subIndex = mutable.getSubIndex();
-      if (subIndex != null)
-        subIndex.drop();
+      try {
+        final LSMTreeIndexCompacted subIndex = mutable.getSubIndex();
+        if (subIndex != null)
+          subIndex.drop();
 
-      mutable.drop();
-
-      valid = false;
-
-      return null;
+        mutable.drop();
+        return null;
+      } finally {
+        valid = false;
+      }
     });
   }
 

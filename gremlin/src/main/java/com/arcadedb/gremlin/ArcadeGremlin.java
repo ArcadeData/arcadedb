@@ -115,10 +115,10 @@ public class ArcadeGremlin extends ArcadeQuery {
         @Override
         public Object next() {
           final Object next = resultSet.next();
-          if (next instanceof Document)
-            return new ResultInternal((Document) next);
-          else if (next instanceof ArcadeElement)
-            return new ResultInternal(((ArcadeElement) next).getBaseElement());
+          if (next instanceof Document document)
+            return new ResultInternal(document);
+          else if (next instanceof ArcadeElement element)
+            return new ResultInternal(element.getBaseElement());
           else if (next instanceof Map) {
             final Map<String, Object> stringMap = getStringObjectMap((Map<Object, Object>) next);
 
@@ -191,8 +191,8 @@ public class ArcadeGremlin extends ArcadeQuery {
 
   private Iterator executeStatement() throws ScriptException {
     final BasicDatabase database = graph.getDatabase();
-    String gremlinEngine = database instanceof Database ?
-        ((Database) database).getConfiguration().getValueAsString(GlobalConfiguration.GREMLIN_ENGINE) :
+    String gremlinEngine = database instanceof Database d ?
+        d.getConfiguration().getValueAsString(GlobalConfiguration.GREMLIN_ENGINE) :
         "auto";
 
     if ("auto".equals(gremlinEngine)) {
@@ -237,9 +237,9 @@ public class ArcadeGremlin extends ArcadeQuery {
     } else
       throw new IllegalArgumentException("Gremlin engine '" + gremlinEngine + "' not supported");
 
-    if (result instanceof GraphTraversal)
-      return (GraphTraversal) result;
+    if (result instanceof GraphTraversal traversal)
+      return traversal;
 
-    return Collections.singleton(result).iterator();
+    return Set.of(result).iterator();
   }
 }

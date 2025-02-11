@@ -95,10 +95,10 @@ public class ForEachStep extends AbstractExecutionStep {
       if (stm instanceof ReturnStatement)
         return true;
 
-      if (stm instanceof ForEachBlock && ((ForEachBlock) stm).containsReturn())
+      if (stm instanceof ForEachBlock block && block.containsReturn())
         return true;
 
-      if (stm instanceof IfStatement && ((IfStatement) stm).containsReturn())
+      if (stm instanceof IfStatement statement && statement.containsReturn())
         return true;
     }
     return false;

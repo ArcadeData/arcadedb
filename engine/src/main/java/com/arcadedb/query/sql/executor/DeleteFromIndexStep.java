@@ -203,8 +203,8 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
       return false;
     }
     for (final BooleanExpression exp : condition.getSubBlocks()) {
-      if (exp instanceof BinaryCondition) {
-        if (((BinaryCondition) exp).getOperator() instanceof EqualsCompareOperator) {
+      if (exp instanceof BinaryCondition binaryCondition) {
+        if (binaryCondition.getOperator() instanceof EqualsCompareOperator) {
           return true;
         }
       } else {
@@ -264,8 +264,8 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
   private PCollection indexKeyFrom(final AndBlock keyCondition, final BinaryCondition additional) {
     final PCollection result = new PCollection(-1);
     for (final BooleanExpression exp : keyCondition.getSubBlocks()) {
-      if (exp instanceof BinaryCondition) {
-        final BinaryCondition binaryCond = ((BinaryCondition) exp);
+      if (exp instanceof BinaryCondition binaryCondition) {
+        final BinaryCondition binaryCond = binaryCondition;
         final BinaryCompareOperator operator = binaryCond.getOperator();
         if ((operator instanceof EqualsCompareOperator) || (operator instanceof GtOperator) || (operator instanceof GeOperator)) {
           result.add(binaryCond.getRight());
@@ -282,8 +282,8 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
   private PCollection indexKeyTo(final AndBlock keyCondition, final BinaryCondition additional) {
     final PCollection result = new PCollection(-1);
     for (final BooleanExpression exp : keyCondition.getSubBlocks()) {
-      if (exp instanceof BinaryCondition) {
-        final BinaryCondition binaryCond = ((BinaryCondition) exp);
+      if (exp instanceof BinaryCondition binaryCondition) {
+        final BinaryCondition binaryCond = binaryCondition;
         final BinaryCompareOperator operator = binaryCond.getOperator();
         if ((operator instanceof EqualsCompareOperator) || (operator instanceof LtOperator) || (operator instanceof LeOperator)) {
           result.add(binaryCond.getRight());
@@ -299,8 +299,8 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
 
   private boolean indexKeyFromIncluded(final AndBlock keyCondition, final BinaryCondition additional) {
     final BooleanExpression exp = keyCondition.getSubBlocks().get(keyCondition.getSubBlocks().size() - 1);
-    if (exp instanceof BinaryCondition) {
-      final BinaryCompareOperator operator = ((BinaryCondition) exp).getOperator();
+    if (exp instanceof BinaryCondition binaryCondition) {
+      final BinaryCompareOperator operator = binaryCondition.getOperator();
       final BinaryCompareOperator additionalOperator = additional == null ? null : additional.getOperator();
       if (isGreaterOperator(operator)) {
         return isIncludeOperator(operator);
@@ -334,8 +334,8 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
 
   private boolean indexKeyToIncluded(final AndBlock keyCondition, final BinaryCondition additional) {
     final BooleanExpression exp = keyCondition.getSubBlocks().get(keyCondition.getSubBlocks().size() - 1);
-    if (exp instanceof BinaryCondition) {
-      final BinaryCompareOperator operator = ((BinaryCondition) exp).getOperator();
+    if (exp instanceof BinaryCondition binaryCondition) {
+      final BinaryCompareOperator operator = binaryCondition.getOperator();
       final BinaryCompareOperator additionalOperator = additional == null ? null : additional.getOperator();
       if (isLessOperator(operator)) {
         return isIncludeOperator(operator);

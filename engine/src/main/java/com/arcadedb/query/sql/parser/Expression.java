@@ -58,44 +58,44 @@ public class Expression extends SimpleNode {
     mathExpression = new BaseExpression(attr, modifier);
   }
 
-  public Object execute(final Identifiable iCurrentRecord, final CommandContext context) {
+  public Object execute(final Identifiable currentRecord, final CommandContext context) {
     if (isNull)
       return null;
     else if (rid != null)
-      return rid.toRecordId(iCurrentRecord, context);
+      return rid.toRecordId(currentRecord, context);
     else if (mathExpression != null)
-      return mathExpression.execute(iCurrentRecord, context);
+      return mathExpression.execute(currentRecord, context);
     else if (whereCondition != null)
-      return whereCondition.matchesFilters(iCurrentRecord, context);
+      return whereCondition.matchesFilters(currentRecord, context);
     else if (arrayConcatExpression != null)
-      return arrayConcatExpression.execute(iCurrentRecord, context);
+      return arrayConcatExpression.execute(currentRecord, context);
     else if (json != null)
-      return json.toMap(iCurrentRecord, context);
+      return json.toMap(currentRecord, context);
     else if (booleanValue != null)
       return booleanValue;
-    else if (value instanceof PNumber)
-      return ((PNumber) value).getValue();//only for old executor (manually replaced params)
+    else if (value instanceof PNumber number)
+      return number.getValue();//only for old executor (manually replaced params)
 
     return value;
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext context) {
+  public Object execute(final Result currentRecord, final CommandContext context) {
     if (isNull)
       return null;
     else if (rid != null)
-      return rid.toRecordId(iCurrentRecord, context);
+      return rid.toRecordId(currentRecord, context);
     else if (mathExpression != null)
-      return mathExpression.execute(iCurrentRecord, context);
+      return mathExpression.execute(currentRecord, context);
     else if (whereCondition != null)
-      return whereCondition.matchesFilters(iCurrentRecord, context);
+      return whereCondition.matchesFilters(currentRecord, context);
     else if (arrayConcatExpression != null)
-      return arrayConcatExpression.execute(iCurrentRecord, context);
+      return arrayConcatExpression.execute(currentRecord, context);
     else if (json != null)
-      return json.toMap(iCurrentRecord, context);
+      return json.toMap(currentRecord, context);
     else if (booleanValue != null)
       return booleanValue;
-    else if (value instanceof PNumber)
-      return ((PNumber) value).getValue();//only for old executor (manually replaced params)
+    else if (value instanceof PNumber number)
+      return number.getValue();//only for old executor (manually replaced params)
 
     return value;
   }
@@ -104,8 +104,8 @@ public class Expression extends SimpleNode {
     if (mathExpression != null) {
       return mathExpression.isBaseIdentifier();
     }
-    if (value instanceof MathExpression) {//only backward stuff, remote it
-      return ((MathExpression) value).isBaseIdentifier();
+    if (value instanceof MathExpression expression) {//only backward stuff, remote it
+      return expression.isBaseIdentifier();
     }
 
     return false;
@@ -124,8 +124,8 @@ public class Expression extends SimpleNode {
       return true;
     else if (value instanceof String)
       return true;
-    else if (value instanceof MathExpression)
-      return ((MathExpression) value).isEarlyCalculated(context);
+    else if (value instanceof MathExpression expression)
+      return expression.isEarlyCalculated(context);
 
     return false;
   }
@@ -169,8 +169,8 @@ public class Expression extends SimpleNode {
       json.toString(params, builder);
     else if (booleanValue != null)
       builder.append(booleanValue);
-    else if (value instanceof SimpleNode)
-      ((SimpleNode) value).toString(params, builder);//only for translated input params, will disappear with new executor
+    else if (value instanceof SimpleNode node)
+      node.toString(params, builder);//only for translated input params, will disappear with new executor
     else if (value instanceof String) {
       if (singleQuotes) {
         builder.append("'" + value + "'");
@@ -330,20 +330,20 @@ public class Expression extends SimpleNode {
       final Expression result = new Expression(-1);
       if (mathExpression != null) {
         final SimpleNode splitResult = mathExpression.splitForAggregation(aggregateSplit, context);
-        if (splitResult instanceof MathExpression) {
-          result.mathExpression = (MathExpression) splitResult;
-        } else if (splitResult instanceof Expression) {
-          return (Expression) splitResult;
+        if (splitResult instanceof MathExpression expression) {
+          result.mathExpression = expression;
+        } else if (splitResult instanceof Expression expression) {
+          return expression;
         } else {
           throw new IllegalStateException("something went wrong while splitting expression for aggregate " + this);
         }
       }
       if (arrayConcatExpression != null) {
         final SimpleNode splitResult = arrayConcatExpression.splitForAggregation(context);
-        if (splitResult instanceof ArrayConcatExpression) {
-          result.arrayConcatExpression = (ArrayConcatExpression) splitResult;
-        } else if (splitResult instanceof Expression) {
-          return (Expression) splitResult;
+        if (splitResult instanceof ArrayConcatExpression expression) {
+          result.arrayConcatExpression = expression;
+        } else if (splitResult instanceof Expression expression) {
+          return expression;
         } else {
           throw new IllegalStateException("something went wrong while splitting expression for aggregate " + this);
         }
@@ -485,8 +485,8 @@ public class Expression extends SimpleNode {
   }
 
   public String prettyPrint(final int depth, final int indent) {
-    if (mathExpression instanceof ParenthesisExpression && ((ParenthesisExpression) mathExpression).getExecutionPlan() != null)
-      return toString() + "\n" + ((ParenthesisExpression) mathExpression).getExecutionPlan().prettyPrint(depth + 1, indent);
+    if (mathExpression instanceof ParenthesisExpression expression && expression.getExecutionPlan() != null)
+      return toString() + "\n" + expression.getExecutionPlan().prettyPrint(depth + 1, indent);
 
     return toString();
   }

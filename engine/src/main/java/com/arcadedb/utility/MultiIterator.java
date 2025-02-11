@@ -132,14 +132,14 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
       final Object o = sources.get(i);
 
       if (o != null)
-        if (o instanceof Collection<?>)
-          size += ((Collection<?>) o).size();
-        else if (o instanceof Map<?, ?>)
-          size += ((Map<?, ?>) o).size();
+        if (o instanceof Collection<?> collection)
+          size += collection.size();
+        else if (o instanceof Map<?, ?> map)
+          size += map.size();
         else if (o.getClass().isArray())
           size += Array.getLength(o);
-        else if (o instanceof ResettableIterator)
-          size += ((ResettableIterator<?>) o).countEntries();
+        else if (o instanceof ResettableIterator<?> iterator)
+          size += iterator.countEntries();
         else
           size++;
     }
@@ -183,8 +183,8 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
       final Object o = sources.get(i);
 
       if (o != null) {
-        if (o instanceof Collection<?>) {
-          if (((Collection<?>) o).contains(value))
+        if (o instanceof Collection<?> collection) {
+          if (collection.contains(value))
             return true;
         }
       }
@@ -203,8 +203,8 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
         Object next = sourcesIterator.next();
         if (next != null) {
 
-          if (next instanceof Iterable<?>)
-            next = ((Iterable) next).iterator();
+          if (next instanceof Iterable<?> iterable)
+            next = iterable.iterator();
 
           if (next instanceof Iterator<?>) {
             if (((Iterator<T>) next).hasNext()) {

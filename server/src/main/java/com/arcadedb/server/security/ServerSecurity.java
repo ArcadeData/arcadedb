@@ -39,7 +39,8 @@ import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
 import java.io.*;
-import java.nio.file.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.charset.*;
 import java.security.*;
 import java.security.spec.*;
@@ -283,7 +284,7 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
     }
 
     final String hash = getEncodedHash(password, salt, iterations);
-    final String encoded = String.format("%s$%d$%s$%s", algorithm, iterations, salt, hash);
+    final String encoded = "%s$%d$%s$%s".formatted(algorithm, iterations, salt, hash);
 
     // CACHE IT
     saltCache.put(password + "$" + salt + "$" + iterations, encoded);
@@ -339,8 +340,8 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
           GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH.getValueAsString();
 
       if (rootPasswordPath != null) {
-        if (Files.isReadable(Paths.get(rootPasswordPath)))
-          rootPassword = Files.readString(Paths.get(rootPasswordPath));
+        if (Files.isReadable(Path.of(rootPasswordPath)))
+          rootPassword = Files.readString(Path.of(rootPasswordPath));
         else
           throw new ServerSecurityException("Error reading password file at path '" + rootPasswordPath + "'");
       }

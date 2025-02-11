@@ -26,6 +26,8 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -36,6 +38,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
 public class JSONImporterIT {
+
+  @BeforeEach
+  @AfterEach
+  public void beforeTests() {
+    TestHelper.checkActiveDatabases();
+  }
+
   @Test
   public void importSingleObject() throws IOException {
     final String databasePath = "target/databases/test-import-graph";
@@ -70,40 +79,40 @@ public class JSONImporterIT {
       assertThat(db.countType("Food", true)).isEqualTo(2);
     }
 
-    TestHelper.checkActiveDatabases();
   }
 
   @Test
   public void importEmployees() throws IOException {
     final String databasePath = "target/databases/test-import-graph";
 
-    final String mapping = "{" + //
-        "  \"Users\":[" + //
-        "    {" + //
-        "      \"@cat\":\"v\"," + //
-        "      \"@type\":\"User\"," + //
-        "      \"@id\":\"id\"," + //
-        "      \"id\":\"<EmployeeID>\"," + //
-        "      \"@idType\":\"string\"," + //
-        "      \"@strategy\": \"merge\"," + //
-        "      \"EmployeeID\": \"@ignore\"," + //
-        "      \"ManagerID\":{" + //
-        "        \"@cat\":\"e\"," + //
-        "        \"@type\":\"HAS_MANAGER\"," + //
-        "        \"@cardinality\":\"no-duplicates\"," + //
-        "        \"@in\": {" + //
-        "          \"@cat\":\"v\"," + //
-        "          \"@type\":\"User\"," + //
-        "          \"@id\":\"id\"," + //
-        "          \"@idType\": \"string\"," + //
-        "          \"@strategy\": \"merge\"," + //
-        "          \"EmployeeID\": \"@ignore\"," + //
-        "          \"id\":\"<../ManagerID>\"" + //
-        "        }     " + //
-        "      }" + //
-        "    }" + //
-        "  ]" + //
-        "}";
+    final String mapping = """
+        {
+          "Users":[
+            {
+              "@cat":"v",
+              "@type":"User",
+              "@id":"id",
+              "id":"<EmployeeID>",
+              "@idType":"string",
+              "@strategy": "merge",
+              "EmployeeID": "@ignore",
+              "ManagerID":{
+                "@cat":"e",
+                "@type":"HAS_MANAGER",
+                "@cardinality":"no-duplicates",
+                "@in": {
+                  "@cat":"v",
+                  "@type":"User",
+                  "@id":"id",
+                  "@idType": "string",
+                  "@strategy": "merge",
+                  "EmployeeID": "@ignore",
+                  "id":"<../ManagerID>"
+                }
+              }
+            }
+          ]
+        }""";
 
     Importer importer = new Importer(
         new String[] { "-url", "file://src/test/resources/importer-employees.json", "-database", databasePath,
@@ -140,6 +149,5 @@ public class JSONImporterIT {
       assertThat(db.countType("User", true)).isEqualTo(4);
     }
 
-    TestHelper.checkActiveDatabases();
   }
 }

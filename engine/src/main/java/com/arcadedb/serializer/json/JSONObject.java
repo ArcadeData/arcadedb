@@ -28,15 +28,27 @@ import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
+import com.google.gson.Strictness;
 import com.google.gson.stream.JsonReader;
 
-import java.io.*;
-import java.math.*;
-import java.text.*;
-import java.time.*;
-import java.time.format.*;
-import java.time.temporal.*;
-import java.util.*;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.StringReader;
+import java.math.BigDecimal;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
+import java.time.temporal.TemporalAccessor;
+import java.util.Collection;
+import java.util.ConcurrentModificationException;
+import java.util.Date;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 
 /**
  * JSON object.<br>
@@ -50,6 +62,8 @@ public class JSONObject {
   private final       JsonObject        object;
   private             String            dateFormatAsString = null;
   private             DateTimeFormatter dateFormat         = null;
+  private             String            dateTimeFormatAsString;
+  private             DateTimeFormatter dateTimeFormat;
 
   public JSONObject() {
     this.object = new JsonObject();
@@ -60,19 +74,23 @@ public class JSONObject {
   }
 
   public JSONObject(final String input) {
-    try {
-      final JsonReader reader = new JsonReader(new StringReader(input));
-      reader.setLenient(false);
-      object = (JsonObject) JsonParser.parseReader(reader);
-    } catch (Exception e) {
-      throw new JSONException("Invalid JSON object format", e);
-    }
+    if (input != null) {
+      try {
+        final JsonReader reader = new JsonReader(new StringReader(input));
+        reader.setStrictness(Strictness.LENIENT);
+        object = JsonParser.parseReader(reader).getAsJsonObject();
+      } catch (Exception e) {
+        throw new JSONException("Invalid JSON object format: " + input, e);
+      }
+    } else
+      object = new JsonObject();
   }
 
   public JSONObject(final Map<String, ?> map) {
     object = new JsonObject();
-    for (Map.Entry<String, ?> entry : map.entrySet())
-      put(entry.getKey(), entry.getValue());
+    if (map != null)
+      for (Map.Entry<String, ?> entry : map.entrySet())
+        put(entry.getKey(), entry.getValue());
   }
 
   public JSONObject copy() {
@@ -105,24 +123,24 @@ public class JSONObject {
 
     if (value == null || value instanceof JsonNull)
       object.add(name, NULL);
-    else if (value instanceof String)
-      object.addProperty(name, (String) value);
-    else if (value instanceof Number)
-      object.addProperty(name, (Number) value);
-    else if (value instanceof Boolean)
-      object.addProperty(name, (Boolean) value);
-    else if (value instanceof Character)
-      object.addProperty(name, (Character) value);
-    else if (value instanceof JSONObject)
-      object.add(name, ((JSONObject) value).getInternal());
-    else if (value instanceof String[])
-      object.add(name, new JSONArray((String[]) value).getInternal());
-    else if (value instanceof Iterable) {
+    else if (value instanceof String string)
+      object.addProperty(name, string);
+    else if (value instanceof Number number)
+      object.addProperty(name, number);
+    else if (value instanceof Boolean bool)
+      object.addProperty(name, bool);
+    else if (value instanceof Character character)
+      object.addProperty(name, character);
+    else if (value instanceof JSONObject nObject)
+      object.add(name, nObject.getInternal());
+    else if (value instanceof String[] string1s)
+      object.add(name, new JSONArray(string1s).getInternal());
+    else if (value instanceof Iterable<?> iterable) {
       // RETRY UP TO 10 TIMES IN CASE OF CONCURRENT UPDATE
       for (int i = 0; i < 10; i++) {
         final JSONArray array = new JSONArray();
         try {
-          for (Object o : (Iterable<?>) value)
+          for (Object o : iterable)
             array.put(o);
           object.add(name, array.getInternal());
           break;
@@ -130,33 +148,42 @@ public class JSONObject {
           // RETRY
         }
       }
-    } else if (value instanceof Enum) {
-      object.addProperty(name, ((Enum<?>) value).name());
-    } else if (value instanceof Date) {
+    } else if (value instanceof Enum<?> enumValue) {
+      object.addProperty(name, enumValue.name());
+    } else if (value instanceof Date date) {
       if (dateFormatAsString == null)
         // SAVE AS TIMESTAMP
-        object.addProperty(name, ((Date) value).getTime());
+        object.addProperty(name, date.getTime());
       else
         // SAVE AS STRING
-        object.addProperty(name, new SimpleDateFormat(dateFormatAsString).format((Date) value));
-    } else if (value instanceof LocalDateTime || value instanceof ZonedDateTime || value instanceof Instant) {
-      if (dateFormat == null)
+        object.addProperty(name, dateFormat.format(date.toInstant().atZone(ZoneId.systemDefault())));
+    } else if (value instanceof LocalDate localDate) {
+      if (dateFormatAsString == null)
+        // SAVE AS TIMESTAMP
+        object.addProperty(name,
+            (localDate.atStartOfDay().toInstant(ZoneId.systemDefault().getRules().getOffset(Instant.now()))
+                .toEpochMilli()));
+      else
+        // SAVE AS STRING
+        object.addProperty(name, dateFormat.format(localDate.atStartOfDay()));
+    } else if (value instanceof TemporalAccessor temporalAccessor) {
+      if (dateFormatAsString == null)
         // SAVE AS TIMESTAMP
         object.addProperty(name,
             DateUtils.dateTimeToTimestamp(value, ChronoUnit.NANOS)); // ALWAYS USE NANOS TO AVOID PRECISION LOSS
       else
         // SAVE AS STRING
-        object.addProperty(name, dateFormat.format((TemporalAccessor) value));
-    } else if (value instanceof Duration) {
+        object.addProperty(name, dateTimeFormat.format(temporalAccessor));
+    } else if (value instanceof Duration duration) {
       object.addProperty(name,
-          Double.valueOf(String.format("%d.%d", ((Duration) value).toSeconds(), ((Duration) value).toNanosPart())));
-    } else if (value instanceof Identifiable) {
-      object.addProperty(name, ((Identifiable) value).getIdentity().toString());
+          Double.valueOf("%d.%d".formatted(duration.toSeconds(), duration.toNanosPart())));
+    } else if (value instanceof Identifiable identifiable) {
+      object.addProperty(name, identifiable.getIdentity().toString());
     } else if (value instanceof Map) {
       final JSONObject embedded = new JSONObject((Map<String, Object>) value);
       object.add(name, embedded.getInternal());
-    } else if (value instanceof Class) {
-      object.addProperty(name, ((Class<?>) value).getName());
+    } else if (value instanceof Class<?> clazz) {
+      object.addProperty(name, clazz.getName());
     } else
       // GENERIC CASE: TRANSFORM IT TO STRING
       object.addProperty(name, value.toString());
@@ -232,10 +259,10 @@ public class JSONObject {
     final Map<String, Object> result = new LinkedHashMap<>(map.size());
     for (Map.Entry<String, JsonElement> entry : map.entrySet()) {
       Object value = elementToObject(entry.getValue());
-      if (value instanceof JSONObject)
-        value = ((JSONObject) value).toMap();
-      else if (value instanceof JSONArray)
-        value = ((JSONArray) value).toList();
+      if (value instanceof JSONObject nObject)
+        value = nObject.toMap();
+      else if (value instanceof JSONArray array)
+        value = array.toList();
 
       result.put(entry.getKey(), value);
     }
@@ -299,6 +326,16 @@ public class JSONObject {
     return this;
   }
 
+  public JSONObject setDateTimeFormat(final String dateFormat) {
+    this.dateTimeFormatAsString = dateFormat;
+    try {
+      this.dateTimeFormat = DateTimeFormatter.ofPattern(dateFormat);
+    } catch (IllegalArgumentException e) {
+      throw new JSONException("Invalid date format: " + dateFormat, e);
+    }
+    return this;
+  }
+
   @Override
   public boolean equals(final Object o) {
     if (this == o)
@@ -345,26 +382,26 @@ public class JSONObject {
   protected static JsonElement objectToElement(final Object object) {
     if (object == null)
       return JsonNull.INSTANCE;
-    else if (object instanceof String)
-      return new JsonPrimitive((String) object);
-    else if (object instanceof Number)
-      return new JsonPrimitive((Number) object);
-    else if (object instanceof Boolean)
-      return new JsonPrimitive((Boolean) object);
-    else if (object instanceof Character)
-      return new JsonPrimitive((Character) object);
-    else if (object instanceof JSONObject)
-      return ((JSONObject) object).getInternal();
-    else if (object instanceof JSONArray)
-      return ((JSONArray) object).getInternal();
-    else if (object instanceof Collection)
-      return new JSONArray((Collection) object).getInternal();
-    else if (object instanceof Map)
-      return new JSONObject((Map) object).getInternal();
-    else if (object instanceof Document)
-      return ((Document) object).toJSON().getInternal();
-    else if (object instanceof Identifiable)
-      return new JsonPrimitive(((Identifiable) object).getIdentity().toString());
+    else if (object instanceof String string)
+      return new JsonPrimitive(string);
+    else if (object instanceof Number number)
+      return new JsonPrimitive(number);
+    else if (object instanceof Boolean boolean1)
+      return new JsonPrimitive(boolean1);
+    else if (object instanceof Character character)
+      return new JsonPrimitive(character);
+    else if (object instanceof JSONObject nObject)
+      return nObject.getInternal();
+    else if (object instanceof JSONArray array)
+      return array.getInternal();
+    else if (object instanceof Collection collection)
+      return new JSONArray(collection).getInternal();
+    else if (object instanceof Map map)
+      return new JSONObject(map).getInternal();
+    else if (object instanceof Document document)
+      return document.toJSON().getInternal();
+    else if (object instanceof Identifiable identifiable)
+      return new JsonPrimitive(identifiable.getIdentity().toString());
 
     throw new IllegalArgumentException("Object of type " + object.getClass() + " not supported");
   }
@@ -386,22 +423,21 @@ public class JSONObject {
   public void validate() {
     for (String key : keySet()) {
       Object value = get(key);
-      if (value instanceof Number) {
-        if (Double.isNaN(((Number) value).doubleValue()))
+      if (value instanceof Number number) {
+        if (Double.isNaN(number.doubleValue()))
           // FIX NAN NUMBERS
           put(key, 0);
-      } else if (value instanceof JSONObject) {
-        ((JSONObject) value).validate();
-      } else if (value instanceof JSONArray) {
-        final JSONArray array = (JSONArray) value;
+      } else if (value instanceof JSONObject nObject) {
+        nObject.validate();
+      } else if (value instanceof JSONArray array) {
         for (int i = 0; i < array.length(); i++) {
           final Object arrayValue = array.get(i);
-          if (arrayValue instanceof Number) {
-            if (Double.isNaN(((Number) arrayValue).doubleValue()))
+          if (arrayValue instanceof Number number) {
+            if (Double.isNaN(number.doubleValue()))
               // FIX NAN NUMBERS
               array.put(i, 0);
-          } else if (arrayValue instanceof JSONObject) {
-            ((JSONObject) arrayValue).validate();
+          } else if (arrayValue instanceof JSONObject nObject) {
+            nObject.validate();
           }
         }
       }

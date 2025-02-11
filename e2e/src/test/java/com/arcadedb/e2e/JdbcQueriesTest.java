@@ -88,7 +88,7 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
   void simpleGremlinQuery() throws Exception {
     try (final Statement st = conn.createStatement()) {
 
-      try (final ResultSet rs = st.executeQuery("{gremlin}g.V().limit(1)")) {
+      try (final ResultSet rs = st.executeQuery("{gremlin}g.V().hasLabel('Beer').limit(1)")) {
         assertThat(rs.next()).isTrue();
 
         assertThat(rs.getString("name")).isNotBlank();

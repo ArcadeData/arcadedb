@@ -43,15 +43,15 @@ public class MatchesCondition extends BooleanExpression {
       regex = regex.substring(1, regex.length() - 1);
     } else if (rightExpression != null) {
       final Object val = rightExpression.execute(currentRecord, context);
-      if (val instanceof String) {
-        regex = (String) val;
+      if (val instanceof String string) {
+        regex = string;
       } else {
         return false;
       }
     } else {
       final Object paramVal = rightParam.getValue(context.getInputParameters());
-      if (paramVal instanceof String) {
-        regex = (String) paramVal;
+      if (paramVal instanceof String string) {
+        regex = string;
       } else {
         return false;
       }
@@ -69,8 +69,8 @@ public class MatchesCondition extends BooleanExpression {
       context.setVariable(key, p);
     }
 
-    if (value instanceof CharSequence) {
-      return p.matcher((CharSequence) value).matches();
+    if (value instanceof CharSequence sequence) {
+      return p.matcher(sequence).matches();
     } else {
       return false;
     }
@@ -83,15 +83,15 @@ public class MatchesCondition extends BooleanExpression {
       regex = regex.substring(1, regex.length() - 1);
     } else if (rightExpression != null) {
       final Object val = rightExpression.execute(currentRecord, context);
-      if (val instanceof String) {
-        regex = (String) val;
+      if (val instanceof String string) {
+        regex = string;
       } else {
         return false;
       }
     } else {
       final Object paramVal = rightParam.getValue(context.getInputParameters());
-      if (paramVal instanceof String) {
-        regex = (String) paramVal;
+      if (paramVal instanceof String string) {
+        regex = string;
       } else {
         return false;
       }

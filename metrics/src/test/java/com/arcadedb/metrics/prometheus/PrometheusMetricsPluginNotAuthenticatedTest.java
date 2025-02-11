@@ -42,6 +42,7 @@ class PrometheusMetricsPluginNotAuthenticatedTest extends BaseGraphServerTest {
 
     HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
     assertThat(response.statusCode()).isEqualTo(200);
+    assertThat(response.headers().firstValue("Content-Type").get()).isEqualTo("text/plain");
     assertThat(response.body()).contains("system_cpu_usage");
   }
 }

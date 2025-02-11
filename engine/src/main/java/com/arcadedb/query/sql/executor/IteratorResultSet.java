@@ -40,11 +40,11 @@ public class IteratorResultSet implements ResultSet {
   @Override
   public Result next() {
     final Object val = iterator.next();
-    if (val instanceof Result)
-      return (Result) val;
+    if (val instanceof Result result)
+      return result;
 
-    return val instanceof Document ?
-        new ResultInternal((Document) val) :
+    return val instanceof Document d ?
+        new ResultInternal(d) :
         new ResultInternal().setProperty("value", val);
   }
 }

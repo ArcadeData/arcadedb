@@ -63,20 +63,19 @@ public class MatchReverseEdgeTraverser extends MatchEdgeTraverser {
     if (qR == null) {
       return Collections.emptyList();
     }
-    if (qR instanceof ResultInternal) {
-      return Collections.singleton((ResultInternal) qR);
+    if (qR instanceof ResultInternal internal) {
+      return Set.of(internal);
     }
-    if (qR instanceof Document) {
-      return Collections.singleton(new ResultInternal((Document) qR));
+    if (qR instanceof Document document) {
+      return Set.of(new ResultInternal(document));
     }
-    if (qR instanceof Iterable) {
-      final Iterable iterable = (Iterable) qR;
+    if (qR instanceof Iterable iterable) {
       final List<ResultInternal> result = new ArrayList<>();
       for (final Object o : iterable) {
-        if (o instanceof Document) {
-          result.add(new ResultInternal((Document) o));
-        } else if (o instanceof ResultInternal) {
-          result.add((ResultInternal) o);
+        if (o instanceof Document document) {
+          result.add(new ResultInternal(document));
+        } else if (o instanceof ResultInternal internal) {
+          result.add(internal);
         } else if (o == null) {
         } else {
           throw new UnsupportedOperationException();

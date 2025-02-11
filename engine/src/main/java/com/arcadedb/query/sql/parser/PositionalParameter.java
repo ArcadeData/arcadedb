@@ -43,8 +43,8 @@ public class PositionalParameter extends InputParameter {
       builder.append("\"");
       builder.append(Expression.encode(finalValue.toString()));
       builder.append("\"");
-    } else if (finalValue instanceof SimpleNode) {
-      ((SimpleNode) finalValue).toString(params, builder);
+    } else if (finalValue instanceof SimpleNode node) {
+      node.toString(params, builder);
     } else {
       builder.append(finalValue);
     }

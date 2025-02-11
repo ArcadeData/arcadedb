@@ -44,7 +44,7 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
     final String className = "testVertexContentArray";
     database.getSchema().buildVertexType().withName(className).withTotalBuckets(1).create();
 
-    String array = IntStream.range(0, 1000).mapToObj(i -> String.format("{'name':'name%d', 'surname':'surname%d'}", i, i))
+    String array = IntStream.range(0, 1000).mapToObj(i -> "{'name':'name%d', 'surname':'surname%d'}".formatted(i, i))
         .collect(Collectors.joining(",", "[", "]"));
     ResultSet result = database.command("sql", "create vertex " + className + " content " + array);
 

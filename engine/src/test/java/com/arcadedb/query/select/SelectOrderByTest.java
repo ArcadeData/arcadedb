@@ -30,9 +30,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class SelectOrderByIT extends TestHelper {
+public class SelectOrderByTest extends TestHelper {
 
-  public SelectOrderByIT() {
+  public SelectOrderByTest() {
     autoStartTx = true;
   }
 

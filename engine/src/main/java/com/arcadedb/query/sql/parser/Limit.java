@@ -51,8 +51,8 @@ public class Limit extends SimpleNode {
 
     if (inputParam != null) {
       final Object paramValue = inputParam.getValue(context.getInputParameters());
-      if (paramValue instanceof Number)
-        return ((Number) paramValue).intValue();
+      if (paramValue instanceof Number number)
+        return number.intValue();
       else
         throw new CommandExecutionException("Invalid value for LIMIT: " + paramValue);
     }

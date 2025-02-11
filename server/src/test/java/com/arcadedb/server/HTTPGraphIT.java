@@ -137,7 +137,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPayload(connection, "sql", "SELECT FROM :rid", null, Collections.singletonMap("rid", "#1:0"));
+      formatPayload(connection, "sql", "SELECT FROM :rid", null, Map.of("rid", "#1:0"));
       connection.connect();
 
       try {
@@ -162,7 +162,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
       formatPayload(connection, "sql", "SELECT FROM " + VERTEX1_TYPE_NAME + " where @rid = :rid", null,
-          Collections.singletonMap("rid", "#1:0"));
+        Map.of("rid", "#1:0"));
       connection.connect();
 
       try {

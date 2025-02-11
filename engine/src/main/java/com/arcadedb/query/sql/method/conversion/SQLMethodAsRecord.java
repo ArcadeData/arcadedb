@@ -39,23 +39,21 @@ public class SQLMethodAsRecord extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext context, final Object[] iParams) {
+  public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
     return getRecord(value, context);
   }
 
   private Object getRecord(final Object obj, final CommandContext context) {
     if (obj != null) {
-      if (obj instanceof Identifiable)
-        return ((Identifiable) obj).getRecord();
-      else if (obj instanceof List) {
-        // CHANGE THE LIST CONTENT
-        final List list = (List) obj;
+      if (obj instanceof Identifiable identifiable)
+        return identifiable.getRecord();
+      else if (obj instanceof List list) {
         for (int i = 0; i < list.size(); i++)
           list.set(i, getRecord(list.get(i), context));
         return list;
 
-      } else if (obj instanceof String && RID.is(obj))
-        return new RID(context != null ? context.getDatabase() : null, (String) obj).getRecord();
+      } else if (obj instanceof String string && RID.is(obj))
+        return new RID(context != null ? context.getDatabase() : null, string).getRecord();
     }
     return null;
   }

@@ -39,7 +39,9 @@ import com.arcadedb.query.sql.parser.ParseException;
 import com.arcadedb.query.sql.parser.SqlParser;
 import com.arcadedb.query.sql.parser.Statement;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
 import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
 
@@ -183,18 +185,18 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
       } else
         lastRetryBlock.add(stm);
 
-      if (stm instanceof CommitStatement) {
+      if (stm instanceof CommitStatement commitStatement) {
         if (nestedTxLevel > 0) {
           nestedTxLevel--;
           if (nestedTxLevel == 0) {
 
-            if (((CommitStatement) stm).getRetry() != null) {
-              int nRetries = ((CommitStatement) stm).getRetry().getValue().intValue();
+            if (commitStatement.getRetry() != null) {
+              int nRetries = commitStatement.getRetry().getValue().intValue();
               if (nRetries <= 0)
                 throw new CommandExecutionException("Invalid retry number " + nRetries);
 
-              final RetryStep step = new RetryStep(lastRetryBlock, nRetries, ((CommitStatement) stm).getElseStatements(),
-                  ((CommitStatement) stm).getElseFail(),
+              final RetryStep step = new RetryStep(lastRetryBlock, nRetries, commitStatement.getElseStatements(),
+                  commitStatement.getElseFail(),
                   scriptContext, false);
               final RetryExecutionPlan retryPlan = new RetryExecutionPlan(scriptContext);
               retryPlan.chain(step);
@@ -211,8 +213,8 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
           throw new CommandSQLParsingException("Found COMMIT statement without a BEGIN");
       }
 
-      if (stm instanceof LetStatement)
-        scriptContext.declareScriptVariable(((LetStatement) stm).getVariableName().getStringValue());
+      if (stm instanceof LetStatement letStatement)
+        scriptContext.declareScriptVariable(letStatement.getVariableName().getStringValue());
     }
 
     return new LocalResultSet(plan);

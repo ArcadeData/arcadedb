@@ -198,8 +198,8 @@ public class ArcadeDBServer {
 
     final String mode = GlobalConfiguration.SERVER_MODE.getValueAsString();
 
-    final String msg = String.format("ArcadeDB Server started in '%s' mode (CPUs=%d MAXRAM=%s)", mode,
-        Runtime.getRuntime().availableProcessors(), FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));
+    final String msg = "ArcadeDB Server started in '%s' mode (CPUs=%d MAXRAM=%s)".formatted(mode,
+      Runtime.getRuntime().availableProcessors(), FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));
     LogManager.instance().log(this, Level.INFO, msg);
 
     getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.INFO, "Server", null, msg);

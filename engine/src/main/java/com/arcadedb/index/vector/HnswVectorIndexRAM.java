@@ -40,6 +40,7 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
 
   private static final byte VERSION_1 = 0x01;
 
+  @Serial
   private static final long serialVersionUID = 1L;
 
   private static final int NO_NODE_ID = -1;
@@ -874,6 +875,7 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
 
   public static class Node<TItem extends Item> implements Serializable {
 
+    @Serial
     private static final long serialVersionUID = 1L;
 
     public final int id;
@@ -920,6 +922,7 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
 
   static class MaxValueComparator<TDistance> implements Comparator<TDistance>, Serializable {
 
+    @Serial
     private static final long serialVersionUID = 1L;
 
     private final Comparator<TDistance> delegate;

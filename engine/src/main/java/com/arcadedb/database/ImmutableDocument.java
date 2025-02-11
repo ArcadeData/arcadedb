@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.database.Record;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.DocumentType;
@@ -41,7 +42,7 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   @Override
-  public  boolean has(final String propertyName) {
+  public boolean has(final String propertyName) {
     if (propertyName == null)
       return false;
 
@@ -50,7 +51,7 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   @Override
-  public  Object get(final String propertyName) {
+  public Object get(final String propertyName) {
     if (propertyName == null)
       return null;
 
@@ -60,11 +61,11 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   @Override
-  public  MutableDocument modify() {
+  public MutableDocument modify() {
     final Record recordInCache = database.getTransaction().getRecordFromCache(rid);
     if (recordInCache != null) {
-      if (recordInCache instanceof MutableDocument)
-        return (MutableDocument) recordInCache;
+      if (recordInCache instanceof MutableDocument document)
+        return document;
       else if (!database.getTransaction().hasPageForRecord(rid.getPageId())) {
         // THE RECORD IS NOT IN TX, SO IT MUST HAVE BEEN LOADED WITHOUT A TX OR PASSED FROM ANOTHER TX
         // IT MUST BE RELOADED TO GET THE LATEST CHANGES. FORCE RELOAD
@@ -85,7 +86,7 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   @Override
-  public  JSONObject toJSON(final boolean includeMetadata) {
+  public JSONObject toJSON(final boolean includeMetadata) {
     checkForLazyLoading();
     final Map<String, Object> map = database.getSerializer()
         .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
@@ -108,15 +109,15 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   @Override
-  public  Map<String, Object> toMap() {
+  public Map<String, Object> toMap() {
     return toMap(true);
   }
 
   @Override
-  public  Map<String, Object> toMap(final boolean includeMetadata) {
+  public Map<String, Object> toMap(final boolean includeMetadata) {
     checkForLazyLoading();
-    final Map<String, Object> result = database.getSerializer()
-        .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
+    final Map<String, Object> result = new LinkedHashMap<>(database.getSerializer()
+        .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid));
     if (includeMetadata) {
       result.put("@cat", "d");
       result.put("@type", type.getName());
@@ -127,7 +128,7 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   @Override
-  public  String toString() {
+  public String toString() {
     final StringBuilder output = new StringBuilder(256);
     if (rid != null)
       output.append(rid);
@@ -166,7 +167,7 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   @Override
-  public  Set<String> getPropertyNames() {
+  public Set<String> getPropertyNames() {
     checkForLazyLoading();
     return database.getSerializer().getPropertyNames(database, buffer, rid);
   }

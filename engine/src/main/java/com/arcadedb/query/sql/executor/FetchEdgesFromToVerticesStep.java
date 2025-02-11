@@ -27,7 +27,10 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.Identifier;
 
-import java.util.*;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * Created by luigidellaquila on 21/02/17.
@@ -86,8 +89,8 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
 
       @Override
       public void close() {
-        if (fromIter instanceof ResultSet) {
-          ((ResultSet) fromIter).close();
+        if (fromIter instanceof ResultSet set) {
+          set.close();
         }
       }
     };
@@ -104,19 +107,19 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
 
     fromValues = context.getVariable(fromAlias);
     if (fromValues != null)
-      if (fromValues instanceof Iterable && !(fromValues instanceof Identifiable))
-        fromValues = ((Iterable) fromValues).iterator();
+      if (fromValues instanceof Iterable iterable && !(fromValues instanceof Identifiable))
+        fromValues = iterable.iterator();
       else if (!(fromValues instanceof Iterator))
-        fromValues = Collections.singleton(fromValues).iterator();
+        fromValues = Set.of(fromValues).iterator();
 
     Object toValues;
 
     toValues = context.getVariable(toAlias);
     if (toValues != null)
-      if (toValues instanceof Iterable && !(toValues instanceof Identifiable))
-        toValues = ((Iterable) toValues).iterator();
+      if (toValues instanceof Iterable iterable && !(toValues instanceof Identifiable))
+        toValues = iterable.iterator();
       else if (!(toValues instanceof Iterator))
-        toValues = Collections.singleton(toValues).iterator();
+        toValues = Set.of(toValues).iterator();
 
     fromIter = (Iterator) fromValues;
 
@@ -124,17 +127,17 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
 
     while (toIter != null && toIter.hasNext()) {
       Object elem = toIter.next();
-      if (elem instanceof Result)
-        elem = ((Result) elem).toElement();
+      if (elem instanceof Result result)
+        elem = result.toElement();
 
-      if (elem instanceof Identifiable && !(elem instanceof Record))
-        elem = ((Identifiable) elem).getRecord();
+      if (elem instanceof Identifiable identifiable && !(elem instanceof Record))
+        elem = identifiable.getRecord();
 
       if (!(elem instanceof Record))
         throw new CommandExecutionException("Invalid vertex: " + elem);
 
-      if (elem instanceof Vertex)
-        toList.add(((Vertex) elem).getIdentity());
+      if (elem instanceof Vertex vertex)
+        toList.add(vertex.getIdentity());
     }
 
     fetchNextEdge();
@@ -149,16 +152,16 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
         }
         if (this.fromIter.hasNext()) {
           Object from = fromIter.next();
-          if (from instanceof Result) {
-            from = ((Result) from).toElement();
+          if (from instanceof Result result) {
+            from = result.toElement();
           }
-          if (from instanceof Identifiable && !(from instanceof Record)) {
-            from = ((Identifiable) from).getRecord();
+          if (from instanceof Identifiable identifiable && !(from instanceof Record)) {
+            from = identifiable.getRecord();
           }
-          if (from instanceof Vertex) {
+          if (from instanceof Vertex vertex) {
 
             // TODO: SUPPORT GET EDGE WITH 'TO' AS PARAMETER
-            currentFromEdgesIter = ((Vertex) from).getEdges(Vertex.DIRECTION.OUT).iterator();
+            currentFromEdgesIter = vertex.getEdges(Vertex.DIRECTION.OUT).iterator();
           } else {
             throw new CommandExecutionException("Invalid vertex: " + from);
           }

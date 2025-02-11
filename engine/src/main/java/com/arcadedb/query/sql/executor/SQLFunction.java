@@ -16,25 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.executor;/*
- *
- *  *  Copyright 2021 Arcade Data Ltd
- *  *
- *  *  Licensed under the Apache License, Version 2.0 (the "License");
- *  *  you may not use this file except in compliance with the License.
- *  *  You may obtain a copy of the License at
- *  *
- *  *       http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  *  Unless required by applicable law or agreed to in writing, software
- *  *  distributed under the License is distributed on an "AS IS" BASIS,
- *  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  *  See the License for the specific language governing permissions and
- *  *  limitations under the License.
- *  *
- *  * For more information: https://arcadedb.com
- *
- */
+package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Identifiable;
 
@@ -53,16 +35,16 @@ public interface SQLFunction {
   /**
    * Process a record.
    *
-   * @param iThis
-   * @param iCurrentRecord : current record
-   * @param iCurrentResult TODO
-   * @param iParams        : function parameters, number is ensured to be within minParams and maxParams.
-   * @param iContext       : object calling this function
+   * @param self
+   * @param currentRecord : current record
+   * @param currentResult TODO
+   * @param params        : function parameters, number is ensured to be within minParams and maxParams.
+   * @param context       : object calling this function
    *
    * @return function result, can be null. Special cases : can be null if function aggregate results, can be null if function filter
    * results : this mean result is excluded
    */
-  Object execute(Object iThis, Identifiable iCurrentRecord, Object iCurrentResult, Object[] iParams, CommandContext iContext);
+  Object execute(Object self, Identifiable currentRecord, Object currentResult, Object[] params, CommandContext context);
 
   /**
    * Configure the function.

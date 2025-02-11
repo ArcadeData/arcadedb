@@ -55,14 +55,14 @@ public class RemoveEdgePointersStep extends AbstractExecutionStep {
           final Set<String> propNames = elem.getPropertyNames();
           for (final String propName : propNames.stream().filter(x -> x.startsWith("in_") || x.startsWith("out_")).collect(Collectors.toList())) {
             final Object val = elem.getProperty(propName);
-            if (val instanceof Document) {
-              if (((Document) val).getType() instanceof LocalEdgeType) {
+            if (val instanceof Document document) {
+              if (document.getType() instanceof LocalEdgeType) {
                 elem.removeProperty(propName);
               }
-            } else if (val instanceof Iterable) {
-              for (final Object o : (Iterable) val) {
-                if (o instanceof Document) {
-                  if (((Document) o).getType() instanceof LocalEdgeType) {
+            } else if (val instanceof Iterable iterable) {
+              for (final Object o : iterable) {
+                if (o instanceof Document document) {
+                  if (document.getType() instanceof LocalEdgeType) {
                     elem.removeProperty(propName);
                     break;
                   }

@@ -20,7 +20,8 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.utility.FileUtils;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
 
 public class ImporterSettings {
   public String  database     = "./databases/imported";
@@ -70,12 +71,28 @@ public class ImporterSettings {
   public int     commitEvery            = 5000;
   public String  mapping                = null;
 
-  public final Map<String, String> options = new HashMap<>();
+  public final Map<String, Object> options = new HashMap<>();
 
   public ImporterSettings() {
     parallel = Runtime.getRuntime().availableProcessors() / 2 - 1;
     if (parallel < 1)
       parallel = 1;
+  }
+
+  public <T> T getValue(final String name, final T defaultValue) {
+    final Object v = options.get(name);
+    return v != null ? (T) v : defaultValue;
+  }
+
+  public int getIntValue(final String name, final int defaultValue) {
+    final Object v = options.get(name);
+    if (v != null) {
+      if (v instanceof Number number)
+        return number.intValue();
+      else
+        return Integer.parseInt(v.toString());
+    }
+    return defaultValue;
   }
 
   protected void parseParameters(final String[] args) {
@@ -91,103 +108,56 @@ public class ImporterSettings {
   public void parseParameter(final String name, String value) {
     value = FileUtils.getStringContent(value);
 
-    if ("database".equals(name))
-      database = value;
-    else if ("url".equals(name))
-      url = value;
-    else if ("forceDatabaseCreate".equals(name))
-      forceDatabaseCreate = Boolean.parseBoolean(value);
-    else if ("wal".equals(name))
-      wal = Boolean.parseBoolean(value);
-    else if ("commitEvery".equals(name))
-      commitEvery = Integer.parseInt(value);
-    else if ("parallel".equals(name))
-      parallel = Integer.parseInt(value);
-    else if ("typeIdProperty".equals(name))
-      typeIdProperty = value;
-    else if ("typeIdUnique".equals(name))
-      typeIdPropertyIsUnique = Boolean.parseBoolean(value);
-    else if ("typeIdType".equals(name))
-      typeIdType = value;
-    else if ("trimText".equals(name))
-      trimText = Boolean.parseBoolean(value);
-    else if ("analysisLimitBytes".equals(name))
-      analysisLimitBytes = FileUtils.getSizeAsNumber(value);
-    else if ("analysisLimitEntries".equals(name))
-      analysisLimitEntries = Long.parseLong(value);
-    else if ("parsingLimitBytes".equals(name))
-      parsingLimitBytes = FileUtils.getSizeAsNumber(value);
-    else if ("parsingLimitEntries".equals(name))
-      parsingLimitEntries = Long.parseLong(value);
-    else if ("mapping".equals(name))
-      mapping = value;
-    else if ("probeOnly".equals(name))
-      probeOnly = Boolean.parseBoolean(value);
+    switch (name) {
+    case "database" -> database = value;
+    case "url" -> url = value;
+    case "forceDatabaseCreate" -> forceDatabaseCreate = Boolean.parseBoolean(value);
+    case "wal" -> wal = Boolean.parseBoolean(value);
+    case "commitEvery" -> commitEvery = Integer.parseInt(value);
+    case "parallel" -> parallel = Integer.parseInt(value);
+    case "typeIdProperty" -> typeIdProperty = value;
+    case "typeIdUnique" -> typeIdPropertyIsUnique = Boolean.parseBoolean(value);
+    case "typeIdType" -> typeIdType = value;
+    case "trimText" -> trimText = Boolean.parseBoolean(value);
+    case "analysisLimitBytes" -> analysisLimitBytes = FileUtils.getSizeAsNumber(value);
+    case "analysisLimitEntries" -> analysisLimitEntries = Long.parseLong(value);
+    case "parsingLimitBytes" -> parsingLimitBytes = FileUtils.getSizeAsNumber(value);
+    case "parsingLimitEntries" -> parsingLimitEntries = Long.parseLong(value);
+    case "mapping" -> mapping = value;
+    case "probeOnly" -> probeOnly = Boolean.parseBoolean(value);
+    // DOCUMENT SETTINGS
+    case "documents" -> documents = value;
+    case "documentsFileType" -> documentsFileType = value;
+    case "documentsDelimiter" -> documentsDelimiter = value;
+    case "documentsHeader" -> documentsHeader = value;
+    case "documentsSkipEntries" -> documentsSkipEntries = Long.parseLong(value);
+    case "documentPropertiesInclude" -> documentPropertiesInclude = value;
+    case "documentType" -> documentTypeName = value;
+    // VERTICES SETTINGS
+    case "vertices" -> vertices = value;
+    case "verticesFileType" -> verticesFileType = value;
+    case "verticesDelimiter" -> verticesDelimiter = value;
+    case "verticesHeader" -> verticesHeader = value;
+    case "verticesSkipEntries" -> verticesSkipEntries = Long.parseLong(value);
+    case "expectedVertices" -> expectedVertices = Integer.parseInt(value);
+    case "vertexType" -> vertexTypeName = value;
+    case "vertexPropertiesInclude" -> vertexPropertiesInclude = value;
+    // EDGES SETTINGS
+    case "edges" -> edges = value;
+    case "edgesFileType" -> edgesFileType = value;
+    case "edgesDelimiter" -> edgesDelimiter = value;
+    case "edgesHeader" -> edgesHeader = value;
+    case "edgesSkipEntries" -> edgesSkipEntries = Long.parseLong(value);
+    case "expectedEdges" -> expectedEdges = Integer.parseInt(value);
+    case "maxRAMIncomingEdges" -> maxRAMIncomingEdges = Long.parseLong(value);
+    case "edgeType" -> edgeTypeName = value;
+    case "edgePropertiesInclude" -> edgePropertiesInclude = value;
+    case "edgeFromField" -> edgeFromField = value;
+    case "edgeToField" -> edgeToField = value;
+    case "edgeBidirectional" -> edgeBidirectional = Boolean.parseBoolean(value);
+    }
 
-      // DOCUMENT SETTINGS
-
-    else if ("documents".equals(name))
-      documents = value;
-    else if ("documentsFileType".equals(name))
-      documentsFileType = value;
-    else if ("documentsDelimiter".equals(name))
-      documentsDelimiter = value;
-    else if ("documentsHeader".equals(name))
-      documentsHeader = value;
-    else if ("documentsSkipEntries".equals(name))
-      documentsSkipEntries = Long.parseLong(value);
-    else if ("documentPropertiesInclude".equals(name))
-      documentPropertiesInclude = value;
-    else if ("documentType".equals(name))
-      documentTypeName = value;
-
-      // VERTICES SETTINGS
-
-    else if ("vertices".equals(name))
-      vertices = value;
-    else if ("verticesFileType".equals(name))
-      verticesFileType = value;
-    else if ("verticesDelimiter".equals(name))
-      verticesDelimiter = value;
-    else if ("verticesHeader".equals(name))
-      verticesHeader = value;
-    else if ("verticesSkipEntries".equals(name))
-      verticesSkipEntries = Long.parseLong(value);
-    else if ("expectedVertices".equals(name))
-      expectedVertices = Integer.parseInt(value);
-    else if ("vertexType".equals(name))
-      vertexTypeName = value;
-    else if ("vertexPropertiesInclude".equals(name))
-      vertexPropertiesInclude = value;
-
-      // EDGES SETTINGS
-
-    else if ("edges".equals(name))
-      edges = value;
-    else if ("edgesFileType".equals(name))
-      edgesFileType = value;
-    else if ("edgesDelimiter".equals(name))
-      edgesDelimiter = value;
-    else if ("edgesHeader".equals(name))
-      edgesHeader = value;
-    else if ("edgesSkipEntries".equals(name))
-      edgesSkipEntries = Long.parseLong(value);
-    else if ("expectedEdges".equals(name))
-      expectedEdges = Integer.parseInt(value);
-    else if ("maxRAMIncomingEdges".equals(name))
-      maxRAMIncomingEdges = Long.parseLong(value);
-    else if ("edgeType".equals(name))
-      edgeTypeName = value;
-    else if ("edgePropertiesInclude".equals(name))
-      edgePropertiesInclude = value;
-    else if ("edgeFromField".equals(name))
-      edgeFromField = value;
-    else if ("edgeToField".equals(name))
-      edgeToField = value;
-    else if ("edgeBidirectional".equals(name))
-      edgeBidirectional = Boolean.parseBoolean(value);
-    else
-      // ADDITIONAL OPTIONS
-      options.put(name, value);
+    // SAVE THE SETTING IN THE OPTIONS
+    options.put(name, value);
   }
 }

@@ -25,7 +25,7 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>25.1.1-SNAPSHOT</version>
+        <version>25.2.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -33,7 +33,7 @@
     <packaging>jar</packaging>
 
     <properties>
-        <jedis.version>3.7.1</jedis.version>
+        <jedis.version>3.10.0</jedis.version>
     </properties>
 
     <dependencies>

@@ -186,6 +186,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     json.put("bucket", underlyingIndex.mutable.getDatabase().getSchema().getBucketById(getAssociatedBucketId()).getName());
     json.put("properties", getPropertyNames());
     json.put("nullStrategy", getNullStrategy());
+    json.put("unique", isUnique());
     return json;
   }
 

@@ -798,7 +798,7 @@ public class Console {
 
     if (args.length > 0) {
       if (output != null)
-        output.onOutput(String.format(text, args));
+        output.onOutput(text.formatted(args));
       else
         terminal.writer().printf(text, args);
     } else {
@@ -879,6 +879,7 @@ public class Console {
           row.setField("MANDATORY", property.hasProperty("mandatory") ? property.getProperty("mandatory") : "false");
           row.setField("READONLY", property.hasProperty("readOnly") ? property.getProperty("readOnly") : "false");
           row.setField("NOT NULL", property.hasProperty("notNull") ? property.getProperty("notNull") : "false");
+          row.setField("HIDDEN", property.hasProperty("hidden") ? property.getProperty("hidden") : "false");
           row.setField("DEFAULT", property.hasProperty("default") ? property.getProperty("default") : null);
           row.setField("MIN", property.hasProperty("min") ? property.getProperty("min") : "");
           row.setField("MAX", property.hasProperty("max") ? property.getProperty("max") : "");
@@ -1018,7 +1019,7 @@ public class Console {
 
   private String getPrompt() {
     final String databaseName = databaseProxy != null ? databaseProxy.getName() : null;
-    return String.format(PROMPT, databaseName != null ? "{" + databaseName + "}" : "");
+    return PROMPT.formatted(databaseName != null ? "{" + databaseName + "}" : "");
   }
 
   private static boolean setGlobalConfiguration(final String key, final String value, final boolean printError) {

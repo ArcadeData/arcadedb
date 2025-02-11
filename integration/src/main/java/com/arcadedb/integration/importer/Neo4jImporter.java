@@ -244,21 +244,21 @@ public class Neo4jImporter {
       Type currentType = typeProperties.get(propName);
       if (currentType == null) {
         Object propValue = properties.get(propName);
-        if (!propValue.equals(JSONObject.NULL)) {
+        if (propValue != null && !propValue.equals(JSONObject.NULL)) {
 
-          if (propValue instanceof String) {
+          if (propValue instanceof String string) {
             // CHECK IF IT'S A DATE
             try {
-              dateTimeISO8601Format.parse((String) propValue);
+              dateTimeISO8601Format.parse(string);
               currentType = Type.DATETIME;
             } catch (final ParseException e) {
               currentType = Type.STRING;
             }
           } else {
-            if (propValue instanceof JSONObject)
-              propValue = ((JSONObject) propValue).toMap();
-            else if (propValue instanceof JSONArray)
-              propValue = ((JSONArray) propValue).toList();
+            if (propValue instanceof JSONObject object)
+              propValue = object.toMap();
+            else if (propValue instanceof JSONArray array)
+              propValue = array.toList();
 
             currentType = Type.getTypeByValue(propValue);
           }
@@ -426,13 +426,13 @@ public class Neo4jImporter {
 
       if (propValue == JSONObject.NULL)
         propValue = null;
-      else if (propValue instanceof JSONObject)
-        propValue = setProperties((JSONObject) propValue, null);
-      else if (propValue instanceof JSONArray)
-        propValue = ((JSONArray) propValue).toList();
-      else if (propValue instanceof String && typeSchema != null && typeSchema.get(propName) == Type.DATETIME) {
+      else if (propValue instanceof JSONObject object)
+        propValue = setProperties(object, null);
+      else if (propValue instanceof JSONArray array)
+        propValue = array.toList();
+      else if (propValue instanceof String string && typeSchema != null && typeSchema.get(propName) == Type.DATETIME) {
         try {
-          propValue = dateTimeISO8601Format.parse((String) propValue).getTime();
+          propValue = dateTimeISO8601Format.parse(string).getTime();
         } catch (final ParseException e) {
           log("Invalid date '%s', ignoring conversion to timestamp and leaving it as string", propValue);
           context.errors.incrementAndGet();
@@ -465,10 +465,8 @@ public class Neo4jImporter {
   private void readFile(final Callable<Void, JSONObject> callback) throws IOException {
     database.begin();
 
-    final InputStream inputStream = openInputStream();
-    try {
-      final BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, DatabaseFactory.getDefaultCharset()));
-      try {
+    try (InputStream inputStream = openInputStream()) {
+      try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, DatabaseFactory.getDefaultCharset()))) {
         long lineNumberStartOfBatch = 0;
         final List<String> transactionBuffer = new ArrayList<>(batchSize);
 
@@ -523,11 +521,7 @@ public class Neo4jImporter {
             context.errors.incrementAndGet();
           }
         }
-      } finally {
-        reader.close();
       }
-    } finally {
-      inputStream.close();
     }
   }
 
@@ -584,7 +578,7 @@ public class Neo4jImporter {
     if (args.length == 0)
       System.out.println(text);
     else
-      System.out.println(String.format(text, args));
+      System.out.println(text.formatted(args));
   }
 
   private void syntaxError(final String s) {

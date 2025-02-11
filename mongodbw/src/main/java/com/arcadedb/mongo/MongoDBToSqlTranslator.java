@@ -32,13 +32,13 @@ public class MongoDBToSqlTranslator {
       final Object key = entry.getKey();
       final Object value = entry.getValue();
 
-      if (key instanceof String && ((String) key).startsWith("$"))
-        buildExpression(buffer, (String) key, value);
+      if (key instanceof String string && string.startsWith("$"))
+        buildExpression(buffer, string, value);
       else if (value instanceof Document) {
         buildAnd(buffer, key, value);
-      } else if (value instanceof List) {
+      } else if (value instanceof List list) {
         if (key.equals("$or")) {
-          buildOr(buffer, (List) value);
+          buildOr(buffer, list);
         } else
           throw new IllegalArgumentException("Invalid operator " + key);
       } else {
@@ -61,8 +61,8 @@ public class MongoDBToSqlTranslator {
 
         buildExpression(sql, o);
       }
-    } else if (value instanceof Document) {
-      for (final Map.Entry<String, Object> subEntry : ((Document) value).entrySet()) {
+    } else if (value instanceof Document document) {
+      for (final Map.Entry<String, Object> subEntry : document.entrySet()) {
         final String subKey = subEntry.getKey();
         final Object subValue = subEntry.getValue();
 
@@ -82,15 +82,15 @@ public class MongoDBToSqlTranslator {
 
   protected static void buildExpression(final StringBuilder sql, final String key, final Object value) {
     if (key.equals("$in")) {
-      if (value instanceof Collection) {
+      if (value instanceof Collection collection) {
         sql.append(" IN ");
-        buildCollection(sql, (Collection) value);
+        buildCollection(sql, collection);
       } else
         throw new IllegalArgumentException("Operator $in was expecting a collection");
     } else if (key.equals("$nin")) {
-      if (value instanceof Collection) {
+      if (value instanceof Collection collection) {
         sql.append(" NOT IN ");
-        buildCollection(sql, (Collection) value);
+        buildCollection(sql, collection);
       } else
         throw new IllegalArgumentException("Operator $in was expecting a collection");
     } else if (key.equals("$eq")) {
@@ -135,8 +135,8 @@ public class MongoDBToSqlTranslator {
       if (i++ > 0)
         buffer.append(" OR ");
 
-      if (o instanceof Document) {
-        buildExpression(buffer, (Document) o);
+      if (o instanceof Document document) {
+        buildExpression(buffer, document);
       }
     }
 
@@ -171,10 +171,10 @@ public class MongoDBToSqlTranslator {
 
       final Object next = it.next();
 
-      if (next instanceof com.arcadedb.database.Document)
-        result.add(convertDocumentToMongoDB((com.arcadedb.database.Document) next));
-      else if (next instanceof Result)
-        result.add(convertDocumentToMongoDB((Result) next));
+      if (next instanceof com.arcadedb.database.Document document)
+        result.add(convertDocumentToMongoDB(document));
+      else if (next instanceof Result result1)
+        result.add(convertDocumentToMongoDB(result1));
       else
         throw new IllegalArgumentException("Object not supported");
 
@@ -267,12 +267,12 @@ public class MongoDBToSqlTranslator {
         final String mainKey = key.substring(0, dotPos);
         final String subKey = key.substring(dotPos + 1);
         final Object object = document.get(mainKey);
-        if (object instanceof Document) {
+        if (object instanceof Document document1) {
           if (!newDocument.containsKey(mainKey)) {
             newDocument.put(mainKey, new Document());
           }
 
-          projectField((Document) object, (Document) newDocument.get(mainKey), subKey);
+          projectField(document1, (Document) newDocument.get(mainKey), subKey);
         }
       } else {
         newDocument.put(key, document.get(key));

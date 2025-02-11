@@ -127,7 +127,7 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
   }
 
   public static boolean isStartStep(final Step<?, ?> step) {
-    return step instanceof GraphStep && ((GraphStep) step).isStartStep();
+    return step instanceof GraphStep gs && gs.isStartStep();
   }
 
   public boolean returnsVertex() {

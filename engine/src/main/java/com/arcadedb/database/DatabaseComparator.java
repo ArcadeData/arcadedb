@@ -36,7 +36,7 @@ public class DatabaseComparator {
 
   static public class DatabaseAreNotIdentical extends ArcadeDBException {
     public DatabaseAreNotIdentical(final String text, final Object... args) {
-      super(String.format(text, args));
+      super(text.formatted(args));
     }
   }
 
@@ -150,6 +150,7 @@ public class DatabaseComparator {
             entry1.toJSON(), entry2.toJSON());
     }
   }
+
 
   public void compareIndexes(final Database db1, final Database db2) {
     final Index[] indexes1 = db1.getSchema().getIndexes();

@@ -100,12 +100,12 @@ public class ProjectionItem extends SimpleNode {
     }
   }
 
-  public Object execute(final Record iCurrentRecord, final CommandContext context) {
+  public Object execute(final Record currentRecord, final CommandContext context) {
     Object result;
     if (all) {
-      result = iCurrentRecord;
+      result = currentRecord;
     } else {
-      result = expression.execute(iCurrentRecord, context);
+      result = expression.execute(currentRecord, context);
     }
     if (nestedProjection != null) {
       result = nestedProjection.apply(expression, result, context);
@@ -114,12 +114,11 @@ public class ProjectionItem extends SimpleNode {
   }
 
   public Object convert(Object value) {
-    if (value instanceof InternalResultSet) {
-      ((InternalResultSet) value).reset();
-      value = ((InternalResultSet) value).stream().collect(Collectors.toList());
+    if (value instanceof InternalResultSet set) {
+      set.reset();
+      value = set.stream().collect(Collectors.toList());
     }
-    if (value instanceof Iterator && !(value instanceof Identifiable)) {
-      final Iterator iter = (Iterator) value;
+    if (value instanceof Iterator iter && !(value instanceof Identifiable)) {
       value = new ArrayList<>();
       while (iter.hasNext()) {
         ((List) value).add(iter.next());
@@ -129,16 +128,16 @@ public class ProjectionItem extends SimpleNode {
     return value;
   }
 
-  public Object execute(final Result iCurrentRecord, final CommandContext context) {
+  public Object execute(final Result currentRecord, final CommandContext context) {
     Object result;
     if (all) {
-      result = iCurrentRecord;
+      result = currentRecord;
     } else {
-      result = expression.execute(iCurrentRecord, context);
+      result = expression.execute(currentRecord, context);
     }
     if (nestedProjection != null) {
-      if (result instanceof Document && ((Document) result).getPropertyNames().isEmpty()) {
-        ((Document) result).reload();
+      if (result instanceof Document document && document.getPropertyNames().isEmpty()) {
+        document.reload();
       }
       result = nestedProjection.apply(expression, result, context);
     }

@@ -1070,7 +1070,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromSingleRid3() {
-    database.getSchema().createDocumentType("testFetchFromSingleRid3");
+    database.getSchema().createDocumentType("testFetchFromSingleRid3", 8);
     database.begin();
     MutableDocument doc = database.newDocument("testFetchFromSingleRid3");
     doc.save();
@@ -1089,7 +1089,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testFetchFromSingleRid4() {
-    database.getSchema().createDocumentType("testFetchFromSingleRid4");
+    database.getSchema().createDocumentType("testFetchFromSingleRid4", 8);
     database.begin();
     MutableDocument doc = database.newDocument("testFetchFromSingleRid4");
     doc.save();
@@ -2971,9 +2971,9 @@ public class SelectStatementExecutionTest extends TestHelper {
       if (names == null) {
         fail("");
       }
-      if (names instanceof Collection) {
-        assertThat(((Collection) names).size()).isEqualTo(3);
-        final Iterator iter = ((Collection) names).iterator();
+      if (names instanceof Collection collection) {
+        assertThat(collection.size()).isEqualTo(3);
+        final Iterator iter = collection.iterator();
         assertThat(iter.next()).isEqualTo("a");
         assertThat(iter.next()).isEqualTo("b");
         assertThat(iter.next()).isEqualTo("c");
@@ -3008,9 +3008,9 @@ public class SelectStatementExecutionTest extends TestHelper {
       if (names == null) {
         fail("");
       }
-      if (names instanceof Collection) {
-        assertThat(((Collection) names).size()).isEqualTo(3);
-        final Iterator iter = ((Collection) names).iterator();
+      if (names instanceof Collection collection) {
+        assertThat(collection.size()).isEqualTo(3);
+        final Iterator iter = collection.iterator();
         assertThat(iter.next()).isEqualTo("a");
         assertThat(iter.next()).isEqualTo("b");
         assertThat(iter.next()).isEqualTo("c");
@@ -3048,9 +3048,9 @@ public class SelectStatementExecutionTest extends TestHelper {
       if (names == null) {
         fail("");
       }
-      if (names instanceof Collection) {
-        assertThat(((Collection) names).size()).isEqualTo(3);
-        final Iterator iter = ((Collection) names).iterator();
+      if (names instanceof Collection collection) {
+        assertThat(collection.size()).isEqualTo(3);
+        final Iterator iter = collection.iterator();
         assertThat(iter.next()).isEqualTo("a");
         assertThat(iter.next()).isEqualTo("b");
         assertThat(iter.next()).isEqualTo("c");
@@ -3085,9 +3085,9 @@ public class SelectStatementExecutionTest extends TestHelper {
       if (names == null) {
         fail("");
       }
-      if (names instanceof Collection) {
-        assertThat(((Collection) names).size()).isEqualTo(3);
-        final Iterator iter = ((Collection) names).iterator();
+      if (names instanceof Collection collection) {
+        assertThat(collection.size()).isEqualTo(3);
+        final Iterator iter = collection.iterator();
         assertThat(iter.next()).isEqualTo("a");
         assertThat(iter.next()).isEqualTo("b");
         assertThat(iter.next()).isEqualTo("c");
@@ -4043,11 +4043,11 @@ public class SelectStatementExecutionTest extends TestHelper {
 //
 //                            @Override
 //                            public Object execute(
-//                                    Object iThis,
-//                                    Identifiable iCurrentRecord,
-//                                    Object iCurrentResult,
-//                                    Object[] iParams,
-//                                    CommandContext iContext) {
+//                                    Object self,
+//                                    Identifiable currentRecord,
+//                                    Object currentResult,
+//                                    Object[] params,
+//                                    CommandContext context) {
 //                                try {
 //                                    Thread.sleep(5);
 //                                } catch (InterruptedException e) {

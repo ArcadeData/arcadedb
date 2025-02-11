@@ -44,10 +44,23 @@ import com.arcadedb.utility.FileUtils;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.zip.*;
+import java.io.EOFException;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.zip.GZIPInputStream;
 
 import static com.google.gson.stream.JsonToken.BEGIN_OBJECT;
 import static com.google.gson.stream.JsonToken.END_ARRAY;
@@ -64,9 +77,9 @@ public class OrientDBImporter {
   private final        File                       file;
   private final        Map<String, OrientDBClass> classes                         = new LinkedHashMap<>();
   private final        Map<String, Long>          totalRecordByType               = new HashMap<>();
-  private final        Set<String>                excludeClasses                  = new HashSet<>(
-      Arrays.asList("OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity",
-          "OFunction", "_studio"));
+  private final        Set<String>                excludeClasses                  = Set.of("OUser", "ORole", "OSchedule",
+      "OSequence", "OTriggered", "OSecurityPolicy",
+      "ORestricted", "OIdentity", "OFunction", "_studio");
   private final        Set<String>                edgeClasses                     = new HashSet<>();
   private final        List<Map<String, Object>>  parsedUsers                     = new ArrayList<>();
   private              CompressedRID2RIDIndex     compressedRecordsRidMap;
@@ -477,15 +490,14 @@ public class OrientDBImporter {
   }
 
   private RID convertRID(final Object value) {
-    final RID rid = value instanceof RID ? (RID) value : new RID(database, value.toString());
+    final RID rid = value instanceof RID rid1 ? rid1 : new RID(database, value.toString());
     return compressedRecordsRidMap.get(rid);
   }
 
   private RID convertRIDs(final Object pValue) {
     if (RID.is(pValue))
       return convertRID(pValue);
-    else if (pValue instanceof List) {
-      final List list = (List) pValue;
+    else if (pValue instanceof List list) {
       for (int i = 0; i < list.size(); i++) {
         final Object item = list.get(i);
         if (RID.is(item))
@@ -496,8 +508,7 @@ public class OrientDBImporter {
           convertRIDs(item);
 
       }
-    } else if (pValue instanceof Map) {
-      final Map map = (Map) pValue;
+    } else if (pValue instanceof Map map) {
       final List keys = new ArrayList(map.keySet());
       for (int i = 0; i < keys.size(); i++) {
         final Object key = keys.get(i);
@@ -1069,9 +1080,8 @@ public class OrientDBImporter {
 
     final DocumentType t;
 
-    int bucketsPerType = GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getValueAsInteger();
-    if (settings.options.containsKey(GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getKey()))
-      bucketsPerType = Integer.parseInt(settings.options.get(GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getKey()));
+    final int bucketsPerType = settings.getIntValue(GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getKey(),
+        GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getValueAsInteger());
 
     switch (type) {
     case 1:

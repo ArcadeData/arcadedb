@@ -33,7 +33,8 @@ import com.arcadedb.utility.Pair;
 
 import java.io.*;
 import java.net.*;
-import java.nio.file.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
@@ -49,7 +50,7 @@ public class FastTextDatabase {
 
   private static final String WORDS_FILE_URL = "https://dl.fbaipublicfiles.com/fasttext/vectors-crawl/cc.en.300.vec.gz";
 
-  private static final Path TMP_PATH       = Paths.get(System.getProperty("java.io.tmpdir"));
+  private static final Path TMP_PATH       = Path.of(System.getProperty("java.io.tmpdir"));
   private final static int  PARALLEL_LEVEL = 8;
 
   public static void main(String[] args) throws Exception {

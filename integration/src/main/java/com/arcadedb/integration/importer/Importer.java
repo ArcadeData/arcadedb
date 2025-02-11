@@ -43,9 +43,8 @@ public class Importer extends AbstractImporter {
     source = null;
 
     try {
-      final String cfgValue = settings.options.get("maxValueSampling");
-
-      final AnalyzedSchema analyzedSchema = new AnalyzedSchema(cfgValue != null ? Integer.parseInt(cfgValue) : 100);
+      final int cfgValue = settings.getIntValue("maxValueSampling", 100);
+      final AnalyzedSchema analyzedSchema = new AnalyzedSchema(cfgValue);
 
       openDatabase();
 
@@ -63,10 +62,10 @@ public class Importer extends AbstractImporter {
         database.commit();
 
     } catch (final Exception e) {
-        if (settings.probeOnly)
-          throw new IllegalArgumentException(e);
-        else
-          throw new ImportException("Error on parsing source '" + source + "'", e);
+      if (settings.probeOnly)
+        throw new IllegalArgumentException(e);
+      else
+        throw new ImportException("Error on parsing source '" + source + "'", e);
     } finally {
       stopImporting();
       if (database != null) {
@@ -78,7 +77,8 @@ public class Importer extends AbstractImporter {
     return context.toMap();
   }
 
-  protected void loadFromSource(final String url, AnalyzedEntity.ENTITY_TYPE entityType, final AnalyzedSchema analyzedSchema) throws IOException {
+  protected void loadFromSource(final String url, AnalyzedEntity.ENTITY_TYPE entityType, final AnalyzedSchema analyzedSchema)
+      throws IOException {
     if (url == null)
       // SKIP IT
       return;

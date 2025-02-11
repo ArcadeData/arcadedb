@@ -20,12 +20,8 @@ package com.arcadedb.integration.exporter;
 
 import com.arcadedb.utility.FileUtils;
 
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
-import java.util.HashMap;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
+import java.text.*;
+import java.util.*;
 
 public class ExporterSettings {
   public       String              format;
@@ -33,6 +29,7 @@ public class ExporterSettings {
   public       String              file;
   public       boolean             overwriteFile = false;
   public       int                 verboseLevel  = 2;
+  public       Set<String>         includeRecords;
   public       Set<String>         includeTypes;
   public       Set<String>         excludeTypes;
   public final Map<String, String> options       = new HashMap<>();
@@ -60,7 +57,7 @@ public class ExporterSettings {
       }
 
     final DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd-HHmmssSSS");
-    file = String.format(file, dateFormat.format(System.currentTimeMillis()));
+    file = file.formatted(dateFormat.format(System.currentTimeMillis()));
   }
 
   public int parseParameter(String name, final String value) {
@@ -81,6 +78,8 @@ public class ExporterSettings {
       includeTypes = Set.of(value.split(","));
     else if ("excludeTypes".equals(name))
       excludeTypes = Set.of(value.split(","));
+    else if ("includeRecords".equals(name))
+      includeRecords = Set.of(value.split(","));
     else
       // ADDITIONAL OPTIONS
       options.put(name, value);

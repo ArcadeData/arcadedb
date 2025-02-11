@@ -22,7 +22,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
-import java.nio.file.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.logging.*;
 import java.util.zip.*;
 
@@ -103,7 +104,7 @@ public class ComponentFile {
   public void drop() throws IOException {
     close();
     LogManager.instance().log(this, Level.FINE, "Deleting file %s (id=%d) to %s...", null, filePath, fileId);
-    Files.delete(Paths.get(getFilePath()));
+    Files.delete(Path.of(getFilePath()));
   }
 
   public String getFileName() {

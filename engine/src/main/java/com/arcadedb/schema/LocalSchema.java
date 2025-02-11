@@ -176,10 +176,10 @@ public class LocalSchema implements Schema {
         if (pf != null) {
           final Object mainComponent = pf.getMainComponent();
 
-          if (mainComponent instanceof LocalBucket)
-            bucketMap.put(pf.getName(), (LocalBucket) mainComponent);
-          else if (mainComponent instanceof IndexInternal)
-            indexMap.put(pf.getName(), (IndexInternal) mainComponent);
+          if (mainComponent instanceof LocalBucket bucket)
+            bucketMap.put(pf.getName(), bucket);
+          else if (mainComponent instanceof IndexInternal internal)
+            indexMap.put(pf.getName(), internal);
 
           registerFile(pf);
         }
@@ -452,8 +452,8 @@ public class LocalSchema implements Schema {
       if (index.getTypeName() != null && existsType(index.getTypeName())) {
         final DocumentType type = getType(index.getTypeName());
         final BucketSelectionStrategy strategy = type.getBucketSelectionStrategy();
-        if (strategy instanceof PartitionedBucketSelectionStrategy) {
-          if (List.of(((PartitionedBucketSelectionStrategy) strategy).getProperties()).equals(index.getPropertyNames()))
+        if (strategy instanceof PartitionedBucketSelectionStrategy selectionStrategy) {
+          if (List.of(selectionStrategy.getProperties()).equals(index.getPropertyNames()))
             // CURRENT INDEX WAS USED FOR PARTITION, SETTING DEFAULT STRATEGY
             type.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
         }
@@ -469,8 +469,8 @@ public class LocalSchema implements Schema {
 
           if (index.getTypeName() != null) {
             final LocalDocumentType type = getType(index.getTypeName());
-            if (index instanceof TypeIndex)
-              type.removeTypeIndexInternal((TypeIndex) index);
+            if (index instanceof TypeIndex typeIndex)
+              type.removeTypeIndexInternal(typeIndex);
             else
               type.removeBucketIndexInternal(index);
           }
@@ -716,9 +716,9 @@ public class LocalSchema implements Schema {
         for (final Index m : new ArrayList<>(type.getAllIndexes(true)))
           dropIndex(m.getName());
 
-        if (type instanceof LocalVertexType)
+        if (type instanceof LocalVertexType vertexType)
           // DELETE IN/OUT EDGE FILES
-          database.getGraphEngine().dropVertexType((VertexType) type);
+          database.getGraphEngine().dropVertexType(vertexType);
 
         // DELETE ALL ASSOCIATED BUCKETS
         final List<Bucket> buckets = new ArrayList<>(type.getBuckets(false));

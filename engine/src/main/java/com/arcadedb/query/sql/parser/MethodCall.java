@@ -81,40 +81,40 @@ public class MethodCall extends SimpleNode {
     return execute(targetObjects, context, methodName.getStringValue(), params, iPossibleResults);
   }
 
-  private Object execute(final Object targetObjects, final CommandContext context, final String name, final List<Expression> iParams,
+  private Object execute(final Object targetObjects, final CommandContext context, final String name, final List<Expression> params,
       final Iterable<Identifiable> iPossibleResults) {
     final List<Object> paramValues = new ArrayList<Object>();
     Object val = context.getVariable("current");
     if (val == null && targetObjects == null) {
       return null;
     }
-    for (final Expression expr : iParams) {
-      if (val instanceof Identifiable) {
-        paramValues.add(expr.execute((Identifiable) val, context));
-      } else if (val instanceof Result) {
-        paramValues.add(expr.execute((Result) val, context));
-      } else if (targetObjects instanceof Identifiable) {
-        paramValues.add(expr.execute((Identifiable) targetObjects, context));
-      } else if (targetObjects instanceof Result) {
-        paramValues.add(expr.execute((Result) targetObjects, context));
+    for (final Expression expr : params) {
+      if (val instanceof Identifiable identifiable) {
+        paramValues.add(expr.execute(identifiable, context));
+      } else if (val instanceof Result result) {
+        paramValues.add(expr.execute(result, context));
+      } else if (targetObjects instanceof Identifiable identifiable) {
+        paramValues.add(expr.execute(identifiable, context));
+      } else if (targetObjects instanceof Result result) {
+        paramValues.add(expr.execute(result, context));
       } else {
         throw new CommandExecutionException("Invalid value for $current: " + val);
       }
     }
     if (isGraphFunction()) {
       final SQLFunction function = ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getFunction(name);
-      if (function instanceof SQLFunctionFiltered) {
+      if (function instanceof SQLFunctionFiltered filtered) {
         Object current = context.getVariable("current");
-        if (current instanceof Result) {
-          current = ((Result) current).getElement().orElse(null);
+        if (current instanceof Result result) {
+          current = result.getElement().orElse(null);
         }
-        return ((SQLFunctionFiltered) function).execute(targetObjects, (Identifiable) current, null, paramValues.toArray(), iPossibleResults, context);
+        return filtered.execute(targetObjects, (Identifiable) current, null, paramValues.toArray(), iPossibleResults, context);
       } else {
         final Object current = context.getVariable("current");
-        if (current instanceof Identifiable) {
-          return function.execute(targetObjects, (Identifiable) current, null, paramValues.toArray(), context);
-        } else if (current instanceof Result) {
-          return function.execute(targetObjects, ((Result) current).getElement().orElse(null), null, paramValues.toArray(), context);
+        if (current instanceof Identifiable identifiable) {
+          return function.execute(targetObjects, identifiable, null, paramValues.toArray(), context);
+        } else if (current instanceof Result result) {
+          return function.execute(targetObjects, result.getElement().orElse(null), null, paramValues.toArray(), context);
         } else {
           return function.execute(targetObjects, null, null, paramValues.toArray(), context);
         }
@@ -124,8 +124,8 @@ public class MethodCall extends SimpleNode {
 
     final SQLMethod method = ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getMethod(name);
     if (method != null) {
-      if (val instanceof Result)
-        val = ((Result) val).getElement().orElse(null);
+      if (val instanceof Result result)
+        val = result.getElement().orElse(null);
 
       return method.execute(targetObjects, (Identifiable) val, context, paramValues.toArray());
     }

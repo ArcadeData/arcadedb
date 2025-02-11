@@ -138,8 +138,8 @@ public class BinaryComparator {
 
     case BinaryTypes.TYPE_STRING: {
       if (value1 instanceof byte[]) {
-        if (value2 instanceof byte[])
-          return UnsignedBytesComparator.BEST_COMPARATOR.compare((byte[]) value1, (byte[]) value2);
+        if (value2 instanceof byte[] bytes)
+          return UnsignedBytesComparator.BEST_COMPARATOR.compare((byte[]) value1, bytes);
         else
           return UnsignedBytesComparator.BEST_COMPARATOR.compare((byte[]) value1,
               ((String) value2).getBytes(DatabaseFactory.getDefaultCharset()));
@@ -378,15 +378,15 @@ public class BinaryComparator {
       return true;
     else if (a == null || b == null)
       return false;
-    else if (a instanceof String && b instanceof String)
-      return equalsString((String) a, (String) b);
-    else if (a instanceof byte[] && b instanceof byte[])
-      return equalsBytes((byte[]) a, (byte[]) b);
-    else if (a instanceof Binary && b instanceof Binary)
-      return equalsBinary((Binary) a, (Binary) b);
+    else if (a instanceof String string && b instanceof String string1)
+      return equalsString(string, string1);
+    else if (a instanceof byte[] bytes && b instanceof byte[] bytes1)
+      return equalsBytes(bytes, bytes1);
+    else if (a instanceof Binary binary && b instanceof Binary binary1)
+      return equalsBinary(binary, binary1);
     else if (!a.getClass().equals(b.getClass()) &&//
-        a instanceof Number && b instanceof Number) {
-      final Number[] pair = Type.castComparableNumber((Number) a, (Number) b);
+        a instanceof Number number && b instanceof Number number1) {
+      final Number[] pair = Type.castComparableNumber(number, number1);
       return pair[0].equals(pair[1]);
     }
     return a.equals(b);
@@ -441,12 +441,12 @@ public class BinaryComparator {
       return 1;
     else if (a == null && b != null)
       return -1;
-    else if (a instanceof String && b instanceof String)
-      return compareBytes(((String) a).getBytes(), ((String) b).getBytes(DatabaseFactory.getDefaultCharset()));
-    else if (a instanceof byte[] && b instanceof byte[])
-      return compareBytes((byte[]) a, (byte[]) b);
-    else if (a instanceof Map && b instanceof Map)
-      return CollectionUtils.compare((Map) a, (Map) b);
+    else if (a instanceof String string && b instanceof String string1)
+      return compareBytes(string.getBytes(), string1.getBytes(DatabaseFactory.getDefaultCharset()));
+    else if (a instanceof byte[] bytes && b instanceof byte[] bytes1)
+      return compareBytes(bytes, bytes1);
+    else if (a instanceof Map map && b instanceof Map map1)
+      return CollectionUtils.compare(map, map1);
     else if (DateUtils.isDate(a) || DateUtils.isDate(b))
       return DateUtils.dateTimeToTimestamp(a, ChronoUnit.NANOS).compareTo(DateUtils.dateTimeToTimestamp(b, ChronoUnit.NANOS));
     return ((Comparable<Object>) a).compareTo(b);

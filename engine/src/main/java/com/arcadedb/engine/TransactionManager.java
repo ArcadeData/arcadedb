@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.LockManager;
 
@@ -36,6 +37,7 @@ import java.util.stream.*;
 
 public class TransactionManager {
   private static final long MAX_LOG_FILE_SIZE = 64 * 1024 * 1024;
+  private static final int  WRITE_WAL_TIMEOUT = 30_000;
 
   private final DatabaseInternal             database;
   private       WALFile[]                    activeWALFilePool;
@@ -143,6 +145,8 @@ public class TransactionManager {
 
   public void writeTransactionToWAL(final List<MutablePage> pages, final WALFile.FLUSH_TYPE sync, final long txId,
       final Binary bufferChanges) {
+    final long begin = System.currentTimeMillis();
+
     while (true) {
       final WALFile file = activeWALFilePool[(int) (Thread.currentThread().getId() % activeWALFilePool.length)];
 
@@ -151,6 +155,9 @@ public class TransactionManager {
         return null;
       }))
         break;
+
+      if (System.currentTimeMillis() - begin > WRITE_WAL_TIMEOUT)
+        throw new TransactionException("Timeout on writing transaction to WAL");
 
       try {
         Thread.sleep(10);

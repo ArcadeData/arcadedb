@@ -70,13 +70,13 @@ public class RecordAttribute extends SimpleNode {
     this.name = name;
   }
 
-  public Object evaluate(final Result iCurrentRecord, final CommandContext context) {
+  public Object evaluate(final Result currentRecord, final CommandContext context) {
     if (name.equalsIgnoreCase("@rid")) {
-      return iCurrentRecord.getIdentity().orElse(null);
+      return currentRecord.getIdentity().orElse(null);
     } else if (name.equalsIgnoreCase("@type")) {
-      return iCurrentRecord.getElement().map(Document::getTypeName).orElse(null);
-    } else if (name.equalsIgnoreCase("@cat") && iCurrentRecord.getElement().isPresent()) {
-      final Document record = iCurrentRecord.getElement().get();
+      return currentRecord.getElement().map(Document::getTypeName).orElse(null);
+    } else if (name.equalsIgnoreCase("@cat") && currentRecord.getElement().isPresent()) {
+      final Document record = currentRecord.getElement().get();
       if (record instanceof Vertex)
         return "v";
       else if (record instanceof Edge)
@@ -85,11 +85,11 @@ public class RecordAttribute extends SimpleNode {
         return "d";
 
     } else if (name.equalsIgnoreCase("@in") && //
-        iCurrentRecord.getElement().isPresent() && iCurrentRecord.getElement().get() instanceof Edge) {
-      return iCurrentRecord.getElement().get().asEdge().getIn();
+        currentRecord.getElement().isPresent() && currentRecord.getElement().get() instanceof Edge) {
+      return currentRecord.getElement().get().asEdge().getIn();
     } else if (name.equalsIgnoreCase("@out") && //
-        iCurrentRecord.getElement().isPresent() && iCurrentRecord.getElement().get() instanceof Edge) {
-      return iCurrentRecord.getElement().get().asEdge().getOut();
+        currentRecord.getElement().isPresent() && currentRecord.getElement().get() instanceof Edge) {
+      return currentRecord.getElement().get().asEdge().getOut();
     }
     return null;
   }

@@ -70,15 +70,15 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
 
   private Result toTraverseResult(final Result item) {
     TraverseResult res = null;
-    if (item instanceof TraverseResult)
-      res = (TraverseResult) item;
+    if (item instanceof TraverseResult result)
+      res = result;
     else if (item.isElement() && item.getElement().get().getIdentity() != null) {
       res = new TraverseResult(item.getElement().get());
       res.depth = 0;
     } else if (item.getPropertyNames().size() == 1) {
       final Object val = item.getProperty(item.getPropertyNames().iterator().next());
-      if (val instanceof Identifiable) {
-        res = new TraverseResult((Document) ((Identifiable) val).getRecord());
+      if (val instanceof Identifiable identifiable) {
+        res = new TraverseResult((Document) identifiable.getRecord());
         res.depth = 0;
         res.setMetadata("$depth", 0);
       }
@@ -110,14 +110,14 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
 
   private void addNextEntryPoints(final Object nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack,
       final CommandContext context) {
-    if (nextStep instanceof Identifiable)
-      addNextEntryPoint(((Identifiable) nextStep), depth, path, stack, context);
-    else if (nextStep instanceof Iterable)
-      addNextEntryPoints(((Iterable) nextStep).iterator(), depth, path, stack, context);
-    else if (nextStep instanceof Map)
-      addNextEntryPoints(((Map) nextStep).values().iterator(), depth, path, stack, context);
-    else if (nextStep instanceof Result)
-      addNextEntryPoint(((Result) nextStep), depth, path, stack, context);
+    if (nextStep instanceof Identifiable identifiable)
+      addNextEntryPoint(identifiable, depth, path, stack, context);
+    else if (nextStep instanceof Iterable iterable)
+      addNextEntryPoints(iterable.iterator(), depth, path, stack, context);
+    else if (nextStep instanceof Map map)
+      addNextEntryPoints(map.values().iterator(), depth, path, stack, context);
+    else if (nextStep instanceof Result result)
+      addNextEntryPoint(result, depth, path, stack, context);
   }
 
   private void addNextEntryPoints(final Iterator nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack,
@@ -158,17 +158,17 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
     if (this.traversed.contains(nextStep.getElement().get().getIdentity()))
       return;
 
-    if (nextStep instanceof TraverseResult) {
-      ((TraverseResult) nextStep).depth = depth;
-      ((TraverseResult) nextStep).setMetadata("$depth", depth);
+    if (nextStep instanceof TraverseResult result) {
+      result.depth = depth;
+      result.setMetadata("$depth", depth);
       final List<Identifiable> newPath = new ArrayList<>(path);
       nextStep.getIdentity().ifPresent(x -> newPath.add(x.getIdentity()));
-      ((TraverseResult) nextStep).setMetadata("$path", newPath);
+      result.setMetadata("$path", newPath);
 
       final List reverseStack = new ArrayList(newPath);
       Collections.reverse(reverseStack);
       final List newStack = new ArrayList(reverseStack);
-      ((TraverseResult) nextStep).setMetadata("$stack", newStack);
+      result.setMetadata("$stack", newStack);
 
       tryAddEntryPoint(nextStep, context);
     } else {

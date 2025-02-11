@@ -32,30 +32,30 @@ public class SQLFunctionSquareRoot extends SQLFunctionMathAbstract {
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iRecord, final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
-    final Object inputValue = iParams[0];
+  public Object execute(final Object self, final Identifiable record, final Object currentResult, final Object[] params, final CommandContext context) {
+    final Object inputValue = params[0];
 
     if (inputValue == null) {
       result = null;
-    } else if (inputValue instanceof Number && ((Number) inputValue).doubleValue() < 0.0) {
+    } else if (inputValue instanceof Number number && number.doubleValue() < 0.0) {
       result = null;
-    } else if (inputValue instanceof BigDecimal) {
-      result = ((BigDecimal) inputValue).sqrt(new MathContext(10));
-    } else if (inputValue instanceof BigInteger) {
-      result = ((BigInteger) inputValue).sqrt();
-    } else if (inputValue instanceof Integer) {
-      result = Double.valueOf(Math.sqrt((Integer) inputValue)).intValue();
-    } else if (inputValue instanceof Long) {
-      result = Double.valueOf(Math.sqrt((Long) inputValue)).longValue();
-    } else if (inputValue instanceof Short) {
-      result = Double.valueOf(Math.sqrt((Short) inputValue)).shortValue();
-    } else if (inputValue instanceof Double) {
-      result = Double.valueOf(Math.sqrt((Double) inputValue)).doubleValue();
-    } else if (inputValue instanceof Float) {
-      result = Double.valueOf(Math.sqrt((Float) inputValue)).floatValue();
-    } else if (inputValue instanceof Duration) {
-      final int seconds = ((Duration) inputValue).toSecondsPart();
-      final long nanos = ((Duration) inputValue).toNanosPart();
+    } else if (inputValue instanceof BigDecimal decimal) {
+      result = decimal.sqrt(new MathContext(10));
+    } else if (inputValue instanceof BigInteger integer) {
+      result = integer.sqrt();
+    } else if (inputValue instanceof Integer integer) {
+      result = Double.valueOf(Math.sqrt(integer)).intValue();
+    } else if (inputValue instanceof Long long1) {
+      result = Double.valueOf(Math.sqrt(long1)).longValue();
+    } else if (inputValue instanceof Short short1) {
+      result = Double.valueOf(Math.sqrt(short1)).shortValue();
+    } else if (inputValue instanceof Double double1) {
+      result = Double.valueOf(Math.sqrt(double1)).doubleValue();
+    } else if (inputValue instanceof Float float1) {
+      result = Double.valueOf(Math.sqrt(float1)).floatValue();
+    } else if (inputValue instanceof Duration duration) {
+      final int seconds = duration.toSecondsPart();
+      final long nanos = duration.toNanosPart();
       if (seconds < 0 && nanos < 0)
         result = null;
       else {

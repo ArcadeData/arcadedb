@@ -10,6 +10,7 @@ import java.net.Authenticator;
 import java.net.PasswordAuthentication;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 
@@ -50,6 +51,7 @@ class PrometheusMetricsPluginAuthenticatedTest extends BaseGraphServerTest {
 
     HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
     assertThat(response.statusCode()).isEqualTo(200);
+    assertThat(response.headers().firstValue("Content-Type").get()).isEqualTo("text/plain");
     assertThat(response.body()).contains("system_cpu_usage");
   }
 }

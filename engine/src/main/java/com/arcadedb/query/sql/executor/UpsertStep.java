@@ -56,7 +56,7 @@ public class UpsertStep extends AbstractExecutionStep {
     if (p instanceof SubQueryStep) {
       for (ExecutionPlan ep : p.getSubExecutionPlans()) {
         for (ExecutionStep s : ep.getSteps()) {
-          if (s instanceof FetchFromIndexStep && ((FetchFromIndexStep) s).index.isUnique()) {
+          if (s instanceof FetchFromIndexStep step && step.index.isUnique()) {
             fetchFromIndexFound = true;
             break;
           }

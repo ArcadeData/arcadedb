@@ -32,14 +32,14 @@ public class SelectTreeNode {
 
   public SelectTreeNode(final Object left, final SelectOperator operator, final Object right) {
     this.left = left;
-    if (left instanceof SelectTreeNode)
-      ((SelectTreeNode) left).setParent(this);
+    if (left instanceof SelectTreeNode node)
+      node.setParent(this);
 
     this.operator = operator;
 
     this.right = right;
-    if (right instanceof SelectTreeNode)
-      ((SelectTreeNode) right).setParent(this);
+    if (right instanceof SelectTreeNode node)
+      node.setParent(this);
   }
 
   public Object eval(final Document record) {
@@ -90,8 +90,8 @@ public class SelectTreeNode {
   public JSONArray toJSON() {
     final JSONArray json = new JSONArray();
 
-    if (left instanceof SelectTreeNode)
-      json.put(((SelectTreeNode) left).toJSON());
+    if (left instanceof SelectTreeNode node)
+      json.put(node.toJSON());
     else if (left instanceof SelectPropertyValue || left instanceof SelectParameterValue)
       json.put(left.toString());
     else
@@ -101,8 +101,8 @@ public class SelectTreeNode {
       json.put(operator.name);
 
     if (right != null) {
-      if (right instanceof SelectTreeNode)
-        json.put(((SelectTreeNode) right).toJSON());
+      if (right instanceof SelectTreeNode node)
+        json.put(node.toJSON());
       else if (right instanceof SelectPropertyValue || right instanceof SelectParameterValue)
         json.put(right.toString());
       else

@@ -39,13 +39,11 @@ public class JSONFactory {
   private JSONFactory() {
     gson = new GsonBuilder()//
         .serializeNulls()//
-        //.registerTypeAdapter(Date.class, new DateDeserializer())//
         .create();
 
     gsonPrettyPrint = new GsonBuilder()//
         .serializeNulls()//
         .setPrettyPrinting()//
-        //.registerTypeAdapter(Date.class, new DateDeserializer())
         .create();
   }
 

@@ -23,7 +23,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
-import java.util.*;
+import java.security.SecureRandom;
 
 /**
  * Generates a random number integer between 0 and the number passed as parameter.
@@ -40,14 +40,14 @@ public class SQLFunctionRandomInt extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      final CommandContext iContext) {
-    if (iParams == null || iParams.length < 1)
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
+    if (params == null || params.length < 1)
       throw new CommandSQLParsingException("Expected maximum value in function");
 
-    int bound = iParams[0] instanceof Number ? ((Number) iParams[0]).intValue() : Integer.parseInt(iParams[0].toString());
+    int bound = params[0] instanceof Number n ? n.intValue() : Integer.parseInt(params[0].toString());
 
-    return new Random().nextInt(bound);
+    return new SecureRandom().nextInt(bound);
   }
 
   @Override

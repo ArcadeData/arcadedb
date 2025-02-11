@@ -26,8 +26,13 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 public class Projection extends SimpleNode {
 
@@ -89,15 +94,15 @@ public class Projection extends SimpleNode {
     }
   }
 
-  public Result calculateSingle(final CommandContext context, final Result iRecord) {
+  public Result calculateSingle(final CommandContext context, final Result record) {
     initExcludes();
     if (isExpand())
       throw new IllegalStateException("This is an expand projection, it cannot be calculated as a single result" + this);
 
-    if (items.isEmpty() ||//
-        (items.size() == 1 && (items.get(0).isAll() || items.get(0).getExpression().toString().equals("@this")))//
-            && items.get(0).nestedProjection == null)
-      return iRecord;
+    if (items.size() == 1 &&
+        items.get(0).getExpression().toString().equals("@this") &&
+        items.get(0).nestedProjection == null)
+      return record;
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
     for (final ProjectionItem item : items) {
@@ -105,41 +110,47 @@ public class Projection extends SimpleNode {
         continue;
 
       if (item.isAll()) {
-        result.setElement(iRecord.toElement());
-        for (final String alias : iRecord.getPropertyNames()) {
-          if (this.excludes.contains(alias)) {
+        for (final String alias : record.getPropertyNames()) {
+          if (excludes.contains(alias)) {
             continue;
+          } else if (record.getElement().isPresent()) {
+            final Document doc = record.getElement().get();
+            if (excludes.contains(alias) ||
+                (doc.getType().existsProperty(alias) &&
+                    doc.getType().getProperty(alias).isHidden())) {
+              continue;
+            }
           }
-          Object val = item.convert(iRecord.getProperty(alias));
+          Object value = item.convert(record.getProperty(alias));
           if (item.nestedProjection != null) {
-            val = item.nestedProjection.apply(item.expression, val, context);
+            value = item.nestedProjection.apply(item.expression, value, context);
           }
-          result.setProperty(alias, val);
+          result.setProperty(alias, value);
         }
-        if (iRecord.getElement().isPresent()) {
-          final Document x = iRecord.getElement().get();
-          if (!this.excludes.contains("@rid")) {
-            result.setProperty("@rid", x.getIdentity());
+
+        record.getElement().ifPresent(doc -> {
+          if (!excludes.contains("@rid")) {
+            result.setProperty("@rid", doc.getIdentity());
           }
-          if (!this.excludes.contains("@type")) {
-            result.setProperty("@type", x.getType().getName());
+          if (!excludes.contains("@type")) {
+            result.setProperty("@type", doc.getType().getName());
           }
-        }
+        });
       } else {
-        result.setProperty(item.getProjectionAliasAsString(), item.execute(iRecord, context));
+        result.setProperty(item.getProjectionAliasAsString(), item.execute(record, context));
       }
     }
 
-    for (final String key : iRecord.getMetadataKeys()) {
+    for (final String key : record.getMetadataKeys()) {
       if (!result.getMetadataKeys().contains(key))
-        result.setMetadata(key, iRecord.getMetadata(key));
+        result.setMetadata(key, record.getMetadata(key));
     }
     return result;
   }
 
   private void initExcludes() {
     if (excludes == null) {
-      this.excludes = new HashSet<String>();
+      this.excludes = new HashSet<>();
       for (final ProjectionItem item : items) {
         if (item.exclude)
           this.excludes.add(item.getProjectionAliasAsString());

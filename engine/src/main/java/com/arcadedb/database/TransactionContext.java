@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Record;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;

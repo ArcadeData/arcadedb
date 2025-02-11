@@ -22,15 +22,24 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalVertexType;
-import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
-import java.time.temporal.*;
-import java.util.*;
-import java.util.logging.*;
+import java.time.temporal.ChronoUnit;
+import java.time.temporal.Temporal;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.logging.Level;
 
 public class JSONSerializer {
   private final Database database;
@@ -60,7 +69,7 @@ public class JSONSerializer {
 
       final Object value = convertToJSONType(entry.getValue(), propertyType);
 
-      if (value instanceof Number && !Float.isFinite(((Number) value).floatValue())) {
+      if (value instanceof Number number && !Float.isFinite(number.floatValue())) {
         LogManager.instance()
             .log(this, Level.SEVERE, "Found non finite number in map with key '%s', ignore this entry in the conversion",
                 entry.getKey());
@@ -88,16 +97,15 @@ public class JSONSerializer {
   }
 
   private Object convertToJSONType(Object value, final Type type) {
-    if (value instanceof Document) {
-      value = ((Document) value).toJSON();
-    } else if (value instanceof Collection) {
-      final Collection c = (Collection) value;
+    if (value instanceof Document document) {
+      value = document.toJSON();
+    } else if (value instanceof Collection c) {
       final JSONArray array = new JSONArray();
       for (final Iterator it = c.iterator(); it.hasNext(); )
         array.put(convertToJSONType(it.next()));
       value = array;
-    } else if (value instanceof Date)
-      value = ((Date) value).getTime();
+    } else if (value instanceof Date date)
+      value = date.getTime();
     else if (value instanceof Temporal)
       value = DateUtils.dateTimeToTimestamp(value, type != null ? DateUtils.getPrecisionFromType(type) : ChronoUnit.MILLIS);
     else if (value instanceof Map) {
@@ -112,8 +120,7 @@ public class JSONSerializer {
   }
 
   private Object convertFromJSONType(Object value) {
-    if (value instanceof JSONObject) {
-      final JSONObject json = (JSONObject) value;
+    if (value instanceof JSONObject json) {
       final String embeddedTypeName = json.getString("@type");
 
       final DocumentType type = database.getSchema().getType(embeddedTypeName);
@@ -127,8 +134,7 @@ public class JSONSerializer {
         embeddedDocument.fromJSON((JSONObject) value);
         value = embeddedDocument;
       }
-    } else if (value instanceof JSONArray) {
-      final JSONArray array = (JSONArray) value;
+    } else if (value instanceof JSONArray array) {
       final List<Object> list = new ArrayList<>();
       for (int i = 0; i < array.length(); ++i)
         list.add(convertFromJSONType(array.get(i)));

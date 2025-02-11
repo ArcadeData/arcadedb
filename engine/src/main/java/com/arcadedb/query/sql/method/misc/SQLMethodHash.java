@@ -49,12 +49,12 @@ public class SQLMethodHash extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable iCurrentRecord, final CommandContext iContext,
-      final Object[] iParams) {
+  public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context,
+      final Object[] params) {
     if (value == null)
       return null;
 
-    final String algorithm = iParams.length > 0 ? iParams[0].toString() : HASH_ALGORITHM;
+    final String algorithm = params.length > 0 ? params[0].toString() : HASH_ALGORITHM;
     try {
       return createHash(value.toString(), algorithm);
 

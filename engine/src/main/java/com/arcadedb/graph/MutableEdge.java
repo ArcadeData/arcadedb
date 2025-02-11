@@ -121,6 +121,12 @@ public class MutableEdge extends MutableDocument implements Edge {
   }
 
   @Override
+  public MutableEdge set(final Map<String, Object> properties) {
+    super.set(properties);
+    return this;
+  }
+
+  @Override
   public MutableEdge set(final String name, final Object value) {
     super.set(name, value);
     return this;
@@ -134,11 +140,6 @@ public class MutableEdge extends MutableDocument implements Edge {
   @Override
   public MutableEdge fromJSON(final JSONObject json) {
     return (MutableEdge) super.fromJSON(json);
-  }
-
-  @Override
-  public MutableEdge set(final Map<String, Object> properties) {
-    return (MutableEdge) super.set(properties);
   }
 
   @Override
