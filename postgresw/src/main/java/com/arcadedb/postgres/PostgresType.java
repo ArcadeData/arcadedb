@@ -64,7 +64,7 @@ public enum PostgresType {
    * @param typeBuffer The buffer to write to
    * @param value      The value to serialize
    */
-  public void serializeAsText(final long code, final Binary typeBuffer, Object value) {
+  public void serializeAsText(final long code,final Binary typeBuffer, Object value) {
     if (value == null) {
       if (code == BOOLEAN.code) {
         value = "0";
@@ -74,7 +74,7 @@ public enum PostgresType {
       }
     }
 
-    byte[] str = value.toString().getBytes(DatabaseFactory.getDefaultCharset());
+    final byte[] str = value.toString().getBytes(DatabaseFactory.getDefaultCharset());
     typeBuffer.putInt(str.length);
     typeBuffer.putByteArray(str);
   }

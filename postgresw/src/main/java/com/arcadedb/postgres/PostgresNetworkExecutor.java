@@ -48,6 +48,8 @@ import com.arcadedb.utility.Pair;
 import java.io.EOFException;
 import java.io.IOException;
 import java.net.Socket;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -347,9 +349,6 @@ public class PostgresNetworkExecutor extends Thread {
         return;
       }
 
-//      if (DEBUG)
-//        LogManager.instance().log(this, Level.INFO, "PSQL: query -> %s (thread=%s)", queryText, Thread.currentThread().getId());
-
       final Query query = getLanguageAndQuery(queryText);
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: query -> %s ", query);
@@ -370,14 +369,14 @@ public class PostgresNetworkExecutor extends Thread {
       } else if (ignoreQueries.contains(query.query))
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       else
-        resultSet = database.query(query.language, query.query);
+        resultSet = database.command(query.language, query.query);
 
       final List<Result> cachedResultSet = browseAndCacheResultSet(resultSet, 0);
 
       final Map<String, PostgresType> columns = getColumns(cachedResultSet);
       writeRowDescription(columns);
       writeDataRows(cachedResultSet, columns);
-      writeCommandComplete(query.query, cachedResultSet.size());
+      writeCommandComplete(queryText, cachedResultSet.size());
 
     } catch (final CommandParsingException e) {
       setErrorInTx();
@@ -476,31 +475,38 @@ public class PostgresNetworkExecutor extends Thread {
       bufferDescription.putByteArray(columnName.getBytes(DatabaseFactory.getDefaultCharset()));//The field name.
       bufferDescription.putByte((byte) 0);
 
-      bufferDescription.putInt(0); //If the field can be identified as a column of a specific table, the object ID of the table; otherwise zero.
-      bufferDescription.putShort((short) 0); //If the field can be identified as a column of a specific table, the attribute number of the column; otherwise zero.
-      bufferDescription.putInt(columnType.code);// The object ID of the field's data type.
-      bufferDescription.putShort((short) columnType.size);// The data type size (see pg_type.typlen). Note that negative values denote variable-width types.
-      bufferDescription.putInt(-1);// The type modifier (see pg_attribute.atttypmod). The meaning of the modifier is type-specific.
-      bufferDescription.putShort((short) 0); // The format code being used for the field. Currently will be zero (text) or one (binary). In a RowDescription returned from the statement variant of Describe, the format code is not yet known and will always be zero.
+      //If the field can be identified as a column of a specific table, the object ID of the table; otherwise zero.
+      bufferDescription.putInt(0);
+      //If the field can be identified as a column of a specific table, the attribute number of the column; otherwise zero.
+      bufferDescription.putShort((short) 0);
+      // The object ID of the field's data type.
+      bufferDescription.putInt(columnType.code);
+      // The data type size (see pg_type.typlen). Note that negative values denote variable-width types.
+      bufferDescription.putShort((short) columnType.size);
+      // The type modifier (see pg_attribute.atttypmod). The meaning of the modifier is type-specific.
+      bufferDescription.putInt(-1);
+      // The format code being used for the field. Currently will be zero (text) or one (binary). In a RowDescription returned from the statement variant of Describe, the format code is not yet known and will always be zero.
+      bufferDescription.putShort((short) 0);
     }
 
     bufferDescription.flip();
     writeMessage("row description", () -> {
       channel.writeUnsignedShort((short) columns.size());
       channel.writeBuffer(bufferDescription.getByteBuffer());
-    }, 'T', 4 + 2 + bufferDescription.capacity());
+    }, 'T', 4 + 2 + bufferDescription.limit());
   }
 
   private void writeDataRows(final List<Result> resultSet, final Map<String, PostgresType> columns) throws IOException {
     if (resultSet.isEmpty())
       return;
 
+//    final ByteBuffer bufferData = ByteBuffer.allocate(128 * 1024).order(ByteOrder.BIG_ENDIAN);
+//    final ByteBuffer bufferValues = ByteBuffer.allocate(128 * 1024).order(ByteOrder.BIG_ENDIAN);
+
     final Binary bufferData = new Binary();
     final Binary bufferValues = new Binary();
 
     for (final Result row : resultSet) {
-      bufferData.clear();
-      bufferValues.clear();
       bufferValues.putShort((short) columns.size()); // Int16 The number of column values that follow (possibly zero).
 
       for (final Map.Entry<String, PostgresType> entry : columns.entrySet()) {
@@ -554,13 +560,17 @@ public class PostgresNetworkExecutor extends Thread {
 
       bufferData.flip();
       channel.writeBuffer(bufferData.getByteBuffer());
+//      channel.flush();
+
+      bufferData.clear();
+      bufferValues.clear();
     }
 
     channel.flush();
 
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row data (%s) (thread=%s)", resultSet.size(),
-          FileUtils.getSizeAsString(bufferData.getByteBuffer().limit()), Thread.currentThread().getId());
+          FileUtils.getSizeAsString(bufferData.limit()), Thread.currentThread().getId());
   }
 
   private void bindCommand() {

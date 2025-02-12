@@ -644,6 +644,10 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     return content.length;
   }
 
+  public int limit() {
+    return buffer.limit();
+  }
+
   public void fill(final byte filler, final int size) {
     checkForAllocation(buffer.position(), size);
     for (int i = 0; i < size; ++i)

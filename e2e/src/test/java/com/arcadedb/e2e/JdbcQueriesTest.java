@@ -142,6 +142,7 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
           CREATE PROPERTY article.title IF NOT EXISTS STRING;
           CREATE PROPERTY article.content IF NOT EXISTS STRING;
           CREATE PROPERTY article.author IF NOT EXISTS STRING;
+          CREATE PROPERTY article.notes IF NOT EXISTS EMBEDDED;
 
           INSERT INTO article CONTENT {"created": "2021-01-01 00:00:00",
                   "updated": "2021-01-01 00:00:00",
