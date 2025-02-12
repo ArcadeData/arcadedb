@@ -229,7 +229,7 @@ public class TransactionIsolationTest extends TestHelper {
               assertThat(
                       database.query("sql", "select from Node where id = 0")
                               .nextIfAvailable()
-                              .<String>getProperty("modified")
+                              .<Boolean>getProperty("modified")
               ).isNull();
 
             sem3.await();
@@ -238,7 +238,7 @@ public class TransactionIsolationTest extends TestHelper {
             assertThat(
                     database.query("sql", "select from Node where id = 0")
                             .nextIfAvailable()
-                            .<String>getProperty("modified")
+                            .<Boolean>getProperty("modified")
             ).isNull();
 
           } catch (InterruptedException e) {

@@ -167,11 +167,15 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
 
   @Override
   public synchronized String toString() {
-    final StringBuilder buffer = new StringBuilder();
-    buffer.append(out != null ? out.toString() : "?");
-    buffer.append("<->");
-    buffer.append(in != null ? in.toString() : "?");
-    return buffer.toString();
+    if (out == null && in == null)
+      return rid.toString();
+    else {
+      final StringBuilder buffer = new StringBuilder();
+      buffer.append(out != null ? out.toString() : "?");
+      buffer.append("<->");
+      buffer.append(in != null ? in.toString() : "?");
+      return buffer.toString();
+    }
   }
 
   @Override
