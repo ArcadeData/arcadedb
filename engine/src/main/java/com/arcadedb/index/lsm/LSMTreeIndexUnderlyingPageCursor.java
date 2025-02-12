@@ -37,7 +37,8 @@ public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbst
   protected Object[] nextKeys;
   protected RID[]    nextValue;
 
-  public LSMTreeIndexUnderlyingPageCursor(final LSMTreeIndexAbstract index, final BasePage page, final int currentEntryInPage, final int keyStartPosition,
+  public LSMTreeIndexUnderlyingPageCursor(final LSMTreeIndexAbstract index, final BasePage page, final int currentEntryInPage,
+      final int keyStartPosition,
       final byte[] keyTypes, final int totalKeys, final boolean ascendingOrder) {
     super(index, keyTypes, totalKeys, ascendingOrder);
 
@@ -60,53 +61,63 @@ public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbst
   }
 
   public Object[] getKeys() {
-    if (nextKeys != null)
-      return nextKeys;
+    while (currentEntryIndex < totalKeys) {
+      if (nextKeys != null)
+        return nextKeys;
 
-    if (currentEntryIndex < 0)
-      throw new IllegalStateException("Invalid page cursor index " + currentEntryIndex);
+      if (currentEntryIndex < 0)
+        throw new IllegalStateException("Invalid page cursor index " + currentEntryIndex);
 
-    int contentPos = buffer.getInt(keyStartPosition + (currentEntryIndex * INT_SERIALIZED_SIZE));
-    buffer.position(contentPos);
-
-    nextKeys = new Object[keyTypes.length];
-    for (int k = 0; k < keyTypes.length; ++k) {
-      final boolean notNull = index.getVersion() < 1 || buffer.getByte() == 1;
-      if (notNull)
-        nextKeys[k] = index.getDatabase().getSerializer().deserializeValue(index.getDatabase(), buffer, keyTypes[k], null);
-      else
-        nextKeys[k] = null;
-    }
-
-    valuePosition = buffer.position();
-    nextValue = index.readEntryValues(buffer);
-
-    for (int pos = currentEntryIndex + 1; pos < totalKeys; ++pos) {
-      contentPos = buffer.getInt(keyStartPosition + (pos * INT_SERIALIZED_SIZE));
+      int contentPos = buffer.getInt(keyStartPosition + (currentEntryIndex * INT_SERIALIZED_SIZE));
       buffer.position(contentPos);
 
-      final Object[] adjacentKeys = new Object[keyTypes.length];
+      nextKeys = new Object[keyTypes.length];
       for (int k = 0; k < keyTypes.length; ++k) {
         final boolean notNull = index.getVersion() < 1 || buffer.getByte() == 1;
         if (notNull)
-          adjacentKeys[k] = index.getDatabase().getSerializer().deserializeValue(index.getDatabase(), buffer, keyTypes[k], null);
+          nextKeys[k] = index.getDatabase().getSerializer().deserializeValue(index.getDatabase(), buffer, keyTypes[k], null);
         else
-          adjacentKeys[k] = null;
+          nextKeys[k] = null;
       }
 
-      final int compare = LSMTreeIndexMutable.compareKeys(index.comparator, keyTypes, nextKeys, adjacentKeys);
-      if (compare != 0)
-        break;
-
-      // SAME KEY, MERGE VALUES
       valuePosition = buffer.position();
-      final RID[] adjacentValue = index.readEntryValues(buffer);
+      nextValue = index.readEntryValues(buffer);
 
-      if (adjacentValue.length > 0) {
-        final RID[] newArray = Arrays.copyOf(nextValue, nextValue.length + adjacentValue.length);
-        for (int i = nextValue.length; i < newArray.length; ++i)
-          newArray[i] = adjacentValue[i - nextValue.length];
-        nextValue = newArray;
+      for (int pos = currentEntryIndex + 1; pos < totalKeys; ++pos) {
+        contentPos = buffer.getInt(keyStartPosition + (pos * INT_SERIALIZED_SIZE));
+        buffer.position(contentPos);
+
+        final Object[] adjacentKeys = new Object[keyTypes.length];
+        for (int k = 0; k < keyTypes.length; ++k) {
+          final boolean notNull = index.getVersion() < 1 || buffer.getByte() == 1;
+          if (notNull)
+            adjacentKeys[k] = index.getDatabase().getSerializer().deserializeValue(index.getDatabase(), buffer, keyTypes[k], null);
+          else
+            adjacentKeys[k] = null;
+        }
+
+        final int compare = LSMTreeIndexMutable.compareKeys(index.comparator, keyTypes, nextKeys, adjacentKeys);
+        if (compare != 0)
+          break;
+
+        // SAME KEY, MERGE VALUES
+        valuePosition = buffer.position();
+        final RID[] adjacentValue = index.readEntryValues(buffer);
+
+        if (adjacentValue.length > 0) {
+          final RID[] newArray = Arrays.copyOf(nextValue, nextValue.length + adjacentValue.length);
+          for (int i = nextValue.length; i < newArray.length; ++i)
+            newArray[i] = adjacentValue[i - nextValue.length];
+          nextValue = newArray;
+        }
+      }
+
+      final RID[] rids = getValue();
+
+      if (rids[rids.length - 1].getBucketId() < 0) {
+        // NOT VALID
+        nextKeys = null;
+        next();
       }
     }
 
