@@ -476,17 +476,12 @@ public class PostgresNetworkExecutor extends Thread {
       bufferDescription.putByteArray(columnName.getBytes(DatabaseFactory.getDefaultCharset()));//The field name.
       bufferDescription.putByte((byte) 0);
 
-      bufferDescription.putInt(
-          0); //If the field can be identified as a column of a specific table, the object ID of the table; otherwise zero.
-      bufferDescription.putShort(
-          (short) 0); //If the field can be identified as a column of a specific table, the attribute number of the column; otherwise zero.
+      bufferDescription.putInt(0); //If the field can be identified as a column of a specific table, the object ID of the table; otherwise zero.
+      bufferDescription.putShort((short) 0); //If the field can be identified as a column of a specific table, the attribute number of the column; otherwise zero.
       bufferDescription.putInt(columnType.code);// The object ID of the field's data type.
-      bufferDescription.putShort(
-          (short) columnType.size);// The data type size (see pg_type.typlen). Note that negative values denote variable-width types.
-      bufferDescription.putInt(
-          columnType.modifier);// The type modifier (see pg_attribute.atttypmod). The meaning of the modifier is type-specific.
-      bufferDescription.putShort(
-          (short) 0); // The format code being used for the field. Currently will be zero (text) or one (binary). In a RowDescription returned from the statement variant of Describe, the format code is not yet known and will always be zero.
+      bufferDescription.putShort((short) columnType.size);// The data type size (see pg_type.typlen). Note that negative values denote variable-width types.
+      bufferDescription.putInt(-1);// The type modifier (see pg_attribute.atttypmod). The meaning of the modifier is type-specific.
+      bufferDescription.putShort((short) 0); // The format code being used for the field. Currently will be zero (text) or one (binary). In a RowDescription returned from the statement variant of Describe, the format code is not yet known and will always be zero.
     }
 
     bufferDescription.flip();
