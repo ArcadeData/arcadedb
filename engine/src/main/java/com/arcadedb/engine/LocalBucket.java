@@ -21,7 +21,6 @@ package com.arcadedb.engine;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordEventsRegistry;
@@ -646,7 +645,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       selectedPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + availablePositionIndex * INT_SERIALIZED_SIZE,
           newRecordPositionInPage);
-      selectedPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) ++availablePositionIndex);
+
+      final short recordCountInPage = selectedPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+      if (availablePositionIndex + 1 > recordCountInPage)
+        // UPDATE RECORD NUMBER
+        selectedPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) ++availablePositionIndex);
 
       LogManager.instance()
           .log(this, Level.FINE, "Created record %s (%s records=%d threadId=%d)", rid, selectedPage, availablePositionIndex,
