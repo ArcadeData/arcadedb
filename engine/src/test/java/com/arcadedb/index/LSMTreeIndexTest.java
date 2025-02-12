@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
@@ -200,6 +201,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
   @Test
   public void testRemoveKeys() {
+    database.getConfiguration().setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 0); // DISABLE COMPACTION
     database.transaction(() -> {
       int total = 0;
 
@@ -238,16 +240,16 @@ public class LSMTreeIndexTest extends TestHelper {
       }
 
       // CHECK ALSO WITH RANGE
-// RANGE DOES NOT WORK WITH TX CHANGES YET
-//        for (int i = 0; i < TOT; ++i) {
-//          for (Index index : indexes) {
-//            if (index instanceof TypeIndex)
-//              continue;
-//            final IndexCursor cursor = ((RangeIndex) index).range(new Object[] { i }, true, new Object[] { i }, true);
-//
-//            Assertions.assertThat(cursor.hasNext() && cursor.next().isFalse() != null, "Found item with key " + i + " inside the TX by using range()");
-//          }
-//        }
+      for (int i = 0; i < TOT; ++i) {
+        for (Index index : indexes) {
+          if (index instanceof TypeIndex)
+            continue;
+          final IndexCursor cursor = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i }, true);
+
+          Assertions.assertThat(cursor.hasNext() || cursor.next() != null)
+              .withFailMessage("Found item with key " + i + " inside the TX by using range()").isFalse();
+        }
+      }
     }, true, 0);
 
     // CHECK ALSO AFTER THE TX HAS BEEN COMMITTED
@@ -270,7 +272,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
           final IndexCursor cursor = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i }, true);
 
-          assertThat(cursor.hasNext() && cursor.next() != null).withFailMessage(
+          assertThat(cursor.hasNext() || cursor.next() != null).withFailMessage(
               "Found item with key " + i + " after the TX was committed by using range()").isFalse();
         }
       }

@@ -133,16 +133,21 @@ public class LSMTreeIndexCursor implements IndexCursor {
             pageCursors[cursorIdx] = index.newPageIterator(pageId, lookupResult.keyIndex, ascendingOrder);
             cursorKeys[cursorIdx] = pageCursors[cursorIdx].getKeys();
 
-            if (ascendingOrder) {
-              if (LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[cursorIdx], fromKeys) < 0) {
-                pageCursors[cursorIdx] = null;
-                cursorKeys[cursorIdx] = null;
+            boolean valid = cursorKeys[cursorIdx] != null;
+
+            if (valid) {
+              if (ascendingOrder) {
+                if (LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[cursorIdx], fromKeys) < 0)
+                  valid = false;
+              } else {
+                if (LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[cursorIdx], fromKeys) > 0)
+                  valid = false;
               }
-            } else {
-              if (LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[cursorIdx], fromKeys) > 0) {
-                pageCursors[cursorIdx] = null;
-                cursorKeys[cursorIdx] = null;
-              }
+            }
+
+            if (!valid) {
+              pageCursors[cursorIdx] = null;
+              cursorKeys[cursorIdx] = null;
             }
           }
         }
@@ -253,10 +258,11 @@ public class LSMTreeIndexCursor implements IndexCursor {
       if (cursor == null)
         buffer.append("%n- Cursor[%d] = null".formatted(i));
       else {
-        buffer.append("%n- Cursor[%d] %s=%s index=%s compacted=%s totalKeys=%d ascending=%s keyTypes=%s currentPageId=%s currentPosInPage=%d".formatted(
-          i, Arrays.toString(cursorKeys[i]), Arrays.toString(cursor.getValue()), cursor.index,
-          cursor instanceof LSMTreeIndexUnderlyingCompactedSeriesCursor, cursor.totalKeys, cursor.ascendingOrder,
-          Arrays.toString(cursor.keyTypes), cursor.getCurrentPageId(), cursor.getCurrentPositionInPage()));
+        buffer.append(
+            "%n- Cursor[%d] %s=%s index=%s compacted=%s totalKeys=%d ascending=%s keyTypes=%s currentPageId=%s currentPosInPage=%d".formatted(
+                i, Arrays.toString(cursorKeys[i]), Arrays.toString(cursor.getValue()), cursor.index,
+                cursor instanceof LSMTreeIndexUnderlyingCompactedSeriesCursor, cursor.totalKeys, cursor.ascendingOrder,
+                Arrays.toString(cursor.keyTypes), cursor.getCurrentPageId(), cursor.getCurrentPositionInPage()));
       }
     }
 

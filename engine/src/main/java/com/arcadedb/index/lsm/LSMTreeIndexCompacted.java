@@ -332,8 +332,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   }
 
   protected void searchInCompactedIndex(final Object[] originalKeys, final Object[] convertedKeys, final int limit,
-      final Set<IndexCursorEntry> set,
-      final Set<RID> removedRIDs) throws IOException {
+      final Set<IndexCursorEntry> set, final Set<RID> removedRIDs) throws IOException {
     // JUMP TO ROOT PAGES BEFORE LOADING THE PAGE WITH THE KEY/VALUES
     final BasePage mainPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), 0), pageSize);
     final int mainPageCount = getCompactedPageNumberOfSeries(mainPage);
