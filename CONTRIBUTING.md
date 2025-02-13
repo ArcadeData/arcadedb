@@ -9,9 +9,7 @@
 
 - **Ensure the bug was not already reported** by searching on GitHub under [Issues](https://github.com/ArcadeData/arcadedb/issues).
 
-- If you're unable to find an open issue addressing the problem, [open a new one](https://github.com/ArcadeData/arcadedb/issues/new)
-  . Be sure to include a **title and clear description**, as much relevant information as possible, and a **code sample** or an **
-  executable test case** demonstrating the expected behavior that is not occurring.
+- If you're unable to find an open issue addressing the problem, [open a new one](https://github.com/ArcadeData/arcadedb/issues/new). Be sure to include a **title and clear description**, as much relevant information as possible, and a **code sample** or an **executable test case** demonstrating the expected behavior that is not occurring. Importantly, note the ArcadeDB version, JVM type and version exhibiting the issue.
 
 #### **Did you write a patch that fixes a bug?**
 
@@ -21,15 +19,13 @@
 
 #### **Did you fix whitespace, format code, or make a purely cosmetic patch?**
 
-Changes that are cosmetic in nature and do not add anything substantial to the stability, functionality, or testability will
-generally not be accepted.
+Changes that are cosmetic in nature and do not add anything substantial to the stability, functionality, or testability will generally not be accepted.
 
 #### **Do you intend to add a new feature or change an existing one?**
 
 - Suggest your change in the [ArcadeDB Community](https://github.com/ArcadeData/arcadedb/discussions) and start writing code.
 
-- Do not open an issue on GitHub until you have collected positive feedback about the change. GitHub issues are primarily intended
-  for bug reports and fixes.
+- Do not open an issue on GitHub until you have collected positive feedback about the change. GitHub issues are primarily intended for bug reports and fixes.
 
 ### Prepare your environment
 
@@ -43,7 +39,7 @@ follow [installation instructions](https://pre-commit.com/#install) for your ope
 In order to use the latest distribution before the official release, you have to build it from the latest SNAPSHOT version in
 the `main` branch of GitHub. All you need is:
 
-- **Java v11** for the runtime or major
+- **Java v17** for the runtime or major
 - [**Apache Maven**](https://maven.apache.org/), to build the distribution
 
 It's super easy, just follow the following steps:
@@ -52,7 +48,7 @@ It's super easy, just follow the following steps:
 
 If you have git installed, execute the following command on a shell or command prompt:
 
-```bash
+```shell
 $ git clone git@github.com:ArcadeData/arcadedb.git
 ```
 
@@ -65,7 +61,7 @@ a local folder.
 
 Assure you have Apache Maven installed on your computer and execute the following commands:
 
-```bash
+```shell
 $ cd arcadedb
 $ mvn clean install -DskipTests
 ```
@@ -76,5 +72,31 @@ The build should take less than a minute.
 
 You will find a fresh built distribution under the directory `package/target/arcadedb-<version>.dir/arcadedb-<version>/`.
 
-For example, if the latest release is the `23.3.1-SNAPSHOT`, then the release will be available under the
-directory `package/target/arcadedb-23.3.1-SNAPSHOT.dir/arcadedb-23.3.1-SNAPSHOT/`
+For example, if the latest release is the `25.1.1-SNAPSHOT`, then the release will be available under the
+directory `package/target/arcadedb-25.1.1-SNAPSHOT.dir/arcadedb-25.1.1-SNAPSHOT/`
+
+### Some build targets
+
+Build and run default tests:
+
+```shell
+$ mvn clean install
+```
+
+To run additional integration test locally use:
+
+```shell
+$ mvn clean install -P integration
+```
+
+Build and run in fail-at-end mode:
+
+```shell
+$ mvn clean install -fae
+```
+
+Print dependency tree:
+
+```shell
+$ mvn dependency:tree
+```

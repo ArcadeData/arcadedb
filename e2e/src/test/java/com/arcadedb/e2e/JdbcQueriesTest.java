@@ -129,4 +129,50 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
       }
     }
   }
+
+  @Test
+  void createSchemaWithSqlScript() throws SQLException {
+    try (final Statement st = conn.createStatement()) {
+
+      st.execute("""
+          {sqlscript}
+          CREATE Document TYPE article IF NOT EXISTS;
+          CREATE PROPERTY article.created IF NOT EXISTS DATETIME;
+          CREATE PROPERTY article.updated IF NOT EXISTS DATETIME;
+          CREATE PROPERTY article.title IF NOT EXISTS STRING;
+          CREATE PROPERTY article.content IF NOT EXISTS STRING;
+          CREATE PROPERTY article.author IF NOT EXISTS STRING;
+          CREATE PROPERTY article.notes IF NOT EXISTS EMBEDDED;
+
+          INSERT INTO article CONTENT {"created": "2021-01-01 00:00:00",
+                  "updated": "2021-01-01 00:00:00",
+                  "title": "My first article",
+                  "content": "This is the content of my first article",
+                  "author": "John Doe"};
+          INSERT INTO article CONTENT {"created": "2021-01-02 00:00:00",
+                  "updated": "2021-01-02 00:00:00",
+                  "title": "My second article",
+                  "content": "This is the content of my second article",
+                  "author": "John Doe"};
+          INSERT INTO article CONTENT {"created": "2021-01-03 00:00:00",
+                  "updated": "2021-01-03 00:00:00",
+                  "title": "My third article",
+                  "content": "This is the content of my third article",
+                  "author": "John Doe"};
+          """);
+    }
+
+    try (final Statement st = conn.createStatement()) {
+      try (final ResultSet rs = st.executeQuery("SELECT * FROM article")) {
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getString("title")).isEqualTo("My first article");
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getString("title")).isEqualTo("My second article");
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getString("title")).isEqualTo("My third article");
+        assertThat(rs.next()).isFalse();
+      }
+
+    }
+  }
 }
