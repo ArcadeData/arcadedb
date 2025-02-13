@@ -94,6 +94,35 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
   }
 
   @Test
+  void testScript() throws Exception {
+    try (final Connection conn = getConnection()) {
+      conn.setAutoCommit(false);
+      try (final Statement st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}create vertex type V IF NOT EXISTS;
+            create vertex V set id = 0, name = 'Jay', lastName = 'Miner';
+            create vertex V set id = 1, name = 'Jay', lastName = 'Miner';
+            create vertex V set id = 2, name = 'Jay', lastName = 'Miner';
+            create vertex V set id = 3, name = 'Jay', lastName = 'Miner';
+            create vertex V set id = 4, name = 'Jay', lastName = 'Miner';
+            create vertex V set id = 5, name = 'Jay', lastName = 'Miner';
+            create vertex V set id = 6, name = 'Jay', lastName = 'Miner';
+            create vertex V set id = 7, name = 'Jay', lastName = 'Miner';
+            create vertex V set id = 8, name = 'Jay', lastName = 'Miner';
+            create vertex V set id = 9, name = 'Jay', lastName = 'Miner';
+            create vertex V set id = 10, name = 'Jay', lastName = 'Miner';
+            """);
+
+        final ResultSet rs = st.executeQuery("{gremlin}g.V().hasLabel('V').order().by('id').limit(10)");
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getInt("id")).isEqualTo(0);
+        assertThat(rs.getString("name")).isEqualTo("Jay");
+        assertThat(rs.getString("lastName")).isEqualTo("Miner");
+      }
+    }
+  }
+
+  @Test
   public void queryVertices() throws Exception {
     final int TOTAL = 1000;
     final long now = System.currentTimeMillis();
