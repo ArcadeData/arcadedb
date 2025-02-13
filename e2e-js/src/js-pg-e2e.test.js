@@ -30,9 +30,7 @@ describe("E2E tests using pg client", () => {
 
   it("should run simple query", async () => {
     const query = "select from Beer limit 10";
-    console.log("Executing query:", query);
     const res = await postgresClient.query(query);
-    console.log("Query executed successfully.", res.rows.length, "rows returned.");
     expect(res.rows.length).toBe(10);
   });
 });
