@@ -52,8 +52,8 @@ function globalNotify(title, message, type) {
       type: type,
       z_index: 100000,
       placement: {
-        from: "bottom",
-        align: "right",
+        from: "top",
+        align: "center",
       },
     },
   );
