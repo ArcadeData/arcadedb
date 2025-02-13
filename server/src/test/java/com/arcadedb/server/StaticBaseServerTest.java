@@ -40,7 +40,6 @@ public abstract class StaticBaseServerTest {
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(DEFAULT_PASSWORD_FOR_TESTS);
     GlobalConfiguration.SERVER_HTTP_IO_THREADS.setValue(2);
-    GlobalConfiguration.TYPE_DEFAULT_BUCKETS.setValue(8);
   }
 
   @BeforeEach
