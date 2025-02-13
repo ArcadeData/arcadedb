@@ -20,3 +20,10 @@ updates:
       interval: weekly
       time: "06:00"
     open-pull-requests-limit: 10
+
+  - package-ecosystem: "npm"
+    directory: "/e2e-js"
+    schedule:
+      interval: weekly
+      time: "07:00"
+    open-pull-requests-limit: 10
