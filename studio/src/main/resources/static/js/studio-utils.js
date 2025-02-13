@@ -47,17 +47,18 @@ function globalNotify(title, message, type) {
     {
       title: "<strong>" + title + "</strong>",
       message: message,
+    },
+    {
+      type: type,
       z_index: 100000,
       placement: {
         from: "bottom",
         align: "right",
       },
     },
-    {
-      type: type,
-    },
   );
 }
+
 
 function globalActivateTab(tab) {
   $('.nav a[href="#' + tab + '"]').tab("show");
