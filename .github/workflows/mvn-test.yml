@@ -29,6 +29,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca # v3.9.0
 
+      - name: Set up Node
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: "22"
+
       - name: Set up JDK 17
         uses: actions/setup-java@3a4f6e1af504cf6a31855fa899c6aa5355ba6c12 # v4.7.0
         with:
@@ -46,9 +51,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: E2E Test
+      - name: E2E Tests
         if: success()
         run: ./mvnw verify -pl e2e
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: E2E Node.js Tests
+        if: success()
+        working-directory: e2e-js
+        run: |
+          npm install
+          npm test
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
