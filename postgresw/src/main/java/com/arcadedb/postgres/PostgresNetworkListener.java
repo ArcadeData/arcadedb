@@ -24,9 +24,14 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ha.network.ServerSocketFactory;
 
-import java.io.*;
-import java.net.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.net.BindException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketException;
+import java.util.logging.Level;
 
 public class PostgresNetworkListener extends Thread {
   private final    ArcadeDBServer      server;
@@ -39,7 +44,8 @@ public class PostgresNetworkListener extends Thread {
     void connected();
   }
 
-  public PostgresNetworkListener(final ArcadeDBServer server, final ServerSocketFactory iSocketFactory, final String hostName, final String hostPortRange) {
+  public PostgresNetworkListener(final ArcadeDBServer server, final ServerSocketFactory iSocketFactory, final String hostName,
+      final String hostPortRange) {
     super(server.getServerName() + " PostgresW listening at " + hostName + ":" + hostPortRange);
 
     this.server = server;
@@ -108,7 +114,8 @@ public class PostgresNetworkListener extends Thread {
 
         if (serverSocket.isBound()) {
           LogManager.instance().log(this, Level.INFO,
-              "Listening for incoming connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":" + inboundAddr.getPort() + "} (protocol v."
+              "Listening for incoming connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":"
+                  + inboundAddr.getPort() + "} (protocol v."
                   + protocolVersion + ")");
 
           return;
@@ -124,9 +131,12 @@ public class PostgresNetworkListener extends Thread {
       }
     }
 
-    LogManager.instance().log(this, Level.SEVERE, "Unable to listen for connections using the configured ports '%s' on host '%s'", hostPortRange, hostName);
+    LogManager.instance()
+        .log(this, Level.SEVERE, "Unable to listen for connections using the configured ports '%s' on host '%s'", hostPortRange,
+            hostName);
 
-    throw new ServerException("Unable to listen for connections using the configured ports '" + hostPortRange + "' on host '" + hostName + "'");
+    throw new ServerException(
+        "Unable to listen for connections using the configured ports '" + hostPortRange + "' on host '" + hostName + "'");
   }
 
   private static int[] getPorts(final String iHostPortRange) {
