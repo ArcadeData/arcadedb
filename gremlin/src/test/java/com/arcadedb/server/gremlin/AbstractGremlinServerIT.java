@@ -55,7 +55,7 @@ public abstract class AbstractGremlinServerIT extends BaseGraphServerTest {
           FileUtils.readStreamAsString(getClass().getClassLoader().getResourceAsStream("gremlin-server.groovy"), "utf8"));
 
       GlobalConfiguration.SERVER_PLUGINS.setValue("GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin");
-      GlobalConfiguration.TYPE_DEFAULT_BUCKETS.setValue(8);
+
     } catch (final IOException e) {
       fail("", e);
     }

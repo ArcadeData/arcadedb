@@ -153,11 +153,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
         final int id = i;
         executorService.submit(() -> {
           try (final ArcadeGraph graph = pool.get()) {
-            graph.traversal()
-                .addV("Country")
-                .property("id", id)
-                .property("country", "USA")
-                .property("code", id).iterate();
+            graph.traversal().addV("Country").property("id", id).property("country", "USA").property("code", id).iterate();
           }
         });
       }
@@ -165,8 +161,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
       executorService.awaitTermination(60, TimeUnit.SECONDS);
 
       try (final ArcadeGraph graph = pool.get()) {
-        Long country = graph.traversal().V().hasLabel("Country").count().toList().get(0);
-        assertThat(country > 800).isTrue();
+        assertThat(graph.traversal().V().hasLabel("Country").count().toList().get(0) > 800).isTrue();
       }
     }
   }
