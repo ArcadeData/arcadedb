@@ -490,7 +490,8 @@ function executeCommandGraph() {
   let language = escapeHtml($("#inputLanguage").val());
 
   let command = editor.getSelection();
-  if (command == null || command.length <= 4 ) command = editor.getValue();
+
+  if (command == null || command.length <= 4) command = editor.getValue();
   command = escapeHtml(command);
 
   let limit = parseInt($("#inputLimit").val());
