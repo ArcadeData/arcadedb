@@ -430,6 +430,14 @@ public enum Type {
           return Set.of(value);
         }
 
+      } else if (targetClass.equals(EmbeddedDocument.class)) {
+        if (value instanceof Map map) {
+          final DocumentType embeddedType = database.getSchema().getType((String) map.get("@type"));
+          return new MutableEmbeddedDocument(database, embeddedType, null);
+        } else
+          throw new IllegalArgumentException(
+              "Cannot convert object of type '" + value.getClass().getName() + "' into an EmbeddedDocument");
+
       } else if (targetClass.equals(Date.class)) {
         return convertToDate(database, value);
       } else if (targetClass.equals(Calendar.class)) {
