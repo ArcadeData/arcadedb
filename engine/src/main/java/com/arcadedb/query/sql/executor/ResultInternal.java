@@ -128,7 +128,9 @@ public class ResultInternal implements Result {
     else
       result = null;
 
-    if (!(result instanceof Record) && result instanceof Identifiable identifiable && identifiable.getIdentity() != null)
+    if (!(result instanceof Record) &&
+        result instanceof Identifiable identifiable &&
+        identifiable.getIdentity() != null)
       result = (T) identifiable.getIdentity();
 
     return result;

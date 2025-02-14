@@ -20,11 +20,15 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.DetachedDocument;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.ImmutableDocument;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.schema.Property;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -118,7 +122,7 @@ public class Projection extends SimpleNode {
             if (excludes.contains(alias) ||
                 (doc.getType().existsProperty(alias) &&
                     doc.getType().getProperty(alias).isHidden())) {
-              continue;
+             continue;
             }
           }
           Object value = item.convert(record.getProperty(alias));
@@ -135,6 +139,9 @@ public class Projection extends SimpleNode {
           if (!excludes.contains("@type")) {
             result.setProperty("@type", doc.getType().getName());
           }
+
+          Document detached = doc.detach(true);
+          result.setElement(detached);
         });
       } else {
         result.setProperty(item.getProjectionAliasAsString(), item.execute(record, context));

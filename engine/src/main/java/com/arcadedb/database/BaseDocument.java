@@ -47,8 +47,14 @@ public abstract class BaseDocument extends BaseRecord implements Document, Seria
     return this;
   }
 
+  @Override
   public DetachedDocument detach() {
     return new DetachedDocument(this);
+  }
+
+  @Override
+  public DetachedDocument detach(boolean filterHiddenProperties) {
+    return new DetachedDocument(this, filterHiddenProperties);
   }
 
   @Override

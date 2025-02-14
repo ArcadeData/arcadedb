@@ -38,7 +38,7 @@ import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class SerializerTest extends TestHelper {
+public class BinarySerializerTest extends TestHelper {
 
   @Test
   public void testVarNumber() {

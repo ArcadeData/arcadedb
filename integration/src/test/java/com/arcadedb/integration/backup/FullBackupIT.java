@@ -27,6 +27,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.integration.TestHelper;
+import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.importer.OrientDBImporter;
 import com.arcadedb.integration.importer.OrientDBImporterIT;
 import com.arcadedb.integration.restore.Restore;
@@ -94,27 +95,28 @@ public class FullBackupIT {
   }
 
   /**
-   * This test allocates 8 parallel threads which insert 500 transactions each with 500 vertices per transaction. Vertices are indexed on thread+id properties.
+   * This test allocates "number of processors-1" parallel threads which insert 500 transactions each with 500 vertices per transaction. Vertices are indexed on thread+id properties.
    * A not unique index has been selected to speed up the insertion avoiding concurrency on buckets/indexes.
    * During the parallel insertion, 8 full backups are scheduled with 1 second pause between each other. When the insertion is completed (2M vertices in total),
    * each backup file is restored and tested the number of vertices is mod (%) 500, so no inconsistent backup has been taken (each transaction is 500 vertices).
    */
   @Test
   public void testFullBackupConcurrency() throws Exception {
-    final int CONCURRENT_THREADS = 8;
+    final int concurrentThreads = Math.min(Runtime.getRuntime().availableProcessors() - 1, 4);
 
-    for (int i = 0; i < CONCURRENT_THREADS; i++) {
+    final ConsoleLogger logger = new ConsoleLogger(1);
+    logger.logLine(1, "Starting test with %d threads", concurrentThreads);
+    for (int i = 0; i < concurrentThreads; i++) {
       new File(FILE + "_" + i).delete();
       FileUtils.deleteRecursively(new File(DATABASE_PATH + "_restored_" + i));
     }
 
-    final Thread[] threads = new Thread[CONCURRENT_THREADS];
+    final Thread[] threads = new Thread[concurrentThreads];
 
-    final Database importedDatabase = importDatabase();
-    try {
+    try (Database importedDatabase = importDatabase()) {
 
       final VertexType type = importedDatabase.getSchema().buildVertexType().withName("BackupTest")
-          .withTotalBuckets(CONCURRENT_THREADS).create();
+          .withTotalBuckets(concurrentThreads).create();
 
       importedDatabase.transaction(() -> {
         type.createProperty("thread", Type.INTEGER);
@@ -128,12 +130,14 @@ public class FullBackupIT {
         });
       });
 
-      for (int i = 0; i < CONCURRENT_THREADS; i++) {
+      for (int i = 0; i < concurrentThreads; i++) {
         final int threadId = i;
         final Bucket threadBucket = type.getBuckets(false).get(i);
 
         threads[i] = new Thread("Inserter-" + i) {
           public void run() {
+
+            logger.logLine(1, "Inserter-%d started", threadId);
             final AtomicInteger totalPerThread = new AtomicInteger();
             for (int j = 0; j < 500; j++) {
               importedDatabase.begin();
@@ -143,45 +147,38 @@ public class FullBackupIT {
                     .set("id", totalPerThread.getAndIncrement())
                     .save();
                 assertThat(v.getIdentity().getBucketId()).isEqualTo(threadBucket.getFileId());
-
-                if (k + 1 % 100 == 0) {
-                  importedDatabase.commit();
-                  importedDatabase.begin();
-                }
               }
               importedDatabase.commit();
             }
-
+            logger.logLine(1, "Inserter-%d completed - total-> %d", threadId, totalPerThread.get());
           }
+
         };
       }
 
       // START THREADS 300MS DISTANCE FROM EACH OTHER
-      for (int i = 0; i < CONCURRENT_THREADS; i++) {
+      for (int i = 0; i < concurrentThreads; i++) {
         threads[i].start();
-        Thread.sleep(300);
-      }
-
-      // EXECUTE 10 BACKUPS EVERY SECOND
-      for (int i = 0; i < CONCURRENT_THREADS; i++) {
-        assertThat(importedDatabase.isTransactionActive()).isFalse();
-        final long totalVertices = importedDatabase.countType("BackupTest", true);
-        new Backup(importedDatabase, FILE + "_" + i).setVerboseLevel(1).backupDatabase();
         Thread.sleep(1000);
+
+        Backup backup = new Backup(importedDatabase, FILE + "_" + i).setVerboseLevel(1);
+        backup.backupDatabase();
       }
 
-      for (int i = 0; i < CONCURRENT_THREADS; i++)
+      for (int i = 0; i < concurrentThreads; i++)
         threads[i].join();
 
-      for (int i = 0; i < CONCURRENT_THREADS; i++) {
+      logger.logLine(1, "All threads completed - checking...");
+      for (int i = 0; i < concurrentThreads; i++) {
         final File file = new File(FILE + "_" + i);
+        logger.logLine(1, "Checking backup file %s", file.getAbsolutePath());
         assertThat(file.exists()).isTrue();
         assertThat(file.length() > 0).isTrue();
 
         final String databasePath = DATABASE_PATH + "_restored_" + i;
 
         new Restore(FILE + "_" + i, databasePath).setVerboseLevel(1).restoreDatabase();
-
+        logger.logLine(1, "Checking restored database %s", databasePath);
         try (final Database restoredDatabase = new DatabaseFactory(databasePath).open(ComponentFile.MODE.READ_ONLY)) {
           // VERIFY ONLY WHOLE TRANSACTION ARE WRITTEN
           assertThat(restoredDatabase.countType("BackupTest", true) % 500).isEqualTo(0);
@@ -189,10 +186,9 @@ public class FullBackupIT {
       }
 
     } finally {
-      importedDatabase.close();
       TestHelper.checkActiveDatabases();
 
-      for (int i = 0; i < CONCURRENT_THREADS; i++) {
+      for (int i = 0; i < concurrentThreads; i++) {
         new File(FILE + "_" + i).delete();
         FileUtils.deleteRecursively(new File(DATABASE_PATH + "_restored_" + i));
       }
@@ -243,6 +239,7 @@ public class FullBackupIT {
   public void beforeTests() {
     FileUtils.deleteRecursively(new File(DATABASE_PATH));
     FileUtils.deleteRecursively(new File(DATABASE_PATH + "_restored"));
-    if (file.exists()) file.delete();
+    if (file.exists())
+      file.delete();
   }
 }

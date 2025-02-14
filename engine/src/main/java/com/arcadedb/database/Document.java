@@ -40,6 +40,8 @@ public interface Document extends Record {
 
   DetachedDocument detach();
 
+  DetachedDocument detach(boolean filterHiddenProperties);
+
   boolean has(String propertyName);
 
   Object get(String propertyName);

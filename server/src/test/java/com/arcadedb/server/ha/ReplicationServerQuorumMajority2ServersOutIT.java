@@ -82,15 +82,15 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
     return new int[] {};
   }
 
-  protected void checkEntriesOnServer(final int serverIndex) {
-    final Database db = getServerDatabase(serverIndex, getDatabaseName());
+  protected void checkEntriesOnServer(final int server) {
+    final Database db = getServerDatabase(server, getDatabaseName());
     db.begin();
     try {
-      assertThat(1 + getTxs() * getVerticesPerTx() > db.countType(VERTEX1_TYPE_NAME, true)).as("Check for vertex count for server" + serverIndex).isTrue();
+      assertThat(1 + getTxs() * getVerticesPerTx() > db.countType(VERTEX1_TYPE_NAME, true)).as("Check for vertex count for server" + server).isTrue();
 
     } catch (final Exception e) {
       e.printStackTrace();
-      fail("Error on checking on server" + serverIndex);
+      fail("Error on checking on server" + server);
     }
   }
 
