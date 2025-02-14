@@ -23,6 +23,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TrackableBinary;
+import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
@@ -113,6 +114,8 @@ public class LSMTreeIndexCompactor {
     LogManager.instance().log(mainIndex, Level.WARNING, "- Compacting pages 0-%d (threadId=%d)", null, lastImmutablePage,
         Thread.currentThread().getId());
 
+    final Set<TransactionIndexContext.ComparableKey> removedKeys = new HashSet<>();
+
     for (int pageIndex = 0; pageIndex <= lastImmutablePage; ) {
       final long totalRAMNeeded = (lastImmutablePage - pageIndex + 1L) * mutableIndex.getPageSize();
 
@@ -140,7 +143,7 @@ public class LSMTreeIndexCompactor {
 
       final LSMTreeIndexUnderlyingPageCursor[] iterators = new LSMTreeIndexUnderlyingPageCursor[pagesToCompact];
       for (int i = 0; i < pagesToCompact; ++i)
-        iterators[i] = mutableIndex.newPageIterator(pageIndex + i, -1, true);
+        iterators[i] = mutableIndex.newPageIterator(pageIndex + i, -1, true, removedKeys);
 
       final Object[][] keys = new Object[pagesToCompact][keyTypes.length];
 
@@ -219,17 +222,18 @@ public class LSMTreeIndexCompactor {
             }
 
             // CHECK IF THE NEXT ELEMENT HAS THE SAME KEY
+            keys[idx] = null;
             if (iter.hasNext()) {
               iter.next();
               keys[idx] = iter.getKeys();
+            }
 
+            if (keys[idx] != null) {
               if (LSMTreeIndexMutable.compareKeys(comparator, keyTypes, keys[idx], minorKey) != 0)
                 break;
-
             } else {
               iterators[idx].close();
               iterators[idx] = null;
-              keys[idx] = null;
               break;
             }
           }
@@ -328,12 +332,13 @@ public class LSMTreeIndexCompactor {
 
     final LSMTreeIndexMutable newIndex = mainIndex.splitIndex(lastImmutablePage + 1, compactedIndex);
 
-    LogManager.instance().log(mainIndex, Level.WARNING, "Index '%s' compacted in %dms (keys=%d values=%d mutablePages=%d immutablePages=%d iterations=%d oldLevel0File=%s(%d) newLevel0File=%s(%d) newLevel1File=%s(%d) threadId=%d)".formatted(
-      mainIndex.getName(), (System.currentTimeMillis() - startTime), totalKeys, totalValues, newIndex.getTotalPages(),
-      compactedIndex.getTotalPages(),
-      iterations, oldMutableFileName, oldMutableFileId, mainIndex.getMutableIndex().getName(),
-      mainIndex.getMutableIndex().getFileId(),
-      compactedIndex.getName(), compactedIndex.getFileId(), Thread.currentThread().getId()));
+    LogManager.instance().log(mainIndex, Level.WARNING,
+        "Index '%s' compacted in %dms (keys=%d values=%d mutablePages=%d immutablePages=%d iterations=%d oldLevel0File=%s(%d) newLevel0File=%s(%d) newLevel1File=%s(%d) threadId=%d)".formatted(
+            mainIndex.getName(), (System.currentTimeMillis() - startTime), totalKeys, totalValues, newIndex.getTotalPages(),
+            compactedIndex.getTotalPages(),
+            iterations, oldMutableFileName, oldMutableFileId, mainIndex.getMutableIndex().getName(),
+            mainIndex.getMutableIndex().getFileId(),
+            compactedIndex.getName(), compactedIndex.getFileId(), Thread.currentThread().getId()));
 
     if (debug) {
       System.out.println("AFTER COMPACTING:");

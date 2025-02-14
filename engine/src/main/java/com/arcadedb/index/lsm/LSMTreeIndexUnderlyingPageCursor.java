@@ -20,6 +20,7 @@ package com.arcadedb.index.lsm;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.PageId;
 
@@ -38,9 +39,9 @@ public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbst
   protected RID[]    nextValue;
 
   public LSMTreeIndexUnderlyingPageCursor(final LSMTreeIndexAbstract index, final BasePage page, final int currentEntryInPage,
-      final int keyStartPosition,
-      final byte[] keyTypes, final int totalKeys, final boolean ascendingOrder) {
-    super(index, keyTypes, totalKeys, ascendingOrder);
+      final int keyStartPosition, final byte[] keyTypes, final int totalKeys, final boolean ascendingOrder,
+      final Set<TransactionIndexContext.ComparableKey> removedKeys) {
+    super(index, keyTypes, totalKeys, ascendingOrder, removedKeys);
 
     this.keyStartPosition = keyStartPosition;
     this.pageId = page.getPageId();
@@ -61,7 +62,10 @@ public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbst
   }
 
   public Object[] getKeys() {
-    while (currentEntryIndex < totalKeys) {
+    if (nextKeys != null)
+      return nextKeys;
+
+    while (ascendingOrder ? currentEntryIndex < totalKeys : currentEntryIndex > -1) {
       if (nextKeys != null)
         return nextKeys;
 
@@ -114,8 +118,16 @@ public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbst
 
       final RID[] rids = getValue();
 
+      final TransactionIndexContext.ComparableKey key = new TransactionIndexContext.ComparableKey(nextKeys);
       if (rids[rids.length - 1].getBucketId() < 0) {
-        // NOT VALID
+        // DELETED
+        removedKeys.add(key);
+        nextKeys = null;
+        next();
+        continue;
+      }
+
+      if (removedKeys.contains(key)) {
         nextKeys = null;
         next();
       }
