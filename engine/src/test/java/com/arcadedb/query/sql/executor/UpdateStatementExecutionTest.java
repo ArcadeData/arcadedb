@@ -125,7 +125,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
       assertThat(result.hasNext()).isTrue();
       item = result.next();
       assertThat(item).isNotNull();
-      assertThat(item.<String>getProperty("surname")).isEqualTo( item.getProperty("name"));
+      assertThat(item.<String>getProperty("surname")).isEqualTo(item.getProperty("name"));
     }
     assertThat(result.hasNext()).isFalse();
     result.close();
@@ -184,7 +184,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
     assertThat(result.hasNext()).isTrue();
     Result item = result.next();
     assertThat(item).isNotNull();
-    assertThat(item.<Long>getProperty("count")).isEqualTo( 1L);
+    assertThat(item.<Long>getProperty("count")).isEqualTo(1L);
     assertThat(result.hasNext()).isFalse();
     result.close();
 
@@ -371,7 +371,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
       assertThat(item.getProperty("name").toString().endsWith("foo")).isTrue(); // test concatenate string to string
       assertThat(item.getProperty("name").toString().length()).isEqualTo(8);
       assertThat(item.<String>getProperty("newField")).isEqualTo("bar"); // test concatenate null to string
-      assertThat(item.<Long>getProperty("number")).isEqualTo( 9L); // test sum numbers
+      assertThat(item.<Long>getProperty("number")).isEqualTo(9L); // test sum numbers
     }
     assertThat(result.hasNext()).isFalse();
     result.close();
@@ -791,12 +791,11 @@ public class UpdateStatementExecutionTest extends TestHelper {
     });
 
     String processor = "SIR1LRM-7.1";
-    String status = "PENDING";
     for (int i = 0; i < 2; i++) {
       int id = i + 1;
       database.transaction(() -> {
         String sqlString = "INSERT INTO Order SET id = ?, status = ?, processor = ?";
-        try (ResultSet resultSet1 = database.command("sql", sqlString, id, status, processor)) {
+        try (ResultSet resultSet1 = database.command("sql", sqlString, id, "PENDING", processor)) {
         }
       });
     }
@@ -809,9 +808,9 @@ public class UpdateStatementExecutionTest extends TestHelper {
     });
     // select records with status = 'PENDING'
     database.transaction(() -> {
-      Object[] parameters2 = { "PENDING" };
       String sqlString = "SELECT id, processor, status FROM Order WHERE status = ?";
-      try (ResultSet resultSet1 = database.query("sql", sqlString, parameters2)) {
+      try (ResultSet resultSet1 = database.query("sql", sqlString, "PENDING")) {
+        assertThat(resultSet1.hasNext()).isTrue();
         final Result record = resultSet1.next();
         assertThat(record.<String>getProperty("status")).isEqualTo("PENDING");
         assertThat(record.<String>getProperty("id")).isEqualTo("2");

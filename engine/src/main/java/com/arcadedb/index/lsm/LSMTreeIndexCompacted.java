@@ -22,6 +22,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TrackableBinary;
+import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
@@ -75,10 +76,8 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     try {
       final Set<IndexCursorEntry> set = new HashSet<>();
 
-      final Set<RID> removedRIDs = new HashSet<>();
-
       // SEARCH IN COMPACTED INDEX
-      searchInCompactedIndex(keys, convertedKeys, limit, set, removedRIDs);
+      searchInCompactedIndex(keys, convertedKeys, limit, set, new HashSet<>());
 
       return set;
 
@@ -333,7 +332,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
   protected void searchInCompactedIndex(final Object[] originalKeys, final Object[] convertedKeys, final int limit,
       final Set<IndexCursorEntry> set,
-      final Set<RID> removedRIDs) throws IOException {
+      final Set<TransactionIndexContext.ComparableKey> removedKeys) throws IOException {
     // JUMP TO ROOT PAGES BEFORE LOADING THE PAGE WITH THE KEY/VALUES
     final BasePage mainPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), 0), pageSize);
     final int mainPageCount = getCompactedPageNumberOfSeries(mainPage);
@@ -404,7 +403,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
         final int count = getCount(currentPage);
 
         if (!lookupInPageAndAddInResultset(currentPage, currentPageBuffer, count, originalKeys, convertedKeys, limit, set,
-            removedRIDs))
+            removedKeys))
           return;
       }
 
