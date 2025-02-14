@@ -47,14 +47,14 @@ function globalNotify(title, message, type) {
     {
       title: "<strong>" + title + "</strong>",
       message: message,
-      z_index: 100000,
-      placement: {
-        from: "bottom",
-        align: "right",
-      },
     },
     {
       type: type,
+      z_index: 100000,
+      placement: {
+        from: "top",
+        align: "center",
+      },
     },
   );
 }
