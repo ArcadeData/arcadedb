@@ -39,11 +39,13 @@ public class TransactionIndexContext {
   private       Map<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries = new LinkedHashMap<>(); // MOST COMMON USE CASE INSERTION IS ORDERED, USE AN ORDERED MAP TO OPTIMIZE THE INDEX
 
   public static class IndexKey {
+    public final boolean  unique;
     public final boolean  addOperation;
     public final Object[] keyValues;
     public final RID      rid;
 
-    public IndexKey(final boolean addOperation, final Object[] keyValues, final RID rid) {
+    public IndexKey(final boolean unique, final boolean addOperation, final Object[] keyValues, final RID rid) {
+      this.unique = unique;
       this.addOperation = addOperation;
       this.keyValues = keyValues;
       this.rid = rid;
@@ -56,14 +58,16 @@ public class TransactionIndexContext {
       if (!(o instanceof IndexKey))
         return false;
       final IndexKey indexKey = (IndexKey) o;
-      return Arrays.equals(keyValues, indexKey.keyValues) && Objects.equals(rid, indexKey.rid);
+      if (unique)
+        return Arrays.equals(keyValues, indexKey.keyValues);
+      return Objects.equals(rid, indexKey.rid) && Arrays.equals(keyValues, indexKey.keyValues);
     }
 
     @Override
     public int hashCode() {
-      int result = Objects.hash(rid);
-      result = 31 * result + Arrays.hashCode(keyValues);
-      return result;
+      if (unique)
+        return Objects.hash(Arrays.hashCode(keyValues));
+      return Objects.hash(rid, Arrays.hashCode(keyValues));
     }
 
     @Override
@@ -255,7 +259,7 @@ public class TransactionIndexContext {
     TreeMap<ComparableKey, Map<IndexKey, IndexKey>> keys = indexEntries.get(indexName);
 
     final ComparableKey k = new ComparableKey(keysValues);
-    final IndexKey v = new IndexKey(addOperation, keysValues, rid);
+    final IndexKey v = new IndexKey(index.isUnique(), addOperation, keysValues, rid);
 
     Map<IndexKey, IndexKey> values;
     if (keys == null) {
@@ -344,7 +348,8 @@ public class TransactionIndexContext {
           } catch (final RecordNotFoundException e) {
             // INDEX DIRTY, THE RECORD WA DELETED, REMOVE THE ENTRY IN THE INDEX TO FIX IT
             LogManager.instance()
-                .log(this, Level.WARNING, "Found entry in index '%s' with key %s pointing to the deleted record %s. Overriding it.", idx.getName(),
+                .log(this, Level.WARNING, "Found entry in index '%s' with key %s pointing to the deleted record %s. Overriding it.",
+                    idx.getName(),
                     Arrays.toString(key.keyValues), firstEntry.getIdentity());
 
             idx.remove(key.keyValues);
