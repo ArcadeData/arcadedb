@@ -28,6 +28,7 @@ import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.index.Index;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.BinaryTypes;
@@ -95,7 +96,8 @@ public class TxForwardRequest extends TxRequestAbstract {
       tx.commitFromReplica(walTx, keysTx, bucketRecordDelta);
 
       if (db.isTransactionActive())
-        throw new ReplicationException("Error on committing transaction in database '" + databaseName + "': a nested transaction occurred");
+        throw new ReplicationException(
+            "Error on committing transaction in database '" + databaseName + "': a nested transaction occurred");
 
     } catch (final NeedRetryException | TransactionException e) {
       return new ErrorResponse(e);
@@ -167,6 +169,8 @@ public class TxForwardRequest extends TxRequestAbstract {
     for (int indexIdx = 0; indexIdx < totalIndexes; ++indexIdx) {
       final String indexName = uniqueKeysBuffer.getString();
 
+      final Index index = database.getSchema().getIndexByName(indexName);
+
       final int totalIndexEntries = (int) uniqueKeysBuffer.getUnsignedNumber();
 
       final TreeMap<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> indexMap = new TreeMap<>();
@@ -191,7 +195,8 @@ public class TxForwardRequest extends TxRequestAbstract {
 
           final RID rid = new RID(database, (int) uniqueKeysBuffer.getUnsignedNumber(), uniqueKeysBuffer.getUnsignedNumber());
 
-          final TransactionIndexContext.IndexKey v = new TransactionIndexContext.IndexKey(addOperation, keyValues, rid);
+          final TransactionIndexContext.IndexKey v = new TransactionIndexContext.IndexKey(index.isUnique(), addOperation, keyValues,
+              rid);
           values.put(v, v);
         }
       }
