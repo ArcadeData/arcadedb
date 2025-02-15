@@ -278,7 +278,7 @@ public class TransactionIndexContext {
           // CHECK IMMEDIATELY (INSTEAD OF AT COMMIT TIME) FOR DUPLICATED KEY IN CASE 2 ENTRIES WITH THE SAME KEY ARE SAVED IN TX.
           final IndexKey entry = values.get(v);
           if (entry != null && entry.addOperation && !entry.rid.equals(rid))
-            throw new DuplicatedKeyException(indexName, Arrays.toString(keysValues), null);
+            throw new DuplicatedKeyException(indexName, Arrays.toString(keysValues), entry.rid);
         }
 
         // REPLACE EXISTENT WITH THIS
