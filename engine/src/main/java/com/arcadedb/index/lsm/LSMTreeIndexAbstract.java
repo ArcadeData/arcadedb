@@ -547,6 +547,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
         }
 
         if (removedKeys.contains(keys))
+          // HAS BEEN DELETED
           continue;
 
         set.add(new IndexCursorEntry(originalKeys, rid, 1));
