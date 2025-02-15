@@ -20,25 +20,23 @@ package com.arcadedb.index.lsm;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.index.IndexException;
 
 import java.io.*;
-import java.util.*;
 
 public class LSMTreeIndexUnderlyingCompactedSeriesCursor extends LSMTreeIndexUnderlyingAbstractCursor {
   private final int                              lastPageNumber;
   private       LSMTreeIndexUnderlyingPageCursor pageCursor;
 
   public LSMTreeIndexUnderlyingCompactedSeriesCursor(final LSMTreeIndexCompacted index, final int firstPageNumber,
-      final int lastPageNumber, final byte[] keyTypes, final boolean ascendingOrder, final int posInPage,
-      final Set<TransactionIndexContext.ComparableKey> removedKeys) {
-    super(index, keyTypes, keyTypes.length, ascendingOrder, removedKeys);
+      final int lastPageNumber,
+      final byte[] keyTypes, final boolean ascendingOrder, final int posInPage) {
+    super(index, keyTypes, keyTypes.length, ascendingOrder);
     this.lastPageNumber = lastPageNumber;
 
-    loadNextNonEmptyPage(firstPageNumber, posInPage, removedKeys);
+    loadNextNonEmptyPage(firstPageNumber, posInPage);
   }
 
   @Override
@@ -51,13 +49,12 @@ public class LSMTreeIndexUnderlyingCompactedSeriesCursor extends LSMTreeIndexUnd
 
     final int nextPage = pageCursor.pageId.getPageNumber() + (ascendingOrder ? 1 : -1);
 
-    loadNextNonEmptyPage(nextPage, -1, removedKeys);
+    loadNextNonEmptyPage(nextPage, -1);
 
     return pageCursor.hasNext();
   }
 
-  private void loadNextNonEmptyPage(final int startingPageNumber, int posInPage,
-      final Set<TransactionIndexContext.ComparableKey> removedKeys) {
+  private void loadNextNonEmptyPage(final int startingPageNumber, int posInPage) {
     // LOAD NEXT PAGE IF NEEDED
     for (int currentPageNumber = startingPageNumber; ascendingOrder ?
         currentPageNumber <= lastPageNumber :
@@ -69,7 +66,7 @@ public class LSMTreeIndexUnderlyingCompactedSeriesCursor extends LSMTreeIndexUnd
         final int count = index.getCount(page);
 
         pageCursor = new LSMTreeIndexUnderlyingPageCursor(index, page, posInPage == -1 ? ascendingOrder ? -1 : count : posInPage,
-            index.getHeaderSize(currentPageNumber), keyTypes, count, ascendingOrder, removedKeys);
+            index.getHeaderSize(currentPageNumber), keyTypes, count, ascendingOrder);
 
         if (pageCursor.hasNext())
           break;

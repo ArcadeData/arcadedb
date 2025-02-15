@@ -55,7 +55,6 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   private final       AtomicLong            statsAdjacentSteps  = new AtomicLong();
   private             int                   minPagesToScheduleACompaction;
   private             int                   currentMutablePages = 0;
-  ;
 
   /**
    * Called at creation time.
@@ -204,10 +203,10 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   }
 
   public LSMTreeIndexUnderlyingPageCursor newPageIterator(final int pageId, final int currentEntryInPage,
-      final boolean ascendingOrder, final Set<TransactionIndexContext.ComparableKey> removedKeys) throws IOException {
+      final boolean ascendingOrder) throws IOException {
     final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
     return new LSMTreeIndexUnderlyingPageCursor(this, page, currentEntryInPage, getHeaderSize(pageId), binaryKeyTypes,
-        getCount(page), ascendingOrder, removedKeys);
+        getCount(page), ascendingOrder);
   }
 
   public LSMTreeIndexCompacted getSubIndex() {

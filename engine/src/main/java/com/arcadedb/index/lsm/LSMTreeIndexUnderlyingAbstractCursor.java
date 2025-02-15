@@ -19,28 +19,22 @@
 package com.arcadedb.index.lsm;
 
 import com.arcadedb.database.RID;
-import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.serializer.BinarySerializer;
 
-import java.util.*;
-
 public abstract class LSMTreeIndexUnderlyingAbstractCursor {
-  protected final LSMTreeIndexAbstract                       index;
-  protected final byte[]                                     keyTypes;
-  protected final BinarySerializer                           serializer;
-  protected final int                                        totalKeys;
-  protected final boolean                                    ascendingOrder;
-  protected final Set<TransactionIndexContext.ComparableKey> removedKeys;
+  protected final LSMTreeIndexAbstract index;
+  protected final byte[]               keyTypes;
+  protected final BinarySerializer     serializer;
+  protected final int                  totalKeys;
+  protected final boolean              ascendingOrder;
 
-  public LSMTreeIndexUnderlyingAbstractCursor(final LSMTreeIndexAbstract index, final byte[] keyTypes, final int totalKeys,
-      final boolean ascendingOrder, final Set<TransactionIndexContext.ComparableKey> removedKeys) {
+  public LSMTreeIndexUnderlyingAbstractCursor(final LSMTreeIndexAbstract index, final byte[] keyTypes, final int totalKeys, final boolean ascendingOrder) {
     this.index = index;
     this.keyTypes = keyTypes;
     this.serializer = index.getDatabase().getSerializer();
     this.totalKeys = totalKeys;
     this.ascendingOrder = ascendingOrder;
-    this.removedKeys = removedKeys;
   }
 
   public abstract boolean hasNext();
@@ -56,6 +50,6 @@ public abstract class LSMTreeIndexUnderlyingAbstractCursor {
   public abstract int getCurrentPositionInPage();
 
   public void close() {
-    removedKeys.clear();
+    // EMPTY METHOD
   }
 }
