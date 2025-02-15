@@ -61,7 +61,7 @@ public class HTTPGraphConcurrentIT extends BaseGraphServerTest {
               final JSONObject responseAsJson = executeCommand(serverIndex, "sqlscript", //
                   "BEGIN ISOLATION REPEATABLE_READ;" //
                       + "LET photo = CREATE vertex Photos" + serverIndex + " SET id = uuid(), name = \"downloadX.jpg\";" //
-                      + "LET user = SELECT * FROM Users" + serverIndex + " WHERE id = \"u1111\";" //
+                      + "LET user = SELECT FROM Users" + serverIndex + " WHERE id = \"u1111\";" //
                       + "LET userEdge = Create edge HasUploaded" + serverIndex + " FROM $user to $photo set type = \"User_Photos\";"
                       //
                       + "commit retry 100;return $photo;");
