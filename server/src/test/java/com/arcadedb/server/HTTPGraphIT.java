@@ -500,7 +500,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       executeCommand(serverIndex, "sqlscript", //
           "BEGIN;" //
               + "LET photo = CREATE vertex Photos SET id = \"p12345\", name = \"download1.jpg\";" //
-              + "LET user = SELECT * FROM Users WHERE id = \"u1111\";" //
+              + "LET user = SELECT FROM Users WHERE id = \"u1111\";" //
               + "LET userEdge = Create edge HasUploaded FROM $user to $photo set type = \"User_Photos\";" //
               + "SLEEP randomInt( 500 );" //
               + "commit retry 30;return $photo;");
@@ -508,13 +508,13 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       executeCommand(serverIndex, "sqlscript", //
           "BEGIN;" //
               + "LET photo = CREATE vertex Photos SET id = \"p2222\", name = \"download2.jpg\";" //
-              + "LET user = SELECT * FROM Users WHERE id = \"u1111\";" //
+              + "LET user = ( SELECT FROM Users WHERE id = \"u1111\" );" //
               + "LET userEdge = Create edge HasUploaded FROM $user to $photo set type = \"User_Photos\";" //
               + "commit retry 30;return $photo;");
 
       executeCommand(serverIndex, "sqlscript", // //
           "BEGIN;" + "LET photo = CREATE vertex Photos SET id = \"p5555\", name = \"download3.jpg\";" //
-              + "LET user = SELECT * FROM Users WHERE id = \"u1111\";" //
+              + "LET user = ( SELECT FROM Users WHERE id = \"u1111\" );" //
               + "LET userEdge = Create edge HasUploaded FROM $user to $photo set type = \"User_Photos\";" //
               + "commit retry 30;return $photo;");
 
@@ -544,7 +544,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
               final JSONObject responseAsJson = executeCommand(serverIndex, "sqlscript", //
                   "BEGIN ISOLATION REPEATABLE_READ;" //
                       + "LET photo = CREATE vertex Photos SET id = uuid(), name = \"downloadX.jpg\";" //
-                      + "LET user = SELECT * FROM Users WHERE id = \"u1111\";" //
+                      + "LET user = SELECT FROM Users WHERE id = \"u1111\";" //
                       + "LET userEdge = Create edge HasUploaded FROM $user to $photo set type = \"User_Photos\";" //
                       + "commit retry 100;return $photo;");
 
