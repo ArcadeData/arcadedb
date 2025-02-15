@@ -534,14 +534,15 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       // REAL ALL THE ENTRIES
       final List<RID> allValues = readAllValuesFromResult(currentPageBuffer, result);
 
+      final Set<RID> validRIDs = new HashSet<>();
+
+      final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(convertedKeys);
+
       // START FROM THE LAST ENTRY
       for (int i = allValues.size() - 1; i > -1; --i) {
         final RID rid = allValues.get(i);
 
-        final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(convertedKeys);
-
         if (rid.getBucketId() < 0) {
-          // RID DELETED, SKIP THE RID
           removedKeys.add(keys);
           continue;
         }
@@ -550,6 +551,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
           // HAS BEEN DELETED
           continue;
 
+        validRIDs.add(rid);
         set.add(new IndexCursorEntry(originalKeys, rid, 1));
 
         if (limit > -1 && set.size() >= limit) {

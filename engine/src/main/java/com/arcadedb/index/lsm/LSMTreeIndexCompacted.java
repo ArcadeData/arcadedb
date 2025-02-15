@@ -202,7 +202,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   }
 
   public List<LSMTreeIndexUnderlyingCompactedSeriesCursor> newIterators(final boolean ascendingOrder, final Object[] fromKeys,
-      final Object[] toKeys, final Set<TransactionIndexContext.ComparableKey> removedKeys)
+      final Object[] toKeys)
       throws IOException {
     final BasePage mainPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), 0), pageSize);
     final int mainPageCount = getCompactedPageNumberOfSeries(mainPage);
@@ -253,7 +253,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
         }
       }
 
-      LSMTreeIndexUnderlyingCompactedSeriesCursor iterator;
+      LSMTreeIndexUnderlyingCompactedSeriesCursor iterator = null;
 
       int startingPageNumber = rootPageNumber + 1 + (ascendingOrder ? 0 : rootPageCount);
       final int lastPageNumber = rootPageNumber + (ascendingOrder ? rootPageCount : 1);
@@ -263,16 +263,16 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
         LookupResult resultInRootPage = lookupInPage(rootPageNumber, rootPageCount + 1, rootPageBuffer, fromKeys, 1);
         iterator = searchInCurrentPage(ascendingOrder, fromKeys, rootPageNumber, rootPageCount, rootPage, lastPageNumber,
-            resultInRootPage, removedKeys);
+            resultInRootPage);
         if (iterator == null) {
           // LOOK FOR TO KEY IF ANY
           resultInRootPage = lookupInPage(rootPageNumber, rootPageCount + 1, rootPageBuffer, toKeys, 1);
           iterator = searchInCurrentPage(ascendingOrder, toKeys, rootPageNumber, rootPageCount, rootPage, lastPageNumber,
-              resultInRootPage, removedKeys);
+              resultInRootPage);
         }
       } else
         iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, binaryKeyTypes,
-            ascendingOrder, -1, removedKeys);
+            ascendingOrder, -1);
 
       if (iterator != null)
         iterators.add(iterator);
@@ -284,9 +284,8 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   }
 
   private LSMTreeIndexUnderlyingCompactedSeriesCursor searchInCurrentPage(boolean ascendingOrder, Object[] convertedFromKeys,
-      int rootPageNumber, int rootPageCount, BasePage rootPage, int lastPageNumber, LookupResult resultInRootPage,
-      Set<TransactionIndexContext.ComparableKey> removedKeys)
-      throws IOException {
+      int rootPageNumber,
+      int rootPageCount, BasePage rootPage, int lastPageNumber, LookupResult resultInRootPage) throws IOException {
     LSMTreeIndexUnderlyingCompactedSeriesCursor iterator = null;
     if (!resultInRootPage.outside) {
       // IT'S IN THE PAGE RANGE
@@ -326,13 +325,14 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       }
 
       iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, binaryKeyTypes,
-          ascendingOrder, posInPage, removedKeys);
+          ascendingOrder, posInPage);
     }
     return iterator;
   }
 
   protected void searchInCompactedIndex(final Object[] originalKeys, final Object[] convertedKeys, final int limit,
-      final Set<IndexCursorEntry> set, final Set<TransactionIndexContext.ComparableKey> removedKeys) throws IOException {
+      final Set<IndexCursorEntry> set,
+      final Set<TransactionIndexContext.ComparableKey> removedKeys) throws IOException {
     // JUMP TO ROOT PAGES BEFORE LOADING THE PAGE WITH THE KEY/VALUES
     final BasePage mainPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), 0), pageSize);
     final int mainPageCount = getCompactedPageNumberOfSeries(mainPage);

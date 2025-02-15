@@ -39,23 +39,22 @@ import java.util.*;
  * Index cursor doesn't remove the deleted entries.
  */
 public class LSMTreeIndexCursor implements IndexCursor {
-  private final LSMTreeIndexMutable                        index;
-  private final boolean                                    ascendingOrder;
-  private final Object[]                                   fromKeys;
-  private final Object[]                                   toKeys;
-  private final Object[]                                   serializedToKeys;
-  private final boolean                                    toKeysInclusive;
-  private final Set<TransactionIndexContext.ComparableKey> removedKeys       = new HashSet<>();
-  private final LSMTreeIndexUnderlyingAbstractCursor[]     pageCursors;
-  private       Object[]                                   currentKeys;
-  private       RID[]                                      currentValues;
-  private       int                                        currentValueIndex = 0;
-  private final int                                        totalCursors;
-  private final byte[]                                     binaryKeyTypes;
-  private final Object[][]                                 cursorKeys;
-  private final BinaryComparator                           comparator;
-  private       int                                        validIterators;
-  private       TempIndexCursor                            txCursor;
+  private final LSMTreeIndexMutable                    index;
+  private final boolean                                ascendingOrder;
+  private final Object[]                               fromKeys;
+  private final Object[]                               toKeys;
+  private final Object[]                               serializedToKeys;
+  private final boolean                                toKeysInclusive;
+  private final LSMTreeIndexUnderlyingAbstractCursor[] pageCursors;
+  private       Object[]                               currentKeys;
+  private       RID[]                                  currentValues;
+  private       int                                    currentValueIndex = 0;
+  private final int                                    totalCursors;
+  private final byte[]                                 binaryKeyTypes;
+  private final Object[][]                             cursorKeys;
+  private final BinaryComparator                       comparator;
+  private       int                                    validIterators;
+  private       TempIndexCursor                        txCursor;
 
   public LSMTreeIndexCursor(final LSMTreeIndexMutable index, final boolean ascendingOrder) throws IOException {
     this(index, ascendingOrder, null, true, null, true);
@@ -88,7 +87,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
     if (compacted != null)
       // INCLUDE COMPACTED
-      compactedSeriesIterators = compacted.newIterators(ascendingOrder, serializedFromKeys, serializedToKeys, removedKeys);
+      compactedSeriesIterators = compacted.newIterators(ascendingOrder, serializedFromKeys, serializedToKeys);
     else
       compactedSeriesIterators = Collections.emptyList();
 
@@ -120,7 +119,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
       final int cursorIdx = pageCounter;
 
       if (serializedFromKeys != null) {
-        // SEEK FROM THE FROM RANGE
+        // SEEK FOR THE FROM RANGE
         final BasePage currentPage = database.getTransaction()
             .getPage(new PageId(database, index.getFileId(), pageId), index.getPageSize());
         final Binary currentPageBuffer = new Binary(currentPage.slice());
@@ -131,35 +130,30 @@ public class LSMTreeIndexCursor implements IndexCursor {
               currentPageBuffer, serializedFromKeys, ascendingOrder ? 2 : 3);
 
           if (!lookupResult.outside) {
-            pageCursors[cursorIdx] = index.newPageIterator(pageId, lookupResult.keyIndex, ascendingOrder, removedKeys);
+            pageCursors[cursorIdx] = index.newPageIterator(pageId, lookupResult.keyIndex, ascendingOrder);
             cursorKeys[cursorIdx] = pageCursors[cursorIdx].getKeys();
 
-            boolean valid = cursorKeys[cursorIdx] != null;
-
-            if (valid) {
-              if (ascendingOrder) {
-                if (LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[cursorIdx], fromKeys) < 0)
-                  valid = false;
-              } else {
-                if (LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[cursorIdx], toKeys) > 0)
-                  valid = false;
+            if (ascendingOrder) {
+              if (LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[cursorIdx], fromKeys) < 0) {
+                pageCursors[cursorIdx] = null;
+                cursorKeys[cursorIdx] = null;
               }
-            }
-
-            if (!valid) {
-              pageCursors[cursorIdx] = null;
-              cursorKeys[cursorIdx] = null;
+            } else {
+              if (LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[cursorIdx], fromKeys) > 0) {
+                pageCursors[cursorIdx] = null;
+                cursorKeys[cursorIdx] = null;
+              }
             }
           }
         }
 
       } else {
         if (ascendingOrder) {
-          pageCursors[cursorIdx] = index.newPageIterator(pageId, -1, true, removedKeys);
+          pageCursors[cursorIdx] = index.newPageIterator(pageId, -1, true);
         } else {
           final BasePage currentPage = database.getTransaction()
               .getPage(new PageId(database, index.getFileId(), pageId), index.getPageSize());
-          pageCursors[cursorIdx] = index.newPageIterator(pageId, index.getCount(currentPage), false, removedKeys);
+          pageCursors[cursorIdx] = index.newPageIterator(pageId, index.getCount(currentPage), false);
         }
 
         if (pageCursors[cursorIdx].hasNext()) {
@@ -171,11 +165,14 @@ public class LSMTreeIndexCursor implements IndexCursor {
       ++pageCounter;
     }
 
+    final Set<TransactionIndexContext.ComparableKey> removedKeys = new HashSet<>();
+    boolean removedEntry = false;
+
     // CHECK THE VALIDITY OF CURSORS
     for (int i = 0; i < pageCursors.length; ++i) {
 
       LSMTreeIndexUnderlyingAbstractCursor pageCursor = pageCursors[i];
-      while (pageCursor != null) {
+      while (pageCursor != null && !removedEntry) {
         if (fromKeys != null && !beginKeysInclusive) {
           if (LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[i], fromKeys) == 0) {
             // SKIP THIS
@@ -188,14 +185,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
           }
         }
 
-        if (pageCursor.getKeys() == null) {
-          // INVALID
-          pageCursors[i] = null;
-          pageCursor = null;
-          continue;
-        }
-
         if (this.serializedToKeys != null) {
+          //final Object[] cursorKey = index.convertKeys(index.checkForNulls(pageCursor.getKeys()), keyTypes);
           final int compare = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, pageCursor.getKeys(), this.toKeys);
 
           if ((ascendingOrder && ((endKeysInclusive && compare <= 0) || (!endKeysInclusive && compare < 0))) || //
@@ -209,25 +200,24 @@ public class LSMTreeIndexCursor implements IndexCursor {
         }
 
         if (pageCursors[i] != null) {
-          final TransactionIndexContext.ComparableKey keys = (new TransactionIndexContext.ComparableKey(pageCursors[i].getKeys()));
+          final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(pageCursors[i].getKeys());
 
-          if (!removedKeys.contains(keys)) {
+          final RID[] rids = pageCursors[i].getValue();
+          if (rids != null) {
+            for (int j = rids.length - 1; j > -1; --j) {
+              final RID r = rids[j];
 
-            final RID[] rids = pageCursors[i].getValue();
-            if (rids != null) {
-              boolean itemNotDeleted = true;
-              for (int j = rids.length - 1; j > -1; --j) {
-                final RID r = rids[j];
-
-                if (r.getBucketId() < 0) {
-                  removedKeys.add(keys);
-                  itemNotDeleted = false;
-                  break;
-                }
+              if (r.getBucketId() < 0) {
+                removedKeys.add(keys);
+                break;
               }
 
-              if (itemNotDeleted)
-                validIterators++;
+              if (removedKeys.contains(keys)) {
+                // HAS BEEN DELETED
+                break;
+              }
+
+              validIterators++;
             }
           }
         }
@@ -349,6 +339,11 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
       currentKeys = minorKey;
 
+      // FILTER DELETED ITEMS
+      final Set<TransactionIndexContext.ComparableKey> removedKeys = new HashSet<>();
+
+      final Set<RID> validRIDs = new HashSet<>();
+
       boolean removedEntry = false;
       for (int i = 0; i < minorKeyIndexes.size(); ++i) {
         final int minorKeyIndex = minorKeyIndexes.get(i);
@@ -368,19 +363,22 @@ public class LSMTreeIndexCursor implements IndexCursor {
         }
 
         // START FROM THE LAST ENTRY
-        final List<RID> validRIDs = new ArrayList<>();
         for (int k = currentValues.length - 1; k > -1; --k) {
           final RID rid = currentValues[k];
 
           final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(currentKeys);
+
           if (rid.getBucketId() < 0) {
-            // RID DELETED, SKIP THE RID
             removedKeys.add(keys);
+            removedEntry = true;
             continue;
           }
 
-          if (removedKeys.contains(keys))
+          if (removedKeys.contains(keys)) {
+            // HAS BEEN DELETED
             removedEntry = true;
+            continue;
+          }
 
           validRIDs.add(rid);
         }
