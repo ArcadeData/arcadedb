@@ -100,7 +100,7 @@ public class CheckDatabaseTest extends TestHelper {
       assertThat((Long) row.getProperty("totalActiveVertices")).isEqualTo(TOTAL);
       assertThat((Long) row.getProperty("totalAllocatedEdges")).isEqualTo(0);
       assertThat((Long) row.getProperty("totalActiveEdges")).isEqualTo(0L);
-      assertThat((Long) row.getProperty("totalDeletedRecords")).isEqualTo(0);
+      assertThat((Long) row.getProperty("totalDeletedRecords")).isEqualTo(13);
       assertThat(((Collection) row.getProperty("corruptedRecords")).size()).isEqualTo(0);
       assertThat((Long) row.getProperty("missingReferenceBack")).isEqualTo(0L);
       assertThat((Long) row.getProperty("invalidLinks")).isEqualTo(0L);

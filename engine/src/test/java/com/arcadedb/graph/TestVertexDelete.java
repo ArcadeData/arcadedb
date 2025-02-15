@@ -4,7 +4,6 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -12,7 +11,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 public class TestVertexDelete extends TestHelper {
 
   @Test
-  public void testFullEdgeDeletion() throws IOException, InterruptedException {
+  public void testFullEdgeDeletion() {
     createSchema(database);
     for (int i = 0; i < 100; i++) {
       List<Vertex> vlist = new ArrayList<>();

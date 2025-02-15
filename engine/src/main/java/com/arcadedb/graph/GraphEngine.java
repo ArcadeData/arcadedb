@@ -398,7 +398,11 @@ public class GraphEngine {
       edge.asEdge().delete();
 
     for (Identifiable chunk : edgeChunkToDelete)
-      chunk.getRecord().delete();
+      try {
+        chunk.getRecord().delete();
+      } catch (RecordNotFoundException e) {
+        // ALREADY DELETED, IGNORE IT
+      }
 
     // DELETE VERTEX RECORD
     vertex.getDatabase().getSchema().getBucketById(vertex.getIdentity().getBucketId()).deleteRecord(vertex.getIdentity());
@@ -698,7 +702,8 @@ public class GraphEngine {
                     } catch (final Exception e) {
                       // UNKNOWN ERROR ON LOADING
                       warnings.add(
-                          "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: "
+                          "edge " + edgeRID + " points to the incoming vertex " + edge.getIn()
+                              + " which cannot be loaded (error: "
                               + e.getMessage() + ")");
                       corruptedRecords.add(edgeRID);
                       removeEntry = true;
@@ -775,7 +780,8 @@ public class GraphEngine {
                       edge.getOutVertex().asVertex(true);
                     } catch (final RecordNotFoundException e) {
                       warnings.add(
-                          "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
+                          "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut()
+                              + " that is not found (deleted?)");
                       corruptedRecords.add(edgeRID);
                       removeEntry = true;
                       corruptedRecords.add(edge.getOut());
@@ -783,7 +789,8 @@ public class GraphEngine {
                     } catch (final Exception e) {
                       // UNKNOWN ERROR ON LOADING
                       warnings.add(
-                          "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: "
+                          "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut()
+                              + " which cannot be loaded (error: "
                               + e.getMessage() + ")");
                       corruptedRecords.add(edgeRID);
                       removeEntry = true;
@@ -905,14 +912,16 @@ public class GraphEngine {
                 missingReferenceBack.incrementAndGet();
 
             } catch (final RecordNotFoundException e) {
-              warnings.add("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
+              warnings.add(
+                  "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
               corruptedRecords.add(edgeRID);
               corruptedRecords.add(edge.getIn());
               invalidLinks.incrementAndGet();
             } catch (final Exception e) {
               // UNKNOWN ERROR ON LOADING
-              warnings.add("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: "
-                  + e.getMessage() + ")");
+              warnings.add(
+                  "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: "
+                      + e.getMessage() + ")");
               corruptedRecords.add(edgeRID);
               corruptedRecords.add(edge.getIn());
             }
@@ -926,7 +935,8 @@ public class GraphEngine {
                 missingReferenceBack.incrementAndGet();
 
             } catch (final RecordNotFoundException e) {
-              warnings.add("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
+              warnings.add(
+                  "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
               corruptedRecords.add(edgeRID);
               invalidLinks.incrementAndGet();
             } catch (final Exception e) {

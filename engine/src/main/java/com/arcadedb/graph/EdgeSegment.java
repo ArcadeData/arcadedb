@@ -57,4 +57,6 @@ public interface EdgeSegment extends Record {
   boolean removeEntry(int currentItemPosition, int nextItemPosition);
 
   EdgeSegment copy();
+
+  boolean isEmpty();
 }

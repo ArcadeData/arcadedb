@@ -370,4 +370,8 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   public void unsetDirty() {
     // IGNORE THIS FLAG
   }
+
+  public boolean isEmpty() {
+    return getUsed() <= CONTENT_START_POSITION;
+  }
 }
