@@ -72,35 +72,36 @@ import java.util.logging.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class LocalSchema implements Schema {
-  public static final String                                 DEFAULT_ENCODING         = "UTF-8";
-  public static final String                                 SCHEMA_FILE_NAME         = "schema.json";
-  public static final String                                 SCHEMA_PREV_FILE_NAME    = "schema.prev.json";
-  public static final String                                 CACHED_COUNT_FILE_NAME   = "cached-count.json";
-  public static final int                                    BUILD_TX_BATCH_SIZE      = 100_000;
-  final               IndexFactory                           indexFactory             = new IndexFactory();
-  final               Map<String, LocalDocumentType>         types                    = new HashMap<>();
-  private             String                                 encoding                 = DEFAULT_ENCODING;
+  public static final String                                 DEFAULT_ENCODING              = "UTF-8";
+  public static final String                                 SCHEMA_FILE_NAME              = "schema.json";
+  public static final String                                 SCHEMA_PREV_FILE_NAME         = "schema.prev.json";
+  public static final String                                 CACHED_COUNT_FILE_NAME_LEGACY = "cached-count.json"; // DEPRECATED FROM v25.2.1
+  public static final String                                 STATISTICS_FILE_NAME          = "statistics.json";
+  public static final int                                    BUILD_TX_BATCH_SIZE           = 100_000;
+  final               IndexFactory                           indexFactory                  = new IndexFactory();
+  final               Map<String, LocalDocumentType>         types                         = new HashMap<>();
+  private             String                                 encoding                      = DEFAULT_ENCODING;
   private final       DatabaseInternal                       database;
   private final       SecurityManager                        security;
-  private final       List<Component>                        files                    = new ArrayList<>();
-  private final       Map<String, LocalBucket>               bucketMap                = new HashMap<>();
-  private             Map<Integer, LocalDocumentType>        bucketId2TypeMap         = new HashMap<>();
-  private             Map<Integer, LocalDocumentType>        bucketId2InvolvedTypeMap = new HashMap<>();
-  protected final     Map<String, IndexInternal>             indexMap                 = new HashMap<>();
+  private final       List<Component>                        files                         = new ArrayList<>();
+  private final       Map<String, LocalBucket>               bucketMap                     = new HashMap<>();
+  private             Map<Integer, LocalDocumentType>        bucketId2TypeMap              = new HashMap<>();
+  private             Map<Integer, LocalDocumentType>        bucketId2InvolvedTypeMap      = new HashMap<>();
+  protected final     Map<String, IndexInternal>             indexMap                      = new HashMap<>();
   private final       String                                 databasePath;
   private final       File                                   configurationFile;
   private final       ComponentFactory                       componentFactory;
   private             Dictionary                             dictionary;
-  private             String                                 dateFormat               = GlobalConfiguration.DATE_FORMAT.getValueAsString();
-  private             String                                 dateTimeFormat           = GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
-  private             TimeZone                               timeZone                 = TimeZone.getDefault();
-  private             ZoneId                                 zoneId                   = ZoneId.systemDefault();
-  private             boolean                                readingFromFile          = false;
-  private             boolean                                dirtyConfiguration       = false;
-  private             boolean                                loadInRamCompleted       = false;
-  private             boolean                                multipleUpdate           = false;
-  private final       AtomicLong                             versionSerial            = new AtomicLong();
-  private final       Map<String, FunctionLibraryDefinition> functionLibraries        = new ConcurrentHashMap<>();
+  private             String                                 dateFormat                    = GlobalConfiguration.DATE_FORMAT.getValueAsString();
+  private             String                                 dateTimeFormat                = GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
+  private             TimeZone                               timeZone                      = TimeZone.getDefault();
+  private             ZoneId                                 zoneId                        = ZoneId.systemDefault();
+  private             boolean                                readingFromFile               = false;
+  private             boolean                                dirtyConfiguration            = false;
+  private             boolean                                loadInRamCompleted            = false;
+  private             boolean                                multipleUpdate                = false;
+  private final       AtomicLong                             versionSerial                 = new AtomicLong();
+  private final       Map<String, FunctionLibraryDefinition> functionLibraries             = new ConcurrentHashMap<>();
 
   public LocalSchema(final DatabaseInternal database, final String databasePath, final SecurityManager security) {
     this.database = database;
@@ -595,7 +596,7 @@ public class LocalSchema implements Schema {
   }
 
   public void close() {
-    writeCachedCountFile();
+    writeStatisticsFile();
     files.clear();
     types.clear();
     bucketMap.clear();
@@ -604,11 +605,18 @@ public class LocalSchema implements Schema {
     bucketId2TypeMap.clear();
   }
 
-  private void readCachedCountFile() {
+  private void readStatisticsFile() {
     try {
-      File file = new File(databasePath + File.separator + CACHED_COUNT_FILE_NAME);
-      if (!file.exists() || file.length() == 0)
-        return;
+      boolean legacyFile = false;
+      File file = new File(databasePath + File.separator + STATISTICS_FILE_NAME);
+      if (!file.exists() || file.length() == 0) {
+        // TRY LEGACY FILE (<v25.2.1)
+        file = new File(databasePath + File.separator + CACHED_COUNT_FILE_NAME_LEGACY);
+        if (!file.exists() || file.length() == 0)
+          return;
+
+        legacyFile = true;
+      }
 
       final JSONObject json;
       try (final FileInputStream fis = new FileInputStream(file)) {
@@ -616,18 +624,27 @@ public class LocalSchema implements Schema {
         json = new JSONObject(fileContent);
       }
 
-      for (Map.Entry<String, Object> entry : json.toMap().entrySet()) {
-        final LocalBucket bucket = bucketMap.get(entry.getKey());
-        if (bucket != null)
-          bucket.setCachedRecordCount(((Number) entry.getValue()).longValue());
+      for (String key : json.keySet()) {
+        final LocalBucket bucket = bucketMap.get(key);
+        if (bucket != null) {
+          if (legacyFile) {
+            bucket.setCachedRecordCount(json.getLong(key));
+          } else {
+            final JSONObject obj = json.getJSONObject(key);
+            if (!obj.isNull("count"))
+              bucket.setCachedRecordCount(obj.getLong("count"));
+            if (!obj.isNull("pages"))
+              bucket.setPageStatistics(obj.getJSONArray("pages"));
+          }
+        }
       }
 
     } catch (Throwable e) {
-      LogManager.instance().log(this, Level.WARNING, "Error on saving cached count file", e);
+      LogManager.instance().log(this, Level.WARNING, "Error on reading cached count file", e);
     }
   }
 
-  private void writeCachedCountFile() {
+  private void writeStatisticsFile() {
     final File directory = new File(databasePath);
     if (!directory.exists())
       // DATABASE DIRECTORY WAS DELETED
@@ -635,17 +652,14 @@ public class LocalSchema implements Schema {
 
     try {
       final JSONObject json = new JSONObject();
-      for (Map.Entry<String, LocalBucket> b : bucketMap.entrySet()) {
-        final long cachedCount = b.getValue().getCachedRecordCount();
-        if (cachedCount > -1)
-          json.put(b.getKey(), cachedCount);
-      }
+      for (Map.Entry<String, LocalBucket> b : bucketMap.entrySet())
+        json.put(b.getKey(), b.getValue().getStatistics());
 
-      try (final FileWriter file = new FileWriter(new File(directory, CACHED_COUNT_FILE_NAME))) {
+      try (final FileWriter file = new FileWriter(new File(directory, STATISTICS_FILE_NAME))) {
         file.write(json.toString());
       }
     } catch (Throwable e) {
-      LogManager.instance().log(this, Level.WARNING, "Error on saving cached count file", e);
+      LogManager.instance().log(this, Level.WARNING, "Error on saving statistics file", e);
     }
   }
 
@@ -1167,7 +1181,7 @@ public class LocalSchema implements Schema {
         saveConfiguration();
 
       rebuildBucketTypeMap();
-      readCachedCountFile();
+      readStatisticsFile();
     }
   }
 

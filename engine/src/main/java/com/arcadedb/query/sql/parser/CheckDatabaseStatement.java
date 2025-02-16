@@ -89,6 +89,9 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
           builder.append(",");
       }
     }
+
+    if (fix)
+      builder.append(" FIX");
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=8b4b56a95655bca6baea744bc4c6aedd (do not edit this line) */
