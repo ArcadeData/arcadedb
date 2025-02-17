@@ -1485,16 +1485,27 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int txPageCounter) throws IOException {
     synchronized (freeSpaceInPages) {
       // TRY WITH THE CURRENT PAGE FIRST
-      AvailableSpace bestAvailableSpace =
-          currentPageId > -1 ? getAvailableSpaceInPage(currentPageId, isPlaceHolder, bufferSize) : null;
+      AvailableSpace bestAvailableSpace = null;
+
+      if (currentPageId > -1) {
+        bestAvailableSpace = getAvailableSpaceInPage(currentPageId, isPlaceHolder, bufferSize);
+        if (bestAvailableSpace != null &&
+            (bestAvailableSpace.createNewPage || bestAvailableSpace.totalRecordsInPage > maxRecordsInPage))
+          bestAvailableSpace = null;
+      }
 
       if (bestAvailableSpace == null) {
         for (Map.Entry<Integer, int[]> entry : freeSpaceInPages.entrySet()) {
+          final int pageId = entry.getKey();
+          if (pageId == currentPageId)
+            // ALREADY EVALUATED
+            continue;
+
           final int[] pageStats = entry.getValue();
 
           if (pageStats[0] < maxRecordsInPage && pageStats[1] >= bufferSize) {
             // CHECK IF THE SPACE AVAILABLE IS REAL
-            final AvailableSpace availableSpace = getAvailableSpaceInPage(entry.getKey(), isPlaceHolder, bufferSize);
+            final AvailableSpace availableSpace = getAvailableSpaceInPage(pageId, isPlaceHolder, bufferSize);
             if (!availableSpace.createNewPage && availableSpace.totalRecordsInPage < maxRecordsInPage) {
               final int delta = availableSpace.spaceAvailableInCurrentPage - bufferSize;
               if (bestAvailableSpace == null || availableSpace.spaceAvailableInCurrentPage - bufferSize > delta) {
