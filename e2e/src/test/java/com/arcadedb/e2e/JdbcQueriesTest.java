@@ -136,7 +136,7 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
 
       st.execute("""
           {sqlscript}
-          CREATE Document TYPE article IF NOT EXISTS;
+          CREATE DOCUMENT TYPE article IF NOT EXISTS;
           CREATE PROPERTY article.created IF NOT EXISTS DATETIME;
           CREATE PROPERTY article.updated IF NOT EXISTS DATETIME;
           CREATE PROPERTY article.title IF NOT EXISTS STRING;
