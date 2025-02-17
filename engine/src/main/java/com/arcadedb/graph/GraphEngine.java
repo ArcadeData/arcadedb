@@ -395,7 +395,11 @@ public class GraphEngine {
     }
 
     for (Identifiable edge : edgesToDelete)
-      edge.asEdge().delete();
+      try {
+        edge.asEdge().delete();
+      } catch (RecordNotFoundException e) {
+        // ALREADY DELETED, IGNORE IT
+      }
 
     for (Identifiable chunk : edgeChunkToDelete)
       try {
