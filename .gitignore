@@ -539,3 +539,9 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# UV specific
+.uv/
+
+# Python egg metadata
+*.egg-info/

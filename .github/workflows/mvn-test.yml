@@ -34,6 +34,16 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.13.0"
+
+      - name: Setup UV package manager
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          uv --version
+
       - name: Set up JDK 17
         uses: actions/setup-java@3a4f6e1af504cf6a31855fa899c6aa5355ba6c12 # v4.7.0
         with:
@@ -63,6 +73,16 @@ jobs:
         run: |
           npm install
           npm test
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: E2E Python Tests
+        if: success()
+        working-directory: e2e-python
+        run: |
+          uv pip install -e .
+          uv pip install pytest
+          pytest tests/
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
