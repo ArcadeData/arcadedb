@@ -5,7 +5,6 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.utility.CodeUtils;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -63,6 +62,11 @@ public class RecordRecyclingTest {
 
             assertThat(db.countType(VERTEX_TYPE, true)).isEqualTo(0);
             assertThat(db.countType(EDGE_TYPE, true)).isEqualTo(0);
+
+            assertThat(db.countBucket(db.getSchema().getBucketById(1).getName())).isEqualTo(0);
+            assertThat(db.countBucket(db.getSchema().getBucketById(2).getName())).isEqualTo(0);
+            assertThat(db.countBucket(db.getSchema().getBucketById(3).getName())).isEqualTo(0);
+            assertThat(db.countBucket(db.getSchema().getBucketById(4).getName())).isEqualTo(0);
           });
         }
 
