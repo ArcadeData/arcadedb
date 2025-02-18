@@ -92,8 +92,8 @@ public class CreateIndexStatement extends DDLStatement {
       unique = true;
     } else if (typeAsString.equalsIgnoreCase("NOTUNIQUE")) {
       indexType = Schema.INDEX_TYPE.LSM_TREE;
-    } else if (typeAsString.equalsIgnoreCase("HSNW")) {
-      indexType = Schema.INDEX_TYPE.HSNW;
+    } else if (typeAsString.equalsIgnoreCase("HNSW")) {
+      indexType = Schema.INDEX_TYPE.HNSW;
       unique = true;
     } else
       throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");

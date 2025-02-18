@@ -68,7 +68,7 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
 
   public VectorIndexBuilder(final Database database, final HnswVectorIndexRAM origin) {
     super((DatabaseInternal) database, HnswVectorIndex.class);
-    this.indexType = Schema.INDEX_TYPE.HSNW;
+    this.indexType = Schema.INDEX_TYPE.HNSW;
     this.origin = origin;
     this.dimensions = origin.getDimensions();
     this.distanceFunction = origin.getDistanceFunction();

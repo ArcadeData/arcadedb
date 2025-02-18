@@ -1199,7 +1199,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
   @Override
   public Schema.INDEX_TYPE getType() {
-    return Schema.INDEX_TYPE.HSNW;
+    return Schema.INDEX_TYPE.HNSW;
   }
 
   @Override
