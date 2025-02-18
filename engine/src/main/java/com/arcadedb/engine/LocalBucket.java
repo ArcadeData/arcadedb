@@ -90,10 +90,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private                long                    timeOfLastStats                  = 0L;
 
   private enum REUSE_SPACE_MODE {
-    HIGH, MEDIUM, LOW
+    LOW, MEDIUM, HIGH
   }
 
-  private static class AvailableSpace {
+  private static class PageAnalysis {
     public final BasePage page;
     public       int      newRecordPositionInPage     = -1;
     public       int      availablePositionIndex      = -1;
@@ -102,7 +102,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     public       int      spaceAvailableInCurrentPage = -1;
     public       int      lastRecordPositionInPage    = -1;
 
-    public AvailableSpace(final BasePage page) {
+    public PageAnalysis(final BasePage page) {
       this.page = page;
     }
   }
@@ -134,7 +134,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     super(database, name, filePath, id, mode, pageSize, version);
     contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
     this.reuseSpaceMode = REUSE_SPACE_MODE.valueOf(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getValueAsString().toUpperCase());
-    gatherPageStatistics();
+    if (this.reuseSpaceMode.ordinal() > REUSE_SPACE_MODE.LOW.ordinal())
+      gatherPageStatistics();
   }
 
   @Override
@@ -633,11 +634,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int txPageCounter = getTotalPages();
 
       if (txPageCounter > 0) {
-        final AvailableSpace availableSpace = findAvailableSpace(-1, bufferSize, isPlaceHolder, txPageCounter);
-        foundPage = availableSpace.page;
-        newRecordPositionInPage = availableSpace.newRecordPositionInPage;
-        availablePositionIndex = availableSpace.availablePositionIndex;
-        createNewPage = availableSpace.createNewPage;
+        final PageAnalysis pageAnalysis = findAvailableSpace(-1, bufferSize, isPlaceHolder, txPageCounter);
+        foundPage = pageAnalysis.page;
+        newRecordPositionInPage = pageAnalysis.newRecordPositionInPage;
+        availablePositionIndex = pageAnalysis.availablePositionIndex;
+        createNewPage = pageAnalysis.createNewPage;
       } else
         createNewPage = true;
 
@@ -962,11 +963,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0);
 
         if (recordSize[0] > -1) {
-          if (reuseSpaceMode.ordinal() > REUSE_SPACE_MODE.HIGH.ordinal()) {
+          if (reuseSpaceMode.ordinal() > REUSE_SPACE_MODE.MEDIUM.ordinal()) {
             // UPDATE THE STATISTICS
-            final AvailableSpace availableSpace = new AvailableSpace(page);
-            getFreeSpaceInPage(availableSpace);
-            updatePageStatistics(pageId, recordCountInPage, availableSpace.spaceAvailableInCurrentPage,
+            final PageAnalysis pageAnalysis = new PageAnalysis(page);
+            getFreeSpaceInPage(pageAnalysis);
+            updatePageStatistics(pageId, recordCountInPage, pageAnalysis.spaceAvailableInCurrentPage,
                 (int) (recordSize[0] + recordSize[1]));
           }
         }
@@ -1205,16 +1206,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       int recordIdInPage = 0;
       if (currentPage.getPageId().getPageNumber() < txPageCounter - 1) {
 
-        final AvailableSpace availableSpace = findAvailableSpace(currentPage.pageId.getPageNumber(), bufferSize, false,
+        final PageAnalysis pageAnalysis = findAvailableSpace(currentPage.pageId.getPageNumber(), bufferSize, false,
             txPageCounter);
-        if (!availableSpace.createNewPage) {
-          nextPage = database.getTransaction().getPageToModify(availableSpace.page.pageId, pageSize, false);
-          newPosition = availableSpace.newRecordPositionInPage;
-          recordIdInPage = availableSpace.availablePositionIndex;
+        if (!pageAnalysis.createNewPage) {
+          nextPage = database.getTransaction().getPageToModify(pageAnalysis.page.pageId, pageSize, false);
+          newPosition = pageAnalysis.newRecordPositionInPage;
+          recordIdInPage = pageAnalysis.availablePositionIndex;
 
           nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + recordIdInPage * INT_SERIALIZED_SIZE, newPosition);
 
-          if (recordIdInPage >= availableSpace.totalRecordsInPage)
+          if (recordIdInPage >= pageAnalysis.totalRecordsInPage)
             nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) (recordIdInPage + 1));
         }
       }
@@ -1323,21 +1324,21 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           final int totalSpaceNeeded =
               bufferSize + Binary.LONG_SERIALIZED_SIZE + 1 + INT_SERIALIZED_SIZE + 100; // CONSIDERING WRONG CASE SCENARIO
 
-          final AvailableSpace availableSpace = findAvailableSpace(currentPage.pageId.getPageNumber(), totalSpaceNeeded, false,
+          final PageAnalysis pageAnalysis = findAvailableSpace(currentPage.pageId.getPageNumber(), totalSpaceNeeded, false,
               txPageCounter);
-          if (!availableSpace.createNewPage) {
+          if (!pageAnalysis.createNewPage) {
             // FOUND IT
-            nextPage = database.getTransaction().getPageToModify(availableSpace.page.pageId, pageSize, false);
-            newPosition = availableSpace.newRecordPositionInPage;
-            recordIdInPage = availableSpace.availablePositionIndex;
+            nextPage = database.getTransaction().getPageToModify(pageAnalysis.page.pageId, pageSize, false);
+            newPosition = pageAnalysis.newRecordPositionInPage;
+            recordIdInPage = pageAnalysis.availablePositionIndex;
 
-            nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + availableSpace.availablePositionIndex * INT_SERIALIZED_SIZE,
+            nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + pageAnalysis.availablePositionIndex * INT_SERIALIZED_SIZE,
                 newPosition);
 
-            if (recordIdInPage >= availableSpace.totalRecordsInPage)
+            if (recordIdInPage >= pageAnalysis.totalRecordsInPage)
               nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) (recordIdInPage + 1));
 
-            updatePageStatistics(nextPage.pageId.getPageNumber(), -1, availableSpace.spaceAvailableInCurrentPage,
+            updatePageStatistics(nextPage.pageId.getPageNumber(), -1, pageAnalysis.spaceAvailableInCurrentPage,
                 -totalSpaceNeeded);
           }
         }
@@ -1432,9 +1433,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return lastRecordPositionInPage;
   }
 
-  private AvailableSpace getAvailableSpaceInPage(final int pageNumber, final boolean isPlaceHolder, final int bufferSize)
+  private PageAnalysis getAvailableSpaceInPage(final int pageNumber, final boolean isPlaceHolder, final int bufferSize)
       throws IOException {
-    final AvailableSpace result = new AvailableSpace(
+    final PageAnalysis result = new PageAnalysis(
         database.getTransaction().getPage(new PageId(database, file.getFileId(), pageNumber), pageSize));
 
     result.totalRecordsInPage = result.page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
@@ -1459,53 +1460,53 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return result;
   }
 
-  private void getFreeSpaceInPage(final AvailableSpace availableSpace) throws IOException {
-    availableSpace.availablePositionIndex = -1;
-    availableSpace.lastRecordPositionInPage = -1;
-    availableSpace.newRecordPositionInPage = -1;
+  private void getFreeSpaceInPage(final PageAnalysis pageAnalysis) throws IOException {
+    pageAnalysis.availablePositionIndex = -1;
+    pageAnalysis.lastRecordPositionInPage = -1;
+    pageAnalysis.newRecordPositionInPage = -1;
 
-    for (int i = 0; i < availableSpace.totalRecordsInPage; i++) {
-      final int recordPositionInPage = getRecordPositionInPage(availableSpace.page, i);
+    for (int i = 0; i < pageAnalysis.totalRecordsInPage; i++) {
+      final int recordPositionInPage = getRecordPositionInPage(pageAnalysis.page, i);
       if (recordPositionInPage == 0) {
         // REUSE THE FIRST AVAILABLE POSITION FROM DELETED RECORD
-        if (availableSpace.availablePositionIndex == -1)
-          availableSpace.availablePositionIndex = i;
-      } else if (recordPositionInPage > availableSpace.lastRecordPositionInPage)
-        availableSpace.lastRecordPositionInPage = recordPositionInPage;
+        if (pageAnalysis.availablePositionIndex == -1)
+          pageAnalysis.availablePositionIndex = i;
+      } else if (recordPositionInPage > pageAnalysis.lastRecordPositionInPage)
+        pageAnalysis.lastRecordPositionInPage = recordPositionInPage;
     }
 
-    if (availableSpace.availablePositionIndex == -1)
+    if (pageAnalysis.availablePositionIndex == -1)
       // USE NEW POSITION
-      availableSpace.availablePositionIndex = availableSpace.totalRecordsInPage;
+      pageAnalysis.availablePositionIndex = pageAnalysis.totalRecordsInPage;
 
-    if (availableSpace.lastRecordPositionInPage == -1) {
+    if (pageAnalysis.lastRecordPositionInPage == -1) {
       // TOTALLY EMPTY PAGE AFTER DELETION, GET THE FIRST POSITION
-      availableSpace.newRecordPositionInPage = contentHeaderSize;
+      pageAnalysis.newRecordPositionInPage = contentHeaderSize;
     } else {
-      final long[] lastRecordSize = availableSpace.page.readNumberAndSize(availableSpace.lastRecordPositionInPage);
+      final long[] lastRecordSize = pageAnalysis.page.readNumberAndSize(pageAnalysis.lastRecordPositionInPage);
       if (lastRecordSize[0] == 0)
         // DELETED (V<24.1.1)
-        availableSpace.newRecordPositionInPage = availableSpace.lastRecordPositionInPage + (int) lastRecordSize[1];
+        pageAnalysis.newRecordPositionInPage = pageAnalysis.lastRecordPositionInPage + (int) lastRecordSize[1];
       else if (lastRecordSize[0] > 0)
         // RECORD PRESENT, CONSIDER THE RECORD SIZE + VARINT SIZE
-        availableSpace.newRecordPositionInPage =
-            availableSpace.lastRecordPositionInPage + (int) lastRecordSize[0] + (int) lastRecordSize[1];
+        pageAnalysis.newRecordPositionInPage =
+            pageAnalysis.lastRecordPositionInPage + (int) lastRecordSize[0] + (int) lastRecordSize[1];
       else if (lastRecordSize[0] == RECORD_PLACEHOLDER_POINTER)
         // PLACEHOLDER, CONSIDER NEXT 9 BYTES
-        availableSpace.newRecordPositionInPage =
-            availableSpace.lastRecordPositionInPage + LONG_SERIALIZED_SIZE + (int) lastRecordSize[1];
+        pageAnalysis.newRecordPositionInPage =
+            pageAnalysis.lastRecordPositionInPage + LONG_SERIALIZED_SIZE + (int) lastRecordSize[1];
       else if (lastRecordSize[0] == FIRST_CHUNK || lastRecordSize[0] == NEXT_CHUNK) {
         // CHUNK
-        final int chunkSize = availableSpace.page.readInt((int) (availableSpace.lastRecordPositionInPage + lastRecordSize[1]));
-        availableSpace.newRecordPositionInPage =
-            availableSpace.lastRecordPositionInPage + (int) lastRecordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE
+        final int chunkSize = pageAnalysis.page.readInt((int) (pageAnalysis.lastRecordPositionInPage + lastRecordSize[1]));
+        pageAnalysis.newRecordPositionInPage =
+            pageAnalysis.lastRecordPositionInPage + (int) lastRecordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE
                 + chunkSize;
       } else
         // PLACEHOLDER CONTENT, CONSIDER THE RECORD SIZE (CONVERTED FROM NEGATIVE NUMBER) + VARINT SIZE
-        availableSpace.newRecordPositionInPage =
-            availableSpace.lastRecordPositionInPage + (int) (-1 * lastRecordSize[0]) + (int) lastRecordSize[1];
+        pageAnalysis.newRecordPositionInPage =
+            pageAnalysis.lastRecordPositionInPage + (int) (-1 * lastRecordSize[0]) + (int) lastRecordSize[1];
     }
-    availableSpace.spaceAvailableInCurrentPage = availableSpace.page.getMaxContentSize() - availableSpace.newRecordPositionInPage;
+    pageAnalysis.spaceAvailableInCurrentPage = pageAnalysis.page.getMaxContentSize() - pageAnalysis.newRecordPositionInPage;
   }
 
   /**
@@ -1515,39 +1516,39 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * 3. if no page has enough space, use the last page
    * 4. if the last page is full, create a new page
    */
-  private AvailableSpace findAvailableSpace(final int currentPageId, final int bufferSize, final boolean isPlaceHolder,
+  private PageAnalysis findAvailableSpace(final int currentPageId, final int bufferSize, final boolean isPlaceHolder,
       final int txPageCounter) throws IOException {
-    if (reuseSpaceMode) {
+    if (reuseSpaceMode.ordinal() > REUSE_SPACE_MODE.LOW.ordinal()) {
       synchronized (freeSpaceInPages) {
         // TRY WITH THE CURRENT PAGE FIRST
-        AvailableSpace bestAvailableSpace = null;
+        PageAnalysis bestPageAnalysis = null;
 
         if (currentPageId > -1) {
           // PRIORITIZE SPACE IN THE SAME PAGE
-          bestAvailableSpace = getAvailableSpaceInPage(currentPageId, isPlaceHolder, bufferSize);
-          if (bestAvailableSpace.createNewPage || bestAvailableSpace.totalRecordsInPage > maxRecordsInPage)
-            bestAvailableSpace = null;
+          bestPageAnalysis = getAvailableSpaceInPage(currentPageId, isPlaceHolder, bufferSize);
+          if (bestPageAnalysis.createNewPage || bestPageAnalysis.totalRecordsInPage > maxRecordsInPage)
+            bestPageAnalysis = null;
         }
 
-        if (bestAvailableSpace == null) {
+        if (bestPageAnalysis == null) {
           if (freeSpaceInPages.isEmpty())
             gatherPageStatistics();
 
           if (!freeSpaceInPages.isEmpty()) {
-            bestAvailableSpace = findAvailableSpaceFromStatistics(currentPageId, bufferSize, isPlaceHolder);
-            if (bestAvailableSpace == null)
+            bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, bufferSize, isPlaceHolder);
+            if (bestPageAnalysis == null)
               // TRY AGAIN WITH HALF SIZE, THE RECORD WILL BE SPLIT IN MULTIPLE CHUNKS
-              bestAvailableSpace = findAvailableSpaceFromStatistics(currentPageId, bufferSize / 2, isPlaceHolder);
+              bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, bufferSize / 2, isPlaceHolder);
           }
         }
 
-        if (bestAvailableSpace != null) {
+        if (bestPageAnalysis != null) {
 //        LogManager.instance()
 //            .log(this, Level.FINEST, "Requesting %db, allocating in %d/%d (free=%db totalRecords=%d total=%d)", bufferSize,
 //                bestAvailableSpace.page.pageId.getFileId(), bestAvailableSpace.page.pageId.getPageNumber(),
 //                bestAvailableSpace.spaceAvailableInCurrentPage, bestAvailableSpace.totalRecordsInPage, freeSpaceInPages.size());
 
-          return bestAvailableSpace;
+          return bestPageAnalysis;
         }
       }
     }
@@ -1556,9 +1557,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return getAvailableSpaceInPage(txPageCounter - 1, isPlaceHolder, bufferSize);
   }
 
-  private AvailableSpace findAvailableSpaceFromStatistics(final int currentPageId, final int bufferSize,
+  private PageAnalysis findAvailableSpaceFromStatistics(final int currentPageId, final int bufferSize,
       final boolean isPlaceHolder) throws IOException {
-    AvailableSpace bestAvailableSpace = null;
+    PageAnalysis bestPageAnalysis = null;
     for (Map.Entry<Integer, int[]> entry : freeSpaceInPages.entrySet()) {
       final int pageId = entry.getKey();
       if (pageId == currentPageId)
@@ -1569,20 +1570,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       if (pageStats[0] < maxRecordsInPage && pageStats[1] >= bufferSize) {
         // CHECK IF THE SPACE AVAILABLE IS REAL
-        final AvailableSpace availableSpace = getAvailableSpaceInPage(pageId, isPlaceHolder, bufferSize);
+        final PageAnalysis pageAnalysis = getAvailableSpaceInPage(pageId, isPlaceHolder, bufferSize);
 
-        pageStats[1] = availableSpace.totalRecordsInPage;
+        pageStats[1] = pageAnalysis.totalRecordsInPage;
 
-        if (!availableSpace.createNewPage && availableSpace.totalRecordsInPage < maxRecordsInPage) {
-          final int delta = availableSpace.spaceAvailableInCurrentPage - bufferSize;
-          if (bestAvailableSpace == null || bestAvailableSpace.spaceAvailableInCurrentPage - bufferSize > delta) {
+        if (!pageAnalysis.createNewPage && pageAnalysis.totalRecordsInPage < maxRecordsInPage) {
+          final int delta = pageAnalysis.spaceAvailableInCurrentPage - bufferSize;
+          if (bestPageAnalysis == null || bestPageAnalysis.spaceAvailableInCurrentPage - bufferSize > delta) {
             // SELECT THE PAGE WITH CLOSEST AVAILABLE SPACE
-            bestAvailableSpace = availableSpace;
+            bestPageAnalysis = pageAnalysis;
           }
         }
       }
     }
-    return bestAvailableSpace;
+    return bestPageAnalysis;
   }
 
   /**
@@ -1631,48 +1632,47 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Update the in memory statistics about the free space in page.
    */
   private void updatePageStatistics(final int pageId, final int totalRecordInPage, final int availableSpace, final int delta) {
-    if (reuseSpaceMode.ordinal() < REUSE_SPACE_MODE.HIGH.ordinal()) {
+    if (reuseSpaceMode.ordinal() < REUSE_SPACE_MODE.HIGH.ordinal())
       return;
 
-      synchronized (freeSpaceInPages) {
-        if (totalRecordInPage >= DEF_MAX_RECORDS_IN_PAGE || availableSpace + delta == 0)
-          freeSpaceInPages.remove(pageId);
-        else {
-          final int usableSpaceInPage = getPageSize() - contentHeaderSize;
+    synchronized (freeSpaceInPages) {
+      if (totalRecordInPage >= DEF_MAX_RECORDS_IN_PAGE || availableSpace + delta == 0)
+        freeSpaceInPages.remove(pageId);
+      else {
+        final int usableSpaceInPage = getPageSize() - contentHeaderSize;
 
-          final int[] page = freeSpaceInPages.get(pageId);
-          final int prevSpace = availableSpace == 0 && page != null ? page[1] : availableSpace;
-          final int newSpace = prevSpace + delta;
+        final int[] page = freeSpaceInPages.get(pageId);
+        final int prevSpace = availableSpace == 0 && page != null ? page[1] : availableSpace;
+        final int newSpace = prevSpace + delta;
 
-          if (page != null) {
-            if (newSpace <= MINIMUM_SPACE_LEFT_IN_PAGE || (freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS
-                && newSpace * 100 / usableSpaceInPage < GATHER_STATS_MIN_SPACE_PERC))
-              freeSpaceInPages.remove(pageId);
-            else {
-              if (totalRecordInPage > -1)
-                page[0] = totalRecordInPage;
-              page[1] = newSpace;
-            }
-          } else if (newSpace * 100 / usableSpaceInPage >= GATHER_STATS_MIN_SPACE_PERC) {
-            if (freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS) {
-              // REMOVE THE SMALLEST PAGE
-              int lowestPageId = -1;
-              int lowestPageSpace = -1;
-
-              for (Map.Entry<Integer, int[]> entry : freeSpaceInPages.entrySet()) {
-                if (lowestPageId < 0 || entry.getValue()[1] < lowestPageSpace) {
-                  lowestPageId = entry.getKey();
-                  lowestPageSpace = entry.getValue()[1];
-                }
-              }
-
-              if (lowestPageId > -1 && lowestPageSpace < newSpace) {
-                freeSpaceInPages.remove(lowestPageId);
-                freeSpaceInPages.put(pageId, new int[] { 0, newSpace });
-              }
-            } else
-              freeSpaceInPages.put(pageId, new int[] { totalRecordInPage, newSpace });
+        if (page != null) {
+          if (newSpace <= MINIMUM_SPACE_LEFT_IN_PAGE || (freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS
+              && newSpace * 100 / usableSpaceInPage < GATHER_STATS_MIN_SPACE_PERC))
+            freeSpaceInPages.remove(pageId);
+          else {
+            if (totalRecordInPage > -1)
+              page[0] = totalRecordInPage;
+            page[1] = newSpace;
           }
+        } else if (newSpace * 100 / usableSpaceInPage >= GATHER_STATS_MIN_SPACE_PERC) {
+          if (freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS) {
+            // REMOVE THE SMALLEST PAGE
+            int lowestPageId = -1;
+            int lowestPageSpace = -1;
+
+            for (Map.Entry<Integer, int[]> entry : freeSpaceInPages.entrySet()) {
+              if (lowestPageId < 0 || entry.getValue()[1] < lowestPageSpace) {
+                lowestPageId = entry.getKey();
+                lowestPageSpace = entry.getValue()[1];
+              }
+            }
+
+            if (lowestPageId > -1 && lowestPageSpace < newSpace) {
+              freeSpaceInPages.remove(lowestPageId);
+              freeSpaceInPages.put(pageId, new int[] { 0, newSpace });
+            }
+          } else
+            freeSpaceInPages.put(pageId, new int[] { totalRecordInPage, newSpace });
         }
       }
     }
