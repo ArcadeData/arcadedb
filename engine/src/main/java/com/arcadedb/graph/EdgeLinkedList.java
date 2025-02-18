@@ -261,4 +261,13 @@ public class EdgeLinkedList {
     } else
       ((DatabaseInternal) vertex.getDatabase()).updateRecord(current);
   }
+
+  public void deleteAll() {
+    EdgeSegment current = lastSegment;
+    while (current != null) {
+      final EdgeSegment prev = current.getPrevious();
+      current.delete();
+      current = prev;
+    }
+  }
 }

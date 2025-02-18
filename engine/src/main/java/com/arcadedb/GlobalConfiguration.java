@@ -27,17 +27,9 @@ import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.SystemVariableResolver;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.PrintStream;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.*;
+import java.util.logging.*;
 
 /**
  * Keeps all configuration settings. At startup assigns the configuration values by reading system properties.
@@ -145,9 +137,9 @@ public enum GlobalConfiguration {
                       FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()), FileUtils.getSizeAsString(newValue));
             else
               System.out.println(
-                "Setting '%s=%s' is > than 80%% of maximum heap (%s). Decreasing it to %s".formatted(MAX_PAGE_RAM.key,
-                  FileUtils.getSizeAsString(maxRAM), FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()),
-                  FileUtils.getSizeAsString(newValue)));
+                  "Setting '%s=%s' is > than 80%% of maximum heap (%s). Decreasing it to %s".formatted(MAX_PAGE_RAM.key,
+                      FileUtils.getSizeAsString(maxRAM), FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()),
+                      FileUtils.getSizeAsString(newValue)));
 
             return newValue;
           }
@@ -204,6 +196,10 @@ public enum GlobalConfiguration {
 
   BUCKET_DEFAULT_PAGE_SIZE("arcadedb.bucketDefaultPageSize", SCOPE.DATABASE,
       "Default page size in bytes for buckets. Default is 64KB", Integer.class, 65_536),
+
+  BUCKET_REUSE_SPACE_MODE("arcadedb.bucketReuseSpaceMode", SCOPE.DATABASE,
+      "Mode used to reuse space in pages. Use low to have faster updates consuming more space on disk. Default is 'high'",
+      String.class, "high", Set.of("low", "high")),
 
   BUCKET_WIPEOUT_ONDELETE("arcadedb.bucketWipeOutOnDelete", SCOPE.DATABASE,
       "Wipe out record content on delete. If enabled, assures deleted records cannot be analyzed by parsing the raw files and backups will be more compressed, but it also makes deletes a little bit slower",
@@ -400,7 +396,7 @@ public enum GlobalConfiguration {
       String.class, ""),
 
   HA_QUORUM("arcadedb.ha.quorum", SCOPE.SERVER,
-      "Default quorum between 'none', one, two, three, 'majority' and 'all' servers. Default is majority",String.class  , "majority",
+      "Default quorum between 'none', one, two, three, 'majority' and 'all' servers. Default is majority", String.class, "majority",
       Set.of(new String[] { "none", "one", "two", "three", "majority", "all" })),
 
   HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", SCOPE.SERVER, "Timeout waiting for the quorum", Long.class, 10000),

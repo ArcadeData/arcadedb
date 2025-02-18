@@ -24,8 +24,9 @@ public class RandomDeleteTest {
       try (Database db = databaseFactory.create()) {
         db.getSchema().createVertexType(TYPE, 1);
 
+        final List<RID> rids = new ArrayList<>(TOT_RECORDS);
         db.transaction(() -> {
-          List<RID> rids = insert(db);
+          insert(db, rids);
           Assertions.assertEquals(TOT_RECORDS, db.countType(TYPE, true));
 
           // DELETE FROM 1 TO N
@@ -33,10 +34,12 @@ public class RandomDeleteTest {
             db.deleteRecord(rids.get(i).asVertex());
 
           Assertions.assertEquals(0, db.countType(TYPE, true));
+        });
 
+        db.transaction(() -> {
           // DELETE RANDOMLY X TIMES
           for (int cycle = 0; cycle < CYCLES; cycle++) {
-            rids = insert(db);
+            insert(db, rids);
             checkRecords(db, rids);
 
             for (int deleted = 0; deleted < TOT_RECORDS; ) {
@@ -73,8 +76,8 @@ public class RandomDeleteTest {
     Assertions.assertEquals(rids.size(), db.countType(TYPE, true));
   }
 
-  private static List<RID> insert(final Database db) {
-    final List<RID> rids = new ArrayList<>(TOT_RECORDS);
+  private static void insert(final Database db, final List<RID> rids) {
+    rids.clear();
     for (int i = 0; i < TOT_RECORDS; i++) {
       final MutableVertex v = db.newVertex(TYPE)//
           .set("id", i)//
@@ -82,6 +85,5 @@ public class RandomDeleteTest {
 
       rids.add(v.getIdentity());
     }
-    return rids;
   }
 }
