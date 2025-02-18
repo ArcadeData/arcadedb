@@ -122,6 +122,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
     contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
+    gatherPageStatistics();
   }
 
   public int getMaxRecordsInPage() {
@@ -1409,9 +1410,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       throws IOException {
     final AvailableSpace result = new AvailableSpace();
 
-    if (freeSpaceInPages.isEmpty())
-      gatherPageStatistics();
-
     result.page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageNumber), pageSize);
 
     result.totalRecordsInPage = result.page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
@@ -1586,8 +1584,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final int newSpace = prevSpace + delta;
 
         if (page != null) {
-          if (freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS
-              && newSpace * 100 / usableSpaceInPage < GATHER_STATS_MIN_SPACE_PERC)
+          if (newSpace * 100 / usableSpaceInPage < GATHER_STATS_MIN_SPACE_PERC)
             freeSpaceInPages.remove(pageId);
           else
             page[1] = newSpace;
