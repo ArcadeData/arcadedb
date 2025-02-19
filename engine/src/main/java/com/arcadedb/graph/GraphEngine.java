@@ -369,7 +369,6 @@ public class GraphEngine {
                   vertex.getIdentity());
         }
       }
-      outEdges.deleteAll();
     }
 
     final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
@@ -388,9 +387,12 @@ public class GraphEngine {
               .log(this, Level.FINE, "Error on deleting incoming vertex %s connected to vertex %s", outV, vertex.getIdentity());
         }
       }
-
-      inEdges.deleteAll();
     }
+
+    if (outEdges != null)
+      outEdges.deleteAll();
+    if (inEdges != null)
+      inEdges.deleteAll();
 
     for (Identifiable edge : edgesToDelete)
       try {
