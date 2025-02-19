@@ -7,6 +7,8 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.*;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class RecordRecyclingTest {
@@ -45,14 +47,14 @@ public class RecordRecyclingTest {
 
           // CHECK RECORDS HAVE BEEN RECYCLED MORE THAN 80% OF THE SPACE
           final RID maxVertex = db.query("sql", "select from " + VERTEX_TYPE + " order by @rid desc").next().getIdentity().get();
-//          if (maxVertexRID != null)
-//            assertThat(maxVertex.getPosition()).isLessThan((long) (maxVertexRID.getPosition() * 1.2));
-//          maxVertexRID = maxVertex;
+          if (maxVertexRID != null)
+            assertThat(maxVertex.getPosition()).isLessThan((long) (maxVertexRID.getPosition() * 1.2));
+          maxVertexRID = maxVertex;
 
           final RID maxEdge = db.query("sql", "select from " + EDGE_TYPE + " order by @rid desc").next().getIdentity().get();
-//          if (maxEdgeRID != null)
-//            assertThat(maxEdge.getPosition()).isLessThan((long) (maxEdgeRID.getPosition() * 1.2));
-//          maxEdgeRID = maxEdge;
+          if (maxEdgeRID != null)
+            assertThat(maxEdge.getPosition()).isLessThan((long) (maxEdgeRID.getPosition() * 1.2));
+          maxEdgeRID = maxEdge;
 
           db.transaction(() -> {
             assertThat(db.countType(VERTEX_TYPE, true)).isEqualTo(TOT_RECORDS);
@@ -64,6 +66,13 @@ public class RecordRecyclingTest {
             assertThat(db.countType(EDGE_TYPE, true)).isEqualTo(0);
 
             assertThat(db.countBucket(db.getSchema().getBucketById(1).getName())).isEqualTo(0);
+
+            for (Iterator<com.arcadedb.database.Record> it = db.iterateBucket(
+                db.getSchema().getBucketById(2).getName()); it.hasNext(); ) {
+              com.arcadedb.database.Record r = it.next();
+              System.out.printf("Record %s\n", r.toJSON());
+            }
+
             assertThat(db.countBucket(db.getSchema().getBucketById(2).getName())).isEqualTo(0);
             assertThat(db.countBucket(db.getSchema().getBucketById(3).getName())).isEqualTo(0);
             assertThat(db.countBucket(db.getSchema().getBucketById(4).getName())).isEqualTo(0);

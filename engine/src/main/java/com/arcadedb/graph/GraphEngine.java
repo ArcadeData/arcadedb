@@ -230,7 +230,7 @@ public class GraphEngine {
         inChunk = (EdgeSegment) database.lookupByRID(inEdgesHeadChunk, true);
       } catch (final RecordNotFoundException e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Record %s (inEdgesHeadChunk) not found on vertex %s. Creating a new one", inEdgesHeadChunk,
+            .log(this, Level.SEVERE, "Record %s (inEdgesHeadChunk) not found on vertex %s. Creating a new one", inEdgesHeadChunk,
                 toVertex);
         inEdgesHeadChunk = null;
       }
@@ -256,7 +256,7 @@ public class GraphEngine {
         outChunk = (EdgeSegment) database.lookupByRID(outEdgesHeadChunk, true);
       } catch (final RecordNotFoundException e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Record %s (outEdgesHeadChunk) not found on vertex %s. Creating a new one", outEdgesHeadChunk,
+            .log(this, Level.SEVERE, "Record %s (outEdgesHeadChunk) not found on vertex %s. Creating a new one", outEdgesHeadChunk,
                 fromVertex.getIdentity());
         outEdgesHeadChunk = null;
       }
@@ -356,18 +356,24 @@ public class GraphEngine {
     if (outEdges != null) {
       final EdgeIterator outIterator = (EdgeIterator) outEdges.edgeIterator();
 
-      while (outIterator.hasNext()) {
-        RID inV = null;
-        try {
-          final Edge nextEdge = outIterator.next();
-          inV = nextEdge.getIn();
-          edgesToDelete.add(nextEdge);
-        } catch (final RecordNotFoundException e) {
-          // ALREADY DELETED, IGNORE THIS
-          LogManager.instance()
-              .log(this, Level.FINE, "Error on deleting outgoing vertex %s connected from vertex %s (record not found)", inV,
-                  vertex.getIdentity());
+      try {
+        while (outIterator.hasNext()) {
+          RID inV = null;
+          try {
+            final Edge nextEdge = outIterator.next();
+            inV = nextEdge.getIn();
+            edgesToDelete.add(nextEdge);
+          } catch (final RecordNotFoundException e) {
+            // ALREADY DELETED, IGNORE THIS
+            LogManager.instance()
+                .log(this, Level.FINE, "Error on deleting outgoing vertex %s connected from vertex %s (record not found)", inV,
+                    vertex.getIdentity());
+          }
         }
+      } catch (Exception e) {
+        // LINKED LIST COULD BE BROKEN
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error on deleting outgoing edges connected to vertex %s", vertex.getIdentity());
       }
     }
 
@@ -375,17 +381,23 @@ public class GraphEngine {
     if (inEdges != null) {
       final EdgeIterator inIterator = (EdgeIterator) inEdges.edgeIterator();
 
-      while (inIterator.hasNext()) {
-        RID outV = null;
-        try {
-          final Edge nextEdge = inIterator.next();
-          outV = nextEdge.getOut();
-          edgesToDelete.add(nextEdge);
-        } catch (final RecordNotFoundException e) {
-          // ALREADY DELETED, IGNORE THIS
-          LogManager.instance()
-              .log(this, Level.FINE, "Error on deleting incoming vertex %s connected to vertex %s", outV, vertex.getIdentity());
+      try {
+        while (inIterator.hasNext()) {
+          RID outV = null;
+          try {
+            final Edge nextEdge = inIterator.next();
+            outV = nextEdge.getOut();
+            edgesToDelete.add(nextEdge);
+          } catch (final RecordNotFoundException e) {
+            // ALREADY DELETED, IGNORE THIS
+            LogManager.instance()
+                .log(this, Level.FINE, "Error on deleting incoming vertex %s connected to vertex %s", outV, vertex.getIdentity());
+          }
         }
+      } catch (Exception e) {
+        // LINKED LIST COULD BE BROKEN
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error on deleting incoming edges connected to vertex %s", vertex.getIdentity());
       }
     }
 
