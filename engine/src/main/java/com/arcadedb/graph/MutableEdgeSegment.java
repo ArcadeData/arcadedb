@@ -171,21 +171,22 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
-    final JSONObject json = new JSONObject();
+    final JSONObject json = new JSONObject().put("@rid", getIdentity().toString());
     final int used = getUsed();
     if (used > 0) {
-      final JSONArray array = new JSONArray();
+      final JSONArray entries = new JSONArray();
 
       buffer.position(CONTENT_START_POSITION);
       while (buffer.position() < used) {
-        // EDGE RID
-        array.put("#" + buffer.getNumber() + ":" + buffer.getNumber());
-        // VERTEX RID
-        array.put("#" + buffer.getNumber() + ":" + buffer.getNumber());
+        new JSONObject()
+            // EDGE RID
+            .put("edge", "#" + buffer.getNumber() + ":" + buffer.getNumber())
+            // VERTEX RID
+            .put("vertex", "#" + buffer.getNumber() + ":" + buffer.getNumber());
       }
 
-      if (array.length() > 0)
-        json.put("array", array);
+      if (!entries.isEmpty())
+        json.put("entries", entries);
     }
     return json;
   }

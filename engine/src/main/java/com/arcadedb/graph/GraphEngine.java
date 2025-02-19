@@ -352,7 +352,7 @@ public class GraphEngine {
     // RETRIEVE ALL THE EDGES TO DELETE AT THE END
     final List<Identifiable> edgesToDelete = new ArrayList<>();
 
-    final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
+    EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
     if (outEdges != null) {
       final EdgeIterator outIterator = (EdgeIterator) outEdges.edgeIterator();
 
@@ -371,7 +371,7 @@ public class GraphEngine {
       }
     }
 
-    final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
+    EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
     if (inEdges != null) {
       final EdgeIterator inIterator = (EdgeIterator) inEdges.edgeIterator();
 
@@ -400,6 +400,14 @@ public class GraphEngine {
       } catch (RecordNotFoundException e) {
         // ALREADY DELETED, IGNORE IT
       }
+
+    // RELOAD LINKED LISTS
+    outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
+    if (outEdges != null)
+      outEdges.deleteAll();
+    inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
+    if (inEdges != null)
+      inEdges.deleteAll();
 
     // DELETE VERTEX RECORD
     vertex.getDatabase().getSchema().getBucketById(vertex.getIdentity().getBucketId()).deleteRecord(vertex.getIdentity());
