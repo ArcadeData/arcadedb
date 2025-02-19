@@ -199,7 +199,7 @@ public enum GlobalConfiguration {
 
   BUCKET_REUSE_SPACE_MODE("arcadedb.bucketReuseSpaceMode", SCOPE.DATABASE,
       "Mode used to reuse space in pages. Use low to have faster updates consuming more space on disk. Default is 'high'",
-      String.class, "high", Set.of("low", "high")),
+      String.class, "high", Set.of("low", "medium", "high")),
 
   BUCKET_WIPEOUT_ONDELETE("arcadedb.bucketWipeOutOnDelete", SCOPE.DATABASE,
       "Wipe out record content on delete. If enabled, assures deleted records cannot be analyzed by parsing the raw files and backups will be more compressed, but it also makes deletes a little bit slower",
