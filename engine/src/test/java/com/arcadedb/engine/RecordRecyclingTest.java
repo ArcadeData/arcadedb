@@ -1,5 +1,6 @@
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
@@ -19,6 +20,8 @@ public class RecordRecyclingTest {
 
   @Test
   public void testCreateAndDeleteGraph() {
+    GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.setValue("high");
+
     try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/DeleteAllTest")) {
       if (databaseFactory.exists())
         databaseFactory.open().drop();
@@ -79,6 +82,8 @@ public class RecordRecyclingTest {
         if (databaseFactory.exists())
           databaseFactory.open().drop();
       }
+    } finally {
+      GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.reset();
     }
   }
 }
