@@ -66,13 +66,6 @@ public class RecordRecyclingTest {
             assertThat(db.countType(EDGE_TYPE, true)).isEqualTo(0);
 
             assertThat(db.countBucket(db.getSchema().getBucketById(1).getName())).isEqualTo(0);
-
-            for (Iterator<com.arcadedb.database.Record> it = db.iterateBucket(
-                db.getSchema().getBucketById(2).getName()); it.hasNext(); ) {
-              com.arcadedb.database.Record r = it.next();
-              System.out.printf("Record %s\n", r.toJSON());
-            }
-
             assertThat(db.countBucket(db.getSchema().getBucketById(2).getName())).isEqualTo(0);
             assertThat(db.countBucket(db.getSchema().getBucketById(3).getName())).isEqualTo(0);
             assertThat(db.countBucket(db.getSchema().getBucketById(4).getName())).isEqualTo(0);

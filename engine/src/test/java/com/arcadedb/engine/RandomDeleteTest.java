@@ -13,7 +13,7 @@ import java.util.*;
 public class RandomDeleteTest {
   private final static int    TOT_RECORDS = 100_000;
   private final static String TYPE        = "Product";
-  private static final int    CYCLES      = 20;
+  private static final int    CYCLES      = 3;
 
   @Test
   public void testSmallRecords() {

@@ -401,11 +401,6 @@ public class GraphEngine {
       }
     }
 
-    if (outEdges != null)
-      outEdges.deleteAll();
-    if (inEdges != null)
-      inEdges.deleteAll();
-
     for (Identifiable edge : edgesToDelete)
       try {
         edge.asEdge().delete();
@@ -416,10 +411,21 @@ public class GraphEngine {
     // RELOAD LINKED LISTS
     outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
     if (outEdges != null)
-      outEdges.deleteAll();
+      try {
+        outEdges.deleteAll();
+      } catch (Exception e) {
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error on deleting outgoing edges connected to vertex %s", vertex.getIdentity());
+      }
+
     inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
     if (inEdges != null)
-      inEdges.deleteAll();
+      try {
+        inEdges.deleteAll();
+      } catch (Exception e) {
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error on deleting incoming edges connected to vertex %s", vertex.getIdentity());
+      }
 
     // DELETE VERTEX RECORD
     vertex.getDatabase().getSchema().getBucketById(vertex.getIdentity().getBucketId()).deleteRecord(vertex.getIdentity());
