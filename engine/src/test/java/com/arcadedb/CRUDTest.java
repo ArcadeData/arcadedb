@@ -34,8 +34,8 @@ import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 import org.assertj.core.api.Assertions;
-import static org.assertj.core.api.Assertions.assertThat;
 
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class CRUDTest extends TestHelper {
   private static final int TOT = ((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()) * 2;
@@ -90,7 +90,7 @@ public class CRUDTest extends TestHelper {
         assertThat(db.countType("V", true)).isEqualTo(TOT);
 
         assertThat(((Long) db.query("sql", "select count(*) as count from V where " + largeField + " is not null").nextIfAvailable()
-          .getProperty("count")).intValue()).as("Count not expected for field '" + largeField + "'").isEqualTo(TOT);
+            .getProperty("count")).intValue()).as("Count not expected for field '" + largeField + "'").isEqualTo(TOT);
 
         db.commit();
         db.begin();
@@ -116,7 +116,7 @@ public class CRUDTest extends TestHelper {
 
         assertThat(db.countType("V", true)).isEqualTo(TOT);
         assertThat(((Long) db.query("sql", "select count(*) as count from V where " + largeField + " is not null").nextIfAvailable()
-          .getProperty("count")).intValue()).as("Count not expected for field '" + largeField + "'").isEqualTo(TOT);
+            .getProperty("count")).intValue()).as("Count not expected for field '" + largeField + "'").isEqualTo(TOT);
 
         db.commit();
         db.begin();
@@ -198,7 +198,7 @@ public class CRUDTest extends TestHelper {
         assertThat(db.countType("V", true)).isEqualTo(TOT);
 
         db.scanType("V", true, record -> {
-          assertThat(record.get("update")).isEqualTo(true);
+          assertThat(record.get("update")).withFailMessage("Record " + record.toJSON()).isEqualTo(true);
 
           assertThat(record.get("largeField" + counter)).isEqualTo("This is a large field to force the page overlap at some point");
           return true;
