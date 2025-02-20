@@ -211,7 +211,7 @@ public enum GlobalConfiguration {
 
   ASYNC_OPERATIONS_QUEUE_IMPL("arcadedb.asyncOperationsQueueImpl", SCOPE.DATABASE,
       "Queue implementation to use between 'standard' and 'fast'. 'standard' consumes less CPU than the 'fast' implementation, but it could be slower with high loads",
-      String.class, "standard", Set.of((Object[]) new String[] { "standard", "fast" })),
+      String.class, "standard", Set.of(new String[] { "standard", "fast" })),
 
   ASYNC_OPERATIONS_QUEUE_SIZE("arcadedb.asyncOperationsQueueSize", SCOPE.DATABASE,
       "Size of the total asynchronous operation queues (it is divided by the number of parallel threads in the pool)",

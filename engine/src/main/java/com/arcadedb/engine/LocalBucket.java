@@ -89,6 +89,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private final          TreeMap<Integer, Integer> freeSpaceInPages                 = new TreeMap<>();
   private final          REUSE_SPACE_MODE          reuseSpaceMode;
   private                long                      timeOfLastStats                  = 0L;
+  private                long                      changesFromLastStats             = 0L;
 
   private enum REUSE_SPACE_MODE {
     LOW, MEDIUM, HIGH
@@ -971,7 +972,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             final PageAnalysis pageAnalysis = new PageAnalysis(page);
             getFreeSpaceInPage(pageAnalysis);
             updatePageStatistics(pageId, pageAnalysis.spaceAvailableInCurrentPage, (int) ((recordSize[0] + recordSize[1]) * -1));
-          }
+          } else
+            ++changesFromLastStats;
         }
 
       } else {
@@ -1564,6 +1566,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   private PageAnalysis findAvailableSpaceFromStatistics(final int currentPageId, final int spaceNeeded) throws IOException {
     PageAnalysis bestPageAnalysis = null;
+    List<Integer> pagesToRemove = null;
     for (Map.Entry<Integer, Integer> entry : freeSpaceInPages.entrySet()) {
       final int pageId = entry.getKey();
       if (pageId == currentPageId)
@@ -1577,6 +1580,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final PageAnalysis pageAnalysis = getAvailableSpaceInPage(pageId, spaceNeeded);
 
         if (!pageAnalysis.createNewPage) {
+          if (pageAnalysis.spaceAvailableInCurrentPage != pageStats) {
+            // LOW COST UPDATE OF STATISTICS
+            if (pageAnalysis.spaceAvailableInCurrentPage < MINIMUM_SPACE_LEFT_IN_PAGE) {
+              pagesToRemove = pagesToRemove == null ? new ArrayList<>() : pagesToRemove;
+              pagesToRemove.add(pageId);
+            }
+            entry.setValue(pageAnalysis.spaceAvailableInCurrentPage);
+          }
+
           final int delta = pageAnalysis.spaceAvailableInCurrentPage - spaceNeeded;
           if (bestPageAnalysis == null || bestPageAnalysis.spaceAvailableInCurrentPage - spaceNeeded > delta) {
             // SELECT THE PAGE WITH CLOSEST AVAILABLE SPACE
@@ -1585,6 +1597,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         }
       }
     }
+
+    if (pagesToRemove != null)
+      for (Integer pageId : pagesToRemove)
+        freeSpaceInPages.remove(pageId);
+
     return bestPageAnalysis;
   }
 
@@ -1595,7 +1612,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * 3. if the tree map is full (size > MAX_PAGES_GATHER_STATS), stop
    */
   public void gatherPageStatistics() {
-    if (System.currentTimeMillis() - timeOfLastStats > MAX_TIMEOUT_GATHER_STATS)
+    if (timeOfLastStats == 0L ||
+        (System.currentTimeMillis() - timeOfLastStats > MAX_TIMEOUT_GATHER_STATS && changesFromLastStats > 0)
+    )
       try {
         int txPageCount = getTotalPages();
 
@@ -1621,6 +1640,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           }
 
           timeOfLastStats = System.currentTimeMillis();
+          changesFromLastStats = 0L;
         }
       } catch (Exception e) {
         LogManager.instance().log(this, Level.WARNING, "Error on gathering statistics on bucket '%s'", e, getName());
@@ -1631,6 +1651,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Update the in memory statistics about the free space in page.
    */
   private void updatePageStatistics(final int pageId, final int availableSpace, final int delta) {
+    ++changesFromLastStats;
+
     if (reuseSpaceMode.ordinal() < REUSE_SPACE_MODE.HIGH.ordinal())
       return;
 
