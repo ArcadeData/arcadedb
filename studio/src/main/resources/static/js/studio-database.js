@@ -877,7 +877,6 @@ function updateDatabaseSetting(key, value) {
           type: "POST",
           url: "api/v1/server",
           data: JSON.stringify({
-            language: "sql",
             command: "set database setting " + getCurrentDatabase() + " " + key + " " + $("#updateSettingInput").val(),
           }),
           beforeSend: function (xhr) {
