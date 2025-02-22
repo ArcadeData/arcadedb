@@ -270,19 +270,19 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
   private void setDatabaseSetting(final String triple) throws IOException {
 
-    final String triple_trimmed = triple.trim();
-    final Integer first_space = triple_trimmed.indexOf(" ");
-    if (first_space == -1)
+    final String tripleTrimmed = triple.trim();
+    final Integer firstSpace = tripleTrimmed.indexOf(" ");
+    if (firstSpace == -1)
       throw new IllegalArgumentException("Expected <database> <key> <value>");
 
-    final String pair_trimmed = triple_trimmed.substring(first_space).trim();
-    final Integer second_space = pair_trimmed.indexOf(" ");
-    if (second_space == -1)
+    final String pairTrimmed = tripleTrimmed.substring(firstSpace).trim();
+    final Integer secondSpace = pairTrimmed.indexOf(" ");
+    if (secondSpace == -1)
       throw new IllegalArgumentException("Expected <database> <key> <value>");
 
-    final String db = triple_trimmed.substring(0,first_space);
-    final String key = pair_trimmed.substring(0,second_space);
-    final String value = pair_trimmed.substring(second_space).trim();
+    final String db = tripleTrimmed.substring(0,firstSpace);
+    final String key = pairTrimmed.substring(0,secondSpace);
+    final String value = pairTrimmed.substring(secondSpace);
 
     final DatabaseInternal database = (DatabaseInternal) httpServer.getServer().getDatabase(db);
     database.getConfiguration().setValue(key, value);
@@ -290,11 +290,17 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   private void setServerSetting(final String pair) {
-    final String[] keyValue = pair.split(" ");
-    if (keyValue.length != 2)
+
+    final String pairTrimmed = pair.trim();
+
+    final Integer firstSpace = pairTrimmed.indexOf(" ");
+    if (firstSpace == -1)
       throw new IllegalArgumentException("Expected <key> <value>");
 
-    httpServer.getServer().getConfiguration().setValue(keyValue[0], keyValue[1]);
+    final String key = pairTrimmed.substring(0,firstSpace);
+    final String value = pairTrimmed.substring(firstSpace);
+
+    httpServer.getServer().getConfiguration().setValue(key, value);
   }
 
   private String getServerEvents(final String fileName) {
