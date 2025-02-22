@@ -268,13 +268,24 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       ha.disconnectAllReplicas();
   }
 
-  private void setDatabaseSetting(final String pair) throws IOException {
-    final String[] dbKeyValue = pair.split(" ");
-    if (dbKeyValue.length != 3)
+  private void setDatabaseSetting(final String triple) throws IOException {
+
+    final String triple_trimmed = triple.trim();
+    final Integer first_space = triple_trimmed.indexOf(" ");
+    if (first_space == -1)
       throw new IllegalArgumentException("Expected <database> <key> <value>");
 
-    final DatabaseInternal database = (DatabaseInternal) httpServer.getServer().getDatabase(dbKeyValue[0]);
-    database.getConfiguration().setValue(dbKeyValue[1], dbKeyValue[2]);
+    final String pair_trimmed = triple_trimmed.substring(first_space).trim();
+    final Integer second_space = pair_trimmed.indexOf(" ");
+    if (second_space == -1)
+      throw new IllegalArgumentException("Expected <database> <key> <value>");
+
+    final String db = triple_trimmed.substring(0,first_space);
+    final String key = pair_trimmed.substring(0,second_space);
+    final String value = pair_trimmed.substring(second_space).trim();
+
+    final DatabaseInternal database = (DatabaseInternal) httpServer.getServer().getDatabase(db);
+    database.getConfiguration().setValue(key, value);
     database.saveConfiguration();
   }
 
