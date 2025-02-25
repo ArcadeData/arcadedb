@@ -126,6 +126,10 @@ ArcadeDB is Free for any usage and licensed under the liberal [Open Source Apach
 support, or you need to have an issue fixed ASAP, check our [GitHub Sponsor page](https://github.com/sponsors/ArcadeData) on both
 Recurrent and One-Time tiers. All the sponsorship received will be distributed to the active contributors of this project.
 
+### Thanks To
+
+<a href="https://www.yourkit.com"><img src="https://www.yourkit.com/images/yklogo.png"></a> for providing YourKit Profiler to our committers.
+
 ### Contributing
 
 We would love for you to get involved with ArcadeDB project.

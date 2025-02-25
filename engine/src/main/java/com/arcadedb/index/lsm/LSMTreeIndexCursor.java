@@ -165,8 +165,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
       ++pageCounter;
     }
 
-    final Set<RID> removedRIDs = new HashSet<>();
-    final Set<RID> validRIDs = new HashSet<>();
+    final Set<TransactionIndexContext.ComparableKey> removedKeys = new HashSet<>();
     boolean removedEntry = false;
 
     // CHECK THE VALIDITY OF CURSORS
@@ -201,26 +200,23 @@ public class LSMTreeIndexCursor implements IndexCursor {
         }
 
         if (pageCursors[i] != null) {
+          final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(pageCursors[i].getKeys());
+
           final RID[] rids = pageCursors[i].getValue();
           if (rids != null) {
             for (int j = rids.length - 1; j > -1; --j) {
               final RID r = rids[j];
 
-              if (index.REMOVED_ENTRY_RID.equals(r)) {
-                removedEntry = true;
+              if (r.getBucketId() < 0) {
+                removedKeys.add(keys);
                 break;
               }
 
-              if (r.getBucketId() < 0) {
-                final RID originalRID = index.getOriginalRID(r);
-                if (!validRIDs.remove(originalRID))
-                  removedRIDs.add(originalRID);
-                continue;
-              } else if (removedRIDs.contains(r))
+              if (removedKeys.contains(keys)) {
                 // HAS BEEN DELETED
-                continue;
+                break;
+              }
 
-              validRIDs.add(r);
               validIterators++;
             }
           }
@@ -253,10 +249,11 @@ public class LSMTreeIndexCursor implements IndexCursor {
       if (cursor == null)
         buffer.append("%n- Cursor[%d] = null".formatted(i));
       else {
-        buffer.append("%n- Cursor[%d] %s=%s index=%s compacted=%s totalKeys=%d ascending=%s keyTypes=%s currentPageId=%s currentPosInPage=%d".formatted(
-          i, Arrays.toString(cursorKeys[i]), Arrays.toString(cursor.getValue()), cursor.index,
-          cursor instanceof LSMTreeIndexUnderlyingCompactedSeriesCursor, cursor.totalKeys, cursor.ascendingOrder,
-          Arrays.toString(cursor.keyTypes), cursor.getCurrentPageId(), cursor.getCurrentPositionInPage()));
+        buffer.append(
+            "%n- Cursor[%d] %s=%s index=%s compacted=%s totalKeys=%d ascending=%s keyTypes=%s currentPageId=%s currentPosInPage=%d".formatted(
+                i, Arrays.toString(cursorKeys[i]), Arrays.toString(cursor.getValue()), cursor.index,
+                cursor instanceof LSMTreeIndexUnderlyingCompactedSeriesCursor, cursor.totalKeys, cursor.ascendingOrder,
+                Arrays.toString(cursor.keyTypes), cursor.getCurrentPageId(), cursor.getCurrentPositionInPage()));
       }
     }
 
@@ -343,7 +340,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
       currentKeys = minorKey;
 
       // FILTER DELETED ITEMS
-      final Set<RID> removedRIDs = new HashSet<>();
+      final Set<TransactionIndexContext.ComparableKey> removedKeys = new HashSet<>();
+
       final Set<RID> validRIDs = new HashSet<>();
 
       boolean removedEntry = false;
@@ -368,22 +366,19 @@ public class LSMTreeIndexCursor implements IndexCursor {
         for (int k = currentValues.length - 1; k > -1; --k) {
           final RID rid = currentValues[k];
 
-          if (index.REMOVED_ENTRY_RID.equals(rid)) {
-            removedEntry = true;
-            break;
-          }
+          final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(currentKeys);
 
           if (rid.getBucketId() < 0) {
-            // RID DELETED, SKIP THE RID
-            final RID originalRID = index.getOriginalRID(rid);
-            if (!validRIDs.contains(originalRID))
-              removedRIDs.add(originalRID);
+            removedKeys.add(keys);
+            removedEntry = true;
             continue;
           }
 
-          if (removedRIDs.contains(rid))
+          if (removedKeys.contains(keys)) {
             // HAS BEEN DELETED
+            removedEntry = true;
             continue;
+          }
 
           validRIDs.add(rid);
         }

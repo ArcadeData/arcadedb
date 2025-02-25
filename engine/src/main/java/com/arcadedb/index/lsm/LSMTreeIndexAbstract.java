@@ -22,6 +22,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
@@ -527,7 +528,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
   protected boolean lookupInPageAndAddInResultset(final BasePage currentPage, final Binary currentPageBuffer, final int count,
       final Object[] originalKeys, final Object[] convertedKeys, final int limit, final Set<IndexCursorEntry> set,
-      final Set<RID> removedRIDs) {
+      final Set<TransactionIndexContext.ComparableKey> removedKeys) {
     final LookupResult result = lookupInPage(currentPage.getPageId().getPageNumber(), count, currentPageBuffer, convertedKeys, 1);
     if (result.found) {
       // REAL ALL THE ENTRIES
@@ -535,24 +536,18 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
       final Set<RID> validRIDs = new HashSet<>();
 
+      final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(convertedKeys);
+
       // START FROM THE LAST ENTRY
       for (int i = allValues.size() - 1; i > -1; --i) {
         final RID rid = allValues.get(i);
 
-        if (REMOVED_ENTRY_RID.equals(rid)) {
-          // DELETED ITEM
-          return false;
-        }
-
         if (rid.getBucketId() < 0) {
-          // RID DELETED, SKIP THE RID
-          final RID originalRID = getOriginalRID(rid);
-          if (!validRIDs.contains(originalRID))
-            removedRIDs.add(originalRID);
+          removedKeys.add(keys);
           continue;
         }
 
-        if (removedRIDs.contains(rid))
+        if (removedKeys.contains(keys))
           // HAS BEEN DELETED
           continue;
 

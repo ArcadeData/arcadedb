@@ -2,6 +2,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ValidationException;
@@ -306,7 +307,8 @@ public class DocumentValidationTest extends TestHelper {
         // EXPECTED
       }
 
-      final Edge e = database.command("sql", "create edge E from ? to ? set a = '12345', b = '4444', c = '2222'", v1, v2).nextIfAvailable().getEdge().get();
+      final Edge e = database.command("sql", "create edge E from ? to ? set a = '12345', b = '4444', c = '2222'", v1, v2)
+          .nextIfAvailable().getEdge().get();
       assertThat(e.getString("a")).isEqualTo("12345");
       assertThat(e.getString("b")).isEqualTo("4444");
       assertThat(e.getString("c")).isEqualTo("2222");
@@ -730,6 +732,16 @@ public class DocumentValidationTest extends TestHelper {
     } catch (IllegalArgumentException e) {
       // EXPECTED
     }
+  }
+
+  @Test
+  public void testEmbeddedDocumentConversion() {
+    final DocumentType clazz = database.getSchema().getOrCreateDocumentType("Validation");
+    MutableDocument v = clazz.newRecord();
+    v.set("embedded", Map.of("value", 300, "@type", "Validation"));
+    final EmbeddedDocument embedded = v.getEmbedded("embedded");
+    assertThat(embedded).isNotNull();
+    assertThat(embedded.getInteger("value")).isEqualTo(300);
   }
 
   private void checkFieldValue(final Document toCheck, final String field, final Object newValue) {
