@@ -59,7 +59,6 @@ function globalNotify(title, message, type) {
   );
 }
 
-
 function globalActivateTab(tab) {
   $('.nav a[href="#' + tab + '"]').tab("show");
 }

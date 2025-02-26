@@ -68,20 +68,16 @@ function updateDatabases(callback) {
       $(".inputDatabase").html(databases);
       $("schemaInputDatabase").html(databases);
 
-      if (selected != null && selected != "")
-        {
-          //check if selected database exists
-          if(data.result.includes(selected))
-          {
-            $(".inputDatabase").val(selected)
-            $("#schemaInputDatabase").val(selected)
-          }
-          else
-          {
-            $(".inputDatabase").val(data.result[0])
-            $("#schemaInputDatabase").val(data.result[0])
-          }
+      if (selected != null && selected != "") {
+        //check if selected database exists
+        if (data.result.includes(selected)) {
+          $(".inputDatabase").val(selected);
+          $("#schemaInputDatabase").val(selected);
+        } else {
+          $(".inputDatabase").val(data.result[0]);
+          $("#schemaInputDatabase").val(data.result[0]);
         }
+      }
 
       $("#currentDatabase").html(getCurrentDatabase());
 
