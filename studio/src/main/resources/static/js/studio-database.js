@@ -66,8 +66,18 @@ function updateDatabases(callback) {
         databases += "<option value='" + dbName + "'>" + dbName + "</option>";
       }
       $(".inputDatabase").html(databases);
+      $("schemaInputDatabase").html(databases);
 
-      if (selected != null && selected != "") $("#schemaInputDatabase").val(selected);
+      if (selected != null && selected != "") {
+        //check if selected database exists
+        if (data.result.includes(selected)) {
+          $(".inputDatabase").val(selected);
+          $("#schemaInputDatabase").val(selected);
+        } else {
+          $(".inputDatabase").val(data.result[0]);
+          $("#schemaInputDatabase").val(data.result[0]);
+        }
+      }
 
       $("#currentDatabase").html(getCurrentDatabase());
 
@@ -123,6 +133,7 @@ function createDatabase() {
         })
         .done(function (data) {
           $(".inputDatabase").val(database);
+          $("#schemaInputDatabase").val(database);
           updateDatabases();
         })
         .fail(function (jqXHR, textStatus, errorThrown) {
@@ -198,6 +209,7 @@ function resetDatabase() {
             })
             .done(function (data) {
               $(".inputDatabase").val(database);
+              $("#schemaInputDatabase").val(database);
               updateDatabases();
             })
             .fail(function (jqXHR, textStatus, errorThrown) {
@@ -317,12 +329,14 @@ function dropIndex(indexName) {
 }
 
 function getCurrentDatabase() {
-  let db = $("#schemaInputDatabase").val();
+  let db = $(".inputDatabase").val();
   return db != null ? db.trim() : null;
 }
 
 function setCurrentDatabase(dbName) {
   $(".inputDatabase").val(dbName);
+  $("#schemaInputDatabase").val(dbName);
+
   globalStorageSave("database.current", dbName);
 }
 
@@ -472,6 +486,7 @@ function executeCommandGraph() {
   let language = escapeHtml($("#inputLanguage").val());
 
   let command = editor.getSelection();
+
   if (command == null || command.length <= 4) command = editor.getValue();
   command = escapeHtml(command);
 
