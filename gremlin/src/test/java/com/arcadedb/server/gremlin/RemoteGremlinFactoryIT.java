@@ -24,11 +24,12 @@ import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.gremlin.ArcadeGraphFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
-
 import org.apache.tinkerpop.gremlin.structure.Transaction;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -104,7 +105,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
         graph.getDatabase().getSchema().createVertexType("Country");
       }
 
-      final ExecutorService executorService = Executors.newFixedThreadPool(10);
+      final ExecutorService executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
 
       for (int i = 0; i < 1000; i++) {
         final int id = i;
@@ -114,12 +115,12 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
 
             Transaction tx = graph.tx();
             GraphTraversalSource gtx = tx.begin();
-              gtx.addV("Country")
-                  .property("id", id)
-                  .property("country", "USA")
-                  .property("code", id)
-                  .iterate();
-              tx.commit();
+            gtx.addV("Country")
+                .property("id", id)
+                .property("country", "USA")
+                .property("code", id)
+                .iterate();
+            tx.commit();
 
           } catch (Exception e) {
             //do nothing
@@ -132,7 +133,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
 
       try (final ArcadeGraph graph = pool.get()) {
         Long country = graph.traversal().V().hasLabel("Country").count().toList().get(0);
-        assertThat(country > 800).isTrue();
+        assertThat(country).isGreaterThan(800);
       }
     } catch (Exception e) {
       //do nothing
@@ -148,7 +149,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
         graph.getDatabase().getSchema().createVertexType("Country");
       }
 
-      final ExecutorService executorService = Executors.newFixedThreadPool(10);
+      final ExecutorService executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
       for (int i = 0; i < 1000; i++) {
         final int id = i;
         executorService.submit(() -> {
@@ -161,7 +162,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
       executorService.awaitTermination(60, TimeUnit.SECONDS);
 
       try (final ArcadeGraph graph = pool.get()) {
-        assertThat(graph.traversal().V().hasLabel("Country").count().toList().get(0) > 800).isTrue();
+        assertThat(graph.traversal().V().hasLabel("Country").count().toList().get(0)).isGreaterThan(800);
       }
     }
   }

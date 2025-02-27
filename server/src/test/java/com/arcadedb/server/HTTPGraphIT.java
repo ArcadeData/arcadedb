@@ -3,16 +3,20 @@ package com.arcadedb.server;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import org.assertj.core.api.Assertions;
+import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.net.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.Base64;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
-import static org.assertj.core.api.Assertions.as;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
@@ -162,7 +166,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
       formatPayload(connection, "sql", "SELECT FROM " + VERTEX1_TYPE_NAME + " where @rid = :rid", null,
-        Map.of("rid", "#1:0"));
+          Map.of("rid", "#1:0"));
       connection.connect();
 
       try {
@@ -494,34 +498,61 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   @Test
   public void testOneEdgePerTx() throws Exception {
     testEachServer((serverIndex) -> {
-      executeCommand(serverIndex, "sqlscript", "create vertex type Photos;create vertex type Users;create edge type HasUploaded;");
-      executeCommand(serverIndex, "sql", "create vertex Users set id = 'u1111'");
+      executeCommand(serverIndex, "sqlscript",
+          """
+              CREATE VERTEX TYPE Photos;
+              CREATE VERTEX TYPE Users;
+              CREATE EDGE TYPE HasUploaded;""");
 
-      executeCommand(serverIndex, "sqlscript", //
-          "BEGIN;" //
-              + "LET photo = CREATE vertex Photos SET id = \"p12345\", name = \"download1.jpg\";" //
-              + "LET user = SELECT FROM Users WHERE id = \"u1111\";" //
-              + "LET userEdge = Create edge HasUploaded FROM $user to $photo set type = \"User_Photos\";" //
-              + "SLEEP randomInt( 500 );" //
-              + "commit retry 30;return $photo;");
+      executeCommand(serverIndex, "sql", "CREATE VERTEX Users SET id = 'u1111'");
 
-      executeCommand(serverIndex, "sqlscript", //
-          "BEGIN;" //
-              + "LET photo = CREATE vertex Photos SET id = \"p2222\", name = \"download2.jpg\";" //
-              + "LET user = ( SELECT FROM Users WHERE id = \"u1111\" );" //
-              + "LET userEdge = Create edge HasUploaded FROM $user to $photo set type = \"User_Photos\";" //
-              + "commit retry 30;return $photo;");
+      executeCommand(serverIndex, "sqlscript",
+          """
+              BEGIN;
+              LET photo = CREATE VERTEX Photos SET id = "p12345", name = "download1.jpg";
+              LET user = SELECT FROM Users WHERE id = "u1111";
+              LET userEdge = CREATE EDGE HasUploaded FROM $user TO $photo SET type = "User_Photos";
+              COMMIT RETRY 30;
+              RETURN $photo;""");
 
-      executeCommand(serverIndex, "sqlscript", // //
-          "BEGIN;" + "LET photo = CREATE vertex Photos SET id = \"p5555\", name = \"download3.jpg\";" //
-              + "LET user = ( SELECT FROM Users WHERE id = \"u1111\" );" //
-              + "LET userEdge = Create edge HasUploaded FROM $user to $photo set type = \"User_Photos\";" //
-              + "commit retry 30;return $photo;");
+      executeCommand(serverIndex, "sqlscript",
+          """
+              BEGIN;
+              LET photo = CREATE VERTEX Photos SET id = "p2222", name = "download2.jpg";
+              LET user = SELECT FROM Users WHERE id = "u1111";
+              LET userEdge = CREATE EDGE HasUploaded FROM $user TO $photo SET type = "User_Photos";
+              COMMIT RETRY 30;
+              RETURN $photo;""");
 
-      final JSONObject responseAsJsonSelect = executeCommand(serverIndex, "sql", //
-          "SELECT id FROM ( SELECT expand( outE('HasUploaded') ) FROM Users WHERE id = \"u1111\" )");
+      executeCommand(serverIndex, "sqlscript",
+          """
+              BEGIN;LET photo = CREATE VERTEX Photos SET id = "p5555", name = "download3.jpg";
+              LET user = SELECT FROM Users WHERE id = "u1111";
+              LET userEdge = CREATE EDGE HasUploaded FROM $user TO $photo SET type = "User_Photos";
+              COMMIT RETRY 30;
+              RETURN $photo;""");
 
-      assertThat(responseAsJsonSelect.getJSONObject("result").getJSONArray("records").length()).isEqualTo(3);
+      final JSONObject responseAsJsonSelect = executeCommand(serverIndex, "sql",
+          """
+              SELECT expand( outE('HasUploaded') ) FROM Users WHERE id = "u1111"
+              """);
+
+      String response = responseAsJsonSelect.toString();
+      assertThat(JsonPath.<Integer>read(response, "$..records.length()")).isEqualTo(3);
+      assertThat(JsonPath.<String>read(response, "$.user")).isEqualTo("root");
+      assertThat(JsonPath.<String>read(response, "$.result.vertices[0].p.@type")).isEqualTo("Photos");
+      assertThat(JsonPath.<String>read(response, "$.result.vertices[0].p.@cat")).isEqualTo("v");
+      assertThat(JsonPath.<String>read(response, "$.result.vertices[0].t")).isEqualTo("Photos");
+
+      assertThat(JsonPath.<String>read(response, "$.result.edges[0].p.@type")).isEqualTo("HasUploaded");
+      assertThat(JsonPath.<String>read(response, "$.result.edges[0].p.@cat")).isEqualTo("e");
+      assertThat(JsonPath.<String>read(response, "$.result.edges[0].p.@in")).isNotEmpty();
+      assertThat(JsonPath.<String>read(response, "$.result.edges[0].p.@out")).isNotEmpty();
+
+      assertThat(JsonPath.<String>read(response, "$.result.records[0].@type")).isEqualTo("HasUploaded");
+      assertThat(JsonPath.<String>read(response, "$.result.records[0].@cat")).isEqualTo("e");
+      assertThat(JsonPath.<String>read(response, "$.result.records[0].@in")).isNotEmpty();
+      assertThat(JsonPath.<String>read(response, "$.result.records[0].@out")).isNotEmpty();
     });
   }
 
@@ -541,12 +572,13 @@ public class HTTPGraphIT extends BaseGraphServerTest {
         threads[i] = new Thread(() -> {
           for (int j = 0; j < SCRIPTS; j++) {
             try {
-              final JSONObject responseAsJson = executeCommand(serverIndex, "sqlscript", //
-                  "BEGIN ISOLATION REPEATABLE_READ;" //
-                      + "LET photo = CREATE vertex Photos SET id = uuid(), name = \"downloadX.jpg\";" //
-                      + "LET user = SELECT FROM Users WHERE id = \"u1111\";" //
-                      + "LET userEdge = Create edge HasUploaded FROM $user to $photo set type = \"User_Photos\";" //
-                      + "commit retry 100;return $photo;");
+              final JSONObject responseAsJson = executeCommand(serverIndex, "sqlscript",
+                  """
+                      BEGIN ISOLATION REPEATABLE_READ;
+                      LET photo = CREATE vertex Photos SET id = uuid(), name = "downloadX.jpg";
+                      LET user = SELECT FROM Users WHERE id = "u1111";
+                      LET userEdge = Create edge HasUploaded FROM $user to $photo set type = "User_Photos";
+                      commit retry 100;return $photo;""");
 
               atomic.incrementAndGet();
 
@@ -570,7 +602,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
 
       assertThat(atomic.get()).isEqualTo(THREADS * SCRIPTS);
 
-      final JSONObject responseAsJsonSelect = executeCommand(serverIndex, "sql", //
+      final JSONObject responseAsJsonSelect = executeCommand(serverIndex, "sql",
           "SELECT id FROM ( SELECT expand( outE('HasUploaded') ) FROM Users WHERE id = \"u1111\" )");
 
       assertThat(responseAsJsonSelect.getJSONObject("result").getJSONArray("records").length()).isEqualTo(THREADS * SCRIPTS);

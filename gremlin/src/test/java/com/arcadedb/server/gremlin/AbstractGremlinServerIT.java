@@ -31,9 +31,6 @@ import java.io.File;
 import java.io.IOException;
 
 import static org.assertj.core.api.Assertions.fail;
-import java.io.IOException;
-
-import static org.assertj.core.api.Assertions.fail;
 
 public abstract class AbstractGremlinServerIT extends BaseGraphServerTest {
 
@@ -56,7 +53,10 @@ public abstract class AbstractGremlinServerIT extends BaseGraphServerTest {
 
       GlobalConfiguration.SERVER_PLUGINS.setValue("GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin");
 
+      GlobalConfiguration.TYPE_DEFAULT_BUCKETS.setValue(Runtime.getRuntime().availableProcessors());
+
     } catch (final IOException e) {
+
       fail("", e);
     }
   }
@@ -75,5 +75,9 @@ public abstract class AbstractGremlinServerIT extends BaseGraphServerTest {
     if (server.exists(getDatabaseName()))
       server.drop(getDatabaseName());
     super.endTest();
+
+    //restore configuration
+    GlobalConfiguration.SERVER_PLUGINS.setValue("");
+    GlobalConfiguration.TYPE_DEFAULT_BUCKETS.setValue(1);
   }
 }

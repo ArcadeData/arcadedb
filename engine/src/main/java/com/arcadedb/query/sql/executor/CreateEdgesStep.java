@@ -271,9 +271,8 @@ public class CreateEdgesStep extends AbstractExecutionStep {
       currentFrom = iD.getRecord();
 
     if (currentFrom instanceof Result result) {
-      final Object from = currentFrom;
       currentFrom = result.getVertex()
-          .orElseThrow(() -> new CommandExecutionException("Invalid vertex for edge creation: " + from));
+          .orElseThrow(() -> new CommandExecutionException("Invalid vertex for edge creation: " + result));
     }
 
     if (currentFrom instanceof Vertex vertex)

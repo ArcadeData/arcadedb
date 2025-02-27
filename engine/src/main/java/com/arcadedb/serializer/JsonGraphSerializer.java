@@ -34,6 +34,14 @@ public class JsonGraphSerializer extends JsonSerializer {
 
   private boolean    expandVertexEdges = false;
   private JSONObject sharedJson        = null;
+  private boolean    includeMetadata   = true;
+
+  private JsonGraphSerializer() {
+  }
+
+  public static JsonGraphSerializer createJsonGraphSerializer() {
+    return new JsonGraphSerializer();
+  }
 
   public JSONObject serializeGraphElement(final Document document) {
     if (sharedJson != null)
@@ -59,7 +67,7 @@ public class JsonGraphSerializer extends JsonSerializer {
       object.put("r", rid.toString());
     object.put("t", document.getTypeName());
 
-    for (final Map.Entry<String, Object> prop : document.toMap(false).entrySet()) {
+    for (final Map.Entry<String, Object> prop : document.toMap(includeMetadata).entrySet()) {
       Object value = prop.getValue();
 
       if (value != null) {
@@ -91,15 +99,6 @@ public class JsonGraphSerializer extends JsonSerializer {
     return object;
   }
 
-  public boolean isExpandVertexEdges() {
-    return expandVertexEdges;
-  }
-
-  public JsonGraphSerializer setExpandVertexEdges(final boolean expandVertexEdges) {
-    this.expandVertexEdges = expandVertexEdges;
-    return this;
-  }
-
   private void setMetadata(final Document document, final JSONObject object) {
     if (document instanceof Vertex vertex1) {
       final Vertex vertex = vertex1;
@@ -126,8 +125,22 @@ public class JsonGraphSerializer extends JsonSerializer {
     }
   }
 
+  public boolean isExpandVertexEdges() {
+    return expandVertexEdges;
+  }
+
+  public JsonGraphSerializer setExpandVertexEdges(final boolean expandVertexEdges) {
+    this.expandVertexEdges = expandVertexEdges;
+    return this;
+  }
+
   public JsonGraphSerializer setSharedJson(final JSONObject json) {
     sharedJson = json;
+    return this;
+  }
+
+  public JsonGraphSerializer setIncludeMetadata(final boolean includeMetadata) {
+    this.includeMetadata = includeMetadata;
     return this;
   }
 }
