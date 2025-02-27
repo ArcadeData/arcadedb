@@ -66,12 +66,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Test Reporter
+      - name: Unit Tests Reporter
         uses: dorny/test-reporter@31a54ee7ebcacc03a09ea97a7e5465a47b84aea5 # v1.9.1
         if: success() || failure()
         with:
-          name: Test Report - ${{ matrix.os }}
-          path: "**/surefire-reports/TEST*.xml,**/failsafe-reports/TEST*.xml"
+          name: Unit Tests Report
+          path: "**/surefire-reports/TEST*.xml"
+          list-suites: "failed"
+          list-tests: "failed"
+          reporter: java-junit
+
+      - name: IT Tests Reporter
+        uses: dorny/test-reporter@31a54ee7ebcacc03a09ea97a7e5465a47b84aea5 # v1.9.1
+        if: success() || failure()
+        with:
+          name: IT Tests Report
+          path: "**/failsafe-reports/TEST*.xml"
           list-suites: "failed"
           list-tests: "failed"
           reporter: java-junit
