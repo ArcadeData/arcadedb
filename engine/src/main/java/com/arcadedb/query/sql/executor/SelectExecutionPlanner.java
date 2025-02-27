@@ -130,7 +130,7 @@ public class SelectExecutionPlanner {
   }
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean useCache) {
-    final DatabaseInternal db = context.getDatabase();
+    final DatabaseInternal db= context.getDatabase();
     if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached()) {
       final ExecutionPlan plan = db.getExecutionPlanCache().get(statement.getOriginalStatement(), context);
       if (plan != null)

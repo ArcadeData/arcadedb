@@ -30,7 +30,6 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
-
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -38,6 +37,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
 public class ReplicationChangeSchemaIT extends ReplicationServerIT {
@@ -71,12 +72,8 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
     testOnAllServers((database) -> isInSchemaFile(database, "newBucket"));
 
     // CHANGE SCHEMA FROM A REPLICA (ERROR EXPECTED)
-    try {
-      databases[1].getSchema().createVertexType("RuntimeVertex1");
-      fail("");
-    } catch (final ServerIsNotTheLeaderException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> databases[1].getSchema().createVertexType("RuntimeVertex1"))
+        .isInstanceOf(ServerIsNotTheLeaderException.class);
 
     testOnAllServers((database) -> isNotInSchemaFile(database, "RuntimeVertex1"));
 
@@ -119,27 +116,21 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
         databases[0].newVertex("IndexedVertex0").set("propertyIndexed", i).save();
     });
 
-    try {
-      databases[1].transaction(() -> {
-        for (int i = 0; i < 10; i++)
-          databases[1].newVertex("IndexedVertex0").set("propertyIndexed", i).save();
-      });
-      fail("");
-    } catch (final TransactionException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> databases[1]
+        .transaction(() -> {
+          for (int i = 0; i < 10; i++)
+            databases[1].newVertex("IndexedVertex0").set("propertyIndexed", i).save();
+        })
+    ).isInstanceOf(TransactionException.class);
 
     databases[0].getSchema().dropIndex(idx.getName());
     testOnAllServers((database) -> isNotInSchemaFile(database, idx.getName()));
 
     // CREATE NEW TYPE IN TRANSACTION
-    databases[0].transaction(() -> {
-      try {
-        databases[0].getSchema().createVertexType("RuntimeVertexTx0");
-      } catch (final Exception e) {
-        fail(e);
-      }
-    });
+    databases[0].transaction(() -> assertThatCode(() ->
+            databases[0].getSchema().createVertexType("RuntimeVertexTx0")
+        ).doesNotThrowAnyException()
+    );
 
     testOnAllServers((database) -> isInSchemaFile(database, "RuntimeVertexTx0"));
   }
@@ -187,8 +178,10 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
       if (first == null)
         first = entry.getValue();
       else
-        assertThat(entry.getValue()).as("Server " + entry.getKey() + " has different schema saved:\nFIRST SERVER:\n" + first + "\n" + entry.getKey()
-          + " SERVER:\n" + entry.getValue()).isEqualTo(first);
+        assertThat(entry.getValue()).withFailMessage(
+                "Server " + entry.getKey() + " has different schema saved:\nFIRST SERVER:\n" + first + "\n" + entry.getKey()
+                    + " SERVER:\n" + entry.getValue())
+            .isEqualTo(first);
     }
   }
 

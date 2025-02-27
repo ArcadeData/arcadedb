@@ -37,7 +37,7 @@ import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.*;
 
-public class HTTPDocumentIT extends BaseGraphServerTest {
+public class  HTTPDocumentIT extends BaseGraphServerTest {
   private final static String DATABASE_NAME = "httpDocument";
 
   @Override
@@ -57,6 +57,8 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
       try {
         connection.connect();
         final String response = readResponse(connection);
+
+        System.out.println("response = " + response);
         LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
         assertThat(connection.getResponseCode()).isEqualTo(200);
         assertThat(connection.getResponseMessage()).isEqualTo("OK");

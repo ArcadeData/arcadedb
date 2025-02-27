@@ -26,7 +26,7 @@ public class ReplicationServerWriteAgainstReplicaIT extends ReplicationServerIT 
   public void testReplication() {
     testReplication(1);
     waitForReplicationIsCompleted(1);
-    CodeUtils.sleep(1_000);
+    waitForReplicationIsCompleted(0);
   }
 
   @Override

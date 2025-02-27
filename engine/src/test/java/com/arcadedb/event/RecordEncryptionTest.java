@@ -24,8 +24,6 @@ import com.arcadedb.database.Record;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.VertexType;
-
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import javax.crypto.BadPaddingException;
@@ -37,12 +35,15 @@ import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
-import java.security.*;
-import java.security.spec.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.security.InvalidAlgorithmParameterException;
+import java.security.InvalidKeyException;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.KeySpec;
+import java.util.Base64;
+import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -72,7 +73,10 @@ public class RecordEncryptionTest extends TestHelper
 
     try {
       key = getKeyFromPassword(password, "salt");
-      ivParameterSpec = generateIv();
+      // Generate IV once during initialization
+      byte[] iv = new byte[16];
+      new SecureRandom().nextBytes(iv);
+      ivParameterSpec = new IvParameterSpec(iv);
     } catch (Exception e) {
       throw new SecurityException(e);
     }
@@ -116,7 +120,9 @@ public class RecordEncryptionTest extends TestHelper
   public Record onAfterRead(Record record) {
     final MutableVertex doc = record.asVertex().modify();
     try {
-      doc.set("secret", decrypt(ALGORITHM, doc.getString("secret"), key, ivParameterSpec));
+      byte[] ivBytes = Base64.getDecoder().decode(doc.getString("iv"));
+      IvParameterSpec iv = new IvParameterSpec(ivBytes);
+      doc.set("secret", decrypt(ALGORITHM, doc.getString("secret"), key, iv));
       reads.incrementAndGet();
       return doc;
     } catch (Exception e) {
@@ -128,7 +134,9 @@ public class RecordEncryptionTest extends TestHelper
   public boolean onBeforeCreate(Record record) {
     final MutableVertex doc = record.asVertex().modify();
     try {
-      doc.set("secret", encrypt(ALGORITHM, doc.getString("secret"), key, ivParameterSpec));
+      String encrypted = encrypt(ALGORITHM, doc.getString("secret"), key, ivParameterSpec);
+      doc.set("secret", encrypted);
+      doc.set("iv", Base64.getEncoder().encodeToString(ivParameterSpec.getIV()));
       creates.incrementAndGet();
     } catch (Exception e) {
       throw new SecurityException(e);
@@ -140,7 +148,9 @@ public class RecordEncryptionTest extends TestHelper
   public boolean onBeforeUpdate(Record record) {
     final MutableVertex doc = record.asVertex().modify();
     try {
-      doc.set("secret", encrypt(ALGORITHM, doc.getString("secret"), key, ivParameterSpec));
+      String encrypted = encrypt(ALGORITHM, doc.getString("secret"), key, ivParameterSpec);
+      doc.set("secret", encrypted);
+      doc.set("iv", Base64.getEncoder().encodeToString(ivParameterSpec.getIV()));
       updates.incrementAndGet();
     } catch (Exception e) {
       throw new SecurityException(e);
@@ -149,8 +159,8 @@ public class RecordEncryptionTest extends TestHelper
   }
 
   public static String encrypt(String algorithm, String input, SecretKey key, IvParameterSpec iv)
-      throws NoSuchPaddingException, NoSuchAlgorithmException, InvalidAlgorithmParameterException, InvalidKeyException,
-      BadPaddingException, IllegalBlockSizeException {
+      throws NoSuchPaddingException, NoSuchAlgorithmException, InvalidAlgorithmParameterException,
+      InvalidKeyException, BadPaddingException, IllegalBlockSizeException {
     final Cipher cipher = Cipher.getInstance(algorithm);
     cipher.init(Cipher.ENCRYPT_MODE, key, iv);
     final byte[] cipherText = cipher.doFinal(input.getBytes());
@@ -158,9 +168,8 @@ public class RecordEncryptionTest extends TestHelper
   }
 
   public static String decrypt(String algorithm, String cipherText, SecretKey key, IvParameterSpec iv)
-      throws NoSuchPaddingException, NoSuchAlgorithmException, InvalidAlgorithmParameterException, InvalidKeyException,
-      BadPaddingException, IllegalBlockSizeException {
-
+      throws NoSuchPaddingException, NoSuchAlgorithmException, InvalidAlgorithmParameterException,
+      InvalidKeyException, BadPaddingException, IllegalBlockSizeException {
     final Cipher cipher = Cipher.getInstance(algorithm);
     cipher.init(Cipher.DECRYPT_MODE, key, iv);
     final byte[] plainText = cipher.doFinal(Base64.getDecoder().decode(cipherText));
@@ -172,11 +181,5 @@ public class RecordEncryptionTest extends TestHelper
     final SecretKeyFactory factory = SecretKeyFactory.getInstance(PASSWORD_ALGORITHM);
     final KeySpec spec = new PBEKeySpec(password.toCharArray(), salt.getBytes(), SALT_ITERATIONS, KEY_LENGTH);
     return new SecretKeySpec(factory.generateSecret(spec).getEncoded(), "AES");
-  }
-
-  public static IvParameterSpec generateIv() {
-    final byte[] iv = new byte[16];
-    new SecureRandom().nextBytes(iv);
-    return new IvParameterSpec(iv);
   }
 }

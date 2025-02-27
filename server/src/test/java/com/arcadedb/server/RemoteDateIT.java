@@ -71,33 +71,25 @@ public class RemoteDateIT {
 
     Database database = arcadeDBServer.getDatabase("remotedate");
     try {
-      String sqlString;
-      LocalDateTime vstart = LocalDateTime.now();
+      LocalDateTime vstart = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
 
       database.begin();
-      sqlString = "INSERT INTO Order SET vstart = ?";
-      try (ResultSet resultSet = database.command("sql", sqlString, vstart)) {
+      try (ResultSet resultSet = database.command("sql",  "INSERT INTO Order SET vstart = ?", vstart)) {
         assertThat(resultSet.next().toJSON().getLong("vstart")).isEqualTo(DateUtils.dateTimeToTimestamp(vstart, ChronoUnit.MICROS));
       }
-      sqlString = "select from Order";
-      System.out.println(sqlString);
-      Result result = null;
-      try (ResultSet resultSet = database.query("sql", sqlString)) {
-        result = resultSet.next();
+      try (ResultSet resultSet = database.query("sql", "select from Order")) {
+        Result result = resultSet.next();
         assertThat(result.toElement().get("vstart")).isEqualTo(vstart);
       }
-      assertThat(result).isNotNull();
 
       database.commit();
 
       final RemoteDatabase remote = new RemoteDatabase("localhost", 2480, "remotedate", "root", DEFAULT_PASSWORD_FOR_TESTS);
 
-      result = null;
-      try (ResultSet resultSet = remote.query("sql", sqlString)) {
-        result = resultSet.next();
+      try (ResultSet resultSet = remote.query("sql", "select from Order")) {
+        Result result = resultSet.next();
         assertThat(result.toElement().get("vstart")).isEqualTo(vstart.toString());
       }
-      assertThat(result).isNotNull();
 
     } finally {
       arcadeDBServer.stop();

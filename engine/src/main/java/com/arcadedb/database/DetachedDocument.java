@@ -18,9 +18,14 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Detached document instances are generated from a document and can be accessed outside a transaction.
@@ -29,9 +34,16 @@ import java.util.*;
  */
 public class DetachedDocument extends ImmutableDocument {
   private Map<String, Object> map;
+  private boolean             filterHiddenProperties = false;
 
   protected DetachedDocument(final BaseDocument source) {
     super(null, source.type, source.rid, null);
+    init(source);
+  }
+
+  protected DetachedDocument(final BaseDocument source, boolean filterHiddenProperties) {
+    super(null, source.type, source.rid, null);
+    this.filterHiddenProperties = filterHiddenProperties;
     init(source);
   }
 
@@ -39,6 +51,12 @@ public class DetachedDocument extends ImmutableDocument {
     this.map = new LinkedHashMap<>();
     final Map<String, Object> sourceMap = sourceDocument.propertiesAsMap();
     for (final Map.Entry<String, Object> entry : sourceMap.entrySet()) {
+
+      if (filterHiddenProperties) {
+        Property property = sourceDocument.getType().getPropertyIfExists(entry.getKey());
+        if (property != null && property.isHidden())
+          continue;
+      }
       Object value = entry.getValue();
 
       if (value instanceof List list) {

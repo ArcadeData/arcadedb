@@ -31,14 +31,18 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
-
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.fail;
 
 public abstract class ReplicationServerIT extends BaseGraphServerTest {
@@ -111,14 +115,14 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
     }
 
     db.commit();
-    db.begin();
 
     testLog("Done");
 
     for (int i = 0; i < getServerCount(); i++)
       waitForReplicationIsCompleted(i);
 
-    assertThat(db.countType(VERTEX1_TYPE_NAME, true)).as("Check for vertex count for server" + 0)
+    assertThat(db.countType(VERTEX1_TYPE_NAME, true))
+        .as("Check for vertex count for server" + 0)
         .isEqualTo(1 + (long) getTxs() * getVerticesPerTx());
 
     // CHECK INDEXES ARE REPLICATED CORRECTLY
@@ -136,17 +140,24 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
     for (int s = 0; s < getServerCount(); ++s) {
       final Database db = getServerDatabase(s, getDatabaseName());
       db.begin();
-      try {
-        assertThat(db.countType(VERTEX1_TYPE_NAME, true)).as("Check for vertex count for server" + s).isEqualTo(1);
-        assertThat(db.countType(VERTEX2_TYPE_NAME, true)).as("Check for vertex count for server" + s).isEqualTo(2);
+      final ArcadeDBServer server = getServer(s);
+      assertThatNoException().isThrownBy(() -> {
+        assertThat(db.countType(VERTEX1_TYPE_NAME, true))
+            .as("Check for vertex count for server" + server)
+            .isEqualTo(1);
+        assertThat(db.countType(VERTEX2_TYPE_NAME, true))
+            .as("Check for vertex count for server" + server)
+            .isEqualTo(2);
 
-        assertThat(db.countType(EDGE1_TYPE_NAME, true)).as("Check for edge count for server" + s).isEqualTo(1);
-        assertThat(db.countType(EDGE2_TYPE_NAME, true)).as("Check for edge count for server" + s).isEqualTo(2);
+        assertThat(db.countType(EDGE1_TYPE_NAME, true))
+            .as("Check for edge count for server" + server)
+            .isEqualTo(1);
+        assertThat(db.countType(EDGE2_TYPE_NAME, true))
+            .as("Check for edge count for server" + server)
+            .isEqualTo(2);
+      });
 
-      } catch (final Exception e) {
-        e.printStackTrace();
-        fail("Error on checking on server" + s);
-      }
+      db.commit();
     }
   }
 
@@ -157,8 +168,8 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
     return false;
   }
 
-  protected void checkEntriesOnServer(final int serverIndex) {
-    final Database db = getServerDatabase(serverIndex, getDatabaseName());
+  protected void checkEntriesOnServer(final int server) {
+    final Database db = getServerDatabase(server, getDatabaseName());
 
     // RESET ANY PREVIOUS TRANSACTION IN TL. IN CASE OF STOP/CRASH THE TL COULD HAVE AN OLD INSTANCE THAT POINT TO AN OLD SERVER
     DatabaseContext.INSTANCE.init((DatabaseInternal) db);
@@ -166,11 +177,11 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
     db.transaction(() -> {
       try {
         final long recordInDb = db.countType(VERTEX1_TYPE_NAME, true);
-        assertThat(recordInDb).isLessThanOrEqualTo(1 + getTxs() * getVerticesPerTx())
+        assertThat(recordInDb)
             .withFailMessage(
-                "TEST: Check for vertex count for server" + serverIndex + " found " + recordInDb + " not less than " + (1
-                    + getTxs() * getVerticesPerTx()));
-
+                "TEST: Check for vertex count for server" + server + " found " + recordInDb + " not less than " + (1
+                    + getTxs() * getVerticesPerTx()))
+            .isLessThanOrEqualTo(1 + getTxs() * getVerticesPerTx());
 
         final TypeIndex index = db.getSchema().getType(VERTEX1_TYPE_NAME).getPolymorphicIndexByProperties("id");
         long total = 0;
@@ -215,14 +226,13 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
         }
 
         assertThat(ridsFoundInIndex.size())
-            .withFailMessage("TEST: Found " + missingsCount + " missing records on server " + serverIndex)
+            .withFailMessage("TEST: Found " + missingsCount + " missing records on server " + server)
             .isEqualTo(recordInDb);
         assertThat(missingsCount).isZero();
         assertThat(total).isEqualTo(total2);
 
       } catch (final Exception e) {
-        e.printStackTrace();
-        fail("TEST: Error on checking on server" + serverIndex + ": " + e.getMessage());
+        fail("TEST: Error on checking on server" + server + ": " + e.getMessage());
       }
     });
   }

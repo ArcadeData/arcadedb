@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Simulates a split brain on 5 nodes, by isolating nodes 4th and 5th in a separate network. After 10 seconds, allows the 2 networks to see
- * each other and hoping for a rejoin in only one network where the leaser is still the original one.
+ * each other and hoping for a rejoin in only one network where the leader is still the original one.
  */
 public class HASplitBrainIT extends ReplicationServerIT {
   private final    Timer      timer     = new Timer();
@@ -77,11 +77,11 @@ public class HASplitBrainIT extends ReplicationServerIT {
           final String connectTo = (String) object;
 
           final String[] parts = HostUtil.parseHostAddress(connectTo, HostUtil.HA_DEFAULT_PORT);
-          final int port = Integer.parseInt(parts[1]);
+          final int connectToPort = Integer.parseInt(parts[1]);
 
           if (server.getServerName().equals("ArcadeDB_3") || server.getServerName().equals("ArcadeDB_4")) {
             // SERVERS 3-4
-            if (port == 2424 || port == 2425 || port == 2426) {
+            if (connectToPort == 2424 || connectToPort == 2425 || connectToPort == 2426) {
               if (!rejoining) {
                 testLog("SIMULATING CONNECTION ERROR TO CONNECT TO THE LEADER FROM " + server);
                 throw new IOException(
@@ -92,8 +92,8 @@ public class HASplitBrainIT extends ReplicationServerIT {
               LogManager.instance()
                   .log(this, Level.FINE, "ALLOWED CONNECTION FROM SERVER %s TO %s...", null, server.getServerName(), connectTo);
           } else {
-            // SERVERS 0-2
-            if (port == 2427 || port == 2428) {
+            // SERVERS 0-1-2
+            if (connectToPort == 2427 || connectToPort == 2428) {
               if (!rejoining) {
                 testLog("SIMULATING CONNECTION ERROR TO SERVERS " + connectTo + " FROM " + server);
                 throw new IOException(

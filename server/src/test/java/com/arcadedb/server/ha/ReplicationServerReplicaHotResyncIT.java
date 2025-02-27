@@ -22,18 +22,20 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
-import com.arcadedb.utility.CodeUtils;
 
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
-  private final    AtomicLong totalMessages = new AtomicLong();
-  private volatile boolean    slowDown      = true;
-  private          boolean    hotResync     = false;
-  private          boolean    fullResync    = false;
+  private final    CountDownLatch hotResyncLatch  = new CountDownLatch(1);
+  private final    CountDownLatch fullResyncLatch = new CountDownLatch(1);
+  private final    AtomicLong     totalMessages   = new AtomicLong();
+  private volatile boolean        slowDown        = true;
 
   @Override
   public void setTestConfiguration() {
@@ -43,14 +45,23 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
 
   @Override
   protected void onAfterTest() {
-    assertThat(hotResync).isTrue();
-    assertThat(fullResync).isFalse();
+    try {
+      // Wait for hot resync event with timeout
+      boolean hotResyncReceived = hotResyncLatch.await(30, TimeUnit.SECONDS);
+      // Wait for full resync event with timeout
+      boolean fullResyncReceived = fullResyncLatch.await(1, TimeUnit.SECONDS);
+
+      assertThat(hotResyncReceived).as("Hot resync event should have been received").isTrue();
+      assertThat(fullResyncReceived).as("Full resync event should not have been received").isFalse();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      fail("Test was interrupted while waiting for resync events");
+    }
   }
 
   @Override
   protected void onBeforeStarting(final ArcadeDBServer server) {
-
-    if (server.getServerName().equals("ArcadeDB_2"))
+    if (server.getServerName().equals("ArcadeDB_2")) {
       server.registerTestEventListener(new ReplicationCallback() {
         @Override
         public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
@@ -61,25 +72,30 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
             // SLOW DOWN A SERVER AFTER 5TH MESSAGE
             if (totalMessages.incrementAndGet() > 5) {
               LogManager.instance().log(this, Level.INFO, "TEST: Slowing down response from replica server 2...");
-              CodeUtils.sleep(5_000);
+              try {
+                // Still need some delay to trigger the hot resync
+                Thread.sleep(5_000);
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+              }
             }
           } else {
             if (type == TYPE.REPLICA_HOT_RESYNC) {
               LogManager.instance().log(this, Level.INFO, "TEST: Received hot resync request");
-              hotResync = true;
+              hotResyncLatch.countDown();
             } else if (type == TYPE.REPLICA_FULL_RESYNC) {
               LogManager.instance().log(this, Level.INFO, "TEST: Received full resync request");
-              fullResync = true;
+              fullResyncLatch.countDown();
             }
           }
         }
       });
+    }
 
-    if (server.getServerName().equals("ArcadeDB_0"))
+    if (server.getServerName().equals("ArcadeDB_0")) {
       server.registerTestEventListener(new ReplicationCallback() {
         @Override
         public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
-          // SLOW DOWN A SERVER
           if (!serversSynchronized)
             return;
 
@@ -89,5 +105,6 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
           }
         }
       });
+    }
   }
 }

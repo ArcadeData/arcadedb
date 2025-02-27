@@ -23,7 +23,6 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
-import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -52,8 +51,8 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
     database.command("sql", "create vertex type Person");
     database.command("sql", "create edge type FriendOf");
 
-    MutableVertex me = database.newVertex("Person").set("name", "me") .save();
-    MutableVertex you = database.newVertex("Person").set("name", "you") .save();
+    MutableVertex me = database.newVertex("Person").set("name", "me").save();
+    MutableVertex you = database.newVertex("Person").set("name", "you").save();
 
     MutableEdge friendOf = me.newEdge("FriendOf", you, false).save();
 
@@ -64,6 +63,53 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
       assertThat(e).isEqualTo(friendOf);
     });
 
+    database.query("sql", "select expand(out('FriendOf')) from Person where name = 'me'").stream().forEach(r -> {
+      assertThat(r.<String>getProperty("name")).isEqualTo("you");
+    });
   }
 
+  @Test
+  void createTypesAndDataWithSqlScripts() {
+    //this is a test-double of HTTPGraphIT.testOneEdgePerTx test
+    database.command("sqlscript",
+        """
+            CREATE VERTEX TYPE Photos;
+            CREATE VERTEX TYPE Users;
+            CREATE EDGE TYPE HasUploaded;""");
+
+    database.command("sql", "CREATE VERTEX Users SET id = 'u1111'");
+
+    database.command("sqlscript",
+        """
+            BEGIN;
+            LET photo = CREATE VERTEX Photos SET id = "p12345", name = "download1.jpg";
+            LET user = SELECT FROM Users WHERE id = "u1111";
+            LET userEdge = CREATE EDGE HasUploaded FROM $user TO $photo SET kind = "User_Photos";
+            COMMIT RETRY 30;
+            RETURN $photo;""");
+
+    database.command("sqlscript",
+        """
+            BEGIN;
+            LET photo = CREATE VERTEX Photos SET id = "p2222", name = "download2.jpg";
+            LET user = SELECT FROM Users WHERE id = "u1111";
+            LET userEdge = CREATE EDGE HasUploaded FROM $user TO $photo SET kind = "User_Photos";
+            COMMIT RETRY 30;
+            RETURN $photo;""");
+
+    database.command("sqlscript",
+        """
+            BEGIN;LET photo = CREATE VERTEX Photos SET id = "p5555", name = "download3.jpg";
+            LET user = SELECT FROM Users WHERE id = "u1111";
+            LET userEdge = CREATE EDGE HasUploaded FROM $user TO $photo SET kind = "User_Photos";
+            COMMIT RETRY 30;
+            RETURN $photo;""");
+
+    ResultSet resultSet = database.command("sql",
+        """
+            SELECT expand( out('HasUploaded') ) FROM Users WHERE id = "u1111"
+            """);
+
+    assertThat(resultSet.stream()).hasSize(3);
+  }
 }

@@ -34,15 +34,31 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.utility.FileUtils;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 
-import java.io.*;
-import java.net.*;
-import java.nio.charset.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.io.BufferedOutputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.PrintWriter;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.concurrent.Callable;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -80,15 +96,23 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
 
     deleteDatabaseFolders();
 
+    prepareDatabase();
+
+    startServers();
+  }
+
+  private void prepareDatabase() {
     if (isCreateDatabases()) {
       databases = new Database[getServerCount()];
 
+      //create database for server 0
       GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
       databases[0] = new DatabaseFactory(getDatabasePath(0)).create();
       databases[0].async().setParallelLevel(PARALLEL_LEVEL);
       populateDatabase();
       databases[0].close();
 
+      //copy the database under other servers
       for (int i = 1; i < getServerCount(); ++i) {
         try {
           FileUtils.copyDirectory(new File(getDatabasePath(0)), new File(getDatabasePath(i)));
@@ -104,8 +128,6 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       for (Database db : databases)
         if (db != null && db.isOpen())
           databases[0].close();
-
-    startServers();
   }
 
   protected void populateDatabase() {
@@ -167,13 +189,13 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   }
 
   protected void waitForReplicationIsCompleted(final int serverNumber) {
-    while (getServer(serverNumber).getHA().getMessagesInQueue() > 0) {
-      try {
-        Thread.sleep(1000);
-      } catch (InterruptedException e) {
-        throw new RuntimeException(e);
-      }
-    }
+
+    Awaitility.await()
+        .atMost(2, TimeUnit.MINUTES)
+        .pollInterval(1, TimeUnit.SECONDS)
+        .untilTrue(new AtomicBoolean(getServer(serverNumber).getHA().getMessagesInQueue() == 0)
+        );
+
   }
 
   @AfterEach

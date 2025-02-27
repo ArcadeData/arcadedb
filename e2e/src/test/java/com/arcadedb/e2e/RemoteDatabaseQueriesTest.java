@@ -46,7 +46,7 @@ public class RemoteDatabaseQueriesTest extends ArcadeContainerTemplate {
   @Test
   void simpleSQLQuery() {
     database.transaction(() -> {
-      final ResultSet result = database.query("SQL", "select from Beer limit 10");
+      final ResultSet result = database.query("SQL", "select * from Beer limit 10");
       assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
     }, true, 10);
   }

@@ -38,6 +38,13 @@ public class JsonSerializer {
   private boolean useVertexEdgeSize         = true;
   private boolean useCollectionSizeForEdges = true;
 
+  JsonSerializer() {
+  }
+
+  public static JsonSerializer createJsonSerializer() {
+    return new JsonSerializer();
+  }
+
   public JSONObject serializeDocument(final Document document) {
     final Database database = document.getDatabase();
     final JSONObject object = new JSONObject()

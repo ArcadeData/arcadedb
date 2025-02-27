@@ -32,6 +32,7 @@ import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.CodeUtils;
+import org.graalvm.nativebridge.In;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -54,6 +55,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
   }
 
   @Test
+  @Override
   public void testReplication() {
     checkDatabases();
 
@@ -153,18 +155,14 @@ public class HARandomCrashIT extends ReplicationServerIT {
             final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter,
                 "distributed-test");
 
-            assertThat(resultSet.hasNext()).isTrue();
             final Result result = resultSet.next();
-            assertThat(result).isNotNull();
             final Set<String> props = result.getPropertyNames();
-            assertThat(props.size()).as("Found the following properties " + props).isEqualTo(2);
-            assertThat(props.contains("id")).isTrue();
-            assertThat((int) result.getProperty("id")).isEqualTo(counter);
-            assertThat(props.contains("name")).isTrue();
+            assertThat(props).as("Found the following properties " + props).hasSize(2);
+            assertThat(result.<Integer>getProperty("id")).isEqualTo(counter);
             assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
           }
 
-          CodeUtils.sleep(delay);
+          CodeUtils.sleep(100);
 
           break;
 
@@ -228,7 +226,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
   }
 
   private static Level getLogLevel() {
-    return Level.SEVERE;
+    return Level.INFO;
   }
 
   @Override
