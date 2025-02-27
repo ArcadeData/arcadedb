@@ -614,24 +614,26 @@ public class GraphEngine {
 
   public EdgeLinkedList getEdgeHeadChunk(final VertexInternal vertex, final Vertex.DIRECTION direction) {
     if (direction == Vertex.DIRECTION.OUT) {
-      final RID rid = vertex.getOutEdgesHeadChunk();
-      if (rid != null) {
-        try {
+      RID rid = null;
+      try {
+        rid = vertex.getOutEdgesHeadChunk();
+        if (rid != null) {
           return new EdgeLinkedList(vertex, Vertex.DIRECTION.OUT, (EdgeSegment) vertex.getDatabase().lookupByRID(rid, true));
-        } catch (final RecordNotFoundException e) {
-          LogManager.instance()
-              .log(this, Level.WARNING, "Cannot load OUT edge list chunk (%s) for vertex %s", e, rid, vertex.getIdentity());
         }
+      } catch (final RecordNotFoundException e) {
+        LogManager.instance()
+            .log(this, Level.WARNING, "Cannot load OUT edge list chunk (%s) for vertex %s", e, rid, vertex.getIdentity());
       }
     } else if (direction == Vertex.DIRECTION.IN) {
-      final RID rid = vertex.getInEdgesHeadChunk();
-      if (rid != null) {
-        try {
+      RID rid = null;
+      try {
+        rid = vertex.getInEdgesHeadChunk();
+        if (rid != null) {
           return new EdgeLinkedList(vertex, Vertex.DIRECTION.IN, (EdgeSegment) vertex.getDatabase().lookupByRID(rid, true));
-        } catch (final RecordNotFoundException e) {
-          LogManager.instance()
-              .log(this, Level.WARNING, "Cannot load IN edge list chunk (%s) for vertex %s", e, rid, vertex.getIdentity());
         }
+      } catch (final RecordNotFoundException e) {
+        LogManager.instance()
+            .log(this, Level.WARNING, "Cannot load IN edge list chunk (%s) for vertex %s", e, rid, vertex.getIdentity());
       }
     }
 
