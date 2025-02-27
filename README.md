@@ -105,12 +105,21 @@ ArcadeDB is cloud-ready with [Docker](https://docs.arcadedb.com/#Docker) and [Ku
 
 You can also [download the latest release](https://github.com/ArcadeData/arcadedb/releases), unpack it on your local hard drive and start the server with `bin/server.sh` or `bin/server.bat` for Windows.
 
+### Releases
+
+There are three variants of (about monthly) releases:
+
+- `full` - this is the complete package of including all modules
+- `minimal` - this package excludes the `gremlin`, `redisw`, `mongodbw`, `graphql` modules
+- `headless` - this package excludes the `gremlin`, `redisw`, `mongodbw`, `graphql`, `studio` modules
+
 ### Community
 
 Join our growing community around the world, for ideas, discussions and help regarding ArcadeDB.
 
 - Chat live with us on [Discord](https://discord.gg/w2Npx2B7hZ)
 - Follow us on [Twitter](https://twitter.com/arcade_db)
+- or on [Bluesky](https://bsky.app/profile/arcadedb.bsky.social)
 - Connect with us on [LinkedIn](https://www.linkedin.com/products/arcadedb)
 - or on [Facebook](https://www.facebook.com/arcadedb)
 - Questions tagged `#arcadedb` on [Stack Overflow](https://stackoverflow.com/questions/tagged/arcadedb)
