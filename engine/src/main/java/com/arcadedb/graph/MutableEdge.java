@@ -201,6 +201,19 @@ public class MutableEdge extends MutableDocument implements Edge {
     return json;
   }
 
+  @Override
+  public synchronized String toString() {
+    final StringBuilder buffer = new StringBuilder();
+    buffer.append("V(");
+    buffer.append(out != null ? out.toString() : "?");
+    buffer.append(")<-[E");
+    buffer.append(rid != null ? rid.toString() : "?");
+    buffer.append("]->V(");
+    buffer.append(in != null ? in.toString() : "?");
+    buffer.append(")");
+    return buffer.toString();
+  }
+
   private void init() {
     if (buffer != null) {
       buffer.position(1);

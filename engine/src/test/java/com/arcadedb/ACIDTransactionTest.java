@@ -317,7 +317,7 @@ public class ACIDTransactionTest extends TestHelper {
   @Test
   public void multiThreadConcurrentTransactions() {
     database.transaction(() -> {
-      final DocumentType type = database.getSchema().createDocumentType("Stock", 8);
+      final DocumentType type = database.getSchema().createDocumentType("Stock", 32);
       type.createProperty("symbol", Type.STRING);
       type.createProperty("date", Type.DATETIME);
       type.createProperty("history", Type.LIST);

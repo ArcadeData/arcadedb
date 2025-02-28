@@ -198,6 +198,7 @@ public class EdgeLinkedList {
   }
 
   public void removeEdge(final Edge edge) {
+    EdgeSegment prevBrowsed = null;
     EdgeSegment current = lastSegment;
     while (current != null) {
       final RID rid = edge.getIdentity();
@@ -211,39 +212,62 @@ public class EdgeLinkedList {
         deleted = current.removeVertex(direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut());
 
       if (deleted > 0) {
-        ((DatabaseInternal) vertex.getDatabase()).updateRecord(current);
+        updateSegment(current, prevBrowsed);
         break;
       }
 
+      prevBrowsed = current;
       current = current.getPrevious();
     }
   }
 
   public void removeEdgeRID(final RID edge) {
+    EdgeSegment prevBrowsed = null;
     EdgeSegment current = lastSegment;
     while (current != null) {
       final int deleted = current.removeEdge(edge);
       if (deleted > 0) {
-        ((DatabaseInternal) vertex.getDatabase()).updateRecord(current);
+        updateSegment(current, prevBrowsed);
         break;
       }
+      prevBrowsed = current;
       current = current.getPrevious();
     }
   }
 
   public void removeVertex(final RID vertexRID) {
+    EdgeSegment prevBrowsed = null;
     EdgeSegment current = lastSegment;
     while (current != null) {
       if (current.removeVertex(vertexRID) > 0) {
-        ((DatabaseInternal) vertex.getDatabase()).updateRecord(current);
+        updateSegment(current, prevBrowsed);
         break;
       }
-
+      prevBrowsed = current;
       current = current.getPrevious();
     }
   }
 
   private int computeBestSize() {
     return ((DatabaseInternal) vertex.getDatabase()).getNewEdgeListSize(lastSegment.getRecordSize());
+  }
+
+  private void updateSegment(final EdgeSegment current, final EdgeSegment prevBrowsed) {
+    if (prevBrowsed != null && current.isEmpty() && current.getPrevious() != null) {
+      // SEGMENT EMPTY: DELETE ONLY IF IT IS NOT THE FIRST SEGMENT. DELETE CURRENT SEGMENT AND REATTACH THE LINKED LIST
+      prevBrowsed.setPrevious(current.getPrevious());
+      ((DatabaseInternal) vertex.getDatabase()).updateRecord(prevBrowsed);
+      current.delete();
+    } else
+      ((DatabaseInternal) vertex.getDatabase()).updateRecord(current);
+  }
+
+  public void deleteAll() {
+    EdgeSegment current = lastSegment;
+    while (current != null) {
+      final EdgeSegment prev = current.getPrevious();
+      current.delete();
+      current = prev;
+    }
   }
 }

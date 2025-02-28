@@ -329,11 +329,11 @@ public class LSMTreeIndexCompactor {
     final LSMTreeIndexMutable newIndex = mainIndex.splitIndex(lastImmutablePage + 1, compactedIndex);
 
     LogManager.instance().log(mainIndex, Level.WARNING, "Index '%s' compacted in %dms (keys=%d values=%d mutablePages=%d immutablePages=%d iterations=%d oldLevel0File=%s(%d) newLevel0File=%s(%d) newLevel1File=%s(%d) threadId=%d)".formatted(
-      mainIndex.getName(), (System.currentTimeMillis() - startTime), totalKeys, totalValues, newIndex.getTotalPages(),
-      compactedIndex.getTotalPages(),
-      iterations, oldMutableFileName, oldMutableFileId, mainIndex.getMutableIndex().getName(),
-      mainIndex.getMutableIndex().getFileId(),
-      compactedIndex.getName(), compactedIndex.getFileId(), Thread.currentThread().getId()));
+        mainIndex.getName(), (System.currentTimeMillis() - startTime), totalKeys, totalValues, newIndex.getTotalPages(),
+        compactedIndex.getTotalPages(),
+        iterations, oldMutableFileName, oldMutableFileId, mainIndex.getMutableIndex().getName(),
+        mainIndex.getMutableIndex().getFileId(),
+        compactedIndex.getName(), compactedIndex.getFileId(), Thread.currentThread().getId()));
 
     if (debug) {
       System.out.println("AFTER COMPACTING:");
