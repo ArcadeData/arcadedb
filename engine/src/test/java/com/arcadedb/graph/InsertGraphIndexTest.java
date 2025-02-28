@@ -53,8 +53,12 @@ public class InsertGraphIndexTest extends TestHelper {
     {
       final Vertex[] cachedVertices = loadVertices();
       checkGraph(cachedVertices);
+      database.transaction(() -> {
+        database.select().fromType(EDGE_TYPE_NAME).edges().toList().forEach(e -> {
+          e.delete();
+        });
+      });
     }
-
     database.close();
   }
 
@@ -75,11 +79,12 @@ public class InsertGraphIndexTest extends TestHelper {
       for (; sourceIndex < VERTICES; ++sourceIndex) {
         int edges = 0;
 
-        final Vertex sourceVertex = (Vertex) database.lookupByKey(VERTEX_TYPE_NAME, new String[] { "id" }, new Object[] { sourceIndex }).next().getRecord();
+        final Vertex sourceVertex = (Vertex) database.lookupByKey(VERTEX_TYPE_NAME, new String[] { "id" },
+            new Object[] { sourceIndex }).next().getRecord();
 
         for (int destinationIndex = 0; destinationIndex < VERTICES; destinationIndex++) {
-          final Vertex destinationVertex = (Vertex) database.lookupByKey(VERTEX_TYPE_NAME, new String[] { "id" }, new Object[] { destinationIndex }).next()
-              .getRecord();
+          final Vertex destinationVertex = (Vertex) database.lookupByKey(VERTEX_TYPE_NAME, new String[] { "id" },
+              new Object[] { destinationIndex }).next().getRecord();
 
           sourceVertex.newEdge(EDGE_TYPE_NAME, destinationVertex, true);
           if (++edges > EDGES_PER_VERTEX)
