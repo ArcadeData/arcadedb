@@ -138,28 +138,32 @@ public class ImmutableDocument extends BaseDocument {
     else {
       final int currPosition = buffer.position();
 
-      buffer.position(propertiesStartingPosition);
-      final Map<String, Object> map = this.database.getSerializer()
-          .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
+      try {
+        buffer.position(propertiesStartingPosition);
+        final Map<String, Object> map = this.database.getSerializer()
+            .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
 
-      buffer.position(currPosition);
+        buffer.position(currPosition);
 
-      int i = 0;
-      for (final Map.Entry<String, Object> entry : map.entrySet()) {
-        if (i > 0)
-          output.append(',');
+        int i = 0;
+        for (final Map.Entry<String, Object> entry : map.entrySet()) {
+          if (i > 0)
+            output.append(',');
 
-        output.append(entry.getKey());
-        output.append('=');
+          output.append(entry.getKey());
+          output.append('=');
 
-        final Object v = entry.getValue();
-        if (v != null && v.getClass().isArray()) {
-          output.append('[');
-          output.append(Array.getLength(v));
-          output.append(']');
-        } else
-          output.append(v);
-        i++;
+          final Object v = entry.getValue();
+          if (v != null && v.getClass().isArray()) {
+            output.append('[');
+            output.append(Array.getLength(v));
+            output.append(']');
+          } else
+            output.append(v);
+          i++;
+        }
+      } catch (Exception e) {
+        output.append("corrupted?");
       }
     }
     output.append(']');
