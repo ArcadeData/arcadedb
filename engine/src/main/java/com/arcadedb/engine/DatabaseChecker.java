@@ -31,6 +31,7 @@ import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.io.*;
 import java.util.*;
 import java.util.logging.*;
 import java.util.stream.*;
@@ -39,6 +40,7 @@ public class DatabaseChecker {
   private final DatabaseInternal    database;
   private       int                 verboseLevel = 1;
   private       boolean             fix          = false;
+  private       boolean             compress     = false;
   private       Set<Object>         buckets      = Collections.emptySet();
   private       Set<String>         types        = Collections.emptySet();
   private final Map<String, Object> result       = new HashMap<>();
@@ -67,7 +69,8 @@ public class DatabaseChecker {
 
     final Set<Integer> affectedBuckets = new HashSet<>();
     for (final RID rid : (Collection<RID>) result.get("corruptedRecords"))
-      affectedBuckets.add(rid.getBucketId());
+      if (rid != null)
+        affectedBuckets.add(rid.getBucketId());
 
     final Set<Index> affectedIndexes = new HashSet<>();
     for (final Index index : database.getSchema().getIndexes())
@@ -96,10 +99,50 @@ public class DatabaseChecker {
             .withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy).create();
       }
 
+    if (compress)
+      compress();
+
     if (verboseLevel > 0)
       LogManager.instance().log(this, Level.INFO, "Result:\n%s", null, new JSONObject(result).toString(2));
 
     return result;
+  }
+
+  public void compress() {
+    if (database.isTransactionActive())
+      database.rollback();
+
+    int pageTxBatch = 10;
+    int pageBatch = 0;
+
+    for (final Bucket b : database.getSchema().getBuckets()) {
+      final LocalBucket bucket = (LocalBucket) b;
+
+      database.begin();
+
+      final int pages = bucket.getTotalPages();
+      for (int i = 0; i < pages; i++) {
+        try {
+          final MutablePage page = database.getTransaction()
+              .getPageToModify(new PageId(database, bucket.getFileId(), i), bucket.getPageSize(), false);
+
+          bucket.compressPage(page);
+
+          ++pageBatch;
+
+          if (pageBatch >= pageTxBatch) {
+            database.commit();
+            database.begin();
+            pageBatch = 0;
+          }
+
+        } catch (IOException e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on loading page %d of bucket %s", e, i, bucket.getName());
+        }
+      }
+
+      database.commit();
+    }
   }
 
   private void checkEdges() {
@@ -159,6 +202,11 @@ public class DatabaseChecker {
 
   public DatabaseChecker setFix(final boolean fix) {
     this.fix = fix;
+    return this;
+  }
+
+  public DatabaseChecker setCompress(final boolean compress) {
+    this.compress = compress;
     return this;
   }
 

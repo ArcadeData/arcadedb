@@ -30,9 +30,10 @@ import java.util.*;
 import java.util.stream.*;
 
 public class CheckDatabaseStatement extends SimpleExecStatement {
-  protected final Set<BucketIdentifier> buckets = new HashSet<>();
-  protected final Set<Identifier>       types   = new HashSet<>();
-  protected       boolean               fix     = false;
+  protected final Set<BucketIdentifier> buckets  = new HashSet<>();
+  protected final Set<Identifier>       types    = new HashSet<>();
+  protected       boolean               fix      = false;
+  protected       boolean               compress = false;
 
   public CheckDatabaseStatement(final int id) {
     super(id);
@@ -53,6 +54,7 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
         x.getStringValue().substring(1, x.getStringValue().length() - 1) :
         x.getStringValue()).collect(Collectors.toSet()));
     checker.setFix(fix);
+    checker.setCompress(compress);
 
     final Map<String, Object> checkResult = checker.check();
 
@@ -92,6 +94,9 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
 
     if (fix)
       builder.append(" FIX");
+
+    if (compress)
+      builder.append(" COMPRESS");
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=8b4b56a95655bca6baea744bc4c6aedd (do not edit this line) */
