@@ -107,41 +107,45 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         while (qResult.hasNext()) {
           final Result row = qResult.next();
 
-          boolean recordIncluded = true;
-          if (row.getIdentity().isPresent()) {
-            final RID rid = row.getIdentity().get();
-            recordIncluded = includedRecords.add(rid);
-            if (recordIncluded)
+          try {
+            boolean recordIncluded = true;
+            if (row.getIdentity().isPresent()) {
+              final RID rid = row.getIdentity().get();
+              recordIncluded = includedRecords.add(rid);
+              if (recordIncluded)
+                records.put(serializerImpl.serializeResult(database, row));
+            } else
               records.put(serializerImpl.serializeResult(database, row));
-          } else
-            records.put(serializerImpl.serializeResult(database, row));
 
-          if (row.isVertex()) {
-            if (recordIncluded) {
-              final Vertex v = row.getVertex().get();
-              if (includedVertices.add(v.getIdentity()))
-                vertices.put(serializerImpl.serializeGraphElement(v));
-            }
-          } else if (row.isEdge()) {
-            final Edge e = row.getEdge().get();
-            if (recordIncluded)
-              if (includedEdges.add(e.getIdentity())) {
-                edges.put(serializerImpl.serializeGraphElement(e));
-                try {
-                  if (includedVertices.add(e.getIn())) {
-                    includedRecords.add(e.getIn());
-                    vertices.put(serializerImpl.serializeGraphElement(e.getInVertex()));
-                  }
-                  if (includedVertices.add(e.getOut())) {
-                    includedRecords.add(e.getOut());
-                    vertices.put(serializerImpl.serializeGraphElement(e.getOutVertex()));
-                  }
-                } catch (RecordNotFoundException ex) {
-                  LogManager.instance().log(this, Level.SEVERE, "Record %s not found during serialization", ex.getRID());
-                }
+            if (row.isVertex()) {
+              if (recordIncluded) {
+                final Vertex v = row.getVertex().get();
+                if (includedVertices.add(v.getIdentity()))
+                  vertices.put(serializerImpl.serializeGraphElement(v));
               }
-          } else {
-            analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, row, limit);
+            } else if (row.isEdge()) {
+              final Edge e = row.getEdge().get();
+              if (recordIncluded)
+                if (includedEdges.add(e.getIdentity())) {
+                  edges.put(serializerImpl.serializeGraphElement(e));
+                  try {
+                    if (includedVertices.add(e.getIn())) {
+                      includedRecords.add(e.getIn());
+                      vertices.put(serializerImpl.serializeGraphElement(e.getInVertex()));
+                    }
+                    if (includedVertices.add(e.getOut())) {
+                      includedRecords.add(e.getOut());
+                      vertices.put(serializerImpl.serializeGraphElement(e.getOutVertex()));
+                    }
+                  } catch (RecordNotFoundException ex) {
+                    LogManager.instance().log(this, Level.SEVERE, "Record %s not found during serialization", ex.getRID());
+                  }
+                }
+            } else {
+              analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, row, limit);
+            }
+          } catch (Exception e) {
+            LogManager.instance().log(this, Level.SEVERE, "Error on serializing element (error=%s)", e.getMessage());
           }
 
           if (limit > 0 && records.length() >= limit)
@@ -194,7 +198,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     }
 
     default: {
-      final JsonSerializer serializerImpl = JsonSerializer.createJsonSerializer().setIncludeVertexEdges(true).setUseCollectionSize(false)
+      final JsonSerializer serializerImpl = JsonSerializer.createJsonSerializer().setIncludeVertexEdges(true)
+          .setUseCollectionSize(false)
           .setUseCollectionSizeForEdges(false);
       final JSONArray result = new JSONArray(limit > 0 ?
           qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(database, r)).collect(Collectors.toList()) :
@@ -208,18 +213,22 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       final Set<RID> includedVertices, final Set<RID> includedEdges, final JSONArray vertices, final JSONArray edges,
       final Result row, final int limit) {
     for (final String prop : row.getPropertyNames()) {
-      final Object value = row.getProperty(prop);
-      if (value == null)
-        continue;
+      try {
+        final Object value = row.getProperty(prop);
+        if (value == null)
+          continue;
 
-      if (limit > 0 && vertices.length() + edges.length() >= limit)
-        break;
+        if (limit > 0 && vertices.length() + edges.length() >= limit)
+          break;
 
-      if (prop.equals("@rid") && RID.is(value)) {
-        analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges,
-            new RID(database, value.toString()), limit);
-      } else
-        analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges, value, limit);
+        if (prop.equals("@rid") && RID.is(value)) {
+          analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges,
+              new RID(database, value.toString()), limit);
+        } else
+          analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges, value, limit);
+      } catch (Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error on serializing collection element (error=%s)", e.getMessage());
+      }
     }
   }
 
@@ -262,7 +271,11 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, result, limit);
     } else if (value instanceof Collection<?> collection) {
       for (final Iterator<?> it = collection.iterator(); it.hasNext(); ) {
-        analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges, it.next(), limit);
+        try {
+          analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges, it.next(), limit);
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on serializing collection element (error=%s)", e.getMessage());
+        }
       }
     }
   }

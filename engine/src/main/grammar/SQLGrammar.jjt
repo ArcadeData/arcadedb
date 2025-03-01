@@ -251,6 +251,8 @@ TOKEN:
   |
   <OFF: ("o"|"O")("f"|"F")("f"|"F")>
   |
+  <COMPRESS: ("c"|"C")("o"|"O")("m"|"M")("p"|"P")("r"|"R")("e"|"E")("s"|"S")("s"|"S") >
+  |
   <TRUNCATE: ("t"|"T")("r"|"R")("u"|"U")("n"|"N")("c"|"C")("a"|"A")("t"|"T")("e"|"E")>
   |
   <POLYMORPHIC: ("p"|"P")("o"|"O")("l"|"L")("y"|"Y")("m"|"M")("o"|"O")("r"|"R")("p"|"P")("h"|"H")("i"|"I")("c"|"C")>
@@ -4207,6 +4209,7 @@ CheckDatabaseStatement CheckDatabaseStatement():
     )*
   ]
   [ <FIX> { jjtThis.fix = true; } ]
+  [ <COMPRESS> { jjtThis.compress = true; } ]
   {return jjtThis; }
 }
 
