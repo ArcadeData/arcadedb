@@ -21,6 +21,7 @@ package com.arcadedb.engine;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -65,6 +66,8 @@ public class DatabaseChecker {
 
     checkVertices();
 
+    checkDocuments();
+
     checkBuckets(result);
 
     final Set<Integer> affectedBuckets = new HashSet<>();
@@ -106,6 +109,46 @@ public class DatabaseChecker {
       LogManager.instance().log(this, Level.INFO, "Result:\n%s", null, new JSONObject(result).toString(2));
 
     return result;
+  }
+
+  private void checkDocuments() {
+    if (verboseLevel > 0)
+      LogManager.instance().log(this, Level.INFO, "Checking documents...");
+
+    final List<String> warnings = new ArrayList<>();
+    final Set<RID> corruptedRecords = new LinkedHashSet<>();
+
+    for (final DocumentType type : database.getSchema().getTypes()) {
+      if (types != null && !types.isEmpty())
+        if (type == null || !types.contains(type.getName()))
+          continue;
+
+      if (!(type instanceof LocalVertexType) && !(type instanceof LocalEdgeType)) {
+        database.begin();
+        try {
+
+          // CHECK RECORD IS OF THE RIGHT TYPE
+          for (final Bucket b : type.getBuckets(false)) {
+            b.scan((rid, view) -> {
+              try {
+                final Record record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null);
+                record.asDocument(true);
+              } catch (Exception e) {
+                warnings.add("vertex " + rid + " cannot be loaded, removing it");
+                corruptedRecords.add(rid);
+              }
+              return true;
+            }, null);
+          }
+
+        } finally {
+          database.commit();
+        }
+
+        ((LinkedHashSet<String>) result.get("warnings")).addAll(warnings);
+        ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll(corruptedRecords);
+      }
+    }
   }
 
   public void compress() {

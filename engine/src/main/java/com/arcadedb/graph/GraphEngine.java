@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -680,6 +681,21 @@ public class GraphEngine {
     database.begin();
 
     try {
+      // CHECK RECORD IS OF THE RIGHT TYPE
+      final DocumentType type = database.getSchema().getType(typeName);
+      for (final Bucket b : type.getBuckets(false)) {
+        b.scan((rid, view) -> {
+          try {
+            final Record record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null);
+            record.asVertex(true);
+          } catch (Exception e) {
+            warnings.add("vertex " + rid + " cannot be loaded, removing it");
+            corruptedRecords.add(rid);
+          }
+          return true;
+        }, null);
+      }
+
       database.scanType(typeName, false, (record) -> {
         try {
           Vertex vertex = record.asVertex(true);
@@ -947,6 +963,21 @@ public class GraphEngine {
     database.begin();
 
     try {
+      // CHECK RECORD IS OF THE RIGHT TYPE
+      final DocumentType type = database.getSchema().getType(typeName);
+      for (final Bucket b : type.getBuckets(false)) {
+        b.scan((rid, view) -> {
+          try {
+            final Record record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null);
+            record.asEdge(true);
+          } catch (Exception e) {
+            warnings.add("edge " + rid + " cannot be loaded, removing it");
+            corruptedRecords.add(rid);
+          }
+          return true;
+        }, null);
+      }
+
       database.scanType(typeName, false, (record) -> {
         final RID edgeRID = record.getIdentity();
 
