@@ -26,7 +26,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.database.RecordInternal;
 import com.arcadedb.database.TransactionContext;
-import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
@@ -259,14 +259,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                   return;
               }
 
-            } catch (final ArcadeDBException e) {
-              throw e;
             } catch (final Exception e) {
-              if (errorRecordCallback == null)
+              final boolean reThrowException = e instanceof DatabaseIsReadOnlyException;
+
+              if (errorRecordCallback != null) {
+                if (!errorRecordCallback.onErrorLoading(rid, e))
+                  // STOP THE SCAN
+                  return;
+              } else if (!reThrowException)
+                // LOG THE EXCEPTION
                 LogManager.instance()
-                    .log(this, Level.SEVERE, "Error on loading record #%s (error: %s)".formatted(rid, e.getMessage()));
-              else if (!errorRecordCallback.onErrorLoading(rid, e))
-                return;
+                    .log(this, Level.SEVERE, "Error on loading record %s (error: %s)".formatted(rid, e.getMessage()));
+
+              if (reThrowException)
+                throw e;
             }
           }
         }
@@ -405,10 +411,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         int pageChunks = 0;
 
         for (int positionInPage = 0; positionInPage < recordCountInPage; ++positionInPage) {
-          final RID rid = new RID(database, file.getFileId(), positionInPage);
+          final RID rid = new RID(database, file.getFileId(), pageId * maxRecordsInPage + positionInPage);
 
           final int recordPositionInPage = (int) page.readUnsignedInt(
               PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
+
           if (recordPositionInPage == 0) {
             // DELETED RECORD (>= 24.1.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
             pageDeletedRecords++;
@@ -418,7 +425,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             ++totalErrors;
             warning = "invalid record offset %d in page for record %s".formatted(recordPositionInPage, rid);
             if (fix) {
-              deleteRecord(rid);
+              deleteRecordInternal(rid, true, true);
               deletedRecordsAfterFix.add(rid);
               ++totalDeletedRecords;
             }
@@ -459,7 +466,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 ++totalErrors;
                 warning = "wrong record size %d found for record %s".formatted(recordSize[1] + recordSize[0], rid);
                 if (fix) {
-                  deleteRecord(rid);
+                  deleteRecordInternal(rid, true, true);
                   deletedRecordsAfterFix.add(rid);
                   ++totalDeletedRecords;
                 }
@@ -471,6 +478,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             } catch (final Exception e) {
               ++totalErrors;
               warning = "unknown error on loading record %s: %s".formatted(rid, e.getMessage());
+
+              if (fix && !(e instanceof RecordNotFoundException)) {
+                deleteRecordInternal(rid, true, true);
+                deletedRecordsAfterFix.add(rid);
+                ++totalDeletedRecords;
+              }
             }
           }
 
@@ -895,9 +908,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
     }
 
+    MutablePage page = null;
     try {
-      final MutablePage page = database.getTransaction()
+      page = database.getTransaction()
           .getPageToModify(new PageId(database, file.getFileId(), pageId), pageSize, false);
+
       final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
       if (positionInPage >= recordCountInPage)
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
@@ -917,7 +932,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
           // FOUND PLACEHOLDER POINTER: DELETE THE PLACEHOLDER CONTENT FIRST
           final RID placeHolderContentRID = new RID(database, fileId, page.readLong((int) (recordPositionInPage + recordSize[1])));
-          deleteRecordInternal(placeHolderContentRID, true, false);
+          try {
+            deleteRecordInternal(placeHolderContentRID, true, false);
+          } catch (RecordNotFoundException e) {
+            // PARTIAL RECORD NOT FOUND
+          }
 
         } else if (recordSize[0] == FIRST_CHUNK) {
           // 1ST CHUNK: DELETE ALL THE CHUNKS
@@ -960,7 +979,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             throw new RecordNotFoundException("Record " + rid + " not found", rid);
         } else if (database.getConfiguration().getValueAsBoolean(GlobalConfiguration.BUCKET_WIPEOUT_ONDELETE)) {
           // WIPE OUT RECORD CONTENT
-          page.writeZeros(recordPositionInPage + 1, (int) (recordSize[0] + recordSize[1] - 1));
+          try {
+            page.writeZeros(recordPositionInPage + 1, (int) (recordSize[0] + recordSize[1] - 1));
+          } catch (Exception e) {
+            // IGNORE IT
+          }
         }
 
         // POINTER = 0 MEANS DELETED
@@ -984,15 +1007,23 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       LogManager.instance()
           .log(this, Level.FINE, "Deleted record %s (%s threadId=%d)", null, rid, page, Thread.currentThread().getId());
 
+    } catch (final RecordNotFoundException e) {
+      throw e;
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on deletion of record " + rid, e);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on deleting record %s content", e, rid);
+
+      if (page != null)
+        // POINTER = 0 MEANS DELETED
+        page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0);
     }
   }
 
   public void compressPage(final MutablePage page) throws IOException {
     final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
-    final List<int[]> orderedRecordContentInPage = getOrderedRecordsInPage(page, recordCountInPage);
+    final List<int[]> orderedRecordContentInPage = getOrderedRecordsInPage(page, recordCountInPage, false);
 
     if (orderedRecordContentInPage.isEmpty()) {
       if (recordCountInPage > 0) {
@@ -1041,7 +1072,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int to = hole[0] - gap;
       final int length = marginEnd - from;
       if (length < 1)
-        LogManager.instance().log(this, Level.SEVERE, "Error on reusing hole, invalid length " + length);
+        LogManager.instance().log(this, Level.SEVERE, "Error on reusing hole in page %s, invalid length %d", page.pageId, length);
 
       LogManager.instance().log(this, Level.FINE, "Moving segment page %s %d-(%d)->%d...", page.pageId, from, length, to);
       page.move(from, to, length);
@@ -1079,16 +1110,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (lastHole != null && lastHole[0] + lastHole[1] == pointer[0]) {
           // UPDATE PREVIOUS HOLE
           lastHole[1] += pointer[1];
-        } else
+        } else {
+          final int delta = pointer[0] - lastPointerEnd;
+          if (delta < 1)
+            continue;
           // CREATE A NEW HOLE
-          holes.add(new int[] { lastPointerEnd, pointer[0] - lastPointerEnd });
+          holes.add(new int[] { lastPointerEnd, delta });
+        }
       }
       lastPointer = pointer;
     }
     return holes;
   }
 
-  private List<int[]> getOrderedRecordsInPage(final BasePage page, final short recordCountInPage) {
+  private List<int[]> getOrderedRecordsInPage(BasePage page, final short recordCountInPage, final boolean readOnly) {
     final List<int[]> orderedRecordContentInPage = new ArrayList<>(DEF_MAX_RECORDS_IN_PAGE);
 
     for (int positionInPage = 0; positionInPage < recordCountInPage; positionInPage++) {
@@ -1097,28 +1132,50 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // SKIP DELETED RECORD (>=24.1.1), OR CORRUPTED
         continue;
 
-      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
-      if (recordSize[0] == 0)
-        // DELETED <24.1.1
-        continue;
-
       final int size;
-      if (recordSize[0] == RECORD_PLACEHOLDER_POINTER)
-        size = LONG_SERIALIZED_SIZE + (int) recordSize[1];
-      else if (recordSize[0] == FIRST_CHUNK || recordSize[0] == NEXT_CHUNK) {
-        final int chunkSize = page.readInt((recordPositionInPage + (int) recordSize[1]));
-        size = chunkSize + (int) recordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE; // LONG = nextChunkPointer
-      } else if (recordSize[0] < RECORD_PLACEHOLDER_CONTENT)
-        // PLACEHOLDER CONTENT, CONSIDER THE RECORD SIZE (CONVERTED FROM NEGATIVE NUMBER) + VARINT SIZE
-        size = (int) (-1 * recordSize[0]) + (int) recordSize[1];
-      else
-        size = (int) recordSize[0] + (int) recordSize[1];
+      try {
+        final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
+        if (recordSize[0] == 0) {
+          // DELETED <24.1.1
+          if (!readOnly) {
+            // SET 0 IN THE RECORD TABLE
+            if (!(page instanceof MutablePage))
+              page = database.getTransaction().getPageToModify(page);
+            ((MutablePage) page).writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0L);
+          }
+          continue;
+        }
 
-      if (size < 0 || size > getPageSize() - contentHeaderSize)
-        // INVALID SIZE
-        throw new DatabaseOperationException(
-            "Invalid record size " + size + " for record #" + fileId + ":" + (page.pageId.getPageNumber() * maxRecordsInPage)
+        if (recordSize[0] == RECORD_PLACEHOLDER_POINTER)
+          size = LONG_SERIALIZED_SIZE + (int) recordSize[1];
+        else if (recordSize[0] == FIRST_CHUNK || recordSize[0] == NEXT_CHUNK) {
+          final int chunkSize = page.readInt((recordPositionInPage + (int) recordSize[1]));
+          size = chunkSize + (int) recordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE; // LONG = nextChunkPointer
+        } else if (recordSize[0] < RECORD_PLACEHOLDER_CONTENT)
+          // PLACEHOLDER CONTENT, CONSIDER THE RECORD SIZE (CONVERTED FROM NEGATIVE NUMBER) + VARINT SIZE
+          size = (int) (-1 * recordSize[0]) + (int) recordSize[1];
+        else
+          size = (int) recordSize[0] + (int) recordSize[1];
+
+        if (size < 0 || size > getPageSize() - contentHeaderSize) {
+          // INVALID SIZE
+          LogManager.instance().log(this, Level.SEVERE,
+              "Invalid record size " + size + " for record #" + fileId + ":" + (page.pageId.getPageNumber() * maxRecordsInPage)
+                  + positionInPage + ": deleting record");
+
+          if (readOnly) {
+            if (!(page instanceof MutablePage))
+              page = database.getTransaction().getPageToModify(page);
+            ((MutablePage) page).writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0L);
+          }
+          continue;
+        }
+      } catch (Exception e) {
+        LogManager.instance()
+            .log(this, Level.SEVERE, "Error on loading record #" + fileId + ":" + (page.pageId.getPageNumber() * maxRecordsInPage)
                 + positionInPage);
+        continue;
+      }
 
       orderedRecordContentInPage.add(new int[] { recordPositionInPage, size });
     }
@@ -1622,7 +1679,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           for (int pageId = 0; pageId < txPageCount - 2; ++pageId) {
             final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
             final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
-            final List<int[]> orderedRecordContentInPage = getOrderedRecordsInPage(page, recordCountInPage);
+            final List<int[]> orderedRecordContentInPage = getOrderedRecordsInPage(page, recordCountInPage, true);
 
             int freeSpaceInPage = getPageSize() - contentHeaderSize;
             if (!orderedRecordContentInPage.isEmpty()) {

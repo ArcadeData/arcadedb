@@ -107,8 +107,12 @@ public class RebuildIndexStatement extends DDLStatement {
       result.setProperty("totalIndexed", total.get());
 
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on rebuilding index '%s'", e, indexName);
-      throw new IndexException("Error on rebuilding index '" + indexName + "'", e);
+      LogManager.instance()
+          .log(this, Level.SEVERE, "Error on rebuilding index '%s': %s", e, (indexName != null ? indexName : name.getValue()),
+              e.getMessage());
+      throw new IndexException(
+          "Error on rebuilding index '" + (indexName != null ? indexName : name.getValue()) + "' (error=" + e.getMessage() + ")",
+          e);
     }
 
     // SUCCESS

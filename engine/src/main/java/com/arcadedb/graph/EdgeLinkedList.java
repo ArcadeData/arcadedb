@@ -68,7 +68,12 @@ public class EdgeLinkedList {
       if (current.containsEdge(rid))
         return true;
 
-      current = current.getPrevious();
+      final EdgeSegment prev = current.getPrevious();
+      if (prev != null && prev.getIdentity().equals(current.getIdentity()))
+        // CURRENT POINT TO ITSELF, AVOID LOOPS
+        break;
+
+      current = prev;
     }
 
     return false;
@@ -97,7 +102,12 @@ public class EdgeLinkedList {
       if (current.containsVertex(rid, edgeBucketFilter))
         return true;
 
-      current = current.getPrevious();
+      final EdgeSegment prev = current.getPrevious();
+      if (prev != null && prev.getIdentity().equals(current.getIdentity()))
+        // CURRENT POINT TO ITSELF, AVOID LOOPS
+        break;
+
+      current = prev;
     }
 
     return false;

@@ -1031,7 +1031,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
   @Override
   public int hashCode() {
-    return Objects.hash(componentName, underlyingIndex.hashCode());
+    return Objects.hash(componentName, underlyingIndex);
   }
 
   @Override
