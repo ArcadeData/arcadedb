@@ -53,29 +53,29 @@ jobs:
           cache: "maven"
 
       - name: Install jars
-        run: ./mvnw --show-version clean install -Pdocker -DskipTests
+        run: ./mvnw --show-version clean install -DskipTests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      #      - name: Test
-      #        run: ./mvnw verify  -Pintegration -Pcoverage -Pdocker --batch-mode  --errors --fail-never --show-version  -pl !e2e
-      #        env:
-      #          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      #
-      #      - name: E2E Tests
-      #        if: success()
-      #        run: ./mvnw verify -pl e2e
-      #        env:
-      #          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      #
-      #      - name: E2E Node.js Tests
-      #        if: success()
-      #        working-directory: e2e-js
-      #        run: |
-      #          npm install
-      #          npm test
-      #        env:
-      #          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Test
+        run: ./mvnw verify  -Pintegration -Pcoverage -Pdocker --batch-mode  --errors --fail-never --show-version  -pl !e2e
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: E2E Tests
+        if: success()
+        run: ./mvnw verify -pl e2e
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: E2E Node.js Tests
+        if: success()
+        working-directory: e2e-js
+        run: |
+          npm install
+          npm test
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: E2E Python Tests
         if: success()
