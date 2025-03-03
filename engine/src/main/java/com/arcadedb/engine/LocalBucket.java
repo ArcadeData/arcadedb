@@ -1650,6 +1650,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           if (bestPageAnalysis == null || bestPageAnalysis.spaceAvailableInCurrentPage - spaceNeeded > delta) {
             // SELECT THE PAGE WITH CLOSEST AVAILABLE SPACE
             bestPageAnalysis = pageAnalysis;
+            break;
           }
         }
       }
