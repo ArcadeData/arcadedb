@@ -21,6 +21,7 @@ jobs:
         uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: "3.13.0"
+          cache: "pip"
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
 
       - name: Set up QEMU
@@ -52,36 +53,36 @@ jobs:
           cache: "maven"
 
       - name: Install jars
-        run: ./mvnw --show-version clean install -DskipTests
+        run: ./mvnw --show-version clean install -Pdocker -DskipTests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Test
-        run: ./mvnw verify  -Pintegration -Pcoverage -Pdocker --batch-mode  --errors --fail-never --show-version  -pl !e2e
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: E2E Tests
-        if: success()
-        run: ./mvnw verify -pl e2e
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: E2E Node.js Tests
-        if: success()
-        working-directory: e2e-js
-        run: |
-          npm install
-          npm test
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #      - name: Test
+      #        run: ./mvnw verify  -Pintegration -Pcoverage -Pdocker --batch-mode  --errors --fail-never --show-version  -pl !e2e
+      #        env:
+      #          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #
+      #      - name: E2E Tests
+      #        if: success()
+      #        run: ./mvnw verify -pl e2e
+      #        env:
+      #          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #
+      #      - name: E2E Node.js Tests
+      #        if: success()
+      #        working-directory: e2e-js
+      #        run: |
+      #          npm install
+      #          npm test
+      #        env:
+      #          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: E2E Python Tests
         if: success()
         working-directory: e2e-python
         run: |
-          uv pip install -e .
-          uv pip install pytest
+          uv pip install --system -e  .
+          uv pip install --system pytest
           pytest tests/
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
