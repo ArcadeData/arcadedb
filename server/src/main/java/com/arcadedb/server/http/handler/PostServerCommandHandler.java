@@ -302,7 +302,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final String key = pairTrimmed.substring(0, secondSpace);
     final String value = pairTrimmed.substring(secondSpace);
 
-    final DatabaseInternal database = (DatabaseInternal) httpServer.getServer().getDatabase(db);
+    final DatabaseInternal database = httpServer.getServer().getDatabase(db);
     database.getConfiguration().setValue(key, value);
     database.saveConfiguration();
   }
