@@ -6,7 +6,7 @@ import pytest
 import requests
 from testcontainers.core.container import DockerContainer
 
-arcadedb = (DockerContainer("arcadedata/arcadedb:25.2.1")
+arcadedb = (DockerContainer("arcadedata/arcadedb:latest")
             .with_exposed_ports(2480, 2424, 5432)
             .with_env("JAVA_OPTS",
                       "-Darcadedb.server.rootPassword=playwithdata "
