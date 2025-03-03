@@ -27,11 +27,10 @@ updates:
       interval: weekly
       day: "sunday"
     open-pull-requests-limit: 10
-
-  - package-ecosystem: "uv"
-    enable-beta-ecosystems: "true"
-    directory: "/e2e-pythom"
-    schedule:
-      interval: weekly
-      day: "sunday"
-    open-pull-requests-limit: 10
+#  - package-ecosystem: "uv"
+#    enable-beta-ecosystems: "true"
+#    directory: "/e2e-pythom"
+#    schedule:
+#      interval: weekly
+#      day: "sunday"
+#    open-pull-requests-limit: 10
