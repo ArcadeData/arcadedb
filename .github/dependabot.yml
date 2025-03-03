@@ -28,7 +28,7 @@ updates:
       day: "sunday"
     open-pull-requests-limit: 10
 
-  - package-ecosystem: "python"
+  - package-ecosystem: "uv"
     directory: "/e2e-pythom"
     schedule:
       interval: weekly
