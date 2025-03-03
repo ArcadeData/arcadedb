@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.*;
 import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
@@ -65,17 +66,17 @@ public class SQLFunctionConvertTest {
       results = db.query("sql", "select dateAsString.asDate(\"yyyy-MM-dd'T'HH:mm:ss.SSS\") as convert from TestConversion");
       assertThat((Iterator<? extends Result>) results).isNotNull();
       convert = results.next().getProperty("convert");
-      assertThat(convert instanceof Date).as("Found " + convert.getClass() + " instead").isTrue();
+      assertThat(convert instanceof LocalDate).as("Found " + convert.getClass() + " instead").isTrue();
 
       results = db.query("sql", "select number.asDateTime() as convert from TestConversion");
       assertThat((Iterator<? extends Result>) results).isNotNull();
       convert = results.next().getProperty("convert");
-      assertThat(convert instanceof Date).as("Found " + convert.getClass() + " instead").isTrue();
+      assertThat(convert instanceof LocalDateTime).as("Found " + convert.getClass() + " instead").isTrue();
 
       results = db.query("sql", "select dateAsString.asDateTime(\"yyyy-MM-dd'T'HH:mm:ss.SSS\") as convert from TestConversion");
       assertThat((Iterator<? extends Result>) results).isNotNull();
       convert = results.next().getProperty("convert");
-      assertThat(convert instanceof Date).as("Found " + convert.getClass() + " instead").isTrue();
+      assertThat(convert instanceof LocalDateTime).as("Found " + convert.getClass() + " instead").isTrue();
 
       results = db.query("sql", "select number.asInteger() as convert from TestConversion");
       assertThat((Iterator<? extends Result>) results).isNotNull();

@@ -23,6 +23,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
@@ -61,7 +62,7 @@ public class BinaryTypes {
   public final static byte TYPE_ARRAY_OF_FLOATS   = 26; // @SINCE 23.6.1
   public final static byte TYPE_ARRAY_OF_DOUBLES  = 27; // @SINCE 23.6.1
 
-  public static byte getTypeFromValue(final Object value) {
+  public static byte getTypeFromValue(final Object value, final Property propertyType) {
     final byte type;
 
     // ORDERED BY THE MOST COMMON FIRST
@@ -83,13 +84,22 @@ public class BinaryTypes {
       type = TYPE_FLOAT;
     else if (value instanceof Double)
       type = TYPE_DOUBLE;
-    else if (value instanceof LocalDateTime time)
-      type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(time.getNano()));
-    else if (value instanceof ZonedDateTime time)
-      type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(time.getNano()));
-    else if (value instanceof Instant instant)
-      type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(instant.getNano()));
-    else if (value instanceof LocalDate)
+    else if (value instanceof LocalDateTime time) {
+      if (propertyType != null)
+        type = propertyType.getType().getBinaryType();
+      else
+        type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(time.getNano()));
+    } else if (value instanceof ZonedDateTime time) {
+      if (propertyType != null)
+        type = propertyType.getType().getBinaryType();
+      else
+        type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(time.getNano()));
+    } else if (value instanceof Instant instant) {
+      if (propertyType != null)
+        type = propertyType.getType().getBinaryType();
+      else
+        type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(instant.getNano()));
+    } else if (value instanceof LocalDate)
       type = TYPE_DATE;
     else if (value instanceof Calendar) // CAN'T DETERMINE IF DATE OR DATETIME, USE DATETIME
       type = TYPE_DATETIME;

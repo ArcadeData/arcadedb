@@ -65,8 +65,7 @@ public class JavaBinarySerializer {
         buffer.clear();
 
         final Property property = documentType.getPropertyIfExists(propName);
-
-        final byte type = BinaryTypes.getTypeFromValue(propValue);
+        final byte type = BinaryTypes.getTypeFromValue(propValue, property);
         buffer.putByte(type);
         serializer.serializeValue(db, buffer, type, propValue);
         buffer.flip();

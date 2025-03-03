@@ -52,10 +52,12 @@ public class SQLMethodAsDateTime extends AbstractSQLMethod {
     if (value == null)
       return null;
 
-    if (value instanceof Date)
+    final Class dateTimeImpl = context.getDatabase().getSerializer().getDateTimeImplementation();
+
+    if (DateUtils.isDate(value))
       return value;
     else if (value instanceof Number number)
-      return new Date(number.longValue());
+      return DateUtils.getDate(value, dateTimeImpl);
 
     final String format = params.length > 0 ? params[0].toString() : context.getDatabase().getSchema().getDateTimeFormat();
     final Object date = DateUtils.parse(value.toString(), format);

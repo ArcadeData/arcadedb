@@ -133,7 +133,7 @@ public class TxForwardRequest extends TxRequestAbstract {
 
         uniqueKeysBuffer.putUnsignedNumber(entryKey.values.length);
         for (int k = 0; k < entryKey.values.length; ++k) {
-          final byte keyType = BinaryTypes.getTypeFromValue(entryKey.values[k]);
+          final byte keyType = BinaryTypes.getTypeFromValue(entryKey.values[k], null);
           uniqueKeysBuffer.putByte(keyType);
           serializer.serializeValue(database, uniqueKeysBuffer, keyType, entryKey.values[k]);
         }

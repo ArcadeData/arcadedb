@@ -16,6 +16,7 @@ import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.text.SimpleDateFormat;
+import java.time.*;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -457,7 +458,7 @@ public class DocumentValidationTest extends TestHelper {
 
     checkFieldValue(d, "byte", 20);
     cal = Calendar.getInstance();
-    cal.add(Calendar.DAY_OF_MONTH, 1);
+    cal.add(Calendar.DAY_OF_MONTH, 2);
     checkFieldValue(d, "date", cal.getTime());
     checkFieldValue(d, "datetime", cal.getTime());
     checkFieldValue(d, "decimal", 20);
@@ -508,7 +509,7 @@ public class DocumentValidationTest extends TestHelper {
 
     cal = Calendar.getInstance();
     cal.add(Calendar.DAY_OF_MONTH, 1);
-    d.set("date", new Date());
+    d.set("date", cal.getTime());
     d.set("datetime", cal.getTime());
     d.set("decimal", 12);
     d.set("double", 12);
