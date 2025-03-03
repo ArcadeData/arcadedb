@@ -10,6 +10,7 @@ dependencies = [
     "testcontainers>=4.9.1",
     "pytest>=8.3.4",
     "docker>=7.1.0",
+    "psycopg>=3.2.5",
     "psycopg-binary>=3.2.5",
 ]
 
