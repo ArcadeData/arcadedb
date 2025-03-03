@@ -1,7 +1,0 @@
-asyncpg==0.29.0
-nest_asyncio==1.5.8
-pg8000==1.30.3
-psycopg==3.1.12
-psycopg-binary==3.1.12
-psycopg2-binary==2.9.9
-SQLAlchemy==2.0.23
