@@ -151,8 +151,8 @@ public enum GlobalConfiguration {
       Integer.class, 65535),
 
   DATE_IMPLEMENTATION("arcadedb.dateImplementation", SCOPE.DATABASE,
-      "Default date implementation to use on deserialization. By default java.util.Date is used, but the following are supported: java.util.Calendar, java.time.LocalDate",
-      Class.class, java.util.Date.class, value -> {
+      "Default date implementation to use on deserialization. By default java.time.LocalDate is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDate",
+      Class.class, java.time.LocalDate.class, value -> {
     if (value instanceof String string) {
       try {
         return Class.forName(string);
@@ -167,8 +167,8 @@ public enum GlobalConfiguration {
       "yyyy-MM-dd"),
 
   DATE_TIME_IMPLEMENTATION("arcadedb.dateTimeImplementation", SCOPE.DATABASE,
-      "Default datetime implementation to use on deserialization. By default java.util.Date is used, but the following are supported: java.util.Calendar, java.time.LocalDateTime, java.time.ZonedDateTime",
-      Class.class, java.util.Date.class, value -> {
+      "Default datetime implementation to use on deserialization. By default java.time.LocalDateTime is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDateTime, java.time.ZonedDateTime",
+      Class.class, java.time.LocalDateTime.class, value -> {
     if (value instanceof String string) {
       try {
         return Class.forName(string);

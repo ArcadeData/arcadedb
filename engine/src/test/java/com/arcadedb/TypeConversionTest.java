@@ -19,6 +19,7 @@
 package com.arcadedb;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -29,24 +30,22 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.DisabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 
-import java.math.BigDecimal;
-import java.text.SimpleDateFormat;
-import java.time.Duration;
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.ZoneOffset;
-import java.time.ZonedDateTime;
-import java.time.temporal.ChronoField;
-import java.time.temporal.ChronoUnit;
-import java.util.Calendar;
-import java.util.Date;
-import java.util.concurrent.TimeUnit;
-import java.util.stream.StreamSupport;
+import java.math.*;
+import java.text.*;
+import java.time.*;
+import java.time.temporal.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.stream.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class TypeConversionTest extends TestHelper {
+  public TypeConversionTest() throws ClassNotFoundException {
+    ((LocalDatabase) database).getSerializer().setDateImplementation(java.util.Date.class);
+    ((LocalDatabase) database).getSerializer().setDateTimeImplementation(java.util.Date.class);
+  }
+
   @Override
   public void beginTest() {
     database.transaction(() -> {

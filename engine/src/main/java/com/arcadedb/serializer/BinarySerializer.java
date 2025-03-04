@@ -45,6 +45,7 @@ import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
@@ -422,14 +423,14 @@ public class BinarySerializer {
         content.putUnsignedNumber(list.size());
         for (final Iterator<Object> it = list.iterator(); it.hasNext(); ) {
           final Object entryValue = it.next();
-          final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
+          final byte entryType = BinaryTypes.getTypeFromValue(entryValue, null);
           content.putByte(entryType);
           serializeValue(database, content, entryType, entryValue);
         }
       } else if (value instanceof Object[] array) {
         content.putUnsignedNumber(array.length);
         for (final Object entryValue : array) {
-          final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
+          final byte entryType = BinaryTypes.getTypeFromValue(entryValue, null);
           content.putByte(entryType);
           serializeValue(database, content, entryType, entryValue);
         }
@@ -442,7 +443,7 @@ public class BinarySerializer {
         content.putUnsignedNumber(list.size());
         for (final Iterator it = list.iterator(); it.hasNext(); ) {
           final Object entryValue = it.next();
-          final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
+          final byte entryType = BinaryTypes.getTypeFromValue(entryValue, null);
           content.putByte(entryType);
           serializeValue(database, content, entryType, entryValue);
         }
@@ -453,7 +454,7 @@ public class BinarySerializer {
         for (int i = 0; i < length; ++i) {
           final Object entryValue = Array.get(value, i);
           try {
-            final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
+            final byte entryType = BinaryTypes.getTypeFromValue(entryValue, null);
             content.putByte(entryType);
             serializeValue(database, content, entryType, entryValue);
           } catch (Exception e) {
@@ -478,7 +479,7 @@ public class BinarySerializer {
         try {
           // WRITE THE KEY
           Object entryKey = entry.getKey();
-          byte entryKeyType = BinaryTypes.getTypeFromValue(entryKey);
+          byte entryKeyType = BinaryTypes.getTypeFromValue(entryKey, null);
 
           if (entryKey != null && entryKeyType == BinaryTypes.TYPE_STRING) {
             final int id = dictionary.getIdByName((String) entryKey, false);
@@ -494,7 +495,7 @@ public class BinarySerializer {
 
           // WRITE THE VALUE
           final Object entryValue = entry.getValue();
-          final byte entryValueType = BinaryTypes.getTypeFromValue(entryValue);
+          final byte entryValueType = BinaryTypes.getTypeFromValue(entryValue, null);
           content.putByte(entryValueType);
           serializeValue(database, content, entryValueType, entryValue);
         } catch (Exception e) {
@@ -578,7 +579,7 @@ public class BinarySerializer {
 
   public Object deserializeValue(final Database database, final Binary deserialized, final byte type,
       final EmbeddedModifier embeddedModifier) {
-    Binary content = dataEncryption != null &&
+    final Binary content = dataEncryption != null &&
         type != BinaryTypes.TYPE_NULL &&
         type != BinaryTypes.TYPE_COMPRESSED_RID &&
         type != BinaryTypes.TYPE_RID ? new Binary(dataEncryption.decrypt(deserialized.getBytes())) : deserialized;
@@ -757,7 +758,8 @@ public class BinarySerializer {
 
       final int startContentPosition = content.position();
 
-      byte type = BinaryTypes.getTypeFromValue(value);
+      final Property propertyType = documentType.getPropertyIfExists(propertyName);
+      byte type = BinaryTypes.getTypeFromValue(value, propertyType);
 
       if (value != null && type == BinaryTypes.TYPE_STRING) {
         final int id = dictionary.getIdByName((String) value, false);

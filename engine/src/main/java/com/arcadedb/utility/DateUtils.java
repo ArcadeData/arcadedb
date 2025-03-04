@@ -23,22 +23,11 @@ import com.arcadedb.exception.SerializationException;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryTypes;
 
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeFormatterBuilder;
-import java.time.temporal.ChronoField;
-import java.time.temporal.ChronoUnit;
-import java.time.temporal.TemporalAccessor;
-import java.util.Calendar;
-import java.util.Date;
-import java.util.Locale;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
+import java.time.*;
+import java.time.format.*;
+import java.time.temporal.*;
+import java.util.*;
+import java.util.concurrent.*;
 
 public class DateUtils {
   public static final  String                                       DATE_TIME_ISO_8601_FORMAT = "yyyy-MM-dd'T'HH:mm:ssZ";
@@ -114,7 +103,7 @@ public class DateUtils {
     } else if (dateImplementation.equals(LocalDate.class)) {
       value = LocalDate.ofEpochDay(timestamp);
     } else if (dateImplementation.equals(LocalDateTime.class)) {
-      value = LocalDateTime.ofEpochSecond(timestamp / 1000, (int) ((timestamp % 1000) * 1000), ZoneOffset.UTC);
+      value = LocalDateTime.ofEpochSecond(timestamp / 1_000, (int) ((timestamp % 1_000) * 1_000_000), ZoneOffset.UTC);
     } else
       throw new SerializationException("Error on deserialize date. Configured class '" + dateImplementation + "' is not supported");
     return value;
@@ -388,15 +377,27 @@ public class DateUtils {
             .parseDefaulting(ChronoField.MINUTE_OF_HOUR, 0).parseDefaulting(ChronoField.SECOND_OF_MINUTE, 0).toFormatter());
   }
 
-  public static Object getDate(final Object date, final Class impl) {
-    if (impl.equals(Date.class))
-      return new Date(DateUtils.dateTimeToTimestamp(date, ChronoUnit.MILLIS));
-    else if (impl.equals(Calendar.class)) {
+  public static Object getDate(final Object date, final Class dateImplementation) {
+    if (date == null)
+      return null;
+
+    if (date.getClass().equals(dateImplementation))
+      return date;
+
+    final long timestamp = DateUtils.dateTimeToTimestamp(date, ChronoUnit.MILLIS);
+
+    if (dateImplementation.equals(Date.class))
+      return new Date(timestamp);
+    else if (dateImplementation.equals(Calendar.class)) {
       final Calendar cal = Calendar.getInstance();
-      cal.setTimeInMillis(DateUtils.dateTimeToTimestamp(date, ChronoUnit.MILLIS));
+      cal.setTimeInMillis(timestamp);
       return cal;
-    }
-    return date;
+    } else if (dateImplementation.equals(LocalDate.class))
+      return LocalDate.ofEpochDay(timestamp / DateUtils.MS_IN_A_DAY);
+    else if (dateImplementation.equals(LocalDateTime.class))
+      return LocalDateTime.ofEpochSecond(timestamp / 1_000, (int) ((timestamp % 1_000) * 1_000_000), ZoneOffset.UTC);
+    else
+      return date;
   }
 
   public static String formatElapsed(final long ms) {
