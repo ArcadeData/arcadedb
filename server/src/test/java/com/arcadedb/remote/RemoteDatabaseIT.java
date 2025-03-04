@@ -254,8 +254,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
 
       final Iterator<Vertex> connected = kimbal.getVertices(Vertex.DIRECTION.IN).iterator();
       assertThat(connected.hasNext()).isTrue();
-      final Vertex elon = connected.next();
-      assertThat(elon.getString("lastName")).isEqualTo("Red");
+      final Vertex albert = connected.next();
+      assertThat(albert.getString("lastName")).isEqualTo("Red");
 
       assertThat(kimbal.countEdges(Vertex.DIRECTION.IN, null)).isEqualTo(1L);
       assertThat(kimbal.countEdges(Vertex.DIRECTION.IN, EDGE1_TYPE_NAME)).isEqualTo(1L);
@@ -264,24 +264,24 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       assertThat(kimbal.countEdges(Vertex.DIRECTION.OUT, EDGE1_TYPE_NAME)).isEqualTo(0);
       assertThat(kimbal.countEdges(Vertex.DIRECTION.OUT, EDGE2_TYPE_NAME)).isEqualTo(0L);
 
-      assertThat(elon.countEdges(Vertex.DIRECTION.OUT, null)).isEqualTo(1L);
-      assertThat(elon.countEdges(Vertex.DIRECTION.OUT, EDGE1_TYPE_NAME)).isEqualTo(1L);
-      assertThat(elon.countEdges(Vertex.DIRECTION.OUT, EDGE2_TYPE_NAME)).isEqualTo(0L);
-      assertThat(elon.countEdges(Vertex.DIRECTION.IN, null)).isEqualTo(0);
-      assertThat(elon.countEdges(Vertex.DIRECTION.IN, EDGE1_TYPE_NAME)).isEqualTo(0);
-      assertThat(elon.countEdges(Vertex.DIRECTION.IN, EDGE2_TYPE_NAME)).isEqualTo(0);
+      assertThat(albert.countEdges(Vertex.DIRECTION.OUT, null)).isEqualTo(1L);
+      assertThat(albert.countEdges(Vertex.DIRECTION.OUT, EDGE1_TYPE_NAME)).isEqualTo(1L);
+      assertThat(albert.countEdges(Vertex.DIRECTION.OUT, EDGE2_TYPE_NAME)).isEqualTo(0L);
+      assertThat(albert.countEdges(Vertex.DIRECTION.IN, null)).isEqualTo(0);
+      assertThat(albert.countEdges(Vertex.DIRECTION.IN, EDGE1_TYPE_NAME)).isEqualTo(0);
+      assertThat(albert.countEdges(Vertex.DIRECTION.IN, EDGE2_TYPE_NAME)).isEqualTo(0);
 
-      assertThat(kimbal.isConnectedTo(elon.getIdentity())).isTrue();
-      assertThat(kimbal.isConnectedTo(elon.getIdentity(), Vertex.DIRECTION.IN)).isTrue();
-      assertThat(kimbal.isConnectedTo(elon.getIdentity(), Vertex.DIRECTION.OUT)).isFalse();
+      assertThat(kimbal.isConnectedTo(albert.getIdentity())).isTrue();
+      assertThat(kimbal.isConnectedTo(albert.getIdentity(), Vertex.DIRECTION.IN)).isTrue();
+      assertThat(kimbal.isConnectedTo(albert.getIdentity(), Vertex.DIRECTION.OUT)).isFalse();
 
-      assertThat(elon.isConnectedTo(kimbal.getIdentity())).isTrue();
-      assertThat(elon.isConnectedTo(kimbal.getIdentity(), Vertex.DIRECTION.OUT)).isTrue();
-      assertThat(elon.isConnectedTo(kimbal.getIdentity(), Vertex.DIRECTION.IN)).isFalse();
+      assertThat(albert.isConnectedTo(kimbal.getIdentity())).isTrue();
+      assertThat(albert.isConnectedTo(kimbal.getIdentity(), Vertex.DIRECTION.OUT)).isTrue();
+      assertThat(albert.isConnectedTo(kimbal.getIdentity(), Vertex.DIRECTION.IN)).isFalse();
 
-      final MutableEdge newEdge = elon.newEdge(EDGE2_TYPE_NAME, kimbal, true, "since", "today");
-      assertThat(elon.getIdentity()).isEqualTo(newEdge.getOut());
-      assertThat(elon).isEqualTo(newEdge.getOutVertex());
+      final MutableEdge newEdge = albert.newEdge(EDGE2_TYPE_NAME, kimbal, true, "since", "today");
+      assertThat(albert.getIdentity()).isEqualTo(newEdge.getOut());
+      assertThat(albert).isEqualTo(newEdge.getOutVertex());
       assertThat(kimbal.getIdentity()).isEqualTo(newEdge.getIn());
       assertThat(kimbal).isEqualTo(newEdge.getInVertex());
 
@@ -289,28 +289,28 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       newEdge.save();
 
       // SAME BUT FROM A MUTABLE INSTANCE
-      final MutableEdge newEdge2 = elon.modify().newEdge(EDGE2_TYPE_NAME, kimbal, true, "since", "today");
-      assertThat(elon.getIdentity()).isEqualTo(newEdge2.getOut());
-      assertThat(elon).isEqualTo(newEdge2.getOutVertex());
+      final MutableEdge newEdge2 = albert.modify().newEdge(EDGE2_TYPE_NAME, kimbal, true, "since", "today");
+      assertThat(albert.getIdentity()).isEqualTo(newEdge2.getOut());
+      assertThat(albert).isEqualTo(newEdge2.getOutVertex());
       assertThat(kimbal.getIdentity()).isEqualTo(newEdge2.getIn());
       assertThat(kimbal).isEqualTo(newEdge2.getInVertex());
       newEdge2.delete();
 
-      final Edge edge = elon.getEdges(Vertex.DIRECTION.OUT, EDGE2_TYPE_NAME).iterator().next();
-      assertThat(elon.getIdentity()).isEqualTo(edge.getOut());
-      assertThat(elon).isEqualTo(edge.getOutVertex());
+      final Edge edge = albert.getEdges(Vertex.DIRECTION.OUT, EDGE2_TYPE_NAME).iterator().next();
+      assertThat(albert.getIdentity()).isEqualTo(edge.getOut());
+      assertThat(albert).isEqualTo(edge.getOutVertex());
       assertThat(kimbal.getIdentity()).isEqualTo(edge.getIn());
       assertThat(kimbal).isEqualTo(edge.getInVertex());
       assertThat(edge.getBoolean("updated")).isTrue();
 
       // DELETE THE EDGE
       edge.delete();
-      assertThat(elon.getEdges(Vertex.DIRECTION.OUT, EDGE2_TYPE_NAME).iterator().hasNext()).isFalse();
+      assertThat(albert.getEdges(Vertex.DIRECTION.OUT, EDGE2_TYPE_NAME).iterator().hasNext()).isFalse();
 
       // DELETE ONE VERTEX
-      elon.delete();
+      albert.delete();
       try {
-        database.lookupByRID(elon.getIdentity());
+        database.lookupByRID(albert.getIdentity());
         fail();
       } catch (final RecordNotFoundException e) {
         // EXPECTED
@@ -468,7 +468,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       database1.setSessionId(sessionId + "1");
 
       try {
-        final MutableDocument elon = database1.newDocument("Person").set("name", "John").save();
+        final MutableDocument albert = database1.newDocument("Person").set("name", "John").save();
         fail();
       } catch (TransactionException e) {
         // EXPECTED

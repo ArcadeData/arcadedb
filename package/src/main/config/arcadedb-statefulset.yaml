@@ -108,7 +108,7 @@ spec:
             - "-Darcadedb.server.name=${HOSTNAME}"
             - "-Darcadedb.server.rootPassword=${rootPassword}"
             - "-Darcadedb.server.databaseDirectory=/mnt/data0/databases"
-            - "-Darcadedb.server.defaultDatabases=Universe[elon:musk]"
+            - "-Darcadedb.server.defaultDatabases=Universe[albert:einstein]"
             - "-Darcadedb.ha.enabled=true"
             - "-Darcadedb.ha.replicationIncomingHost=0.0.0.0"
             - "-Darcadedb.ha.serverList=arcadedb-0.arcadedb.default.svc.cluster.local:2424"

@@ -188,18 +188,18 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
       // PASSWORD MUST BE MAX 256 CHARS LONG
     }
 
-    assertThat(console.parse("create user elon identified by musk")).isTrue();
+    assertThat(console.parse("create user albert identified by einstein")).isTrue();
     assertThat(console.parse("drop user elon")).isTrue();
 
     // TEST SYNTAX ERROR
     try {
-      assertThat(console.parse("create user elon identified by musk grand connect on db1")).isTrue();
+      assertThat(console.parse("create user albert identified by einstein grand connect on db1")).isTrue();
       fail("");
     } catch (final Exception e) {
       // EXPECTED
     }
 
-    assertThat(console.parse("create user elon identified by musk grant connect to db1")).isTrue();
+    assertThat(console.parse("create user albert identified by einstein grant connect to db1")).isTrue();
     assertThat(console.parse("create user jeff identified by amazon grant connect to db1:readonly")).isTrue();
     assertThat(console.parse("drop user elon")).isTrue();
   }

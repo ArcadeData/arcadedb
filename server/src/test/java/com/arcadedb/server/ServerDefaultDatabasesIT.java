@@ -43,13 +43,13 @@ public class ServerDefaultDatabasesIT extends BaseGraphServerTest {
   }
 
   protected void onServerConfiguration(final ContextConfiguration config) {
-    config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "Universe[elon:musk:admin];Amiga[Jay:Miner:admin,Jack:Tramiel:admin,root]");
+    config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "Universe[albert:einstein:admin];Amiga[Jay:Miner:admin,Jack:Tramiel:admin,root]");
   }
 
   @Test
   public void checkDefaultDatabases() throws IOException {
-    getServer(0).getSecurity().authenticate("elon", "musk", null);
-    getServer(0).getSecurity().authenticate("elon", "musk", "Universe");
+    getServer(0).getSecurity().authenticate("albert", "einstein", null);
+    getServer(0).getSecurity().authenticate("albert", "einstein", "Universe");
     getServer(0).getSecurity().authenticate("Jay", "Miner", null);
     getServer(0).getSecurity().authenticate("Jay", "Miner", "Amiga");
     getServer(0).getSecurity().authenticate("Jack", "Tramiel", null);
@@ -58,7 +58,7 @@ public class ServerDefaultDatabasesIT extends BaseGraphServerTest {
     getServer(0).getSecurity().authenticate("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS, "Amiga");
 
     try {
-      getServer(0).getSecurity().authenticate("elon", "musk", "Amiga");
+      getServer(0).getSecurity().authenticate("albert", "einstein", "Amiga");
       fail("");
     } catch (final ServerSecurityException e) {
       // EXPECTED

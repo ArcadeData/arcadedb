@@ -58,12 +58,12 @@ public class ServerProfilingIT {
 
   @Test
   void userDefaultAccessCannotAccessDatabase() throws Throwable {
-    SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk")));
+    SECURITY.createUser(new JSONObject().put("name", "albert").put("password", SECURITY.encodePassword("einstein")));
 
     try {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
 
-      checkJohnUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("albert", database));
 
       createSchemaNotAllowed(database);
 
@@ -74,8 +74,8 @@ public class ServerProfilingIT {
 
       final RID validRID = createSomeRecords(database, true);
 
-      // SWITCH BACK TO ELON
-      checkJohnUser(setCurrentUser("elon", database));
+      // SWITCH BACK TO ALBERT
+      checkJohnUser(setCurrentUser("albert", database));
 
       expectedSecurityException(() -> database.newVertex("Vertex1").save());
       expectedSecurityException(() -> database.newDocument("Document1").save());
@@ -83,16 +83,16 @@ public class ServerProfilingIT {
       expectedSecurityException(() -> database.lookupByRID(validRID, true));
 
       expectedSecurityException(() -> {
-        executeRemoteCommand("INSERT INTO Vertex1 set name = 'invalid'", "elon", "musk");
+        executeRemoteCommand("INSERT INTO Vertex1 set name = 'invalid'", "albert", "einstein");
       });
       expectedSecurityException(() -> {
-        executeRemoteCommand("INSERT INTO Document1 set name = 'invalid'", "elon", "musk");
+        executeRemoteCommand("INSERT INTO Document1 set name = 'invalid'", "albert", "einstein");
       });
       expectedSecurityException(() -> {
-        executeRemoteCommand("SELECT FROM Document1", "elon", "musk");
+        executeRemoteCommand("SELECT FROM Document1", "albert", "einstein");
       });
       expectedSecurityException(() -> {
-        executeRemoteCommand("SELECT FROM " + validRID, "elon", "musk");
+        executeRemoteCommand("SELECT FROM " + validRID, "albert", "einstein");
       });
 
       // SWITCH TO ROOT TO DROP THE SCHEMA
@@ -100,7 +100,7 @@ public class ServerProfilingIT {
       dropSchema(database);
 
     } finally {
-      SECURITY.dropUser("elon");
+      SECURITY.dropUser("albert");
     }
   }
 
@@ -114,13 +114,13 @@ public class ServerProfilingIT {
 
   @Test
   void notRootAdminAccess() {
-    SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
+    SECURITY.createUser(new JSONObject().put("name", "albert").put("password", SECURITY.encodePassword("einstein"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "admin" }))));
 
     try {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
 
-      checkJohnUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("albert", database));
 
       createSchema(database);
 
@@ -133,13 +133,13 @@ public class ServerProfilingIT {
 
       dropSchema(database);
     } finally {
-      SECURITY.dropUser("elon");
+      SECURITY.dropUser("albert");
     }
   }
 
   @Test
   void testMultipleGroupsAnyType() {
-    SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk")).put("databases",
+    SECURITY.createUser(new JSONObject().put("name", "albert").put("password", SECURITY.encodePassword("einstein")).put("databases",
         new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "creator", "reader", "updater", "deleter" }))));
 
     try {
@@ -148,7 +148,7 @@ public class ServerProfilingIT {
       setCurrentUser("root", database);
       createSchema(database);
 
-      checkJohnUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("albert", database));
 
       final RID validRID = createSomeRecords(database, true);
 
@@ -160,13 +160,13 @@ public class ServerProfilingIT {
       setCurrentUser("root", database);
       dropSchema(database);
     } finally {
-      SECURITY.dropUser("elon");
+      SECURITY.dropUser("albert");
     }
   }
 
   @Test
   void testMultipleGroupsSpecificType() throws Throwable {
-    SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk")).put("databases",
+    SECURITY.createUser(new JSONObject().put("name", "albert").put("password", SECURITY.encodePassword("einstein")).put("databases",
         new JSONObject().put(DATABASE_NAME, new JSONArray(
             new String[] { "creatorOfDocuments", "readerOfDocuments", "updaterOfDocuments", "deleterOfDocuments" }))));
 
@@ -176,7 +176,7 @@ public class ServerProfilingIT {
       setCurrentUser("root", database);
       createSchema(database);
 
-      checkJohnUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("albert", database));
 
       expectedSecurityException(() -> database.newVertex("Vertex1").save());
       database.newDocument("Document1").save();
@@ -187,19 +187,19 @@ public class ServerProfilingIT {
       setCurrentUser("root", database);
       dropSchema(database);
     } finally {
-      SECURITY.dropUser("elon");
+      SECURITY.dropUser("albert");
     }
   }
 
   @Test
   void createOnlyAccess() throws Throwable {
-    SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
+    SECURITY.createUser(new JSONObject().put("name", "albert").put("password", SECURITY.encodePassword("einstein"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "creator" }))));
 
     try {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
 
-      checkJohnUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("albert", database));
 
       createSchemaNotAllowed(database);
 
@@ -208,8 +208,8 @@ public class ServerProfilingIT {
 
       createSchema(database);
 
-      // SWITCH BACK TO ELON
-      checkJohnUser(setCurrentUser("elon", database));
+      // SWITCH BACK TO ALBERT
+      checkJohnUser(setCurrentUser("albert", database));
 
       final RID validRID = createSomeRecords(database, false);
 
@@ -228,19 +228,19 @@ public class ServerProfilingIT {
       dropSchema(database);
 
     } finally {
-      SECURITY.dropUser("elon");
+      SECURITY.dropUser("albert");
     }
   }
 
   @Test
   void createEdgeAccess() throws Throwable {
-    SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
+    SECURITY.createUser(new JSONObject().put("name", "albert").put("password", SECURITY.encodePassword("einstein"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "createOnlyGraph" }))));
 
     try {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
 
-      checkJohnUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("albert", database));
 
       createSchemaNotAllowed(database);
 
@@ -249,8 +249,8 @@ public class ServerProfilingIT {
 
       createSchema(database);
 
-      // SWITCH BACK TO ELON
-      checkJohnUser(setCurrentUser("elon", database));
+      // SWITCH BACK TO ALBERT
+      checkJohnUser(setCurrentUser("albert", database));
 
       MutableVertex v1 = database.newVertex("Vertex1").save();
       MutableVertex v2 = database.newVertex("Vertex1").save();
@@ -263,19 +263,19 @@ public class ServerProfilingIT {
       dropSchema(database);
 
     } finally {
-      SECURITY.dropUser("elon");
+      SECURITY.dropUser("albert");
     }
   }
 
   @Test
   void readOnlyAccess() throws Throwable {
-    SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
+    SECURITY.createUser(new JSONObject().put("name", "albert").put("password", SECURITY.encodePassword("einstein"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "reader" }))));
 
     try {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
 
-      checkJohnUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("albert", database));
 
       createSchemaNotAllowed(database);
 
@@ -286,8 +286,8 @@ public class ServerProfilingIT {
 
       final RID validRID = createSomeRecords(database, true);
 
-      // SWITCH BACK TO ELON
-      checkJohnUser(setCurrentUser("elon", database));
+      // SWITCH BACK TO ALBERT
+      checkJohnUser(setCurrentUser("albert", database));
 
       expectedSecurityException(() -> database.newVertex("Vertex1").save());
       expectedSecurityException(() -> database.newDocument("Document1").save());
@@ -299,19 +299,19 @@ public class ServerProfilingIT {
       dropSchema(database);
 
     } finally {
-      SECURITY.dropUser("elon");
+      SECURITY.dropUser("albert");
     }
   }
 
   @Test
   void readAndUpdateOnlyAccess() throws Throwable {
-    SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
+    SECURITY.createUser(new JSONObject().put("name", "albert").put("password", SECURITY.encodePassword("einstein"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "reader", "updater" }))));
 
     try {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
 
-      checkJohnUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("albert", database));
 
       createSchemaNotAllowed(database);
 
@@ -324,8 +324,8 @@ public class ServerProfilingIT {
 
       final Vertex v = validRID.getRecord(true).asVertex();
 
-      // SWITCH BACK TO ELON
-      checkJohnUser(setCurrentUser("elon", database));
+      // SWITCH BACK TO ALBERT
+      checkJohnUser(setCurrentUser("albert", database));
 
       database.iterateType("Document1", true);
       database.lookupByRID(validRID, true);
@@ -340,21 +340,21 @@ public class ServerProfilingIT {
       dropSchema(database);
 
     } finally {
-      SECURITY.dropUser("elon");
+      SECURITY.dropUser("albert");
     }
   }
 
   @Test
   void deleteOnlyAccess() throws Throwable {
-    SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
+    SECURITY.createUser(new JSONObject().put("name", "albert").put("password", SECURITY.encodePassword("einstein"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "deleter" }))));
 
     try {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
 
-      final ServerSecurityUser elon = setCurrentUser("elon", database);
-      checkJohnUser(elon);
-      assertThat(elon.getAuthorizedDatabases().contains(database.getName())).isTrue();
+      final ServerSecurityUser albert = setCurrentUser("albert", database);
+      checkJohnUser(albert);
+      assertThat(albert.getAuthorizedDatabases().contains(database.getName())).isTrue();
 
       createSchemaNotAllowed(database);
 
@@ -367,8 +367,8 @@ public class ServerProfilingIT {
       createSomeRecords(database, true);
       final Document doc = database.iterateType("Document1", true).next().asDocument();
 
-      // SWITCH BACK TO ELON
-      checkJohnUser(setCurrentUser("elon", database));
+      // SWITCH BACK TO ALBERT
+      checkJohnUser(setCurrentUser("albert", database));
 
       expectedSecurityException(() -> database.newVertex("Vertex1").save());
       expectedSecurityException(() -> database.newDocument("Document1").save());
@@ -382,19 +382,19 @@ public class ServerProfilingIT {
       dropSchema(database);
 
     } finally {
-      SECURITY.dropUser("elon");
+      SECURITY.dropUser("albert");
     }
   }
 
   @Test
   void testResultSetLimit() throws Throwable {
-    SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
+    SECURITY.createUser(new JSONObject().put("name", "albert").put("password", SECURITY.encodePassword("einstein"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "readerOfDocumentsCapped" }))));
 
     try {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
 
-      checkJohnUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("albert", database));
 
       createSchemaNotAllowed(database);
 
@@ -408,8 +408,8 @@ public class ServerProfilingIT {
         createSomeRecords(database, true);
       }
 
-      // SWITCH BACK TO ELON
-      checkJohnUser(setCurrentUser("elon", database));
+      // SWITCH BACK TO ALBERT
+      checkJohnUser(setCurrentUser("albert", database));
 
       expectedSecurityException(() -> database.newVertex("Vertex1").save());
       expectedSecurityException(() -> database.newDocument("Document1").save());
@@ -435,19 +435,19 @@ public class ServerProfilingIT {
       dropSchema(database);
 
     } finally {
-      SECURITY.dropUser("elon");
+      SECURITY.dropUser("albert");
     }
   }
 
   @Test
   void testReadTimeout() throws Throwable {
-    SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
+    SECURITY.createUser(new JSONObject().put("name", "albert").put("password", SECURITY.encodePassword("einstein"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "readerOfDocumentsShortTimeout" }))));
 
     try {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
 
-      checkJohnUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("albert", database));
 
       createSchemaNotAllowed(database);
 
@@ -462,8 +462,8 @@ public class ServerProfilingIT {
         }
       });
 
-      // SWITCH BACK TO ELON
-      checkJohnUser(setCurrentUser("elon", database));
+      // SWITCH BACK TO ALBERT
+      checkJohnUser(setCurrentUser("albert", database));
 
       expectedSecurityException(() -> database.newVertex("Vertex1").save());
       expectedSecurityException(() -> database.newDocument("Document1").save());
@@ -491,7 +491,7 @@ public class ServerProfilingIT {
       dropSchema(database);
 
     } finally {
-      SECURITY.dropUser("elon");
+      SECURITY.dropUser("albert");
     }
   }
 
@@ -522,12 +522,12 @@ public class ServerProfilingIT {
 
   @Test
   public void reloadWhileUsingDatabase() throws Throwable {
-    SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
+    SECURITY.createUser(new JSONObject().put("name", "albert").put("password", SECURITY.encodePassword("einstein"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "reader", "updater" }))));
 
     try {
       final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
-      checkJohnUser(setCurrentUser("elon", database));
+      checkJohnUser(setCurrentUser("albert", database));
       // SWITCH TO ROOT TO CREATE SOME TYPES FOR FURTHER TESTS
       setCurrentUser("root", database);
 
@@ -570,7 +570,7 @@ public class ServerProfilingIT {
       dropSchema(database);
 
     } finally {
-      SECURITY.dropUser("elon");
+      SECURITY.dropUser("albert");
     }
   }
 
@@ -601,15 +601,15 @@ public class ServerProfilingIT {
     }
   }
 
-  private void checkJohnUser(final ServerSecurityUser elon) {
-    assertThat(elon).isNotNull();
-    final ServerSecurityUser authJohn = SECURITY.authenticate("elon", "musk", null);
+  private void checkJohnUser(final ServerSecurityUser albert) {
+    assertThat(albert).isNotNull();
+    final ServerSecurityUser authJohn = SECURITY.authenticate("albert", "einstein", null);
     assertThat(authJohn).isNotNull();
-    assertThat(authJohn.getName()).isEqualTo(elon.getName());
+    assertThat(authJohn.getName()).isEqualTo(albert.getName());
 
     final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target/config");
     assertThat(repository.getUsers().size()).isEqualTo(2);
-    assertThat(repository.getUsers().get(1).getString("name")).isEqualTo("elon");
+    assertThat(repository.getUsers().get(1).getString("name")).isEqualTo("albert");
   }
 
   private ServerSecurityUser setCurrentUser(final String userName, final DatabaseInternal database) {

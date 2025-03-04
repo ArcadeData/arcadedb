@@ -55,12 +55,12 @@ public class ServerImportDatabaseIT extends BaseGraphServerTest {
   }
 
   protected void onServerConfiguration(final ContextConfiguration config) {
-    config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "Movies[elon:musk:admin]{import:classpath://orientdb-export-small.gz}");
+    config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "Movies[albert:einstein:admin]{import:classpath://orientdb-export-small.gz}");
   }
 
   @Test
   public void checkDefaultDatabases() {
-    getServer(0).getSecurity().authenticate("elon", "musk", "Movies");
+    getServer(0).getSecurity().authenticate("albert", "einstein", "Movies");
     final Database database = getServer(0).getDatabase("Movies");
     assertThat(database.countType("Person", true)).isEqualTo(500);
     FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + "0/Movies"));
