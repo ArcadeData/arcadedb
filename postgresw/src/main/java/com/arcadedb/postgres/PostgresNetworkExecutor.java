@@ -65,6 +65,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.Objects;
 
 /**
  * Postgres Reference for Protocol Messages: https://www.postgresql.org/docs/9.6/protocol-message-formats.html
@@ -433,12 +434,30 @@ public class PostgresNetworkExecutor extends Thread {
 
             if (valueType == null) {
               // FIND THE VALUE TYPE AND WRITE IT IN THE DATA DESCRIPTION
-              final Class valueClass = value.getClass();
+              final Class<?> valueClass = value.getClass();
 
-              for (final PostgresType t : PostgresType.values()) {
-                if (t.cls.isAssignableFrom(valueClass)) {
-                  valueType = t;
-                  break;
+              // Special handling for ArrayLists
+              if (value instanceof ArrayList<?> list) {
+                if (!list.isEmpty()) {
+                  // Determine element type from the first non-null element
+                  Object firstElement = list.stream().filter(Objects::nonNull).findFirst().orElse(null);
+                  if (firstElement != null) {
+                    valueType = PostgresType.getArrayTypeForElementType(firstElement.getClass());
+                  } else {
+                    // Default to text array if all elements are null
+                    valueType = PostgresType.ARRAY_TEXT;
+                  }
+                } else {
+                  // Default to text array for empty lists
+                  valueType = PostgresType.ARRAY_TEXT;
+                }
+              } else {
+                // Regular type matching
+                for (final PostgresType t : PostgresType.values()) {
+                  if (t.cls.isAssignableFrom(valueClass) && !t.isArrayType()) {
+                    valueType = t;
+                    break;
+                  }
                 }
               }
 
