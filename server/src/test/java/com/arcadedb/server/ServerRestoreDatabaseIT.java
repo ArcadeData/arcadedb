@@ -87,14 +87,14 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
         database2.drop();
 
         config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES,
-            "graph[elon:musk:admin]{restore:file://" + backupFile.getPath() + "}");
+            "graph[albert:einstein:admin]{restore:file://" + backupFile.getPath() + "}");
       }
     }
   }
 
   @Test
   public void defaultDatabases() {
-    getServer(0).getSecurity().authenticate("elon", "musk", "graph");
+    getServer(0).getSecurity().authenticate("albert", "einstein", "graph");
     final Database database = getServer(0).getDatabase("graph");
     assertThat(database.countType("testDoc", true)).isEqualTo(1);
     FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + "0/Movies"));
