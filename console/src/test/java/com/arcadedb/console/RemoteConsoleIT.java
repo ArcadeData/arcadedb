@@ -165,7 +165,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
   public void testUserMgmt() throws IOException {
     assertThat(console.parse("connect " + URL)).isTrue();
     try {
-      assertThat(console.parse("drop user elon")).isTrue();
+      assertThat(console.parse("drop user albert")).isTrue();
     } catch (final Exception e) {
       // EXPECTED IF ALREADY EXISTENT
     }
@@ -189,7 +189,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     }
 
     assertThat(console.parse("create user albert identified by einstein")).isTrue();
-    assertThat(console.parse("drop user elon")).isTrue();
+    assertThat(console.parse("drop user albert")).isTrue();
 
     // TEST SYNTAX ERROR
     try {
@@ -201,7 +201,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
 
     assertThat(console.parse("create user albert identified by einstein grant connect to db1")).isTrue();
     assertThat(console.parse("create user jeff identified by amazon grant connect to db1:readonly")).isTrue();
-    assertThat(console.parse("drop user elon")).isTrue();
+    assertThat(console.parse("drop user albert")).isTrue();
   }
 
   @Test
