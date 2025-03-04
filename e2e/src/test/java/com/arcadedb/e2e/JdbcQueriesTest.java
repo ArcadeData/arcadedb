@@ -21,7 +21,6 @@ package com.arcadedb.e2e;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
@@ -132,8 +131,6 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
   }
 
   @Test
-  @Disabled
-  // TODO: This test fails because the INSERT commands contain curly braces { }
   void createSchemaWithSqlScript() throws SQLException {
     try (final Statement st = conn.createStatement()) {
 
