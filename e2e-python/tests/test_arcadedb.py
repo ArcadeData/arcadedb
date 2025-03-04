@@ -98,3 +98,27 @@ def test_psycopg2_basic_queries():
             assert 29.99 in product
     finally:
         conn.close()
+
+
+def test_psycopg2_return_array_floats():
+    """Check if the driver correctly sends the array of floats as a list of floats to the python driver"""
+    # Get connection parameters
+    params = get_connection_params(arcadedb)
+
+    # Connect to the database
+    conn = psycopg.connect(**params)
+    conn.autocommit = True
+
+    try:
+        with conn.cursor() as cursor:
+
+            cursor.execute("create vertex type `TEXT_EMBEDDING` if not exists;")
+
+            cursor.execute("create property TEXT_EMBEDDING.str if not exists STRING;")
+            cursor.execute("create property TEXT_EMBEDDING.embedding if not exists ARRAY_OF_FLOATS;")
+
+            cursor.execute('INSERT INTO `TEXT_EMBEDDING` SET str = "meow", hash = [0.1,0.2,0.3] RETURN hash')
+            embeddings = cursor.fetchone()[0]
+            assert isinstance(embeddings, list) and all(isinstance(item, float) for item in embeddings), f"Type ARRAY_OF_FLOATS is returned as {type(embeddings)} instead of list of floats"
+    finally:
+        conn.close()
