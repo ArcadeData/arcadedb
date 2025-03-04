@@ -117,7 +117,7 @@ def test_psycopg2_return_array_floats():
             cursor.execute("create property TEXT_EMBEDDING.str if not exists STRING;")
             cursor.execute("create property TEXT_EMBEDDING.embedding if not exists ARRAY_OF_FLOATS;")
 
-            cursor.execute('INSERT INTO `TEXT_EMBEDDING` SET str = "meow", hash = [0.1,0.2,0.3] RETURN hash')
+            cursor.execute('INSERT INTO `TEXT_EMBEDDING` SET str = "meow", embedding = [0.1,0.2,0.3] RETURN embedding')
             embeddings = cursor.fetchone()[0]
             assert isinstance(embeddings, list) and all(isinstance(item, float) for item in embeddings), f"Type ARRAY_OF_FLOATS is returned as {type(embeddings)} instead of list of floats"
     finally:
