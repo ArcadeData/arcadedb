@@ -1,0 +1,114 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "arcadedb.fullname" . }}
+  labels:
+    {{- include "arcadedb.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "arcadedb.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "arcadedb.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "arcadedb.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.http.port }}
+              protocol: TCP
+          command:
+            - bin/server.sh
+            - -Darcadedb.dumpConfigAtStartup=true
+            - -Darcadedb.server.name=${HOSTNAME}
+            - -Darcadedb.server.rootPassword=${rootPassword}
+            - -Darcadedb.server.databaseDirectory={{ .Values.arcadedb.databaseDirectory }}
+            - -Darcadedb.server.defaultDatabases={{ .Values.arcadedb.defaultDatabases }}
+            - -Darcadedb.ha.enabled=true
+            - -Darcadedb.ha.replicationIncomingHost=0.0.0.0
+            - -Darcadedb.ha.serverList={{ include "arcadedb.fullname" . }}-0.{{ .Chart.Name }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.rpc.port }}
+            - -Darcadedb.ha.k8s=true
+            - -Darcadedb.ha.k8sSuffix=.{{ .Chart.Name }}.{{ .Release.Namespace }}.svc.cluster.local
+            {{- with .Values.arcadedb.extraCommands }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: POD_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: rootPassword
+              {{- if .Values.arcadedb.credentials.rootPassword.secret.name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.arcadedb.credentials.rootPassword.secret.name }}
+                  {{- if .Values.arcadedb.credentials.rootPassword.secret.key }}
+                  key: {{ .Values.arcadedb.credentials.rootPassword.secret.key }}
+                  {{- end }}
+                  optional: false
+              {{- else }}  {{/* Use auto generated secret then */}}
+              valueFrom:
+                secretKeyRef:
+                  name: arcadedb-credentials-secret
+                  key: rootPassword
+              {{- end }}
+
+      {{- with .Values.volumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
