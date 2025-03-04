@@ -4,26 +4,33 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
-      time: "04:00"
+      day: "sunday"
     open-pull-requests-limit: 20
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: weekly
-      time: "05:00"
+      day: "sunday"
     open-pull-requests-limit: 10
 
   - package-ecosystem: "docker"
     directory: "/package/src/main/docker/"
     schedule:
       interval: weekly
-      time: "06:00"
+      day: "sunday"
     open-pull-requests-limit: 10
 
   - package-ecosystem: "npm"
     directory: "/e2e-js"
     schedule:
       interval: weekly
-      time: "07:00"
+      day: "sunday"
     open-pull-requests-limit: 10
+#  - package-ecosystem: "uv"
+#    enable-beta-ecosystems: "true"
+#    directory: "/e2e-pythom"
+#    schedule:
+#      interval: weekly
+#      day: "sunday"
+#    open-pull-requests-limit: 10

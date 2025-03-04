@@ -20,23 +20,14 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.DetachedDocument;
 import com.arcadedb.database.Document;
-import com.arcadedb.database.ImmutableDocument;
-import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.schema.Property;
 
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.stream.*;
 
 public class Projection extends SimpleNode {
 
@@ -122,7 +113,7 @@ public class Projection extends SimpleNode {
             if (excludes.contains(alias) ||
                 (doc.getType().existsProperty(alias) &&
                     doc.getType().getProperty(alias).isHidden())) {
-             continue;
+              continue;
             }
           }
           Object value = item.convert(record.getProperty(alias));
@@ -157,11 +148,17 @@ public class Projection extends SimpleNode {
 
   private void initExcludes() {
     if (excludes == null) {
-      this.excludes = new HashSet<>();
       for (final ProjectionItem item : items) {
-        if (item.exclude)
-          this.excludes.add(item.getProjectionAliasAsString());
+        if (item.exclude) {
+          if (excludes == null)
+            excludes = new HashSet<>();
+
+          excludes.add(item.getProjectionAliasAsString());
+        }
       }
+
+      if (excludes == null)
+        excludes = Collections.EMPTY_SET;
     }
   }
 
