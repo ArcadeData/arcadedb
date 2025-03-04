@@ -69,7 +69,7 @@
         <nexus-staging-maven-plugin.version>1.7.0</nexus-staging-maven-plugin.version>
 
         <assertj-core.version>3.27.3</assertj-core.version>
-        <junit.jupiter.version>5.12.0</junit.jupiter.version>
+        <junit.jupiter.version>5.11.4</junit.jupiter.version>
         <awaitility.version>4.3.0</awaitility.version>
         <mockito-core.version>5.16.0</mockito-core.version>
         <json-path.version>2.9.0</json-path.version>
