@@ -242,7 +242,7 @@ public class ConsoleTest {
   public void testUserMgmtLocalError() throws IOException {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
     try {
-      assertThat(console.parse("create user elon identified by musk")).isTrue();
+      assertThat(console.parse("create user albert identified by einstein")).isTrue();
       fail("local connection allowed user creation");
     } catch (final Exception e) {
       // EXPECTED
