@@ -72,7 +72,6 @@ public class SelectIndexExecutionTest extends TestHelper {
 
         list.forEach(r -> assertThat(r.getInteger("id") == finalI && r.getString("name").equals("John")).isTrue());
 
-        // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
         assertThat(result.getMetrics().get("evaluatedRecords")).as("With id " + i).isEqualTo(1L);
         assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
       }
@@ -93,7 +92,6 @@ public class SelectIndexExecutionTest extends TestHelper {
 
         result.forEachRemaining(r -> assertThat(r.getInteger("id") == finalI || r.getString("name").equals("John")).isTrue());
 
-        // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
         assertThat(result.getMetrics().get("evaluatedRecords")).as("" + finalI).isEqualTo(i < 100 ? 100L : 101L);
         assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(2);
       }
@@ -114,7 +112,6 @@ public class SelectIndexExecutionTest extends TestHelper {
 
         result.forEachRemaining(r -> assertThat((int) r.getInteger("id")).isEqualTo(finalI));
 
-        // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
         assertThat(result.getMetrics().get("evaluatedRecords")).isEqualTo(1L);
         assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
       }
@@ -132,7 +129,6 @@ public class SelectIndexExecutionTest extends TestHelper {
 
         result.forEachRemaining(r -> assertThat((int) r.getInteger("id")).isEqualTo(finalI));
 
-        // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
         assertThat(result.getMetrics().get("evaluatedRecords")).isEqualTo(1L);
         assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
       }
@@ -151,7 +147,6 @@ public class SelectIndexExecutionTest extends TestHelper {
         final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
         result.toList();
 
-        // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
         assertThat(result.getMetrics().get("evaluatedRecords")).isEqualTo(110L);
         assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(0);
       }
@@ -167,7 +162,6 @@ public class SelectIndexExecutionTest extends TestHelper {
         final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
         result.toList();
 
-        // CHECK 1 FOR ID = I + 100 FOR NAME = ELON (ALL OF THEM)
         assertThat(result.getMetrics().get("evaluatedRecords")).isEqualTo(110L);
         assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(0);
       }
