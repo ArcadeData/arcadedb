@@ -394,7 +394,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       return null;
 
     final Property property = type.getPolymorphicPropertyIfExists(name);
-    if (property != null)
+    if (property != null) {
       try {
         final Type propType = property.getType();
         final String ofType = property.getOfType();
@@ -436,6 +436,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
             "Cannot convert type '" + value.getClass() + "' to '" + property.getType().name() + "' found in property '" + name
                 + "'", e);
       }
+    }
 
     return value;
   }

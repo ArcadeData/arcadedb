@@ -271,7 +271,7 @@ public class BinarySerializer {
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
     }
-    return Collections.emptyMap();
+    return new LinkedHashMap<>();
   }
 
   public boolean hasProperty(final Database database, final Binary buffer, final String fieldName, final RID rid) {

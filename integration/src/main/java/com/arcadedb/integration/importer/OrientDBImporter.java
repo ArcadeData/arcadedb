@@ -748,11 +748,9 @@ public class OrientDBImporter {
     if (!checkForNullIndexes(attributes, type))
       return;
 
-    Map<String, Object> properties = Collections.emptyMap();
+    final Map<String, Object> properties = new LinkedHashMap<>();
     for (final Map.Entry<String, Object> attr : attributes.entrySet())
       if (!attr.getKey().startsWith("@") && !attr.getKey().equals("out") && !attr.getKey().equals("in")) {
-        if (properties == Collections.EMPTY_MAP)
-          properties = new HashMap<>();
         properties.put(attr.getKey(), attr.getValue());
       }
 
