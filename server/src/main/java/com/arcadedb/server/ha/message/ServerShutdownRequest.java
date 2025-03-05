@@ -26,7 +26,7 @@ import java.util.logging.Level;
 public class ServerShutdownRequest extends HAAbstractCommand {
 
   @Override
-  public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
+  public HACommand execute(final HAServer server, final HAServer.ServerInfo remoteServerName, final long messageNumber) {
     LogManager.instance()
         .log(this, Level.SEVERE, "Server '%s' requested the shutdown of the server '%s'. Shutdown in progress...", null,
             remoteServerName, server.getServerName());

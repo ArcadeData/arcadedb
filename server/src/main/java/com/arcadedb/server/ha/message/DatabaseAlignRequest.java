@@ -84,7 +84,7 @@ public class DatabaseAlignRequest extends HAAbstractCommand {
   }
 
   @Override
-  public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
+  public HACommand execute(final HAServer server,  final HAServer.ServerInfo remoteServerName, final long messageNumber) {
     final DatabaseInternal database = server.getServer().getDatabase(databaseName);
 
     final List<int[]> pagesToAlign = new ArrayList<>();

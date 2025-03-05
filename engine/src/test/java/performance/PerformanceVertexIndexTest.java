@@ -129,7 +129,7 @@ public class PerformanceVertexIndexTest {
       database.async().setCommitEvery(50000);
       database.async().setParallelLevel(parallel);
       database.async().setTransactionUseWAL(true);
-      database.async().setTransactionSync(WALFile.FLUSH_TYPE.YES_NOMETADATA);
+      database.async().setTransactionSync(WALFile.FlushType.YES_NOMETADATA);
 
       database.async().onError(new ErrorCallback() {
         @Override

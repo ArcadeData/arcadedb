@@ -22,6 +22,8 @@ jobs:
         with:
           python-version: "3.13.0"
           cache: "pip"
+
+      - name: Run pre-commit
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
 
       - name: Set up QEMU
@@ -34,11 +36,6 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
-
-      - name: Setup Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.13.0"
 
       - name: Setup UV package manager
         run: |
@@ -86,6 +83,13 @@ jobs:
           pytest tests/
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resilient Tests
+        if: success()
+        run: ./mvnw verify -Pintegration -pl resilience
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 
       - name: Unit Tests Reporter
         uses: dorny/test-reporter@6e6a65b7a0bd2c9197df7d0ae36ac5cee784230c # v2.0.0

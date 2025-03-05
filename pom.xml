@@ -68,19 +68,17 @@
         <license-maven-plugin.version>5.0.0</license-maven-plugin.version>
         <nexus-staging-maven-plugin.version>1.7.0</nexus-staging-maven-plugin.version>
 
+        <micrometer.version>1.14.6</micrometer.version>
         <assertj-core.version>3.27.3</assertj-core.version>
         <junit.jupiter.version>5.12.2</junit.jupiter.version>
         <awaitility.version>4.3.0</awaitility.version>
-        <mockito-core.version>5.16.0</mockito-core.version>
         <json-path.version>2.9.0</json-path.version>
+        <mockito-core.version>5.17.0</mockito-core.version>
 
         <skipIntegration>true</skipIntegration>
 
         <itCoverageAgent></itCoverageAgent>
         <argLine></argLine>
-        <license-maven-plugin.version>5.0.0</license-maven-plugin.version>
-        <mockito-core.version>5.17.0</mockito-core.version>
-        <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
     </properties>
 
     <developers>
@@ -130,6 +128,7 @@
         <module>studio</module>
         <module>package</module>
         <module>e2e</module>
+        <module>resilience</module>
     </modules>
 
     <build>
