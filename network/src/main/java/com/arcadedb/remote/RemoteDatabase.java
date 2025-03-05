@@ -456,7 +456,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     checkDatabaseIsOpen();
     stats.commands.incrementAndGet();
 
-    return (ResultSet) databaseCommand("command", language, command, params, true,
+    return (ResultSet) databaseCommand("command", language, command, params, false,
         (connection, response) -> createResultSet(response));
   }
 
@@ -466,7 +466,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     stats.commands.incrementAndGet();
 
     final Map<String, Object> params = mapArgs(args);
-    return (ResultSet) databaseCommand("command", language, command, params, true,
+    return (ResultSet) databaseCommand("command", language, command, params, false,
         (connection, response) -> createResultSet(response));
   }
 
