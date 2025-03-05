@@ -140,6 +140,7 @@
         <module>package</module>
         <module>e2e</module>
         <module>e2e-perf</module>
+        <module>resilience</module>
     </modules>
 
     <build>
