@@ -57,8 +57,8 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
   }
 
   @Override
-  protected HAServer.SERVER_ROLE getServerRole(int serverIndex) {
-    return HAServer.SERVER_ROLE.ANY;
+  protected HAServer.ServerRole getServerRole(int serverIndex) {
+    return HAServer.ServerRole.ANY;
   }
 
   @Test
@@ -146,11 +146,11 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
   protected void onBeforeStarting(final ArcadeDBServer server) {
     server.registerTestEventListener(new ReplicationCallback() {
       @Override
-      public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
+      public void onEvent(final Type type, final Object object, final ArcadeDBServer server) {
         if (!serversSynchronized)
           return;
 
-        if (type == TYPE.REPLICA_MSG_RECEIVED) {
+        if (type == Type.REPLICA_MSG_RECEIVED) {
           if (!(((Pair) object).getSecond() instanceof TxRequest))
             return;
 
