@@ -45,6 +45,7 @@ import java.util.Map;
 import java.util.Scanner;
 import java.util.Set;
 import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 public class GetServerHandler extends AbstractServerHttpHandler {
   public GetServerHandler(final HttpServer httpServer) {
@@ -129,13 +130,13 @@ public class GetServerHandler extends AbstractServerHttpHandler {
       final String leaderServer = ha.isLeader() ?
           ha.getServer().getHttpServer().getListeningAddress() :
           ha.getLeader().getRemoteHTTPAddress();
-      final String replicaServers = ha.getReplicaServersHTTPAddressesList();
+//      final String replicaServers = ha.getReplicaServersHTTPAddressesList();
 
       haJSON.put("leaderAddress", leaderServer);
-      haJSON.put("replicaAddresses", replicaServers);
+      haJSON.put("replicaAddresses", ha.getCluster().servers.stream().map(HAServer.ServerInfo::toString).collect(Collectors.joining(",")));
 
       LogManager.instance()
-          .log(this, Level.FINE, "Returning configuration leaderServer=%s replicaServers=[%s]", leaderServer, replicaServers);
+          .log(this, Level.FINE, "Returning configuration leaderServer=%s replicaServers=[%s]", leaderServer, ha.getCluster());
     }
   }
 
