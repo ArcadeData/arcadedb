@@ -34,7 +34,7 @@ public class GetReadyHandler extends AbstractServerHttpHandler {
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     Metrics.counter("http.ready").increment();
 
-    if (httpServer.getServer().getStatus() == ArcadeDBServer.STATUS.ONLINE)
+    if (httpServer.getServer().getStatus() == ArcadeDBServer.Status.ONLINE)
       return new ExecutionResponse(204, "");
     return new ExecutionResponse(503, "Server not started yet");
   }

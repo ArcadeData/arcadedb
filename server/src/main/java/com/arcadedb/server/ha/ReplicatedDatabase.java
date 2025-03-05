@@ -20,12 +20,33 @@ package com.arcadedb.server.ha;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.*;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DocumentCallback;
+import com.arcadedb.database.DocumentIndexer;
+import com.arcadedb.database.EmbeddedModifier;
+import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.database.LocalTransactionExplicitLock;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.MutableEmbeddedDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.RecordCallback;
+import com.arcadedb.database.RecordEvents;
+import com.arcadedb.database.RecordFactory;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
-import com.arcadedb.engine.*;
+import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.ErrorRecordCallback;
+import com.arcadedb.engine.FileManager;
+import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.TransactionManager;
+import com.arcadedb.engine.WALFile;
+import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
@@ -49,19 +70,31 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ha.message.*;
+import com.arcadedb.server.ha.message.CommandForwardRequest;
+import com.arcadedb.server.ha.message.DatabaseAlignRequest;
+import com.arcadedb.server.ha.message.DatabaseAlignResponse;
+import com.arcadedb.server.ha.message.DatabaseChangeStructureRequest;
+import com.arcadedb.server.ha.message.InstallDatabaseRequest;
+import com.arcadedb.server.ha.message.TxForwardRequest;
+import com.arcadedb.server.ha.message.TxRequest;
 
 import java.io.IOException;
-import java.util.*;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 public class ReplicatedDatabase implements DatabaseInternal {
-  private final ArcadeDBServer server;
-  private final LocalDatabase proxied;
-  private final HAServer.QUORUM quorum;
-  private final long timeout;
+  private final ArcadeDBServer  server;
+  private final LocalDatabase   proxied;
+  private final HAServer.Quorum quorum;
+  private final long            timeout;
 
   public ReplicatedDatabase(final ArcadeDBServer server, final LocalDatabase proxied) {
     if (!server.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL))
@@ -72,16 +105,16 @@ public class ReplicatedDatabase implements DatabaseInternal {
     this.timeout = proxied.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
     this.proxied.setWrappedDatabaseInstance(this);
 
-    HAServer.QUORUM quorum;
+    HAServer.Quorum quorum;
     final String quorumValue = proxied.getConfiguration().getValueAsString(GlobalConfiguration.HA_QUORUM)
-            .toUpperCase(Locale.ENGLISH);
+        .toUpperCase(Locale.ENGLISH);
     try {
-      quorum = HAServer.QUORUM.valueOf(quorumValue);
+      quorum = HAServer.Quorum.valueOf(quorumValue);
     } catch (Exception e) {
       LogManager.instance()
-              .log(this, Level.SEVERE, "Error on setting quorum to '%s' for database '%s'. Setting it to MAJORITY", e, quorumValue,
-                      getName());
-      quorum = HAServer.QUORUM.MAJORITY;
+          .log(this, Level.SEVERE, "Error on setting quorum to '%s' for database '%s'. Setting it to MAJORITY", e, quorumValue,
+              getName());
+      quorum = HAServer.Quorum.MAJORITY;
     }
     this.quorum = quorum;
   }
@@ -814,7 +847,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
     return proxied.getOpenedOn();
   }
 
-  public HAServer.QUORUM getQuorum() {
+  public HAServer.Quorum getQuorum() {
     return quorum;
   }
 
@@ -862,7 +895,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
         if (responsePayloads != null) {
           for (final Object o : responsePayloads) {
             final DatabaseAlignResponse response = (DatabaseAlignResponse) o;
-            result.put(response.getRemoteServerName(), response.getAlignedPages());
+            result.put(response.getRemoteServerName().alias(), response.getAlignedPages());
           }
         }
       });

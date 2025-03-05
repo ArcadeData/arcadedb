@@ -23,42 +23,39 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 
-import java.util.logging.*;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 public class UpdateClusterConfiguration extends HAAbstractCommand {
-  private String servers;
-  private String replicaServersHTTPAddresses;
+  private HAServer.HACluster cluster;
 
+  // Constructor for serialization
   public UpdateClusterConfiguration() {
   }
 
-  public UpdateClusterConfiguration(final String servers, final String replicaServersHTTPAddresses) {
-    this.servers = servers;
-    this.replicaServersHTTPAddresses = replicaServersHTTPAddresses;
+  public UpdateClusterConfiguration(final HAServer.HACluster cluster) {
+    this.cluster = cluster;
   }
 
   @Override
-  public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
-    LogManager.instance().log(this, Level.FINE, "Updating server list=%s replicaHTTPs=%s", servers, replicaServersHTTPAddresses);
-    server.setServerAddresses(servers);
-    server.setReplicasHTTPAddresses(replicaServersHTTPAddresses);
+  public HACommand execute(final HAServer server, final HAServer.ServerInfo remoteServer, final long messageNumber) {
+    LogManager.instance().log(this, Level.INFO, "Updating server list=%s from `%s` ", cluster, remoteServer);
+    server.setServerAddresses(cluster);
     return null;
   }
 
   @Override
   public void toStream(final Binary stream) {
-    stream.putString(servers);
-    stream.putString(replicaServersHTTPAddresses);
+    stream.putString(cluster.getServers().stream().map(HAServer.ServerInfo::toString).collect(Collectors.joining(",")));
   }
 
   @Override
   public void fromStream(final ArcadeDBServer server, final Binary stream) {
-    servers = stream.getString();
-    replicaServersHTTPAddresses = stream.getString();
+    cluster = new HAServer.HACluster(server.getHA().parseServerList(stream.getString()));
   }
 
   @Override
   public String toString() {
-    return "updateClusterConfig(servers=" + servers + ")";
+    return "updateClusterConfig(servers=" + cluster + ")";
   }
 }

@@ -82,7 +82,7 @@ public class DatabaseStructureResponse extends HAAbstractCommand {
   }
 
   @Override
-  public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
+  public HACommand execute(final HAServer server, final HAServer.ServerInfo remoteServerName, final long messageNumber) {
     return null;
   }
 

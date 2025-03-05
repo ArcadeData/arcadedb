@@ -280,7 +280,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     Metrics.counter("http.connect-cluster").increment();
 
-    return ha.connectToLeader(serverAddress, exception -> {
+    return ha.connectToLeader(HAServer.ServerInfo.fromString(serverAddress), exception -> {
       exchange.setStatusCode(StatusCodes.INTERNAL_SERVER_ERROR);
       exchange.getResponseSender().send("{ \"error\" : \"" + exception.getMessage() + "\"}");
       return null;

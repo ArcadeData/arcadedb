@@ -34,9 +34,9 @@ import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -59,8 +59,8 @@ public class ReplicationServerFixedClientConnectionIT extends ReplicationServerI
   }
 
   @Override
-  protected HAServer.SERVER_ROLE getServerRole(int serverIndex) {
-    return HAServer.SERVER_ROLE.ANY;
+  protected HAServer.ServerRole getServerRole(int serverIndex) {
+    return HAServer.ServerRole.ANY;
   }
 
   @Test
@@ -133,7 +133,7 @@ public class ReplicationServerFixedClientConnectionIT extends ReplicationServerI
   protected void onBeforeStarting(final ArcadeDBServer server) {
     if (server.getServerName().equals("ArcadeDB_1"))
       server.registerTestEventListener((type, object, server1) -> {
-        if (type == ReplicationCallback.TYPE.REPLICA_MSG_RECEIVED) {
+        if (type == ReplicationCallback.Type.REPLICA_MSG_RECEIVED) {
           if (messages.incrementAndGet() > 1000 && getServer(0).isStarted()) {
             testLog("TEST: Stopping the Leader...");
 

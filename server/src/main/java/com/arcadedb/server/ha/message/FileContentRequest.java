@@ -51,7 +51,7 @@ public class FileContentRequest extends HAAbstractCommand {
   }
 
   @Override
-  public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
+  public HACommand execute(final HAServer server, final HAServer.ServerInfo remoteServerName, final long messageNumber) {
     final DatabaseInternal db = server.getServer().getDatabase(databaseName);
     final ComponentFile file = db.getFileManager().getFile(fileId);
 

@@ -36,7 +36,7 @@ public class ReplicaConnectRequest extends HAAbstractCommand {
   }
 
   @Override
-  public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
+  public HACommand execute(final HAServer server, final HAServer.ServerInfo remoteServerName, final long messageNumber) {
     if (lastReplicationMessageNumber > -1) {
       LogManager.instance().log(this, Level.INFO, "Hot backup with Replica server '%s' is possible (lastReplicationMessageNumber=%d)", remoteServerName,
           lastReplicationMessageNumber);

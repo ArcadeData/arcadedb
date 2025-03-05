@@ -28,7 +28,7 @@ import java.util.logging.*;
  */
 public class DatabaseChangeStructureResponse extends HAAbstractCommand {
   @Override
-  public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
+  public HACommand execute(final HAServer server, final HAServer.ServerInfo remoteServerName, final long messageNumber) {
     server.receivedResponse(remoteServerName, messageNumber, null);
     LogManager.instance().log(this, Level.FINE, "Database change structure received from server %s (msg=%d)", null, remoteServerName, messageNumber);
     return null;

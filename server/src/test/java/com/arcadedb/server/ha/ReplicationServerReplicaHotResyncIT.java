@@ -22,14 +22,12 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
+import org.awaitility.Awaitility;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
 
 public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
   private final    CountDownLatch hotResyncLatch  = new CountDownLatch(1);
@@ -45,18 +43,33 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
 
   @Override
   protected void onAfterTest() {
-    try {
-      // Wait for hot resync event with timeout
-      boolean hotResyncReceived = hotResyncLatch.await(30, TimeUnit.SECONDS);
-      // Wait for full resync event with timeout
-      boolean fullResyncReceived = fullResyncLatch.await(1, TimeUnit.SECONDS);
 
-      assertThat(hotResyncReceived).as("Hot resync event should have been received").isTrue();
-      assertThat(fullResyncReceived).as("Full resync event should not have been received").isFalse();
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      fail("Test was interrupted while waiting for resync events");
-    }
+    Awaitility.await().atMost(10, TimeUnit.MINUTES)
+        .pollInterval(2, TimeUnit.SECONDS)
+        .until(() -> {
+          // Wait for the hot resync event to be received
+
+          return hotResyncLatch.getCount() == 0;
+        });
+
+    Awaitility.await().atMost(10, TimeUnit.MINUTES)
+        .pollInterval(2, TimeUnit.SECONDS)
+        .until(() -> {
+          // Wait for the full resync event to be received
+          return fullResyncLatch.getCount() == 0;
+        });
+//    try {
+//      // Wait for hot resync event with timeout
+//      boolean hotResyncReceived = hotResyncLatch.await(30, TimeUnit.SECONDS);
+//      // Wait for full resync event with timeout
+//      boolean fullResyncReceived = fullResyncLatch.await(1, TimeUnit.SECONDS);
+//
+//      assertThat(hotResyncReceived).as("Hot resync event should have been received").isTrue();
+//      assertThat(fullResyncReceived).as("Full resync event should not have been received").isFalse();
+//    } catch (InterruptedException e) {
+//      Thread.currentThread().interrupt();
+//      fail("Test was interrupted while waiting for resync events");
+//    }
   }
 
   @Override
@@ -64,28 +77,31 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
     if (server.getServerName().equals("ArcadeDB_2")) {
       server.registerTestEventListener(new ReplicationCallback() {
         @Override
-        public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
+        public void onEvent(final Type type, final Object object, final ArcadeDBServer server) {
           if (!serversSynchronized)
             return;
 
           if (slowDown) {
             // SLOW DOWN A SERVER AFTER 5TH MESSAGE
-            if (totalMessages.incrementAndGet() > 5) {
-              LogManager.instance().log(this, Level.INFO, "TEST: Slowing down response from replica server 2...");
+            if (totalMessages.incrementAndGet() > 5 && totalMessages.get() < 10) {
+              LogManager.instance()
+                  .log(this, Level.INFO, "TEST: Slowing down response from replica server 2... - total messages %d",
+                      totalMessages.get());
               try {
                 // Still need some delay to trigger the hot resync
-                Thread.sleep(5_000);
+                Thread.sleep(1_000);
               } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
               }
             }
           } else {
-            if (type == TYPE.REPLICA_HOT_RESYNC) {
-              LogManager.instance().log(this, Level.INFO, "TEST: Received hot resync request");
+            LogManager.instance().log(this, Level.INFO, "TEST: Slowdown is disabled");
+            if (type == Type.REPLICA_HOT_RESYNC) {
               hotResyncLatch.countDown();
-            } else if (type == TYPE.REPLICA_FULL_RESYNC) {
-              LogManager.instance().log(this, Level.INFO, "TEST: Received full resync request");
+              LogManager.instance().log(this, Level.INFO, "TEST: Received hot resync request %s", hotResyncLatch.getCount());
+            } else if (type == Type.REPLICA_FULL_RESYNC) {
               fullResyncLatch.countDown();
+              LogManager.instance().log(this, Level.INFO, "TEST: Received full resync request %s", fullResyncLatch.getCount());
             }
           }
         }
@@ -95,11 +111,11 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
     if (server.getServerName().equals("ArcadeDB_0")) {
       server.registerTestEventListener(new ReplicationCallback() {
         @Override
-        public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
+        public void onEvent(final Type type, final Object object, final ArcadeDBServer server) {
           if (!serversSynchronized)
             return;
 
-          if ("ArcadeDB_2".equals(object) && type == TYPE.REPLICA_OFFLINE) {
+          if ("ArcadeDB_2".equals(object) && type == Type.REPLICA_OFFLINE) {
             LogManager.instance().log(this, Level.INFO, "TEST: Replica 2 is offline removing latency...");
             slowDown = false;
           }

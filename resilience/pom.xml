@@ -25,22 +25,52 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>26.3.1-SNAPSHOT</version>
+        <version>25.5.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
     <properties>
-        <postgresql.version>42.7.10</postgresql.version>
-        <logback-classic.version>1.5.32</logback-classic.version>
+        <testcontainers.version>1.20.6</testcontainers.version>
+        <postgresql.version>42.7.5</postgresql.version>
+        <logback-classic.version>1.5.18</logback-classic.version>
         <allowIncompleteProjects>true</allowIncompleteProjects>
-        <assertj-db.version>3.0.1</assertj-db.version>
+        <assertj-db.version>3.0.0</assertj-db.version>
     </properties>
 
-    <artifactId>arcadedb-e2e</artifactId>
+    <artifactId>arcadedb-resilience-tests</artifactId>
     <packaging>jar</packaging>
-    <name>ArcadeDB End-to-End Tests</name>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-deploy-plugin</artifactId>
+                <configuration>
+                    <skip>true</skip>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+        </plugins>
+    </build>
 
     <dependencies>
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <version>${logback-classic.version}</version>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-network</artifactId>
@@ -78,29 +108,18 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>com.arcadedb</groupId>
-            <artifactId>arcadedb-grpc-client</artifactId>
-            <version>${project.parent.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <version>${postgresql.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>ch.qos.logback</groupId>
-            <artifactId>logback-classic</artifactId>
-            <version>${logback-classic.version}</version>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <version>${micrometer.version}</version>
             <scope>test</scope>
         </dependency>
-        <dependency>
-            <groupId>org.neo4j.driver</groupId>
-            <artifactId>neo4j-java-driver</artifactId>
-            <version>${neo4j-driver.version}</version>
-            <scope>test</scope>
-        </dependency>
+
     </dependencies>
 
 </project>

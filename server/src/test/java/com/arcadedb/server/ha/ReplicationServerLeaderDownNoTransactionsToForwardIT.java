@@ -47,8 +47,8 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
   }
 
   @Override
-  protected HAServer.SERVER_ROLE getServerRole(int serverIndex) {
-    return HAServer.SERVER_ROLE.ANY;
+  protected HAServer.ServerRole getServerRole(int serverIndex) {
+    return HAServer.ServerRole.ANY;
   }
 
   @Test
@@ -117,7 +117,7 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
   protected void onBeforeStarting(final ArcadeDBServer server) {
     if (server.getServerName().equals("ArcadeDB_2"))
       server.registerTestEventListener((type, object, server1) -> {
-        if (type == ReplicationCallback.TYPE.REPLICA_MSG_RECEIVED) {
+        if (type == ReplicationCallback.Type.REPLICA_MSG_RECEIVED) {
           if (messages.incrementAndGet() > 10 && getServer(0).isStarted()) {
             testLog("TEST: Stopping the Leader...");
 
