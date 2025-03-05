@@ -100,7 +100,7 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
     db.async().setCommitEvery(getVerticesPerTx());
     db.async().setParallelLevel(parallel);
     db.async().setTransactionUseWAL(true);
-    db.async().setTransactionSync(WALFile.FLUSH_TYPE.YES_NOMETADATA);
+    db.async().setTransactionSync(WALFile.FlushType.YES_NOMETADATA);
 
     for (int tx = 0; tx < getTxs(); ++tx) {
       for (int i = 0; i < getVerticesPerTx(); ++i) {
