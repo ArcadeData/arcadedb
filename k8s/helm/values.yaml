@@ -1,63 +1,74 @@
-# Default values for arcadedb.
-# This is a YAML-formatted file.
-# Declare variables to be passed into your templates.
-
-# This will set the replicaset count more information can be found here: https://kubernetes.io/docs/concepts/workloads/controllers/replicaset/
+## @param replicaCount This will set the replicaset count more information can be found here: https://kubernetes.io/docs/concepts/workloads/controllers/replicaset/
+##
 replicaCount: 1
 
+## @section arcaddb
 arcadedb:
-  # Enable persistence by updating this and volume/Mounts
+  ## @param arcadedb.databaseDirectory Enable persistence by updating this and volume/Mounts
   databaseDirectory: "/home/arcadedb/databases"
+  ## @param arcadedb.defaultDatabases Default databases 
   defaultDatabases: "Universe[foo:bar]"
+  ## @param arcadedb.extraCommands Any extra comands to pass to ArcadeDB startup
   extraCommands:
     - -Darcadedb.server.mode=development # development | production
+  ## @section arcadedb.credentials
   credentials:
+  ## @section arcadedb.credentials.rootPassword
     rootPassword:
-      # If the secret is null, a new one called 'arcadedb-credentials-secret' will be created
-      # NOTE: If you are using `helm template` ie like ArgoCD does, each time the generated secret
-      # will be updated! If your auth flow is automated thru the secret name then maybe that's okay.
-      # Otherwise, you may be better off specifying the secret thru other means.
+      ## @section arcadedb.credentials.secret
+      ## If the secret is null, a new one called 'arcadedb-credentials-secret' will be created
+      ## NOTE: If you are using `helm template` ie like ArgoCD does, each time the generated secret
+      ## will be updated! If your auth flow is automated thru the secret name then maybe that's okay.
+      ## Otherwise, you may be better off specifying the secret thru other means.
       secret:
+        ## @param arcadedb.credentials.rootPassword.secret.name Name of existing secret
         name: null
+        ## @param arcadedb.credentials.rootPassword.secret.key Key to use in existing secret
         key: null
 
-# This sets the container image more information can be found here: https://kubernetes.io/docs/concepts/containers/images/
+## @section image
+## This sets the container image more information can be found here: https://kubernetes.io/docs/concepts/containers/images/
 image:
+  ## @param image.registry Registry for image
   registry: arcadedata
+  ## @param image.repository Image repo
   repository: arcadedb
-  # This sets the pull policy for images.
+  ## @param image.pullPolicy This sets the pull policy for images.
   pullPolicy: IfNotPresent
-  # Overrides the image tag whose default is the chart appVersion.
+  ## @param image.tag Overrides the image tag whose default is the chart appVersion.
   tag: ""
 
-# This is for the secrets for pulling an image from a private repository more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+## @param imagePullSecrets This is for the secrets for pulling an image from a private repository more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
 imagePullSecrets: []
-# This is to override the chart name.
+## @param nameOverride This is to override the chart name.
 nameOverride: ""
+## @param fullnameOverride
 fullnameOverride: ""
 
-# This section builds out the service account more information can be found here: https://kubernetes.io/docs/concepts/security/service-accounts/
+## @section This section builds out the service account more information can be found here: https://kubernetes.io/docs/concepts/security/service-accounts/
 serviceAccount:
-  # Specifies whether a service account should be created
+  ## @param serviceAccount.create Specifies whether a service account should be created
   create: true
-  # Automatically mount a ServiceAccount's API credentials?
+  ## @param serviceAccount.automount Automatically mount a ServiceAccount's API credentials?
   automount: true
-  # Annotations to add to the service account
+  ## @param serviceAccount.annotations Annotations to add to the service account
   annotations: {}
-  # The name of the service account to use.
-  # If not set and create is true, a name is generated using the fullname template
+  ## @param serviceAccount.name The name of the service account to use.
+  ## If not set and create is true, a name is generated using the fullname template
   name: ""
 
-# This is for setting Kubernetes Annotations to a Pod.
-# For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/
+## @param podAnnotations This is for setting Kubernetes Annotations to a Pod.
+## For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/
 podAnnotations: {}
-# This is for setting Kubernetes Labels to a Pod.
-# For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
+## @param podLabels This is for setting Kubernetes Labels to a Pod.
+## For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
 podLabels: {}
 
+## @param podSecurityContext
 podSecurityContext: {}
   # fsGroup: 2000
 
+## @param securityContext
 securityContext: {}
   # capabilities:
   #   drop:
@@ -66,35 +77,48 @@ securityContext: {}
   # runAsNonRoot: true
   # runAsUser: 1000
 
-# This is for setting up a service more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/
+## @section This is for setting up a service more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/
 service:
+  ## @section http
   http:
-    # This sets the service type more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types
+    ## @param service.http.type This sets the service type more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types
     type: LoadBalancer
-    # This sets the ports more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#field-spec-ports
+    ## @param service.http.port This sets the ports more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#field-spec-ports
     port: 2480
+  ## @section rpc
   rpc:
+    ## @param service.rpc.port This sets the ports more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#field-spec-ports
     port: 2424
 
-# This block is for setting up the ingress for more information can be found here: https://kubernetes.io/docs/concepts/services-networking/ingress/
-# TODO: This is probably broken, a mismatch between selectors in the headless service vs http service.
-# At least it doesn't seem to work correctly when using Traefik annotations.
+## @section ingress This block is for setting up the ingress for more information can be found here: https://kubernetes.io/docs/concepts/services-networking/ingress/
+## TODO: This is probably broken, a mismatch between selectors in the headless service vs http service.
+## At least it doesn't seem to work correctly when using Traefik annotations.
 ingress:
+  ## @param ingress.enabled
   enabled: false
+  ## @param ingress.className
   className: ""
+  ## @param ingress.annotations
   annotations: {}
     # kubernetes.io/ingress.class: nginx
     # kubernetes.io/tls-acme: "true"
+  ## @section ingress.hosts
   hosts:
+      ## @param ingress.hosts[0].host
     - host: chart-example.local
+      ## @section ingress.hosts[0].paths
       paths:
+          ## @param ingress.hosts[0].paths[0].path
         - path: /
+          ## @param ingress.hosts[0].paths[0].pathType
           pathType: ImplementationSpecific
+  ## @param ingress.tls
   tls: []
   #  - secretName: chart-example-tls
   #    hosts:
   #      - chart-example.local
 
+## @param resources
 resources: {}
   # We usually recommend not to specify default resources and to leave this as a conscious
   # choice for the user. This also increases chances charts run on environments with little
@@ -107,46 +131,63 @@ resources: {}
   #   cpu: 100m
   #   memory: 128Mi
 
-# This is to setup the liveness and readiness probes more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
+## @section This is to setup the liveness and readiness probes more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
 livenessProbe:
+  ## @section livenessProbe.httpGet
   httpGet:
+    ## @param livenessProbe.httpGet.path
     path: /api/v1/ready
+    ## @param livenessProbe.httpGet.port
     port: http
+## @section This is to setup the liveness and readiness probes more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
 readinessProbe:
+  ## @section readinessProbe.httpGet
   httpGet:
+    ## @param readinessProbe.httpGet.path
     path: /api/v1/ready
+    ## @param readinessProbe.httpGet.port
     port: http
 
-# This section is for setting up autoscaling more information can be found here: https://kubernetes.io/docs/concepts/workloads/autoscaling/
+## @section This section is for setting up autoscaling more information can be found here: https://kubernetes.io/docs/concepts/workloads/autoscaling/
 autoscaling:
+  ## @param autoscaling.enabled
   enabled: false
+  ## @param autoscaling.minReplicas
   minReplicas: 1
+  ## @param autoscaling.maxReplicas
   maxReplicas: 100
+  ## @param autoscaling.targetCPUUtilizationPercentage
   targetCPUUtilizationPercentage: 80
   # targetMemoryUtilizationPercentage: 80
 
-# Additional volumes on the output Deployment definition.
+## @param volumes Additional volumes on the output Deployment definition.
 volumes: []
 # - name: foo
 #   secret:
 #     secretName: mysecret
 #     optional: false
 
-# Additional volumeMounts on the output Deployment definition.
+## @param volumeMounts Additional volumeMounts on the output Deployment definition.
 volumeMounts: []
 # - name: foo
 #   mountPath: "/etc/foo"
 #   readOnly: true
 
+## @param nodeSelector
 nodeSelector: {}
 
+## @param tolerations
 tolerations: []
 
+## @section affinity
 affinity:
-  # Set the anti-affinity selector scope to arcadedb servers.
+  ## @section Set the anti-affinity selector scope to arcadedb servers.
   podAntiAffinity:
+    ## @section preferredDuringSchedulingIgnoredDuringExecution
     preferredDuringSchedulingIgnoredDuringExecution:
+        ## @param affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].weight
       - weight: 100
+        ## @skip affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].podAffinityTerm
         podAffinityTerm:
           labelSelector:
             matchExpressions:
@@ -156,5 +197,5 @@ affinity:
                   - arcadedb
           topologyKey: kubernetes.io/hostname
 
-# extraManifests - Include any amount of extra arbitrary manifests
+## @param extraManifests - Include any amount of extra arbitrary manifests
 extraManifests: {}
