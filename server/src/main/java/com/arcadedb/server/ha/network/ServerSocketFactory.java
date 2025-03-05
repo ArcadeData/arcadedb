@@ -18,8 +18,9 @@
  */
 package com.arcadedb.server.ha.network;
 
-import java.io.*;
-import java.net.*;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.ServerSocket;
 
 public abstract class ServerSocketFactory {
   public abstract ServerSocket createServerSocket(int port, int backlog, InetAddress ifAddress) throws IOException;
