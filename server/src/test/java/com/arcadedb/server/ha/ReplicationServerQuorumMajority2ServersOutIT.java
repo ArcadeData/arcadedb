@@ -45,8 +45,8 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
     if (server.getServerName().equals("ArcadeDB_1"))
       server.registerTestEventListener(new ReplicationCallback() {
         @Override
-        public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
-          if (type == TYPE.REPLICA_MSG_RECEIVED) {
+        public void onEvent(final Type type, final Object object, final ArcadeDBServer server) {
+          if (type == Type.REPLICA_MSG_RECEIVED) {
             if (messages.incrementAndGet() > 100) {
               LogManager.instance().log(this, Level.FINE, "TEST: Stopping Replica 1...");
               getServer(1).stop();
@@ -58,8 +58,8 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
     if (server.getServerName().equals("ArcadeDB_2"))
       server.registerTestEventListener(new ReplicationCallback() {
         @Override
-        public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
-          if (type == TYPE.REPLICA_MSG_RECEIVED) {
+        public void onEvent(final Type type, final Object object, final ArcadeDBServer server) {
+          if (type == Type.REPLICA_MSG_RECEIVED) {
             if (messages.incrementAndGet() > 200) {
               LogManager.instance().log(this, Level.FINE, "TEST: Stopping Replica 2...");
               getServer(2).stop();
