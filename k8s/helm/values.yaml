@@ -8,7 +8,7 @@ replicaCount: 1
 arcadedb:
   # Enable persistence by updating this and volume/Mounts
   databaseDirectory: "/home/arcadedb/databases"
-  defaultDatabases: "Universe[elon:musk]"
+  defaultDatabases: "Universe[foo:bar]"
   extraCommands:
     - -Darcadedb.server.mode=development # development | production
   credentials:
