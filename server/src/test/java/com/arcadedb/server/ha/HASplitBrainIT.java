@@ -61,8 +61,8 @@ public class HASplitBrainIT extends ReplicationServerIT {
   }
 
   @Override
-  protected HAServer.SERVER_ROLE getServerRole(int serverIndex) {
-    return HAServer.SERVER_ROLE.ANY;
+  protected HAServer.ServerRole getServerRole(int serverIndex) {
+    return HAServer.ServerRole.ANY;
   }
 
   @Override
