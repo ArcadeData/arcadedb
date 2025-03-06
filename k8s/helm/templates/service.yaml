@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "arcadedb.fullname" . }}-http
+  labels:
+    {{- include "arcadedb.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.http.type }}
+  ports:
+    - port: {{ .Values.service.http.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "arcadedb.selectorLabels" . | nindent 4 }}
+
+---
+
+{{/*
+This is a "headless" service for the arcadedb which exists to allow discovery of the set of
+member pods (masters). The CNAME of this service points to SRV records - one for each Pod that
+is Running and Ready). Read more in the Kubernetes docs:
+https://kubernetes.io/docs/tutorials/stateful-application/basic-stateful-set/
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "arcadedb.fullname" . }}
+  labels:
+    {{- include "arcadedb.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  ports:
+    - port: {{ .Values.service.http.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: {{ .Values.service.rpc.port }}
+      targetPort: rpc
+      protocol: TCP
+      name: rpc
+  selector:
+    {{- include "arcadedb.selectorLabels" . | nindent 4 }}
+
