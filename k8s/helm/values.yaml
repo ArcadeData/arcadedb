@@ -6,7 +6,7 @@ replicaCount: 1
 arcadedb:
   ## @param arcadedb.databaseDirectory Enable persistence by updating this and volume/Mounts
   databaseDirectory: "/home/arcadedb/databases"
-  ## @param arcadedb.defaultDatabases Default databases 
+  ## @param arcadedb.defaultDatabases Default databases
   defaultDatabases: "Universe[foo:bar]"
   ## @param arcadedb.extraCommands Any extra comands to pass to ArcadeDB startup
   extraCommands:

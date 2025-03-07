@@ -41,4 +41,3 @@ spec:
       name: rpc
   selector:
     {{- include "arcadedb.selectorLabels" . | nindent 4 }}
-
