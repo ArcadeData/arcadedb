@@ -21,12 +21,14 @@ package com.arcadedb.database;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.lang.reflect.*;
 import java.util.*;
+import java.util.logging.*;
 
 /**
  * Immutable document implementation. To modify the record, you need to get the mutable representation by calling {@link #modify()}. This implementation keeps the
@@ -55,9 +57,14 @@ public class ImmutableDocument extends BaseDocument {
     if (propertyName == null)
       return null;
 
-    checkForLazyLoading();
-    return database.getSerializer()
-        .deserializeProperty(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName, rid);
+    try {
+      checkForLazyLoading();
+      return database.getSerializer()
+          .deserializeProperty(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName, rid);
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on loading property '%s' from record %s", e, propertyName, rid);
+      return null;
+    }
   }
 
   @Override
@@ -71,8 +78,9 @@ public class ImmutableDocument extends BaseDocument {
         // IT MUST BE RELOADED TO GET THE LATEST CHANGES. FORCE RELOAD
         try {
           // RELOAD THE PAGE FIRST TO AVOID LOOP WITH TRIGGERS (ENCRYPTION)
-          database.getTransaction().getPageToModify(rid.getPageId(),
-              ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize(), false);
+          database.getTransaction()
+              .getPageToModify(rid.getPageId(), ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize(),
+                  false);
           reload();
         } catch (final IOException e) {
           throw new DatabaseOperationException("Error on reloading document " + rid, e);
@@ -116,8 +124,8 @@ public class ImmutableDocument extends BaseDocument {
   @Override
   public Map<String, Object> toMap(final boolean includeMetadata) {
     checkForLazyLoading();
-    final Map<String, Object> result = new LinkedHashMap<>(database.getSerializer()
-        .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid));
+    final Map<String, Object> result = new LinkedHashMap<>(
+        database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid));
     if (includeMetadata) {
       result.put("@cat", "d");
       result.put("@type", type.getName());
