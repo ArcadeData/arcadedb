@@ -38,7 +38,7 @@ public class DictionaryTest extends TestHelper {
   @Test
   public void updateName() {
     database.transaction(() -> {
-      Assertions.assertThat(database.getSchema().existsType("V")).isFalse();
+      assertThat(database.getSchema().existsType("V")).isFalse();
 
       final DocumentType type = database.getSchema().buildDocumentType().withName("V").withTotalBuckets(3).create();
       type.createProperty("id", Integer.class);
@@ -56,7 +56,7 @@ public class DictionaryTest extends TestHelper {
     assertThat(database.getSchema().getDictionary().getDictionaryMap().size()).isEqualTo(4);
 
     database.transaction(() -> {
-      Assertions.assertThat(database.getSchema().existsType("V")).isTrue();
+      assertThat(database.getSchema().existsType("V")).isTrue();
 
       final MutableDocument v = database.newDocument("V");
       v.set("id", 10);
@@ -69,7 +69,7 @@ public class DictionaryTest extends TestHelper {
     assertThat(database.getSchema().getDictionary().getDictionaryMap().size()).isEqualTo(5);
 
     database.transaction(() -> {
-      Assertions.assertThat(database.getSchema().existsType("V")).isTrue();
+      assertThat(database.getSchema().existsType("V")).isTrue();
       database.getSchema().getDictionary().updateName("name", "firstName");
     });
 
@@ -82,26 +82,26 @@ public class DictionaryTest extends TestHelper {
       while (iter.hasNext()) {
         final Document d = (Document) iter.next().getRecord().get();
 
-        Assertions.assertThat(d.getInteger("id")).isEqualTo(i);
-        Assertions.assertThat(d.getString("firstName")).isEqualTo("Jay");
-        Assertions.assertThat(d.getString("surname")).isEqualTo("Miner");
+        assertThat(d.getInteger("id")).isEqualTo(i);
+        assertThat(d.getString("firstName")).isEqualTo("Jay");
+        assertThat(d.getString("surname")).isEqualTo("Miner");
 
         if (i == 10)
-          Assertions.assertThat(d.getString("newProperty")).isEqualTo("newProperty");
+          assertThat(d.getString("newProperty")).isEqualTo("newProperty");
         else
-          Assertions.assertThat(d.getString("newProperty")).isNull();
+          assertThat(d.getString("newProperty")).isNull();
 
-        Assertions.assertThat(d.getString("name")).isNull();
+        assertThat(d.getString("name")).isNull();
 
         ++i;
       }
 
-      Assertions.assertThat(i).isEqualTo(11);
+      assertThat(i).isEqualTo(11);
     });
 
     try {
       database.transaction(() -> {
-        Assertions.assertThat(database.getSchema().existsType("V")).isTrue();
+        assertThat(database.getSchema().existsType("V")).isTrue();
         database.getSchema().getDictionary().updateName("V", "V2");
       });
       fail("");

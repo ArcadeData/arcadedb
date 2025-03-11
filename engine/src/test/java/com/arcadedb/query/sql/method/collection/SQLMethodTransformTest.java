@@ -59,12 +59,18 @@ import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.BinarySerializer;
+import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.*;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.Callable;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -88,13 +94,13 @@ class SQLMethodTransformTest {
 
     final Object result = method.execute(Set.of("A", "B"), null, context, new String[] { "toLowerCase" });
     assertThat(result).isInstanceOf(Set.class);
-    assertThat(new ArrayList<>((Set) result)).asList().contains("a");
-    assertThat(new ArrayList<>((Set) result)).asList().contains("b");
+    assertThat(result).asInstanceOf(InstanceOfAssertFactories.SET).contains("a");
+    assertThat(result).asInstanceOf(InstanceOfAssertFactories.SET).contains("b");
 
     final Object result2 = method.execute(List.of("A", "B"), null, context, new String[] { "toLowerCase" });
     assertThat(result2).isInstanceOf(List.class);
-    assertThat(result2).asList().contains("a");
-    assertThat(result2).asList().contains("b");
+    assertThat(result2).asInstanceOf(InstanceOfAssertFactories.LIST).contains("a");
+    assertThat(result2).asInstanceOf(InstanceOfAssertFactories.LIST).contains("b");
   }
 
   @Test
@@ -103,13 +109,13 @@ class SQLMethodTransformTest {
 
     final Object result = method.execute(Set.of("A", "b"), null, context, new String[] { "toUpperCase" });
     assertThat(result).isInstanceOf(Set.class);
-    assertThat(new ArrayList<>((Set) result)).asList().contains("A");
-    assertThat(new ArrayList<>((Set) result)).asList().contains("B");
+    assertThat(result).asInstanceOf(InstanceOfAssertFactories.SET).contains("A");
+    assertThat(result).asInstanceOf(InstanceOfAssertFactories.SET).contains("B");
 
     final Object result2 = method.execute(List.of("a", "B"), null, context, new String[] { "toUpperCase" });
     assertThat(result2).isInstanceOf(List.class);
-    assertThat(result2).asList().contains("A");
-    assertThat(result2).asList().contains("B");
+    assertThat(result2).asInstanceOf(InstanceOfAssertFactories.LIST).contains("A");
+    assertThat(result2).asInstanceOf(InstanceOfAssertFactories.LIST).contains("B");
   }
 
   @Test
@@ -118,13 +124,13 @@ class SQLMethodTransformTest {
 
     final Object result = method.execute(Set.of(" AA ", " bb "), null, context, new String[] { "trim", "toUpperCase" });
     assertThat(result).isInstanceOf(Set.class);
-    assertThat(new ArrayList<>((Set) result)).asList().contains("AA");
-    assertThat(new ArrayList<>((Set) result)).asList().contains("BB");
+    assertThat(result).asInstanceOf(InstanceOfAssertFactories.SET).contains("AA");
+    assertThat(result).asInstanceOf(InstanceOfAssertFactories.SET).contains("BB");
 
     final Object result2 = method.execute(List.of(" aa ", " BB "), null, context, new String[] { "trim", "toLowerCase" });
     assertThat(result2).isInstanceOf(List.class);
-    assertThat(result2).asList().contains("aa");
-    assertThat(result2).asList().contains("bb");
+    assertThat(result2).asInstanceOf(InstanceOfAssertFactories.LIST).contains("aa");
+    assertThat(result2).asInstanceOf(InstanceOfAssertFactories.LIST).contains("bb");
   }
 
   private static BasicCommandContext getMockedContext() {

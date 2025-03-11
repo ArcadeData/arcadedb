@@ -74,7 +74,8 @@ public class SQLMethodAsListTest {
     final ArrayList<Object> expected = new ArrayList<Object>();
     expected.add(1);
     expected.add("2");
-    assertThat(expected).isEqualTo(result);
+    assertThat(result).isEqualTo(expected);
+
   }
 
   @Test
@@ -88,7 +89,8 @@ public class SQLMethodAsListTest {
     final TestIterable<Object> anIterable = new TestIterable<Object>(expected);
     final Object result = function.execute(anIterable, null, null, null);
 
-    assertThat(expected).isEqualTo(result);
+    assertThat(result).isEqualTo(expected);
+
   }
 
   @Test
@@ -102,7 +104,8 @@ public class SQLMethodAsListTest {
     final TestIterable<Object> anIterable = new TestIterable<Object>(expected);
     final Object result = function.execute(anIterable.iterator(), null, null, null);
 
-    assertThat(expected).isEqualTo(result);
+    assertThat(result).isEqualTo(expected);
+
   }
 
   @Test
@@ -121,7 +124,8 @@ public class SQLMethodAsListTest {
     final ArrayList<Object> expected = new ArrayList<Object>();
     expected.add(doc);
 
-    assertThat(expected).isEqualTo(result);
+    assertThat(result).isEqualTo(expected);
+
   }
 
   @Test
@@ -132,6 +136,7 @@ public class SQLMethodAsListTest {
     final Object result = function.execute(Integer.valueOf(4), null, null, null);
     final ArrayList<Object> expected = new ArrayList<Object>();
     expected.add(Integer.valueOf(4));
-    assertThat(expected).isEqualTo(result);
+    assertThat(result).isEqualTo(expected);
+
   }
 }
