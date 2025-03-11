@@ -65,7 +65,7 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
   private final        Map<String, ServerSecurityUser> users                = new HashMap<>();
   private final        int                             checkConfigReloadEveryMs;
   private              CredentialsValidator            credentialsValidator = new DefaultCredentialsValidator();
-  private static final Random                          RANDOM               = new SecureRandom();
+  private static final SecureRandom                    RANDOM               = new SecureRandom();
   public static final  int                             SALT_SIZE            = 32;
   private              Timer                           reloadConfigurationTimer;
 

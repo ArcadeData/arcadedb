@@ -86,7 +86,6 @@ public class SocketFactory {
         final KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
 
         final KeyStore keyStore = KeyStore.getInstance(keyStoreType);
-        final SecureRandom secureRandom = new SecureRandom();
         final char[] keyStorePass = keyStorePassword.toCharArray();
         keyStore.load(getAsStream(keyStorePath), keyStorePass);
 

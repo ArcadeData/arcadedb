@@ -40,21 +40,23 @@ import com.arcadedb.exception.EncryptionException;
  * @since 27 Jun 2024
  */
 public class DefaultDataEncryption implements DataEncryption {
-  public static final int DEFAULT_SALT_ITERATIONS = 65536;
-  public static final int DEFAULT_KEY_LENGTH = 256;
-  public static final String DEFAULT_PASSWORD_ALGORITHM = "PBKDF2WithHmacSHA256";
+  public static final int    DEFAULT_SALT_ITERATIONS      = 65536;
+  public static final int    DEFAULT_KEY_LENGTH           = 256;
+  public static final String DEFAULT_PASSWORD_ALGORITHM   = "PBKDF2WithHmacSHA256";
   public static final String DEFAULT_SECRET_KEY_ALGORITHM = "AES";
 
-  public static final String DEFAULT_ALGORITHM = "AES/GCM/NoPadding";
-  public static final int DEFAULT_IV_SIZE = 12;
-  public static final int DEFAULT_TAG_SIZE = 128;
+  public static final  String       DEFAULT_ALGORITHM = "AES/GCM/NoPadding";
+  public static final  int          DEFAULT_IV_SIZE   = 12;
+  public static final  int          DEFAULT_TAG_SIZE  = 128;
+  private static final SecureRandom SECURE_RANDOM     = new SecureRandom();
 
   private SecretKey secretKey;
-  private String algorithm;
-  private int ivSize;
-  private int tagSize;
+  private String    algorithm;
+  private int       ivSize;
+  private int       tagSize;
 
-  public DefaultDataEncryption(SecretKey secretKey, String algorithm, int ivSize, int tagSize) throws NoSuchAlgorithmException, NoSuchPaddingException {
+  public DefaultDataEncryption(SecretKey secretKey, String algorithm, int ivSize, int tagSize)
+      throws NoSuchAlgorithmException, NoSuchPaddingException {
     this.secretKey = secretKey;
     this.algorithm = algorithm;
     this.ivSize = ivSize;
@@ -103,17 +105,20 @@ public class DefaultDataEncryption implements DataEncryption {
     return keyGen.generateKey();
   }
 
-  public static SecretKey getSecretKeyFromPasswordUsingDefaults(String password, String salt) throws NoSuchAlgorithmException, InvalidKeySpecException {
-    return getKeyFromPassword(password, salt, DEFAULT_PASSWORD_ALGORITHM, DEFAULT_SECRET_KEY_ALGORITHM, DEFAULT_SALT_ITERATIONS, DEFAULT_KEY_LENGTH);
+  public static SecretKey getSecretKeyFromPasswordUsingDefaults(String password, String salt)
+      throws NoSuchAlgorithmException, InvalidKeySpecException {
+    return getKeyFromPassword(password, salt, DEFAULT_PASSWORD_ALGORITHM, DEFAULT_SECRET_KEY_ALGORITHM, DEFAULT_SALT_ITERATIONS,
+        DEFAULT_KEY_LENGTH);
   }
 
   private static byte[] generateIv(int ivSize) {
     final byte[] iv = new byte[ivSize];
-    new SecureRandom().nextBytes(iv);
+    SECURE_RANDOM.nextBytes(iv);
     return iv;
   }
 
-  public static SecretKey getKeyFromPassword(String password, String salt, String passwordAlgorithm, String secretKeyAlgorithm, int saltIterations, int keyLength)
+  public static SecretKey getKeyFromPassword(String password, String salt, String passwordAlgorithm, String secretKeyAlgorithm,
+      int saltIterations, int keyLength)
       throws NoSuchAlgorithmException, InvalidKeySpecException {
     final SecretKeyFactory factory = SecretKeyFactory.getInstance(passwordAlgorithm);
     final KeySpec spec = new PBEKeySpec(password.toCharArray(), salt.getBytes(), saltIterations, keyLength);
