@@ -18,17 +18,20 @@
  */
 package com.arcadedb.query.sql.method.collection;
 
-import com.arcadedb.database.Database;
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.MutableEmbeddedDocument;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class SQLMethodFieldTest {
+class SQLMethodFieldTest extends TestHelper {
 
   private SQLMethod method;
 
@@ -45,19 +48,37 @@ class SQLMethodFieldTest {
   }
 
   @Test
+  void testFieldValueSQL() {
+    database.transaction(() -> {
+      DocumentType type = database.getSchema().buildDocumentType().withName("Test").create();
+      type.createProperty("embedded", Type.EMBEDDED);
+      MutableDocument document = database.newDocument("Test");
+      MutableEmbeddedDocument embeddedDocument = document.newEmbeddedDocument("Test", "embedded");
+      embeddedDocument.set("field", "value");
+      document.set("embedded", embeddedDocument);
+      document.save();
+
+      ResultSet resultSet = database.query("sql", "SELECT embedded.field('field') as res FROM Test");
+      Result result = resultSet.next();
+      assertThat(result.<String>getProperty("res")).isEqualTo("value");
+    });
+
+  }
+  @Test
   void testFieldValue() {
+    database.transaction(() -> {
+      DocumentType type = database.getSchema().buildDocumentType().withName("Test").create();
+      type.createProperty("embedded", Type.EMBEDDED);
+      MutableDocument document = database.newDocument("Test");
+      MutableEmbeddedDocument embeddedDocument = document.newEmbeddedDocument("Test", "embedded");
+      embeddedDocument.set("field", "value");
+      document.set("embedded", embeddedDocument);
+      document.save();
+      Object result = method.execute(embeddedDocument, document, null, new Object[] { "field" });
 
-    final Database database = Mockito.mock(Database.class);
-
-    final DocumentType type = Mockito.mock(LocalDocumentType.class);
-
-//        MutableDocument doc = new MutableDocument(database, type, null);
-//        doc.set("name", "Foo");
-//        doc.set("surname", "Bar");
-
-//        Object result = method.execute(null, doc, null, null, new Object[]{"name"});
-//        assertThat(result).isNotNull();
-//        assertThat(result).isEqualTo("Foo");
+      assertThat(result).isInstanceOf(String.class);
+      assertThat(result).isEqualTo("value");
+    });
 
   }
 }

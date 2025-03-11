@@ -47,8 +47,8 @@ class SQLMethodIncludeTest {
 
     final Object result = method.execute(resultInternal, null, null, new Object[] { "name" });
     assertThat(result).isNotNull();
-    assertThat(((Map) result).containsKey("name")).isTrue();
-    assertThat(((Map) result).containsKey("surname")).isFalse();
-    assertThat(((Map) result).get("name")).isEqualTo("Foo");
+    assertThat(((Map<?, ?>) result).containsKey("name")).isTrue();
+    assertThat(((Map<?, ?>) result).containsKey("surname")).isFalse();
+    assertThat(((Map<?, ?>) result).get("name")).isEqualTo("Foo");
   }
 }

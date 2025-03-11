@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.function.sql;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
@@ -44,6 +45,8 @@ import java.io.File;
 import java.io.UnsupportedEncodingException;
 import java.security.NoSuchAlgorithmException;
 import java.text.SimpleDateFormat;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Date;
@@ -51,6 +54,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static com.arcadedb.TestHelper.checkActiveDatabases;
@@ -60,6 +64,41 @@ import static org.assertj.core.api.Assertions.fail;
 public class SQLFunctionsTest {
   private final DatabaseFactory factory = new DatabaseFactory("./target/databases/SQLFunctionsTest");
   private       Database        database;
+
+  @BeforeEach
+  public void beforeEach() {
+    checkActiveDatabases();
+    FileUtils.deleteRecursively(new File("./target/databases/SQLFunctionsTest"));
+    database = factory.create();
+    database.getSchema().createDocumentType("V");
+    database.getSchema().createDocumentType("Account");
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++) {
+        database.newDocument("Account").set("id", i).save();
+      }
+    });
+
+    database.getSchema().createDocumentType("City");
+    database.getSchema().createDocumentType("Country");
+    database.transaction(() -> {
+      final MutableDocument italy = database.newDocument("Country").set("name", "Italy").save();
+      final MutableDocument usa = database.newDocument("Country").set("name", "USA").save();
+
+      database.newDocument("City").set("name", "Rome").set("country", italy).save();
+      database.newDocument("City").set("name", "Grosseto").set("country", italy).save();
+      database.newDocument("City").set("name", "Miami").set("country", usa).save();
+      database.newDocument("City").set("name", "Austin").set("country", usa).save();
+    });
+  }
+
+  @AfterEach
+  public void afterEach() {
+    if (database != null)
+      database.drop();
+    checkActiveDatabases();
+    FileUtils.deleteRecursively(new File("./target/databases/SQLFunctionsTest"));
+  }
+
 
   @Test
   public void queryMax() {
@@ -395,7 +434,14 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void queryDate() {
+  public void queryDate() throws InterruptedException {
+
+//    System.out.println("dateTimeformat = " + database.getSchema().getDateTimeFormat());
+//    System.out.println("database.getSchema().getDateFormat() = " + database.getSchema().getDateFormat());
+//
+//    System.out.println("DATE_IMPLEMENTATION = " + GlobalConfiguration.DATE_IMPLEMENTATION.getValue());
+//    System.out.println("DATE_TIME_IMPLEMENTATION = " + GlobalConfiguration.DATE_TIME_IMPLEMENTATION.getValue());
+
     ResultSet result = database.command("sql", "select count(*) as tot from Account");
     assertThat(result.hasNext()).isTrue();
     final int tot = ((Number) result.next().getProperty("tot")).intValue();
@@ -406,10 +452,14 @@ public class SQLFunctionsTest {
     });
 
     final String pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
-    final SimpleDateFormat dateFormat = new SimpleDateFormat(pattern);
 
+    DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern(pattern);
+    LocalDateTime now = LocalDateTime.now();
+    String formattedDate = now.format(timeFormatter);
+//    System.out.println("formattedDate = " + formattedDate);
+    String query = "select from Account where created <= date('" +formattedDate + "', \"" + pattern + "\")";
     result = database.command("sql",
-        "select from Account where created <= date('" + dateFormat.format(new Date()) + "', \"" + pattern + "\")");
+        query);
 
     int count = 0;
     for (final ResultSet it = result; it.hasNext(); ) {
@@ -597,37 +647,4 @@ public class SQLFunctionsTest {
     }
   }
 
-  @BeforeEach
-  public void beforeEach() {
-    checkActiveDatabases();
-    FileUtils.deleteRecursively(new File("./target/databases/SQLFunctionsTest"));
-    database = factory.create();
-    database.getSchema().createDocumentType("V");
-    database.getSchema().createDocumentType("Account");
-    database.transaction(() -> {
-      for (int i = 0; i < 100; i++) {
-        database.newDocument("Account").set("id", i).save();
-      }
-    });
-
-    database.getSchema().createDocumentType("City");
-    database.getSchema().createDocumentType("Country");
-    database.transaction(() -> {
-      final MutableDocument italy = database.newDocument("Country").set("name", "Italy").save();
-      final MutableDocument usa = database.newDocument("Country").set("name", "USA").save();
-
-      database.newDocument("City").set("name", "Rome").set("country", italy).save();
-      database.newDocument("City").set("name", "Grosseto").set("country", italy).save();
-      database.newDocument("City").set("name", "Miami").set("country", usa).save();
-      database.newDocument("City").set("name", "Austin").set("country", usa).save();
-    });
-  }
-
-  @AfterEach
-  public void afterEach() {
-    if (database != null)
-      database.drop();
-    checkActiveDatabases();
-    FileUtils.deleteRecursively(new File("./target/databases/SQLFunctionsTest"));
-  }
 }

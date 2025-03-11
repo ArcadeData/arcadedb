@@ -55,4 +55,9 @@ public class SQLMethodField extends AbstractSQLMethod {
   public boolean evaluateParameters() {
     return false;
   }
+
+  @Override
+  public String getSyntax() {
+    return "<property>.field(<string>)";
+  }
 }
