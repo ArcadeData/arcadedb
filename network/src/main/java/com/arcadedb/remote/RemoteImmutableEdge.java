@@ -18,13 +18,16 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.database.JSONSerializer;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
 
 public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge {
   private final RID out;
@@ -96,4 +99,29 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
       checkForLazyLoading();
     return this;
   }
+
+  @Override
+  public Map<String, Object> toMap(final boolean includeMetadata) {
+    final Map<String, Object> result = new HashMap<>(map);
+    if (includeMetadata) {
+      result.put("@cat", "e");
+      result.put("@type", getTypeName());
+      if (getIdentity() != null)
+        result.put("@rid", getIdentity().toString());
+    }
+    return result;
+  }
+
+  @Override
+  public JSONObject toJSON(final boolean includeMetadata) {
+    final JSONObject result = new JSONSerializer(database).map2json(map, null);
+    if (includeMetadata) {
+      result.put("@cat", "e");
+      result.put("@type", getTypeName());
+      if (getIdentity() != null)
+        result.put("@rid", getIdentity().toString());
+    }
+    return result;
+  }
+
 }

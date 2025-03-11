@@ -40,12 +40,19 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RWLockContext;
 
-import java.io.*;
-import java.net.*;
-import java.nio.charset.*;
-import java.util.*;
-import java.util.logging.*;
-import java.util.stream.*;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.net.ConnectException;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
+import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 /**
  * Remote Database implementation. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
@@ -54,22 +61,25 @@ import java.util.stream.*;
  */
 public class RemoteHttpComponent extends RWLockContext {
   public static final    int                         DEFAULT_PORT              = 2480;
+
+  protected static final String                      protocol                  = "http";
+
+  private static final   String                      charset                   = "UTF-8";
+
   private final          String                      originalServer;
   private final          int                         originalPort;
-  private                int                         apiVersion                = 1;
-  protected final        ContextConfiguration        configuration;
   private final          String                      userName;
   private final          String                      userPassword;
   private final          List<Pair<String, Integer>> replicaServerList         = new ArrayList<>();
-  protected              String                      currentServer;
-  protected              int                         currentPort;
+  protected final        DatabaseStats               stats                     = new DatabaseStats();
+  protected final        ContextConfiguration        configuration;
+  private                int                         apiVersion                = 1;
   private                CONNECTION_STRATEGY         connectionStrategy        = CONNECTION_STRATEGY.ROUND_ROBIN;
   private                Pair<String, Integer>       leaderServer;
   private                int                         currentReplicaServerIndex = -1;
   private                int                         timeout;
-  protected static final String                      protocol                  = "http";
-  private static final   String                      charset                   = "UTF-8";
-  protected final        DatabaseStats               stats                     = new DatabaseStats();
+  protected              String                      currentServer;
+  protected              int                         currentPort;
 
   public enum CONNECTION_STRATEGY {
     STICKY, ROUND_ROBIN
