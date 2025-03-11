@@ -19,11 +19,13 @@
 package com.arcadedb.remote;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.JSONSerializer;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.ImmutableLightEdge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
@@ -121,4 +123,29 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
       checkForLazyLoading();
     return this;
   }
+
+  @Override
+  public Map<String, Object> toMap(final boolean includeMetadata) {
+    final Map<String, Object> result = new HashMap<>(map);
+    if (includeMetadata) {
+      result.put("@cat", "v");
+      result.put("@type", getTypeName());
+      if (getIdentity() != null)
+        result.put("@rid", getIdentity().toString());
+    }
+    return result;
+  }
+
+  @Override
+  public JSONObject toJSON(final boolean includeMetadata) {
+    final JSONObject result = new JSONSerializer(database).map2json(map, null);
+    if (includeMetadata) {
+      result.put("@cat", "v");
+      result.put("@type", getTypeName());
+      if (getIdentity() != null)
+        result.put("@rid", getIdentity().toString());
+    }
+    return result;
+  }
+
 }

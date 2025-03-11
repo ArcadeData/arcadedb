@@ -609,7 +609,7 @@ public class ServerProfilingIT {
 
     final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target/config");
     assertThat(repository.getUsers().size()).isEqualTo(2);
-    assertThat(repository.getUsers().get(1).getString("name")).isEqualTo("albert");
+    assertThat(repository.getUsers().get(0).getString("name")).isEqualTo("albert");
   }
 
   private ServerSecurityUser setCurrentUser(final String userName, final DatabaseInternal database) {
