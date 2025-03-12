@@ -125,20 +125,39 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
         }
       }
 
-      String rootPassword = server != null ?
+      final String rootPasswordFromEnv = server != null ?
         server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD) :
         GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
+
+
+
+      final String rootPasswordPath = server != null ?
+        server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH) :
+        GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH.getValueAsString();
+
+
+      final String rootPasswordFromFile = rootPasswordPath != null ? (Files.isReadable(Path.of(rootPasswordPath)) ? Files.readString(Path.of(rootPasswordPath)) : null) : null;
+
       if (users.isEmpty() || (users.containsKey("root") && users.get("root").getPassword() == null))
       {
         askForRootPassword();
       }
-      else if (rootPassword != null && (users.containsKey("root") && users.get("root").getPassword() != rootPassword))
+      else if ((rootPasswordFromFile != null || rootPasswordFromEnv != null) && (users.containsKey("root")))
       {
-        credentialsValidator.validateCredentials("root", rootPassword);
+        final String curRootPassword = users.get("root").getPassword();
+        if (rootPasswordFromFile != null && rootPasswordFromEnv != null)
+          LogManager.instance().log(this, Level.WARNING, "Both `arcadedb.server.rootPassword` and `arcadedb.server.rootPasswordPath` settings were used, falling back to `arcadedb.server.rootPasswordPath`");
 
-        final String encodedPassword = encodePassword(rootPassword, ServerSecurity.generateRandomSalt());
-        getUser("root").setPassword(encodedPassword);
-        saveUsers();
+        final String pickedNewRootPassword = rootPasswordFromFile == null ? rootPasswordFromEnv : rootPasswordFromFile;
+
+
+        if (curRootPassword != pickedNewRootPassword)
+        {
+            credentialsValidator.validateCredentials("root", pickedNewRootPassword);
+            final String encodedPassword = encodePassword(pickedNewRootPassword, ServerSecurity.generateRandomSalt());
+            getUser("root").setPassword(encodedPassword);
+            saveUsers();
+        }
       }
 
 
