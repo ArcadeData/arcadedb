@@ -137,11 +137,8 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
         credentialsValidator.validateCredentials("root", rootPassword);
 
         final String encodedPassword = encodePassword(rootPassword, ServerSecurity.generateRandomSalt());
-
-        if (existsUser("root")) {
-          getUser("root").setPassword(encodedPassword);
-          saveUsers();
-        }
+        getUser("root").setPassword(encodedPassword);
+        saveUsers();
       }
 
 
