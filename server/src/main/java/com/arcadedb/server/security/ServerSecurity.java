@@ -125,8 +125,25 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
         }
       }
 
+      String rootPassword = server != null ?
+        server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD) :
+        GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
       if (users.isEmpty() || (users.containsKey("root") && users.get("root").getPassword() == null))
+      {
         askForRootPassword();
+      }
+      else if (rootPassword != null && (users.containsKey("root") && users.get("root").getPassword() != rootPassword))
+      {
+        credentialsValidator.validateCredentials("root", rootPassword);
+
+        final String encodedPassword = encodePassword(rootPassword, ServerSecurity.generateRandomSalt());
+
+        if (existsUser("root")) {
+          getUser("root").setPassword(encodedPassword);
+          saveUsers();
+        }
+      }
+
 
       final long fileLastModified = usersRepository.getFileLastModified();
       if (fileLastModified > -1 && reloadConfigurationTimer == null) {
