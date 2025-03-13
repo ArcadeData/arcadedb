@@ -33,14 +33,32 @@ import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.MultiIterator;
 
-import java.math.*;
-import java.text.*;
-import java.time.*;
-import java.time.format.*;
-import java.time.temporal.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoField;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Calendar;
+import java.util.Collection;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
 /**
  * Generic representation of a type.<br>
@@ -166,34 +184,34 @@ public enum Type {
     DECIMAL.castable.addAll(Arrays.asList(BOOLEAN, BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE));
   }
 
-  protected final String     name;
-  protected final int        id;
-  protected final byte       binaryType;
-  protected final Class<?>   javaDefaultType;
-  protected final Class<?>[] allowAssignmentFrom;
-  protected final Set<Type>  castable;
+  final         String     name;
+  private final int        id;
+  private final byte       binaryType;
+  final         Class<?>   javaDefaultType;
+  private final Class<?>[] allowAssignmentFrom;
+  private final Set<Type>  castable;
 
-  Type(final String iName, final int iId, final byte binaryType, final Class<?> iJavaDefaultType,
-      final Class<?>[] iAllowAssignmentBy) {
-    this.name = iName.toUpperCase(Locale.ENGLISH);
-    this.id = iId;
+  Type(final String name, final int id, final byte binaryType, final Class<?> javaDefaultType,
+      final Class<?>[] allowAssignmentBy) {
+    this.name = name.toUpperCase(Locale.ENGLISH);
+    this.id = id;
     this.binaryType = binaryType;
-    this.javaDefaultType = iJavaDefaultType;
-    this.allowAssignmentFrom = iAllowAssignmentBy;
-    this.castable = new HashSet<Type>();
+    this.javaDefaultType = javaDefaultType;
+    this.allowAssignmentFrom = allowAssignmentBy;
+    this.castable = new HashSet<>();
     this.castable.add(this);
   }
 
   /**
    * Return the type by ID.
    *
-   * @param iId The id to search
+   * @param id The id to search
    *
    * @return The type if any, otherwise null
    */
-  public static Type getById(final byte iId) {
-    if (iId >= 0 && iId < TYPES_BY_ID.length)
-      return TYPES_BY_ID[iId];
+  public static Type getById(final byte id) {
+    if (id >= 0 && id < TYPES_BY_ID.length)
+      return TYPES_BY_ID[id];
     return null;
   }
 
@@ -230,20 +248,19 @@ public enum Type {
   /**
    * Return the correspondent type by checking the "assignability" of the class received as parameter.
    *
-   * @param iClass Class to check
+   * @param clazz Class to check
    *
    * @return OType instance if found, otherwise null
    */
-  public static Type getTypeByClass(final Class<?> iClass) {
-    if (iClass == null)
+  public static Type getTypeByClass(final Class<?> clazz) {
+    if (clazz == null)
       return null;
 
-    Type type = TYPES_BY_USERTYPE.get(iClass);
+    Type type = TYPES_BY_USERTYPE.get(clazz);
     if (type != null)
       return type;
-    type = getTypeByClassInherit(iClass);
+    return getTypeByClassInherit(clazz);
 
-    return type;
   }
 
   private static Type getTypeByClassInherit(final Class<?> iClass) {
@@ -304,8 +321,10 @@ public enum Type {
 
     final Class<?> valueClass = value.getClass();
 
-    if (property == null ||//
-        !(value instanceof LocalDateTime) && !(value instanceof ZonedDateTime) && !(value instanceof Instant)) {
+    if (property == null ||
+        !(value instanceof LocalDateTime) &&
+            !(value instanceof ZonedDateTime) &&
+            !(value instanceof Instant)) {
       if (valueClass.equals(targetClass))
         // SAME TYPE: DON'T CONVERT IT
         return value;

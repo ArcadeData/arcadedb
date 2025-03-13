@@ -48,8 +48,6 @@ import com.arcadedb.utility.Pair;
 import java.io.EOFException;
 import java.io.IOException;
 import java.net.Socket;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -65,7 +63,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.Objects;
 
 /**
  * Postgres Reference for Protocol Messages: https://www.postgresql.org/docs/9.6/protocol-message-formats.html
@@ -75,32 +72,36 @@ import java.util.Objects;
 public class PostgresNetworkExecutor extends Thread {
   public enum ERROR_SEVERITY {FATAL, ERROR}
 
-  public static final  String                                         PG_SERVER_VERSION          = "10.5";
-  private static final int                                            BUFFER_LENGTH              = 32 * 1024;
-  private final        ArcadeDBServer                                 server;
-  private              Database                                       database;
-  private final        ChannelBinaryServer                            channel;
-  private volatile     boolean                                        shutdown                   = false;
-  private final        byte[]                                         buffer                     = new byte[BUFFER_LENGTH];
-  private              int                                            nextByte                   = 0;
-  private              boolean                                        reuseLastByte              = false;
-  private              String                                         userName                   = null;
-  private              String                                         databaseName               = null;
-  private              String                                         userPassword               = null;
-  private              int                                            consecutiveErrors          = 0;
-  private              long                                           processIdSequence          = 0;
-  private static final Map<Long, Pair<Long, PostgresNetworkExecutor>> ACTIVE_SESSIONS            = new ConcurrentHashMap<>();
-  private final        Map<String, PostgresPortal>                    portals                    = new HashMap<>();
-  private final        boolean                                        DEBUG                      = GlobalConfiguration.POSTGRES_DEBUG.getValueAsBoolean();
-  private final        Map<String, Object>                            connectionProperties       = new HashMap<>();
-  private              boolean                                        explicitTransactionStarted = false;
-  private              boolean                                        errorInTransaction         = false;
-  private final        Set<String>                                    ignoreQueriesAppNames      = new HashSet<>(//
+  public static final String PG_SERVER_VERSION = "10.5";
+
+  private static final int                                            BUFFER_LENGTH   = 32 * 1024;
+  private static final Map<Long, Pair<Long, PostgresNetworkExecutor>> ACTIVE_SESSIONS = new ConcurrentHashMap<>();
+
+  private final ArcadeDBServer              server;
+  private final ChannelBinaryServer         channel;
+  private final byte[]                      buffer                = new byte[BUFFER_LENGTH];
+  private final Map<String, PostgresPortal> portals               = new HashMap<>();
+  private final boolean                     DEBUG                 = GlobalConfiguration.POSTGRES_DEBUG.getValueAsBoolean();
+  private final Map<String, Object>         connectionProperties  = new HashMap<>();
+  private final Set<String>                 ignoreQueriesAppNames = new HashSet<>(//
       List.of("dbvis", "Database Navigator - Pool"));
-  private final        Set<String>                                    ignoreQueries              = new HashSet<>(//
+  private final Set<String>                 ignoreQueries         = new HashSet<>(//
       List.of(//
           "select distinct PRIVILEGE_TYPE as PRIVILEGE_NAME from INFORMATION_SCHEMA.USAGE_PRIVILEGES order by PRIVILEGE_TYPE asc",//
           "SELECT oid, typname FROM pg_type"));
+
+  private volatile boolean shutdown = false;
+
+  private Database database;
+  private int      nextByte                   = 0;
+  private boolean  reuseLastByte              = false;
+  private String   userName                   = null;
+  private String   databaseName               = null;
+  private String   userPassword               = null;
+  private int      consecutiveErrors          = 0;
+  private long     processIdSequence          = 0;
+  private boolean  explicitTransactionStarted = false;
+  private boolean  errorInTransaction         = false;
 
   private interface ReadMessageCallback {
     void read(char type, long length) throws IOException;
@@ -420,61 +421,55 @@ public class PostgresNetworkExecutor extends Thread {
   private Map<String, PostgresType> getColumns(final List<Result> resultSet) {
     final Map<String, PostgresType> columns = new LinkedHashMap<>();
 
-    if (resultSet != null) {
-      boolean atLeastOneElement = false;
-      for (final Result row : resultSet) {
-        if (row.isElement())
-          atLeastOneElement = true;
+    boolean atLeastOneElement = false;
+    for (final Result row : resultSet) {
+      if (row.isElement())
+        atLeastOneElement = true;
 
-        final Set<String> propertyNames = row.getPropertyNames();
-        for (final String p : propertyNames) {
-          final Object value = row.getProperty(p);
-          if (value != null) {
-            PostgresType valueType = columns.get(p);
+      final Set<String> propertyNames = row.getPropertyNames();
+      for (final String p : propertyNames) {
+        final Object value = row.getProperty(p);
 
-            if (valueType == null) {
+        if (value != null) {
+          PostgresType currentType = columns.get(p);
+
+          final Class<?> valueClass = value.getClass();
+          if (currentType == null || currentType.cls != valueClass) {
+
+            PostgresType newType = PostgresType.getTypeForValue(value);
+
+            if (newType == null) {
               // FIND THE VALUE TYPE AND WRITE IT IN THE DATA DESCRIPTION
-              final Class<?> valueClass = value.getClass();
-
-              // Special handling for ArrayLists
-              if (value instanceof ArrayList<?> list) {
-                if (!list.isEmpty()) {
-                  // Determine element type from the first non-null element
-                  Object firstElement = list.stream().filter(Objects::nonNull).findFirst().orElse(null);
-                  if (firstElement != null) {
-                    valueType = PostgresType.getArrayTypeForElementType(firstElement.getClass());
-                  } else {
-                    // Default to text array if all elements are null
-                    valueType = PostgresType.ARRAY_TEXT;
-                  }
-                } else {
-                  // Default to text array for empty lists
-                  valueType = PostgresType.ARRAY_TEXT;
-                }
-              } else {
-                // Regular type matching
-                for (final PostgresType t : PostgresType.values()) {
-                  if (t.cls.isAssignableFrom(valueClass) && !t.isArrayType()) {
-                    valueType = t;
-                    break;
-                  }
+              for (final PostgresType pgType : PostgresType.values()) {
+                if (pgType.cls.isAssignableFrom(valueClass) && !pgType.isArrayType()) {
+                  newType = pgType;
+                  break;
                 }
               }
-
-              if (valueType == null)
-                valueType = PostgresType.VARCHAR;
-
-              columns.put(p, valueType);
             }
+
+            // assign new type if it id better than the current one: better means more specific than VARCHAR
+            if (newType != null &&
+                newType != currentType &&
+                newType != PostgresType.VARCHAR &&
+                newType != PostgresType.ARRAY_TEXT) {
+              currentType = newType;
+            }
+            // in the end, if currentType is null, assign VARCHAR
+            if (currentType == null)
+              currentType = PostgresType.VARCHAR;
+
+            columns.put(p, currentType);
+
           }
         }
       }
+    }
 
-      if (atLeastOneElement) {
-        columns.put("@rid", PostgresType.VARCHAR);
-        columns.put("@type", PostgresType.VARCHAR);
-        columns.put("@cat", PostgresType.CHAR);
-      }
+    if (atLeastOneElement) {
+      columns.put("@rid", PostgresType.VARCHAR);
+      columns.put("@type", PostgresType.VARCHAR);
+      columns.put("@cat", PostgresType.CHAR);
     }
 
     return columns;
@@ -519,17 +514,14 @@ public class PostgresNetworkExecutor extends Thread {
     if (resultSet.isEmpty())
       return;
 
-//    final ByteBuffer bufferData = ByteBuffer.allocate(128 * 1024).order(ByteOrder.BIG_ENDIAN);
-//    final ByteBuffer bufferValues = ByteBuffer.allocate(128 * 1024).order(ByteOrder.BIG_ENDIAN);
-
     final Binary bufferData = new Binary();
     final Binary bufferValues = new Binary();
 
     for (final Result row : resultSet) {
       bufferValues.putShort((short) columns.size()); // Int16 The number of column values that follow (possibly zero).
 
-      for (final Map.Entry<String, PostgresType> entry : columns.entrySet()) {
-        final String propertyName = entry.getKey();
+      for (final Map.Entry<String, PostgresType> postgresTypeEntry : columns.entrySet()) {
+        final String propertyName = postgresTypeEntry.getKey();
 
         Object value = switch (propertyName) {
           case "@rid" -> row.isElement() ? row.getElement().get().getIdentity() : null;
@@ -569,7 +561,7 @@ public class PostgresNetworkExecutor extends Thread {
           default -> row.getProperty(propertyName);
         };
 
-        entry.getValue().serializeAsText(entry.getValue().code, bufferValues, value);
+        postgresTypeEntry.getValue().serializeAsText(postgresTypeEntry.getValue(), bufferValues, value);
       }
 
       bufferValues.flip();
@@ -579,7 +571,6 @@ public class PostgresNetworkExecutor extends Thread {
 
       bufferData.flip();
       channel.writeBuffer(bufferData.getByteBuffer());
-//      channel.flush();
 
       bufferData.clear();
       bufferValues.clear();
@@ -605,8 +596,9 @@ public class PostgresNetworkExecutor extends Thread {
       }
 
       if (DEBUG)
-        LogManager.instance().log(this, Level.INFO, "PSQL: bind (portal=%s) -> %s (thread=%s)", portalName, sourcePreparedStatement,
-            Thread.currentThread().getId());
+        LogManager.instance()
+            .log(this, Level.INFO, "PSQL: bind (portal=%s) -> %s (thread=%s)", portalName, sourcePreparedStatement,
+                Thread.currentThread().getId());
 
       final int paramFormatCount = channel.readShort();
       if (paramFormatCount > 0) {
