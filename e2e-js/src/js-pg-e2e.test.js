@@ -33,4 +33,13 @@ describe("E2E tests using pg client", () => {
     const res = await postgresClient.query(query);
     expect(res.rows.length).toBe(10);
   });
+
+  it("should run schema query", async () => {
+    const query = "select * from schema:types limit -1";
+    const res = await postgresClient.query(query);
+    expect(res.rows.length).toBeGreaterThan(0);
+    res.rows.forEach((row) => {
+      console.log(row);
+    });
+  });
 });

@@ -19,13 +19,20 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.postgresql.util.PSQLException;
 
-import java.sql.*;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.LocalDate;
 import java.util.Properties;
 
@@ -89,6 +96,25 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
         assertThat(rs.getInt("id")).isEqualTo(0);
         assertThat(rs.getString("name")).isEqualTo("Jay");
         assertThat(rs.getString("lastName")).isEqualTo("Miner");
+      }
+    }
+  }
+
+  @Test
+  void testSelectSchemaTypes() throws SQLException, ClassNotFoundException {
+    try (final Connection conn = getConnection()) {
+      try (final Statement st = conn.createStatement()) {
+
+        final ResultSet rs = st.executeQuery("{sql}select from schema:types");
+        printResultSetMetaData(rs.getMetaData());
+        while (rs.next()) {
+          if (rs.getArray("properties").getResultSet().next()) {
+            ResultSet props = rs.getArray("properties").getResultSet();
+            assertThat(props.next()).isTrue();
+            assertThat(new JSONObject(props.getString("value")).getString("type")).isEqualTo("LONG");
+          }
+        }
+
       }
     }
   }
@@ -325,5 +351,112 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
 
   protected String getDatabaseName() {
     return "postgresdb";
+  }
+
+  @Test
+  void createSchemaWithSqlScript() throws SQLException, ClassNotFoundException {
+    try (final Connection conn = getConnection()) {
+      try (final Statement st = conn.createStatement()) {
+
+        st.execute("""
+            {sqlscript}
+            CREATE DOCUMENT TYPE comment IF NOT EXISTS;
+            CREATE PROPERTY comment.created IF NOT EXISTS DATETIME;
+            CREATE PROPERTY comment.content IF NOT EXISTS STRING;
+
+
+            CREATE DOCUMENT TYPE location IF NOT EXISTS;
+            CREATE PROPERTY location.name IF NOT EXISTS STRING;
+            CREATE PROPERTY location.timezone IF NOT EXISTS STRING;
+
+            CREATE VERTEX TYPE article IF NOT EXISTS BUCKETS 8;
+            CREATE PROPERTY article.id IF NOT EXISTS LONG;
+            CREATE PROPERTY article.created IF NOT EXISTS DATETIME;
+            CREATE PROPERTY article.updated IF NOT EXISTS DATETIME;
+            CREATE PROPERTY article.title IF NOT EXISTS STRING;
+            CREATE PROPERTY article.content IF NOT EXISTS STRING;
+            CREATE PROPERTY article.author IF NOT EXISTS STRING;
+            CREATE PROPERTY article.tags IF NOT EXISTS LIST OF STRING;
+            CREATE PROPERTY article.comment IF NOT EXISTS LIST OF comment;
+            CREATE PROPERTY article.location IF NOT EXISTS EMBEDDED OF location;
+
+            CREATE INDEX IF NOT EXISTS on article(id) UNIQUE;
+            """);
+
+        st.execute("""
+            {sqlscript}
+            INSERT INTO article CONTENT {
+                    "id": 1,
+                    "created": "2021-01-01 00:00:00",
+                    "updated": "2021-01-01 00:00:00",
+                    "title": "My first article",
+                    "content": "This is the content of my first article",
+                    "author": "John Doe",
+                    "tags": ["tag1", "tag2"],
+                    "comment": [{
+                      "@type": "comment",
+                      "content": "This is a comment",
+                      "created": "2021-01-01 00:00:00"
+                      },
+                      {
+                      "@type": "comment",
+                      "content": "This is a comment 2",
+                      "created": "2021-01-01 00:00:00"
+                      }],
+                    "location": {
+                      "@type": "location",
+                      "name": "My location",
+                      "timezone": "UTC"
+                      }
+                    };
+            INSERT INTO article CONTENT {
+                    "id": 2,
+                    "created": "2021-01-02 00:00:00",
+                    "updated": "2021-01-02 00:00:00",
+                    "title": "My second article",
+                    "content": "This is the content of my second article",
+                    "author": "John Doe",
+                    "tags": ["tag1", "tag3", "tag4"]
+                    };
+            INSERT INTO article CONTENT {
+                    "id": 3,
+                    "created": "2021-01-03 00:00:00",
+                    "updated": "2021-01-03 00:00:00",
+                    "title": "My third article",
+                    "content": "This is the content of my third article",
+                    "author": "John Doe",
+                    "tags": ["tag2", "tag3"]
+                    };
+            """);
+      }
+      try (final Statement st = conn.createStatement()) {
+        try (final ResultSet rs = st.executeQuery("SELECT * FROM article")) {
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getString("title")).isEqualTo("My first article");
+          //comments is an array of embedded docs on first row
+          ResultSet comments = rs.getArray("comment").getResultSet();
+          assertThat(comments.next()).isTrue();
+          assertThat(new JSONObject(comments.getString("value")).getString("content")).isEqualTo("This is a comment");
+          //location is an embedded doc
+          assertThat(rs.getString("location")).isNotNull();
+          assertThat(new JSONObject(rs.getString("location")).getString("name")).contains("My location");
+          assertThat(new JSONObject(rs.getString("location")).getString("timezone")).contains("UTC");
+
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getString("title")).isEqualTo("My second article");
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getString("title")).isEqualTo("My third article");
+          assertThat(rs.next()).isFalse();
+        }
+
+      }
+    }
+  }
+
+  private void printResultSetMetaData(ResultSetMetaData metaData) throws SQLException {
+    int columnCount = metaData.getColumnCount();
+    for (int i = 1; i <= columnCount; i++) {
+      System.out.println("Column " + i + ": " + metaData.getColumnName(i) + " of type " + metaData.getColumnTypeName(i));
+    }
   }
 }
