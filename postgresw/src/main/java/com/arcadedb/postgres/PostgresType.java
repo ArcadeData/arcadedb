@@ -30,8 +30,7 @@ import java.util.stream.Collectors;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.arcadedb.serializer.json.JSONFactory;
 
 /**
  * Represents PostgreSQL data types and provides serialization/deserialization functionality.
@@ -55,8 +54,6 @@ public enum PostgresType {
 
   private static final Map<Integer, PostgresType> CODE_MAP = Arrays.stream(values())
       .collect(Collectors.toMap(type -> type.code, type -> type));
-
-  private static final ObjectMapper objectMapper = new ObjectMapper();
 
   public final int code;
   public final Class<?> cls;
@@ -119,7 +116,7 @@ public enum PostgresType {
 
   /**
    * Serializes a value as text format into the provided Binary buffer.
-   * Uses Jackson for JSON conversion of complex types.
+   * Uses JSONObject for JSON conversion of complex types.
    *
    * @param code       The PostgreSQL type code
    * @param typeBuffer The buffer to write to
@@ -160,7 +157,7 @@ public enum PostgresType {
   }
 
   /**
-   * Converts a collection to a PostgreSQL array format using Jackson.
+   * Converts a collection to a PostgreSQL array format using JSONObject.
    */
   private String convertToPgArray(Collection<?> collection) {
     if (collection == null || collection.isEmpty())
@@ -182,10 +179,10 @@ public enum PostgresType {
         sb.append(item);
       } else {
         try {
-          // Complex objects get converted to JSON then escaped
-          String json = objectMapper.writeValueAsString(item);
+          // Complex objects get converted to JSON using JSONFactory
+          String json = JSONFactory.INSTANCE.getGson().toJson(item);
           sb.append("\"").append(json.replace("\"", "\\\"")).append("\"");
-        } catch (JsonProcessingException e) {
+        } catch (Exception e) {
           // Fallback
           sb.append("\"").append(item.toString().replace("\"", "\\\"")).append("\"");
         }
