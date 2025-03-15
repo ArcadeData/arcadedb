@@ -35,6 +35,7 @@
     <properties>
         <postgres.version>42.7.5</postgres.version>
         <tomcat-jdbc.version>11.0.5</tomcat-jdbc.version>
+        <jackson-databind.version>2.15.2</jackson-databind.version>
     </properties>
 
     <dependencies>
@@ -69,6 +70,11 @@
             <version>${project.parent.version}</version>
             <classifier>shaded</classifier>
          <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson-databind.version}</version>
         </dependency>
     </dependencies>
     <build>
