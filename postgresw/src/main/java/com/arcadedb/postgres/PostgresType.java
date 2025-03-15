@@ -30,6 +30,7 @@ import java.util.stream.Collectors;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.serializer.json.JSONFactory;
 
 /**
  * Represents PostgreSQL data types and provides serialization/deserialization functionality.
@@ -115,6 +116,7 @@ public enum PostgresType {
 
   /**
    * Serializes a value as text format into the provided Binary buffer.
+   * Uses JSONObject for JSON conversion of complex types.
    *
    * @param code       The PostgreSQL type code
    * @param typeBuffer The buffer to write to
@@ -130,40 +132,60 @@ public enum PostgresType {
       }
     }
 
-    // Handle array serialization
-    if (value instanceof Collection<?> collection) {
-      String arrayStr = serializeArrayToString(collection);
-      final byte[] str = arrayStr.getBytes(DatabaseFactory.getDefaultCharset());
-      typeBuffer.putInt(str.length);
-      typeBuffer.putByteArray(str);
+    // Handle collections (including arrays)
+    if (value instanceof Collection<?>) {
+      try {
+        // For PostgreSQL arrays, convert using the array format
+        String pgArray = convertToPgArray((Collection<?>) value);
+        byte[] bytes = pgArray.getBytes(DatabaseFactory.getDefaultCharset());
+        typeBuffer.putInt(bytes.length);
+        typeBuffer.putByteArray(bytes);
+      } catch (Exception e) {
+        // Fallback to simple string representation
+        String str = value.toString();
+        final byte[] bytes = str.getBytes(DatabaseFactory.getDefaultCharset());
+        typeBuffer.putInt(bytes.length);
+        typeBuffer.putByteArray(bytes);
+      }
       return;
     }
 
+    // Standard handling for non-collection types
     final byte[] str = value.toString().getBytes(DatabaseFactory.getDefaultCharset());
     typeBuffer.putInt(str.length);
     typeBuffer.putByteArray(str);
   }
 
   /**
-   * Serializes a Collection into a PostgreSQL array string format.
+   * Converts a collection to a PostgreSQL array format using JSONObject.
    */
-  private String serializeArrayToString(Collection<?> collection) {
-    if (collection.isEmpty())
+  private String convertToPgArray(Collection<?> collection) {
+    if (collection == null || collection.isEmpty())
       return "{}";
-
     StringBuilder sb = new StringBuilder("{");
     boolean first = true;
-    for (Object element : collection) {
+    for (Object item : collection) {
       if (!first) {
         sb.append(",");
       }
       first = false;
 
-      if (element instanceof String) {
-        // Strings need to be quoted
-        sb.append("\"").append(((String) element).replace("\"", "\\\"")).append("\"");
+      if (item == null) {
+        sb.append("NULL");
+      } else if (item instanceof String) {
+        // For strings, we need PostgreSQL's quoted string format
+        sb.append("\"").append(((String) item).replace("\"", "\\\"")).append("\"");
+      } else if (item instanceof Number || item instanceof Boolean) {
+        sb.append(item);
       } else {
-        sb.append(element == null ? "NULL" : element.toString());
+        try {
+          // Complex objects get converted to JSON using JSONFactory
+          String json = JSONFactory.INSTANCE.getGson().toJson(item);
+          sb.append("\"").append(json.replace("\"", "\\\"")).append("\"");
+        } catch (Exception e) {
+          // Fallback
+          sb.append("\"").append(item.toString().replace("\"", "\\\"")).append("\"");
+        }
       }
     }
     sb.append("}");
