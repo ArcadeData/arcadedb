@@ -30,7 +30,6 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.LocalDate;
@@ -106,7 +105,6 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
       try (final Statement st = conn.createStatement()) {
 
         final ResultSet rs = st.executeQuery("{sql}select from schema:types");
-        printResultSetMetaData(rs.getMetaData());
         while (rs.next()) {
           if (rs.getArray("properties").getResultSet().next()) {
             ResultSet props = rs.getArray("properties").getResultSet();
@@ -450,13 +448,6 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
         }
 
       }
-    }
-  }
-
-  private void printResultSetMetaData(ResultSetMetaData metaData) throws SQLException {
-    int columnCount = metaData.getColumnCount();
-    for (int i = 1; i <= columnCount; i++) {
-      System.out.println("Column " + i + ": " + metaData.getColumnName(i) + " of type " + metaData.getColumnTypeName(i));
     }
   }
 }
