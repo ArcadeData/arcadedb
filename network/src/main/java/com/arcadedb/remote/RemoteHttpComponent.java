@@ -40,19 +40,12 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RWLockContext;
 
-import java.io.DataOutputStream;
-import java.io.IOException;
-import java.net.ConnectException;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Base64;
-import java.util.List;
-import java.util.Map;
-import java.util.NoSuchElementException;
-import java.util.logging.Level;
-import java.util.stream.Collectors;
+import java.io.*;
+import java.net.*;
+import java.nio.charset.*;
+import java.util.*;
+import java.util.logging.*;
+import java.util.stream.*;
 
 /**
  * Remote Database implementation. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
@@ -60,26 +53,24 @@ import java.util.stream.Collectors;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class RemoteHttpComponent extends RWLockContext {
-  public static final    int                         DEFAULT_PORT              = 2480;
+  public static final  int    DEFAULT_PORT = 2480;
+  private static final String charset      = "UTF-8";
 
-  protected static final String                      protocol                  = "http";
-
-  private static final   String                      charset                   = "UTF-8";
-
-  private final          String                      originalServer;
-  private final          int                         originalPort;
-  private final          String                      userName;
-  private final          String                      userPassword;
-  private final          List<Pair<String, Integer>> replicaServerList         = new ArrayList<>();
-  protected final        DatabaseStats               stats                     = new DatabaseStats();
-  protected final        ContextConfiguration        configuration;
-  private                int                         apiVersion                = 1;
-  private                CONNECTION_STRATEGY         connectionStrategy        = CONNECTION_STRATEGY.ROUND_ROBIN;
-  private                Pair<String, Integer>       leaderServer;
-  private                int                         currentReplicaServerIndex = -1;
-  private                int                         timeout;
-  protected              String                      currentServer;
-  protected              int                         currentPort;
+  protected       String                      protocol                  = "http";
+  private final   String                      originalServer;
+  private final   int                         originalPort;
+  private final   String                      userName;
+  private final   String                      userPassword;
+  private final   List<Pair<String, Integer>> replicaServerList         = new ArrayList<>();
+  protected final DatabaseStats               stats                     = new DatabaseStats();
+  protected final ContextConfiguration        configuration;
+  private         int                         apiVersion                = 1;
+  private         CONNECTION_STRATEGY         connectionStrategy        = CONNECTION_STRATEGY.ROUND_ROBIN;
+  private         Pair<String, Integer>       leaderServer;
+  private         int                         currentReplicaServerIndex = -1;
+  private         int                         timeout;
+  protected       String                      currentServer;
+  protected       int                         currentPort;
 
   public enum CONNECTION_STRATEGY {
     STICKY, ROUND_ROBIN
@@ -132,6 +123,14 @@ public class RemoteHttpComponent extends RWLockContext {
 
   public Map<String, Object> getStats() {
     return stats.toMap();
+  }
+
+  public String getProtocol() {
+    return protocol;
+  }
+
+  public void setProtocol(final String protocol) {
+    this.protocol = protocol;
   }
 
   Object httpCommand(final String method, final String extendedURL, final String operation, final String language,
