@@ -18,6 +18,7 @@
  */
 package com.arcadedb.e2e;
 
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Properties;
@@ -136,29 +138,73 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
 
       st.execute("""
           {sqlscript}
-          CREATE Document TYPE article IF NOT EXISTS;
+          CREATE DOCUMENT TYPE comment IF NOT EXISTS;
+          CREATE PROPERTY comment.created IF NOT EXISTS DATETIME;
+          CREATE PROPERTY comment.content IF NOT EXISTS STRING;
+
+
+          CREATE DOCUMENT TYPE location IF NOT EXISTS;
+          CREATE PROPERTY location.name IF NOT EXISTS STRING;
+          CREATE PROPERTY location.timezone IF NOT EXISTS STRING;
+
+          CREATE VERTEX TYPE article IF NOT EXISTS BUCKETS 8;
+          CREATE PROPERTY article.id IF NOT EXISTS LONG;
           CREATE PROPERTY article.created IF NOT EXISTS DATETIME;
           CREATE PROPERTY article.updated IF NOT EXISTS DATETIME;
           CREATE PROPERTY article.title IF NOT EXISTS STRING;
           CREATE PROPERTY article.content IF NOT EXISTS STRING;
           CREATE PROPERTY article.author IF NOT EXISTS STRING;
-          CREATE PROPERTY article.notes IF NOT EXISTS EMBEDDED;
+          CREATE PROPERTY article.tags IF NOT EXISTS LIST OF STRING;
+          CREATE PROPERTY article.comment IF NOT EXISTS LIST OF comment;
+          CREATE PROPERTY article.location IF NOT EXISTS EMBEDDED OF location;
 
-          INSERT INTO article CONTENT {"created": "2021-01-01 00:00:00",
+          CREATE INDEX IF NOT EXISTS on article(id) UNIQUE;
+          """);
+
+      st.execute("""
+          {sqlscript}
+          INSERT INTO article CONTENT {
+                  "id": 1,
+                  "created": "2021-01-01 00:00:00",
                   "updated": "2021-01-01 00:00:00",
                   "title": "My first article",
                   "content": "This is the content of my first article",
-                  "author": "John Doe"};
-          INSERT INTO article CONTENT {"created": "2021-01-02 00:00:00",
+                  "author": "John Doe",
+                  "tags": ["tag1", "tag2"],
+                  "comment": [{
+                    "@type": "comment",
+                    "content": "This is a comment",
+                    "created": "2021-01-01 00:00:00"
+                    },
+                    {
+                    "@type": "comment",
+                    "content": "This is a comment 2",
+                    "created": "2021-01-01 00:00:00"
+                    }],
+                  "location": {
+                    "@type": "location",
+                    "name": "My location",
+                    "timezone": "UTC"
+                    }
+                  };
+          INSERT INTO article CONTENT {
+                  "id": 2,
+                  "created": "2021-01-02 00:00:00",
                   "updated": "2021-01-02 00:00:00",
                   "title": "My second article",
                   "content": "This is the content of my second article",
-                  "author": "John Doe"};
-          INSERT INTO article CONTENT {"created": "2021-01-03 00:00:00",
+                  "author": "John Doe",
+                  "tags": ["tag1", "tag3", "tag4"]
+                  };
+          INSERT INTO article CONTENT {
+                  "id": 3,
+                  "created": "2021-01-03 00:00:00",
                   "updated": "2021-01-03 00:00:00",
                   "title": "My third article",
                   "content": "This is the content of my third article",
-                  "author": "John Doe"};
+                  "author": "John Doe",
+                  "tags": ["tag2", "tag3"]
+                  };
           """);
     }
 
@@ -166,6 +212,15 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
       try (final ResultSet rs = st.executeQuery("SELECT * FROM article")) {
         assertThat(rs.next()).isTrue();
         assertThat(rs.getString("title")).isEqualTo("My first article");
+        //comments is an array of embedded docs on first row
+        ResultSet comments = rs.getArray("comment").getResultSet();
+        assertThat(comments.next()).isTrue();
+        assertThat(new JSONObject(comments.getString("value")).getString("content")).isEqualTo("This is a comment");
+        //location is an embedded doc
+        assertThat(rs.getString("location")).isNotNull();
+        assertThat(new JSONObject(rs.getString("location")).getString("name")).contains("My location");
+        assertThat(new JSONObject(rs.getString("location")).getString("timezone")).contains("UTC");
+
         assertThat(rs.next()).isTrue();
         assertThat(rs.getString("title")).isEqualTo("My second article");
         assertThat(rs.next()).isTrue();
@@ -174,5 +229,59 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
       }
 
     }
+
+  }
+
+  @Test
+  void testSelectSchemaTypes() throws SQLException, ClassNotFoundException {
+      try (final Statement st = conn.createStatement()) {
+
+        final ResultSet rs = st.executeQuery("{sql}select from schema:types");
+        while (rs.next()) {
+          if (rs.getArray("properties").getResultSet().next()) {
+            ResultSet props = rs.getArray("properties").getResultSet();
+            assertThat(props.next()).isTrue();
+            assertThat(new JSONObject(props.getString("value")).getString("type")).isEqualTo("INTEGER");
+          }
+        }
+
+    }
+  }
+
+  //use this to test the result set
+  private static void printResultSet(ResultSet rs) throws SQLException {
+    ResultSetMetaData metaData = rs.getMetaData();
+    int columnCount = metaData.getColumnCount();
+
+    // Print header
+    StringBuilder header = new StringBuilder();
+    StringBuilder separator = new StringBuilder();
+    for (int i = 1; i <= columnCount; i++) {
+      String columnName = metaData.getColumnName(i);
+      header.append(String.format("| %-20s ", columnName));
+      separator.append("+----------------------");
+    }
+    header.append("|");
+    separator.append("+");
+
+    System.out.println(separator);
+    System.out.println(header);
+    System.out.println(separator);
+
+    // Print rows
+    while (rs.next()) {
+      StringBuilder row = new StringBuilder();
+      for (int i = 1; i <= columnCount; i++) {
+        String value = rs.getString(i);
+        value = value != null ? value : "null";
+        if (value.length() > 20)
+          value = value.substring(0, 17) + "...";
+        row.append(String.format("| %-20s ", value));
+      }
+      row.append("|");
+      System.out.println(row);
+    }
+
+    System.out.println(separator);
   }
 }

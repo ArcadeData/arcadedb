@@ -27,10 +27,16 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
-import java.lang.reflect.*;
-import java.math.*;
-import java.time.*;
-import java.util.*;
+import java.lang.reflect.Array;
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.Map;
+import java.util.UUID;
 
 public class BinaryTypes {
   public final static byte TYPE_NULL              = 0;
@@ -169,102 +175,42 @@ public class BinaryTypes {
   }
 
   public static int getTypeSize(final byte type) {
-    switch (type) {
-    case BinaryTypes.TYPE_INT:
-      return Binary.INT_SERIALIZED_SIZE;
-
-    case BinaryTypes.TYPE_SHORT:
-      return Binary.SHORT_SERIALIZED_SIZE;
-
-    case BinaryTypes.TYPE_LONG:
-    case BinaryTypes.TYPE_DATETIME:
-    case BinaryTypes.TYPE_DATE:
-      return Binary.LONG_SERIALIZED_SIZE;
-
-    case BinaryTypes.TYPE_BYTE:
-      return Binary.BYTE_SERIALIZED_SIZE;
-
-    case BinaryTypes.TYPE_DECIMAL:
-
-    case BinaryTypes.TYPE_FLOAT:
-      return Binary.FLOAT_SERIALIZED_SIZE;
-
-    case BinaryTypes.TYPE_DOUBLE:
-      return Binary.DOUBLE_SERIALIZED_SIZE;
-
-    case BinaryTypes.TYPE_RID:
-      return Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
-
-    case BinaryTypes.TYPE_UUID:
-      return Binary.LONG_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
-
-    default:
+    return switch (type) {
+      case BinaryTypes.TYPE_INT -> Binary.INT_SERIALIZED_SIZE;
+      case BinaryTypes.TYPE_SHORT -> Binary.SHORT_SERIALIZED_SIZE;
+      case BinaryTypes.TYPE_LONG, BinaryTypes.TYPE_DATETIME, BinaryTypes.TYPE_DATE -> Binary.LONG_SERIALIZED_SIZE;
+      case BinaryTypes.TYPE_BYTE -> Binary.BYTE_SERIALIZED_SIZE;
+      case BinaryTypes.TYPE_DECIMAL, BinaryTypes.TYPE_FLOAT -> Binary.FLOAT_SERIALIZED_SIZE;
+      case BinaryTypes.TYPE_DOUBLE -> Binary.DOUBLE_SERIALIZED_SIZE;
+      case BinaryTypes.TYPE_RID -> Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
+      case BinaryTypes.TYPE_UUID -> Binary.LONG_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
       // VARIABLE SIZE
-      return -1;
-    }
+      default -> -1;
+    };
   }
 
   public static Class<?> getClassFromType(final byte type) {
-    switch (type) {
-    case BinaryTypes.TYPE_STRING:
-    case BinaryTypes.TYPE_COMPRESSED_STRING:
-      return String.class;
-
-    case BinaryTypes.TYPE_INT:
-      return Integer.class;
-
-    case BinaryTypes.TYPE_SHORT:
-      return Short.class;
-
-    case BinaryTypes.TYPE_LONG:
-      return Long.class;
-
-    case BinaryTypes.TYPE_BYTE:
-      return Byte.class;
-
-    case BinaryTypes.TYPE_DECIMAL:
-      return BigDecimal.class;
-
-    case BinaryTypes.TYPE_FLOAT:
-      return Float.class;
-
-    case BinaryTypes.TYPE_DOUBLE:
-      return Double.class;
-
-    case BinaryTypes.TYPE_DATETIME:
-    case BinaryTypes.TYPE_DATETIME_MICROS:
-    case BinaryTypes.TYPE_DATETIME_NANOS:
-    case BinaryTypes.TYPE_DATETIME_SECOND:
-      return GlobalConfiguration.DATE_TIME_IMPLEMENTATION.getValue();
-
-    case BinaryTypes.TYPE_DATE:
-      return GlobalConfiguration.DATE_IMPLEMENTATION.getValue();
-
-    case BinaryTypes.TYPE_RID:
-    case BinaryTypes.TYPE_UUID:
-      return RID.class;
-
-    case BinaryTypes.TYPE_EMBEDDED:
-      return Document.class;
-
-    case BinaryTypes.TYPE_ARRAY_OF_SHORTS:
-      return short[].class;
-
-    case BinaryTypes.TYPE_ARRAY_OF_INTEGERS:
-      return int[].class;
-
-    case BinaryTypes.TYPE_ARRAY_OF_LONGS:
-      return long[].class;
-
-    case BinaryTypes.TYPE_ARRAY_OF_FLOATS:
-      return float[].class;
-
-    case BinaryTypes.TYPE_ARRAY_OF_DOUBLES:
-      return double[].class;
-
-    default:
+    return switch (type) {
+      case BinaryTypes.TYPE_STRING, BinaryTypes.TYPE_COMPRESSED_STRING -> String.class;
+      case BinaryTypes.TYPE_INT -> Integer.class;
+      case BinaryTypes.TYPE_SHORT -> Short.class;
+      case BinaryTypes.TYPE_LONG -> Long.class;
+      case BinaryTypes.TYPE_BYTE -> Byte.class;
+      case BinaryTypes.TYPE_DECIMAL -> BigDecimal.class;
+      case BinaryTypes.TYPE_FLOAT -> Float.class;
+      case BinaryTypes.TYPE_DOUBLE -> Double.class;
+      case BinaryTypes.TYPE_DATETIME, BinaryTypes.TYPE_DATETIME_MICROS, BinaryTypes.TYPE_DATETIME_NANOS,
+           BinaryTypes.TYPE_DATETIME_SECOND -> GlobalConfiguration.DATE_TIME_IMPLEMENTATION.getValue();
+      case BinaryTypes.TYPE_DATE -> GlobalConfiguration.DATE_IMPLEMENTATION.getValue();
+      case BinaryTypes.TYPE_RID, BinaryTypes.TYPE_UUID -> RID.class;
+      case BinaryTypes.TYPE_EMBEDDED -> Document.class;
+      case BinaryTypes.TYPE_ARRAY_OF_SHORTS -> short[].class;
+      case BinaryTypes.TYPE_ARRAY_OF_INTEGERS -> int[].class;
+      case BinaryTypes.TYPE_ARRAY_OF_LONGS -> long[].class;
+      case BinaryTypes.TYPE_ARRAY_OF_FLOATS -> float[].class;
+      case BinaryTypes.TYPE_ARRAY_OF_DOUBLES -> double[].class;
       // UNKNOWN
-      return null;
-    }
+      default -> null;
+    };
   }
 }
