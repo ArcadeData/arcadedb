@@ -164,6 +164,8 @@ public class Console {
 
     try {
       execute(args);
+    } catch(Throwable t) {
+      System.exit(1);
     } finally {
       // FORCE EXIT IN CASE OF UNMANAGED ERROR
       System.exit(0);
