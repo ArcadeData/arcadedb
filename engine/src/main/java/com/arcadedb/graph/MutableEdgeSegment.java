@@ -200,8 +200,16 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     if (currentPosition > used)
       return false;
 
-    // MOVE THE ENTIRE BUFFER FROM THE NEXT ITEM TO THE CURRENT ONE
-    buffer.move(nextItemPosition, currentPosition, used - buffer.position());
+    if (used - nextItemPosition < 0) {
+      // CORRUPTION, UPDATE THE BOUNDARIES
+      setUsed(currentPosition);
+      buffer.position(currentPosition);
+      return false;
+    }
+
+    if (used - nextItemPosition > 0)
+      // MOVE THE ENTIRE BUFFER FROM THE NEXT ITEM TO THE CURRENT ONE
+      buffer.move(nextItemPosition, currentPosition, used - nextItemPosition);
 
     used -= nextItemPosition - currentPosition;
     setUsed(used);
