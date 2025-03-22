@@ -32,7 +32,6 @@ import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.CodeUtils;
-import org.graalvm.nativebridge.In;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -50,8 +49,8 @@ public class HARandomCrashIT extends ReplicationServerIT {
   }
 
   @Override
-  protected HAServer.SERVER_ROLE getServerRole(int serverIndex) {
-    return HAServer.SERVER_ROLE.ANY;
+  protected HAServer.ServerRole getServerRole(int serverIndex) {
+    return HAServer.ServerRole.ANY;
   }
 
   @Test
@@ -98,7 +97,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
             getServer(serverId).stop();
 
-            while (getServer(serverId).getStatus() == ArcadeDBServer.STATUS.SHUTTING_DOWN)
+            while (getServer(serverId).getStatus() == ArcadeDBServer.Status.SHUTTING_DOWN)
               CodeUtils.sleep(300);
 
             LogManager.instance().log(this, getLogLevel(), "TEST: Restarting the Server %s (delay=%d)...", null, serverId, delay);
