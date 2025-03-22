@@ -1,15 +1,14 @@
+import json
+import random
+import string
 import time
 from time import sleep
-import random
+
 import psycopg
 import pytest
 import requests
-from testcontainers.core.container import DockerContainer
-import json
-import string
-
-import pytest
 from pytest_check import check
+from testcontainers.core.container import DockerContainer
 
 arcadedb = (DockerContainer("arcadedata/arcadedb:latest")
             .with_exposed_ports(2480, 2424, 5432)
@@ -99,6 +98,7 @@ def test_psycopg2_basic_queries():
             # Check if data was correctly inserted
             # The first column is typically the @rid, so we check the subsequent columns
             product = products[0]
+            print(f"Product: {product}")
             assert 'TestItem' in product
             assert 29.99 in product
     finally:
@@ -114,8 +114,6 @@ def test_psycopg2_return_array_floats():
     conn = psycopg.connect(**params)
     conn.autocommit = True
 
-
-
     try:
         with conn.cursor() as cursor:
 
@@ -126,7 +124,8 @@ def test_psycopg2_return_array_floats():
 
             cursor.execute('INSERT INTO `TEXT_EMBEDDING` SET str = "meow", embedding = [0.1,0.2,0.3] RETURN embedding')
             embeddings = cursor.fetchone()[0]
-            assert isinstance(embeddings, list) and all(isinstance(item, float) for item in embeddings), f"Type ARRAY_OF_FLOATS is returned as {type(embeddings)} instead of list of floats"
+            assert isinstance(embeddings, list) and all(isinstance(item, float) for item in
+                                                        embeddings), f"Type ARRAY_OF_FLOATS is returned as {type(embeddings)} instead of list of floats"
     finally:
         conn.close()
 
@@ -144,6 +143,7 @@ def random_values(_type, size=64):
                 for _ in range(size)]
     else:
         raise ValueError(f"Unsupported type: {_type}")
+
 
 def test_psycopg2_return_array_common():
     """Check if the driver correctly sends the array of floats as a list of floats to the python driver"""
@@ -167,7 +167,8 @@ def test_psycopg2_return_array_common():
                 cursor.execute(f"create property {arcade_name}.str if not exists STRING;")
                 cursor.execute(f"create property {arcade_name}.data if not exists LIST;")
 
-                cursor.execute(f'INSERT INTO `{arcade_name}` SET str = "meow", data = {json.dumps(random_values(type_to_test))} RETURN data')
+                cursor.execute(
+                    f'INSERT INTO `{arcade_name}` SET str = "meow", data = {json.dumps(random_values(type_to_test))} RETURN data')
                 datas = cursor.fetchone()[0]
 
                 # Use pytest-check to continue even after assertion failures
@@ -176,6 +177,7 @@ def test_psycopg2_return_array_common():
 
                 if isinstance(datas, list):
                     with check:
-                        assert all(isinstance(item, type_to_test) for item in datas), f"For {type_name}: Not all items are of type {type_name}"
+                        assert all(isinstance(item, type_to_test) for item in
+                                   datas), f"For {type_name}: Not all items are of type {type_name}"
     finally:
         conn.close()

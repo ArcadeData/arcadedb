@@ -19,6 +19,7 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
@@ -26,6 +27,7 @@ import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.postgresql.util.PSQLException;
 
+import java.sql.Array;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -33,10 +35,17 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Properties;
+import java.util.Random;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class PostgresWJdbcTest extends BaseGraphServerTest {
   @Override
@@ -447,6 +456,107 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
           assertThat(rs.next()).isFalse();
         }
 
+      }
+    }
+  }
+
+  private static final int    DEFAULT_SIZE = 64;
+  private static final Random RANDOM       = new Random();
+
+  private static List<?> randomValues(Class<?> type) {
+    if (type == Boolean.class) {
+      return IntStream.range(0, PostgresWJdbcTest.DEFAULT_SIZE)
+          .mapToObj(i -> RANDOM.nextBoolean())
+          .collect(Collectors.toList());
+    } else if (type == Double.class) {
+      return IntStream.range(0, PostgresWJdbcTest.DEFAULT_SIZE)
+          .mapToObj(i -> RANDOM.nextDouble() * 200 - 100)
+          .collect(Collectors.toList());
+    } else if (type == Integer.class) {
+      return IntStream.range(0, PostgresWJdbcTest.DEFAULT_SIZE)
+          .mapToObj(i -> RANDOM.nextInt(201) - 100)
+          .collect(Collectors.toList());
+    } else if (type == String.class) {
+      return IntStream.range(0, PostgresWJdbcTest.DEFAULT_SIZE)
+          .mapToObj(i -> {
+            int length = RANDOM.nextInt(11) + 5; // 5 to 15
+            return generateRandomString(length);
+          })
+          .collect(Collectors.toList());
+    } else {
+      throw new IllegalArgumentException("Unsupported type: " + type.getName());
+    }
+  }
+
+  private static String generateRandomString(int length) {
+    String chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < length; i++) {
+      int index = RANDOM.nextInt(chars.length());
+      sb.append(chars.charAt(index));
+    }
+    return sb.toString();
+  }
+
+  @Test
+  public void testPsycopgReturnArrayCommon() throws Exception {
+    Class<?>[] typesToTest = {
+//        Boolean.class,
+//        Double.class,
+//        Integer.class,
+        String.class
+    };
+
+    try (Connection conn = getConnection()) {
+      conn.setAutoCommit(true);
+
+      for (Class<?> typeToTest : typesToTest) {
+        String typeName = typeToTest.getSimpleName();
+        String arcadeName = "TEXT_" + typeName;
+
+        try (Statement st = conn.createStatement()) {
+          st.execute("CREATE VERTEX TYPE `" + arcadeName + "` IF NOT EXISTS");
+          st.execute("CREATE PROPERTY " + arcadeName + ".str IF NOT EXISTS STRING");
+          st.execute("CREATE PROPERTY " + arcadeName + ".data IF NOT EXISTS LIST");
+
+          List<?> randomData = randomValues(typeToTest);
+          JSONArray jsonArray = new JSONArray(randomData);
+
+          try (ResultSet rs = st.executeQuery(
+              "INSERT INTO `" + arcadeName + "` SET str = \"meow\", data = " +
+                  jsonArray.toString() + " RETURN data")) {
+          }
+
+          try (ResultSet rs = st.executeQuery(
+              "SELECT data FROM `" + arcadeName + "` WHERE str = \"meow\"")) {
+            assertTrue(rs.next());
+            Array dataArray = rs.getArray("data");
+            String[] dataValues = (String[]) dataArray.getArray();
+
+          System.out.println("jsonArray = " + dataValues);
+          for (String item : dataValues) {
+            System.out.println("item = " + item);
+          }
+            // Check if it's a list (array in Java)
+            assertNotNull(dataValues, "For " + typeName + ": Type LIST is returned as null");
+
+            // Check if all items are of the expected type
+            for (Object item : dataValues) {
+              if (typeToTest == Boolean.class) {
+                assertInstanceOf(Boolean.class, item, "For " + typeName + ": Not all items are of type " + typeName);
+              } else if (typeToTest == Double.class) {
+                assertTrue(item instanceof Double || item instanceof Float,
+                    "For " + typeName + ": Not all items are of type " + typeName);
+              } else if (typeToTest == Integer.class) {
+                assertTrue(item instanceof Integer || item instanceof Long,
+                    "For " + typeName + ": Not all items are of type " + typeName);
+              } else if (typeToTest == String.class) {
+                System.out.println("item = " + item);
+                assertInstanceOf(String.class, item, "For " + typeName + ": Not all items are of type " + typeName);
+              }
+            }
+          }
+        }
       }
     }
   }

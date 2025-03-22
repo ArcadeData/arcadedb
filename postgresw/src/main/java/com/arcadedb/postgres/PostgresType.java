@@ -153,7 +153,20 @@ public enum PostgresType {
     } else if (val instanceof byte[]) {
       return PostgresType.ARRAY_CHAR;
     } else if (val.getClass().isArray()) {
-      return PostgresType.ARRAY_TEXT;
+      // Handle Java arrays
+      if (val instanceof int[]) {
+        return PostgresType.ARRAY_INT;
+      } else if (val instanceof long[]) {
+        return PostgresType.ARRAY_LONG;
+      } else if (val instanceof double[]) {
+        return PostgresType.ARRAY_DOUBLE;
+      } else if (val instanceof boolean[]) {
+        return PostgresType.ARRAY_BOOLEAN;
+      } else if (val instanceof char[]) {
+        return PostgresType.ARRAY_CHAR;
+      } else if (val instanceof String[]) {
+        return PostgresType.ARRAY_TEXT;
+      }
     } else if (val instanceof Date) {
       return PostgresType.DATE;
     } else if (val instanceof LocalDateTime) {
@@ -177,7 +190,6 @@ public enum PostgresType {
       serializedValue = "0";
     } else if (value instanceof Collection<?> collection) {
       // Handle array serialization
-
       serializedValue = serializeArrayToString(collection, pgType);
     } else if (value instanceof JSONObject json) {
       serializedValue = json.toString();
@@ -220,7 +232,9 @@ public enum PostgresType {
         sb.append(",");
       }
       first = false;
-      if (element instanceof Number || element instanceof Boolean) {
+      if (element instanceof Double || element instanceof Float) {
+        sb.append(((Number) element).doubleValue());
+      } else if (element instanceof Number || element instanceof Boolean) {
         sb.append(element);
       } else if (element instanceof Character) {
         sb.append("'").append(element).append("'");
@@ -256,7 +270,9 @@ public enum PostgresType {
    * Determines the appropriate array type based on the element type.
    */
   public static PostgresType getArrayTypeForElementType(Object element) {
-    if (element instanceof Integer)
+    if (element instanceof Integer ||
+        element instanceof Short ||
+        element instanceof Byte)
       return ARRAY_INT;
     if (element instanceof Long)
       return ARRAY_LONG;
