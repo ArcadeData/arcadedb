@@ -1210,10 +1210,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           throw new DatabaseOperationException("Invalid pointer to a chunk for record " + originalRID);
       }
 
-      page = database.getTransaction().getPage(new PageId(database, file.getFileId(), chunkPageId), pageSize);
-      recordPositionInPage = getRecordPositionInPage(page, chunkPositionInPage);
+      final BasePage nextPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), chunkPageId), pageSize);
+
+      final int nextRecordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
       if (recordPositionInPage == 0)
         throw new DatabaseOperationException("Chunk of record " + originalRID + " was deleted");
+
+      if (nextPage.equals(page) && recordPositionInPage == nextRecordPositionInPage) {
+        // AVOID INFINITE LOOP?
+        LogManager.instance().log(this, Level.SEVERE,
+            "Infinite loop on loading multi-page record " + originalRID + " chunk " + chunkPageId + "/" + chunkPositionInPage);
+        throw new DatabaseOperationException("Infinite loop on loading multi-page record " + originalRID + " chunk "
+            + chunkPageId + "/" + chunkPositionInPage);
+      }
+
+      page = nextPage;
+      recordPositionInPage = nextRecordPositionInPage;
 
       recordSize = page.readNumberAndSize(recordPositionInPage);
 
