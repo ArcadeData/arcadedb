@@ -70,9 +70,11 @@ public class AlterPropertyExecutionTest extends TestHelper {
     final ResultSet resultset = database.query("sql", "SELECT properties FROM schema:types");
     while (resultset.hasNext()) {
       final Result result = resultset.next();
-      final Object custom = ((Result) ((List) result.getProperty("properties")).get(0)).getProperty("custom");
+      List properties =  result.getProperty("properties");
+
+      final Object custom = ((Result) properties.get(0)).getProperty("custom");
       assertThat(custom instanceof Map).isTrue();
-      assertThat(((Map<?, ?>) custom).isEmpty()).isFalse();
+      assertThat((Map<?, ?>) custom).isNotEmpty();
     }
   }
 

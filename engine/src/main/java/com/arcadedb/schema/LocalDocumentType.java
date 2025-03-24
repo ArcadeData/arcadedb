@@ -38,25 +38,35 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.FileUtils;
 
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.logging.Level;
 
 public class LocalDocumentType implements DocumentType {
-  protected final LocalSchema                       schema;
   protected final String                            name;
+  protected final LocalSchema                       schema;
   protected final List<LocalDocumentType>           superTypes                   = new ArrayList<>();
   protected final List<LocalDocumentType>           subTypes                     = new ArrayList<>();
-  protected       List<Bucket>                      buckets                      = new ArrayList<>();
-  protected       List<Bucket>                      cachedPolymorphicBuckets     = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
-  protected       List<Integer>                     bucketIds                    = new ArrayList<>();
-  protected       List<Integer>                     cachedPolymorphicBucketIds   = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
-  protected       BucketSelectionStrategy           bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
   protected final Map<String, Property>             properties                   = new HashMap<>();
   protected final Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new HashMap<>();
   protected final Map<List<String>, TypeIndex>      indexesByProperties          = new HashMap<>();
   protected final RecordEventsRegistry              events                       = new RecordEventsRegistry();
   protected final Map<String, Object>               custom                       = new HashMap<>();
+  protected       List<Bucket>                      buckets                      = new ArrayList<>();
+  protected       List<Bucket>                      cachedPolymorphicBuckets     = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
+  protected       List<Integer>                     bucketIds                    = new ArrayList<>();
+  protected       List<Integer>                     cachedPolymorphicBucketIds   = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
+  protected       BucketSelectionStrategy           bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
   protected       Set<String>                       propertiesWithDefaultDefined = Collections.emptySet();
 
   public LocalDocumentType(final LocalSchema schema, final String name) {

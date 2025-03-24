@@ -18,22 +18,30 @@
  */
 package com.arcadedb.postgres;
 
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.EmbeddedDocument;
+import com.arcadedb.database.Record;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.serializer.json.JSONObject;
+
 import java.nio.ByteBuffer;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
-
-import com.arcadedb.database.Binary;
-import com.arcadedb.database.DatabaseFactory;
+import java.util.stream.StreamSupport;
 
 /**
  * Represents PostgreSQL data types and provides serialization/deserialization functionality.
-*/
+ */
 public enum PostgresType {
   SMALLINT(21, Short.class, 2, value -> Short.parseShort(value)),
   INTEGER(23, Integer.class, 4, value -> Integer.parseInt(value)),
@@ -44,19 +52,22 @@ public enum PostgresType {
   BOOLEAN(16, Boolean.class, 1, value -> value.equalsIgnoreCase("true")),
   DATE(1082, Date.class, 8, value -> new Date(Long.parseLong(value))),
   VARCHAR(1043, String.class, -1, value -> value),
+  JSON(114, JSONObject.class, -1, JSONObject::new),
   // Adding array types with PostgreSQL array type codes
-  ARRAY_INT(1007, ArrayList.class, -1, value -> parseArrayFromString(value, Integer::parseInt)),
-  ARRAY_LONG(1016, ArrayList.class, -1, value -> parseArrayFromString(value, Long::parseLong)),
-  ARRAY_DOUBLE(1022, ArrayList.class, -1, value -> parseArrayFromString(value, Double::parseDouble)),
-  ARRAY_TEXT(1009, ArrayList.class, -1, value -> parseArrayFromString(value, s -> s)),
-  ARRAY_BOOLEAN(1000, ArrayList.class, -1, value -> parseArrayFromString(value, Boolean::parseBoolean));
+  ARRAY_INT(1007, Collection.class, -1, value -> parseArrayFromString(value, Integer::parseInt)),
+  ARRAY_CHAR(1003, Collection.class, -1, value -> parseArrayFromString(value, s -> s.charAt(0))),
+  ARRAY_LONG(1016, Collection.class, -1, value -> parseArrayFromString(value, Long::parseLong)),
+  ARRAY_DOUBLE(1022, Collection.class, -1, value -> parseArrayFromString(value, Double::parseDouble)),
+  ARRAY_TEXT(1009, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
+  ARRAY_JSON(199, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
+  ARRAY_BOOLEAN(1000, Collection.class, -1, value -> parseArrayFromString(value, Boolean::parseBoolean));
 
   private static final Map<Integer, PostgresType> CODE_MAP = Arrays.stream(values())
       .collect(Collectors.toMap(type -> type.code, type -> type));
 
-  public final int code;
-  public final Class<?> cls;
-  public final int size;
+  public final  int                      code;
+  public final  Class<?>                 cls;
+  public final  int                      size;
   private final Function<String, Object> textParser;
 
   PostgresType(final int code, final Class<?> cls, final int size, Function<String, Object> textParser) {
@@ -113,33 +124,117 @@ public enum PostgresType {
     return result;
   }
 
+  public static PostgresType getTypeForValue(Object val) {
+    if (val == null) {
+      return PostgresType.VARCHAR;
+    } else if (val instanceof Double || val instanceof Float) {
+      return PostgresType.DOUBLE;
+    } else if (val instanceof Integer || val instanceof Short || val instanceof Byte) {
+      return PostgresType.INTEGER;
+    } else if (val instanceof Long) {
+      return PostgresType.LONG;
+    } else if (val instanceof Boolean) {
+      return PostgresType.BOOLEAN;
+    } else if (val instanceof String) {
+      return PostgresType.VARCHAR;
+    } else if (val instanceof Character) {
+      return PostgresType.CHAR;
+    } else if (val instanceof JSONObject) {
+      return PostgresType.JSON;
+    } else if (val instanceof Result) {
+      return PostgresType.JSON;
+    } else if (val instanceof EmbeddedDocument) {
+      return PostgresType.JSON;
+    } else if (val instanceof Map) {
+      return PostgresType.JSON;
+    } else if (val instanceof Record) {
+      return PostgresType.JSON;
+    } else if (val instanceof Collection<?> collection) {
+      // Determine element type from the first non-null element
+      return collection.stream()
+          .filter(Objects::nonNull)
+          .findFirst()
+          .map(PostgresType::getArrayTypeForElementType)
+          .orElse(PostgresType.ARRAY_TEXT);
+    } else if (val instanceof Iterable<?> iterable) {
+      return StreamSupport.stream(iterable.spliterator(), false)
+          .filter(Objects::nonNull)
+          .findFirst()
+          .map(PostgresType::getArrayTypeForElementType)
+          .orElse(PostgresType.ARRAY_TEXT);
+
+    } else if (val instanceof Iterator<?> iterator) {
+      while (iterator.hasNext()) {
+        Object next = iterator.next();
+        if (next != null) {
+          return getArrayTypeForElementType(next);
+        }
+      }
+      return PostgresType.ARRAY_TEXT;
+    } else if (val instanceof byte[]) {
+      return PostgresType.ARRAY_CHAR;
+    } else if (val.getClass().isArray()) {
+      // Handle Java arrays
+      if (val instanceof int[]) {
+        return PostgresType.ARRAY_INT;
+      } else if (val instanceof long[]) {
+        return PostgresType.ARRAY_LONG;
+      } else if (val instanceof double[]) {
+        return PostgresType.ARRAY_DOUBLE;
+      } else if (val instanceof boolean[]) {
+        return PostgresType.ARRAY_BOOLEAN;
+      } else if (val instanceof char[]) {
+        return PostgresType.ARRAY_CHAR;
+      } else if (val instanceof String[]) {
+        return PostgresType.ARRAY_TEXT;
+      }
+    } else if (val instanceof Date) {
+      return PostgresType.DATE;
+    } else if (val instanceof LocalDateTime) {
+      return PostgresType.DATE;
+    }
+
+    return PostgresType.VARCHAR;
+
+  }
+
   /**
    * Serializes a value as text format into the provided Binary buffer.
    *
-   * @param code       The PostgreSQL type code
+   * @param pgType     The PostgreSQL type
    * @param typeBuffer The buffer to write to
    * @param value      The value to serialize
    */
-  public void serializeAsText(final long code, final Binary typeBuffer, Object value) {
-    if (value == null) {
-      if (code == BOOLEAN.code) {
-        value = "0";
-      } else {
-        typeBuffer.putInt(-1);
-        return;
-      }
+  public void serializeAsText(final PostgresType pgType, final Binary typeBuffer, final Object value) {
+    String serializedValue = null;
+    if (value == null && pgType.code == BOOLEAN.code) {
+      serializedValue = "0";
+    } else if (value instanceof Collection<?> collection) {
+      // Handle array serialization
+      serializedValue = serializeArrayToString(collection, pgType);
+    } else if (value instanceof JSONObject json) {
+      serializedValue = json.toString();
+    } else if (value instanceof Map map) {
+      serializedValue = new JSONObject(map).toString();
+    } else if (value instanceof Record record) {
+      serializedValue = record.toJSON().toString();
+    } else if (value instanceof Result result) {
+      serializedValue = result.toJSON().toString();
+    } else if (value instanceof EmbeddedDocument embeddedDocument) {
+      serializedValue = embeddedDocument.toJSON().toString();
+    } else if (value != null) {
+      serializedValue = value.toString();
     }
+    writeString(typeBuffer, serializedValue);
+  }
 
-    // Handle array serialization
-    if (value instanceof Collection<?> collection) {
-      String arrayStr = serializeArrayToString(collection);
-      final byte[] str = arrayStr.getBytes(DatabaseFactory.getDefaultCharset());
-      typeBuffer.putInt(str.length);
-      typeBuffer.putByteArray(str);
+  private void writeString(final Binary typeBuffer, final String value) {
+    if (value == null) {
+      typeBuffer.putInt(-1);
       return;
     }
 
-    final byte[] str = value.toString().getBytes(DatabaseFactory.getDefaultCharset());
+    final byte[] str = value.getBytes(DatabaseFactory.getDefaultCharset());
     typeBuffer.putInt(str.length);
     typeBuffer.putByteArray(str);
   }
@@ -147,7 +242,7 @@ public enum PostgresType {
   /**
    * Serializes a Collection into a PostgreSQL array string format.
    */
-  private String serializeArrayToString(Collection<?> collection) {
+  private String serializeArrayToString(Collection<?> collection, PostgresType pgType) {
     if (collection.isEmpty())
       return "{}";
 
@@ -158,10 +253,33 @@ public enum PostgresType {
         sb.append(",");
       }
       first = false;
-
-      if (element instanceof String) {
-        // Strings need to be quoted
-        sb.append("\"").append(((String) element).replace("\"", "\\\"")).append("\"");
+      if (element instanceof Double || element instanceof Float || element.getClass() == double.class
+          || element.getClass() == float.class) {
+        sb.append(((Number) element).doubleValue());
+      } else if (element instanceof Number || element instanceof Boolean) {
+        sb.append(element);
+      } else if (element instanceof Character) {
+        sb.append("'").append(element).append("'");
+      } else if (element instanceof Date date) {
+        sb.append(date.getTime());
+      } else if (element instanceof Binary binary) {
+        sb.append(binary.getString());
+      } else if (element instanceof byte[] bytes) {
+        sb.append(Arrays.toString(bytes));
+      } else if (element instanceof Collection<?> subCollection) {
+        sb.append(serializeArrayToString(subCollection, pgType));
+      } else if (element instanceof Result result) {
+        sb.append("\"").append(result.toJSON().toString().replace("\"", "\\\"")).append("\"");
+      } else if (element instanceof JSONObject json) {
+        sb.append("\"").append(json.toString().replace("\"", "\\\"")).append("\"");
+      } else if (element instanceof Map map) {
+        sb.append("\"").append(new JSONObject(map).toString().replace("\"", "\\\"")).append("\"");
+      } else if (element instanceof Record record) {
+        sb.append("\"").append(record.toJSON().toString().replace("\"", "\\\"")).append("\"");
+      } else if (element instanceof EmbeddedDocument embeddedDocument) {
+        sb.append("\"").append(embeddedDocument.toJSON().toString().replace("\"", "\\\"")).append("\"");
+      } else if (element instanceof String str) {
+        sb.append("\"").append(str.replace("\"", "\\\"")).append("\"");
       } else {
         sb.append(element == null ? "NULL" : element.toString());
       }
@@ -173,16 +291,28 @@ public enum PostgresType {
   /**
    * Determines the appropriate array type based on the element type.
    */
-  public static PostgresType getArrayTypeForElementType(Class<?> elementType) {
-    if (elementType == Integer.class || elementType == int.class)
+  public static PostgresType getArrayTypeForElementType(Object element) {
+    if (element instanceof Integer ||
+        element instanceof Short ||
+        element instanceof Byte)
       return ARRAY_INT;
-    if (elementType == Long.class || elementType == long.class)
-      return ARRAY_LONG;
-    if (elementType == Double.class || elementType == double.class ||
-        elementType == Float.class || elementType == float.class)
+    if (element instanceof Double ||
+        element instanceof Float ||
+        element.getClass() == double.class ||
+        element.getClass() == float.class)
       return ARRAY_DOUBLE;
-    if (elementType == Boolean.class || elementType == boolean.class)
+    if (element instanceof Long)
+      return ARRAY_LONG;
+    if (element instanceof Boolean)
       return ARRAY_BOOLEAN;
+    if (element instanceof String)
+      return ARRAY_TEXT;
+    if (element instanceof JSONObject ||
+        element instanceof Map ||
+        element instanceof Result ||
+        element instanceof EmbeddedDocument ||
+        element instanceof Record)
+      return ARRAY_JSON;
     // Default to text array for all other types
     return ARRAY_TEXT;
   }
@@ -193,7 +323,9 @@ public enum PostgresType {
    * @param code         The PostgreSQL type code
    * @param formatCode   The format code (0 for text, 1 for binary)
    * @param valueAsBytes The raw byte array to deserialize
+   *
    * @return The deserialized object
+   *
    * @throws PostgresProtocolException if the type or format is not supported
    */
   public static Object deserialize(final long code, final int formatCode, final byte[] valueAsBytes) {
@@ -241,7 +373,13 @@ public enum PostgresType {
       case DATE -> new Date(buffer.getLong());
       case CHAR -> buffer.getChar();
       case BOOLEAN -> buffer.get() == 1;
-      case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_TEXT, ARRAY_BOOLEAN -> {
+      case JSON -> {
+        int length = buffer.getInt();
+        byte[] bytes = new byte[length];
+        buffer.get(bytes);
+        yield new JSONObject(new String(bytes));
+      }
+      case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_TEXT, ARRAY_BOOLEAN, ARRAY_CHAR, ARRAY_JSON -> {
         // For binary format, would need to implement proper array binary deserialization
         // This is a simplified placeholder - proper implementation would need to handle
         // array dimensions and element deserialization according to PostgreSQL protocol
@@ -254,7 +392,12 @@ public enum PostgresType {
    * Checks if this type is an array type.
    */
   public boolean isArrayType() {
-    return this == ARRAY_INT || this == ARRAY_LONG || this == ARRAY_DOUBLE
-        || this == ARRAY_TEXT || this == ARRAY_BOOLEAN;
+    return this == ARRAY_INT ||
+        this == ARRAY_CHAR ||
+        this == ARRAY_LONG ||
+        this == ARRAY_DOUBLE ||
+        this == ARRAY_TEXT ||
+        this == ARRAY_JSON ||
+        this == ARRAY_BOOLEAN;
   }
 }
