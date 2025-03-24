@@ -42,8 +42,8 @@ public class BasicHaTest {
     final Proxy arcade2Proxy = toxiproxyClient.createProxy("proxyTwo", "0.0.0.0:8667", "arcade2:2424");
 
     //create two arcade containers
-    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "proxy:8667", network);
-    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "proxy:8666", network);
+    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "proxy:8667", "none", network);
+    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "proxy:8666", "none", network);
 
     //start the containers in sequence: arcade1 will be the leaser
     Startables.deepStart(arcade1).join();
@@ -62,7 +62,7 @@ public class BasicHaTest {
         "playwithdata");
 
     //create schema on database one
-    createTypes(db1);
+    createSchema(db1);
 
     //check if the database is replicated
     checkSchema(db1);
@@ -84,7 +84,7 @@ public class BasicHaTest {
     arcade1Proxy.toxics().bandwidth("CUT_CONNECTION_DOWNSTREAM", ToxicDirection.DOWNSTREAM, 0);
     arcade1Proxy.toxics().bandwidth("CUT_CONNECTION_UPSTREAM", ToxicDirection.UPSTREAM, 0);
 
-    //add to arcadw onw
+    //add to arcade onw
     addUserAndPhotos(db1, 10, 10);
     // 20 on db1
     resultSet1 = db1.query("sql", "SELECT count() as count FROM User");
@@ -119,7 +119,7 @@ public class BasicHaTest {
     assertThat(db.getSchema().existsType("Likes")).isTrue();
   }
 
-  void createTypes(RemoteDatabase db) {
+  void createSchema(RemoteDatabase db) {
     //this is a test-double of HTTPGraphIT.testOneEdgePerTx test
     db.command("sqlscript",
         """
@@ -163,11 +163,12 @@ public class BasicHaTest {
    *
    * @param name       The name of the container.
    * @param serverList The server list for HA configuration.
+   * @param quorum
    * @param network    The network to attach the container to.
    *
    * @return A GenericContainer instance representing the ArcadeDB container.
    */
-  GenericContainer createArcadeContainer(String name, String serverList, Network network) {
+  GenericContainer createArcadeContainer(String name, String serverList, String quorum, Network network) {
     return new GenericContainer(IMAGE)
         .withExposedPorts(2480, 5432)
         .withNetwork(network)
@@ -177,10 +178,10 @@ public class BasicHaTest {
             -Darcadedb.server.rootPassword=playwithdata
             -Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin
             -Darcadedb.ha.enabled=true
-            -Darcadedb.ha.quorum=none
+            -Darcadedb.ha.quorum=%s
             -Darcadedb.server.name=%s
             -Darcadedb.ha.serverList=%s
-            """, name, serverList))
+            """, quorum, name, serverList))
         .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
   }
 }
