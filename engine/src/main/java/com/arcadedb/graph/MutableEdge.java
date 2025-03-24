@@ -206,7 +206,7 @@ public class MutableEdge extends MutableDocument implements Edge {
     final StringBuilder buffer = new StringBuilder();
     buffer.append("V(");
     buffer.append(out != null ? out.toString() : "?");
-    buffer.append(")<-[E");
+    buffer.append(")->[E");
     buffer.append(rid != null ? rid.toString() : "?");
     buffer.append("]->V(");
     buffer.append(in != null ? in.toString() : "?");

@@ -29,6 +29,7 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.select.SelectIterator;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
@@ -675,11 +676,12 @@ public class GraphEngine {
     final AtomicLong invalidLinks = new AtomicLong();
     final LinkedHashSet<RID> corruptedRecords = new LinkedHashSet<>();
     final List<String> warnings = new ArrayList<>();
+    final Set<RID> reconnectOutEdges = new HashSet<>();
+    final Set<RID> reconnectInEdges = new HashSet<>();
 
     final Map<String, Object> stats = new HashMap<>();
 
     database.begin();
-
     try {
       // CHECK RECORD IS OF THE RIGHT TYPE
       final DocumentType type = database.getSchema().getType(typeName);
@@ -774,11 +776,57 @@ public class GraphEngine {
                       }
 
                       if (!edge.getOut().equals(vertexIdentity)) {
+                        // CHECK ALL OUT EDGES
+                        int totalEdges = 0;
+                        int totalEdgesOk = 0;
+                        int totalEdgesError = 0;
+                        int totalEdgesErrorFromSameVertex = 0;
+
+                        final Iterator<Pair<RID, RID>> outEdgesIterator = outEdges.entryIterator();
+                        while (outEdgesIterator.hasNext()) {
+                          final Pair<RID, RID> nextEntry = outEdgesIterator.next();
+
+                          ++totalEdges;
+
+                          final RID edgeOut = nextEntry.getFirst().asEdge(true).getOut();
+                          if (edgeOut.equals(vertexIdentity))
+                            ++totalEdgesOk;
+                          else if (edgeOut.equals(edge.getOut()))
+                            ++totalEdgesErrorFromSameVertex;
+                          else
+                            ++totalEdgesError;
+                        }
                         warnings.add("edge " + edgeRID + " has an outgoing link " + edge.getOut() + " different from expected "
-                            + vertexIdentity);
-                        corruptedRecords.add(edgeRID);
-                        removeEntry = true;
-                        invalidLinks.incrementAndGet();
+                            + vertexIdentity + ". Found " + totalEdges + " edges, of which " + totalEdgesOk
+                            + " are correct, " + totalEdgesErrorFromSameVertex + " are from the same vertex and "
+                            + totalEdgesError + " are different");
+
+                        if (totalEdges == totalEdgesErrorFromSameVertex) {
+                          // ORIGINAL OUT VERTEX POINTER MUST BE WRONG, CHECKING
+                          final VertexInternal wrongOutVertex = (VertexInternal) edge.getOut().asVertex(false);
+                          if (((VertexInternal) vertex).getOutEdgesHeadChunk().equals(wrongOutVertex.getOutEdgesHeadChunk())) {
+                            // CURRENT VERTEX POINTS TO ANOTHER LINKED LIST. SEARCHING FOR ITS CORRECT LINKED LIST LATER
+                            reconnectOutEdges.add(vertexIdentity);
+
+                            // RESET POINTER TO OUT EDGES
+                            vertex = vertex.modify();
+                            ((VertexInternal) vertex).setOutEdgesHeadChunk(null);
+                            ((MutableVertex) vertex).save();
+
+                            // SKIP THE REST OF THE EDGES
+                            break;
+
+                          } else {
+                            corruptedRecords.add(edgeRID);
+                            removeEntry = true;
+                            invalidLinks.incrementAndGet();
+                          }
+                        } else {
+                          corruptedRecords.add(edgeRID);
+                          removeEntry = true;
+                          invalidLinks.incrementAndGet();
+                        }
+
                       } else if (!edge.getIn().equals(vertexRID)) {
                         warnings.add(
                             "edge " + edgeRID + " has an incoming link " + edge.getIn() + " different from expected " + vertexRID);
@@ -897,9 +945,56 @@ public class GraphEngine {
                       if (!edge.getIn().equals(vertexIdentity)) {
                         warnings.add("edge " + edgeRID + " has an incoming link " + edge.getIn() + " different from expected "
                             + vertexIdentity);
-                        corruptedRecords.add(edgeRID);
-                        removeEntry = true;
-                        invalidLinks.incrementAndGet();
+
+                        // CHECK ALL INCOMING EDGES
+                        int totalEdges = 0;
+                        int totalEdgesOk = 0;
+                        int totalEdgesError = 0;
+                        int totalEdgesErrorFromSameVertex = 0;
+                        final Iterator<Pair<RID, RID>> inEdgeIterator = inEdges.entryIterator();
+                        while (inEdgeIterator.hasNext()) {
+                          final Pair<RID, RID> nextEntry = inEdgeIterator.next();
+
+                          ++totalEdges;
+
+                          final RID edgeIn = nextEntry.getFirst().asEdge(true).getIn();
+                          if (edgeIn.equals(vertexIdentity))
+                            ++totalEdgesOk;
+                          else if (edgeIn.equals(edge.getIn()))
+                            ++totalEdgesErrorFromSameVertex;
+                          else
+                            ++totalEdgesError;
+                        }
+                        warnings.add("edge " + edgeRID + " has an incoming link " + edge.getOut() + " different from expected "
+                            + vertexIdentity + ". Found " + totalEdges + " edges, of which " + totalEdgesOk
+                            + " are correct, " + totalEdgesErrorFromSameVertex + " are from the same vertex and "
+                            + totalEdgesError + " are different");
+
+                        if (totalEdges == totalEdgesErrorFromSameVertex) {
+                          // ORIGINAL OUT VERTEX POINTER MUST BE WRONG, CHECKING
+                          final VertexInternal wrongInVertex = (VertexInternal) edge.getIn().asVertex(false);
+                          if (((VertexInternal) vertex).getInEdgesHeadChunk().equals(wrongInVertex.getInEdgesHeadChunk())) {
+                            // CURRENT VERTEX POINTS TO ANOTHER LINKED LIST. SEARCHING FOR ITS CORRECT LINKED LIST LATER
+                            reconnectInEdges.add(vertexIdentity);
+
+                            // RESET POINTER TO OUT EDGES
+                            vertex = vertex.modify();
+                            ((VertexInternal) vertex).setOutEdgesHeadChunk(null);
+                            ((MutableVertex) vertex).save();
+
+                            // SKIP THE REST OF THE EDGES
+                            break;
+                          } else {
+                            corruptedRecords.add(edgeRID);
+                            removeEntry = true;
+                            invalidLinks.incrementAndGet();
+                          }
+                        } else {
+                          corruptedRecords.add(edgeRID);
+                          removeEntry = true;
+                          invalidLinks.incrementAndGet();
+                        }
+
                       } else if (!edge.getOut().equals(vertexRID)) {
                         warnings.add(
                             "edge " + edgeRID + " has an outgoing link " + edge.getOut() + " different from expected " + vertexRID);
@@ -954,6 +1049,51 @@ public class GraphEngine {
       });
 
       if (fix) {
+        if (!reconnectOutEdges.isEmpty() || !reconnectInEdges.isEmpty()) {
+          // BROWSE ALL THE EDGES AND COLLECT THE ONES PART OF THE RECONNECTION
+          final List<EdgeType> edgeTypes = new ArrayList<>();
+          for (DocumentType schemaType : database.getSchema().getTypes()) {
+            if (schemaType instanceof EdgeType t)
+              edgeTypes.add(t);
+          }
+
+          final List<Edge> outEdgesToReconnect = new ArrayList<>();
+          final List<Edge> inEdgesToReconnect = new ArrayList<>();
+
+          for (EdgeType edgeType : edgeTypes) {
+            final SelectIterator<Edge> edges = database.select().fromType(edgeType.getName()).edges();
+            while (edges.hasNext()) {
+              final Edge e = edges.next();
+              if (reconnectOutEdges.contains(e.getOut()))
+                outEdgesToReconnect.add(e);
+              if (reconnectInEdges.contains(e.getIn()))
+                inEdgesToReconnect.add(e);
+            }
+          }
+
+          if (!outEdgesToReconnect.isEmpty()) {
+            for (Edge e : outEdgesToReconnect) {
+              final MutableVertex vertex = e.getOutVertex().modify();
+              final EdgeSegment outChunk = createOutEdgeChunk(vertex);
+              final EdgeLinkedList outLinkedList = new EdgeLinkedList(vertex, Vertex.DIRECTION.OUT, outChunk);
+              outLinkedList.add(e.getIdentity(), e.getIn());
+            }
+            warnings.add("reconnected " + outEdgesToReconnect.size() + " outgoing edges");
+            stats.put("outEdgesToReconnect", outEdgesToReconnect);
+          }
+
+          if (!inEdgesToReconnect.isEmpty()) {
+            for (Edge e : inEdgesToReconnect) {
+              final MutableVertex vertex = e.getInVertex().modify();
+              final EdgeSegment inChunk = createInEdgeChunk(vertex);
+              final EdgeLinkedList inLinkedList = new EdgeLinkedList(vertex, Vertex.DIRECTION.IN, inChunk);
+              inLinkedList.add(e.getIdentity(), e.getOut());
+            }
+            warnings.add("reconnected " + inEdgesToReconnect.size() + " incoming edges");
+            stats.put("inEdgesToReconnect", inEdgesToReconnect);
+          }
+        }
+
         for (final RID rid : corruptedRecords) {
           if (rid == null)
             continue;
