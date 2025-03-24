@@ -93,6 +93,7 @@ public class Console {
   private              RemoteServer         remoteServer;
   private              boolean              batchMode                = false;
   private              boolean              failAtEnd                = false;
+  private static       boolean              errored                  = false;
 
   public Console(final DatabaseInternal database) throws IOException {
     this();
@@ -166,7 +167,8 @@ public class Console {
       execute(args);
     } finally {
       // FORCE EXIT IN CASE OF UNMANAGED ERROR
-      System.exit(0);
+      if (errored) System.exit(1);
+      else System.exit(0);
     }
   }
 
@@ -629,6 +631,7 @@ public class Console {
       try {
         resultSet = databaseProxy.command(language, line);
       } catch (Exception e) {
+        errored = true;
         if (batchMode && !failAtEnd)
           throw e;
         else
@@ -776,6 +779,7 @@ public class Console {
           if (!execute(w))
             return false;
         } catch (final Exception e) {
+          errored = true;
           if (!failAtEnd)
             throw e;
         }
