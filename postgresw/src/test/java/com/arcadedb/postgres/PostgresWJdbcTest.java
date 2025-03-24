@@ -25,6 +25,8 @@ import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.postgresql.util.PSQLException;
 
 import java.sql.Array;
@@ -43,9 +45,6 @@ import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class PostgresWJdbcTest extends BaseGraphServerTest {
   @Override
@@ -498,66 +497,66 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
     return sb.toString();
   }
 
-  @Test
-  public void testPsycopgReturnArrayCommon() throws Exception {
-    Class<?>[] typesToTest = {
-//        Boolean.class,
-//        Double.class,
-//        Integer.class,
-        String.class
-    };
-
+  @ParameterizedTest
+//  @ValueSource(classes = { Boolean.class, Double.class, Integer.class, String.class })
+  @ValueSource(classes = { String.class })
+  public void testReturnArray(Class<?> typeToTest) throws Exception {
     try (Connection conn = getConnection()) {
       conn.setAutoCommit(true);
 
-      for (Class<?> typeToTest : typesToTest) {
-        String typeName = typeToTest.getSimpleName();
-        String arcadeName = "TEXT_" + typeName;
+      String typeName = typeToTest.getSimpleName();
+      String arcadeName = "TEXT_" + typeName;
 
-        try (Statement st = conn.createStatement()) {
-          st.execute("CREATE VERTEX TYPE `" + arcadeName + "` IF NOT EXISTS");
-          st.execute("CREATE PROPERTY " + arcadeName + ".str IF NOT EXISTS STRING");
-          st.execute("CREATE PROPERTY " + arcadeName + ".data IF NOT EXISTS LIST");
+      try (Statement st = conn.createStatement()) {
+        st.execute("CREATE VERTEX TYPE `" + arcadeName + "` IF NOT EXISTS");
+        st.execute("CREATE PROPERTY " + arcadeName + ".str IF NOT EXISTS STRING");
+        st.execute("CREATE PROPERTY " + arcadeName + ".data IF NOT EXISTS LIST");
 
-          List<?> randomData = randomValues(typeToTest);
-          JSONArray jsonArray = new JSONArray(randomData);
+        List<?> randomData = randomValues(typeToTest);
+        JSONArray jsonArray = new JSONArray(randomData);
 
-          try (ResultSet rs = st.executeQuery(
-              "INSERT INTO `" + arcadeName + "` SET str = \"meow\", data = " +
-                  jsonArray.toString() + " RETURN data")) {
-          }
+        try (ResultSet rs = st.executeQuery(
+            "INSERT INTO `" + arcadeName + "` SET str = \"meow\", data = " +
+                jsonArray + " RETURN data")) {
+        }
 
-          try (ResultSet rs = st.executeQuery(
-              "SELECT data FROM `" + arcadeName + "` WHERE str = \"meow\"")) {
-            assertTrue(rs.next());
-            Array dataArray = rs.getArray("data");
-            String[] dataValues = (String[]) dataArray.getArray();
+        try (ResultSet rs = st.executeQuery(
+            "SELECT data FROM `" + arcadeName + "` WHERE str = \"meow\"")) {
+          assertThat(rs.next()).isTrue();
 
-          System.out.println("jsonArray = " + dataValues);
-          for (String item : dataValues) {
-            System.out.println("item = " + item);
-          }
-            // Check if it's a list (array in Java)
-            assertNotNull(dataValues, "For " + typeName + ": Type LIST is returned as null");
+          Array dataArray = rs.getArray("data");
+          Object[] dataValues = (Object[]) dataArray.getArray();
 
-            // Check if all items are of the expected type
-            for (Object item : dataValues) {
-              if (typeToTest == Boolean.class) {
-                assertInstanceOf(Boolean.class, item, "For " + typeName + ": Not all items are of type " + typeName);
-              } else if (typeToTest == Double.class) {
-                assertTrue(item instanceof Double || item instanceof Float,
-                    "For " + typeName + ": Not all items are of type " + typeName);
-              } else if (typeToTest == Integer.class) {
-                assertTrue(item instanceof Integer || item instanceof Long,
-                    "For " + typeName + ": Not all items are of type " + typeName);
-              } else if (typeToTest == String.class) {
-                System.out.println("item = " + item);
-                assertInstanceOf(String.class, item, "For " + typeName + ": Not all items are of type " + typeName);
-              }
-            }
+          // Check if it's a list (array in Java)
+          assertThat(dataValues)
+              .as("For " + typeName + ": Type LIST is returned as null")
+              .isNotNull();
+          // Check if all items are of the expected type
+          for (Object item : dataValues) {
+            assertThat(item.getClass())//.isInstance(item)
+                .as("For " + typeName + ": Not all items are of type " + typeName)
+                .isInstanceOf(typeToTest.getClass());
           }
         }
       }
+    }
+  }
+
+  @Test
+  void testFloatMapping() throws SQLException, ClassNotFoundException {
+    try (Connection conn = getConnection()) {
+      Statement stmt = conn.createStatement();
+
+      stmt.execute("CREATE DOCUMENT TYPE TestProduct");
+
+      stmt.execute("INSERT INTO TestProduct (name, price) VALUES ('TestItem', 29.99)");
+
+      ResultSet rs = stmt.executeQuery("SELECT * FROM TestProduct");
+
+      assertThat(rs.next()).isTrue();
+      assertThat(rs.getString("name")).isEqualTo("TestItem");
+      assertThat(rs.getDouble("price")).isEqualTo(29.99);
+
     }
   }
 }

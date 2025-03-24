@@ -437,24 +437,10 @@ public class PostgresNetworkExecutor extends Thread {
           if (currentType == null || currentType.cls != valueClass) {
 
             PostgresType newType = PostgresType.getTypeForValue(value);
-
-//            if (newType == null) {
-//              // FIND THE VALUE TYPE AND WRITE IT IN THE DATA DESCRIPTION
-//              for (final PostgresType pgType : PostgresType.values()) {
-//                if (pgType.cls.isAssignableFrom(valueClass)
-//                    && !pgType.isArrayType()
-//                ) {
-//                  newType = pgType;
-//                  break;
-//                }
-//              }
-//            }
-
             // assign new type if it id better than the current one: better means more specific than VARCHAR
             if (newType != null &&
-                newType != currentType &&
-                newType != PostgresType.VARCHAR &&
-                newType != PostgresType.ARRAY_TEXT) {
+                newType != currentType
+            ) {
               currentType = newType;
             }
             // in the end, if currentType is null, assign VARCHAR

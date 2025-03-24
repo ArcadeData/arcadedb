@@ -37,6 +37,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 /**
  * Represents PostgreSQL data types and provides serialization/deserialization functionality.
@@ -126,6 +127,20 @@ public enum PostgresType {
   public static PostgresType getTypeForValue(Object val) {
     if (val == null) {
       return PostgresType.VARCHAR;
+    } else if (val instanceof Double || val instanceof Float) {
+      return PostgresType.DOUBLE;
+    } else if (val instanceof Integer || val instanceof Short || val instanceof Byte) {
+      return PostgresType.INTEGER;
+    } else if (val instanceof Long) {
+      return PostgresType.LONG;
+    } else if (val instanceof Boolean) {
+      return PostgresType.BOOLEAN;
+    } else if (val instanceof String) {
+      return PostgresType.VARCHAR;
+    } else if (val instanceof Character) {
+      return PostgresType.CHAR;
+    } else if (val instanceof JSONObject) {
+      return PostgresType.JSON;
     } else if (val instanceof Result) {
       return PostgresType.JSON;
     } else if (val instanceof EmbeddedDocument) {
@@ -135,20 +150,26 @@ public enum PostgresType {
     } else if (val instanceof Record) {
       return PostgresType.JSON;
     } else if (val instanceof Collection<?> collection) {
-      if (collection.isEmpty()) {
-        // Default to text array for empty lists
-        return PostgresType.ARRAY_TEXT;
-      } else {
-        // Determine element type from the first non-null element
-        return collection.stream()
-            .filter(Objects::nonNull)
-            .findFirst()
-            .map(PostgresType::getArrayTypeForElementType)
-            .orElse(PostgresType.ARRAY_TEXT);
+      // Determine element type from the first non-null element
+      return collection.stream()
+          .filter(Objects::nonNull)
+          .findFirst()
+          .map(PostgresType::getArrayTypeForElementType)
+          .orElse(PostgresType.ARRAY_TEXT);
+    } else if (val instanceof Iterable<?> iterable) {
+      return StreamSupport.stream(iterable.spliterator(), false)
+          .filter(Objects::nonNull)
+          .findFirst()
+          .map(PostgresType::getArrayTypeForElementType)
+          .orElse(PostgresType.ARRAY_TEXT);
+
+    } else if (val instanceof Iterator<?> iterator) {
+      while (iterator.hasNext()) {
+        Object next = iterator.next();
+        if (next != null) {
+          return getArrayTypeForElementType(next);
+        }
       }
-    } else if (val instanceof Iterable<?>) {
-      return PostgresType.ARRAY_TEXT;
-    } else if (val instanceof Iterator<?>) {
       return PostgresType.ARRAY_TEXT;
     } else if (val instanceof byte[]) {
       return PostgresType.ARRAY_CHAR;
@@ -232,7 +253,8 @@ public enum PostgresType {
         sb.append(",");
       }
       first = false;
-      if (element instanceof Double || element instanceof Float) {
+      if (element instanceof Double || element instanceof Float || element.getClass() == double.class
+          || element.getClass() == float.class) {
         sb.append(((Number) element).doubleValue());
       } else if (element instanceof Number || element instanceof Boolean) {
         sb.append(element);
@@ -274,11 +296,13 @@ public enum PostgresType {
         element instanceof Short ||
         element instanceof Byte)
       return ARRAY_INT;
+    if (element instanceof Double ||
+        element instanceof Float ||
+        element.getClass() == double.class ||
+        element.getClass() == float.class)
+      return ARRAY_DOUBLE;
     if (element instanceof Long)
       return ARRAY_LONG;
-    if (element instanceof Double ||
-        element instanceof Float)
-      return ARRAY_DOUBLE;
     if (element instanceof Boolean)
       return ARRAY_BOOLEAN;
     if (element instanceof String)
