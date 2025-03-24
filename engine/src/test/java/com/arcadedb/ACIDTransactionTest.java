@@ -469,7 +469,9 @@ public class ACIDTransactionTest extends TestHelper {
           CREATE VERTEX device SET id='device1';
           CREATE EDGE zone_device FROM (SELECT FROM zone WHERE id='zone1') TO (SELECT FROM device WHERE id='device1') SET from_id='zone1', to_id='device1';
           """);
+    });
 
+    database.transaction(() -> {
       database.command("sqlscript", """
           DELETE FROM zone_device WHERE from_id='zone1' and to_id='device1';
           CREATE EDGE zone_device FROM (SELECT FROM zone WHERE id='zone2') TO (SELECT FROM device WHERE id='device1') SET from_id='zone2', to_id='device1';

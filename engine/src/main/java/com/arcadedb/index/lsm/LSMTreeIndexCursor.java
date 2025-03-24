@@ -457,7 +457,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
         if (values != null) {
           for (final TransactionIndexContext.IndexKey value : values.values()) {
             if (value != null) {
-              if (!value.addOperation)
+              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE)
                 // REMOVED
                 break;
 

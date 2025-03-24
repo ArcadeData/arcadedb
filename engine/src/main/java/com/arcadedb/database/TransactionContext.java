@@ -19,9 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Record;
 import com.arcadedb.engine.BasePage;
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.LocalBucket;
@@ -40,7 +38,6 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
-import com.arcadedb.schema.Schema;
 
 import java.io.*;
 import java.util.*;
@@ -696,8 +693,9 @@ public class TransactionContext implements Transaction {
     }
   }
 
-  public void addIndexOperation(final IndexInternal index, final boolean addOperation, final Object[] keys, final RID rid) {
-    indexChanges.addIndexKeyLock(index, addOperation, keys, rid);
+  public void addIndexOperation(final IndexInternal index, final TransactionIndexContext.IndexKey.IndexKeyOperation operation,
+      final Object[] keys, final RID rid) {
+    indexChanges.addIndexKeyLock(index, operation, keys, rid);
   }
 
   @Override

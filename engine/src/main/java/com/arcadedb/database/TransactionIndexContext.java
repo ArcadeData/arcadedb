@@ -39,14 +39,18 @@ public class TransactionIndexContext {
   private       Map<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries = new LinkedHashMap<>(); // MOST COMMON USE CASE INSERTION IS ORDERED, USE AN ORDERED MAP TO OPTIMIZE THE INDEX
 
   public static class IndexKey {
-    public final boolean  unique;
-    public final boolean  addOperation;
-    public final Object[] keyValues;
-    public final RID      rid;
+    public final boolean           unique;
+    public final Object[]          keyValues;
+    public final RID               rid;
+    public       IndexKeyOperation operation;
 
-    public IndexKey(final boolean unique, final boolean addOperation, final Object[] keyValues, final RID rid) {
+    public enum IndexKeyOperation {
+      REMOVE, ADD, REPLACE // @compatibility < 25.3.2: 0 = REMOVE, 1 = ADD. 2 = REPLACE introduced with 25.3.2
+    }
+
+    public IndexKey(final boolean unique, final IndexKeyOperation operation, final Object[] keyValues, final RID rid) {
       this.unique = unique;
-      this.addOperation = addOperation;
+      this.operation = operation;
       this.keyValues = keyValues;
       this.rid = rid;
     }
@@ -72,7 +76,7 @@ public class TransactionIndexContext {
 
     @Override
     public String toString() {
-      return "IndexKey(" + (addOperation ? "add " : "remove ") + Arrays.toString(keyValues) + ")";
+      return "IndexKey(" + operation + Arrays.toString(keyValues) + ")";
     }
   }
 
@@ -169,7 +173,7 @@ public class TransactionIndexContext {
       for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> keyValueEntries : keys.entrySet()) {
         final Collection<IndexKey> values = keyValueEntries.getValue().values();
         for (final IndexKey key : values) {
-          if (!key.addOperation)
+          if (key.operation == IndexKey.IndexKeyOperation.REMOVE)
             index.remove(key.keyValues, key.rid);
         }
       }
@@ -187,7 +191,8 @@ public class TransactionIndexContext {
           final Set<RID> rids2Insert = new LinkedHashSet<>(values.size());
 
           for (final IndexKey key : values) {
-            if (key.addOperation)
+            if (key.operation == IndexKey.IndexKeyOperation.ADD ||
+                key.operation == IndexKey.IndexKeyOperation.REPLACE)
               rids2Insert.add(key.rid);
           }
 
@@ -199,7 +204,8 @@ public class TransactionIndexContext {
 
         } else {
           for (final IndexKey key : values) {
-            if (key.addOperation)
+            if (key.operation == IndexKey.IndexKeyOperation.ADD ||
+                key.operation == IndexKey.IndexKeyOperation.REPLACE)
               index.put(key.keyValues, new RID[] { key.rid });
           }
         }
@@ -249,7 +255,8 @@ public class TransactionIndexContext {
     return indexEntries.isEmpty();
   }
 
-  public void addIndexKeyLock(final IndexInternal index, final boolean addOperation, final Object[] keysValues, final RID rid) {
+  public void addIndexKeyLock(final IndexInternal index, IndexKey.IndexKeyOperation operation, final Object[] keysValues,
+      final RID rid) {
     if (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.SKIP && LSMTreeIndexAbstract.isKeyNull(keysValues))
       // NULL VALUES AND SKIP NUL VALUES
       return;
@@ -259,7 +266,7 @@ public class TransactionIndexContext {
     TreeMap<ComparableKey, Map<IndexKey, IndexKey>> keys = indexEntries.get(indexName);
 
     final ComparableKey k = new ComparableKey(keysValues);
-    final IndexKey v = new IndexKey(index.isUnique(), addOperation, keysValues, rid);
+    final IndexKey v = new IndexKey(index.isUnique(), operation, keysValues, rid);
 
     Map<IndexKey, IndexKey> values;
     if (keys == null) {
@@ -274,19 +281,23 @@ public class TransactionIndexContext {
         values = new HashMap<>();
         keys.put(k, values);
       } else {
-        if (addOperation && index.isUnique()) {
-          // CHECK IMMEDIATELY (INSTEAD OF AT COMMIT TIME) FOR DUPLICATED KEY IN CASE 2 ENTRIES WITH THE SAME KEY ARE SAVED IN TX.
-          final IndexKey entry = values.get(v);
-          if (entry != null && entry.addOperation && !entry.rid.equals(rid))
-            throw new DuplicatedKeyException(indexName, Arrays.toString(keysValues), entry.rid);
-        }
+        if (v.operation == IndexKey.IndexKeyOperation.ADD) {
+          if (index.isUnique()) {
+            // CHECK IMMEDIATELY (INSTEAD OF AT COMMIT TIME) FOR DUPLICATED KEY IN CASE 2 ENTRIES WITH THE SAME KEY ARE SAVED IN TX.
+            final IndexKey entry = values.get(v);
+            if (entry != null && entry.operation == IndexKey.IndexKeyOperation.ADD && !entry.rid.equals(rid))
+              throw new DuplicatedKeyException(indexName, Arrays.toString(keysValues), entry.rid);
 
-        // REPLACE EXISTENT WITH THIS
-        values.remove(v);
+            // REPLACE EXISTENT WITH THIS
+            v.operation = IndexKey.IndexKeyOperation.REPLACE;
+          }
+        }
       }
     }
 
-    if (addOperation && index.isUnique()) {
+    if (index.isUnique() &&
+        (v.operation == IndexKey.IndexKeyOperation.ADD ||
+            v.operation == IndexKey.IndexKeyOperation.REPLACE)) {
       // CHECK FOR UNIQUE ON OTHER SUB-INDEXES
       final TypeIndex typeIndex = index.getTypeIndex();
       if (typeIndex != null) {
@@ -300,8 +311,11 @@ public class TransactionIndexContext {
             final Map<IndexKey, IndexKey> otherIndexValues = entries.get(k);
             if (otherIndexValues != null)
               for (final IndexKey e : otherIndexValues.values()) {
-                if (e.addOperation)
+                if (e.operation == IndexKey.IndexKeyOperation.ADD)
                   throw new DuplicatedKeyException(indexName, Arrays.toString(keysValues), e.rid);
+
+                // REPLACE EXISTENT WITH THIS
+                v.operation = IndexKey.IndexKeyOperation.REPLACE;
               }
           }
         }
@@ -376,9 +390,9 @@ public class TransactionIndexContext {
           final Map<IndexKey, IndexKey> valuesPerKey = txEntriesPerKey.getValue();
 
           for (final IndexKey entry : valuesPerKey.values()) {
-            if (entry.addOperation) {
-              final Map<ComparableKey, RID> entries = deletedKeys.get(typeIndex);
-              final RID deleted = entries != null ? entries.get(new ComparableKey(entry.keyValues)) : null;
+            if (entry.operation == IndexKey.IndexKeyOperation.ADD) {
+              final Map<ComparableKey, RID> deletedEntries = deletedKeys.get(typeIndex);
+              final RID deleted = deletedEntries != null ? deletedEntries.get(new ComparableKey(entry.keyValues)) : null;
               checkUniqueIndexKeys(index, entry, deleted);
             }
           }
@@ -399,7 +413,8 @@ public class TransactionIndexContext {
           final Map<IndexKey, IndexKey> valuesPerKey = txEntriesPerKey.getValue();
 
           for (final IndexKey entry : valuesPerKey.values()) {
-            if (!entry.addOperation) {
+            if (entry.operation == IndexKey.IndexKeyOperation.REMOVE ||
+                entry.operation == IndexKey.IndexKeyOperation.REPLACE) {
               final TypeIndex typeIndex = index.getTypeIndex();
               final Map<ComparableKey, RID> entries = deletedKeys.computeIfAbsent(typeIndex, k -> new HashMap<>());
               entries.put(new ComparableKey(entry.keyValues), entry.rid);

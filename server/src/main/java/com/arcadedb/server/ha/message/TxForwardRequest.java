@@ -143,7 +143,7 @@ public class TxForwardRequest extends TxRequestAbstract {
         uniqueKeysBuffer.putUnsignedNumber(entryValue.size());
 
         for (final TransactionIndexContext.IndexKey key : entryValue.values()) {
-          uniqueKeysBuffer.putByte((byte) (key.addOperation ? 1 : 0));
+          uniqueKeysBuffer.putByte((byte) key.operation.ordinal());
           uniqueKeysBuffer.putUnsignedNumber(key.rid.getBucketId());
           uniqueKeysBuffer.putUnsignedNumber(key.rid.getPosition());
         }
@@ -191,11 +191,11 @@ public class TxForwardRequest extends TxRequestAbstract {
         indexMap.put(new TransactionIndexContext.ComparableKey(keyValues), values);
 
         for (int i = 0; i < totalKeyEntries; ++i) {
-          final boolean addOperation = uniqueKeysBuffer.getByte() == 1;
+          final TransactionIndexContext.IndexKey.IndexKeyOperation operation = TransactionIndexContext.IndexKey.IndexKeyOperation.values()[uniqueKeysBuffer.getByte()];
 
           final RID rid = new RID(database, (int) uniqueKeysBuffer.getUnsignedNumber(), uniqueKeysBuffer.getUnsignedNumber());
 
-          final TransactionIndexContext.IndexKey v = new TransactionIndexContext.IndexKey(index.isUnique(), addOperation, keyValues,
+          final TransactionIndexContext.IndexKey v = new TransactionIndexContext.IndexKey(index.isUnique(), operation, keyValues,
               rid);
           values.put(v, v);
         }

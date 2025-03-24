@@ -380,7 +380,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         if (values != null) {
           for (final TransactionIndexContext.IndexKey value : values.values()) {
             if (value != null) {
-              if (!value.addOperation)
+              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE)
                 // REMOVED
                 return EMPTY_CURSOR;
 
@@ -421,7 +421,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       // KEY ADDED AT COMMIT TIME (IN A LOCK)
       final TransactionContext tx = getDatabase().getTransaction();
       for (final RID rid : rids)
-        tx.addIndexOperation(this, true, convertedKeys, rid);
+        tx.addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.ADD, convertedKeys, rid);
     } else
       lock.executeInReadLock(() -> {
         mutable.put(convertedKeys, rids);
@@ -436,7 +436,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN)
       // KEY REMOVED AT COMMIT TIME (IN A LOCK)
-      getDatabase().getTransaction().addIndexOperation(this, false, convertedKeys, null);
+      getDatabase().getTransaction()
+          .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE, convertedKeys, null);
     else
       lock.executeInReadLock(() -> {
         mutable.remove(convertedKeys);
@@ -451,7 +452,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN)
       // KEY REMOVED AT COMMIT TIME (IN A LOCK)
-      getDatabase().getTransaction().addIndexOperation(this, false, convertedKeys, rid.getIdentity());
+      getDatabase().getTransaction()
+          .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE, convertedKeys, rid.getIdentity());
     else
       lock.executeInReadLock(() -> {
         mutable.remove(convertedKeys, rid);
