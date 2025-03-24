@@ -21,7 +21,6 @@ package com.arcadedb;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
-import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
 import com.arcadedb.engine.WALException;
@@ -39,7 +38,6 @@ import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
-import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
@@ -452,6 +450,32 @@ public class ACIDTransactionTest extends TestHelper {
 
     database.transaction(() -> assertThat(database.countType("Node", true)).isEqualTo(TOT));
     database.transaction(() -> assertThat(database.countType("Arc", true)).isEqualTo(TOT - 1));
+  }
+
+  @Test
+  public void testDeleteOverwriteCompositeKeyInTx() {
+    database.transaction(() -> {
+      database.command("sqlscript", """
+          CREATE VERTEX TYPE zone;
+          CREATE PROPERTY zone.id STRING;
+          CREATE VERTEX TYPE device;
+          CREATE PROPERTY device.id STRING;
+          CREATE EDGE TYPE zone_device;
+          CREATE PROPERTY zone_device.from_id STRING;
+          CREATE PROPERTY zone_device.to_id STRING;
+          CREATE INDEX ON zone_device (from_id, to_id) UNIQUE;
+          CREATE VERTEX zone SET id='zone1';
+          CREATE VERTEX zone SET id='zone2';
+          CREATE VERTEX device SET id='device1';
+          CREATE EDGE zone_device FROM (SELECT FROM zone WHERE id='zone1') TO (SELECT FROM device WHERE id='device1') SET from_id='zone1', to_id='device1';
+          """);
+
+      database.command("sqlscript", """
+          DELETE FROM zone_device WHERE from_id='zone1' and to_id='device1';
+          CREATE EDGE zone_device FROM (SELECT FROM zone WHERE id='zone2') TO (SELECT FROM device WHERE id='device1') SET from_id='zone2', to_id='device1';
+          CREATE EDGE zone_device FROM (SELECT FROM zone WHERE id='zone1') TO (SELECT FROM device WHERE id='device1') SET from_id='zone1', to_id='device1';
+          """);
+    });
   }
 
   private void verifyDatabaseWasNotClosedProperly() {
