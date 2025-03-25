@@ -103,7 +103,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
           ridSerializedSize);
 
       // UPDATE USED BYTES
-      buffer.putInt(Binary.BYTE_SERIALIZED_SIZE, used + ridSerializedSize);
+      setUsed(used + ridSerializedSize);
 
       return true;
     }

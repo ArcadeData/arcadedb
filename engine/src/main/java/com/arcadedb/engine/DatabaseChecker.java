@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.graph.GraphDatabaseChecker;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -198,7 +199,7 @@ public class DatabaseChecker {
           continue;
 
       if (type instanceof LocalEdgeType) {
-        final Map<String, Object> stats = database.getGraphEngine().checkEdges(type.getName(), fix, verboseLevel);
+        final Map<String, Object> stats = new GraphDatabaseChecker(database).checkEdges(type.getName(), fix, verboseLevel);
 
         updateStats(stats);
 
@@ -218,7 +219,7 @@ public class DatabaseChecker {
           continue;
 
       if (type instanceof LocalVertexType) {
-        final Map<String, Object> stats = database.getGraphEngine().checkVertices(type.getName(), fix, verboseLevel);
+        final Map<String, Object> stats = new GraphDatabaseChecker(database).checkVertices(type.getName(), fix, verboseLevel);
 
         updateStats(stats);
 
