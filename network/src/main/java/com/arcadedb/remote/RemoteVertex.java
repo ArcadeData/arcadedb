@@ -25,10 +25,9 @@ import com.arcadedb.graph.ImmutableLightEdge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.EdgeType;
 
-import java.util.Iterator;
-import java.util.Locale;
-import java.util.Map;
+import java.util.*;
 
 /**
  * Vertex type used by {@link RemoteDatabase} class. The metadata are cached from the server until the schema is changed or
@@ -133,13 +132,17 @@ public class RemoteVertex {
   }
 
   public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
-      Object... properties) {
+      final Object... properties) {
+    if (!bidirectional && ((EdgeType) remoteDatabase.getSchema().getType(edgeType)).isBidirectional())
+      throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
+
+    return newEdge(edgeType, toVertex, properties);
+  }
+
+  @Deprecated
+  public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, Object... properties) {
     StringBuilder query = new StringBuilder(
         "create edge `" + edgeType + "` from " + vertex.getIdentity() + " to " + toVertex.getIdentity());
-
-    if (!bidirectional) {
-      query.append(" unidirectional ");
-    }
 
     if (properties != null && properties.length > 0) {
       query.append(" set ");
@@ -186,6 +189,11 @@ public class RemoteVertex {
   /**
    * TODO
    */
+  public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex) {
+    throw new UnsupportedOperationException("Creating light edges is not supported from remote database");
+  }
+
+  @Deprecated
   public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional) {
     throw new UnsupportedOperationException("Creating light edges is not supported from remote database");
   }

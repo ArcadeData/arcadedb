@@ -24,6 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Transaction;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -132,13 +133,29 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
     return Vertex.RECORD_TYPE;
   }
 
-  public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
-      final Object... properties) {
-    return database.getGraphEngine().newEdge(this, edgeType, toVertex, bidirectional, properties);
+  public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final Object... properties) {
+    return database.getGraphEngine().newEdge(this, edgeType, toVertex, properties);
   }
 
+  @Deprecated
+  public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
+      final Object... properties) {
+    if (!bidirectional && ((EdgeType) database.getSchema().getType(edgeType)).isBidirectional())
+      throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
+
+    return database.getGraphEngine().newEdge(this, edgeType, toVertex, properties);
+  }
+
+  public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex) {
+    return database.getGraphEngine().newLightEdge(this, edgeType, toVertex);
+  }
+
+  @Deprecated
   public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional) {
-    return database.getGraphEngine().newLightEdge(this, edgeType, toVertex, bidirectional);
+    if (!bidirectional && ((EdgeType) database.getSchema().getType(edgeType)).isBidirectional())
+      throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
+
+    return database.getGraphEngine().newLightEdge(this, edgeType, toVertex);
   }
 
   @Override

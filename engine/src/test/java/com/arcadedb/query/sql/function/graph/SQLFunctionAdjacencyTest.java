@@ -29,12 +29,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -235,19 +230,19 @@ public class SQLFunctionAdjacencyTest {
       vertices.get(3).save();
       vertices.get(4).save();
 
-      edges.put(1, vertices.get(1).newEdge("Edge1", vertices.get(2), true));
-      edges.put(2, vertices.get(2).newEdge("Edge1", vertices.get(3), true));
-      edges.put(3, vertices.get(3).newEdge("Edge2", vertices.get(1), true));
-      edges.put(4, vertices.get(3).newEdge("Edge1", vertices.get(4), true));
+      edges.put(1, vertices.get(1).newEdge("Edge1", vertices.get(2)));
+      edges.put(2, vertices.get(2).newEdge("Edge1", vertices.get(3)));
+      edges.put(3, vertices.get(3).newEdge("Edge2", vertices.get(1)));
+      edges.put(4, vertices.get(3).newEdge("Edge1", vertices.get(4)));
 
       for (int i = 5; i <= 20; i++) {
         vertices.put(i, graph.newVertex("Node"));
         vertices.get(i).set("node_id", "V" + i);
         vertices.get(i).save();
 
-        vertices.get(i - 1).newEdge("Edge1", vertices.get(i), true);
+        vertices.get(i - 1).newEdge("Edge1", vertices.get(i));
         if (i % 2 == 0) {
-          vertices.get(i - 2).newEdge("Edge1", vertices.get(i), true);
+          vertices.get(i - 2).newEdge("Edge1", vertices.get(i));
         }
       }
     });

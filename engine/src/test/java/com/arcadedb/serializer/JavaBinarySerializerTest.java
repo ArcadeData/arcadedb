@@ -40,7 +40,8 @@ public class JavaBinarySerializerTest extends TestHelper {
     type.createProperty("id", Type.LONG);
 
     final MutableDocument doc1 = database.newDocument("Doc").set("id", 100L, "name", "John");
-    try (final ByteArrayOutputStream arrayOut = new ByteArrayOutputStream(); final ObjectOutput buffer = new ObjectOutputStream(arrayOut)) {
+    try (final ByteArrayOutputStream arrayOut = new ByteArrayOutputStream();
+        final ObjectOutput buffer = new ObjectOutputStream(arrayOut)) {
       doc1.writeExternal(buffer);
       buffer.flush();
 
@@ -48,7 +49,8 @@ public class JavaBinarySerializerTest extends TestHelper {
 
       final MutableDocument doc2 = database.newDocument("Doc");
 
-      try (final ByteArrayInputStream arrayIn = new ByteArrayInputStream(arrayOut.toByteArray()); final ObjectInput in = new ObjectInputStream(arrayIn)) {
+      try (final ByteArrayInputStream arrayIn = new ByteArrayInputStream(arrayOut.toByteArray());
+          final ObjectInput in = new ObjectInputStream(arrayIn)) {
         doc2.readExternal(in);
         assertThat(doc2).isEqualTo(doc1);
         assertThat(doc2.toMap()).isEqualTo(doc1.toMap());
@@ -65,7 +67,8 @@ public class JavaBinarySerializerTest extends TestHelper {
     final MutableDocument doc1 = database.newDocument("Doc").set("id", 100L, "name", "John");
     doc1.save();
 
-    try (final ByteArrayOutputStream arrayOut = new ByteArrayOutputStream(); final ObjectOutput buffer = new ObjectOutputStream(arrayOut)) {
+    try (final ByteArrayOutputStream arrayOut = new ByteArrayOutputStream();
+        final ObjectOutput buffer = new ObjectOutputStream(arrayOut)) {
       doc1.writeExternal(buffer);
       buffer.flush();
 
@@ -73,7 +76,8 @@ public class JavaBinarySerializerTest extends TestHelper {
 
       final MutableDocument doc2 = database.newDocument("Doc");
 
-      try (final ByteArrayInputStream arrayIn = new ByteArrayInputStream(arrayOut.toByteArray()); final ObjectInput in = new ObjectInputStream(arrayIn)) {
+      try (final ByteArrayInputStream arrayIn = new ByteArrayInputStream(arrayOut.toByteArray());
+          final ObjectInput in = new ObjectInputStream(arrayIn)) {
         doc2.readExternal(in);
         assertThat(doc2).isEqualTo(doc1);
         assertThat(doc2.toMap()).isEqualTo(doc1.toMap());
@@ -87,7 +91,8 @@ public class JavaBinarySerializerTest extends TestHelper {
     type.createProperty("id", Type.LONG);
 
     final MutableVertex doc1 = database.newVertex("Doc").set("id", 100L, "name", "John");
-    try (final ByteArrayOutputStream arrayOut = new ByteArrayOutputStream(); final ObjectOutput buffer = new ObjectOutputStream(arrayOut)) {
+    try (final ByteArrayOutputStream arrayOut = new ByteArrayOutputStream();
+        final ObjectOutput buffer = new ObjectOutputStream(arrayOut)) {
       doc1.writeExternal(buffer);
       buffer.flush();
 
@@ -95,7 +100,8 @@ public class JavaBinarySerializerTest extends TestHelper {
 
       final MutableVertex docTest = database.newVertex("Doc");
 
-      try (final ByteArrayInputStream arrayIn = new ByteArrayInputStream(arrayOut.toByteArray()); final ObjectInput in = new ObjectInputStream(arrayIn)) {
+      try (final ByteArrayInputStream arrayIn = new ByteArrayInputStream(arrayOut.toByteArray());
+          final ObjectInput in = new ObjectInputStream(arrayIn)) {
         docTest.readExternal(in);
         assertThat(docTest).isEqualTo(doc1);
         assertThat(docTest.toMap()).isEqualTo(doc1.toMap());
@@ -114,9 +120,10 @@ public class JavaBinarySerializerTest extends TestHelper {
     v1.save();
     final MutableVertex v2 = database.newVertex("Doc").set("id", 101L, "name", "Jay");
     v2.save();
-    v1.newEdge("Edge", v2, true);
+    v1.newEdge("Edge", v2);
 
-    try (final ByteArrayOutputStream arrayOut = new ByteArrayOutputStream(); final ObjectOutput buffer = new ObjectOutputStream(arrayOut)) {
+    try (final ByteArrayOutputStream arrayOut = new ByteArrayOutputStream();
+        final ObjectOutput buffer = new ObjectOutputStream(arrayOut)) {
       v1.writeExternal(buffer);
       buffer.flush();
 
@@ -124,7 +131,8 @@ public class JavaBinarySerializerTest extends TestHelper {
 
       final MutableVertex vTest = database.newVertex("Doc");
 
-      try (final ByteArrayInputStream arrayIn = new ByteArrayInputStream(arrayOut.toByteArray()); final ObjectInput in = new ObjectInputStream(arrayIn)) {
+      try (final ByteArrayInputStream arrayIn = new ByteArrayInputStream(arrayOut.toByteArray());
+          final ObjectInput in = new ObjectInputStream(arrayIn)) {
         vTest.readExternal(in);
         assertThat(vTest).isEqualTo(v1);
         assertThat(vTest.toMap()).isEqualTo(v1.toMap());
@@ -144,9 +152,10 @@ public class JavaBinarySerializerTest extends TestHelper {
     v1.save();
     final MutableVertex v2 = database.newVertex("Doc").set("id", 101L, "name", "Jay");
     v2.save();
-    final MutableEdge edge1 = v1.newEdge("Edge", v2, true);
+    final MutableEdge edge1 = v1.newEdge("Edge", v2);
 
-    try (final ByteArrayOutputStream arrayOut = new ByteArrayOutputStream(); final ObjectOutput buffer = new ObjectOutputStream(arrayOut)) {
+    try (final ByteArrayOutputStream arrayOut = new ByteArrayOutputStream();
+        final ObjectOutput buffer = new ObjectOutputStream(arrayOut)) {
       edge1.writeExternal(buffer);
       buffer.flush();
 
@@ -154,7 +163,8 @@ public class JavaBinarySerializerTest extends TestHelper {
 
       final MutableEdge edgeTest = new MutableEdge(database, type, null);
 
-      try (final ByteArrayInputStream arrayIn = new ByteArrayInputStream(arrayOut.toByteArray()); final ObjectInput in = new ObjectInputStream(arrayIn)) {
+      try (final ByteArrayInputStream arrayIn = new ByteArrayInputStream(arrayOut.toByteArray());
+          final ObjectInput in = new ObjectInputStream(arrayIn)) {
         edgeTest.readExternal(in);
         assertThat(edgeTest).isEqualTo(edge1);
         assertThat(edgeTest.toMap()).isEqualTo(edge1.toMap());

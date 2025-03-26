@@ -44,23 +44,10 @@ import com.arcadedb.utility.FileUtils;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
 
-import java.io.EOFException;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.zip.GZIPInputStream;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.atomic.*;
+import java.util.zip.*;
 
 import static com.google.gson.stream.JsonToken.BEGIN_OBJECT;
 import static com.google.gson.stream.JsonToken.END_ARRAY;
@@ -786,7 +773,7 @@ public class OrientDBImporter {
 
     final Vertex sourceVertex = (Vertex) database.lookupByRID(newOut, false);
 
-    sourceVertex.newEdge(className, newIn, true, properties);
+    sourceVertex.newEdge(className, newIn, properties);
 
     context.createdEdges.incrementAndGet();
 

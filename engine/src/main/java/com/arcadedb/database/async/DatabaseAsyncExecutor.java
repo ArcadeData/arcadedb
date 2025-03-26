@@ -235,15 +235,17 @@ public interface DatabaseAsyncExecutor {
    * @param sourceVertex         Source vertex instance
    * @param edgeType             Type of the edge to create. The type must be defined in the schema beforehand
    * @param destinationVertexRID Destination vertex id as @{@link RID}
-   * @param bidirectional        True to create a bidirectional edge. Using bidirectional edges is always the recommended setting, unless advanced
-   *                             fine-tuning on performances
    * @param light                True to create a light-weight edge. Using bidirectional edges is always the recommended setting, unless advanced
    *                             fine-tuning on performances
    * @param callback             Callback invoked when the edge is created
    * @param properties           Initial properties to set to the new edge as a variable argument array with key/value pairs
    */
-  void newEdge(Vertex sourceVertex, String edgeType, RID destinationVertexRID, boolean bidirectional, boolean light, NewEdgeCallback callback,
+  void newEdge(Vertex sourceVertex, String edgeType, RID destinationVertexRID, boolean light, NewEdgeCallback callback,
       Object... properties);
+
+  @Deprecated
+  void newEdge(Vertex sourceVertex, String edgeType, RID destinationVertexRID, boolean bidirectional, boolean light,
+      NewEdgeCallback callback, Object... properties);
 
   /**
    * Schedules the request to creates a new edge between two vertices specifying the key/value pairs to lookup for both source and destination vertices. The direction of the edge is from source
@@ -269,7 +271,8 @@ public interface DatabaseAsyncExecutor {
    * @see #newEdgeByKeys(String, String[], Object[], String, String[], Object[], boolean, String, boolean, boolean, NewEdgeCallback, Object...)
    */
   void newEdgeByKeys(String sourceVertexType, String sourceVertexKeyName, Object sourceVertexKeyValue, String destinationVertexType,
-      String destinationVertexKeyName, Object destinationVertexKeyValue, boolean createVertexIfNotExist, String edgeType, boolean bidirectional, boolean light,
+      String destinationVertexKeyName, Object destinationVertexKeyValue, boolean createVertexIfNotExist, String edgeType,
+      boolean bidirectional, boolean light,
       NewEdgeCallback callback, Object... properties);
 
   /**
@@ -295,8 +298,10 @@ public interface DatabaseAsyncExecutor {
    * @see DatabaseAsyncExecutor#newEdgeByKeys(String, String, Object, String, String, Object, boolean, String, boolean, boolean, NewEdgeCallback, Object...)
    * @see #newEdgeByKeys(String, String[], Object[], String, String[], Object[], boolean, String, boolean, boolean, NewEdgeCallback, Object...)
    */
-  void newEdgeByKeys(String sourceVertexType, String[] sourceVertexKeyNames, Object[] sourceVertexKeyValues, String destinationVertexType,
-      String[] destinationVertexKeyNames, Object[] destinationVertexKeyValues, boolean createVertexIfNotExist, String edgeType, boolean bidirectional,
+  void newEdgeByKeys(String sourceVertexType, String[] sourceVertexKeyNames, Object[] sourceVertexKeyValues,
+      String destinationVertexType,
+      String[] destinationVertexKeyNames, Object[] destinationVertexKeyValues, boolean createVertexIfNotExist, String edgeType,
+      boolean bidirectional,
       boolean light, NewEdgeCallback callback, Object... properties);
 
   /**

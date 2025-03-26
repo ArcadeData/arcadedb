@@ -69,8 +69,8 @@ public abstract class AbstractGraphQLTest {
           book2.set("pageCount", 422);
           book2.save();
 
-          author1.newEdge("IS_AUTHOR_OF", book1, true);
-          author1.newEdge("IS_AUTHOR_OF", book2, true);
+          author1.newEdge("IS_AUTHOR_OF", book1);
+          author1.newEdge("IS_AUTHOR_OF", book2);
         });
 
         database.transaction(() -> callback.call(database));

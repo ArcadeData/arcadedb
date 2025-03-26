@@ -188,7 +188,7 @@ public class TransactionBucketTest extends TestHelper {
 
     final MutableVertex v1 = database.newVertex("testIteratorOnEdges_Vertex").save();
     final MutableVertex v2 = database.newVertex("testIteratorOnEdges_Vertex").save();
-    final MutableEdge e = v1.newEdge("testIteratorOnEdges_Edge", v2, true).save();
+    final MutableEdge e = v1.newEdge("testIteratorOnEdges_Edge", v2).save();
 
     database.scanType("testIteratorOnEdges_Edge", true, record -> {
 
@@ -214,7 +214,7 @@ public class TransactionBucketTest extends TestHelper {
 
     final MutableVertex v1 = database.newVertex("testIteratorOnEdges_Vertex").save();
     final MutableVertex v2 = database.newVertex("testIteratorOnEdges_Vertex").save();
-    final MutableEdge e = v1.newEdge("testIteratorOnEdges_Edge", v2, true).save();
+    final MutableEdge e = v1.newEdge("testIteratorOnEdges_Edge", v2).save();
 
     final ResultSet result = database.query("sql", "select from testIteratorOnEdges_Edge");
 
@@ -239,7 +239,7 @@ public class TransactionBucketTest extends TestHelper {
 
       final MutableVertex v1 = database.newVertex("testIteratorOnEdges_Vertex").save();
       final MutableVertex v2 = database.newVertex("testIteratorOnEdges_Vertex").save();
-      final MutableEdge e = v1.newEdge("testIteratorOnEdges_Edge", v2, true).save();
+      final MutableEdge e = v1.newEdge("testIteratorOnEdges_Edge", v2).save();
     });
 
     database.transaction(() -> {

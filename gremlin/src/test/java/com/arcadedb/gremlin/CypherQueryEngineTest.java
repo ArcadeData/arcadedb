@@ -40,7 +40,6 @@ import java.util.stream.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-
 public class CypherQueryEngineTest {
   private static final String DB_PATH = "./target/testsql";
 
@@ -60,8 +59,8 @@ public class CypherQueryEngineTest {
         final MutableVertex v2 = database.newVertex("V").save();
         final MutableVertex v3 = database.newVertex("V").save();
 
-        v1.newEdge("E", v2, true);
-        v1.newEdge("E", v3, true);
+        v1.newEdge("E", v2);
+        v1.newEdge("E", v3);
         try (final ResultSet query = database.query("cypher",
             "match(parent:V)-[e:E]-(child:V) where id(parent) = $p return parent as parent, collect(child) as children", "p",
             v1.getIdentity().toString())) {
@@ -108,10 +107,10 @@ public class CypherQueryEngineTest {
         database.command("cypher", "CREATE (n:Transaction {id:'T1'}) RETURN n");
         database.command("cypher", "CREATE (n:City {id:'C1'}) RETURN n");
         database.command("cypher",
-                "MATCH (t:Transaction), (c:City) WHERE t.id = 'T1' AND c.id = 'C1' CREATE path = (t)-[r:IS_IN]->(c) RETURN type(r)");
+            "MATCH (t:Transaction), (c:City) WHERE t.id = 'T1' AND c.id = 'C1' CREATE path = (t)-[r:IS_IN]->(c) RETURN type(r)");
 
         try (final ResultSet query = database.query("cypher",
-                "MATCH path = (t:City{id:'C1'})-[r]-(c:Transaction{id:'T1'}) RETURN path")) {
+            "MATCH path = (t:City{id:'C1'})-[r]-(c:Transaction{id:'T1'}) RETURN path")) {
           assertThat(query.hasNext()).isTrue();
           final Result r1 = query.next();
           assertThat(query.hasNext()).isTrue();
@@ -165,7 +164,8 @@ public class CypherQueryEngineTest {
         try (final ResultSet query = database.command("cypher", "CREATE (n:Person) return n.name")) {
           assertThat(query.hasNext()).isTrue();
           final Result r1 = query.next();
-          assertThat(r1.<String>getProperty("n.name")).isNull();;
+          assertThat(r1.<String>getProperty("n.name")).isNull();
+          ;
         }
       });
     } finally {

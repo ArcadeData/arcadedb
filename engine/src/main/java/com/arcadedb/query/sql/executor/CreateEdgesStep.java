@@ -31,6 +31,7 @@ import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.schema.EdgeType;
 
 import java.util.*;
 
@@ -99,7 +100,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
       public Result next(final Object[] properties) {
         if (currentTo == null) {
           loadNextFromTo();
-          if(edgeToUpdate != null && !ifNotExists) {
+          if (edgeToUpdate != null && !ifNotExists) {
             System.out.println("edgeToUpdate = " + edgeToUpdate);
             currentTo = null;
             currentBatch++;
@@ -134,8 +135,11 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
           final String target = targetBucket != null ? "bucket:" + targetBucket.getStringValue() : targetClass.getStringValue();
 
+          if (unidirectional && ((EdgeType) context.getDatabase().getSchema().getType(target)).isBidirectional())
+            throw new CommandExecutionException("Cannot create unidirectional edge on a bidirectional edge type");
+
           final MutableEdge edge =
-              edgeToUpdate != null ? edgeToUpdate : currentFrom.newEdge(target, currentTo, !unidirectional, properties);
+              edgeToUpdate != null ? edgeToUpdate : currentFrom.newEdge(target, currentTo, properties);
 
           final UpdatableResult result = new UpdatableResult(edge);
           currentTo = null;

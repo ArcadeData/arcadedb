@@ -566,7 +566,7 @@ public class JSONImporterFormat implements FormatImporter {
           }
         }
 
-        final MutableEdge edge = ((Vertex) record).newEdge(subTypeName, destVertex, true);
+        final MutableEdge edge = ((Vertex) record).newEdge(subTypeName, destVertex);
 
         attributeMap.keySet().removeIf(name -> name.startsWith("@"));
         edge.set(attributeMap);

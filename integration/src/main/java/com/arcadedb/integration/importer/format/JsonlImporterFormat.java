@@ -229,7 +229,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
       var sourceVertex = (Vertex) database.lookupByRID(newOut, false);
 
-      MutableEdge imported = sourceVertex.newEdge(edgeType, newIn, true);
+      MutableEdge imported = sourceVertex.newEdge(edgeType, newIn);
       loadProperties(database, imported, properties);
       imported.save();
 

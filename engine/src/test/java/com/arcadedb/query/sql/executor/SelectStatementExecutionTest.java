@@ -34,7 +34,6 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.*;
@@ -994,8 +993,8 @@ public class SelectStatementExecutionTest extends TestHelper {
       assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
       assertThat(item.<String>getProperty("name")).isNotNull();
-      assertThat( item.<List<String>>getProperty("keyTypes")).first().isEqualTo("STRING");
-      assertThat( item.<Boolean>getProperty("unique")).isFalse();
+      assertThat(item.<List<String>>getProperty("keyTypes")).first().isEqualTo("STRING");
+      assertThat(item.<Boolean>getProperty("unique")).isFalse();
     }
     assertThat(result.hasNext()).isFalse();
     result.close();
@@ -2024,7 +2023,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final DocumentType edgeClass = database.getSchema().createEdgeType(edgeClassName);
 
-    doc1.newEdge(edgeClassName, doc2, true).save();
+    doc1.newEdge(edgeClassName, doc2).save();
     database.commit();
 
     final String queryString = "SELECT $x, name FROM " + vertexClassName + " let $x = out(\"" + edgeClassName + "\")";
@@ -2282,7 +2281,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "select from " + parent + " where name = 'name1' and surname = 'surname1'");
     final InternalExecutionPlan plan = (InternalExecutionPlan) result.getExecutionPlan().get();
-    assertThat(plan.getSteps().get(0) instanceof FetchFromTypeExecutionStep).isTrue(); // no index, because the superclass is not empty
+    assertThat(
+        plan.getSteps().get(0) instanceof FetchFromTypeExecutionStep).isTrue(); // no index, because the superclass is not empty
     for (int i = 0; i < 2; i++) {
       assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
@@ -3859,10 +3859,10 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     MutableVertex presuntoResponsable = database.newVertex("PresuntoResponsable").set("id", 0).save();
 
-    legajo.newEdge("Legajo_intervinientes", interviniente, true).save();
+    legajo.newEdge("Legajo_intervinientes", interviniente).save();
 
-    interviniente.newEdge("Interviniente_roles", presuntoResponsable, true).save();
-    interviniente.newEdge("Interviniente_persona", personaDifusa, true).save();
+    interviniente.newEdge("Interviniente_roles", presuntoResponsable).save();
+    interviniente.newEdge("Interviniente_persona", personaDifusa).save();
 
     database.commit();
 

@@ -86,7 +86,7 @@ public class InsertGraphIndexTest extends TestHelper {
           final Vertex destinationVertex = (Vertex) database.lookupByKey(VERTEX_TYPE_NAME, new String[] { "id" },
               new Object[] { destinationIndex }).next().getRecord();
 
-          sourceVertex.newEdge(EDGE_TYPE_NAME, destinationVertex, true);
+          sourceVertex.newEdge(EDGE_TYPE_NAME, destinationVertex);
           if (++edges > EDGES_PER_VERTEX)
             break;
         }

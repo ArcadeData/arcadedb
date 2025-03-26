@@ -16,7 +16,7 @@
 
 options {
   TRACK_TOKENS = true;
-    JDK_VERSION = "11";
+    JDK_VERSION = "21";
     MULTI=true;
     VISITOR=false;
     STATIC=false;
@@ -3553,6 +3553,7 @@ CreateEdgeTypeStatement CreateEdgeTypeStatement():
     )*
   ]
   [ <BUCKETS> jjtThis.totalBucketNo = PInteger() ]
+  [ <UNIDIRECTIONAL> { jjtThis.unidirectional = true; }]
   { return jjtThis; }
 }
 
