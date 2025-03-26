@@ -247,5 +247,12 @@ public class ContainsCondition extends BooleanExpression {
     }
     return false;
   }
+
+  @Override
+  public Expression resolveKeyFrom(final BinaryCondition additional) {
+    if (right != null)
+      return right;
+    throw new UnsupportedOperationException("Cannot execute index query with " + this);
+  }
 }
 /* JavaCC - OriginalChecksum=bad1118296ea74860e88d66bfe9fa222 (do not edit this line) */

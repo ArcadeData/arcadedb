@@ -146,5 +146,10 @@ public class ContainsValueCondition extends BooleanExpression {
     }
     return false;
   }
+
+  @Override
+  public Expression resolveKeyFrom(final BinaryCondition additional) {
+    return expression;
+  }
 }
 /* JavaCC - OriginalChecksum=6fda752f10c8d8731f43efa706e39459 (do not edit this line) */

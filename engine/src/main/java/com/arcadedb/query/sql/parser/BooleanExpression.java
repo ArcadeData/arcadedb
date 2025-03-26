@@ -24,9 +24,7 @@ import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 07/11/14.

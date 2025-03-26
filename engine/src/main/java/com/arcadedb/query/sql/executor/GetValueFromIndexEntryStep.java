@@ -34,7 +34,7 @@ import java.util.stream.*;
  */
 public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
 
-  private final int[] filterBucketIds;
+  private final List<Integer> filterBucketIds;
 
   // runtime
 
@@ -44,7 +44,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
    * @param context         the execution context
    * @param filterBucketIds only extract values from these clusters. Pass null if no filtering is needed
    */
-  public GetValueFromIndexEntryStep(final CommandContext context, final int[] filterBucketIds) {
+  public GetValueFromIndexEntryStep(final CommandContext context, final List<Integer> filterBucketIds) {
     super(context);
     this.filterBucketIds = filterBucketIds;
   }
@@ -58,7 +58,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
       public boolean finished = false;
 
       Result nextItem = null;
-      int fetched = 0;
+      int    fetched  = 0;
 
       @Override
       public boolean hasNext() {
@@ -165,7 +165,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
       result += "\n";
       result += spaces;
       result += "  filtering buckets [";
-      result += Arrays.stream(filterBucketIds).boxed().map(x -> "" + x).collect(Collectors.joining(","));
+      result += filterBucketIds.stream().map(x -> "" + x).collect(Collectors.joining(","));
       result += "]";
     }
 

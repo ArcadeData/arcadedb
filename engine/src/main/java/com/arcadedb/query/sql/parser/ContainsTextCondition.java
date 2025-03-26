@@ -121,5 +121,12 @@ public class ContainsTextCondition extends BooleanExpression {
   public Expression getRight() {
     return right;
   }
+
+  @Override
+  public Expression resolveKeyFrom(BinaryCondition additional) {
+    if (getRight() != null)
+      return getRight();
+    throw new UnsupportedOperationException("Cannot execute index query with " + this);
+  }
 }
 /* JavaCC - OriginalChecksum=b588492ba2cbd0f932055f1f64bbbecd (do not edit this line) */

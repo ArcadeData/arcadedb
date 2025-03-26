@@ -23,13 +23,11 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
 public class BinaryCondition extends BooleanExpression {
   protected Expression            left;
@@ -184,6 +182,31 @@ public class BinaryCondition extends BooleanExpression {
   }
 
   @Override
+  public boolean isIndexAware(final IndexSearchInfo info) {
+    if (left.isBaseIdentifier()) {
+      if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
+        if (right.isEarlyCalculated(info.getContext())) {
+          if (operator instanceof EqualsCompareOperator) {
+            Object vl = this.right.execute((Result) null, info.getContext());
+            if (vl instanceof Collection<?>) {
+              return !((Collection) vl).isEmpty();
+            }
+            return true;
+          } else if (operator instanceof ContainsKeyOperator
+              && info.isMap()
+              && info.isIndexByKey()) {
+            return true;
+          } else if (info.allowsRange() && operator.isRangeOperator()) {
+            return true;
+          }
+          return false;
+        }
+      }
+    }
+    return false;
+  }
+
+  @Override
   public List<String> getMatchPatternInvolvedAliases() {
     final List<String> leftX = left.getMatchPatternInvolvedAliases();
     final List<String> rightX = right.getMatchPatternInvolvedAliases();
@@ -228,13 +251,18 @@ public class BinaryCondition extends BooleanExpression {
   @Override
   public Expression resolveKeyFrom(final BinaryCondition additional) {
     BinaryCompareOperator operator = getOperator();
-    if ((operator instanceof EqualsCompareOperator) || (operator instanceof GtOperator) || (operator instanceof GeOperator)
-        || (operator instanceof ContainsKeyOperator) || (operator instanceof ContainsValueOperator)) {
+    if ((operator instanceof EqualsCompareOperator)
+        || (operator instanceof GtOperator)
+        || (operator instanceof GeOperator)
+        || (operator instanceof ContainsKeyOperator)
+        || (operator instanceof ContainsValueOperator)) {
       return getRight();
     } else if (additional != null) {
       return additional.getRight();
+    } else {
+      return null;
+      //      throw new UnsupportedOperationException("Cannot execute index query with " + this);
     }
-    return null;
   }
 
   @Override

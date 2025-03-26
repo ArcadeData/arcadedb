@@ -129,7 +129,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     nextEntry = null;
     while (true) {
       if (cursor == null) {
-        if (nextCursors.size() == 0) {
+        if (nextCursors.isEmpty()) {
           if (nextEntry == null && customIterator != null && customIterator.hasNext()) {
             final Map.Entry<Object, Identifiable> entry = customIterator.next();
             nextEntry = new Pair<>(entry.getKey(), entry.getValue().getIdentity());

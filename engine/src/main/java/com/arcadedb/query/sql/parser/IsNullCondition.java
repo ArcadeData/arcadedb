@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.*;
@@ -65,6 +66,16 @@ public class IsNullCondition extends BooleanExpression {
   }
 
   @Override
+  public boolean isIndexAware(IndexSearchInfo info) {
+    if (expression.isBaseIdentifier()) {
+      if (info.getField().equals(expression.getDefaultAlias().getStringValue())) {
+        return info.isSupportNull();
+      }
+    }
+    return false;
+  }
+
+  @Override
   public void extractSubQueries(final SubQueryCollector collector) {
     this.expression.extractSubQueries(collector);
   }
@@ -82,6 +93,13 @@ public class IsNullCondition extends BooleanExpression {
   @Override
   protected SimpleNode[] getCacheableElements() {
     return new SimpleNode[] { expression };
+  }
+
+  @Override
+  public Expression resolveKeyFrom(final BinaryCondition additional) {
+    final Expression exp = new Expression(-1);
+    exp.setNull(true);
+    return exp;
   }
 }
 /* JavaCC - OriginalChecksum=29ebbc506a98f90953af91a66a03aa1e (do not edit this line) */
