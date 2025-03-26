@@ -74,5 +74,20 @@ public class LtOperator extends SimpleNode implements BinaryCompareOperator {
   public int hashCode() {
     return getClass().hashCode();
   }
+
+  @Override
+  public boolean isInclude() {
+    return false;
+  }
+
+  @Override
+  public boolean isLess() {
+    return true;
+  }
+
+  @Override
+  public boolean isGreater() {
+    return false;
+  }
 }
 /* JavaCC - OriginalChecksum=d8e97d52128198b373bb0c272c72de2c (do not edit this line) */

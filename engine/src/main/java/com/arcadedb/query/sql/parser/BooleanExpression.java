@@ -210,4 +210,12 @@ public abstract class BooleanExpression extends SimpleNode {
   public Expression resolveKeyTo(BinaryCondition additional) {
     throw new UnsupportedOperationException("Cannot execute index query with " + this);
   }
+
+  public boolean isKeyFromIncluded(final BinaryCondition additional) {
+    throw new UnsupportedOperationException("Cannot execute index query with " + this);
+  }
+
+  public boolean isKeyToIncluded(final BinaryCondition additional) {
+    throw new UnsupportedOperationException("Cannot execute index query with " + this);
+  }
 }

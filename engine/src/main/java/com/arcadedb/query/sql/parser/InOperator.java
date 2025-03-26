@@ -90,5 +90,20 @@ public class InOperator extends SimpleNode implements BinaryCompareOperator {
   public int hashCode() {
     return getClass().hashCode();
   }
+
+  @Override
+  public boolean isInclude() {
+    return false;
+  }
+
+  @Override
+  public boolean isLess() {
+    return false;
+  }
+
+  @Override
+  public boolean isGreater() {
+    return false;
+  }
 }
 /* JavaCC - OriginalChecksum=6650a720cb942fa3c4d588ff0f381b3a (do not edit this line) */

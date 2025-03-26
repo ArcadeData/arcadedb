@@ -151,5 +151,36 @@ public class ContainsValueCondition extends BooleanExpression {
   public Expression resolveKeyFrom(final BinaryCondition additional) {
     return expression;
   }
+
+  @Override
+  public Expression resolveKeyTo(final BinaryCondition additional) {
+    return expression;
+  }
+
+  @Override
+  public boolean isKeyFromIncluded(final BinaryCondition additional) {
+    if (operator.isGreater()) {
+      return operator.isInclude();
+    } else {
+      if (additional != null && additional.getOperator() != null) {
+        return additional.getOperator().isGreaterInclude();
+      } else {
+        return true;
+      }
+    }
+  }
+
+  @Override
+  public boolean isKeyToIncluded(final BinaryCondition additional) {
+    if (operator.isLess()) {
+      return operator.isInclude();
+    } else {
+      if (additional != null && additional.getOperator() != null) {
+        return additional.getOperator().isLessInclude();
+      } else {
+        return true;
+      }
+    }
+  }
 }
 /* JavaCC - OriginalChecksum=6fda752f10c8d8731f43efa706e39459 (do not edit this line) */

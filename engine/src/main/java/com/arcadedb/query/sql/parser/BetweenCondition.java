@@ -161,5 +161,19 @@ public class BetweenCondition extends BooleanExpression {
   public Expression resolveKeyFrom(final BinaryCondition additional) {
     return this.second;
   }
+
+  public Expression resolveKeyTo(final BinaryCondition additional) {
+    return this.third;
+  }
+
+  @Override
+  public boolean isKeyFromIncluded(final BinaryCondition additional) {
+    return true;
+  }
+
+  @Override
+  public boolean isKeyToIncluded(final BinaryCondition additional) {
+    return true;
+  }
 }
 /* JavaCC - OriginalChecksum=f94f4779c4a6c6d09539446045ceca89 (do not edit this line) */

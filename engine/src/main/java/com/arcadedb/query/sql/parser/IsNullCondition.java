@@ -101,5 +101,22 @@ public class IsNullCondition extends BooleanExpression {
     exp.setNull(true);
     return exp;
   }
+
+  @Override
+  public Expression resolveKeyTo(final BinaryCondition additional) {
+    Expression exp = new Expression(-1);
+    exp.setNull(true);
+    return exp;
+  }
+
+  @Override
+  public boolean isKeyFromIncluded(final BinaryCondition additional) {
+    return true;
+  }
+
+  @Override
+  public boolean isKeyToIncluded(final BinaryCondition additional) {
+    return true;
+  }
 }
 /* JavaCC - OriginalChecksum=29ebbc506a98f90953af91a66a03aa1e (do not edit this line) */

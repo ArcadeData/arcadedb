@@ -128,5 +128,20 @@ public class ContainsTextCondition extends BooleanExpression {
       return getRight();
     throw new UnsupportedOperationException("Cannot execute index query with " + this);
   }
+
+  @Override
+  public Expression resolveKeyTo(final BinaryCondition additional) {
+    return getRight();
+  }
+
+  @Override
+  public boolean isKeyFromIncluded(final BinaryCondition additional) {
+    return true;
+  }
+
+  @Override
+  public boolean isKeyToIncluded(final BinaryCondition additional) {
+    return true;
+  }
 }
 /* JavaCC - OriginalChecksum=b588492ba2cbd0f932055f1f64bbbecd (do not edit this line) */

@@ -30,7 +30,6 @@ import com.arcadedb.query.sql.parser.BetweenCondition;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
-import com.arcadedb.query.sql.parser.ContainsAnyCondition;
 import com.arcadedb.query.sql.parser.EqualsCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.GeOperator;
@@ -560,55 +559,13 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
   private boolean indexKeyFromIncluded(final AndBlock keyCondition, final BinaryCondition additional) {
     final BooleanExpression exp = keyCondition.getSubBlocks().get(keyCondition.getSubBlocks().size() - 1);
-    final BinaryCompareOperator additionalOperator = additional == null ? null : additional.getOperator();
-    if (exp instanceof BinaryCondition binaryCondition) {
-      final BinaryCompareOperator operator = binaryCondition.getOperator();
-      if (isGreaterOperator(operator)) {
-        return isIncludeOperator(operator);
-      } else
-        return additionalOperator == null || (isIncludeOperator(additionalOperator) && isGreaterOperator(additionalOperator));
-    } else if (exp instanceof InCondition || exp instanceof ContainsAnyCondition) {
-      return additional == null || (isIncludeOperator(additionalOperator) && isGreaterOperator(additionalOperator));
-    } else {
-      throw new UnsupportedOperationException("Cannot execute index query with " + exp);
-    }
-  }
-
-  private boolean isGreaterOperator(final BinaryCompareOperator operator) {
-    if (operator == null) {
-      return false;
-    }
-    return operator instanceof GeOperator || operator instanceof GtOperator;
-  }
-
-  private boolean isLessOperator(final BinaryCompareOperator operator) {
-    if (operator == null) {
-      return false;
-    }
-    return operator instanceof LeOperator || operator instanceof LtOperator;
-  }
-
-  private boolean isIncludeOperator(final BinaryCompareOperator operator) {
-    if (operator == null) {
-      return false;
-    }
-    return operator instanceof GeOperator || operator instanceof LeOperator;
+    return exp.isKeyFromIncluded(additional);
   }
 
   private boolean indexKeyToIncluded(final AndBlock keyCondition, final BinaryCondition additional) {
-    final BooleanExpression exp = keyCondition.getSubBlocks().get(keyCondition.getSubBlocks().size() - 1);
-    final BinaryCompareOperator additionalOperator = additional == null ? null : additional.getOperator();
-    if (exp instanceof BinaryCondition binaryCondition) {
-      final BinaryCompareOperator operator = binaryCondition.getOperator();
-      if (isLessOperator(operator)) {
-        return isIncludeOperator(operator);
-      } else
-        return additionalOperator == null || (isIncludeOperator(additionalOperator) && isLessOperator(additionalOperator));
-    } else if (exp instanceof InCondition || exp instanceof ContainsAnyCondition) {
-      return additionalOperator == null || (isIncludeOperator(additionalOperator) && isLessOperator(additionalOperator));
-    } else {
-      throw new UnsupportedOperationException("Cannot execute index query with " + exp);
-    }
+    final BooleanExpression exp =
+        keyCondition.getSubBlocks().get(keyCondition.getSubBlocks().size() - 1);
+    return exp.isKeyToIncluded(additional);
   }
 
   @Override
