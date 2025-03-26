@@ -630,7 +630,8 @@ public class RemoteSchema implements Schema {
           type = new RemoteVertexType(remoteDatabase, record);
           break;
         case "edge":
-          type = new RemoteEdgeType(remoteDatabase, record);
+          type = new RemoteEdgeType(remoteDatabase, record,
+              record.hasProperty("bidirectional") ? (Boolean) record.getProperty("bidirectional") : true);
           break;
         default:
           throw new IllegalArgumentException("Unknown record type for " + typeName);

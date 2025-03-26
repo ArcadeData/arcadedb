@@ -475,7 +475,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
       final String edgeTypeName = getEdgeType(level);
       database.getSchema().getOrCreateEdgeType(edgeTypeName);
 
-      newNode.newEdge(edgeTypeName, selectedNeighbourId, false);
+      newNode.newEdge(edgeTypeName, selectedNeighbourId);
 
       final Vertex neighbourNode = loadVertexFromRID(selectedNeighbourId);
       final TVector neighbourVector = getVectorFromVertex(neighbourNode);
@@ -483,7 +483,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
       final Iterator<Vertex> neighbourConnectionsAtLevel = getConnectionsFromVertex(neighbourNode, level);
 
       if (neighbourConnectionsAtLevelTotal < bestN) {
-        neighbourNode.newEdge(edgeTypeName, newNode, false);
+        neighbourNode.newEdge(edgeTypeName, newNode);
       } else {
         // finding the "weakest" element to replace it with the new one
         final TDistance dMax = distanceFunction.distance(newItemVector, neighbourVector);
@@ -500,7 +500,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
         getNeighborsByHeuristic2(candidates, bestN);
 
         while (!candidates.isEmpty()) {
-          neighbourNode.newEdge(edgeTypeName, candidates.poll().nodeId, false);
+          neighbourNode.newEdge(edgeTypeName, candidates.poll().nodeId);
         }
       }
     }
@@ -992,7 +992,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
             if (destination == null)
               LogManager.instance().log(this, Level.WARNING, "Destination vertex %d is null", pointer);
             else {
-              source.newEdge(edgeTypeLevel, destination, false);
+              source.newEdge(edgeTypeLevel, destination);
               ++totalEdges;
             }
           }

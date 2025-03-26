@@ -19,7 +19,6 @@
 package com.arcadedb.integration.importer;
 
 import com.arcadedb.Constants;
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
@@ -388,7 +387,7 @@ public class Neo4jImporter {
         final Identifiable toVertex = endCursor.next();
 
         try {
-          final MutableEdge edge = fromVertex.newEdge(type, toVertex, true);
+          final MutableEdge edge = fromVertex.newEdge(type, toVertex);
 
           if (json.has("properties"))
             edge.fromMap(setProperties(json.getJSONObject("properties"), schemaProperties.get(type)));

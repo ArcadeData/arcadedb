@@ -163,7 +163,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     v2.save();
 
     // CREATION OF EDGE PASSING PARAMS AS VARARGS
-    final MutableEdge e1 = v1.newEdge(EDGE1_TYPE_NAME, v2, true, "name", "E1");
+    final MutableEdge e1 = v1.newEdge(EDGE1_TYPE_NAME, v2, "name", "E1");
     assertThat(v1).isEqualTo(e1.getOut());
     assertThat(v2).isEqualTo(e1.getIn());
 
@@ -175,11 +175,11 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     params.put("name", "E2");
 
     // CREATION OF EDGE PASSING PARAMS AS MAP
-    final MutableEdge e2 = v2.newEdge(EDGE2_TYPE_NAME, v3, true, params);
+    final MutableEdge e2 = v2.newEdge(EDGE2_TYPE_NAME, v3, params);
     assertThat(v2).isEqualTo(e2.getOut());
     assertThat(v3).isEqualTo(e2.getIn());
 
-    final MutableEdge e3 = v1.newEdge(EDGE2_TYPE_NAME, v3, true);
+    final MutableEdge e3 = v1.newEdge(EDGE2_TYPE_NAME, v3);
     assertThat(v1).isEqualTo(e3.getOut());
     assertThat(v3).isEqualTo(e3.getIn());
 

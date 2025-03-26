@@ -184,12 +184,24 @@ public class RemoteMutableVertex extends MutableVertex {
   }
 
   @Override
+  public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final Object... properties) {
+    return internal.newEdge(edgeType, toVertex, properties);
+  }
+
+  @Override
+  @Deprecated
   public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
       final Object... properties) {
     return internal.newEdge(edgeType, toVertex, bidirectional, properties);
   }
 
   @Override
+  public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex) {
+    return internal.newLightEdge(edgeType, toVertex);
+  }
+
+  @Override
+  @Deprecated
   public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional) {
     return internal.newLightEdge(edgeType, toVertex, bidirectional);
   }

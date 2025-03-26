@@ -26,7 +26,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -53,19 +53,19 @@ public class SQLFunctionDijkstraTest {
       v3.set("node_id", "C").save();
       v4.set("node_id", "D").save();
 
-      final MutableEdge e1 = v1.newEdge("weight", v2, true);
+      final MutableEdge e1 = v1.newEdge("weight", v2);
       e1.set("weight", 1.0f);
       e1.save();
 
-      final MutableEdge e2 = v2.newEdge("weight", v3, true);
+      final MutableEdge e2 = v2.newEdge("weight", v3);
       e2.set("weight", 1.0f);
       e2.save();
 
-      final MutableEdge e3 = v1.newEdge("weight", v3, true);
+      final MutableEdge e3 = v1.newEdge("weight", v3);
       e3.set("weight", 100.0f);
       e3.save();
 
-      final MutableEdge e4 = v3.newEdge("weight", v4, true);
+      final MutableEdge e4 = v3.newEdge("weight", v4);
       e4.set("weight", 1.0f);
       e4.save();
 

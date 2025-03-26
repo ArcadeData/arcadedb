@@ -65,7 +65,7 @@ public class TraversalTest {
 
       if (lastRid != null) {
         final Vertex lastV = lastRid.asVertex();
-        lastV.newEdge("E", v, true);
+        lastV.newEdge("E", v);
       } else {
         firstRid = v.getIdentity();
       }

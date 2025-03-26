@@ -27,12 +27,9 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-import java.util.Spliterator;
-import java.util.Spliterators;
-import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
-import java.util.stream.StreamSupport;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.stream.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -71,7 +68,7 @@ public class SelectExecutionTest extends TestHelper {
         root.newEdge("Edge", database.select()
                 .fromType("Vertex")
                 .where().property("id").eq().value(i)
-                .vertices().nextOrNull(), true)
+                .vertices().nextOrNull())
             .save();
       }
     });

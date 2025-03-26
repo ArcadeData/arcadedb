@@ -112,7 +112,7 @@ public class LSMTreeIndexCompositeTest extends TestHelper {
           c.set("lastUpdated", System.currentTimeMillis());
           c.save();
 
-          v.newEdge("HasChildren", c, true);
+          v.newEdge("HasChildren", c);
         }
       }
     });

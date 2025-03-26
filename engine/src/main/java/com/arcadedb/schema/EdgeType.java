@@ -34,4 +34,6 @@ public interface EdgeType extends DocumentType {
   default byte getType() {
     return Edge.RECORD_TYPE;
   }
+
+  boolean isBidirectional();
 }

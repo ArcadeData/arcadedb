@@ -56,7 +56,7 @@ class DataEncryptionTest extends TestHelper {
     database.transaction(() -> {
       var v1 = database.newVertex("Person").set("name", "John").save();
       var v2 = database.newVertex("Person").set("name", "Doe").save();
-      v1.newEdge("Knows", v2, true, "since", 2024);
+      v1.newEdge("Knows", v2, "since", 2024);
       verify(v1, v2, true);
       v1Id.set(v1.getIdentity());
       v2Id.set(v2.getIdentity());

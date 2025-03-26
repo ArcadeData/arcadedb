@@ -70,7 +70,7 @@ public class JsonSerializerTest extends TestHelper {
       MutableVertex vertex1 = database.newVertex("TestVertexType").save();
       MutableVertex vertex2 = database.newVertex("TestVertexType").save();
 
-      MutableEdge edge = vertex1.newEdge("TestEdgeType", vertex2, true).save();
+      MutableEdge edge = vertex1.newEdge("TestEdgeType", vertex2).save();
 
       String json = jsonSerializer.serializeDocument(edge).toString();
 

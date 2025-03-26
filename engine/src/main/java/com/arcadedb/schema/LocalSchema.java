@@ -978,7 +978,8 @@ public class LocalSchema implements Schema {
         if ("v".equals(kind)) {
           type = new LocalVertexType(this, typeName);
         } else if ("e".equals(kind)) {
-          type = new LocalEdgeType(this, typeName);
+          type = new LocalEdgeType(this, typeName,
+              schemaType.has("bidirectional") ? schemaType.getBoolean("bidirectional") : true);
         } else if ("d".equals(kind)) {
           type = new LocalDocumentType(this, typeName);
         } else

@@ -27,6 +27,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -117,13 +118,32 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
     throw new UnsupportedOperationException("setInEdgesHeadChunk");
   }
 
-  public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
-      final Object... properties) {
-    return database.getGraphEngine().newEdge(getMostUpdatedVertex(this), edgeType, toVertex, bidirectional, properties);
+  public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final Object... properties) {
+    return database.getGraphEngine().newEdge(getMostUpdatedVertex(this), edgeType, toVertex, properties);
   }
 
+  @Override
+  @Deprecated
+  public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
+      final Object... properties) {
+    if (!bidirectional && ((EdgeType) database.getSchema().getType(edgeType)).isBidirectional())
+      throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
+
+    return database.getGraphEngine().newEdge(getMostUpdatedVertex(this), edgeType, toVertex, properties);
+  }
+
+  @Override
+  public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex) {
+    return database.getGraphEngine().newLightEdge(getMostUpdatedVertex(this), edgeType, toVertex);
+  }
+
+  @Override
+  @Deprecated
   public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional) {
-    return database.getGraphEngine().newLightEdge(getMostUpdatedVertex(this), edgeType, toVertex, bidirectional);
+    if (!bidirectional && ((EdgeType) database.getSchema().getType(edgeType)).isBidirectional())
+      throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
+
+    return database.getGraphEngine().newLightEdge(getMostUpdatedVertex(this), edgeType, toVertex);
   }
 
   @Override

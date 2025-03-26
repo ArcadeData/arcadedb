@@ -39,8 +39,20 @@ public interface Vertex extends Document {
 
   MutableVertex modify();
 
+  MutableEdge newEdge(String edgeType, Identifiable toVertex, final Object... properties);
+
+  /**
+   * Deprecated use of bidirectional, now defined at schema level on the edge type.
+   */
+  @Deprecated
   MutableEdge newEdge(String edgeType, Identifiable toVertex, boolean bidirectional, final Object... properties);
 
+  ImmutableLightEdge newLightEdge(String edgeType, Identifiable toVertex);
+
+  /**
+   * Deprecated use of bidirectional, now defined at schema level on the edge type.
+   */
+  @Deprecated
   ImmutableLightEdge newLightEdge(String edgeType, Identifiable toVertex, boolean bidirectional);
 
   long countEdges(DIRECTION direction, String edgeType);

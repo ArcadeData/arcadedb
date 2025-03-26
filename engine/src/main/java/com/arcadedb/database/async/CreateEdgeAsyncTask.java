@@ -33,19 +33,17 @@ public class CreateEdgeAsyncTask implements DatabaseAsyncTask {
   protected final String   edgeType;
   protected final Object[] edgeAttributes;
 
-  protected final boolean         bidirectional;
   protected final boolean         light;
   protected final NewEdgeCallback callback;
 
-  public CreateEdgeAsyncTask(final Identifiable sourceVertex, final Identifiable destinationVertex, final String edgeType, final Object[] edgeAttributes,
-      final boolean bidirectional, final boolean light, final NewEdgeCallback callback) {
+  public CreateEdgeAsyncTask(final Identifiable sourceVertex, final Identifiable destinationVertex, final String edgeType,
+      final Object[] edgeAttributes, final boolean light, final NewEdgeCallback callback) {
     this.sourceVertex = sourceVertex;
     this.destinationVertex = destinationVertex;
 
     this.edgeType = edgeType;
     this.edgeAttributes = edgeAttributes;
 
-    this.bidirectional = bidirectional;
     this.light = light;
     this.callback = callback;
   }
@@ -61,10 +59,11 @@ public class CreateEdgeAsyncTask implements DatabaseAsyncTask {
     final Edge edge;
 
     if (light)
-      edge = database.getGraphEngine().newLightEdge((VertexInternal) sourceVertex.getRecord(), edgeType, destinationVertex.getIdentity(), bidirectional);
+      edge = database.getGraphEngine()
+          .newLightEdge((VertexInternal) sourceVertex.getRecord(), edgeType, destinationVertex.getIdentity());
     else
       edge = database.getGraphEngine()
-          .newEdge((VertexInternal) sourceVertex.getRecord(), edgeType, destinationVertex.getIdentity(), bidirectional, edgeAttributes);
+          .newEdge((VertexInternal) sourceVertex.getRecord(), edgeType, destinationVertex.getIdentity(), edgeAttributes);
 
     if (callback != null)
       callback.call(edge, createdSourceVertex, createdDestinationVertex);

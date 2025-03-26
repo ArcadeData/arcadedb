@@ -313,7 +313,7 @@ public class CheckDatabaseTest extends TestHelper {
       root = database.newVertex("Person").set("name", "root", "id", 0).save();
       for (int i = 1; i <= TOTAL - 1; i++) {
         final MutableVertex v = database.newVertex("Person").set("name", "test", "id", i).save();
-        root.newEdge("Knows", v, true);
+        root.newEdge("Knows", v);
       }
     });
   }

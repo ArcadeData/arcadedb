@@ -65,10 +65,10 @@ public class RemoteGraphOrderIT extends AbstractGremlinServerIT {
         Vertex connectedVtx1 = db.command("sql", "CREATE VERTEX ConnectedVtx").next().getVertex().get();
 
         //EdgType0 added first
-        Edge edgType0 = rootVtx.newEdge("EdgType0", connectedVtx0, true);
+        Edge edgType0 = rootVtx.newEdge("EdgType0", connectedVtx0);
 
         //EdgType1 added last
-        Edge edgType1 = rootVtx.newEdge("EdgType1", connectedVtx1, true);
+        Edge edgType1 = rootVtx.newEdge("EdgType1", connectedVtx1);
 
         //Correct result - Returns one vertex/edge
 // Vertices with outgoing "EdgType0" edge

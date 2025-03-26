@@ -21,7 +21,6 @@ package com.arcadedb.database;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.Profiler;
-import com.arcadedb.database.Record;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.async.ErrorCallback;
@@ -66,6 +65,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalVertexType;
@@ -82,8 +82,7 @@ import com.arcadedb.utility.RWLockContext;
 
 import java.io.*;
 import java.nio.channels.*;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
@@ -1220,12 +1219,23 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     stats.createRecord.incrementAndGet();
 
-    return sourceVertex.newEdge(edgeType, destinationVertex, bidirectional, properties);
+    return sourceVertex.newEdge(edgeType, destinationVertex, properties);
+  }
+
+  @Deprecated
+  public Edge newEdgeByKeys(final Vertex sourceVertex, final String destinationVertexType, final String[] destinationVertexKeyNames,
+      final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist, final String edgeType,
+      final boolean bidirectional, final Object... properties) {
+    if (!bidirectional && ((EdgeType) schema.getType(edgeType)).isBidirectional())
+      throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
+
+    return newEdgeByKeys(sourceVertex, destinationVertexType, destinationVertexKeyNames, destinationVertexKeyValues,
+        createVertexIfNotExist, edgeType, properties);
   }
 
   public Edge newEdgeByKeys(final Vertex sourceVertex, final String destinationVertexType, final String[] destinationVertexKeyNames,
       final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist, final String edgeType,
-      final boolean bidirectional, final Object... properties) {
+      final Object... properties) {
     if (sourceVertex == null)
       throw new IllegalArgumentException("Source vertex is null");
 
@@ -1253,7 +1263,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     stats.createRecord.incrementAndGet();
 
-    return sourceVertex.newEdge(edgeType, destinationVertex, bidirectional, properties);
+    return sourceVertex.newEdge(edgeType, destinationVertex, properties);
   }
 
   @Override

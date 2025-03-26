@@ -36,6 +36,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.conversantmedia.util.concurrent.PushPullBlockingQueue;
 
 import java.util.*;
@@ -484,8 +485,18 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   }
 
   @Override
+  @Deprecated
   public void newEdge(final Vertex sourceVertex, final String edgeType, final RID destinationVertexRID, final boolean bidirectional,
       final boolean light, final NewEdgeCallback callback, final Object... properties) {
+    if (!bidirectional && ((EdgeType) database.getSchema().getType(edgeType)).isBidirectional())
+      throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
+
+    newEdge(sourceVertex, edgeType, destinationVertexRID, light, callback, properties);
+  }
+
+  @Override
+  public void newEdge(final Vertex sourceVertex, final String edgeType, final RID destinationVertexRID, final boolean light,
+      final NewEdgeCallback callback, final Object... properties) {
     if (sourceVertex == null)
       throw new IllegalArgumentException("Source vertex is null");
 
@@ -495,14 +506,16 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     final int sourceSlot = getSlot(sourceVertex.getIdentity().getBucketId());
     final int destinationSlot = getSlot(destinationVertexRID.getBucketId());
 
+    final boolean bidirectional = ((EdgeType) database.getSchema().getType(edgeType)).isBidirectional();
+
     if (sourceSlot == destinationSlot)
       // BOTH VERTICES HAVE THE SAME SLOT, CREATE THE EDGE USING IT
       scheduleTask(sourceSlot,
-          new CreateEdgeAsyncTask(sourceVertex, destinationVertexRID, edgeType, properties, bidirectional, light, callback), true,
+          new CreateEdgeAsyncTask(sourceVertex, destinationVertexRID, edgeType, properties, light, callback), true,
           backPressurePercentage);
     else {
       // CREATE THE EDGE IN THE SOURCE VERTEX'S SLOT AND A CASCADE TASK TO ADD THE INCOMING EDGE FROM DESTINATION VERTEX (THIS IS THE MOST EXPENSIVE CASE WHERE 2 TASKS ARE EXECUTED)
-      scheduleTask(sourceSlot, new CreateEdgeAsyncTask(sourceVertex, destinationVertexRID, edgeType, properties, false, light,
+      scheduleTask(sourceSlot, new CreateEdgeAsyncTask(sourceVertex, destinationVertexRID, edgeType, properties, light,
           (newEdge, createdSourceVertex, createdDestinationVertex) -> {
             if (bidirectional) {
               scheduleTask(destinationSlot,
@@ -564,8 +577,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       // SOURCE AND DESTINATION VERTICES BOTH DON'T EXIST: CREATE 2 VERTICES + EDGE IN THE SAME TASK PICKING THE BEST SLOT
       scheduleTask(getRandomSlot(),
           new CreateBothVerticesAndEdgeAsyncTask(sourceVertexType, sourceVertexKeyNames, sourceVertexKeyValues,
-              destinationVertexType, destinationVertexKeyNames, destinationVertexKeyValues, edgeType, properties, bidirectional,
-              lightWeight, callback), true, backPressurePercentage);
+              destinationVertexType, destinationVertexKeyNames, destinationVertexKeyValues, edgeType, properties, lightWeight,
+              callback), true, backPressurePercentage);
 
     } else if (sourceRID != null && destinationRID == null) {
 
@@ -577,7 +590,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       // ONLY SOURCE VERTEX EXISTS, CREATE DESTINATION VERTEX + EDGE IN SOURCE'S SLOT
       scheduleTask(getSlot(sourceRID.getBucketId()),
           new CreateDestinationVertexAndEdgeAsyncTask(sourceRID, destinationVertexType, destinationVertexKeyNames,
-              destinationVertexKeyValues, edgeType, properties, bidirectional, lightWeight, callback), true,
+              destinationVertexKeyValues, edgeType, properties, lightWeight, callback), true,
           backPressurePercentage);
 
     } else if (sourceRID == null && destinationRID != null) {
@@ -590,11 +603,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       // ONLY DESTINATION VERTEX EXISTS
       scheduleTask(getSlot(destinationRID.getBucketId()),
           new CreateSourceVertexAndEdgeAsyncTask(sourceVertexType, sourceVertexKeyNames, sourceVertexKeyValues, destinationRID,
-              edgeType, properties, bidirectional, lightWeight, callback), true, backPressurePercentage);
+              edgeType, properties, lightWeight, callback), true, backPressurePercentage);
 
     } else
       // BOTH VERTICES EXIST
-      newEdge(sourceRID.asVertex(true), edgeType, destinationRID, bidirectional, lightWeight, callback, properties);
+      newEdge(sourceRID.asVertex(true), edgeType, destinationRID, lightWeight, callback, properties);
   }
 
   /**

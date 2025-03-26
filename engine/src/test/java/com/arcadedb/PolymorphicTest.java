@@ -107,9 +107,9 @@ public class PolymorphicTest extends TestHelper {
     luca.set("lastName", "Skywalker");
     luca.save();
 
-    luca.newEdge("Owns", maserati, true, "since", "2018");
-    luca.newEdge("Owns", ducati, true, "since", "2016");
-    luca.newEdge("Drives", ferrari, true, "since", "2018");
+    luca.newEdge("Owns", maserati, "since", "2018");
+    luca.newEdge("Owns", ducati, "since", "2016");
+    luca.newEdge("Drives", ferrari, "since", "2018");
 
     db.commit();
   }
@@ -142,10 +142,13 @@ public class PolymorphicTest extends TestHelper {
       assertThat(database.countType("Drives", true)).isEqualTo(3);
       assertThat(database.countType("Owns", true)).isEqualTo(2);
 
-      assertThat((long) database.query("sql", "select count(*) as count from Vehicle").nextIfAvailable().getProperty("count")).isEqualTo(3L);
+      assertThat(
+          (long) database.query("sql", "select count(*) as count from Vehicle").nextIfAvailable().getProperty("count")).isEqualTo(
+          3L);
 
-      assertThat((long) database.query("sql", "select count(*) as count from Vehicle WHERE $this INSTANCEOF Vehicle").nextIfAvailable()
-        .getProperty("count")).isEqualTo(3L);
+      assertThat(
+          (long) database.query("sql", "select count(*) as count from Vehicle WHERE $this INSTANCEOF Vehicle").nextIfAvailable()
+              .getProperty("count")).isEqualTo(3L);
 
     } finally {
       database.commit();

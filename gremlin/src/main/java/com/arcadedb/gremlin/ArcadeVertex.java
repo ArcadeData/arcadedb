@@ -81,7 +81,7 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
 
     final com.arcadedb.graph.Vertex baseElement = getBaseElement();
 
-    final MutableEdge edge = baseElement.newEdge(label, vertex.getBaseElement(), true);
+    final MutableEdge edge = baseElement.newEdge(label, vertex.getBaseElement());
     final ArcadeEdge arcadeEdge = new ArcadeEdge(graph, edge, keyValues);
     edge.save();
     return arcadeEdge;

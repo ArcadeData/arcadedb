@@ -119,17 +119,19 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
       int vertexIndex = 0;
       for (; vertexIndex < VERTICES; ++vertexIndex) {
 
-        final Vertex sourceVertex = (Vertex) database.lookupByKey(VERTEX_TYPE_NAME, new String[] { "id" }, new Object[] { vertexIndex }).next().getRecord();
+        final Vertex sourceVertex = (Vertex) database.lookupByKey(VERTEX_TYPE_NAME, new String[] { "id" },
+            new Object[] { vertexIndex }).next().getRecord();
 
         int edgesPerVertex = 0;
         for (int destinationIndex = 0; destinationIndex < VERTICES; destinationIndex++) {
-          final Vertex destinationVertex = (Vertex) database.lookupByKey(VERTEX_TYPE_NAME, new String[] { "id" }, new Object[] { destinationIndex }).next()
+          final Vertex destinationVertex = (Vertex) database.lookupByKey(VERTEX_TYPE_NAME, new String[] { "id" },
+                  new Object[] { destinationIndex }).next()
               .getRecord();
 
           if (EDGE_IDS) {
-            sourceVertex.newEdge(EDGE_TYPE_NAME, destinationVertex, true, "id", edgeSerial++);
+            sourceVertex.newEdge(EDGE_TYPE_NAME, destinationVertex, "id", edgeSerial++);
           } else
-            sourceVertex.newEdge(EDGE_TYPE_NAME, destinationVertex, true);
+            sourceVertex.newEdge(EDGE_TYPE_NAME, destinationVertex);
 
           if (++edgesPerVertex >= EDGES_PER_VERTEX)
             break;
@@ -137,8 +139,9 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
 
         if (vertexIndex % 10_000 == 0) {
           final long elapsed = System.currentTimeMillis() - begin;
-          System.out.println("Created " + edgesPerVertex + " edges per vertex in " + vertexIndex + " vertices in " + elapsed + "ms total (" + (
-              vertexIndex * edgesPerVertex / elapsed * 1000) + " edges/sec)");
+          System.out.println(
+              "Created " + edgesPerVertex + " edges per vertex in " + vertexIndex + " vertices in " + elapsed + "ms total (" + (
+                  vertexIndex * edgesPerVertex / elapsed * 1000) + " edges/sec)");
         }
 
         if (vertexIndex % 1000 == 0) {
@@ -152,8 +155,9 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
       }
 
       final long elapsed = System.currentTimeMillis() - begin;
-      System.out.println("Created " + EDGES_PER_VERTEX + " edges per vertex in " + vertexIndex + " vertices in " + elapsed + "ms total (" + (
-          vertexIndex * EDGES_PER_VERTEX / elapsed * 1000) + " edges/sec)");
+      System.out.println(
+          "Created " + EDGES_PER_VERTEX + " edges per vertex in " + vertexIndex + " vertices in " + elapsed + "ms total (" + (
+              vertexIndex * EDGES_PER_VERTEX / elapsed * 1000) + " edges/sec)");
 
     } finally {
       if (database.isTransactionActive()) {
@@ -311,14 +315,16 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
         if (i % 100_000 == 0) {
           final long elapsed = System.currentTimeMillis() - begin;
           System.out.println(
-              "Checked " + outEdges + " outgoing edges and " + inEdges + " incoming edges per vertex in " + i + " vertices in " + elapsed + "ms total (" + (
+              "Checked " + outEdges + " outgoing edges and " + inEdges + " incoming edges per vertex in " + i + " vertices in "
+                  + elapsed + "ms total (" + (
                   (outEdges + inEdges) / elapsed * 1000) + " edges/sec)");
         }
       }
 
       final long elapsed = System.currentTimeMillis() - begin;
       System.out.println(
-          "Checked " + outEdges + " outgoing edges and " + inEdges + " incoming edges per vertex in " + i + " vertices in " + elapsed + "ms total (" + (
+          "Checked " + outEdges + " outgoing edges and " + inEdges + " incoming edges per vertex in " + i + " vertices in "
+              + elapsed + "ms total (" + (
               (outEdges + inEdges) / elapsed * 1000) + " edges/sec)");
 
       final int expectedTotalEdges = VERTICES * EDGES_PER_VERTEX;

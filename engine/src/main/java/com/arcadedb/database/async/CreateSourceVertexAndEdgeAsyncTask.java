@@ -32,8 +32,8 @@ public class CreateSourceVertexAndEdgeAsyncTask extends CreateEdgeAsyncTask {
 
   public CreateSourceVertexAndEdgeAsyncTask(final String sourceVertexType, final String[] sourceVertexAttributeNames,
       final Object[] sourceVertexAttributeValues, final RID destinationVertex, final String edgeType, final Object[] edgeAttributes,
-      final boolean bidirectional, final boolean light, final NewEdgeCallback callback) {
-    super(null, destinationVertex, edgeType, edgeAttributes, bidirectional, light, callback);
+      final boolean light, final NewEdgeCallback callback) {
+    super(null, destinationVertex, edgeType, edgeAttributes, light, callback);
 
     this.sourceVertexType = sourceVertexType;
     this.sourceVertexAttributeNames = sourceVertexAttributeNames;

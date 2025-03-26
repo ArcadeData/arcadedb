@@ -11,12 +11,10 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.text.SimpleDateFormat;
-import java.time.*;
+import java.text.*;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -264,13 +262,13 @@ public class DocumentValidationTest extends TestHelper {
       final MutableVertex v1 = database.newVertex("V").save();
       final MutableVertex v2 = database.newVertex("V").save();
       try {
-        v1.newEdge("E", v2, true);
+        v1.newEdge("E", v2);
         Assertions.fail();
       } catch (ValidationException e) {
         // EXPECTED
       }
 
-      final MutableEdge e = v1.newEdge("E", v2, true, "id", "12345");
+      final MutableEdge e = v1.newEdge("E", v2, "id", "12345");
       assertThat(e.getString("id")).isEqualTo("12345");
     });
   }

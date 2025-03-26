@@ -32,8 +32,6 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
-
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.math.*;
@@ -41,7 +39,6 @@ import java.util.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
-import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class MVCCTest extends TestHelper {
@@ -96,7 +93,7 @@ public class MVCCTest extends TestHelper {
 
             final Identifiable account = accounts.next();
 
-            ((MutableVertex) doc).newEdge("PurchasedBy", account, true, "date", new Date());
+            ((MutableVertex) doc).newEdge("PurchasedBy", account, "date", new Date());
           }, 0, null, (err) -> txErrors.incrementAndGet());
         }
 
@@ -157,7 +154,8 @@ public class MVCCTest extends TestHelper {
 
         database.async().waitCompletion();
 
-        assertThat((long) database.query("sql", "select count(*) as count from Account where updated = true").nextIfAvailable().getProperty("count")).isEqualTo(TOT_ACCOUNT);
+        assertThat((long) database.query("sql", "select count(*) as count from Account where updated = true").nextIfAvailable()
+            .getProperty("count")).isEqualTo(TOT_ACCOUNT);
 
       } finally {
         new DatabaseChecker(database).setVerboseLevel(0).check();

@@ -163,7 +163,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
 
         // CREATE DOCUMENT VIA API
         final Map<String, Object> map = Map.of("on", "today", "for", "5 days");
-        Edge edge = jay.newEdge(EDGE1_TYPE_NAME, jay, true, map).save();
+        Edge edge = jay.newEdge(EDGE1_TYPE_NAME, jay, map).save();
         assertThat(edge instanceof RemoteMutableEdge).isTrue();
         assertThat(edge.get("on")).isEqualTo("today");
         assertThat(edge.get("for")).isEqualTo("5 days");
@@ -279,7 +279,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       assertThat(albert.isConnectedTo(kimbal.getIdentity(), Vertex.DIRECTION.OUT)).isTrue();
       assertThat(albert.isConnectedTo(kimbal.getIdentity(), Vertex.DIRECTION.IN)).isFalse();
 
-      final MutableEdge newEdge = albert.newEdge(EDGE2_TYPE_NAME, kimbal, true, "since", "today");
+      final MutableEdge newEdge = albert.newEdge(EDGE2_TYPE_NAME, kimbal, "since", "today");
       assertThat(albert.getIdentity()).isEqualTo(newEdge.getOut());
       assertThat(albert).isEqualTo(newEdge.getOutVertex());
       assertThat(kimbal.getIdentity()).isEqualTo(newEdge.getIn());
@@ -289,7 +289,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       newEdge.save();
 
       // SAME BUT FROM A MUTABLE INSTANCE
-      final MutableEdge newEdge2 = albert.modify().newEdge(EDGE2_TYPE_NAME, kimbal, true, "since", "today");
+      final MutableEdge newEdge2 = albert.modify().newEdge(EDGE2_TYPE_NAME, kimbal, "since", "today");
       assertThat(albert.getIdentity()).isEqualTo(newEdge2.getOut());
       assertThat(albert).isEqualTo(newEdge2.getOutVertex());
       assertThat(kimbal.getIdentity()).isEqualTo(newEdge2.getIn());

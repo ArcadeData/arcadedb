@@ -25,6 +25,8 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 
 public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
+  public boolean unidirectional = false;
+
   public CreateEdgeTypeStatement(final int id) {
     super(id);
   }
@@ -38,13 +40,15 @@ public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
   protected DocumentType createType(final Schema schema) {
     final EdgeType type;
     if (totalBucketNo != null)
-      type = schema.buildEdgeType().withName(name.getStringValue()).withTotalBuckets(totalBucketNo.getValue().intValue()).create();
+      type = schema.buildEdgeType().withName(name.getStringValue()).withTotalBuckets(totalBucketNo.getValue().intValue())
+          .withBidirectional(!unidirectional).create();
     else {
       if (buckets == null || buckets.isEmpty())
         type = schema.createEdgeType(name.getStringValue());
       else {
         // CHECK THE BUCKETS FIRST
-        type = schema.buildEdgeType().withName(name.getStringValue()).withBuckets(getBuckets(schema)).create();
+        type = schema.buildEdgeType().withName(name.getStringValue()).withBuckets(getBuckets(schema))
+            .withBidirectional(!unidirectional).create();
       }
     }
     return type;
@@ -52,7 +56,9 @@ public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
 
   @Override
   public CreateEdgeTypeStatement copy() {
-    return (CreateEdgeTypeStatement) super.copy(new CreateEdgeTypeStatement(-1));
+    final CreateEdgeTypeStatement copy = (CreateEdgeTypeStatement) super.copy(new CreateEdgeTypeStatement(-1));
+    copy.unidirectional = unidirectional;
+    return copy;
   }
 }
 /* JavaCC - OriginalChecksum=4043013624f55fdf0ea8fee6d4f211b0 (do not edit this line) */
