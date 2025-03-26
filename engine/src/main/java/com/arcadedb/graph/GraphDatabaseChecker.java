@@ -311,7 +311,7 @@ public class GraphDatabaseChecker {
                   invalidLinks.incrementAndGet();
                 }
 
-                if (!inVertex.isConnectedTo(vertexIdentity, Vertex.DIRECTION.OUT, edge.getTypeName())) {
+                if (inVertex != null && !inVertex.isConnectedTo(vertexIdentity, Vertex.DIRECTION.OUT, edge.getTypeName())) {
                   warnings.add(
                       "edge " + edgeRID + " was not connected from the incoming vertex " + edge.getOut() + " to the vertex " +
                           vertexIdentity);
@@ -491,7 +491,7 @@ public class GraphDatabaseChecker {
                 }
 
                 // CHECK THE EDGE IS CONNECTED FROM THE OTHER SIDE
-                if (!outVertex.isConnectedTo(vertexIdentity, Vertex.DIRECTION.IN, edge.getTypeName())) {
+                if (outVertex != null && !outVertex.isConnectedTo(vertexIdentity, Vertex.DIRECTION.IN, edge.getTypeName())) {
                   warnings.add(
                       "edge " + edgeRID + " was not connected from the outgoing vertex " + edge.getIn()
                           + " back to the vertex "
