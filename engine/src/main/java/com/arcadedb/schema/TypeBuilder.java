@@ -37,12 +37,13 @@ import java.util.logging.*;
 public class TypeBuilder<T> {
   final DatabaseInternal database;
   final Class<T>         type;
-  boolean                 ignoreIfExists  = false;
+  boolean                 ignoreIfExists    = false;
   String                  typeName;
   List<LocalDocumentType> superTypes;
-  List<Bucket>            bucketInstances = Collections.emptyList();
+  List<Bucket>            bucketInstances   = Collections.emptyList();
   int                     buckets;
   int                     pageSize;
+  boolean                 edgeBidirectional = true;
 
   protected TypeBuilder(final DatabaseInternal database, final Class<T> type) {
     this.database = database;
@@ -99,7 +100,7 @@ public class TypeBuilder<T> {
       if (type.equals(VertexType.class))
         c = new LocalVertexType(schema, typeName);
       else if (type.equals(EdgeType.class))
-        c = new LocalEdgeType(schema, typeName);
+        c = new LocalEdgeType(schema, typeName, edgeBidirectional);
       else {
         c = new LocalDocumentType(schema, typeName);
 
@@ -165,6 +166,13 @@ public class TypeBuilder<T> {
   public TypeBuilder<T> withBuckets(final List<Bucket> bucketInstances) {
     this.bucketInstances = bucketInstances;
     this.buckets = 0;
+    return this;
+  }
+
+  public TypeBuilder<T> withBidirectional(final boolean edgeBidirectional) {
+    if (!type.isAssignableFrom(EdgeType.class))
+      throw new UnsupportedOperationException("withBidirectional() on non edge type");
+    this.edgeBidirectional = edgeBidirectional;
     return this;
   }
 

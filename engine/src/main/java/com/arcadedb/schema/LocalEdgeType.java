@@ -19,7 +19,15 @@
 package com.arcadedb.schema;
 
 public class LocalEdgeType extends LocalDocumentType implements EdgeType {
-  public LocalEdgeType(final LocalSchema schema, final String name) {
+  private boolean bidirectional;
+
+  public LocalEdgeType(final LocalSchema schema, final String name, final boolean bidirectional) {
     super(schema, name);
+    this.bidirectional = bidirectional;
+  }
+
+  @Override
+  public boolean isBidirectional() {
+    return bidirectional;
   }
 }
