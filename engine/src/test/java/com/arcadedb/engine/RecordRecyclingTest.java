@@ -44,7 +44,7 @@ public class RecordRecyclingTest {
                   .set("id", k)//
                   .save();
 
-              root.newEdge(EDGE_TYPE, v, true, "something", k);
+              root.newEdge(EDGE_TYPE, v, "something", k);
             }
           });
 

@@ -311,14 +311,16 @@ public class GraphDatabaseChecker {
                   invalidLinks.incrementAndGet();
                 }
 
-                if (!inVertex.isConnectedTo(vertexIdentity, Vertex.DIRECTION.OUT, edge.getTypeName())) {
-                  warnings.add(
-                      "edge " + edgeRID + " was not connected from the incoming vertex " + edge.getOut() + " to the vertex " +
-                          vertexIdentity);
-                  if (fix) {
-                    inVertex = inVertex.modify();
-                    database.getGraphEngine().connectOutgoingEdge(inVertex, vertexIdentity, edge);
-                    ((MutableVertex) inVertex).save();
+                if (((EdgeType) edge.getType()).isBidirectional()) {
+                  if (inVertex != null && !inVertex.isConnectedTo(vertexIdentity, Vertex.DIRECTION.OUT, edge.getTypeName())) {
+                    warnings.add(
+                        "edge " + edgeRID + " was not connected from the incoming vertex " + edge.getOut() + " to the vertex " +
+                            vertexIdentity);
+                    if (fix) {
+                      inVertex = inVertex.modify();
+                      database.getGraphEngine().connectOutgoingEdge(inVertex, vertexIdentity, edge);
+                      ((MutableVertex) inVertex).save();
+                    }
                   }
                 }
 
@@ -490,16 +492,18 @@ public class GraphDatabaseChecker {
                   invalidLinks.incrementAndGet();
                 }
 
-                // CHECK THE EDGE IS CONNECTED FROM THE OTHER SIDE
-                if (!outVertex.isConnectedTo(vertexIdentity, Vertex.DIRECTION.IN, edge.getTypeName())) {
-                  warnings.add(
-                      "edge " + edgeRID + " was not connected from the outgoing vertex " + edge.getIn()
-                          + " back to the vertex "
-                          + vertexIdentity);
-                  if (fix) {
-                    outVertex = outVertex.modify();
-                    database.getGraphEngine().connectIncomingEdge(outVertex, vertexIdentity, edgeRID);
-                    ((MutableVertex) outVertex).save();
+                if (((EdgeType) edge.getType()).isBidirectional()) {
+                  // CHECK THE EDGE IS CONNECTED FROM THE OTHER SIDE
+                  if (outVertex != null && !outVertex.isConnectedTo(vertexIdentity, Vertex.DIRECTION.IN, edge.getTypeName())) {
+                    warnings.add(
+                        "edge " + edgeRID + " was not connected from the outgoing vertex " + edge.getIn()
+                            + " back to the vertex "
+                            + vertexIdentity);
+                    if (fix) {
+                      outVertex = outVertex.modify();
+                      database.getGraphEngine().connectIncomingEdge(outVertex, vertexIdentity, edgeRID);
+                      ((MutableVertex) outVertex).save();
+                    }
                   }
                 }
 

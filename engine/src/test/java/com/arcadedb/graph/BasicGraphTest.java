@@ -34,9 +34,8 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
-import java.util.Iterator;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.*;
+import java.util.concurrent.atomic.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -403,13 +402,15 @@ public class BasicGraphTest extends BaseGraphTest {
 
   @Test
   public void selfLoopEdges() {
+    database.getSchema().buildEdgeType().withName(EDGE3_TYPE_NAME).withBidirectional(false).create();
+
     database.begin();
     try {
 
       // UNIDIRECTIONAL EDGE
       final Vertex v1 = database.newVertex(VERTEX1_TYPE_NAME).save();
 
-      database.command("sql", "create edge " + EDGE1_TYPE_NAME + " from ? to ? unidirectional", v1, v1);
+      database.command("sql", "create edge " + EDGE3_TYPE_NAME + " from ? to ? unidirectional", v1, v1);
 
       assertThat(v1.getVertices(Vertex.DIRECTION.OUT).iterator().hasNext()).isTrue();
       assertThat(v1.getVertices(Vertex.DIRECTION.OUT).iterator().next()).isEqualTo(v1);
@@ -417,7 +418,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
       // BIDIRECTIONAL EDGE
       final Vertex v2 = database.newVertex(VERTEX1_TYPE_NAME).save();
-      v2.newEdge(EDGE1_TYPE_NAME, v2, true).save();
+      v2.newEdge(EDGE1_TYPE_NAME, v2).save();
 
       assertThat(v2.getVertices(Vertex.DIRECTION.OUT).iterator().hasNext()).isTrue();
       assertThat(v2.getVertices(Vertex.DIRECTION.OUT).iterator().next()).isEqualTo(v2);
@@ -551,8 +552,8 @@ public class BasicGraphTest extends BaseGraphTest {
 
         final MutableVertex v2 = database.newVertex(VERTEX1_TYPE_NAME).save();
 
-        v1a.newEdge(EDGE2_TYPE_NAME, v2, false);
-        v1a.newEdge(EDGE2_TYPE_NAME, v2, true);
+        v1a.newEdge(EDGE2_TYPE_NAME, v2);
+        v1a.newEdge(EDGE2_TYPE_NAME, v2);
         //throw new ArcadeDBException();
       });
 
@@ -586,8 +587,8 @@ public class BasicGraphTest extends BaseGraphTest {
     database.begin();
     final Vertex v1a = v1RID.get().asVertex();
     MutableVertex v2 = database.newVertex(VERTEX1_TYPE_NAME).save();
-    v1a.newEdge(EDGE2_TYPE_NAME, v2, false);
-    v1a.newEdge(EDGE2_TYPE_NAME, v2, true);
+    v1a.newEdge(EDGE2_TYPE_NAME, v2);
+    v1a.newEdge(EDGE2_TYPE_NAME, v2);
     database.rollback();
 
     try {
@@ -614,17 +615,17 @@ public class BasicGraphTest extends BaseGraphTest {
 
       v1[0] = database.newVertex(VERTEX1_TYPE_NAME).set("id", 1001).save();
       v2[0] = database.newVertex(VERTEX1_TYPE_NAME).set("id", 1002).save();
-      v1[0].newEdge("OnlyOneBetweenVertices", v2[0], true);
+      v1[0].newEdge("OnlyOneBetweenVertices", v2[0]);
     });
 
     try {
-      database.transaction(() -> v1[0].newEdge("OnlyOneBetweenVertices", v2[0], true));
+      database.transaction(() -> v1[0].newEdge("OnlyOneBetweenVertices", v2[0]));
       fail("");
     } catch (final DuplicatedKeyException ex) {
       // EXPECTED
     }
 
-    database.transaction(() -> v2[0].newEdge("OnlyOneBetweenVertices", v1[0], true));
+    database.transaction(() -> v2[0].newEdge("OnlyOneBetweenVertices", v1[0]));
 
     database.transaction(() -> {
       final Iterable<Edge> edges = v1[0].getEdges(Vertex.DIRECTION.OUT, "OnlyOneBetweenVertices");
@@ -632,7 +633,7 @@ public class BasicGraphTest extends BaseGraphTest {
         e.delete();
     });
 
-    database.transaction(() -> v1[0].newEdge("OnlyOneBetweenVertices", v2[0], true));
+    database.transaction(() -> v1[0].newEdge("OnlyOneBetweenVertices", v2[0]));
 
     database.transaction(() -> {
       final Iterable<Edge> edges = v2[0].getEdges(Vertex.DIRECTION.OUT, "OnlyOneBetweenVertices");
@@ -640,7 +641,7 @@ public class BasicGraphTest extends BaseGraphTest {
         e.delete();
     });
 
-    database.transaction(() -> v2[0].newEdge("OnlyOneBetweenVertices", v1[0], true));
+    database.transaction(() -> v2[0].newEdge("OnlyOneBetweenVertices", v1[0]));
   }
 
   @Test
@@ -660,7 +661,7 @@ public class BasicGraphTest extends BaseGraphTest {
     });
 
     try {
-      database.transaction(() -> v1[0].newEdge("OnlyOneBetweenVertices", v2[0], true));
+      database.transaction(() -> v1[0].newEdge("OnlyOneBetweenVertices", v2[0]));
       fail("");
     } catch (final DuplicatedKeyException ex) {
       // EXPECTED
@@ -673,7 +674,8 @@ public class BasicGraphTest extends BaseGraphTest {
       // EXPECTED
     }
 
-    database.transaction(() -> database.command("sql", "create edge OnlyOneBetweenVertices from ? to ? IF NOT EXISTS", v1[0], v2[0]));
+    database.transaction(
+        () -> database.command("sql", "create edge OnlyOneBetweenVertices from ? to ? IF NOT EXISTS", v1[0], v2[0]));
   }
 
   @Test
@@ -692,7 +694,7 @@ public class BasicGraphTest extends BaseGraphTest {
     });
 
     try {
-      database.transaction(() -> v2[0].newEdge("EdgeConstraint", v1[0], true));
+      database.transaction(() -> v2[0].newEdge("EdgeConstraint", v1[0]));
       fail("");
     } catch (final ValidationException ex) {
       // EXPECTED
@@ -717,7 +719,7 @@ public class BasicGraphTest extends BaseGraphTest {
     final var v2 = database.newVertex("a-vertex").save();
 
     try {
-      final Edge e1 = v1.newEdge("a-vertex", v2, /*= bidirectional */ true); // <-- expect IllegalArgumentException
+      final Edge e1 = v1.newEdge("a-vertex", v2); // <-- expect IllegalArgumentException
       fail("Created an edge of vertex type");
     } catch (final ClassCastException e) {
       // EXPECTED
@@ -734,7 +736,7 @@ public class BasicGraphTest extends BaseGraphTest {
       final var v1 = database.newVertex("testEdgeDescendantOrderVertex").set("id", -1).save();
       for (int i = 0; i < 10000; i++) {
         final var v2 = database.newVertex("testEdgeDescendantOrderVertex").set("id", i).save();
-        v1.newEdge("testEdgeDescendantOrderEdge", v2, true);
+        v1.newEdge("testEdgeDescendantOrderEdge", v2);
       }
 
       final Iterator<Vertex> vertices = v1.getVertices(Vertex.DIRECTION.OUT).iterator();

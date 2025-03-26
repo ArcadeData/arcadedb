@@ -217,7 +217,7 @@ public class ServerProfilingIT {
       MutableVertex v2 = database.newVertex("Vertex1").save();
 
       // NEW EDGE IS TECHNICALLY A 2-STEP OPERATION: CREATE THE EDGE AND UPDATE THE VERTICES
-      expectedSecurityException(() -> v1.newEdge("Edge1", v2, true).save());
+      expectedSecurityException(() -> v1.newEdge("Edge1", v2).save());
 
       database.newDocument("Document1").save();
       expectedSecurityException(() -> database.iterateType("Document1", true));
@@ -256,7 +256,7 @@ public class ServerProfilingIT {
       MutableVertex v2 = database.newVertex("Vertex1").save();
 
       // NEW EDGE IS TECHNICALLY A 2-STEP OPERATION: CREATE THE EDGE AND UPDATE THE VERTICES
-      v1.newEdge("Edge1", v2, true);
+      v1.newEdge("Edge1", v2);
 
       // SWITCH TO ROOT TO DROP THE SCHEMA
       setCurrentUser("root", database);
@@ -627,7 +627,7 @@ public class ServerProfilingIT {
       final MutableVertex v1 = database.newVertex("Vertex1").save();
       final MutableVertex v2 = database.newVertex("Vertex1").save();
       if (createEdge)
-        v1.newEdge("Edge1", v2, true);
+        v1.newEdge("Edge1", v2);
       database.newDocument("Document1").save();
 
       validRID.set(v1.getIdentity());

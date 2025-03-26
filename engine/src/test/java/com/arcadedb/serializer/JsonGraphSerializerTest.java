@@ -30,7 +30,7 @@ class JsonGraphSerializerTest extends TestHelper {
       vertex1 = database.newVertex("TestVertexType").save();
       vertex2 = database.newVertex("TestVertexType").save();
 
-      edge = vertex1.newEdge("TestEdgeType", vertex2, true).save();
+      edge = vertex1.newEdge("TestEdgeType", vertex2).save();
     });
   }
 

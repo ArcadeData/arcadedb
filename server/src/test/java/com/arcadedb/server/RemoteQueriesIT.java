@@ -84,7 +84,7 @@ public class RemoteQueriesIT {
      */
     Vertex fromVtx = database.command("sql", "CREATE VERTEX FromVtx").next().getVertex().get();
     Vertex toVtx = database.command("sql", "CREATE VERTEX ToVtx").next().getVertex().get();
-    Edge conEdg = fromVtx.newEdge("ConEdge", toVtx, true);
+    Edge conEdg = fromVtx.newEdge("ConEdge", toVtx);
 
     assertThat(fromVtx.countEdges(Vertex.DIRECTION.OUT, "ConEdge")).isEqualTo(1);
     assertThat(fromVtx.countEdges(Vertex.DIRECTION.IN, "ConEdge")).isEqualTo(0);

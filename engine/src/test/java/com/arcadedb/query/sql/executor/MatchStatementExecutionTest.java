@@ -30,10 +30,8 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import org.junit.jupiter.api.Test;
 
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.stream.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -2015,9 +2013,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     v3.set("name", "three");
     v3.save(clazz + "_three");
 
-    v1.newEdge("Friend", v2, true).save();
-    v2.newEdge("Friend", v3, true).save();
-    v1.newEdge("Friend", v3, true).save();
+    v1.newEdge("Friend", v2).save();
+    v2.newEdge("Friend", v3).save();
+    v1.newEdge("Friend", v3).save();
 
     final String query =
         "MATCH { bucket: " + clazz + "_one, as:a} --> {as:b, bucket:" + clazz + "_two} RETURN a.name as aname, b.name as bname";
@@ -2095,8 +2093,8 @@ public class MatchStatementExecutionTest extends TestHelper {
     v3.set("name", "c");
     v3.save();
 
-    v1.newEdge("Friend", v2, true).save();
-    v2.newEdge("Friend", v3, true).save();
+    v1.newEdge("Friend", v2).save();
+    v2.newEdge("Friend", v3).save();
 
     String query = "MATCH { type:" + clazz + ", as:a} --> {as:b} --> {as:c}, ";
     query += " NOT {as:a} --> {as:c}";
@@ -2127,9 +2125,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     v3.set("name", "c");
     v3.save();
 
-    v1.newEdge("Friend", v2, true).save();
-    v2.newEdge("Friend", v3, true).save();
-    v1.newEdge("Friend", v3, true).save();
+    v1.newEdge("Friend", v2).save();
+    v2.newEdge("Friend", v3).save();
+    v1.newEdge("Friend", v3).save();
 
     String query = "MATCH { type:" + clazz + ", as:a} --> {as:b} --> {as:c}, ";
     query += " NOT {as:a} --> {as:c}";
@@ -2158,9 +2156,9 @@ public class MatchStatementExecutionTest extends TestHelper {
     v3.set("name", "c");
     v3.save();
 
-    v1.newEdge("Friend", v2, true).save();
-    v2.newEdge("Friend", v3, true).save();
-    v1.newEdge("Friend", v3, true).save();
+    v1.newEdge("Friend", v2).save();
+    v2.newEdge("Friend", v3).save();
+    v1.newEdge("Friend", v3).save();
 
     String query = "MATCH { type:" + clazz + ", as:a} --> {as:b} --> {as:c}, ";
     query += " NOT {as:a} --> {as:c, where:(name <> 'c')}";

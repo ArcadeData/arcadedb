@@ -25,6 +25,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.ImmutableLightEdge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
@@ -102,14 +103,32 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
   }
 
   @Override
-  public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
-      final Object... properties) {
-    return internal.newEdge(edgeType, toVertex, bidirectional, properties);
+  public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final Object... properties) {
+    return internal.newEdge(edgeType, toVertex, properties);
   }
 
   @Override
+  @Deprecated
+  public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
+      final Object... properties) {
+    if (!bidirectional && ((EdgeType) database.getSchema().getType(edgeType)).isBidirectional())
+      throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
+
+    return internal.newEdge(edgeType, toVertex, properties);
+  }
+
+  @Override
+  public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex) {
+    return internal.newLightEdge(edgeType, toVertex);
+  }
+
+  @Override
+  @Deprecated
   public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional) {
-    return internal.newLightEdge(edgeType, toVertex, bidirectional);
+    if (!bidirectional && ((EdgeType) database.getSchema().getType(edgeType)).isBidirectional())
+      throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
+
+    return internal.newLightEdge(edgeType, toVertex);
   }
 
   @Override

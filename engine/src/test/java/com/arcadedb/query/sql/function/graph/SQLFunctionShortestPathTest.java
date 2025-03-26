@@ -202,19 +202,19 @@ public class SQLFunctionShortestPathTest {
       vertices.get(3).save();
       vertices.get(4).save();
 
-      vertices.get(1).newEdge("Edge1", vertices.get(2), true);
-      vertices.get(2).newEdge("Edge1", vertices.get(3), true);
-      vertices.get(3).newEdge("Edge2", vertices.get(1), true);
-      vertices.get(3).newEdge("Edge1", vertices.get(4), true);
+      vertices.get(1).newEdge("Edge1", vertices.get(2));
+      vertices.get(2).newEdge("Edge1", vertices.get(3));
+      vertices.get(3).newEdge("Edge2", vertices.get(1));
+      vertices.get(3).newEdge("Edge1", vertices.get(4));
 
       for (int i = 5; i <= 20; i++) {
         vertices.put(i, graph.newVertex("Node"));
         vertices.get(i).set("node_id", "V" + i);
         vertices.get(i).save();
 
-        vertices.get(i - 1).newEdge("Edge1", vertices.get(i), true);
+        vertices.get(i - 1).newEdge("Edge1", vertices.get(i));
         if (i % 2 == 0) {
-          vertices.get(i - 2).newEdge("Edge1", vertices.get(i), true);
+          vertices.get(i - 2).newEdge("Edge1", vertices.get(i));
         }
       }
     });

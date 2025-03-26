@@ -86,8 +86,7 @@ public class GraphEngine {
     }
   }
 
-  public ImmutableLightEdge newLightEdge(final VertexInternal fromVertex, final String edgeTypeName, final Identifiable toVertex,
-      final boolean bidirectional) {
+  public ImmutableLightEdge newLightEdge(final VertexInternal fromVertex, final String edgeTypeName, final Identifiable toVertex) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
 
@@ -100,20 +99,22 @@ public class GraphEngine {
 
     final DatabaseInternal database = (DatabaseInternal) fromVertex.getDatabase();
 
-    final RID edgeRID = new RID(database, database.getSchema().getType(edgeTypeName).getFirstBucketId(), -1l);
+    final EdgeType edgeType = (EdgeType) database.getSchema().getType(edgeTypeName);
+
+    final RID edgeRID = new RID(database, edgeType.getFirstBucketId(), -1l);
 
     final ImmutableLightEdge edge = new ImmutableLightEdge(database, database.getSchema().getType(edgeTypeName), edgeRID,
         fromVertexRID, toVertex.getIdentity());
 
     connectOutgoingEdge(fromVertex, toVertex, edge);
-    if (bidirectional)
+    if (edgeType.isBidirectional())
       connectIncomingEdge(toVertex, fromVertex.getIdentity(), edge.getIdentity());
 
     return edge;
   }
 
   public MutableEdge newEdge(final VertexInternal fromVertex, String edgeTypeName, final Identifiable toVertex,
-      final boolean bidirectional, final Object... edgeProperties) {
+      final Object... edgeProperties) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
 
@@ -149,7 +150,7 @@ public class GraphEngine {
       edge.save();
 
     connectOutgoingEdge(fromVertex, toVertex, edge);
-    if (bidirectional)
+    if (type.isBidirectional())
       connectIncomingEdge(toVertex, fromVertex.getIdentity(), edge.getIdentity());
 
     return edge;
@@ -698,9 +699,9 @@ public class GraphEngine {
       for (Edge oe : outEdges) {
         final RID inV = oe.getIn();
         if (oe instanceof LightEdge)
-          newVertex.newLightEdge(oe.getTypeName(), inV, true);
+          newVertex.newLightEdge(oe.getTypeName(), inV);
         else {
-          final MutableEdge e = newVertex.newEdge(oe.getTypeName(), inV, true);
+          final MutableEdge e = newVertex.newEdge(oe.getTypeName(), inV);
           final Map<String, Object> edgeProperties = oe.propertiesAsMap();
           if (!edgeProperties.isEmpty())
             e.set(edgeProperties).save();
@@ -710,9 +711,9 @@ public class GraphEngine {
       for (Edge ie : inEdges) {
         final RID outV = ie.getOut();
         if (ie instanceof LightEdge)
-          newVertex.newLightEdge(ie.getTypeName(), outV, true);
+          newVertex.newLightEdge(ie.getTypeName(), outV);
         else {
-          final MutableEdge e = newVertex.newEdge(ie.getTypeName(), outV, true);
+          final MutableEdge e = newVertex.newEdge(ie.getTypeName(), outV);
           final Map<String, Object> edgeProperties = ie.propertiesAsMap();
           if (!edgeProperties.isEmpty())
             e.set(edgeProperties).save();

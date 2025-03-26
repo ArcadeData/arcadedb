@@ -54,7 +54,7 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
     MutableVertex me = database.newVertex("Person").set("name", "me").save();
     MutableVertex you = database.newVertex("Person").set("name", "you").save();
 
-    MutableEdge friendOf = me.newEdge("FriendOf", you, false).save();
+    MutableEdge friendOf = me.newEdge("FriendOf", you).save();
 
     assertThat(friendOf.getOut()).isEqualTo(me);
     assertThat(friendOf.getIn()).isEqualTo(you);

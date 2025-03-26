@@ -40,17 +40,17 @@ public class TestVertexDelete extends TestHelper {
   private static List<Vertex> createTree(Database db) {
     var p1 = db.newVertex("v1").save();
     var p11 = db.newVertex("v1").save();
-    p11.newEdge("hasParent", p1, true).save();
+    p11.newEdge("hasParent", p1).save();
     var p12 = db.newVertex("v1").save();
-    p12.newEdge("hasParent", p1, true).save();
+    p12.newEdge("hasParent", p1).save();
     var n1 = db.newVertex("v1").save();
-    n1.newEdge("hasParent", p1, true).save();
+    n1.newEdge("hasParent", p1).save();
     var n2 = db.newVertex("v1").save();
-    n2.newEdge("hasParent", p11, true).save();
+    n2.newEdge("hasParent", p11).save();
     var n3 = db.newVertex("v1").save();
-    n3.newEdge("hasParent", p11, true).save();
+    n3.newEdge("hasParent", p11).save();
     var n4 = db.newVertex("v1").save();
-    n4.newEdge("hasParent", p12, true).save();
+    n4.newEdge("hasParent", p12).save();
 
     return List.of(p1, p11, p12, n1, n2, n3, n4);
   }
