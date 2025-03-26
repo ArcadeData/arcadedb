@@ -39,7 +39,7 @@ follow [installation instructions](https://pre-commit.com/#install) for your ope
 In order to use the latest distribution before the official release, you have to build it from the latest SNAPSHOT version in
 the `main` branch of GitHub. All you need is:
 
-- **Java v17** for the runtime or major
+- **Java v21** for the runtime or major
 - [**Apache Maven**](https://maven.apache.org/), to build the distribution
 
 It's super easy, just follow the following steps:
