@@ -276,5 +276,33 @@ public class BinaryCondition extends BooleanExpression {
     }
     return null;
   }
+
+  @Override
+  public boolean isKeyFromIncluded(final BinaryCondition additional) {
+    final BinaryCompareOperator operator = getOperator();
+    if (operator.isGreater()) {
+      return operator.isInclude();
+    } else {
+      if (additional != null && additional.getOperator() != null) {
+        return additional.getOperator().isGreaterInclude();
+      } else {
+        return true;
+      }
+    }
+  }
+
+  @Override
+  public boolean isKeyToIncluded(final BinaryCondition additional) {
+    final BinaryCompareOperator operator = getOperator();
+    if (operator.isLess()) {
+      return operator.isInclude();
+    } else {
+      if (additional != null && additional.getOperator() != null) {
+        return additional.getOperator().isLessInclude();
+      } else {
+        return true;
+      }
+    }
+  }
 }
 /* JavaCC - OriginalChecksum=99ed1dd2812eb730de8e1931b1764da5 (do not edit this line) */

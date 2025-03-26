@@ -119,6 +119,20 @@ public class ContainsCondition extends BooleanExpression {
     return false;
   }
 
+  @Override
+  public boolean isCacheable() {
+    if (left != null && !left.isCacheable()) {
+      return false;
+    }
+    if (right != null && !right.isCacheable()) {
+      return false;
+    }
+    if (condition != null && !condition.isCacheable()) {
+      return false;
+    }
+    return true;
+  }
+
   private boolean equalsInContainsSpace(final Object left, final Object right) {
     if (left == null && right == null)
       return true;
@@ -239,12 +253,12 @@ public class ContainsCondition extends BooleanExpression {
   }
 
   public boolean isIndexAware(final IndexSearchInfo info) {
-    if (left.isBaseIdentifier()) {
-      if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
-        if (right != null)
-          return right.isEarlyCalculated(info.getContext());
-      }
-    }
+//    if (left.isBaseIdentifier()) {
+//      if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
+//        if (right != null)
+//          return right.isEarlyCalculated(info.getContext());
+//      }
+//    }
     return false;
   }
 
