@@ -131,6 +131,7 @@ public class RemoteVertex {
     return resultSet.nextIfAvailable().getVertex().get().getIdentity();
   }
 
+  @Deprecated
   public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
       final Object... properties) {
     if (!bidirectional && ((EdgeType) remoteDatabase.getSchema().getType(edgeType)).isBidirectional())
@@ -139,7 +140,6 @@ public class RemoteVertex {
     return newEdge(edgeType, toVertex, properties);
   }
 
-  @Deprecated
   public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, Object... properties) {
     StringBuilder query = new StringBuilder(
         "create edge `" + edgeType + "` from " + vertex.getIdentity() + " to " + toVertex.getIdentity());
