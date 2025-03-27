@@ -47,7 +47,8 @@ public class Issue1898Test extends TestHelper {
           addresses CONTAINS '192.168.10.10'
           """);
       assertThat(rs.hasNext()).isTrue();
-      assertThat(rs.stream().count()).isEqualTo(1);
+      assertThat(rs.nextIfAvailable().getProperty("id").equals("first")).isTrue();
+      assertThat(rs.hasNext()).isFalse();
     });
     database.transaction(() -> {
       final ResultSet rs = database.query("SQL", """

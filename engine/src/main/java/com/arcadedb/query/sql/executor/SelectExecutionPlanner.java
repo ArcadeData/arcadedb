@@ -1437,12 +1437,14 @@ public class SelectExecutionPlanner {
       }
     }
 
+    if (resultSubPlans.size() > 1) { // if resultSubPlans.size() == 1 the step was already chained (see above)
+      plan.chain(new ParallelExecStep(resultSubPlans, context));
+      plan.chain(new FilterByClustersStep(filterClusters, context));
+      plan.chain(new DistinctExecutionStep(context));
+      indexedFunctionsFound = true;
+    }
+
     if (indexedFunctionsFound) {
-      if (resultSubPlans.size() > 1) { // if resultSubPlans.size() == 1 the step was already chained (see above)
-        plan.chain(new ParallelExecStep(resultSubPlans, context));
-        plan.chain(new FilterByClustersStep(filterClusters, context));
-        plan.chain(new DistinctExecutionStep(context));
-      }
       // WHERE condition already applied
       info.whereClause = null;
       info.flattenedWhereClause = null;
