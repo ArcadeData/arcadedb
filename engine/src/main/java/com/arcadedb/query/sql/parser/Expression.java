@@ -25,7 +25,6 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.ExecutionStepInternal;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
@@ -489,6 +488,10 @@ public class Expression extends SimpleNode {
       return toString() + "\n" + expression.getExecutionPlan().prettyPrint(depth + 1, indent);
 
     return toString();
+  }
+
+  public void setNull(final boolean isNull) {
+    this.isNull = isNull;
   }
 }
 /* JavaCC - OriginalChecksum=9c860224b121acdc89522ae97010be01 (do not edit this line) */

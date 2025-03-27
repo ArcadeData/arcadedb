@@ -34,7 +34,6 @@ import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.Bucket;
-import com.arcadedb.query.sql.parser.ContainsAnyCondition;
 import com.arcadedb.query.sql.parser.ContainsTextCondition;
 import com.arcadedb.query.sql.parser.EqualsCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
@@ -45,7 +44,6 @@ import com.arcadedb.query.sql.parser.GeOperator;
 import com.arcadedb.query.sql.parser.GroupBy;
 import com.arcadedb.query.sql.parser.GtOperator;
 import com.arcadedb.query.sql.parser.Identifier;
-import com.arcadedb.query.sql.parser.InCondition;
 import com.arcadedb.query.sql.parser.IndexIdentifier;
 import com.arcadedb.query.sql.parser.InputParameter;
 import com.arcadedb.query.sql.parser.LeOperator;
@@ -69,21 +67,13 @@ import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.Pair;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.stream.*;
 
 import static com.arcadedb.schema.Schema.INDEX_TYPE.FULL_TEXT;
 
@@ -119,18 +109,14 @@ public class SelectExecutionPlanner {
     info.skip = this.statement.getSkip();
     info.limit = this.statement.getLimit();
     info.timeout = this.statement.getTimeout() == null ? null : this.statement.getTimeout().copy();
-    if (info.timeout == null
-        && context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT) > 0) {
+    if (info.timeout == null && context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT) > 0) {
       info.timeout = new Timeout(-1);
-      info.timeout.setValue(
-          context.getDatabase()
-              .getConfiguration()
-              .getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT));
+      info.timeout.setValue(context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT));
     }
   }
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext context, final boolean useCache) {
-    final DatabaseInternal db= context.getDatabase();
+    final DatabaseInternal db = context.getDatabase();
     if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached()) {
       final ExecutionPlan plan = db.getExecutionPlanCache().get(statement.getOriginalStatement(), context);
       if (plan != null)
@@ -173,11 +159,8 @@ public class SelectExecutionPlanner {
     if (info.timeout != null)
       selectExecutionPlan.chain(new AccumulatingTimeoutStep(info.timeout, context));
 
-    if (useCache &&
-        !context.isProfiling() &&
-        statement.executionPlanCanBeCached() &&
-        selectExecutionPlan.canBeCached() &&
-        db.getExecutionPlanCache().getLastInvalidation() < planningStart)
+    if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && selectExecutionPlan.canBeCached()
+        && db.getExecutionPlanCache().getLastInvalidation() < planningStart)
       db.getExecutionPlanCache().put(statement.getOriginalStatement(), selectExecutionPlan);
 
     return selectExecutionPlan;
@@ -293,8 +276,7 @@ public class SelectExecutionPlanner {
   }
 
   private boolean handleHardwiredOptimizations(final SelectExecutionPlan result, final CommandContext context) {
-    return handleHardwiredCountOnIndex(result, info, context)
-        || handleHardwiredCountOnType(result, info, context);
+    return handleHardwiredCountOnIndex(result, info, context) || handleHardwiredCountOnType(result, info, context);
   }
 
   private boolean handleHardwiredCountOnType(final SelectExecutionPlan result, final QueryPlanningInfo info,
@@ -347,22 +329,13 @@ public class SelectExecutionPlanner {
    * @return
    */
   private boolean isMinimalQuery(final QueryPlanningInfo info) {
-    return info.projectionAfterOrderBy == null
-        && info.globalLetClause == null
-        && info.perRecordLetClause == null
-        && info.whereClause == null
-        && info.flattenedWhereClause == null
-        && info.groupBy == null
-        && info.orderBy == null
-        && info.unwind == null
-        && info.skip == null
-        && info.limit == null;
+    return info.projectionAfterOrderBy == null && info.globalLetClause == null && info.perRecordLetClause == null
+        && info.whereClause == null && info.flattenedWhereClause == null && info.groupBy == null && info.orderBy == null
+        && info.unwind == null && info.skip == null && info.limit == null;
   }
 
   private boolean isCountStar(final QueryPlanningInfo info) {
-    if (info.aggregateProjection == null
-        || info.projection == null
-        || info.aggregateProjection.getItems().size() != 1
+    if (info.aggregateProjection == null || info.projection == null || info.aggregateProjection.getItems().size() != 1
         || info.projection.getItems().size() != 1) {
       return false;
     }
@@ -371,12 +344,9 @@ public class SelectExecutionPlanner {
   }
 
   private static boolean isCountOnly(final QueryPlanningInfo info) {
-    if (info.aggregateProjection == null
-        || info.projection == null
-        || info.aggregateProjection.getItems().size() != 1
-        || info.projection.getItems().stream()
-        .filter(x -> !x.getProjectionAliasAsString().startsWith("_$$$ORDER_BY_ALIAS$$$_"))
-        .count() != 1) {
+    if (info.aggregateProjection == null || info.projection == null || info.aggregateProjection.getItems().size() != 1 ||
+        info.projection.getItems().stream().filter(x -> !x.getProjectionAliasAsString().startsWith("_$$$ORDER_BY_ALIAS$$$_"))
+            .count() != 1) {
       return false;
     }
     final ProjectionItem item = info.aggregateProjection.getItems().get(0);
@@ -389,9 +359,7 @@ public class SelectExecutionPlanner {
   }
 
   private boolean isCount(final Projection aggregateProjection, final Projection projection) {
-    if (aggregateProjection == null
-        || projection == null
-        || aggregateProjection.getItems().size() != 1
+    if (aggregateProjection == null || projection == null || aggregateProjection.getItems().size() != 1
         || projection.getItems().size() != 1) {
       return false;
     }
@@ -432,13 +400,8 @@ public class SelectExecutionPlanner {
           }
         }
 
-        result.chain(
-            new AggregateProjectionCalculationStep(
-                info.aggregateProjection,
-                info.groupBy,
-                aggregationLimit,
-                context,
-                info.timeout != null ? info.timeout.getVal().longValue() : -1));
+        result.chain(new AggregateProjectionCalculationStep(info.aggregateProjection, info.groupBy, aggregationLimit, context,
+            info.timeout != null ? info.timeout.getVal().longValue() : -1));
         if (isCountOnly(info) && info.groupBy == null) {
           result.chain(new GuaranteeEmptyCountStep(info.aggregateProjection.getItems().get(0), context));
         }
@@ -471,9 +434,7 @@ public class SelectExecutionPlanner {
     if (context == null || context.getDatabase() == null) {
       return;
     }
-    if (info.whereClause != null
-        && info.target != null
-        && info.target.getItem().getIdentifier() != null) {
+    if (info.whereClause != null && info.target != null && info.target.getItem().getIdentifier() != null) {
       String className = info.target.getItem().getIdentifier().getStringValue();
       Schema schema = context.getDatabase().getSchema();
       DocumentType type = schema.getType(className);
@@ -489,8 +450,7 @@ public class SelectExecutionPlanner {
       final Iterator<LetItem> iterator = info.perRecordLetClause.getItems().iterator();
       while (iterator.hasNext()) {
         final LetItem item = iterator.next();
-        if (item.getExpression() != null
-            && item.getExpression().isEarlyCalculated(context)) {
+        if (item.getExpression() != null && item.getExpression().isEarlyCalculated(context)) {
           iterator.remove();
           addGlobalLet(info, item.getVarName(), item.getExpression());
         } else if (item.getQuery() != null && !item.getQuery().refersToParent()) {
@@ -540,14 +500,8 @@ public class SelectExecutionPlanner {
    * creates additional projections for ORDER BY
    */
   private static void addOrderByProjections(final QueryPlanningInfo info) {
-    if (info.orderApplied
-        || info.expand
-        || info.unwind != null
-        || info.orderBy == null
-        || info.orderBy.getItems().size() == 0
-        || info.projection == null
-        || info.projection.getItems() == null
-        || (info.projection.getItems().size() == 1
+    if (info.orderApplied || info.expand || info.unwind != null || info.orderBy == null || info.orderBy.getItems().size() == 0
+        || info.projection == null || info.projection.getItems() == null || (info.projection.getItems().size() == 1
         && info.projection.getItems().get(0).isAll())) {
       return;
     }
@@ -654,13 +608,11 @@ public class SelectExecutionPlanner {
     //bind split projections to the execution planner
     if (isSplitted) {
       info.preAggregateProjection = preAggregate;
-      if (info.preAggregateProjection.getItems() == null
-          || info.preAggregateProjection.getItems().size() == 0) {
+      if (info.preAggregateProjection.getItems() == null || info.preAggregateProjection.getItems().size() == 0) {
         info.preAggregateProjection = null;
       }
       info.aggregateProjection = aggregate;
-      if (info.aggregateProjection.getItems() == null
-          || info.aggregateProjection.getItems().size() == 0) {
+      if (info.aggregateProjection.getItems() == null || info.aggregateProjection.getItems().size() == 0) {
         info.aggregateProjection = null;
       }
       info.projection = postAggregate;
@@ -671,9 +623,7 @@ public class SelectExecutionPlanner {
   }
 
   private static void handleGroupByNoSplit(final QueryPlanningInfo info, final CommandContext context) {
-    if (info.groupBy == null
-        || info.groupBy.getItems() == null
-        || info.groupBy.getItems().size() == 0)
+    if (info.groupBy == null || info.groupBy.getItems() == null || info.groupBy.getItems().size() == 0)
       return;
 
     for (Expression exp : info.groupBy.getItems()) {
@@ -707,9 +657,7 @@ public class SelectExecutionPlanner {
    * be put in the pre-aggregate (only here, in subsequent steps it's removed)
    */
   private static void addGroupByExpressionsToProjections(final QueryPlanningInfo info, final CommandContext context) {
-    if (info.groupBy == null
-        || info.groupBy.getItems() == null
-        || info.groupBy.getItems().size() == 0) {
+    if (info.groupBy == null || info.groupBy.getItems() == null || info.groupBy.getItems().size() == 0) {
       return;
     }
     final GroupBy newGroupBy = new GroupBy(-1);
@@ -829,10 +777,7 @@ public class SelectExecutionPlanner {
       info.perRecordLetClause.getItems().add(item);
   }
 
-  private void handleFetchFromTarget(
-      final SelectExecutionPlan result,
-      final QueryPlanningInfo info,
-      final CommandContext context) {
+  private void handleFetchFromTarget(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext context) {
 
     final FromItem target = info.target == null ? null : info.target.getItem();
 
@@ -863,10 +808,7 @@ public class SelectExecutionPlanner {
       }
       handleTypeAsTarget(info.fetchExecutionPlan, filterBuckets, info, context);
     } else if (target.getBucket() != null) {
-      handleBucketsAsTarget(info.fetchExecutionPlan,
-          info,
-          List.of(target.getBucket()),
-          context);
+      handleBucketsAsTarget(info.fetchExecutionPlan, info, List.of(target.getBucket()), context);
     } else if (target.getBucketList() != null) {
       final List<Bucket> allBuckets = target.getBucketList().toListOfClusters();
       final List<Bucket> buckets = new ArrayList<>();
@@ -878,11 +820,9 @@ public class SelectExecutionPlanner {
         if (name != null && info.buckets.contains(name))
           buckets.add(bucket);
       }
-      handleBucketsAsTarget(
-          info.fetchExecutionPlan, info, buckets, context);
+      handleBucketsAsTarget(info.fetchExecutionPlan, info, buckets, context);
     } else if (target.getStatement() != null) {
-      handleSubqueryAsTarget(
-          info.fetchExecutionPlan, target.getStatement(), context);
+      handleSubqueryAsTarget(info.fetchExecutionPlan, target.getStatement(), context);
     } else if (target.getFunctionCall() != null) {
       //        handleFunctionCallAsTarget(result, target.getFunctionCall(), context);//TODO
       throw new CommandExecutionException("function call as target is not supported yet");
@@ -1011,18 +951,12 @@ public class SelectExecutionPlanner {
   }
 
   private boolean isRangeOperator(final BinaryCompareOperator operator) {
-    return operator instanceof LtOperator
-        || operator instanceof LeOperator
-        || operator instanceof GtOperator
+    return operator instanceof LtOperator || operator instanceof LeOperator || operator instanceof GtOperator
         || operator instanceof GeOperator;
   }
 
-  private void handleInputParamAsTarget(
-      final SelectExecutionPlan result,
-      final Set<String> filterClusters,
-      final QueryPlanningInfo info,
-      final InputParameter inputParam,
-      final CommandContext context) {
+  private void handleInputParamAsTarget(final SelectExecutionPlan result, final Set<String> filterClusters,
+      final QueryPlanningInfo info, final InputParameter inputParam, final CommandContext context) {
     Object paramValue = inputParam.getValue(context.getInputParameters());
 
     if (paramValue instanceof String && RID.is(paramValue))
@@ -1119,11 +1053,10 @@ public class SelectExecutionPlanner {
       throw new CommandExecutionException("Index not found: " + indexName);
     }
 
-    int[] filterClusterIds = null;
-    if (filterClusters != null) {
+    List<Integer> filterClusterIds = null;
+    if (filterClusters != null)
       filterClusterIds = filterClusters.stream().map(name -> context.getDatabase().getSchema().getBucketByName(name).getFileId())
-          .mapToInt(i -> i).toArray();
-    }
+          .mapToInt(i -> i).boxed().toList();
 
     switch (indexIdentifier.getType()) {
     case INDEX:
@@ -1237,13 +1170,17 @@ public class SelectExecutionPlanner {
 
   private void handleGlobalLet(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext context) {
     if (info.globalLetClause != null) {
-      final List<LetItem> items = info.globalLetClause.getItems();
-      for (final LetItem item : items) {
+      List<LetItem> items = info.globalLetClause.getItems();
+      items = sortLet(items, this.statement.getLetClause());
+      List<String> scriptVars = new ArrayList<>();
+      for (LetItem item : items) {
+        context.declareScriptVariable(item.getVarName().getStringValue());
         if (item.getExpression() != null) {
           result.chain(new GlobalLetExpressionStep(item.getVarName(), item.getExpression(), context));
         } else {
-          result.chain(new GlobalLetQueryStep(item.getVarName(), item.getQuery(), context));
+          result.chain(new GlobalLetQueryStep(item.getVarName(), item.getQuery(), context, scriptVars));
         }
+        scriptVars.add(item.getVarName().getStringValue());
         info.globalLetPresent = true;
       }
     }
@@ -1251,14 +1188,14 @@ public class SelectExecutionPlanner {
 
   private void handleLet(final SelectExecutionPlan plan, final QueryPlanningInfo info, final CommandContext context) {
     if (info.perRecordLetClause != null) {
-      final List<LetItem> items = info.perRecordLetClause.getItems();
-      if (info.planCreated) {
+      List<LetItem> items = info.perRecordLetClause.getItems();
+      items = sortLet(items, this.statement.getLetClause());
+      if (!plan.steps.isEmpty()) {
         for (final LetItem item : items) {
-          if (item.getExpression() != null) {
+          if (item.getExpression() != null)
             plan.chain(new LetExpressionStep(item.getVarName(), item.getExpression(), context));
-          } else {
+          else
             plan.chain(new LetQueryStep(item.getVarName(), item.getQuery(), context));
-          }
         }
       } else {
 
@@ -1286,6 +1223,30 @@ public class SelectExecutionPlanner {
     }
   }
 
+  private List<LetItem> sortLet(final List<LetItem> items, final LetClause letClause) {
+    if (letClause == null)
+      return items;
+
+    final List<LetItem> i = new ArrayList<>(items);
+    final List<LetItem> result = new ArrayList<>();
+    for (LetItem item : letClause.getItems()) {
+      final String var = item.getVarName().getStringValue();
+      final Iterator<LetItem> iterator = i.iterator();
+      while (iterator.hasNext()) {
+        final LetItem x = iterator.next();
+        if (x.getVarName().getStringValue().equals(var)) {
+          iterator.remove();
+          result.add(x);
+          break;
+        }
+      }
+    }
+
+    result.addAll(i);
+
+    return result;
+  }
+
   private void handleWhere(final SelectExecutionPlan plan, final QueryPlanningInfo info, final CommandContext context) {
     if (info.whereClause != null) {
       if (info.planCreated)
@@ -1308,10 +1269,7 @@ public class SelectExecutionPlanner {
     if (info.expand || info.unwind != null)
       maxResults = null;
 
-    if (!info.orderApplied
-        && info.orderBy != null
-        && info.orderBy.getItems() != null
-        && info.orderBy.getItems().size() > 0) {
+    if (!info.orderApplied && info.orderBy != null && info.orderBy.getItems() != null && info.orderBy.getItems().size() > 0) {
       plan.chain(new OrderByStep(info.orderBy, maxResults, context, info.timeout != null ? info.timeout.getVal().longValue() : -1));
       if (info.projectionAfterOrderBy != null) {
         plan.chain(new ProjectionCalculationStep(info.projectionAfterOrderBy, context));
@@ -1364,16 +1322,15 @@ public class SelectExecutionPlanner {
 
   private boolean handleTypeAsTargetWithIndexedFunction(final SelectExecutionPlan plan, final Set<String> filterClusters,
       final Identifier queryTarget, final QueryPlanningInfo info, final CommandContext context) {
-    if (queryTarget == null) {
+    if (queryTarget == null)
       return false;
-    }
+
     final DocumentType typez = context.getDatabase().getSchema().getType(queryTarget.getStringValue());
-    if (typez == null) {
+    if (typez == null)
       throw new CommandExecutionException("Type not found: " + queryTarget);
-    }
-    if (info.flattenedWhereClause == null || info.flattenedWhereClause.size() == 0) {
+
+    if (info.flattenedWhereClause == null || info.flattenedWhereClause.isEmpty())
       return false;
-    }
 
     final List<InternalExecutionPlan> resultSubPlans = new ArrayList<>();
 
@@ -1384,43 +1341,47 @@ public class SelectExecutionPlanner {
 
       indexedFunctionConditions = filterIndexedFunctionsWithoutIndex(indexedFunctionConditions, info.target, context);
 
-      if (indexedFunctionConditions == null || indexedFunctionConditions.size() == 0) {
-        final List<IndexSearchDescriptor> bestIndexes = findBestIndexesFor(context, typez.getAllIndexes(true), block, typez);
-        if (!bestIndexes.isEmpty()) {
+      if (indexedFunctionConditions == null || indexedFunctionConditions.isEmpty()) {
+        IndexSearchDescriptor bestIndex = findBestIndexFor(context, typez.getAllIndexes(true), block, typez);
+        if (bestIndex != null) {
 
-          for (final IndexSearchDescriptor bestIndex : bestIndexes) {
-            final FetchFromIndexStep step = new FetchFromIndexStep(bestIndex.idx, bestIndex.keyCondition,
-                bestIndex.additionalRangeCondition, true, context);
+          final FetchFromIndexStep step = new FetchFromIndexStep(bestIndex.index, bestIndex.keyCondition,
+              bestIndex.additionalRangeCondition, true, context);
 
-            final SelectExecutionPlan subPlan = new SelectExecutionPlan(context);
-            subPlan.chain(step);
-            int[] filterClusterIds = null;
-            if (filterClusters != null) {
-              filterClusterIds = filterClusters.stream()
-                  .map(name -> context.getDatabase().getSchema().getBucketByName(name).getFileId()).mapToInt(i -> i).toArray();
-            }
-            subPlan.chain(new GetValueFromIndexEntryStep(context, filterClusterIds));
-            if (requiresMultipleIndexLookups(bestIndex.keyCondition)) {
-              subPlan.chain(new DistinctExecutionStep(context));
-            }
-            if (!block.getSubBlocks().isEmpty()) {
-              subPlan.chain(new FilterStep(createWhereFrom(block), context));
-            }
-            resultSubPlans.add(subPlan);
+          SelectExecutionPlan subPlan = new SelectExecutionPlan(context);
+          subPlan.chain(step);
+          List<Integer> filterClusterIds = null;
+          if (filterClusters != null)
+            filterClusterIds = classClustersFiltered(context.getDatabase(), typez, filterClusters);
+          else
+            filterClusterIds = typez.getBucketIds(true);
+
+          subPlan.chain(new GetValueFromIndexEntryStep(context, filterClusterIds));
+          if (bestIndex.requiresDistinctStep()) {
+            subPlan.chain(new DistinctExecutionStep(context));
           }
-
+          if (!block.getSubBlocks().isEmpty()) {
+            if ((info.perRecordLetClause != null && refersToLet(block.getSubBlocks()))) {
+              handleLet(subPlan, info, context);
+            }
+            subPlan.chain(new FilterStep(createWhereFrom(block), context));
+          }
+          resultSubPlans.add(subPlan);
         } else {
-          final FetchFromTypeExecutionStep step = new FetchFromTypeExecutionStep(typez.getName(), filterClusters, context, true);
-          final SelectExecutionPlan subPlan = new SelectExecutionPlan(context);
+          FetchFromTypeExecutionStep step = new FetchFromTypeExecutionStep(typez.getName(), filterClusters, context, true);
+          SelectExecutionPlan subPlan = new SelectExecutionPlan(context);
           subPlan.chain(step);
           if (!block.getSubBlocks().isEmpty()) {
+            if ((info.perRecordLetClause != null && refersToLet(block.getSubBlocks()))) {
+              handleLet(subPlan, info, context);
+            }
             subPlan.chain(new FilterStep(createWhereFrom(block), context));
           }
           resultSubPlans.add(subPlan);
         }
       } else {
         BinaryCondition blockCandidateFunction = null;
-        for (final BinaryCondition cond : indexedFunctionConditions) {
+        for (BinaryCondition cond : indexedFunctionConditions) {
           if (!cond.allowsIndexedFunctionExecutionOnTarget(info.target, context)) {
             if (!cond.canExecuteIndexedFunctionWithoutIndex(info.target, context)) {
               throw new CommandExecutionException("Cannot execute " + block + " on " + queryTarget);
@@ -1429,28 +1390,28 @@ public class SelectExecutionPlanner {
           if (blockCandidateFunction == null) {
             blockCandidateFunction = cond;
           } else {
-            final boolean thisAllowsNoIndex = cond.canExecuteIndexedFunctionWithoutIndex(info.target, context);
-            final boolean prevAllowsNoIndex = blockCandidateFunction.canExecuteIndexedFunctionWithoutIndex(info.target, context);
+            boolean thisAllowsNoIndex = cond.canExecuteIndexedFunctionWithoutIndex(info.target, context);
+            boolean prevAllowsNoIndex = blockCandidateFunction.canExecuteIndexedFunctionWithoutIndex(info.target, context);
             if (!thisAllowsNoIndex && !prevAllowsNoIndex) {
-              //none of the functions allow execution without index, so cannot choose one
+              // none of the functions allow execution without index, so cannot choose one
               throw new CommandExecutionException(
                   "Cannot choose indexed function between " + cond + " and " + blockCandidateFunction
                       + ". Both require indexed execution");
             } else if (thisAllowsNoIndex && prevAllowsNoIndex) {
-              //both can be calculated without index, choose the best one for index execution
+              // both can be calculated without index, choose the best one for index execution
               final long thisEstimate = cond.estimateIndexed(info.target, context);
               final long lastEstimate = blockCandidateFunction.estimateIndexed(info.target, context);
               if (thisEstimate > -1 && thisEstimate < lastEstimate) {
                 blockCandidateFunction = cond;
               }
             } else if (prevAllowsNoIndex) {
-              //choose current condition, because the other one can be calculated without index
+              // choose current condition, because the other one can be calculated without index
               blockCandidateFunction = cond;
             }
           }
         }
 
-        final FetchFromIndexedFunctionStep step = new FetchFromIndexedFunctionStep(blockCandidateFunction, info.target, context);
+        FetchFromIndexedFunctionStep step = new FetchFromIndexedFunctionStep(blockCandidateFunction, info.target, context);
         if (!blockCandidateFunction.executeIndexedFunctionAfterIndexSearch(info.target, context)) {
           block = block.copy();
           block.getSubBlocks().remove(blockCandidateFunction);
@@ -1459,10 +1420,13 @@ public class SelectExecutionPlanner {
           plan.chain(step);
           plan.chain(new FilterByClustersStep(filterClusters, context));
           if (!block.getSubBlocks().isEmpty()) {
+            if ((info.perRecordLetClause != null && refersToLet(block.getSubBlocks()))) {
+              handleLet(plan, info, context);
+            }
             plan.chain(new FilterStep(createWhereFrom(block), context));
           }
         } else {
-          final SelectExecutionPlan subPlan = new SelectExecutionPlan(context);
+          SelectExecutionPlan subPlan = new SelectExecutionPlan(context);
           subPlan.chain(step);
           if (!block.getSubBlocks().isEmpty()) {
             subPlan.chain(new FilterStep(createWhereFrom(block), context));
@@ -1473,13 +1437,15 @@ public class SelectExecutionPlanner {
       }
     }
 
+    if (resultSubPlans.size() > 1) { // if resultSubPlans.size() == 1 the step was already chained (see above)
+      plan.chain(new ParallelExecStep(resultSubPlans, context));
+      plan.chain(new FilterByClustersStep(filterClusters, context));
+      plan.chain(new DistinctExecutionStep(context));
+      indexedFunctionsFound = true;
+    }
+
     if (indexedFunctionsFound) {
-      if (resultSubPlans.size() > 1) { //if resultSubPlans.size() == 1 the step was already chained (see above)
-        plan.chain(new ParallelExecStep(resultSubPlans, context));
-        plan.chain(new FilterByClustersStep(filterClusters, context));
-        plan.chain(new DistinctExecutionStep(context));
-      }
-      //WHERE condition already applied
+      // WHERE condition already applied
       info.whereClause = null;
       info.flattenedWhereClause = null;
       return true;
@@ -1488,18 +1454,39 @@ public class SelectExecutionPlanner {
     }
   }
 
+  private boolean refersToLet(final List<BooleanExpression> subBlocks) {
+    if (subBlocks == null)
+      return false;
+
+    for (BooleanExpression exp : subBlocks) {
+      if (exp.toString().startsWith("$"))
+        return true;
+    }
+    return false;
+  }
+
+  private List<Integer> classClustersFiltered(final Database db, final DocumentType clazz, final Set<String> filterClusters) {
+    final List<Integer> ids = clazz.getBucketIds(true);
+    final List<Integer> filtered = new ArrayList<>();
+    for (Integer id : ids) {
+      if (filterClusters.contains(db.getSchema().getBucketById(id).getName()))
+        filtered.add(id);
+    }
+
+    return filtered;
+  }
+
   private List<BinaryCondition> filterIndexedFunctionsWithoutIndex(final List<BinaryCondition> indexedFunctionConditions,
       final FromClause fromClause, final CommandContext context) {
-    if (indexedFunctionConditions == null) {
+    if (indexedFunctionConditions == null)
       return null;
-    }
+
     final List<BinaryCondition> result = new ArrayList<>();
     for (final BinaryCondition cond : indexedFunctionConditions) {
-      if (cond.allowsIndexedFunctionExecutionOnTarget(fromClause, context)) {
+      if (cond.allowsIndexedFunctionExecutionOnTarget(fromClause, context))
         result.add(cond);
-      } else if (!cond.canExecuteIndexedFunctionWithoutIndex(fromClause, context)) {
+      else if (!cond.canExecuteIndexedFunctionWithoutIndex(fromClause, context))
         throw new CommandExecutionException("Cannot evaluate " + cond + ": no index defined");
-      }
     }
     return result;
   }
@@ -1518,12 +1505,10 @@ public class SelectExecutionPlanner {
       final Set<String> filterClusters, final QueryPlanningInfo info, final CommandContext context) {
 
     final DocumentType typez = context.getDatabase().getSchema().getType(queryTarget.getStringValue());
-    if (typez == null) {
+    if (typez == null)
       throw new CommandExecutionException("Type not found: " + queryTarget.getStringValue());
-    }
 
-    for (final Index idx : typez.getAllIndexes(true).stream().filter(i -> i.supportsOrderedIterations())
-        .collect(Collectors.toList())) {
+    for (final Index idx : typez.getAllIndexes(true).stream().filter(TypeIndex::supportsOrderedIterations).toList()) {
       final List<String> indexFields = idx.getPropertyNames();
       if (indexFields.size() < info.orderBy.getItems().size()) {
         continue;
@@ -1548,11 +1533,11 @@ public class SelectExecutionPlanner {
       }
       if (indexFound && orderType != null) {
         plan.chain(new FetchFromIndexValuesStep((RangeIndex) idx, orderType.equals(OrderByItem.ASC), context));
-        int[] filterClusterIds = null;
-        if (filterClusters != null) {
+        List<Integer> filterClusterIds = null;
+        if (filterClusters != null)
           filterClusterIds = filterClusters.stream()
-              .map(name -> context.getDatabase().getSchema().getBucketByName(name).getFileId()).mapToInt(i -> i).toArray();
-        }
+              .map(name -> context.getDatabase().getSchema().getBucketByName(name).getFileId()).mapToInt(i -> i).boxed().toList();
+
         plan.chain(new GetValueFromIndexEntryStep(context, filterClusterIds));
         info.orderApplied = true;
         return true;
@@ -1561,12 +1546,8 @@ public class SelectExecutionPlanner {
     return false;
   }
 
-  private boolean handleTypeAsTargetWithIndex(
-      final SelectExecutionPlan plan,
-      final Identifier targetType,
-      final Set<String> filterBuckets,
-      final QueryPlanningInfo info,
-      final CommandContext context) {
+  private boolean handleTypeAsTargetWithIndex(final SelectExecutionPlan plan, final Identifier targetType,
+      final Set<String> filterBuckets, final QueryPlanningInfo info, final CommandContext context) {
 
     final List<ExecutionStepInternal> result = handleTypeAsTargetWithIndex(targetType.getStringValue(), filterBuckets, info,
         context);
@@ -1577,12 +1558,12 @@ public class SelectExecutionPlanner {
       info.flattenedWhereClause = null;
       return true;
     }
-    //TODO
+
     final DocumentType typez = context.getDatabase().getSchema().getType(targetType.getStringValue());
     if (typez == null)
       throw new CommandExecutionException("Cannot find type '" + targetType + "'");
 
-    if (!isEmptyNoSubtypes(typez) || typez.getSubTypes().isEmpty() || isDiamondHierarchy(typez))
+    if (context.getDatabase().countType(typez.getName(), false) > 0 || typez.getSubTypes().isEmpty() || isDiamondHierarchy(typez))
       return false;
 
     final Collection<DocumentType> subTypes = typez.getSubTypes();
@@ -1605,21 +1586,8 @@ public class SelectExecutionPlanner {
     return false;
   }
 
-  private boolean isEmptyNoSubtypes(final DocumentType typez) {
-    final List<com.arcadedb.engine.Bucket> buckets = typez.getBuckets(false);
-    for (final com.arcadedb.engine.Bucket bucket : buckets) {
-      if (bucket.iterator().hasNext())
-        return false;
-    }
-    return true;
-  }
-
   /**
-   * checks if a class is the top of a diamond hierarchy
-   *
-   * @param typez
-   *
-   * @return
+   * Checks if a class is the top of a diamond hierarchy.
    */
   private boolean isDiamondHierarchy(final DocumentType typez) {
     final Set<DocumentType> traversed = new HashSet<>();
@@ -1639,11 +1607,8 @@ public class SelectExecutionPlanner {
     return false;
   }
 
-  private List<ExecutionStepInternal> handleTypeAsTargetWithIndexRecursive(
-      final String targetType,
-      final Set<String> filterBuckets,
-      final QueryPlanningInfo info,
-      final CommandContext context) {
+  private List<ExecutionStepInternal> handleTypeAsTargetWithIndexRecursive(final String targetType, final Set<String> filterBuckets,
+      final QueryPlanningInfo info, final CommandContext context) {
     List<ExecutionStepInternal> result = handleTypeAsTargetWithIndex(targetType, filterBuckets, info, context);
     if (result == null) {
       result = new ArrayList<>();
@@ -1651,9 +1616,9 @@ public class SelectExecutionPlanner {
       if (typez == null)
         throw new CommandExecutionException("Cannot find class " + targetType);
 
-//      if (typez.count(false) != 0 || typez.getSubclasses().size() == 0 || isDiamondHierarchy(typez)) {
-//      return null;
-//      }
+      if (context.getDatabase().countType(typez.getName(), false) != 0 || typez.getSubTypes().size() == 0 || isDiamondHierarchy(
+          typez))
+        return null;
 
       final Collection<DocumentType> subTypes = typez.getSubTypes();
 
@@ -1675,81 +1640,77 @@ public class SelectExecutionPlanner {
     return result.isEmpty() ? null : result;
   }
 
-  private List<ExecutionStepInternal> handleTypeAsTargetWithIndex(
-      final String targetType,
-      final Set<String> filterBuckets,
-      final QueryPlanningInfo info,
-      final CommandContext context) {
-    if (info.flattenedWhereClause == null || info.flattenedWhereClause.size() == 0) {
+  private List<ExecutionStepInternal> handleTypeAsTargetWithIndex(final String targetType, final Set<String> filterBuckets,
+      final QueryPlanningInfo info, final CommandContext context) {
+    if (info.flattenedWhereClause == null || info.flattenedWhereClause.isEmpty())
       return null;
-    }
 
     final DocumentType typez = context.getDatabase().getSchema().getType(targetType);
-    if (typez == null) {
+    if (typez == null)
       throw new CommandExecutionException("Cannot find type " + targetType);
-    }
 
     final Collection<TypeIndex> indexes = typez.getAllIndexes(true);
 
     if (indexes.isEmpty())
       return null;
 
-    final List<IndexSearchDescriptor> indexSearchDescriptors =
+    List<IndexSearchDescriptor> indexSearchDescriptors =
         info.flattenedWhereClause.stream()
             .map(x -> findBestIndexFor(context, indexes, x, typez))
             .filter(Objects::nonNull)
             .collect(Collectors.toList());
 
     if (indexSearchDescriptors.isEmpty())
-      return null;
+      return null; // some blocks could not be managed with an index
 
-    // TODO
-    if (indexSearchDescriptors.size() != info.flattenedWhereClause.size()) {
-      return null; //some blocks could not be managed with an index
-    }
+    List<IndexSearchDescriptor> optimumIndexSearchDescriptors =
+        commonFactor(indexSearchDescriptors);
 
-//    // ARCADEDB: NOT APPLICABLE TO ORIENTDB
-//    // IF THERE ARE ANY CHANGES IN TX, AVOID IT
-//    for (IndexSearchDescriptor entry : indexSearchDescriptors) {
-//      if (entry.idx instanceof TypeIndex) {
-//        for (IndexInternal idx : ((TypeIndex) entry.idx).getIndexesOnBuckets()) {
-//          if (context.getDatabase().getTransaction().getIndexChanges().getTotalEntriesByIndex(idx.getName()) > 0)
-//            // CANNOT USE THE INDEX WITH MODIFIED PAGES IN TX BECAUSE THEY COULD CONTAIN NOT INDEXED ENTRIES
-//            return null;
-//        }
-//      } else if (context.getDatabase().getTransaction().getIndexChanges().getTotalEntriesByIndex(entry.idx.getName()) > 0)
-//        // CANNOT USE THE INDEX WITH MODIFIED PAGES IN TX BECAUSE THEY COULD CONTAIN NOT INDEXED ENTRIES
-//        return null;
-//    }
+    return executionStepFromIndexes(filterBuckets, typez, info, context, optimumIndexSearchDescriptors);
+  }
 
-    final List<ExecutionStepInternal> result;
-
-    final List<IndexSearchDescriptor> optimumIndexSearchDescriptors = commonFactor(indexSearchDescriptors);
-
-    if (indexSearchDescriptors.size() == 1) {
-      final IndexSearchDescriptor desc = indexSearchDescriptors.get(0);
+  private List<ExecutionStepInternal> executionStepFromIndexes(final Set<String> filterClusters, final DocumentType clazz,
+      final QueryPlanningInfo info, final CommandContext context, List<IndexSearchDescriptor> optimumIndexSearchDescriptors) {
+    List<ExecutionStepInternal> result;
+    if (optimumIndexSearchDescriptors.size() == 1) {
+      final IndexSearchDescriptor desc = optimumIndexSearchDescriptors.get(0);
       result = new ArrayList<>();
+
       final Boolean orderAsc = getOrderDirection(info);
-      result.add(new FetchFromIndexStep(desc.idx, desc.keyCondition, desc.additionalRangeCondition, !Boolean.FALSE.equals(orderAsc),
-          context));
-      int[] filterClusterIds = null;
-      if (filterBuckets != null) {
-        filterClusterIds = filterBuckets.stream().map(name -> context.getDatabase().getSchema().getBucketByName(name).getFileId())
-            .mapToInt(i -> i).toArray();
+      result.add(
+          new FetchFromIndexStep((RangeIndex) desc.getIndex(), desc.keyCondition, desc.additionalRangeCondition,
+              !Boolean.FALSE.equals(orderAsc),
+              context));
+
+      List<Integer> filterClusterIds = null;
+      if (filterClusters != null) {
+        filterClusterIds = classClustersFiltered(context.getDatabase(), clazz, filterClusters);
+      } else {
+        filterClusterIds = clazz.getBucketIds(true);
       }
       result.add(new GetValueFromIndexEntryStep(context, filterClusterIds));
-      if (requiresMultipleIndexLookups(desc.keyCondition)) {
+      if (desc.requiresDistinctStep()) {
         result.add(new DistinctExecutionStep(context));
       }
-      if (orderAsc != null && info.orderBy != null && fullySorted(info.orderBy, desc.keyCondition, desc.idx)) {
+
+      if (orderAsc != null && info.orderBy != null && fullySorted(info.orderBy, (AndBlock) desc.keyCondition, desc.getIndex()))
         info.orderApplied = true;
-      }
-      if (desc.remainingCondition != null && !desc.remainingCondition.isEmpty()) {
-        result.add(new FilterStep(createWhereFrom(desc.remainingCondition), context));
+
+      if (desc.getRemainingCondition() != null && !desc.getRemainingCondition().isEmpty()) {
+        if ((info.perRecordLetClause != null
+            && refersToLet(Collections.singletonList(desc.getRemainingCondition())))) {
+          SelectExecutionPlan stubPlan = new SelectExecutionPlan(context);
+          handleLet(stubPlan, info, context);
+          for (ExecutionStep step : stubPlan.getSteps()) {
+            result.add((ExecutionStepInternal) step);
+          }
+        }
+        result.add(
+            new FilterStep(createWhereFrom(desc.getRemainingCondition()), context));
       }
     } else {
       result = new ArrayList<>();
-      result.add(createParallelIndexFetch(optimumIndexSearchDescriptors, filterBuckets, context));
+      result.add(createParallelIndexFetch(optimumIndexSearchDescriptors, filterClusters, context));
       if (optimumIndexSearchDescriptors.size() > 1) {
         result.add(new DistinctExecutionStep(context));
       }
@@ -1827,9 +1788,9 @@ public class SelectExecutionPlanner {
    * @return TRUE if all the order clauses are ASC, FALSE if all are DESC, null otherwise
    */
   private Boolean getOrderDirection(final QueryPlanningInfo info) {
-    if (info.orderBy == null) {
+    if (info.orderBy == null)
       return null;
-    }
+
     String result = null;
     for (final OrderByItem item : info.orderBy.getItems()) {
       if (result == null) {
@@ -1849,14 +1810,14 @@ public class SelectExecutionPlanner {
     final List<InternalExecutionPlan> subPlans = new ArrayList<>();
     for (final IndexSearchDescriptor desc : indexSearchDescriptors) {
       final SelectExecutionPlan subPlan = new SelectExecutionPlan(context);
-      subPlan.chain(new FetchFromIndexStep(desc.idx, desc.keyCondition, desc.additionalRangeCondition, context));
-      int[] filterClusterIds = null;
-      if (filterClusters != null) {
+      subPlan.chain(new FetchFromIndexStep(desc.index, desc.keyCondition, desc.additionalRangeCondition, context));
+      List<Integer> filterClusterIds = null;
+      if (filterClusters != null)
         filterClusterIds = filterClusters.stream().map(name -> context.getDatabase().getSchema().getBucketByName(name).getFileId())
-            .mapToInt(i -> i).toArray();
-      }
+            .mapToInt(i -> i).boxed().toList();
+
       subPlan.chain(new GetValueFromIndexEntryStep(context, filterClusterIds));
-      if (requiresMultipleIndexLookups(desc.keyCondition)) {
+      if (requiresMultipleIndexLookups((AndBlock) desc.keyCondition)) {
         subPlan.chain(new DistinctExecutionStep(context));
       }
       if (desc.remainingCondition != null && !desc.remainingCondition.isEmpty()) {
@@ -1899,20 +1860,64 @@ public class SelectExecutionPlanner {
    *
    * @return
    */
-  private List<IndexSearchDescriptor> findBestIndexesFor(final CommandContext context, final Collection<TypeIndex> indexes,
+  private IndexSearchDescriptor findBestIndexesFor(final CommandContext context, final Collection<TypeIndex> indexes,
       final AndBlock block, final DocumentType typez) {
-    final Iterator<IndexSearchDescriptor> it = indexes.stream()
-        //.filter(index -> index.getInternal().canBeUsedInEqualityOperators())
-        .map(index -> buildIndexSearchDescriptor(context, index, block)).filter(Objects::nonNull)
-        .filter(x -> x.keyCondition != null).filter(x -> x.keyCondition.getSubBlocks().size() > 0)
-        .sorted(Comparator.comparing(x -> x.cost(context))).iterator();
+    // get all valid index descriptors
+    List<IndexSearchDescriptor> descriptors = indexes.stream()
+        .map(index -> buildIndexSearchDescriptor(context, index, block, typez)).filter(Objects::nonNull)
+        .filter(x -> x.keyCondition != null).filter(x -> x.getSubBlocks().size() > 0)
+        .sorted(Comparator.comparing(x -> x.cost(context))).collect(Collectors.toList());
 
-    final List<IndexSearchDescriptor> list = new ArrayList<>();
+    descriptors = removeGenericIndexes(descriptors, typez);
 
-    while (it.hasNext())
-      list.add(it.next());
+    // remove the redundant descriptors (eg. if I have one on [a] and one on [a, b], the first one
+    // is redundant, just discard it)
+    descriptors = removePrefixIndexes(descriptors);
 
-    return list;
+    // sort by cost
+    List<Pair<Integer, IndexSearchDescriptor>> sortedDescriptors = descriptors.stream()
+        .map(x -> (Pair<Integer, IndexSearchDescriptor>) new Pair(x.cost(context), x)).sorted().toList();
+
+    // get only the descriptors with the lowest cost
+    if (sortedDescriptors.isEmpty()) {
+      descriptors = Collections.emptyList();
+    } else {
+      descriptors = sortedDescriptors.stream().filter(x -> x.getFirst().equals(sortedDescriptors.get(0).getFirst()))
+          .map(Pair::getSecond).collect(Collectors.toList());
+    }
+
+    // sort remaining by the number of indexed fields
+    descriptors = descriptors.stream().sorted(Comparator.comparingInt(x -> x.blockCount())).collect(Collectors.toList());
+
+    // get the one that has more indexed fields
+    return descriptors.isEmpty() ? null : descriptors.get(descriptors.size() - 1);
+  }
+
+  /**
+   * If between the index candidates there are for the same property target class index and super
+   * class index prefer the target class.
+   */
+  private List<IndexSearchDescriptor> removeGenericIndexes(final List<IndexSearchDescriptor> descriptors,
+      final DocumentType clazz) {
+    List<IndexSearchDescriptor> results = new ArrayList<>();
+    for (IndexSearchDescriptor desc : descriptors) {
+      IndexSearchDescriptor matching = null;
+      for (IndexSearchDescriptor result : results) {
+        if (desc.isSameCondition(result)) {
+          matching = result;
+          break;
+        }
+      }
+      if (matching != null) {
+        if (clazz.getName().equals(desc.getIndex().getTypeName())) {
+          results.remove(matching);
+          results.add(desc);
+        }
+      } else {
+        results.add(desc);
+      }
+    }
+    return results;
   }
 
   /**
@@ -1927,20 +1932,21 @@ public class SelectExecutionPlanner {
    */
   private IndexSearchDescriptor findBestIndexFor(final CommandContext context, final Collection<TypeIndex> indexes,
       final AndBlock block, final DocumentType clazz) {
+
     // get all valid index descriptors
-    List<IndexSearchDescriptor> descriptors = indexes.stream().map(index -> buildIndexSearchDescriptor(context, index, block))
-        .filter(Objects::nonNull).filter(x -> x.keyCondition != null).filter(x -> x.keyCondition.getSubBlocks().size() > 0)
-        .collect(Collectors.toList());
+    List<IndexSearchDescriptor> descriptors = indexes.stream()
+        .map(index -> buildIndexSearchDescriptor(context, index, block, clazz)).filter(Objects::nonNull)
+        .filter(x -> x.keyCondition != null).filter(x -> !x.getSubBlocks().isEmpty()).collect(Collectors.toList());
 
     final List<IndexSearchDescriptor> fullTextIndexDescriptors = indexes.stream().filter(idx -> idx.getType().equals(FULL_TEXT))
         .map(idx -> buildIndexSearchDescriptorForFulltext(context, idx, block, clazz)).filter(Objects::nonNull)
-        .filter(x -> x.keyCondition != null).filter(x -> x.keyCondition.getSubBlocks().size() > 0).collect(Collectors.toList());
+        .filter(x -> x.keyCondition != null).filter(x -> !x.getSubBlocks().isEmpty()).toList();
 
     descriptors.addAll(fullTextIndexDescriptors);
 
     // remove the redundant descriptors (eg. if I have one on [a] and one on [a, b], the first one
     // is redundant, just discard it)
-    descriptors = removePrefixIndexes(descriptors);
+    //descriptors = removePrefixIndexes(descriptors);
 
     // sort by cost
     final List<Pair<Integer, IndexSearchDescriptor>> sortedDescriptors = descriptors.stream()
@@ -1955,11 +1961,10 @@ public class SelectExecutionPlanner {
     }
 
     // sort remaining by the number of indexed fields
-    descriptors = descriptors.stream().sorted(Comparator.comparingInt(x -> x.keyCondition.getSubBlocks().size()))
-        .collect(Collectors.toList());
+    descriptors = descriptors.stream().sorted(Comparator.comparingInt(x -> x.getSubBlocks().size())).collect(Collectors.toList());
 
     // get the one that has more indexed fields
-    return descriptors.isEmpty() ? null : descriptors.get(descriptors.size() - 1);
+    return descriptors.isEmpty() ? null : descriptors.get(0);
   }
 
   /**
@@ -1972,8 +1977,8 @@ public class SelectExecutionPlanner {
    * @return
    */
   private boolean isPrefixOf(final IndexSearchDescriptor item, final IndexSearchDescriptor desc) {
-    final List<BooleanExpression> left = item.keyCondition.getSubBlocks();
-    final List<BooleanExpression> right = desc.keyCondition.getSubBlocks();
+    final List<BooleanExpression> left = item.getSubBlocks();
+    final List<BooleanExpression> right = desc.getSubBlocks();
     if (left.size() > right.size()) {
       return false;
     }
@@ -2058,7 +2063,7 @@ public class SelectExecutionPlanner {
 
     final AndBlock indexKeyValue = new AndBlock(-1);
     final IndexSearchDescriptor result = new IndexSearchDescriptor();
-    result.idx = (RangeIndex) index;
+    result.index = (RangeIndex) index;
     result.keyCondition = indexKeyValue;
     for (final String indexField : indexFields) {
       blockIterator = blockCopy.getSubBlocks().iterator();
@@ -2088,10 +2093,9 @@ public class SelectExecutionPlanner {
       }
     }
 
-    if (result.keyCondition.getSubBlocks().size() < index.getPropertyNames().size() && !index.supportsOrderedIterations()) {
+    if (result.getSubBlocks().size() < index.getPropertyNames().size() && !index.supportsOrderedIterations())
       // hash indexes do not support partial key match
       return null;
-    }
 
     if (found) {
       result.remainingCondition = blockCopy;
@@ -2109,128 +2113,65 @@ public class SelectExecutionPlanner {
    *
    * @return
    */
-  private IndexSearchDescriptor buildIndexSearchDescriptor(final CommandContext context, final Index index, final AndBlock block) {
+  private IndexSearchDescriptor buildIndexSearchDescriptor(final CommandContext context, final Index index, final AndBlock block,
+      final DocumentType clazz) {
     final List<String> indexFields = index.getPropertyNames();
-    final BinaryCondition keyCondition = new BinaryCondition(-1);
-    final Identifier key = new Identifier("key");
-    keyCondition.setLeft(new Expression(key));
-    final boolean allowsRange = allowsRangeQueries(index);
     boolean found = false;
 
-    final AndBlock blockCopy = block.copy();
+    AndBlock blockCopy = block.copy();
     Iterator<BooleanExpression> blockIterator;
 
-    final AndBlock indexKeyValue = new AndBlock(-1);
-    final IndexSearchDescriptor result = new IndexSearchDescriptor();
-    result.idx = (RangeIndex) index;
-    result.keyCondition = indexKeyValue;
-    for (final String indexField : indexFields) {
-      blockIterator = blockCopy.getSubBlocks().iterator();
-      boolean breakHere = false;
-      boolean indexFieldFound = false;
-      while (blockIterator.hasNext()) {
-        final BooleanExpression singleExp = blockIterator.next();
-        if (singleExp instanceof BinaryCondition) {
-          final Expression left = ((BinaryCondition) singleExp).getLeft();
-          if (left.isBaseIdentifier()) {
-            final String fieldName = left.getDefaultAlias().getStringValue();
-            if (indexField.equals(fieldName)) {
-              final BinaryCompareOperator operator = ((BinaryCondition) singleExp).getOperator();
-              if (!((BinaryCondition) singleExp).getRight().isEarlyCalculated(context)) {
-                continue; //this cannot be used because the value depends on single record
-              }
-              if (operator instanceof EqualsCompareOperator) {
-                found = true;
-                indexFieldFound = true;
-                final BinaryCondition condition = new BinaryCondition(-1);
-                condition.setLeft(left);
-                condition.setOperator(operator);
-                condition.setRight(((BinaryCondition) singleExp).getRight().copy());
-                indexKeyValue.getSubBlocks().add(condition);
-                blockIterator.remove();
-                break;
-              } else if (allowsRange && operator.isRangeOperator()) {
-                found = true;
-                indexFieldFound = true;
-                breakHere = true;//this is last element, no other fields can be added to the key because this is a range condition
-                final BinaryCondition condition = new BinaryCondition(-1);
-                condition.setLeft(left);
-                condition.setOperator(operator);
-                condition.setRight(((BinaryCondition) singleExp).getRight().copy());
-                indexKeyValue.getSubBlocks().add(condition);
-                blockIterator.remove();
-                //look for the opposite condition, on the same field, for range queries (the other side of the range)
-                while (blockIterator.hasNext()) {
-                  final BooleanExpression next = blockIterator.next();
-                  if (createsRangeWith((BinaryCondition) singleExp, next)) {
-                    result.additionalRangeCondition = (BinaryCondition) next;
-                    blockIterator.remove();
-                    break;
-                  }
-                }
-                break;
-              }
-            }
-          }
-        } else if (singleExp instanceof ContainsAnyCondition) {
-          final Expression left = ((ContainsAnyCondition) singleExp).getLeft();
-          if (left.isBaseIdentifier()) {
-            final String fieldName = left.getDefaultAlias().getStringValue();
-            if (indexField.equals(fieldName)) {
-              if (!((ContainsAnyCondition) singleExp).getRight().isEarlyCalculated(context)) {
-                continue; //this cannot be used because the value depends on single record
-              }
-              found = true;
-              indexFieldFound = true;
-              final ContainsAnyCondition condition = new ContainsAnyCondition(-1);
-              condition.setLeft(left);
-              condition.setRight(((ContainsAnyCondition) singleExp).getRight().copy());
-              indexKeyValue.getSubBlocks().add(condition);
-              blockIterator.remove();
-              break;
-            }
-          }
-        } else if (singleExp instanceof InCondition) {
-          final Expression left = ((InCondition) singleExp).getLeft();
-          if (left.isBaseIdentifier()) {
-            final String fieldName = left.getDefaultAlias().getStringValue();
-            if (indexField.equals(fieldName)) {
-              if (((InCondition) singleExp).getRightMathExpression() != null) {
+    AndBlock indexKeyValue = new AndBlock(-1);
+    BinaryCondition additionalRangeCondition = null;
 
-                if (!((InCondition) singleExp).getRightMathExpression().isEarlyCalculated(context)) {
-                  continue; //this cannot be used because the value depends on single record
-                }
-                found = true;
-                indexFieldFound = true;
-                final InCondition condition = new InCondition(-1);
-                condition.setLeft(left);
-                condition.setRightMathExpression(((InCondition) singleExp).getRightMathExpression().copy());
-                indexKeyValue.getSubBlocks().add(condition);
-                blockIterator.remove();
-                break;
-              } else if (((InCondition) singleExp).getRightParam() != null) {
-                found = true;
-                indexFieldFound = true;
-                final InCondition condition = new InCondition(-1);
-                condition.setLeft(left);
-                condition.setRightParam(((InCondition) singleExp).getRightParam().copy());
-                indexKeyValue.getSubBlocks().add(condition);
+    for (String indexField : indexFields) {
+      final IndexSearchInfo info = new IndexSearchInfo(indexField, allowsRangeQueries(index), isMap(clazz, indexField),
+          isIndexByKey(index, indexField), isIndexByValue(index, indexField), true, context);
+      blockIterator = blockCopy.getSubBlocks().iterator();
+      boolean indexFieldFound = false;
+      boolean rangeOp = false;
+      while (blockIterator.hasNext()) {
+        BooleanExpression singleExp = blockIterator.next();
+        if (singleExp.isIndexAware(info)) {
+          indexFieldFound = true;
+          indexKeyValue.getSubBlocks().add(singleExp.copy());
+          blockIterator.remove();
+          if (singleExp instanceof BinaryCondition && ((BinaryCondition) singleExp).getOperator().isRangeOperator()) {
+            rangeOp = true;
+          }
+          if (rangeOp && info.allowsRange()) {
+            // look for the opposite condition, on the same field, for range queries (the other
+            // side of the range)
+            while (blockIterator.hasNext()) {
+              BooleanExpression next = blockIterator.next();
+              if (next.createRangeWith(singleExp)) {
+                additionalRangeCondition = (BinaryCondition) next;
                 blockIterator.remove();
                 break;
               }
             }
           }
+          break;
         }
       }
-      if (breakHere || !indexFieldFound) {
+
+      if (indexFieldFound) {
+        found = true;
+      }
+      if (!indexFieldFound || rangeOp) {
         break;
       }
     }
 
-    if (found) {
-      result.remainingCondition = blockCopy;
-      return result;
+    if (indexKeyValue.getSubBlocks().size() < index.getPropertyNames().size()) {
+      if (!index.supportsOrderedIterations()) {
+        return null;
+      }
     }
+
+    if (found)
+      return new IndexSearchDescriptor((RangeIndex) index, indexKeyValue, additionalRangeCondition, blockCopy);
+
     return null;
   }
 
@@ -2256,6 +2197,29 @@ public class SelectExecutionPlanner {
     return index.supportsOrderedIterations();
   }
 
+  private boolean isMap(final DocumentType clazz, final String indexField) {
+    final Property prop = clazz.getPropertyIfExists(indexField);
+    if (prop == null)
+      return false;
+    return prop.getType() == Type.MAP;
+  }
+
+  private boolean isIndexByKey(final Index index, final String field) {
+    for (String o : index.getPropertyNames()) {
+      if (o.equalsIgnoreCase(field + " by key"))
+        return true;
+    }
+    return false;
+  }
+
+  private boolean isIndexByValue(final Index index, final String field) {
+    for (String o : index.getPropertyNames()) {
+      if (o.equalsIgnoreCase(field + " by value"))
+        return true;
+    }
+    return false;
+  }
+
   /**
    * aggregates multiple index conditions that refer to the same key search
    *
@@ -2267,8 +2231,8 @@ public class SelectExecutionPlanner {
     //index, key condition, additional filter (to aggregate in OR)
     final Map<RangeIndex, Map<IndexCondPair, OrBlock>> aggregation = new HashMap<>();
     for (final IndexSearchDescriptor item : indexSearchDescriptors) {
-      final Map<IndexCondPair, OrBlock> filtersForIndex = aggregation.computeIfAbsent(item.idx, k -> new HashMap<>());
-      final IndexCondPair extendedCond = new IndexCondPair(item.keyCondition, item.additionalRangeCondition);
+      final Map<IndexCondPair, OrBlock> filtersForIndex = aggregation.computeIfAbsent(item.index, k -> new HashMap<>());
+      final IndexCondPair extendedCond = new IndexCondPair((AndBlock) item.keyCondition, item.additionalRangeCondition);
 
       OrBlock existingAdditionalConditions = filtersForIndex.get(extendedCond);
       if (existingAdditionalConditions == null) {
@@ -2280,10 +2244,7 @@ public class SelectExecutionPlanner {
     final List<IndexSearchDescriptor> result = new ArrayList<>();
     for (final Map.Entry<RangeIndex, Map<IndexCondPair, OrBlock>> item : aggregation.entrySet()) {
       for (final Map.Entry<IndexCondPair, OrBlock> filters : item.getValue().entrySet()) {
-        result.add(new IndexSearchDescriptor(
-            item.getKey(),
-            filters.getKey().mainCondition,
-            filters.getKey().additionalRange,
+        result.add(new IndexSearchDescriptor(item.getKey(), filters.getKey().mainCondition, filters.getKey().additionalRange,
             filters.getValue()));
       }
     }
@@ -2426,9 +2387,7 @@ public class SelectExecutionPlanner {
     if (info.orderBy.getItems().size() == 1) {
       final OrderByItem item = info.orderBy.getItems().get(0);
       final String recordAttr = item.getRecordAttr();
-      return recordAttr != null
-          && recordAttr.equalsIgnoreCase("@rid")
-          && (item.getType() == null || OrderByItem.ASC.equals(
+      return recordAttr != null && recordAttr.equalsIgnoreCase("@rid") && (item.getType() == null || OrderByItem.ASC.equals(
           item.getType()));
     }
     return false;

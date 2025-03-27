@@ -331,7 +331,10 @@ public class BinaryComparator {
     case BinaryTypes.TYPE_LIST: {
       switch (type2) {
       case BinaryTypes.TYPE_LIST:
-        return CollectionUtils.compare((List) value1, (List) value2);
+        final List v1 = value1.getClass().isArray() ? Arrays.asList((Object[]) value1) : (List) value1;
+        final List v2 = value2.getClass().isArray() ? Arrays.asList((Object[]) value2) : (List) value2;
+
+        return CollectionUtils.compare(v1, v2);
       }
       break;
     }

@@ -23,8 +23,7 @@ import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.LocalResultSet;
 import com.arcadedb.query.sql.parser.Statement;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 03/08/16.
@@ -34,14 +33,23 @@ public class GlobalLetQueryStep extends AbstractExecutionStep {
   private final InternalExecutionPlan subExecutionPlan;
   boolean executed = false;
 
-  public GlobalLetQueryStep(final Identifier varName, final Statement query, final CommandContext context) {
+  public GlobalLetQueryStep(final Identifier varName, final Statement query, final CommandContext context,
+      final List<String> scriptVars) {
     super(context);
     this.varName = varName;
 
     final BasicCommandContext subCtx = new BasicCommandContext();
+
+    if (scriptVars != null)
+      scriptVars.forEach(subCtx::declareScriptVariable);
+
     subCtx.setDatabase(context.getDatabase());
     subCtx.setParent(context);
-    subExecutionPlan = query.createExecutionPlan(subCtx);
+
+    final boolean useCache = !query.toString().contains("?");
+    // with positional parameters, you cannot know if a parameter has the same ordinal as the one
+    // cached
+    subExecutionPlan = query.resolvePlan(useCache, subCtx);
   }
 
   @Override

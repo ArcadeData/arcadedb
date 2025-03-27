@@ -54,5 +54,20 @@ public class EqualsCompareOperator extends SimpleNode implements BinaryCompareOp
   public int hashCode() {
     return getClass().hashCode();
   }
+
+  @Override
+  public boolean isInclude() {
+    return false;
+  }
+
+  @Override
+  public boolean isLess() {
+    return false;
+  }
+
+  @Override
+  public boolean isGreater() {
+    return false;
+  }
 }
 /* JavaCC - OriginalChecksum=bd2ec5d13a1d171779c2bdbc9d3a56bc (do not edit this line) */

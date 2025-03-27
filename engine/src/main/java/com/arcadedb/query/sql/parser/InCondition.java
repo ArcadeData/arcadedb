@@ -287,5 +287,23 @@ public class InCondition extends BooleanExpression {
       throw new UnsupportedOperationException("Cannot execute index query with " + this);
     }
   }
+
+  @Override
+  public boolean isKeyFromIncluded(final BinaryCondition additional) {
+    if (additional != null && additional.getOperator() != null) {
+      return additional.getOperator().isGreaterInclude();
+    } else {
+      return true;
+    }
+  }
+
+  @Override
+  public boolean isKeyToIncluded(final BinaryCondition additional) {
+    if (additional != null && additional.getOperator() != null) {
+      return additional.getOperator().isLessInclude();
+    } else {
+      return true;
+    }
+  }
 }
 /* JavaCC - OriginalChecksum=00df7cb1877c0a12d24205c1700653c7 (do not edit this line) */

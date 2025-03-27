@@ -25,7 +25,7 @@ import java.util.stream.*;
  * Created by luigidellaquila on 06/07/16.
  */
 public class SelectExecutionPlan implements InternalExecutionPlan {
-  private       String                      location;
+  private       String                      statement;
   private final CommandContext              context;
   protected     List<ExecutionStepInternal> steps    = new ArrayList<>();
   private       ExecutionStepInternal       lastStep = null;
@@ -99,17 +99,20 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
   @Override
   public InternalExecutionPlan copy(final CommandContext context) {
     final SelectExecutionPlan copy = new SelectExecutionPlan(context);
+    copyOn(copy, context);
+    return copy;
+  }
 
+  protected void copyOn(final SelectExecutionPlan copy, final CommandContext ctx) {
     ExecutionStepInternal lastStep = null;
-    for (final ExecutionStepInternal step : this.steps) {
-      final ExecutionStepInternal newStep = (ExecutionStepInternal) step.copy(context);
+    for (ExecutionStepInternal step : this.steps) {
+      final ExecutionStepInternal newStep = (ExecutionStepInternal) step.copy(ctx);
       newStep.setPrevious(lastStep);
       lastStep = newStep;
       copy.getSteps().add(newStep);
     }
-    copy.lastStep = copy.steps.get(copy.steps.size() - 1);
-    copy.location = location;
-    return copy;
+    copy.lastStep = copy.steps.isEmpty() ? null : copy.steps.getLast();
+    copy.statement = this.statement;
   }
 
   @Override

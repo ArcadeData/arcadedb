@@ -90,6 +90,20 @@ public class Statement extends SimpleNode {
     throw new UnsupportedOperationException();
   }
 
+  public boolean executingPlanCanBeCached() {
+    return false;
+  }
+
+  public InternalExecutionPlan resolvePlan(final boolean useCache, final CommandContext context) {
+    if (useCache && !context.isProfiling() && executingPlanCanBeCached()) {
+      final InternalExecutionPlan plan =
+          (InternalExecutionPlan) context.getDatabase().getExecutionPlanCache().get(getOriginalStatement(), context);
+      if (plan != null)
+        return plan;
+    }
+    return createExecutionPlan(context);
+  }
+
   /**
    * creates an execution plan for current statement, with profiling disabled
    *

@@ -216,19 +216,33 @@ public class ContainsAnyCondition extends BooleanExpression {
 
   @Override
   public Expression resolveKeyFrom(final BinaryCondition additional) {
-    if (getRight() != null) {
+    if (getRight() != null)
       return getRight();
-    } else {
-      throw new UnsupportedOperationException("Cannot execute index query with " + this);
-    }
+    throw new UnsupportedOperationException("Cannot execute index query with " + this);
   }
 
   @Override
   public Expression resolveKeyTo(final BinaryCondition additional) {
-    if (getRight() != null) {
+    if (getRight() != null)
       return getRight();
+    throw new UnsupportedOperationException("Cannot execute index query with " + this);
+  }
+
+  @Override
+  public boolean isKeyFromIncluded(final BinaryCondition additional) {
+    if (additional != null && additional.getOperator() != null) {
+      return additional.getOperator().isGreaterInclude();
     } else {
-      throw new UnsupportedOperationException("Cannot execute index query with " + this);
+      return true;
+    }
+  }
+
+  @Override
+  public boolean isKeyToIncluded(final BinaryCondition additional) {
+    if (additional != null && additional.getOperator() != null) {
+      return additional.getOperator().isLessInclude();
+    } else {
+      return true;
     }
   }
 }

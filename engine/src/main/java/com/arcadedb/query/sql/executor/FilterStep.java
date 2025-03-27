@@ -28,8 +28,7 @@ import java.util.*;
  */
 public class FilterStep extends AbstractExecutionStep {
   private final WhereClause whereClause;
-
-  ResultSet prevResult = null;
+  private       ResultSet   prevResult = null;
 
   public FilterStep(final WhereClause whereClause, final CommandContext context) {
     super(context);
@@ -44,7 +43,7 @@ public class FilterStep extends AbstractExecutionStep {
       public boolean finished = false;
 
       Result nextItem = null;
-      int fetched = 0;
+      int    fetched  = 0;
 
       private void fetchNextItem() {
         nextItem = null;

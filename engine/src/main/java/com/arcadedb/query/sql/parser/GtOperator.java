@@ -79,5 +79,20 @@ public class GtOperator extends SimpleNode implements BinaryCompareOperator {
   public int hashCode() {
     return getClass().hashCode();
   }
+
+  @Override
+  public boolean isInclude() {
+    return false;
+  }
+
+  @Override
+  public boolean isLess() {
+    return false;
+  }
+
+  @Override
+  public boolean isGreater() {
+    return true;
+  }
 }
 /* JavaCC - OriginalChecksum=4b96739fc6e9ae496916d542db361376 (do not edit this line) */

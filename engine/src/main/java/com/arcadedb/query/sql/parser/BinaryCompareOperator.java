@@ -33,4 +33,18 @@ public interface BinaryCompareOperator {
   default boolean isRangeOperator() {
     return false;
   }
+
+  boolean isLess();
+
+  boolean isGreater();
+
+  boolean isInclude();
+
+  default boolean isGreaterInclude() {
+    return isGreater() && isInclude();
+  }
+
+  default boolean isLessInclude() {
+    return isLess() && isInclude();
+  }
 }

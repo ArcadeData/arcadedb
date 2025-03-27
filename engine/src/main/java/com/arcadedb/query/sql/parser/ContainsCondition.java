@@ -119,6 +119,20 @@ public class ContainsCondition extends BooleanExpression {
     return false;
   }
 
+  @Override
+  public boolean isCacheable() {
+    if (left != null && !left.isCacheable()) {
+      return false;
+    }
+    if (right != null && !right.isCacheable()) {
+      return false;
+    }
+    if (condition != null && !condition.isCacheable()) {
+      return false;
+    }
+    return true;
+  }
+
   private boolean equalsInContainsSpace(final Object left, final Object right) {
     if (left == null && right == null)
       return true;
@@ -239,13 +253,45 @@ public class ContainsCondition extends BooleanExpression {
   }
 
   public boolean isIndexAware(final IndexSearchInfo info) {
-    if (left.isBaseIdentifier()) {
-      if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
-        if (right != null)
-          return right.isEarlyCalculated(info.getContext());
-      }
-    }
+//    if (left.isBaseIdentifier()) {
+//      if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
+//        if (right != null)
+//          return right.isEarlyCalculated(info.getContext());
+//      }
+//    }
     return false;
+  }
+
+  @Override
+  public Expression resolveKeyFrom(final BinaryCondition additional) {
+    if (right != null)
+      return right;
+    throw new UnsupportedOperationException("Cannot execute index query with " + this);
+  }
+
+  @Override
+  public Expression resolveKeyTo(final BinaryCondition additional) {
+    if (right != null)
+      return right;
+    throw new UnsupportedOperationException("Cannot execute index query with " + this);
+  }
+
+  @Override
+  public boolean isKeyFromIncluded(final BinaryCondition additional) {
+    if (additional != null && additional.getOperator() != null) {
+      return additional.getOperator().isGreaterInclude();
+    } else {
+      return true;
+    }
+  }
+
+  @Override
+  public boolean isKeyToIncluded(final BinaryCondition additional) {
+    if (additional != null && additional.getOperator() != null) {
+      return additional.getOperator().isLessInclude();
+    } else {
+      return true;
+    }
   }
 }
 /* JavaCC - OriginalChecksum=bad1118296ea74860e88d66bfe9fa222 (do not edit this line) */

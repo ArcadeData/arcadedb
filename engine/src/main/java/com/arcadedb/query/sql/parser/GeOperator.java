@@ -77,5 +77,20 @@ public class GeOperator extends SimpleNode implements BinaryCompareOperator {
   public int hashCode() {
     return getClass().hashCode();
   }
+
+  @Override
+  public boolean isInclude() {
+    return true;
+  }
+
+  @Override
+  public boolean isLess() {
+    return false;
+  }
+
+  @Override
+  public boolean isGreater() {
+    return true;
+  }
 }
 /* JavaCC - OriginalChecksum=960da239569d393eb155f7d8a871e6d5 (do not edit this line) */

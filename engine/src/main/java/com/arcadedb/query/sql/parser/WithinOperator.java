@@ -51,5 +51,20 @@ public class WithinOperator extends SimpleNode implements BinaryCompareOperator 
   public int hashCode() {
     return getClass().hashCode();
   }
+
+  @Override
+  public boolean isInclude() {
+    return false;
+  }
+
+  @Override
+  public boolean isLess() {
+    return false;
+  }
+
+  @Override
+  public boolean isGreater() {
+    return false;
+  }
 }
 /* JavaCC - OriginalChecksum=e627b2d87bdac6de681d462e4b764288 (do not edit this line) */
