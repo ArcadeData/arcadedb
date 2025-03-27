@@ -31,7 +31,7 @@ import static org.mockito.Mockito.when;
 class RemoteDatabaseHttpIT {
   class MockRemoteDatabase extends RemoteDatabase {
     MockRemoteDatabase() {
-      super("localhost", 1234, "testdb", "user", "password", new ContextConfiguration());
+      super("http://localhost", 1234, "testdb", "user", "password", new ContextConfiguration());
     }
 
     void requestClusterConfiguration() {

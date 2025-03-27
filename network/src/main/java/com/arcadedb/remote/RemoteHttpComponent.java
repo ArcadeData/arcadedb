@@ -84,8 +84,16 @@ public class RemoteHttpComponent extends RWLockContext {
     this(server, port, userName, userPassword, new ContextConfiguration());
   }
 
-  public RemoteHttpComponent(final String server, final int port, final String userName, final String userPassword,
+  public RemoteHttpComponent(String server, final int port, final String userName, final String userPassword,
       final ContextConfiguration configuration) {
+    if (server.startsWith("https://")) {
+      protocol = "https";
+      server = server.substring("https://".length());
+    } else if (server.startsWith("http://")) {
+      protocol = "http";
+      server = server.substring("http://".length());
+    }
+
     this.originalServer = server;
     this.originalPort = port;
 
@@ -123,14 +131,6 @@ public class RemoteHttpComponent extends RWLockContext {
 
   public Map<String, Object> getStats() {
     return stats.toMap();
-  }
-
-  public String getProtocol() {
-    return protocol;
-  }
-
-  public void setProtocol(final String protocol) {
-    this.protocol = protocol;
   }
 
   Object httpCommand(final String method, final String extendedURL, final String operation, final String language,
