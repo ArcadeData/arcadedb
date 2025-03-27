@@ -1932,6 +1932,7 @@ public class SelectExecutionPlanner {
    */
   private IndexSearchDescriptor findBestIndexFor(final CommandContext context, final Collection<TypeIndex> indexes,
       final AndBlock block, final DocumentType clazz) {
+
     // get all valid index descriptors
     List<IndexSearchDescriptor> descriptors = indexes.stream()
         .map(index -> buildIndexSearchDescriptor(context, index, block, clazz)).filter(Objects::nonNull)
@@ -1945,7 +1946,7 @@ public class SelectExecutionPlanner {
 
     // remove the redundant descriptors (eg. if I have one on [a] and one on [a, b], the first one
     // is redundant, just discard it)
-    descriptors = removePrefixIndexes(descriptors);
+    //descriptors = removePrefixIndexes(descriptors);
 
     // sort by cost
     final List<Pair<Integer, IndexSearchDescriptor>> sortedDescriptors = descriptors.stream()
@@ -1963,7 +1964,7 @@ public class SelectExecutionPlanner {
     descriptors = descriptors.stream().sorted(Comparator.comparingInt(x -> x.getSubBlocks().size())).collect(Collectors.toList());
 
     // get the one that has more indexed fields
-    return descriptors.isEmpty() ? null : descriptors.get(descriptors.size() - 1);
+    return descriptors.isEmpty() ? null : descriptors.get(0);
   }
 
   /**
