@@ -31,14 +31,14 @@ import java.util.*;
  * Created by luigidellaquila on 26/07/16.
  */
 public class IndexSearchDescriptor {
-  protected RangeIndex        idx;
+  protected RangeIndex        index;
   protected BooleanExpression keyCondition;
   protected BinaryCondition   additionalRangeCondition;
   protected BooleanExpression remainingCondition;
 
-  public IndexSearchDescriptor(final RangeIndex idx, final AndBlock keyCondition, final BinaryCondition additional,
+  public IndexSearchDescriptor(final RangeIndex index, final AndBlock keyCondition, final BinaryCondition additional,
       final BooleanExpression remainingCondition) {
-    this.idx = idx;
+    this.index = index;
     this.keyCondition = keyCondition;
     this.additionalRangeCondition = additional;
     this.remainingCondition = remainingCondition;
@@ -56,7 +56,7 @@ public class IndexSearchDescriptor {
   }
 
   protected Index getIndex() {
-    return idx;
+    return index;
   }
 
   /**
@@ -74,7 +74,7 @@ public class IndexSearchDescriptor {
   public int cost(final CommandContext context) {
     final QueryStats stats = QueryStats.get(context.getDatabase());
 
-    final String indexName = idx.getName();
+    final String indexName = index.getName();
     final int size = getSubBlocks().size();
     boolean range = false;
     final BooleanExpression lastOp = getSubBlocks().get(size - 1);
@@ -113,5 +113,9 @@ public class IndexSearchDescriptor {
       }
     }
     return true;
+  }
+
+  protected BooleanExpression getRemainingCondition() {
+    return remainingCondition;
   }
 }
