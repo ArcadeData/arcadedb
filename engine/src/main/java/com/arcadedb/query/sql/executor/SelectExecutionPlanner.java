@@ -1170,13 +1170,17 @@ public class SelectExecutionPlanner {
 
   private void handleGlobalLet(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext context) {
     if (info.globalLetClause != null) {
-      final List<LetItem> items = info.globalLetClause.getItems();
-      for (final LetItem item : items) {
+      List<LetItem> items = info.globalLetClause.getItems();
+      items = sortLet(items, this.statement.getLetClause());
+      List<String> scriptVars = new ArrayList<>();
+      for (LetItem item : items) {
+        context.declareScriptVariable(item.getVarName().getStringValue());
         if (item.getExpression() != null) {
           result.chain(new GlobalLetExpressionStep(item.getVarName(), item.getExpression(), context));
         } else {
-          result.chain(new GlobalLetQueryStep(item.getVarName(), item.getQuery(), context));
+          result.chain(new GlobalLetQueryStep(item.getVarName(), item.getQuery(), context, scriptVars));
         }
+        scriptVars.add(item.getVarName().getStringValue());
         info.globalLetPresent = true;
       }
     }
@@ -1184,16 +1188,41 @@ public class SelectExecutionPlanner {
 
   private void handleLet(final SelectExecutionPlan plan, final QueryPlanningInfo info, final CommandContext context) {
     if (info.perRecordLetClause != null) {
-      final List<LetItem> items = info.perRecordLetClause.getItems();
-
-      for (final LetItem item : items) {
-        if (item.getExpression() != null) {
-          plan.chain(new LetExpressionStep(item.getVarName(), item.getExpression(), context));
-        } else {
-          plan.chain(new LetQueryStep(item.getVarName(), item.getQuery(), context));
+      List<LetItem> items = info.perRecordLetClause.getItems();
+      items = sortLet(items, this.statement.getLetClause());
+      if (!plan.steps.isEmpty()) {
+        for (final LetItem item : items) {
+          if (item.getExpression() != null)
+            plan.chain(new LetExpressionStep(item.getVarName(), item.getExpression(), context));
+          else
+            plan.chain(new LetQueryStep(item.getVarName(), item.getQuery(), context));
         }
       }
     }
+  }
+
+  private List<LetItem> sortLet(final List<LetItem> items, final LetClause letClause) {
+    if (letClause == null)
+      return items;
+
+    final List<LetItem> i = new ArrayList<>(items);
+    final List<LetItem> result = new ArrayList<>();
+    for (LetItem item : letClause.getItems()) {
+      final String var = item.getVarName().getStringValue();
+      final Iterator<LetItem> iterator = i.iterator();
+      while (iterator.hasNext()) {
+        final LetItem x = iterator.next();
+        if (x.getVarName().getStringValue().equals(var)) {
+          iterator.remove();
+          result.add(x);
+          break;
+        }
+      }
+    }
+
+    result.addAll(i);
+
+    return result;
   }
 
   private void handleWhere(final SelectExecutionPlan plan, final QueryPlanningInfo info, final CommandContext context) {
@@ -1425,16 +1454,15 @@ public class SelectExecutionPlanner {
 
   private List<BinaryCondition> filterIndexedFunctionsWithoutIndex(final List<BinaryCondition> indexedFunctionConditions,
       final FromClause fromClause, final CommandContext context) {
-    if (indexedFunctionConditions == null) {
+    if (indexedFunctionConditions == null)
       return null;
-    }
+
     final List<BinaryCondition> result = new ArrayList<>();
     for (final BinaryCondition cond : indexedFunctionConditions) {
-      if (cond.allowsIndexedFunctionExecutionOnTarget(fromClause, context)) {
+      if (cond.allowsIndexedFunctionExecutionOnTarget(fromClause, context))
         result.add(cond);
-      } else if (!cond.canExecuteIndexedFunctionWithoutIndex(fromClause, context)) {
+      else if (!cond.canExecuteIndexedFunctionWithoutIndex(fromClause, context))
         throw new CommandExecutionException("Cannot evaluate " + cond + ": no index defined");
-      }
     }
     return result;
   }
@@ -1453,12 +1481,10 @@ public class SelectExecutionPlanner {
       final Set<String> filterClusters, final QueryPlanningInfo info, final CommandContext context) {
 
     final DocumentType typez = context.getDatabase().getSchema().getType(queryTarget.getStringValue());
-    if (typez == null) {
+    if (typez == null)
       throw new CommandExecutionException("Type not found: " + queryTarget.getStringValue());
-    }
 
-    for (final Index idx : typez.getAllIndexes(true).stream().filter(i -> i.supportsOrderedIterations())
-        .collect(Collectors.toList())) {
+    for (final Index idx : typez.getAllIndexes(true).stream().filter(TypeIndex::supportsOrderedIterations).toList()) {
       final List<String> indexFields = idx.getPropertyNames();
       if (indexFields.size() < info.orderBy.getItems().size()) {
         continue;
@@ -1508,12 +1534,12 @@ public class SelectExecutionPlanner {
       info.flattenedWhereClause = null;
       return true;
     }
-    //TODO
+
     final DocumentType typez = context.getDatabase().getSchema().getType(targetType.getStringValue());
     if (typez == null)
       throw new CommandExecutionException("Cannot find type '" + targetType + "'");
 
-    if (!isEmptyNoSubtypes(typez) || typez.getSubTypes().isEmpty() || isDiamondHierarchy(typez))
+    if (context.getDatabase().countType(typez.getName(), false) > 0 || typez.getSubTypes().isEmpty() || isDiamondHierarchy(typez))
       return false;
 
     final Collection<DocumentType> subTypes = typez.getSubTypes();
@@ -1536,21 +1562,8 @@ public class SelectExecutionPlanner {
     return false;
   }
 
-  private boolean isEmptyNoSubtypes(final DocumentType typez) {
-    final List<com.arcadedb.engine.Bucket> buckets = typez.getBuckets(false);
-    for (final com.arcadedb.engine.Bucket bucket : buckets) {
-      if (bucket.iterator().hasNext())
-        return false;
-    }
-    return true;
-  }
-
   /**
-   * checks if a class is the top of a diamond hierarchy
-   *
-   * @param typez
-   *
-   * @return
+   * Checks if a class is the top of a diamond hierarchy.
    */
   private boolean isDiamondHierarchy(final DocumentType typez) {
     final Set<DocumentType> traversed = new HashSet<>();
@@ -1605,7 +1618,7 @@ public class SelectExecutionPlanner {
 
   private List<ExecutionStepInternal> handleTypeAsTargetWithIndex(final String targetType, final Set<String> filterBuckets,
       final QueryPlanningInfo info, final CommandContext context) {
-    if (info.flattenedWhereClause == null || info.flattenedWhereClause.size() == 0)
+    if (info.flattenedWhereClause == null || info.flattenedWhereClause.isEmpty())
       return null;
 
     final DocumentType typez = context.getDatabase().getSchema().getType(targetType);

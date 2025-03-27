@@ -273,6 +273,26 @@ public class SelectStatement extends Statement {
     this.unwind = unwind;
   }
 
+  @Override
+  public boolean executingPlanCanBeCached() {
+    if (originalStatement == null)
+      setOriginalStatement(this);
+
+    if (this.target != null && !this.target.isCacheable())
+      return false;
+
+    if (this.letClause != null && !this.letClause.isCacheable())
+      return false;
+
+    if (projection != null && !this.projection.isCacheable())
+      return false;
+
+    if (whereClause != null && !whereClause.isCacheable())
+      return false;
+
+    return true;
+  }
+
   private void setProfilingConstraints(final DatabaseInternal db) {
     final long profiledLimit = db.getResultSetLimit();
     if (profiledLimit > -1 && (limit == null || limit.num.value.longValue() > profiledLimit))

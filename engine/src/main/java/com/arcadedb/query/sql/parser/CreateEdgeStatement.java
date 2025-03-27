@@ -136,6 +136,20 @@ public class CreateEdgeStatement extends Statement {
     return new Object[] { targetType, targetBucketName, leftExpression, rightExpression, unidirectional, ifNotExists, body };
   }
 
+  @Override
+  public boolean executingPlanCanBeCached() {
+    if (this.leftExpression != null && !this.leftExpression.isCacheable())
+      return false;
+
+    if (this.rightExpression != null && !this.rightExpression.isCacheable())
+      return false;
+
+    if (this.body != null && !body.isCacheable())
+      return false;
+
+    return true;
+  }
+
   public Identifier getTargetType() {
     return targetType;
   }
