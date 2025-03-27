@@ -1197,6 +1197,28 @@ public class SelectExecutionPlanner {
           else
             plan.chain(new LetQueryStep(item.getVarName(), item.getQuery(), context));
         }
+      } else {
+
+        boolean containsSubQuery = false;
+        for (final LetItem item : items) {
+          if (item.getExpression() != null) {
+            info.fetchExecutionPlan.chain(
+                new LetExpressionStep(item.getVarName().copy(), item.getExpression().copy(), context));
+          } else {
+            info.fetchExecutionPlan.chain(
+                new LetQueryStep(item.getVarName().copy(), item.getQuery().copy(), context));
+            containsSubQuery = true;
+          }
+        }
+
+        if (containsSubQuery) {
+          // RE-EXECUTE THE EXPRESSION IF THERE IS ANY SUB-QUERY. THIS IS A MUST BECAUSE THERE IS NO CONCEPT OF DEPENDENCY BETWEEN LETS
+          for (final LetItem item : items) {
+            if (item.getExpression() != null)
+              info.fetchExecutionPlan.chain(
+                  new LetExpressionStep(item.getVarName().copy(), item.getExpression().copy(), context));
+          }
+        }
       }
     }
   }
