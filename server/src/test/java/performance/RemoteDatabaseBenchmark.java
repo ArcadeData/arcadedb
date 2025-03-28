@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class RemoteDatabaseBenchmark extends BaseGraphServerTest {
-  private static final int TOTAL              = 10_000;
+  private static final int TOTAL              = 100_000;
   private static final int BATCH_TX           = 1;
   private static final int PRINT_EVERY_MS     = 1_000;
   private static final int BUCKETS            = 2;
@@ -58,6 +58,8 @@ public class RemoteDatabaseBenchmark extends BaseGraphServerTest {
   }
 
   public void run() {
+    final long beginTime = System.currentTimeMillis();
+
     new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).create(DATABASE_NAME);
 
     final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
@@ -90,6 +92,7 @@ public class RemoteDatabaseBenchmark extends BaseGraphServerTest {
       printStats(System.currentTimeMillis());
       System.out.println("END CLIENT " + globalStats);
       System.out.println("END SERVER " + getServer(0).getDatabase(DATABASE_NAME).getStats());
+      System.out.println("TOTAL TIME " + ( System.currentTimeMillis() - beginTime ));
     }
 
     long totalRecordsOnClusters = 0L;
