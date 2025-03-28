@@ -22,6 +22,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
@@ -30,7 +31,10 @@ import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.Properties;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -234,18 +238,51 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
 
   @Test
   void testSelectSchemaTypes() throws SQLException, ClassNotFoundException {
-      try (final Statement st = conn.createStatement()) {
+    try (final Statement st = conn.createStatement()) {
 
-        final ResultSet rs = st.executeQuery("{sql}select from schema:types");
-        while (rs.next()) {
-          if (rs.getArray("properties").getResultSet().next()) {
-            ResultSet props = rs.getArray("properties").getResultSet();
-            assertThat(props.next()).isTrue();
-            assertThat(new JSONObject(props.getString("value")).getString("type")).isEqualTo("INTEGER");
-          }
+      final ResultSet rs = st.executeQuery("{sql}select from schema:types");
+      while (rs.next()) {
+        if (rs.getArray("properties").getResultSet().next()) {
+          ResultSet props = rs.getArray("properties").getResultSet();
+          assertThat(props.next()).isTrue();
+          assertThat(new JSONObject(props.getString("value")).getString("type")).isEqualTo("INTEGER");
         }
+      }
 
     }
+  }
+
+  @Test
+  @Disabled
+  void testMultipleInsert() throws SQLException, ClassNotFoundException {
+    try (Statement stmt = conn.createStatement()) {
+
+      stmt.execute("""
+          {sqlscript}
+          create vertex type `TEXT_EMBEDDING` if not exists;
+          create property TEXT_EMBEDDING.str if not exists STRING;
+          create property TEXT_EMBEDDING.embedding if not exists ARRAY_OF_FLOATS;
+          """);
+    }
+
+    LocalDateTime start = LocalDateTime.now();
+    try (final Statement stmt = conn.createStatement()) {
+
+      IntStream.range(1, 100000).forEach(i -> {
+        try {
+          stmt.executeQuery("""
+              INSERT INTO `TEXT_EMBEDDING` SET str = meow_%d, embedding = [0.1,0.2,0.3] RETURN embedding;
+              """.formatted(i));
+
+        } catch (SQLException e) {
+          throw new RuntimeException(e);
+        }
+
+      });
+
+    }
+    LocalDateTime end = LocalDateTime.now();
+    System.out.println("Execution time: " + Duration.between(start, end).toSeconds() + " seconds");
   }
 
   //use this to test the result set

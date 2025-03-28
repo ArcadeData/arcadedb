@@ -20,9 +20,11 @@ package com.arcadedb.server.http;
 
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.log.LogManager;
 
 import java.util.concurrent.*;
 import java.util.concurrent.locks.*;
+import java.util.logging.Level;
 
 /**
  * Manage a transaction on the HTTP protocol.
@@ -55,12 +57,14 @@ public class HttpSession {
 
     if (lock.tryLock(DEFAULT_TIMEOUT, TimeUnit.MILLISECONDS)) {
       try {
+        LogManager.instance().log(this, Level.FINE, "Executing session %s for user %s", id, user.getName());
         callback.call();
       } finally {
         lock.unlock();
       }
-    } else
+    } else {
       throw new TimeoutException("Timeout on locking http session");
+    }
 
     lastUpdate = System.currentTimeMillis();
     return this;

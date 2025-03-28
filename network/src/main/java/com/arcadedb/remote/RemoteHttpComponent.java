@@ -36,16 +36,25 @@ import com.arcadedb.network.HostUtil;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RWLockContext;
 
-import java.io.*;
-import java.net.*;
-import java.nio.charset.*;
-import java.util.*;
-import java.util.logging.*;
-import java.util.stream.*;
+import java.io.IOException;
+import java.net.Authenticator;
+import java.net.ConnectException;
+import java.net.PasswordAuthentication;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
+import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 /**
  * Remote Database implementation. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
@@ -62,6 +71,7 @@ public class RemoteHttpComponent extends RWLockContext {
   private final   String                      userName;
   private final   String                      userPassword;
   private final   List<Pair<String, Integer>> replicaServerList         = new ArrayList<>();
+  protected final HttpClient                  httpClient;
   protected final DatabaseStats               stats                     = new DatabaseStats();
   protected final ContextConfiguration        configuration;
   private         int                         apiVersion                = 1;
@@ -77,7 +87,7 @@ public class RemoteHttpComponent extends RWLockContext {
   }
 
   public interface Callback {
-    Object call(HttpURLConnection iArgument, JSONObject response) throws Exception;
+    Object call(HttpResponse<String> iArgument, JSONObject response) throws Exception;
   }
 
   public RemoteHttpComponent(final String server, final int port, final String userName, final String userPassword) {
@@ -105,6 +115,19 @@ public class RemoteHttpComponent extends RWLockContext {
 
     this.configuration = configuration;
     this.timeout = this.configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT);
+
+    httpClient = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(60))
+        .version(HttpClient.Version.HTTP_2)
+        .authenticator(new Authenticator() {
+          @Override
+          protected PasswordAuthentication getPasswordAuthentication() {
+            return new PasswordAuthentication(
+                userName,
+                userPassword.toCharArray());
+          }
+        })
+        .build();
 
     requestClusterConfiguration();
   }
@@ -163,46 +186,53 @@ public class RemoteHttpComponent extends RWLockContext {
         url += "/" + extendedURL;
 
       try {
-        final HttpURLConnection connection = createConnection(method, url);
-        connection.setDoOutput(true);
-        try {
+        HttpRequest.Builder requestBuilder = createRequestBuilder(method, url);
+        HttpRequest request;
 
-          if (payloadCommand != null) {
-            if ("GET".equalsIgnoreCase(method))
-              throw new IllegalArgumentException("Cannot execute a HTTP GET request with a payload");
+        if (payloadCommand != null) {
+          if ("GET".equalsIgnoreCase(method))
+            throw new IllegalArgumentException("Cannot execute a HTTP GET request with a payload");
 
-            final JSONObject jsonRequest = new JSONObject();
-            if (language != null)
-              jsonRequest.put("language", language);
-            jsonRequest.put("command", payloadCommand);
-            jsonRequest.put("serializer", "record");
+          final JSONObject jsonRequest = new JSONObject();
+          if (language != null)
+            jsonRequest.put("language", language);
+          jsonRequest.put("command", payloadCommand);
+          jsonRequest.put("serializer", "record");
 
-            if (params != null)
-              jsonRequest.put("params", new JSONObject(params));
+          if (params != null)
+            jsonRequest.put("params", new JSONObject(params));
 
-            setRequestPayload(connection, jsonRequest);
+          String payload = getRequestPayload(jsonRequest);
+          request = requestBuilder
+              .method(method, HttpRequest.BodyPublishers.ofString(payload))
+              .header("Content-Type", "application/json")
+              .build();
+        } else {
+          if ("GET".equalsIgnoreCase(method)) {
+            request = requestBuilder.GET().build();
+          } else {
+            request = requestBuilder
+                .method(method, HttpRequest.BodyPublishers.noBody())
+                .build();
           }
-
-          connection.connect();
-
-          if (connection.getResponseCode() != 200) {
-            lastException = manageException(connection, payloadCommand != null ? payloadCommand : operation);
-            if (lastException instanceof RuntimeException && lastException.getMessage().equals("Empty payload received"))
-              LogManager.instance()
-                  .log(this, Level.FINE, "Empty payload received, retrying (retry=%d/%d)...", null, retry, maxRetry);
-            continue;
-          }
-
-          final JSONObject response = new JSONObject(FileUtils.readStreamAsString(connection.getInputStream(), charset));
-
-          if (callback == null)
-            return null;
-
-          return callback.call(connection, response);
-
-        } finally {
-          connection.disconnect();
         }
+
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+        if (response.statusCode() != 200) {
+          lastException = manageException(response, payloadCommand != null ? payloadCommand : operation);
+          if (lastException instanceof RuntimeException && lastException.getMessage().equals("Empty payload received"))
+            LogManager.instance()
+                .log(this, Level.FINE, "Empty payload received, retrying (retry=%d/%d)...", null, retry, maxRetry);
+          continue;
+        }
+
+        final JSONObject jsonResponse = new JSONObject(response.body());
+
+        if (callback == null)
+          return null;
+
+        return callback.call(response, jsonResponse);
 
       } catch (final IOException | ServerIsNotTheLeaderException e) {
         lastException = e;
@@ -232,6 +262,9 @@ public class RemoteHttpComponent extends RWLockContext {
                     connectToServer.getSecond());
         }
 
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new RemoteException("Request interrupted", e);
       } catch (final RemoteException | NeedRetryException | DuplicatedKeyException | TransactionException | TimeoutException |
                      SecurityException e) {
         throw e;
@@ -263,35 +296,36 @@ public class RemoteHttpComponent extends RWLockContext {
     return replicaServerList.stream().map((e) -> e.getFirst() + ":" + e.getSecond()).collect(Collectors.toList());
   }
 
-  HttpURLConnection createConnection(final String httpMethod, final String url) throws IOException {
-    final HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
-    connection.setRequestProperty("charset", "utf-8");
-    connection.setRequestMethod(httpMethod);
-
+  HttpRequest.Builder createRequestBuilder(final String httpMethod, final String url) {
     final String authorization = userName + ":" + userPassword;
-    connection.setRequestProperty("Authorization",
-        "Basic " + Base64.getEncoder().encodeToString(authorization.getBytes(DatabaseFactory.getDefaultCharset())));
+    String authHeader = "Basic " + Base64.getEncoder().encodeToString(authorization.getBytes(DatabaseFactory.getDefaultCharset()));
 
-    connection.setRequestProperty("Connection", "keep-alive");
-    connection.setConnectTimeout(timeout);
-    connection.setReadTimeout(timeout);
+    HttpRequest.Builder builder = HttpRequest.newBuilder()
+        .uri(URI.create(url))
+        .timeout(Duration.ofMillis(timeout))
+        .header("charset", "utf-8")
+        .header("Authorization", authHeader);
 
-    return connection;
+    return builder;
   }
 
   void requestClusterConfiguration() {
     final JSONObject response;
     try {
-      final HttpURLConnection connection = createConnection("GET", getUrl("server?mode=cluster"));
-      connection.connect();
-      if (connection.getResponseCode() != 200) {
-        final Exception detail = manageException(connection, "cluster configuration");
+      HttpRequest request = createRequestBuilder("GET", getUrl("server?mode=cluster"))
+          .GET()
+          .build();
+
+      HttpResponse<String> httpResponse = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+      if (httpResponse.statusCode() != 200) {
+        final Exception detail = manageException(httpResponse, "cluster configuration");
         if (detail instanceof SecurityException)
           throw detail;
-        throw new RemoteException("Error on requesting cluster configuration: " + connection.getResponseMessage(), detail);
+        throw new RemoteException("Error on requesting cluster configuration", detail);
       }
 
-      response = new JSONObject(FileUtils.readStreamAsString(connection.getInputStream(), charset));
+      response = new JSONObject(httpResponse.body());
 
       LogManager.instance().log(this, Level.FINE, "Configuring remote database: %s", null, response);
 
@@ -400,37 +434,31 @@ public class RemoteHttpComponent extends RWLockContext {
     return protocol + "://" + currentServer + ":" + currentPort + "/api/v" + apiVersion + "/" + command;
   }
 
-  void setRequestPayload(final HttpURLConnection connection, final JSONObject jsonRequest) throws IOException {
-    connection.setDoOutput(true);
-    final byte[] postData = jsonRequest.toString().getBytes(StandardCharsets.UTF_8);
-    connection.setRequestProperty("Content-Length", Integer.toString(postData.length));
-    try (final DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
-      wr.write(postData);
-    }
+  String getRequestPayload(final JSONObject jsonRequest) {
+    return jsonRequest.toString();
   }
 
-  protected Exception manageException(final HttpURLConnection connection, final String operation) throws IOException {
+  protected Exception manageException(final HttpResponse<String> response, final String operation) {
     String detail = null;
     String reason = null;
     String exception = null;
     String exceptionArgs = null;
-    String responsePayload = null;
+    String responsePayload = response.body();
 
-    if (connection.getErrorStream() != null) {
-      try {
-        responsePayload = FileUtils.readStreamAsString(connection.getErrorStream(), charset);
-        final JSONObject response = new JSONObject(responsePayload);
-        reason = response.getString("error");
-        detail = response.has("detail") ? response.getString("detail") : null;
-        exception = response.has("exception") ? response.getString("exception") : null;
-        exceptionArgs = response.has("exceptionArgs") ? response.getString("exceptionArgs") : null;
-      } catch (final Exception e) {
-        // TODO CHECK IF THE COMMAND NEEDS TO BE RE-EXECUTED OR NOT
-        LogManager.instance()
-            .log(this, Level.WARNING, "Error on executing command, retrying... (payload=%s, error=%s)", null, responsePayload,
-                e.toString());
-        return e;
+    try {
+      if (responsePayload != null && !responsePayload.isEmpty()) {
+        final JSONObject jsonResponse = new JSONObject(responsePayload);
+        reason = jsonResponse.has("error") ? jsonResponse.getString("error") : null;
+        detail = jsonResponse.has("detail") ? jsonResponse.getString("detail") : null;
+        exception = jsonResponse.has("exception") ? jsonResponse.getString("exception") : null;
+        exceptionArgs = jsonResponse.has("exceptionArgs") ? jsonResponse.getString("exceptionArgs") : null;
       }
+    } catch (final Exception e) {
+      // TODO CHECK IF THE COMMAND NEEDS TO BE RE-EXECUTED OR NOT
+      LogManager.instance()
+          .log(this, Level.WARNING, "Error on executing command, retrying... (payload=%s, error=%s)", null, responsePayload,
+              e.toString());
+      return e;
     }
 
     if (exception != null) {
@@ -473,17 +501,19 @@ public class RemoteHttpComponent extends RWLockContext {
             "Error on executing remote operation " + operation + " (cause:" + exception + " detail:" + detail + ")");
     }
 
-    final String httpErrorDescription = connection.getResponseMessage();
+    final String httpErrorDescription = response.statusCode() == 400 ? "Bad Request" :
+        response.statusCode() == 404 ? "Not Found" :
+            response.statusCode() == 500 ? "Internal Server Error" :
+                "HTTP Error";
 
     // TEMPORARY FIX FOR AN ISSUE WITH THE CLIENT/SERVER COMMUNICATION WHERE THE PAYLOAD ARRIVES AS EMPTY
-    if (connection.getResponseCode() == 400 && "Bad Request".equals(httpErrorDescription) && "Command text is null".equals(
-        reason)) {
+    if (response.statusCode() == 400 && "Bad Request".equals(httpErrorDescription) && "Command text is null".equals(reason)) {
       // RETRY
       return new RemoteException("Empty payload received");
     }
 
     return new RemoteException(
-        "Error on executing remote command '" + operation + "' (httpErrorCode=" + connection.getResponseCode()
+        "Error on executing remote command '" + operation + "' (httpErrorCode=" + response.statusCode()
             + " httpErrorDescription=" + httpErrorDescription + " reason=" + reason + " detail=" + detail + " exception="
             + exception + ")");
   }

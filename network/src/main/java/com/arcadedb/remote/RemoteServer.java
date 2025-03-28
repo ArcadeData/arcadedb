@@ -23,6 +23,8 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.net.*;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.*;
 
 /**
@@ -56,12 +58,19 @@ public class RemoteServer extends RemoteHttpComponent {
 
   public void drop(final String databaseName) {
     try {
-      final HttpURLConnection connection = createConnection("POST", getUrl("server"));
-      setRequestPayload(connection, new JSONObject().put("command", "drop database " + databaseName));
-      connection.connect();
-      if (connection.getResponseCode() != 200) {
-        final Exception detail = manageException(connection, "drop database");
-        throw new RemoteException("Error on deleting database: " + connection.getResponseMessage(), detail);
+      final JSONObject jsonRequest = new JSONObject().put("command", "drop database " + databaseName);
+      String payload = getRequestPayload(jsonRequest);
+
+      HttpRequest request = createRequestBuilder("POST", getUrl("server"))
+          .POST(HttpRequest.BodyPublishers.ofString(payload))
+          .header("Content-Type", "application/json")
+          .build();
+
+      HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+      if (response.statusCode() != 200) {
+        final Exception detail = manageException(response, "drop database");
+        throw new RemoteException("Error on deleting database", detail);
       }
 
     } catch (final Exception e) {
@@ -76,8 +85,6 @@ public class RemoteServer extends RemoteHttpComponent {
 
   public void createUser(final String userName, final String password, final Map<String,String> databases) {
     try {
-      final HttpURLConnection connection = createConnection("POST", getUrl("server"));
-
       final JSONObject jsonUser = new JSONObject();
       jsonUser.put("name", userName);
       jsonUser.put("password", password);
@@ -88,12 +95,19 @@ public class RemoteServer extends RemoteHttpComponent {
         jsonUser.put("databases", databasesJson);
       }
 
-      setRequestPayload(connection, new JSONObject().put("command", "create user " + jsonUser));
+      final JSONObject jsonRequest = new JSONObject().put("command", "create user " + jsonUser);
+      String payload = getRequestPayload(jsonRequest);
 
-      connection.connect();
-      if (connection.getResponseCode() != 200) {
-        final Exception detail = manageException(connection, "create user");
-        throw new SecurityException("Error on creating user: " + connection.getResponseMessage(), detail);
+      HttpRequest request = createRequestBuilder("POST", getUrl("server"))
+          .POST(HttpRequest.BodyPublishers.ofString(payload))
+          .header("Content-Type", "application/json")
+          .build();
+
+      HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+      if (response.statusCode() != 200) {
+        final Exception detail = manageException(response, "create user");
+        throw new SecurityException("Error on creating user", detail);
       }
 
     } catch (final Exception e) {
@@ -102,7 +116,6 @@ public class RemoteServer extends RemoteHttpComponent {
   }
 
   public void createUser(final String userName, final String password, final List<String> databases) {
-
     Map<String,String> databasesWithGroups = new HashMap<String, String>();
 
     for (final String dbName : databases)
@@ -113,12 +126,19 @@ public class RemoteServer extends RemoteHttpComponent {
 
   public void dropUser(final String userName) {
     try {
-      final HttpURLConnection connection = createConnection("POST", getUrl("server"));
-      setRequestPayload(connection, new JSONObject().put("command", "drop user " + userName));
-      connection.connect();
-      if (connection.getResponseCode() != 200) {
-        final Exception detail = manageException(connection, "drop user");
-        throw new RemoteException("Error on deleting user: " + connection.getResponseMessage(), detail);
+      final JSONObject jsonRequest = new JSONObject().put("command", "drop user " + userName);
+      String payload = getRequestPayload(jsonRequest);
+
+      HttpRequest request = createRequestBuilder("POST", getUrl("server"))
+          .POST(HttpRequest.BodyPublishers.ofString(payload))
+          .header("Content-Type", "application/json")
+          .build();
+
+      HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+      if (response.statusCode() != 200) {
+        final Exception detail = manageException(response, "drop user");
+        throw new RemoteException("Error on deleting user", detail);
       }
 
     } catch (final Exception e) {
