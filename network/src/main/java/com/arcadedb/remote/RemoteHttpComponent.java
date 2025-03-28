@@ -73,7 +73,7 @@ public class RemoteHttpComponent extends RWLockContext {
   protected       int                         currentPort;
 
   public enum CONNECTION_STRATEGY {
-    STICKY, ROUND_ROBIN
+    STICKY, ROUND_ROBIN, FIXED
   }
 
   public interface Callback {
@@ -139,7 +139,8 @@ public class RemoteHttpComponent extends RWLockContext {
 
     Exception lastException = null;
 
-    final int maxRetry = leaderIsPreferable ? 3 : getReplicaServerList().size() + 1;
+    final int maxRetry =
+        leaderIsPreferable || connectionStrategy == CONNECTION_STRATEGY.FIXED ? 3 : getReplicaServerList().size() + 1;
 
     Pair<String, Integer> connectToServer =
         leaderIsPreferable && leaderServer != null ? leaderServer : new Pair<>(currentServer, currentPort);
@@ -204,18 +205,24 @@ public class RemoteHttpComponent extends RWLockContext {
         if (!reloadClusterConfiguration())
           throw new RemoteException("Error on executing remote operation " + operation + ", no server available", e);
 
-        final Pair<String, Integer> currentConnectToServer = connectToServer;
-
-        if (leaderIsPreferable && !currentConnectToServer.equals(leaderServer)) {
-          connectToServer = leaderServer;
-        } else
-          connectToServer = getNextReplicaAddress();
-
-        if (connectToServer != null)
+        if (connectionStrategy == CONNECTION_STRATEGY.FIXED) {
           LogManager.instance()
-              .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, switching to server %s:%d...", null,
-                  currentConnectToServer.getFirst(), currentConnectToServer.getSecond(), connectToServer.getFirst(),
-                  connectToServer.getSecond());
+              .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, retrying...",
+                  connectToServer.getFirst(), connectToServer.getSecond());
+        } else {
+          final Pair<String, Integer> currentConnectToServer = connectToServer;
+
+          if (leaderIsPreferable && !currentConnectToServer.equals(leaderServer)) {
+            connectToServer = leaderServer;
+          } else
+            connectToServer = getNextReplicaAddress();
+
+          if (connectToServer != null)
+            LogManager.instance()
+                .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, switching to server %s:%d...", null,
+                    currentConnectToServer.getFirst(), currentConnectToServer.getSecond(), connectToServer.getFirst(),
+                    connectToServer.getSecond());
+        }
 
       } catch (final RemoteException | NeedRetryException | DuplicatedKeyException | TransactionException | TimeoutException |
                      SecurityException e) {
@@ -321,8 +328,9 @@ public class RemoteHttpComponent extends RWLockContext {
         }
       }
 
-      LogManager.instance().log(this, Level.FINE, "Remote Database configured with leader=%s and replicas=%s", null, leaderServer,
-          replicaServerList);
+      LogManager.instance()
+          .log(this, Level.FINE, "Remote Database configured with leader=%s and replicas=%s strategy=%s",
+              leaderServer, replicaServerList, connectionStrategy);
 
     } catch (final SecurityException e) {
       throw e;
