@@ -257,6 +257,7 @@ public class RemoteHttpComponent extends RWLockContext {
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(authorization.getBytes(DatabaseFactory.getDefaultCharset())));
 
+    connection.setRequestProperty("Connection", "keep-alive");
     connection.setConnectTimeout(timeout);
     connection.setReadTimeout(timeout);
 
