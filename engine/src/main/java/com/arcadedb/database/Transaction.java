@@ -33,7 +33,7 @@ public interface Transaction {
 
   void setUseWAL(boolean useWAL);
 
-  void setWALFlush(WALFile.FLUSH_TYPE flush);
+  void setWALFlush(WALFile.FlushType flush);
 
   boolean isAsyncFlush();
 

@@ -69,11 +69,11 @@ public class HASplitBrainIT extends ReplicationServerIT {
   protected void onBeforeStarting(final ArcadeDBServer server) {
     server.registerTestEventListener(new ReplicationCallback() {
       @Override
-      public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) throws IOException {
-        if (type == TYPE.LEADER_ELECTED) {
+      public void onEvent(final Type type, final Object object, final ArcadeDBServer server) throws IOException {
+        if (type == Type.LEADER_ELECTED) {
           if (firstLeader == null)
             firstLeader = (String) object;
-        } else if (type == TYPE.NETWORK_CONNECTION && split) {
+        } else if (type == Type.NETWORK_CONNECTION && split) {
           final String connectTo = (String) object;
 
           final String[] parts = HostUtil.parseHostAddress(connectTo, HostUtil.HA_DEFAULT_PORT);
@@ -111,7 +111,7 @@ public class HASplitBrainIT extends ReplicationServerIT {
     if (server.getServerName().equals("ArcadeDB_4"))
       server.registerTestEventListener((type, object, server1) -> {
         if (!split) {
-          if (type == ReplicationCallback.TYPE.REPLICA_MSG_RECEIVED) {
+          if (type == ReplicationCallback.Type.REPLICA_MSG_RECEIVED) {
             messages.incrementAndGet();
             if (messages.get() > 10) {
 

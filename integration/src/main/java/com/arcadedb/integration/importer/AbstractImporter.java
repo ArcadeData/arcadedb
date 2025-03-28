@@ -138,7 +138,7 @@ public abstract class AbstractImporter {
     database.async().setParallelLevel(settings.parallel);
     database.async().setCommitEvery(settings.commitEvery);
     database.async().setTransactionUseWAL(settings.wal);
-    database.async().setTransactionSync(WALFile.FLUSH_TYPE.NO);
+    database.async().setTransactionSync(WALFile.FlushType.NO);
 
     database.begin();
   }

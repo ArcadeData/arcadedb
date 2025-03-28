@@ -139,7 +139,6 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private ExecutionResponse listDatabases(final ServerSecurityUser user) {
     final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.list-databases").increment();
-    ;
 
     final Set<String> installedDatabases = new HashSet<>(server.getDatabaseNames());
     final Set<String> allowedDatabases = user.getAuthorizedDatabases();
@@ -154,7 +153,6 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
   private void shutdownServer(final String serverName) throws IOException {
     Metrics.counter("http.server-shutdown").increment();
-    ;
 
     if (serverName.isEmpty()) {
       // SHUTDOWN CURRENT SERVER
@@ -185,7 +183,6 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.create-database").increment();
-    ;
 
     final ServerDatabase db = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
 
@@ -202,7 +199,6 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final ServerDatabase database = httpServer.getServer().getDatabase(databaseName);
 
     Metrics.counter("http.drop-database").increment();
-    ;
 
     database.getEmbedded().drop();
     httpServer.getServer().removeDatabase(database.getName());

@@ -214,7 +214,7 @@ public class LeaderNetworkListener extends Thread {
       // ELECTION FINISHED, THE SERVER IS A REPLICA
       ha.setElectionStatus(HAServer.ElectionStatus.DONE);
       try {
-        ha.getServer().lifecycleEvent(ReplicationCallback.TYPE.LEADER_ELECTED, remoteServerName);
+        ha.getServer().lifecycleEvent(ReplicationCallback.Type.LEADER_ELECTED, remoteServerName);
       } catch (final Exception e) {
         throw new ArcadeDBException("Error on propagating election status", e);
       }

@@ -157,7 +157,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       database.async().setCommitEvery(50000);
       database.async().setParallelLevel(PARALLEL);
       database.async().setTransactionUseWAL(true);
-      database.async().setTransactionSync(WALFile.FLUSH_TYPE.YES_NOMETADATA);
+      database.async().setTransactionSync(WALFile.FlushType.YES_NOMETADATA);
 
       database.async().onError(new ErrorCallback() {
         @Override

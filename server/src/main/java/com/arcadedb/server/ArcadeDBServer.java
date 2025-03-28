@@ -137,7 +137,7 @@ public class ArcadeDBServer {
     eventLog.start();
 
     try {
-      lifecycleEvent(ReplicationCallback.TYPE.SERVER_STARTING, null);
+      lifecycleEvent(ReplicationCallback.Type.SERVER_STARTING, null);
     } catch (final Exception e) {
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
@@ -210,7 +210,7 @@ public class ArcadeDBServer {
     }
 
     try {
-      lifecycleEvent(ReplicationCallback.TYPE.SERVER_UP, null);
+      lifecycleEvent(ReplicationCallback.Type.SERVER_UP, null);
     } catch (final Exception e) {
       stop();
       throw new ServerException("Error on starting the server '" + serverName + "'");
@@ -287,7 +287,7 @@ public class ArcadeDBServer {
     LogManager.instance().log(this, Level.INFO, "Shutting down ArcadeDB Server...");
 
     try {
-      lifecycleEvent(ReplicationCallback.TYPE.SERVER_SHUTTING_DOWN, null);
+      lifecycleEvent(ReplicationCallback.Type.SERVER_SHUTTING_DOWN, null);
     } catch (final Exception e) {
       throw new ServerException("Error on stopping the server '" + serverName + "'");
     }
@@ -320,7 +320,7 @@ public class ArcadeDBServer {
     LogManager.instance().log(this, Level.INFO, "ArcadeDB Server is down");
 
     try {
-      lifecycleEvent(ReplicationCallback.TYPE.SERVER_DOWN, null);
+      lifecycleEvent(ReplicationCallback.Type.SERVER_DOWN, null);
     } catch (final Exception e) {
       throw new ServerException("Error on stopping the server '" + serverName + "'");
     }
@@ -421,7 +421,7 @@ public class ArcadeDBServer {
     testEventListeners.add(callback);
   }
 
-  public void lifecycleEvent(final ReplicationCallback.TYPE type, final Object object) throws Exception {
+  public void lifecycleEvent(final ReplicationCallback.Type type, final Object object) throws Exception {
     if (replicationLifecycleEventsEnabled)
       for (final ReplicationCallback c : testEventListeners)
         c.onEvent(type, object, this);

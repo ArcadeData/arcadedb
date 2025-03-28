@@ -358,7 +358,7 @@ public class HAServer implements ServerPlugin {
     c.setStatus(online ? Leader2ReplicaNetworkExecutor.STATUS.ONLINE : Leader2ReplicaNetworkExecutor.STATUS.OFFLINE);
 
     try {
-      server.lifecycleEvent(online ? ReplicationCallback.TYPE.REPLICA_ONLINE : ReplicationCallback.TYPE.REPLICA_OFFLINE,
+      server.lifecycleEvent(online ? ReplicationCallback.Type.REPLICA_ONLINE : ReplicationCallback.Type.REPLICA_OFFLINE,
           remoteServerName);
     } catch (final Exception e) {
       // IGNORE IT
@@ -1010,7 +1010,7 @@ public class HAServer implements ServerPlugin {
   protected ChannelBinaryClient createNetworkConnection(final String host, final int port, final short commandId)
       throws IOException {
     try {
-      server.lifecycleEvent(ReplicationCallback.TYPE.NETWORK_CONNECTION, host + ":" + port);
+      server.lifecycleEvent(ReplicationCallback.Type.NETWORK_CONNECTION, host + ":" + port);
     } catch (final Exception e) {
       throw new ConnectionException(host + ":" + port, e);
     }

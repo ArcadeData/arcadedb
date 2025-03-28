@@ -130,6 +130,7 @@
         <module>studio</module>
         <module>package</module>
         <module>e2e</module>
+        <module>resilience</module>
     </modules>
 
     <build>

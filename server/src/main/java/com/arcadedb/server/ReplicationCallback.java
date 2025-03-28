@@ -19,7 +19,7 @@
 package com.arcadedb.server;
 
 public interface ReplicationCallback {
-    enum TYPE {
+    enum Type {
         SERVER_STARTING,
         SERVER_UP,
         SERVER_SHUTTING_DOWN,
@@ -33,5 +33,5 @@ public interface ReplicationCallback {
         NETWORK_CONNECTION
     }
 
-    void onEvent(TYPE type, Object object, ArcadeDBServer server) throws Exception;
+    void onEvent(Type type, Object object, ArcadeDBServer server) throws Exception;
 }

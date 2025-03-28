@@ -143,7 +143,7 @@ public class TransactionManager {
     return WALFile.writeTransactionToBuffer(pages, txId);
   }
 
-  public void writeTransactionToWAL(final List<MutablePage> pages, final WALFile.FLUSH_TYPE sync, final long txId,
+  public void writeTransactionToWAL(final List<MutablePage> pages, final WALFile.FlushType sync, final long txId,
       final Binary bufferChanges) {
     final long begin = System.currentTimeMillis();
 

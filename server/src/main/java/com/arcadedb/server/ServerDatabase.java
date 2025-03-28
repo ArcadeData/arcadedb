@@ -279,7 +279,7 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public Database setWALFlush(final WALFile.FLUSH_TYPE flush) {
+  public Database setWALFlush(final WALFile.FlushType flush) {
     return wrapped.setWALFlush(flush);
   }
 
