@@ -19,6 +19,8 @@
 package com.arcadedb.graphql.schema;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.EmbeddedDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graphql.parser.AbstractField;
@@ -60,7 +62,8 @@ public class GraphQLResultSet implements ResultSet {
     }
   }
 
-  public GraphQLResultSet(final GraphQLSchema schema, final ResultSet resultSet, final List<Selection> projections, final ObjectTypeDefinition returnType) {
+  public GraphQLResultSet(final GraphQLSchema schema, final ResultSet resultSet, final List<Selection> projections,
+      final ObjectTypeDefinition returnType) {
     if (resultSet == null)
       throw new IllegalArgumentException("NULL resultSet");
 
@@ -94,7 +97,8 @@ public class GraphQLResultSet implements ResultSet {
     final List<Projection> projections = new ArrayList<>(definedProjections.size());
     for (final Selection fieldDefinition : definedProjections) {
       final SelectionSet set = fieldDefinition.getField().getSelectionSet();
-      projections.add(new Projection(fieldDefinition.getName(), fieldDefinition.getField(), null, set != null ? set.getSelections() : null));
+      projections.add(
+          new Projection(fieldDefinition.getName(), fieldDefinition.getField(), null, set != null ? set.getSelections() : null));
     }
     return mapProjections(current, projections);
   }
@@ -130,11 +134,13 @@ public class GraphQLResultSet implements ResultSet {
 
               if (current.getElement().isPresent()) {
                 final Vertex vertex = current.getElement().get().asVertex();
-                final Iterable<Vertex> connected = type != null ? vertex.getVertices(direction, type) : vertex.getVertices(direction);
+                final Iterable<Vertex> connected =
+                    type != null ? vertex.getVertices(direction, type) : vertex.getVertices(direction);
                 projectionValue = connected;
               } else if (current.getIdentity().isPresent()) {
                 final Vertex vertex = current.getIdentity().get().asVertex();
-                final Iterable<Vertex> connected = type != null ? vertex.getVertices(direction, type) : vertex.getVertices(direction);
+                final Iterable<Vertex> connected =
+                    type != null ? vertex.getVertices(direction, type) : vertex.getVertices(direction);
                 projectionValue = connected;
               }
             }
@@ -150,7 +156,9 @@ public class GraphQLResultSet implements ResultSet {
 
     if (current.getElement().isPresent()) {
       final Document element = current.getElement().get();
-      map.put("@rid", element.getIdentity());
+      final RID rid = element.getIdentity();
+      if (rid != null)
+        map.put("@rid", rid);
       map.put("@type", element.getTypeName());
       map.put("@cat", element instanceof Vertex ? "v" : element instanceof Edge ? "e" : "d");
     }
@@ -189,8 +197,10 @@ public class GraphQLResultSet implements ResultSet {
       final ObjectTypeDefinition projectionType = entry.type;
 
       if (selectionSet != null) {
-        if (projectionValue instanceof Map)
-          projectionValue = mapBySelections(new ResultInternal((Map<String, Object>) projectionValue), selectionSet);
+        if (projectionValue instanceof Map m)
+          projectionValue = mapBySelections(new ResultInternal(m), selectionSet);
+        else if (projectionValue instanceof EmbeddedDocument emb)
+          projectionValue = mapBySelections(new ResultInternal(emb), selectionSet);
         else if (projectionValue instanceof Result result)
           projectionValue = mapBySelections(result, selectionSet);
         else if (projectionValue instanceof Iterable iterable) {
@@ -210,8 +220,10 @@ public class GraphQLResultSet implements ResultSet {
         } else
           continue;
       } else if (projectionType != null) {
-        if (projectionValue instanceof Map)
-          projectionValue = mapByReturnType(new ResultInternal((Map<String, Object>) projectionValue), projectionType);
+        if (projectionValue instanceof Map m)
+          projectionValue = mapByReturnType(new ResultInternal(m), projectionType);
+        else if (projectionValue instanceof EmbeddedDocument emb)
+          projectionValue = mapBySelections(new ResultInternal(emb), selectionSet);
         else if (projectionValue instanceof Result result)
           projectionValue = mapByReturnType(result, projectionType);
         else if (projectionValue instanceof Iterable iterable) {

@@ -20,15 +20,15 @@ package com.arcadedb.graphql;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.graphql.schema.GraphQLResult;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 public class GraphQLBasicTest extends AbstractGraphQLTest {
 
@@ -87,7 +87,8 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
     executeTest((database) -> {
       defineTypes(database);
 
-      try (final ResultSet resultSet = database.query("graphql", "{ bookByName(name: \"Harry Potter and the Philosopher's Stone\")}")) {
+      try (final ResultSet resultSet = database.query("graphql",
+          "{ bookByName(name: \"Harry Potter and the Philosopher's Stone\")}")) {
         assertThat(resultSet.hasNext()).isTrue();
         final Result record = resultSet.next();
         assertThat(record.getPropertyNames()).hasSize(7);
@@ -165,6 +166,49 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
   }
 
   @Test
+  public void embeddedAddresses() {
+    executeTest((database) -> {
+      final String types = "type Query {\n" +//
+          "  bookById(id: String): Book\n" +//
+          "  books(where: String!): [Book!]!\n" +//
+          "  addresses(firstName: String): [Author]\n" + //
+          "}\n\n" +//
+          "type Book {\n" +//
+          "  id: String\n" +//
+          "  name: String\n" +//
+          "  pageCount: Int\n" +//
+          "  authors: [Author] @relationship(type: \"IS_AUTHOR_OF\", direction: IN)\n" +//
+          "}\n\n" +//
+          "type Address {\n" +//
+          "  city: String\n" +//
+          "}\n\n" +//
+          "type Author {\n" +//
+          "  id: String\n" +//
+          "  firstName: String\n" +//
+          "  lastName: String\n" +//
+          "  address: Address\n" +//
+          "}";
+
+      database.command("graphql", types);
+
+      try (final ResultSet resultSet = database.query("graphql", "{ addresses(firstName: \"Joanne\") { address { city } } }")) {
+        assertThat(resultSet.hasNext()).isTrue();
+        Result record = resultSet.next();
+        assertThat(record.getPropertyNames()).hasSize(4);
+
+        final GraphQLResult address = record.getProperty("address");
+        assertThat(address).isNotNull();
+
+        assertThat(address.getProperty("city").equals("Rome")).isTrue();
+
+        assertThat(resultSet.hasNext()).isFalse();
+      }
+
+      return null;
+    });
+  }
+
+  @Test
   public void allBooksWrongRelationshipDirective() {
     executeTest((database) -> {
       final String types = "type Query {\n" +//
@@ -181,11 +225,13 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
           "  id: String\n" +//
           "  firstName: String\n" +//
           "  lastName: String\n" +//
+          "  address: Address\n" +//
           "}";
 
       database.command("graphql", types);
 
-      try (final ResultSet resultSet = database.query("graphql", "{ books { id\n name\n pageCount\n authors @relationship(type: \"WRONG\", direction: IN)} }")) {
+      try (final ResultSet resultSet = database.query("graphql",
+          "{ books { id\n name\n pageCount\n authors @relationship(type: \"WRONG\", direction: IN)} }")) {
         assertThat(resultSet.hasNext()).isTrue();
         Result record = resultSet.next();
         assertThat(record.getPropertyNames()).hasSize(7);
@@ -220,6 +266,7 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
           "  id: String\n" +//
           "  firstName: String\n" +//
           "  lastName: String\n" +//
+          "  address: Address\n" +//
           "}";
 
       database.command("graphql", types);
