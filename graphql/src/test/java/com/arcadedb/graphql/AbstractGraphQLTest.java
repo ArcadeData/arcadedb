@@ -20,8 +20,11 @@ package com.arcadedb.graphql;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -47,14 +50,21 @@ public abstract class AbstractGraphQLTest {
       try {
         database.transaction(() -> {
           final Schema schema = database.getSchema();
+
+          schema.getOrCreateDocumentType("Address");
+
+          final VertexType author = schema.getOrCreateVertexType("Author");
+          author.createProperty("address", Type.EMBEDDED, "Address");
+
           schema.getOrCreateVertexType("Book");
-          schema.getOrCreateVertexType("Author");
           schema.getOrCreateEdgeType("IS_AUTHOR_OF");
 
           final MutableVertex author1 = database.newVertex("Author");
           author1.set("id", "author-1");
           author1.set("firstName", "Joanne");
           author1.set("lastName", "Rowling");
+          final MutableEmbeddedDocument address = author1.newEmbeddedDocument("Address", "address");
+          address.set("city", "Rome");
           author1.save();
 
           final MutableVertex book1 = database.newVertex("Book");
