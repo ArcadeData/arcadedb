@@ -125,6 +125,14 @@ public class RemoteHttpComponent extends RWLockContext {
     return userPassword;
   }
 
+  public CONNECTION_STRATEGY getConnectionStrategy() {
+    return connectionStrategy;
+  }
+
+  public void setConnectionStrategy(final CONNECTION_STRATEGY connectionStrategy) {
+    this.connectionStrategy = connectionStrategy;
+  }
+
   List<Pair<String, Integer>> getReplicaServerList() {
     return replicaServerList;
   }
