@@ -210,14 +210,14 @@ public class RemoteHttpComponent extends RWLockContext {
         if (!autoReconnect)
           break;
 
-        if (!reloadClusterConfiguration())
-          throw new RemoteException("Error on executing remote operation " + operation + ", no server available", e);
-
         if (connectionStrategy == CONNECTION_STRATEGY.FIXED) {
           LogManager.instance()
               .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, retrying...",
                   connectToServer.getFirst(), connectToServer.getSecond());
         } else {
+          if (!reloadClusterConfiguration())
+            throw new RemoteException("Error on executing remote operation " + operation + ", no server available", e);
+
           final Pair<String, Integer> currentConnectToServer = connectToServer;
 
           if (leaderIsPreferable && !currentConnectToServer.equals(leaderServer)) {
