@@ -125,8 +125,41 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
         }
       }
 
+      final String rootPasswordFromEnv = server != null ?
+        server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD) :
+        GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
+
+
+
+      final String rootPasswordPath = server != null ?
+        server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH) :
+        GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH.getValueAsString();
+
+
+      final String rootPasswordFromFile = rootPasswordPath != null ? (Files.isReadable(Path.of(rootPasswordPath)) ? Files.readString(Path.of(rootPasswordPath)) : null) : null;
+
       if (users.isEmpty() || (users.containsKey("root") && users.get("root").getPassword() == null))
+      {
         askForRootPassword();
+      }
+      else if ((rootPasswordFromFile != null || rootPasswordFromEnv != null) && (users.containsKey("root")))
+      {
+        final String curRootPassword = users.get("root").getPassword();
+        if (rootPasswordFromFile != null && rootPasswordFromEnv != null)
+          LogManager.instance().log(this, Level.WARNING, "Both `arcadedb.server.rootPassword` and `arcadedb.server.rootPasswordPath` settings were used, falling back to `arcadedb.server.rootPasswordPath`");
+
+        final String pickedNewRootPassword = rootPasswordFromFile == null ? rootPasswordFromEnv : rootPasswordFromFile;
+
+
+        if (curRootPassword != pickedNewRootPassword)
+        {
+            credentialsValidator.validateCredentials("root", pickedNewRootPassword);
+            final String encodedPassword = encodePassword(pickedNewRootPassword, ServerSecurity.generateRandomSalt());
+            getUser("root").setPassword(encodedPassword);
+            saveUsers();
+        }
+      }
+
 
       final long fileLastModified = usersRepository.getFileLastModified();
       if (fileLastModified > -1 && reloadConfigurationTimer == null) {
