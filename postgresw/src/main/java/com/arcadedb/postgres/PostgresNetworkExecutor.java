@@ -428,8 +428,14 @@ public class PostgresNetworkExecutor extends Thread {
 
       final Set<String> propertyNames = row.getPropertyNames();
       for (final String p : propertyNames) {
+        // Add all property names with default VARCHAR type
+        if (!columns.containsKey(p)) {
+          columns.put(p, PostgresType.VARCHAR);
+        }
+
         final Object value = row.getProperty(p);
 
+        // Only update type if value is not null
         if (value != null) {
           PostgresType currentType = columns.get(p);
 
