@@ -596,33 +596,29 @@ public class PostgresNetworkExecutor extends Thread {
       final String portalName = readString();
       final String sourcePreparedStatement = readString();
 
-      // Create a new portal or get existing one
-      PostgresPortal portal = getPortal(portalName, false);
-      if (portal == null) {
-        // Create a new portal using the source prepared statement
-        portal = new PostgresPortal(null); // Portal with no query yet
-
-        // Find the source prepared statement
-        PostgresPortal sourcePortal = getPortal(sourcePreparedStatement, false);
-        if (sourcePortal != null) {
-          // Copy query and statement from source to this portal
-          portal.query = sourcePortal.query;
-          portal.sqlStatement = sourcePortal.sqlStatement;
-          portal.isExpectingResult = sourcePortal.isExpectingResult;
-
-          if (DEBUG)
-            LogManager.instance().log(this, Level.INFO,
-                "Binding: copied statement from '%s' to portal '%s'",
-                sourcePreparedStatement, portalName);
-        } else {
+      // Find the source prepared statement
+      PostgresPortal sourcePortal = getPortal(sourcePreparedStatement, false);
+      if (sourcePortal == null) {
           LogManager.instance().log(this, Level.WARNING,
-              "Source statement '%s' not found for binding to portal '%s'",
-              sourcePreparedStatement, portalName);
-        }
-
-        // Store the new portal
-        portals.put(portalName, portal);
+              "Source prepared statement '%s' not found for binding", sourcePreparedStatement);
+          // Consume bind parameters but don't create a portal
+          consumeBindParameters();
+          writeMessage("bind complete", null, '2', 4);
+          return;
       }
+
+      // CRITICAL FIX: Always create a new portal or completely reset existing one
+      // to avoid any residual state from previous bindings
+      PostgresPortal portal = new PostgresPortal(null);
+
+      // Copy all necessary information from the source prepared statement
+      portal.query = sourcePortal.query;
+      portal.sqlStatement = sourcePortal.sqlStatement;
+      portal.isExpectingResult = sourcePortal.isExpectingResult;
+      portal.parameterTypes = sourcePortal.parameterTypes;
+      portal.rowDescriptionSent = false; // Important - reset this flag
+
+      // Continue with parameter reading...
       final int paramFormatCount = channel.readShort();
       if (paramFormatCount > 0) {
         portal.parameterFormats = new ArrayList<>(paramFormatCount);
@@ -658,11 +654,47 @@ public class PostgresNetworkExecutor extends Thread {
       if (errorInTransaction)
         return;
 
+      // Store the completely new portal
+      portals.put(portalName, portal);
+
+      if (DEBUG)
+          LogManager.instance().log(this, Level.INFO,
+              "PSQL: bind (portal=%s) -> %s (query=%s) (thread=%s)",
+              portalName, sourcePreparedStatement, portal.query,
+              Thread.currentThread().getId());
+
       writeMessage("bind complete", null, '2', 4);
 
     } catch (final Exception e) {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Error on parsing bind message: " + e.getMessage(), "XX000");
+    }
+  }
+
+
+  private void consumeBindParameters() throws IOException {
+    // Read and discard parameter formats
+    final int paramFormatCount = channel.readShort();
+    for (int i = 0; i < paramFormatCount; i++) {
+      channel.readUnsignedShort(); // discard format code
+    }
+
+    // Read and discard parameter values
+    final int paramValuesCount = channel.readShort();
+    for (int i = 0; i < paramValuesCount; i++) {
+      final long paramSize = channel.readUnsignedInt();
+      if (paramSize > 0) {
+        // Read and discard parameter data
+        final byte[] paramValue = new byte[(int) paramSize];
+        channel.readBytes(paramValue);
+      }
+      // Note: If paramSize is -1, it indicates NULL, no data to read
+    }
+
+    // Read and discard result formats
+    final int resultFormatCount = channel.readShort();
+    for (int i = 0; i < resultFormatCount; i++) {
+      channel.readUnsignedShort(); // discard format code
     }
   }
 
