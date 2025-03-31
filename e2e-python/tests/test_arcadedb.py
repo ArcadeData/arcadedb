@@ -158,7 +158,7 @@ def test_psycopg2_mass_spam():
     try:
         with conn.cursor() as cursor:
             for _ in range(count):
-                random_num = random.randint(1, 2^16)
+                random_num = random.randint(1, 2**16)
                 cursor.execute(f"SELECT {random_num}")
                 assert cursor.fetchone()[0] == random_num
 
