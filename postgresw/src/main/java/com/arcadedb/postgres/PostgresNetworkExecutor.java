@@ -266,28 +266,19 @@ public class PostgresNetworkExecutor extends Thread {
     }
 
     if (type == 'P') {
-      if (portal.sqlStatement != null && !portal.executed) {
-        // Just prepare columns if needed without executing
-        if (portal.columns == null) {
-          // Need to describe the result structure
-          final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
-          final ResultSet resultSet = portal.sqlStatement.execute(database, parameters);
+      if (portal.sqlStatement != null) {
+        final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
+        final ResultSet resultSet = portal.sqlStatement.execute(database, parameters);
+        portal.executed = true;
+        if (portal.isExpectingResult) {
           portal.cachedResultset = browseAndCacheResultSet(resultSet, 0);
           portal.columns = getColumns(portal.cachedResultset);
-        }
-
-        // Now send row description if we have columns
-        if (portal.columns != null && !portal.columns.isEmpty()) {
           writeRowDescription(portal.columns);
-          portal.rowDescriptionSent = true; // Mark that we've sent it
-        } else {
+        } else
           writeNoData();
-        }
-      } else if (portal.columns != null && !portal.columns.isEmpty()) {
-        writeRowDescription(portal.columns);
-        portal.rowDescriptionSent = true; // Mark that we've sent it
       } else {
-        writeNoData();
+        if (portal.columns != null)
+          writeRowDescription(portal.columns);
       }
     } else if (type == 'S') {
       writeNoData();
@@ -303,7 +294,7 @@ public class PostgresNetworkExecutor extends Thread {
       if (errorInTransaction)
         return;
 
-      final PostgresPortal portal = getPortal(portalName, false);
+      final PostgresPortal portal = getPortal(portalName, true);
       if (portal == null) {
         writeNoData();
         return;
@@ -317,24 +308,20 @@ public class PostgresNetworkExecutor extends Thread {
       if (portal.ignoreExecution)
         writeNoData();
       else {
-        // Execute the query if not yet executed
-        if (!portal.executed && portal.sqlStatement != null) {
+        if (!portal.executed) {
           final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
           final ResultSet resultSet = portal.sqlStatement.execute(database, parameters);
           portal.executed = true;
           if (portal.isExpectingResult) {
             portal.cachedResultset = browseAndCacheResultSet(resultSet, limit);
-            if (portal.columns == null)
-              portal.columns = getColumns(portal.cachedResultset);
+            portal.columns = getColumns(portal.cachedResultset);
+            writeRowDescription(portal.columns);
           }
         }
 
         if (portal.isExpectingResult) {
           if (portal.columns == null)
             portal.columns = getColumns(portal.cachedResultset);
-
-          // CRITICAL FIX: NEVER send row description during Execute
-          // Row descriptions should only be sent during Describe phase
 
           writeDataRows(portal.cachedResultset, portal.columns);
           writeCommandComplete(portal.query, portal.cachedResultset == null ? 0 : portal.cachedResultset.size());
@@ -518,7 +505,7 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private void writeDataRows(final List<Result> resultSet, final Map<String, PostgresType> columns) throws IOException {
-    if (resultSet == null || resultSet.isEmpty())
+    if (resultSet.isEmpty())
       return;
 
     final Binary bufferData = new Binary();
@@ -596,33 +583,17 @@ public class PostgresNetworkExecutor extends Thread {
       final String portalName = readString();
       final String sourcePreparedStatement = readString();
 
-      // Create a new portal or get existing one
-      PostgresPortal portal = getPortal(portalName, false);
+      final PostgresPortal portal = getPortal(portalName, false);
       if (portal == null) {
-        // Create a new portal using the source prepared statement
-        portal = new PostgresPortal(null); // Portal with no query yet
-
-        // Find the source prepared statement
-        PostgresPortal sourcePortal = getPortal(sourcePreparedStatement, false);
-        if (sourcePortal != null) {
-          // Copy query and statement from source to this portal
-          portal.query = sourcePortal.query;
-          portal.sqlStatement = sourcePortal.sqlStatement;
-          portal.isExpectingResult = sourcePortal.isExpectingResult;
-
-          if (DEBUG)
-            LogManager.instance().log(this, Level.INFO,
-                "Binding: copied statement from '%s' to portal '%s'",
-                sourcePreparedStatement, portalName);
-        } else {
-          LogManager.instance().log(this, Level.WARNING,
-              "Source statement '%s' not found for binding to portal '%s'",
-              sourcePreparedStatement, portalName);
-        }
-
-        // Store the new portal
-        portals.put(portalName, portal);
+        writeMessage("bind complete", null, '2', 4);
+        return;
       }
+
+      if (DEBUG)
+        LogManager.instance()
+            .log(this, Level.INFO, "PSQL: bind (portal=%s) -> %s (thread=%s)", portalName, sourcePreparedStatement,
+                Thread.currentThread().getId());
+
       final int paramFormatCount = channel.readShort();
       if (paramFormatCount > 0) {
         portal.parameterFormats = new ArrayList<>(paramFormatCount);
