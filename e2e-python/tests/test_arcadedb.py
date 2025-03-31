@@ -155,12 +155,14 @@ def test_psycopg2_mass_spam():
     conn = psycopg.connect(**params)
     conn.autocommit = True
     count = 512
+    ranges = [0,1,2,16,512,2048,2**32]
     try:
-        with conn.cursor() as cursor:
-            for _ in range(count):
-                random_num = random.randint(1, 2**16)
-                cursor.execute(f"SELECT {random_num}")
-                assert cursor.fetchone()[0] == random_num
+        for max_r in ranges:
+            with conn.cursor() as cursor:
+                for _ in range(count):
+                    random_num = random.randint(0, max_r)
+                    cursor.execute(f"SELECT {random_num}")
+                    assert cursor.fetchone()[0] == random_num
 
     finally:
         conn.close()
