@@ -239,5 +239,6 @@ public class RemoteQueriesIT {
       arcadeDBServer.stop();
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();
+
   }
 }

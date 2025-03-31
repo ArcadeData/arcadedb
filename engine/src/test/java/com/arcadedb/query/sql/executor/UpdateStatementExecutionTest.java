@@ -85,6 +85,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
     database.transaction(() -> {
       database.command("sql", "delete from OUpdateStatementExecutionTest");
     });
+    GlobalConfiguration.resetAll();
   }
 
   @Test
