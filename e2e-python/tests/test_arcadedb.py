@@ -168,6 +168,41 @@ def test_psycopg2_mass_spam():
         conn.close()
 
 
+def test_psycopg2_portal_errors():
+    """https://github.com/ArcadeData/arcadedb/issues/2117 test"""
+    # Get connection parameters
+    params = get_connection_params(arcadedb)
+
+    # Connect to the database
+    conn = psycopg.connect(**params)
+    conn.autocommit = True
+
+    try:
+
+        with conn.cursor() as cursor:
+            cursor.execute("create vertex type `IMAGE` if not exists;")
+        for i in range(64):
+            query = 'INSERT INTO `IMAGE` RETURN @rid;'
+            cursor.execute(query)
+            cursor.fetchall()
+
+
+        for i in range(64):
+            query = '{cypher}CREATE (c:IMAGE) RETURN id(c)'
+            cursor.execute(query)
+            cursor.fetchall()
+
+
+        for i in range(64):
+            query = '{sqlscript}INSERT INTO `IMAGE` RETURN @rid;'
+            cursor.execute(query)
+            cursor.fetchall()
+
+
+
+    finally:
+        conn.close()
+
 def random_values(_type, size=64):
     if _type == bool:  # Note: fixed the '=' to '==' for comparison
         return [random.choice([True, False]) for _ in range(size)]
