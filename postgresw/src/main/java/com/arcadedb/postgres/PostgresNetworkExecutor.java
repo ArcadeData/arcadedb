@@ -434,6 +434,11 @@ public class PostgresNetworkExecutor extends Thread {
   private Map<String, PostgresType> getColumns(final List<Result> resultSet) {
     final Map<String, PostgresType> columns = new LinkedHashMap<>();
 
+    if (resultSet == null) {
+      System.out.println("ResultSet is null");
+      return columns; // Return empty columns instead of throwing NPE
+    }
+
     boolean atLeastOneElement = false;
     for (final Result row : resultSet) {
       if (row.isElement())
@@ -595,20 +600,11 @@ public class PostgresNetworkExecutor extends Thread {
       // BIND
       final String portalName = readString();
       final String sourcePreparedStatement = readString();
-
-      // Find the source prepared statement
-      PostgresPortal sourcePortal = getPortal(sourcePreparedStatement, false);
-      if (sourcePortal == null) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Source prepared statement '%s' not found for binding", sourcePreparedStatement);
-          // Consume bind parameters but don't create a portal
-          consumeBindParameters();
-          writeMessage("bind complete", null, '2', 4);
-          return;
-      }
-
       // CRITICAL FIX: Always create a new portal or completely reset existing one
       // to avoid any residual state from previous bindings
+      PostgresPortal sourcePortal = getPortal(sourcePreparedStatement, false);
+
+        // Create new portal
       PostgresPortal portal = new PostgresPortal(null);
 
       // Copy all necessary information from the source prepared statement
@@ -617,6 +613,9 @@ public class PostgresNetworkExecutor extends Thread {
       portal.isExpectingResult = sourcePortal.isExpectingResult;
       portal.parameterTypes = sourcePortal.parameterTypes;
       portal.rowDescriptionSent = false; // Important - reset this flag
+      portal.cachedResultset = sourcePortal.cachedResultset;
+      portal.columns = sourcePortal.columns;
+      portal.executed = sourcePortal.executed;
 
       // Continue with parameter reading...
       final int paramFormatCount = channel.readShort();
@@ -671,32 +670,6 @@ public class PostgresNetworkExecutor extends Thread {
     }
   }
 
-
-  private void consumeBindParameters() throws IOException {
-    // Read and discard parameter formats
-    final int paramFormatCount = channel.readShort();
-    for (int i = 0; i < paramFormatCount; i++) {
-      channel.readUnsignedShort(); // discard format code
-    }
-
-    // Read and discard parameter values
-    final int paramValuesCount = channel.readShort();
-    for (int i = 0; i < paramValuesCount; i++) {
-      final long paramSize = channel.readUnsignedInt();
-      if (paramSize > 0) {
-        // Read and discard parameter data
-        final byte[] paramValue = new byte[(int) paramSize];
-        channel.readBytes(paramValue);
-      }
-      // Note: If paramSize is -1, it indicates NULL, no data to read
-    }
-
-    // Read and discard result formats
-    final int resultFormatCount = channel.readShort();
-    for (int i = 0; i < resultFormatCount; i++) {
-      channel.readUnsignedShort(); // discard format code
-    }
-  }
 
   private void parseCommand() {
     try {
