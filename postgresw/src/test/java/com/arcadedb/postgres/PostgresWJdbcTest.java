@@ -559,4 +559,40 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
 
     }
   }
+
+  @Test
+  void testNullValuesMapping() throws SQLException, ClassNotFoundException {
+    try (Connection conn = getConnection()) {
+      Statement stmt = conn.createStatement();
+
+      stmt.execute("""
+          {sqlscript}
+          CREATE DOCUMENT TYPE TestProduct;
+          CREATE PROPERTY TestProduct.id INTEGER;
+          CREATE PROPERTY TestProduct.name STRING;
+          CREATE PROPERTY TestProduct.price FLOAT;
+          CREATE INDEX ON TestProduct(id) UNIQUE;
+
+          INSERT INTO TestProduct (id, name, price) VALUES (1, 'TestItem', 29.99);
+          INSERT INTO TestProduct (id, price) VALUES (2, 38.99);
+          """);
+
+      ResultSet rs = stmt.executeQuery("SELECT  FROM TestProduct ");
+
+      while (rs.next()) {
+        int id = rs.getInt("id");
+        String name = rs.getString("name");
+        Double price = rs.getDouble("price");
+
+        if (id == 1) {
+          assertThat(name).isEqualTo("TestItem");
+          assertThat(price).isEqualTo(29.99);
+        } else if (id == 2) {
+          assertThat(name).isNull();
+          assertThat(price).isEqualTo(38.99);
+        }
+      }
+
+    }
+  }
 }
