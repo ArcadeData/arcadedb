@@ -100,8 +100,12 @@ public class CreateIndexStatement extends DDLStatement {
 
     final AtomicLong total = new AtomicLong();
 
-    database.getSchema().buildTypeIndex(typeName.getStringValue(), fields).withType(indexType).withUnique(unique)
-        .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE).withNullStrategy(nullStrategy).withCallback((document, totalIndexed) -> {
+    database.getSchema().buildTypeIndex(typeName.getStringValue(), fields)
+        .withType(indexType)
+        .withUnique(unique)
+        .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE)
+        .withNullStrategy(nullStrategy)
+        .withCallback((document, totalIndexed) -> {
           total.incrementAndGet();
 
           if (totalIndexed % 100000 == 0) {

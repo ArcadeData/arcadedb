@@ -446,8 +446,14 @@ public class PostgresNetworkExecutor extends Thread {
 
       final Set<String> propertyNames = row.getPropertyNames();
       for (final String p : propertyNames) {
+        // Add all property names with default VARCHAR type
+        if (!columns.containsKey(p)) {
+          columns.put(p, PostgresType.VARCHAR);
+        }
+
         final Object value = row.getProperty(p);
 
+        // Only update type if value is not null
         if (value != null) {
           PostgresType currentType = columns.get(p);
 
@@ -530,8 +536,8 @@ public class PostgresNetworkExecutor extends Thread {
         final String propertyName = postgresTypeEntry.getKey();
 
         Object value = switch (propertyName) {
-          case "@rid" -> row.isElement() ? row.getElement().get().getIdentity() : null;
-          case "@type" -> row.isElement() ? row.getElement().get().getTypeName() : null;
+          case "@rid" -> row.isElement() ? row.getElement().get().getIdentity() : row.getProperty(propertyName);
+          case "@type" -> row.isElement() ? row.getElement().get().getTypeName() : row.getProperty(propertyName);
           case "@out" -> {
             if (row.isElement()) {
               final Document record = row.getElement().get();
@@ -540,7 +546,7 @@ public class PostgresNetworkExecutor extends Thread {
               else if (record instanceof Edge edge)
                 yield edge.getOut();
             }
-            yield null;
+            yield row.getProperty(propertyName);
           }
           case "@in" -> {
             if (row.isElement()) {
@@ -550,7 +556,7 @@ public class PostgresNetworkExecutor extends Thread {
               else if (record instanceof Edge edge)
                 yield edge.getIn();
             }
-            yield null;
+            yield row.getProperty(propertyName);
           }
           case "@cat" -> {
             if (row.isElement()) {
@@ -562,7 +568,7 @@ public class PostgresNetworkExecutor extends Thread {
               else
                 yield "d";
             }
-            yield null;
+            yield row.getProperty(propertyName);
           }
           default -> row.getProperty(propertyName);
         };

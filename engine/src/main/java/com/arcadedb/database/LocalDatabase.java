@@ -137,6 +137,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private final        RecordEventsRegistry                      events                               = new RecordEventsRegistry();
   private final        ConcurrentHashMap<String, QueryEngine>    reusableQueryEngines                 = new ConcurrentHashMap<>();
   private              TRANSACTION_ISOLATION_LEVEL               transactionIsolationLevel            = TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+  private              long                                      openedOn;
+  private              long                                      lastUpdatedOn;
+  private              long                                      lastUsedOn;
 
   protected LocalDatabase(final String path, final ComponentFile.MODE mode, final ContextConfiguration configuration,
       final SecurityManager security, final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
@@ -216,13 +219,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void drop() {
-    checkDatabaseIsOpen();
+    checkDatabaseIsOpen(true, "Cannot drop database");
 
     if (isTransactionActive())
       throw new DatabaseOperationException("Cannot drop the database in transaction");
-
-    if (mode == ComponentFile.MODE.READ_ONLY)
-      throw new DatabaseIsReadOnlyException("Cannot drop database");
 
     closeInternal(true);
 
@@ -1294,7 +1294,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public boolean checkTransactionIsActive(final boolean createTx) {
-    checkDatabaseIsOpen();
+    checkDatabaseIsOpen(true, "Cannot begin a transaction on a read only database");
 
     if (!isTransactionActive()) {
       if (createTx) {
@@ -1329,7 +1329,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public ResultSet command(final String language, final String query, final Object... parameters) {
-    checkDatabaseIsOpen();
+    checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
     return getQueryEngine(language).command(query, null, parameters);
   }
@@ -1337,7 +1337,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public ResultSet command(final String language, final String query, final ContextConfiguration configuration,
       final Object... parameters) {
-    checkDatabaseIsOpen();
+    checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
     return getQueryEngine(language).command(query, configuration, parameters);
   }
@@ -1350,7 +1350,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public ResultSet command(final String language, final String query, final ContextConfiguration configuration,
       final Map<String, Object> parameters) {
-    checkDatabaseIsOpen();
+    checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
     return getQueryEngine(language).command(query, configuration, parameters);
   }
@@ -1602,6 +1602,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return queryEngineManager;
   }
 
+  public long getLastUpdatedOn() {
+    return lastUpdatedOn;
+  }
+
+  public long getLastUsedOn() {
+    return lastUsedOn;
+  }
+
+  public long getOpenedOn() {
+    return openedOn;
+  }
+
   public void saveConfiguration() throws IOException {
     FileUtils.writeFile(configurationFile, configuration.toJSON());
   }
@@ -1814,6 +1826,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         if (security != null)
           security.updateSchema(this);
 
+        openedOn = lastUsedOn = lastUpdatedOn = System.currentTimeMillis();
+
         Profiler.INSTANCE.registerDatabase(this);
 
       } catch (final RuntimeException e) {
@@ -1836,10 +1850,25 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   protected void checkDatabaseIsOpen() {
+    checkDatabaseIsOpen(false, null);
+  }
+
+  protected void checkDatabaseIsOpen(final boolean updateIntent, final String databaseReadOnlyErrorMessage) {
     if (!open)
       throw new DatabaseIsClosedException(name);
     if (DatabaseContext.INSTANCE.getContextIfExists(databasePath) == null)
       DatabaseContext.INSTANCE.init(this);
+
+    final long now = System.currentTimeMillis();
+
+    if (updateIntent) {
+      if (mode == ComponentFile.MODE.READ_ONLY)
+        throw new DatabaseIsReadOnlyException(databaseReadOnlyErrorMessage);
+
+      lastUpdatedOn = now;
+    }
+
+    lastUsedOn = now;
   }
 
   private void setDefaultValues(final Record record) {
@@ -1872,5 +1901,4 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
     }
   }
-
 }

@@ -27,6 +27,7 @@ import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.StoredFields;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.search.IndexSearcher;
@@ -112,8 +113,11 @@ public class PlainLuceneFullTextIndexTest {
 
       assertThat(hits.length).isEqualTo(501);
       // Iterate through the results:
+
+      StoredFields storedFields = searcher.storedFields();
+
       for (int i = 0; i < hits.length; i++) {
-        final Document hitDoc = searcher.doc(hits[i].doc);
+        Document doc = storedFields.document(hits[i].doc);
         //System.out.print(hitDoc.get("id") + " - ");
       }
 

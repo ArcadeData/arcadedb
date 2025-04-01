@@ -36,18 +36,15 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
-
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.time.*;
-import java.time.format.*;
+import java.io.File;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 
 import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
-import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -196,7 +193,6 @@ public class SelectOrderTest {
         });
       }
 
-      GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
       GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
 
       ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);

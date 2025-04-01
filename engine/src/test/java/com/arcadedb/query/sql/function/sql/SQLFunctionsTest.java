@@ -444,30 +444,25 @@ public class SQLFunctionsTest {
 
     ResultSet result = database.command("sql", "select count(*) as tot from Account");
     assertThat(result.hasNext()).isTrue();
-    final int tot = ((Number) result.next().getProperty("tot")).intValue();
+    final long tot = result.next().<Long>getProperty("tot");
 
     database.transaction(() -> {
       final ResultSet result2 = database.command("sql", "update Account set created = date()");
-      assertThat((Long) result2.next().getProperty("count")).isEqualTo(tot);
+      assertThat(result2.next().<Long>getProperty("count")).isEqualTo(tot);
     });
 
     final String pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
+//    final String pattern = GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
 
     DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern(pattern);
     LocalDateTime now = LocalDateTime.now();
     String formattedDate = now.format(timeFormatter);
 //    System.out.println("formattedDate = " + formattedDate);
-    String query = "select from Account where created <= date('" +formattedDate + "', \"" + pattern + "\")";
-    result = database.command("sql",
-        query);
+    String query = "select count() as tot from Account where created < date('" +formattedDate + "', \"" + pattern + "\")";
+    result = database.command("sql", query);
 
-    int count = 0;
-    for (final ResultSet it = result; it.hasNext(); ) {
-      final Result d = it.next();
-      assertThat(d.<Object>getProperty("created")).isNotNull();
-      ++count;
-    }
-    assertThat(count).isEqualTo(tot);
+    assertThat(result.next().<Long>getProperty("tot")).isEqualTo(tot);
+
   }
 
   @Test

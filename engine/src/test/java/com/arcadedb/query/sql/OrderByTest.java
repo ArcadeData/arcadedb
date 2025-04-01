@@ -31,6 +31,8 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
 import org.assertj.core.api.Assertions;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
@@ -42,6 +44,17 @@ import static org.assertj.core.api.Assertions.*;
  * From Issue https://github.com/ArcadeData/arcadedb/issues/839
  */
 public class OrderByTest {
+
+  @BeforeEach
+  void setUp() {
+    GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
+
+  }
+
+  @AfterEach
+  void tearDown() {
+    GlobalConfiguration.resetAll();
+  }
 
   @Test
   public void testLocalDateTimeOrderBy() {
@@ -62,8 +75,6 @@ public class OrderByTest {
       });
     }
 
-    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
-    GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
 
     final Database database = databaseFactory.open();
 
