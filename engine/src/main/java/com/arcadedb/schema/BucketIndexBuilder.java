@@ -19,16 +19,20 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.async.DatabaseAsyncExecuteAlone;
+import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.DatabaseMetadataException;
-import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 /**
  * Builder class for bucket indexes.
@@ -40,7 +44,8 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
   final String   bucketName;
   final String[] propertyNames;
 
-  protected BucketIndexBuilder(final DatabaseInternal database, final String typeName, final String bucketName, final String[] propertyNames) {
+  protected BucketIndexBuilder(final DatabaseInternal database, final String typeName, final String bucketName,
+      final String[] propertyNames) {
     super(database, Index.class);
     this.typeName = typeName;
     this.bucketName = bucketName;
@@ -51,55 +56,70 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
   public Index create() {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    if (database.isAsyncProcessing())
-      throw new NeedRetryException("Cannot create a new index while asynchronous tasks are running");
+    try {
+      final CountDownLatch semaphore = new CountDownLatch(database.async().getThreadCount());
 
-    final LocalSchema schema = database.getSchema().getEmbedded();
+      ((DatabaseAsyncExecutorImpl) database.async()).waitCompletion(0L, () -> new DatabaseAsyncExecuteAlone(semaphore,
+          () -> {
 
-    if (propertyNames.length == 0)
-      throw new DatabaseMetadataException("Cannot create index on type '" + typeName + "' because there are no property defined");
+          })
+      );
 
-    final LocalDocumentType type = schema.getType(typeName);
+      final LocalSchema schema = database.getSchema().getEmbedded();
 
-    // CHECK ALL THE PROPERTIES EXIST
-    final Type[] keyTypes = new Type[propertyNames.length];
-    int i = 0;
+      if (propertyNames.length == 0)
+        throw new DatabaseMetadataException(
+            "Cannot create index on type '" + typeName + "' because there are no property defined");
 
-    for (final String propertyName : propertyNames) {
-      final Property property = type.getPolymorphicPropertyIfExists(propertyName);
-      if (property == null)
-        throw new SchemaException("Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
+      final LocalDocumentType type = schema.getType(typeName);
 
-      keyTypes[i++] = property.getType();
-    }
+      // CHECK ALL THE PROPERTIES EXIST
+      final Type[] keyTypes = new Type[propertyNames.length];
+      int i = 0;
 
-    return schema.recordFileChanges(() -> {
-      final AtomicReference<Index> result = new AtomicReference<>();
-      database.transaction(() -> {
+      for (final String propertyName : propertyNames) {
+        final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+        if (property == null)
+          throw new SchemaException(
+              "Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
 
-        Bucket bucket = null;
-        final List<Bucket> buckets = type.getBuckets(true);
-        for (final Bucket b : buckets) {
-          if (bucketName.equals(b.getName())) {
-            bucket = b;
-            break;
+        keyTypes[i++] = property.getType();
+      }
+
+      return schema.recordFileChanges(() -> {
+        final AtomicReference<Index> result1 = new AtomicReference<>();
+        database.transaction(() -> {
+
+          Bucket bucket = null;
+          final List<Bucket> buckets = type.getBuckets(true);
+          for (final Bucket b : buckets) {
+            if (bucketName.equals(b.getName())) {
+              bucket = b;
+              break;
+            }
           }
-        }
 
-        final Index index = schema.createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames, null,
-            batchSize);
-        result.set(index);
+          final Index index = schema.createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize,
+              nullStrategy,
+              callback, propertyNames, null,
+              batchSize);
+          result1.set(index);
 
-        schema.saveConfiguration();
+          schema.saveConfiguration();
 
-      }, false, maxAttempts, null, (error) -> {
-        final Index indexToRemove = result.get();
-        if (indexToRemove != null) {
-          ((IndexInternal) indexToRemove).drop();
-        }
+        }, false, maxAttempts, null, (error) -> {
+          final Index indexToRemove = result1.get();
+          if (indexToRemove != null) {
+            ((IndexInternal) indexToRemove).drop();
+          }
+        });
+        return result1.get();
       });
 
-      return result.get();
-    });
+    } finally {
+      // RE-ENABLE THE THREAD POOL
+      LogManager.instance().log(this, Level.INFO, "Resuming asynch threads");
+      ((DatabaseAsyncExecutorImpl) database.async()).pauseThread(false);
+    }
   }
 }

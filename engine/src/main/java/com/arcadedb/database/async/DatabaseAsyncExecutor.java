@@ -413,4 +413,9 @@ public interface DatabaseAsyncExecutor {
    * Returns true if there is any asynchronous tasks executing or scheduled.
    */
   boolean isProcessing();
+
+  /**
+   * Returns the number of asynchronous threads.
+   */
+  int getThreadCount();
 }

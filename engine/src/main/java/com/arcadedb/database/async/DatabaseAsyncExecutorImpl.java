@@ -58,6 +58,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private final AtomicLong           transactionCounter            = new AtomicLong();
   private final AtomicLong           commandRoundRobinIndex        = new AtomicLong();
 
+  public interface AsyncTaskFactory {
+    DatabaseAsyncAbstractCallbackTask create();
+  }
+
   // SPECIAL TASKS
   public final static DatabaseAsyncTask FORCE_EXIT = new DatabaseAsyncTask() {
     @Override
@@ -291,15 +295,20 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     waitCompletion(0L);
   }
 
-  public boolean waitCompletion(long timeout) {
+  @Override
+  public boolean waitCompletion(final long timeout) {
+    return waitCompletion(timeout, () -> new DatabaseAsyncCompletion());
+  }
+
+  public boolean waitCompletion(long timeout, final AsyncTaskFactory taskFactoryClass) {
     if (executorThreads == null)
       return true;
 
-    final DatabaseAsyncCompletion[] semaphores = new DatabaseAsyncCompletion[executorThreads.length];
+    final DatabaseAsyncAbstractCallbackTask[] semaphores = new DatabaseAsyncAbstractCallbackTask[executorThreads.length];
 
     for (int i = 0; i < executorThreads.length; ++i)
       try {
-        semaphores[i] = new DatabaseAsyncCompletion();
+        semaphores[i] = taskFactoryClass.create();
         executorThreads[i].queue.put(semaphores[i]);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
@@ -656,6 +665,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   @Override
   public void setCommitEvery(final int commitEvery) {
     this.commitEvery = commitEvery;
+  }
+
+  @Override
+  public int getThreadCount() {
+    return executorThreads != null ? executorThreads.length : 0;
   }
 
   public static class DBAsyncStats {
