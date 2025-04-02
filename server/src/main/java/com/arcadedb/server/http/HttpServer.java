@@ -44,6 +44,7 @@ import com.arcadedb.server.http.ws.WebSocketEventBus;
 import com.arcadedb.server.security.ServerSecurityException;
 import io.undertow.Handlers;
 import io.undertow.Undertow;
+import io.undertow.UndertowOptions;
 import io.undertow.server.RoutingHandler;
 import io.undertow.server.handlers.PathHandler;
 import org.xnio.Options;
@@ -150,6 +151,7 @@ public class HttpServer implements ServerPlugin {
     for (httpPortListening = httpPortRange[0]; httpPortListening <= httpPortRange[1]; ++httpPortListening) {
       try {
         final Undertow.Builder builder = Undertow.builder()//
+            .setServerOption(UndertowOptions.ENABLE_HTTP2, true)
             .addHttpListener(httpPortListening, host)//
             .setHandler(routes)//
             .setSocketOption(Options.READ_TIMEOUT, configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT))
@@ -159,7 +161,8 @@ public class HttpServer implements ServerPlugin {
 
         if (configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL)) {
           final SSLContext sslContext = createSSLContext();
-          builder.addHttpsListener(httpsPortListening, host, sslContext);
+          builder.addHttpsListener(httpsPortListening, host, sslContext)
+            .setServerOption(UndertowOptions.ENABLE_HTTP2, true);
         }
 
         undertow = builder.build();
