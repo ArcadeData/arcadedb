@@ -18,20 +18,30 @@
  */
 package com.arcadedb.database.async;
 
+import com.arcadedb.database.DatabaseInternal;
+
 import java.util.concurrent.*;
 
-public abstract class DatabaseAsyncAbstractCallbackTask implements DatabaseAsyncTask {
-  private final CountDownLatch semaphore;
+public class DatabaseAsyncExecuteAlone extends DatabaseAsyncAbstractCallbackTask {
+  private final OkCallback callback;
 
-  protected DatabaseAsyncAbstractCallbackTask(final CountDownLatch semaphore) {
-    this.semaphore = semaphore;
+  public DatabaseAsyncExecuteAlone(final CountDownLatch semaphore, final OkCallback callback) {
+    super(semaphore);
+    this.callback = callback;
   }
 
-  public boolean waitCompletion(final long timeoutInMs) throws InterruptedException {
-    return semaphore.await(timeoutInMs, TimeUnit.MILLISECONDS);
+  @Override
+  public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
+    callback.call();
   }
 
-  public void completed() {
-    semaphore.countDown();
+  @Override
+  public boolean requiresActiveTx() {
+    return false;
+  }
+
+  @Override
+  public String toString() {
+    return "ExecuteAlone";
   }
 }

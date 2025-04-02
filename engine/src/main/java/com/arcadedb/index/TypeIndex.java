@@ -186,7 +186,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public String getMostRecentFileName() {
-    return indexesOnBuckets.get(0).getMostRecentFileName();
+    return getFirstUnderlyingIndex().getMostRecentFileName();
   }
 
   @Override
@@ -194,7 +194,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
     if (indexesOnBuckets.isEmpty())
       return null;
-    return indexesOnBuckets.get(0).getType();
+    return getFirstUnderlyingIndex().getType();
   }
 
   @Override
@@ -205,7 +205,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public List<String> getPropertyNames() {
     checkIsValid();
-    return indexesOnBuckets.get(0).getPropertyNames();
+    return getFirstUnderlyingIndex().getPropertyNames();
   }
 
   @Override
@@ -217,7 +217,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public JSONObject toJSON() {
-    return indexesOnBuckets.get(0).toJSON();
+    return getFirstUnderlyingIndex().toJSON();
   }
 
   @Override
@@ -261,25 +261,25 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public LSMTreeIndexAbstract.NULL_STRATEGY getNullStrategy() {
     checkIsValid();
-    return indexesOnBuckets.get(0).getNullStrategy();
+    return getFirstUnderlyingIndex().getNullStrategy();
   }
 
   @Override
   public void setNullStrategy(final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
     checkIsValid();
-    indexesOnBuckets.get(0).setNullStrategy(nullStrategy);
+    getFirstUnderlyingIndex().setNullStrategy(nullStrategy);
   }
 
   @Override
   public boolean isUnique() {
     checkIsValid();
-    return indexesOnBuckets.get(0).isUnique();
+    return getFirstUnderlyingIndex().isUnique();
   }
 
   @Override
   public boolean supportsOrderedIterations() {
     checkIsValid();
-    return indexesOnBuckets.get(0).supportsOrderedIterations();
+    return getFirstUnderlyingIndex().supportsOrderedIterations();
   }
 
   @Override
@@ -290,7 +290,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public int getPageSize() {
     checkIsValid();
-    return indexesOnBuckets.get(0).getPageSize();
+    return getFirstUnderlyingIndex().getPageSize();
   }
 
   @Override
@@ -388,13 +388,13 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public Type[] getKeyTypes() {
     checkIsValid();
-    return indexesOnBuckets.get(0).getKeyTypes();
+    return getFirstUnderlyingIndex().getKeyTypes();
   }
 
   @Override
   public byte[] getBinaryKeyTypes() {
     checkIsValid();
-    return indexesOnBuckets.get(0).getBinaryKeyTypes();
+    return getFirstUnderlyingIndex().getBinaryKeyTypes();
   }
 
   @Override
@@ -490,5 +490,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   private void checkIsValid() {
     if (!valid)
       throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
+  }
+
+  private IndexInternal getFirstUnderlyingIndex() {
+    checkIsValid();
+    if (indexesOnBuckets.isEmpty())
+      throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
+    return indexesOnBuckets.get(0);
   }
 }

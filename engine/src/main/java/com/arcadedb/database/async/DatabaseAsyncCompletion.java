@@ -20,7 +20,13 @@ package com.arcadedb.database.async;
 
 import com.arcadedb.database.DatabaseInternal;
 
+import java.util.concurrent.*;
+
 public class DatabaseAsyncCompletion extends DatabaseAsyncAbstractCallbackTask {
+  public DatabaseAsyncCompletion() {
+    super(new CountDownLatch(1));
+  }
+
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     try {

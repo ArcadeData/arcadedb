@@ -58,6 +58,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private final AtomicLong           transactionCounter            = new AtomicLong();
   private final AtomicLong           commandRoundRobinIndex        = new AtomicLong();
 
+  public interface AsyncTaskFactory {
+    DatabaseAsyncAbstractCallbackTask create();
+  }
+
   // SPECIAL TASKS
   public final static DatabaseAsyncTask FORCE_EXIT = new DatabaseAsyncTask() {
     @Override
@@ -291,11 +295,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     waitCompletion(0L);
   }
 
+  @Override
   public boolean waitCompletion(long timeout) {
     if (executorThreads == null)
       return true;
 
-    final DatabaseAsyncCompletion[] semaphores = new DatabaseAsyncCompletion[executorThreads.length];
+    final DatabaseAsyncAbstractCallbackTask[] semaphores = new DatabaseAsyncAbstractCallbackTask[executorThreads.length];
 
     for (int i = 0; i < executorThreads.length; ++i)
       try {
@@ -656,6 +661,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   @Override
   public void setCommitEvery(final int commitEvery) {
     this.commitEvery = commitEvery;
+  }
+
+  @Override
+  public int getThreadCount() {
+    return executorThreads != null ? executorThreads.length : 0;
   }
 
   public static class DBAsyncStats {
