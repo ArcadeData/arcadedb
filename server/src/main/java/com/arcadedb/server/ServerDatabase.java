@@ -584,4 +584,19 @@ public class ServerDatabase implements DatabaseInternal {
   public void setWrapper(final String name, final Object instance) {
     wrapped.setWrapper(name, instance);
   }
+
+  @Override
+  public long getLastUpdatedOn() {
+    return wrapped.getLastUpdatedOn();
+  }
+
+  @Override
+  public long getLastUsedOn() {
+    return wrapped.getLastUsedOn();
+  }
+
+  @Override
+  public long getOpenedOn() {
+    return wrapped.getOpenedOn();
+  }
 }

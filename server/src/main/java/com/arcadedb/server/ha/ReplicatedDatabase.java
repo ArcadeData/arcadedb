@@ -788,6 +788,21 @@ public class ReplicatedDatabase implements DatabaseInternal {
     proxied.saveConfiguration();
   }
 
+  @Override
+  public long getLastUpdatedOn() {
+    return proxied.getLastUpdatedOn();
+  }
+
+  @Override
+  public long getLastUsedOn() {
+    return proxied.getLastUsedOn();
+  }
+
+  @Override
+  public long getOpenedOn() {
+    return proxied.getOpenedOn();
+  }
+
   public HAServer.QUORUM getQuorum() {
     return quorum;
   }

@@ -314,6 +314,21 @@ class SQLMethodTransformTest {
       }
 
       @Override
+      public long getLastUpdatedOn() {
+        return 0;
+      }
+
+      @Override
+      public long getLastUsedOn() {
+        return 0;
+      }
+
+      @Override
+      public long getOpenedOn() {
+        return 0;
+      }
+
+      @Override
       public void saveConfiguration() throws IOException {
 
       }

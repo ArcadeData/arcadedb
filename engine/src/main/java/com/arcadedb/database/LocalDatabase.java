@@ -1602,14 +1602,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return queryEngineManager;
   }
 
+  @Override
   public long getLastUpdatedOn() {
     return lastUpdatedOn;
   }
 
+  @Override
   public long getLastUsedOn() {
     return lastUsedOn;
   }
 
+  @Override
   public long getOpenedOn() {
     return openedOn;
   }

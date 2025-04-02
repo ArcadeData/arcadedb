@@ -123,6 +123,12 @@ public interface DatabaseInternal extends Database {
 
   <RET> RET recordFileChanges(final Callable<Object> callback);
 
+  long getLastUpdatedOn();
+
+  long getLastUsedOn();
+
+  long getOpenedOn();
+
   void saveConfiguration() throws IOException;
 
   Map<String, Object> alignToReplicas();
