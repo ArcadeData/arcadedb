@@ -56,14 +56,22 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
   public Index create() {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
+    final int totalThreads = database.async().getThreadCount();
+    final CountDownLatch semaphoreToStart = new CountDownLatch(totalThreads);
+    final CountDownLatch semaphoreAfterFinish = new CountDownLatch(1);
+
     try {
-      final CountDownLatch semaphore = new CountDownLatch(database.async().getThreadCount());
-
-      ((DatabaseAsyncExecutorImpl) database.async()).waitCompletion(0L, () -> new DatabaseAsyncExecuteAlone(semaphore,
-          () -> {
-
-          })
-      );
+      for (int i = 0; i < totalThreads; i++) {
+        ((DatabaseAsyncExecutorImpl) database.async()).scheduleTask(i, new DatabaseAsyncExecuteAlone(semaphoreAfterFinish,
+            () -> {
+              try {
+                semaphoreToStart.countDown();
+                semaphoreAfterFinish.await(Long.MAX_VALUE, TimeUnit.MILLISECONDS);
+              } catch (InterruptedException e) {
+                // SHUTDOWN IN PROGRESS
+              }
+            }), true, 100);
+      }
 
       final LocalSchema schema = database.getSchema().getEmbedded();
 
@@ -118,8 +126,8 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
 
     } finally {
       // RE-ENABLE THE THREAD POOL
-      LogManager.instance().log(this, Level.INFO, "Resuming asynch threads");
-      ((DatabaseAsyncExecutorImpl) database.async()).pauseThread(false);
+      LogManager.instance().log(this, Level.FINE, "Resuming asynch threads");
+      semaphoreAfterFinish.countDown();
     }
   }
 }

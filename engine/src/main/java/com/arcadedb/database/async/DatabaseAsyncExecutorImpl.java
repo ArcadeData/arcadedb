@@ -296,11 +296,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   }
 
   @Override
-  public boolean waitCompletion(final long timeout) {
-    return waitCompletion(timeout, () -> new DatabaseAsyncCompletion());
-  }
-
-  public boolean waitCompletion(long timeout, final AsyncTaskFactory taskFactoryClass) {
+  public boolean waitCompletion(long timeout) {
     if (executorThreads == null)
       return true;
 
@@ -308,7 +304,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
     for (int i = 0; i < executorThreads.length; ++i)
       try {
-        semaphores[i] = taskFactoryClass.create();
+        semaphores[i] = new DatabaseAsyncCompletion();
         executorThreads[i].queue.put(semaphores[i]);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
