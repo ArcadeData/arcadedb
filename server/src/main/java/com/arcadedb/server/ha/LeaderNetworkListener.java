@@ -27,9 +27,15 @@ import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ha.network.ServerSocketFactory;
 import com.arcadedb.utility.Pair;
 
-import java.io.*;
-import java.net.*;
-import java.util.logging.*;
+import java.io.EOFException;
+import java.io.IOException;
+import java.net.BindException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketException;
+import java.util.logging.Level;
 
 public class LeaderNetworkListener extends Thread {
   private final        HAServer            ha;
@@ -189,6 +195,9 @@ public class LeaderNetworkListener extends Thread {
     final String remoteServerName = channel.readString();
     final String remoteServerAddress = channel.readString();
     final String remoteServerHTTPAddress = channel.readString();
+    LogManager.instance().log(this, Level.INFO,
+        "Connection from serverName '%s'  - serverAddress '%s' - httoAddress '%s' ",
+        remoteServerName, remoteServerAddress, remoteServerHTTPAddress);
 
     final short command = channel.readShort();
 

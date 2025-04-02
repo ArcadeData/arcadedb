@@ -3,6 +3,7 @@ package com.arcadedb.resilience;
 import eu.rekawek.toxiproxy.Proxy;
 import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -15,6 +16,7 @@ import java.util.concurrent.TimeUnit;
 public class SimpleHaScenarioIT extends ResilienceTestTemplate {
 
   @Test
+  @DisplayName("Test resync after network crash")
   void twoInstancesResyncAfterNetworkCrash() throws InterruptedException, IOException {
 
     logger.info("Creating a proxy for each arcade container");
@@ -72,8 +74,8 @@ public class SimpleHaScenarioIT extends ResilienceTestTemplate {
         .until(() -> {
           try {
             Integer users1 = db1.countUsers();
-            Integer users2 = db2.countUsers();
             Integer photos1 = db1.countPhotos();
+            Integer users2 = db2.countUsers();
             Integer photos2 = db2.countPhotos();
             logger.info("Users:: {} --> {} - Photos:: {} --> {} ", users1, users2, photos1, photos2);
             return users2.equals(users1) && photos2.equals(photos1);
