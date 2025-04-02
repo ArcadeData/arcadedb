@@ -8,8 +8,7 @@
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
@@ -79,12 +78,12 @@ public class HAServer implements ServerPlugin {
   private final       HAMessageFactory                               messageFactory;
   private final       ArcadeDBServer                                 server;
   private final       ContextConfiguration                           configuration;
-  private final       String                                         bucketName;
+  private final       String                                         clusterName;
   private final       long                                           startedOn;
   private final       Map<String, Leader2ReplicaNetworkExecutor>     replicaConnections                = new ConcurrentHashMap<>();
+  private final       AtomicReference<Replica2LeaderNetworkExecutor> leaderConnection                  = new AtomicReference<>();
   private final       AtomicLong                                     lastDistributedOperationNumber    = new AtomicLong(-1);
   private final       AtomicLong                                     lastForwardOperationNumber        = new AtomicLong(0);
-  private final       AtomicReference<Replica2LeaderNetworkExecutor> leaderConnection                  = new AtomicReference<>();
   private final       Map<Long, QuorumMessage>                       messagesWaitingForQuorum          = new ConcurrentHashMap<>(
       1024);
   private final       Map<Long, ForwardedMessage>                    forwardMessagesWaitingForResponse = new ConcurrentHashMap<>(
@@ -152,7 +151,7 @@ public class HAServer implements ServerPlugin {
     this.server = server;
     this.messageFactory = new HAMessageFactory(server);
     this.configuration = configuration;
-    this.bucketName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
+    this.clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
     this.startedOn = System.currentTimeMillis();
     this.replicationPath = server.getRootPath() + "/replication";
     this.serverRole = ServerRole.valueOf(
@@ -164,62 +163,63 @@ public class HAServer implements ServerPlugin {
     if (started)
       return;
 
-    // WAIT THE HTTP SERVER IS CONNECTED AND ACQUIRES A LISTENING ADDRESS
-    while (!server.getHttpServer().isConnected())
-      CodeUtils.sleep(200);
+    waitForHttpServerConnection();
 
     started = true;
-
-    final String fileName = replicationPath + "/replication_" + server.getServerName() + ".rlog";
-    try {
-      replicationLogFile = new ReplicationLogFile(fileName);
-      lastDistributedOperationNumber.set(replicationLogFile.getLastMessageNumber());
-      if (lastDistributedOperationNumber.get() > -1)
-        LogManager.instance().log(this, Level.FINE, "Found an existent replication log. Starting messages from %d",
-            lastDistributedOperationNumber.get());
-    } catch (final IOException e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on creating replication file '%s' for remote server '%s'", fileName,
-          server.getServerName());
-      stopService();
-      throw new ReplicationLogException("Error on creating replication file '" + fileName + "'", e);
-    }
+    initializeReplicationLogFile();
 
     listener = new LeaderNetworkListener(this, new DefaultServerSocketFactory(),
         configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST),
         configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS));
 
     serverAddress = server.getHostAddress() + ":" + listener.getPort();
+    configureServerList();
 
+    if (leaderConnection.get() == null && serverRole != ServerRole.REPLICA) {
+        startElection(false);
+    }
+  }
+
+  private void waitForHttpServerConnection() {
+    while (!server.getHttpServer().isConnected()) {
+        CodeUtils.sleep(200);
+    }
+  }
+
+  private void initializeReplicationLogFile() {
+    final String fileName = replicationPath + "/replication_" + server.getServerName() + ".rlog";
+    try {
+        replicationLogFile = new ReplicationLogFile(fileName);
+        lastDistributedOperationNumber.set(replicationLogFile.getLastMessageNumber());
+        if (lastDistributedOperationNumber.get() > -1) {
+            LogManager.instance().log(this, Level.FINE, "Found an existent replication log. Starting messages from %d",
+                lastDistributedOperationNumber.get());
+        }
+    } catch (final IOException e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error on creating replication file '%s' for remote server '%s'", fileName,
+            server.getServerName());
+        stopService();
+        throw new ReplicationLogException("Error on creating replication file '" + fileName + "'", e);
+    }
+  }
+
+  private void configureServerList() {
     final String cfgServerList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST).trim();
     if (!cfgServerList.isEmpty()) {
-      final String[] serverEntries = cfgServerList.split(",");
+        final String[] serverEntries = cfgServerList.split(",");
+        configuredServers = serverEntries.length;
 
-      configuredServers = serverEntries.length;
+        LogManager.instance().log(this, Level.FINE, "Connecting to servers %s (cluster=%s configuredServers=%d)", cfgServerList, clusterName, configuredServers);
+        checkAllOrNoneAreLocalhosts(serverEntries);
 
-      LogManager.instance()
-          .log(this, Level.FINE, "Connecting to servers %s (cluster=%s configuredServers=%d)", cfgServerList, bucketName,
-              configuredServers);
+        serverAddressList.clear();
+        serverAddressList.addAll(Arrays.asList(serverEntries));
 
-      checkAllOrNoneAreLocalhosts(serverEntries);
-
-      serverAddressList.clear();
-      serverAddressList.addAll(Arrays.asList(serverEntries));
-
-      for (final String serverEntry : serverEntries) {
-        if (!isCurrentServer(serverEntry) && connectToLeader(serverEntry, null)) {
-          break;
+        for (final String serverEntry : serverEntries) {
+            if (!isCurrentServer(serverEntry) && connectToLeader(serverEntry, null)) {
+                break;
+            }
         }
-      }
-    }
-
-    if (leaderConnection.get() == null) {
-      final int majorityOfVotes = (configuredServers / 2) + 1;
-      LogManager.instance()
-          .log(this, Level.INFO, "Unable to find any Leader, start election (cluster=%s configuredServers=%d majorityOfVotes=%d)",
-              bucketName, configuredServers, majorityOfVotes);
-
-      if (serverRole != ServerRole.REPLICA)
-        startElection(false);
     }
   }
 
@@ -433,7 +433,7 @@ public class HAServer implements ServerPlugin {
   }
 
   public String getClusterName() {
-    return bucketName;
+    return clusterName;
   }
 
   public void registerIncomingConnection(final String replicaServerName, final Leader2ReplicaNetworkExecutor connection) {

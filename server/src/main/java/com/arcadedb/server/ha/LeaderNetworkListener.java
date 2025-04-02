@@ -60,26 +60,36 @@ public class LeaderNetworkListener extends Thread {
     try {
       while (active) {
         try {
-          // listen for and accept a client connection to serverSocket
-          final Socket socket = serverSocket.accept();
-
-          socket.setPerformancePreferences(0, 2, 1);
-          handleConnection(socket);
-
+          handleIncomingConnection();
         } catch (final Exception e) {
-          if (active) {
-            final String message = e.getMessage() != null ? e.getMessage() : e.toString();
-            LogManager.instance().log(this, Level.FINE, "Error on connection from another server (error=%s)", message);
-          }
+          handleConnectionException(e);
         }
       }
     } finally {
-      try {
-        if (serverSocket != null && !serverSocket.isClosed())
-          serverSocket.close();
-      } catch (final IOException ioe) {
-        // IGNORE EXCEPTION FROM CLOSE
+      closeServerSocket();
+    }
+  }
+
+  private void handleIncomingConnection() throws IOException {
+    final Socket socket = serverSocket.accept();
+    socket.setPerformancePreferences(0, 2, 1);
+    handleConnection(socket);
+  }
+
+  private void handleConnectionException(Exception e) {
+    if (active) {
+      final String message = e.getMessage() != null ? e.getMessage() : e.toString();
+      LogManager.instance().log(this, Level.FINE, "Error on connection from another server (error=%s)", message);
+    }
+  }
+
+  private void closeServerSocket() {
+    try {
+      if (serverSocket != null && !serverSocket.isClosed()) {
+        serverSocket.close();
       }
+    } catch (final IOException ioe) {
+      // IGNORE EXCEPTION FROM CLOSE
     }
   }
 

@@ -101,7 +101,7 @@ public abstract class ResilienceTestTemplate {
    *
    * @return A GenericContainer instance representing the ArcadeDB container.
    */
-  GenericContainer createArcadeContainer(String name, String serverList, String quorum, Network network) {
+  GenericContainer createArcadeContainer(String name, String serverList, String quorum, String role, Network network) {
     return new GenericContainer(IMAGE)
         .withExposedPorts(2480, 5432)
         .withNetwork(network)
@@ -113,8 +113,9 @@ public abstract class ResilienceTestTemplate {
             -Darcadedb.ha.enabled=true
             -Darcadedb.ha.quorum=%s
             -Darcadedb.server.name=%s
+            -Darcadedb.ha.serverRole=%s
             -Darcadedb.ha.serverList=%s
-            """, quorum, name, serverList))
+            """, quorum, name, role, serverList))
         .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
   }
 }

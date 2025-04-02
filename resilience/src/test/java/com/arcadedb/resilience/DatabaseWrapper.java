@@ -2,6 +2,7 @@ package com.arcadedb.resilience;
 
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.remote.RemoteServer;
 import org.testcontainers.containers.GenericContainer;
 
 import java.util.function.Supplier;
@@ -11,8 +12,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class DatabaseWrapper {
 
-  private final RemoteDatabase    db;
-  private final Supplier<Integer> idSupplier;
+  private final RemoteDatabase      db;
+  private final Supplier<Integer>   idSupplier;
+  private       GenericContainer<?> arcadeServer;
 
   public DatabaseWrapper(GenericContainer<?> arcadeContainer, Supplier<Integer> idSupplier) {
     this.db = createDatabase(arcadeContainer);
@@ -20,11 +22,21 @@ public class DatabaseWrapper {
   }
 
   private RemoteDatabase createDatabase(GenericContainer<?> arcadeContainer) {
+    this.arcadeServer = arcadeContainer;
     return new RemoteDatabase(arcadeContainer.getHost(),
         arcadeContainer.getMappedPort(2480),
         "ha-test",
         "root",
         PASSWORD);
+  }
+
+  public void createDatabase() {
+    RemoteServer server = new RemoteServer(arcadeServer.getHost(),
+        arcadeServer.getMappedPort(2480),
+        "root",
+        PASSWORD);
+    if (!server.exists("ha-test"))
+      server.create("ha-test");
   }
 
   public void checkSchema() {
@@ -71,13 +83,21 @@ public class DatabaseWrapper {
   }
 
   public void assertThatUserCountIs(int expectedCount) {
+
+    assertThat(countUsers()).isEqualTo(expectedCount);
+  }
+
+  public int countUsers() {
     ResultSet resultSet = db.query("sql", "SELECT count() as count FROM User");
-    assertThat(resultSet.next().<Integer>getProperty("count")).isEqualTo(expectedCount);
+    return resultSet.next().<Integer>getProperty("count");
   }
 
   public void assertThatPhotoCountIs(int expectedCount) {
-    ResultSet resultSet = db.query("sql", "SELECT count() as count FROM Photo");
-    assertThat(resultSet.next().<Integer>getProperty("count")).isEqualTo(expectedCount);
+    assertThat(countPhotos()).isEqualTo(expectedCount);
   }
 
+  public int countPhotos() {
+    ResultSet resultSet = db.query("sql", "SELECT count() as count FROM Photo");
+    return resultSet.next().<Integer>getProperty("count");
+  }
 }
