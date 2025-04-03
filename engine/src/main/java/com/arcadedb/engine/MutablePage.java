@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.TrackableBinary;
@@ -33,17 +34,21 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class MutablePage extends BasePage implements TrackableContent {
-  private int     modifiedRangeFrom = Integer.MAX_VALUE;
-  private int     modifiedRangeTo   = -1;
-  private WALFile walFile;
+  private static final byte[]  ZERO_BYTES_ARRAY;
+  private              int     modifiedRangeFrom = Integer.MAX_VALUE;
+  private              int     modifiedRangeTo   = -1;
+  private              WALFile walFile;
+
+  static {
+    ZERO_BYTES_ARRAY = new byte[GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getValueAsInteger()];
+  }
 
   public MutablePage(final PageId pageId, final int size) {
     this(pageId, size, new byte[size], 0, 0);
     updateModifiedRange(0, size - 1);
   }
 
-  public MutablePage(final PageId pageId, final int size, final byte[] array, final int version,
-      final int contentSize) {
+  public MutablePage(final PageId pageId, final int size, final byte[] array, final int version, final int contentSize) {
     super(pageId, size, array, version, contentSize);
   }
 
@@ -150,8 +155,12 @@ public class MutablePage extends BasePage implements TrackableContent {
   public void writeZeros(int index, final int contentLength) {
     index += PAGE_HEADER_SIZE;
     checkBoundariesOnWrite(index, contentLength);
-    for (int i = 0; i < contentLength; i++)
-      this.content.putByte(index + i, (byte) 0);
+    if (contentLength <= ZERO_BYTES_ARRAY.length)
+      // FAST COPY
+      this.content.putByteArray(index, ZERO_BYTES_ARRAY, 0, contentLength);
+    else
+      for (int i = 0; i < contentLength; i++)
+        this.content.putByte(index + i, (byte) 0);
   }
 
   public int writeString(final int index, final String content) {

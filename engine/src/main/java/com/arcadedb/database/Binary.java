@@ -289,6 +289,12 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   }
 
   @Override
+  public int putBytes(final int index, final byte[] value, final int size) {
+    position(index);
+    return putBytes(value, size);
+  }
+
+  @Override
   public void putByteArray(final int index, final byte[] value) {
     position(index);
     putByteArray(value);

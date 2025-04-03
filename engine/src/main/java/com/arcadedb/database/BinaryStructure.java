@@ -64,6 +64,8 @@ public interface BinaryStructure {
 
   int putBytes(byte[] value, int size);
 
+  int putBytes(int index, byte[] value, int size);
+
   void putByteArray(int index, byte[] value);
 
   void putByteArray(int index, byte[] value, int offset, int length);

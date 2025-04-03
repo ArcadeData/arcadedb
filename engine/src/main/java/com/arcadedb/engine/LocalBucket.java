@@ -983,6 +983,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             page.writeZeros(recordPositionInPage + 1, (int) (recordSize[0] + recordSize[1] - 1));
           } catch (Exception e) {
             // IGNORE IT
+            LogManager.instance().log(this, Level.SEVERE, "Error on wiping out page content", e);
           }
         }
 
@@ -993,6 +994,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           if (reuseSpaceMode.ordinal() > REUSE_SPACE_MODE.MEDIUM.ordinal()) {
             // UPDATE THE STATISTICS
             final PageAnalysis pageAnalysis = new PageAnalysis(page);
+            pageAnalysis.totalRecordsInPage = recordCountInPage;
             getFreeSpaceInPage(pageAnalysis);
             updatePageStatistics(pageId, pageAnalysis.spaceAvailableInCurrentPage, (int) ((recordSize[0] + recordSize[1]) * -1));
           } else
@@ -1030,6 +1032,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // RESET RECORD COUNTER TO 0
         page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) 0);
         LogManager.instance().log(this, Level.FINE, "Update record count from %d to 0 in page %s", recordCountInPage, page.pageId);
+        wipeOutFreeSpace(page, (short) 0);
       }
       return;
     }
@@ -1059,6 +1062,27 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             .log(this, Level.FINE, "Update record count from %d to %d in page %s", recordCountInPage, newRecordCount, page.pageId);
         page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) newRecordCount);
       }
+
+      wipeOutFreeSpace(page, recordCountInPage);
+    }
+  }
+
+  private void wipeOutFreeSpace(final MutablePage page, final short recordCountInPage) throws IOException {
+    if (database.getConfiguration().getValueAsBoolean(GlobalConfiguration.BUCKET_WIPEOUT_ONDELETE)) {
+      // WIPE OUT FREE SPACE IN THE PAGE. THIS HELPS WITH THE BACKUP OF DATABASE INCREASING THE COMPRESSION RATE
+      final PageAnalysis pageAnalysis = new PageAnalysis(page);
+      pageAnalysis.totalRecordsInPage = recordCountInPage;
+      getFreeSpaceInPage(pageAnalysis);
+
+      if (pageAnalysis.spaceAvailableInCurrentPage > 0)
+        // WIPE OUT FREE SPACE
+        try {
+          page.writeZeros(pageAnalysis.newRecordPositionInPage,
+              page.getMaxContentSize() - pageAnalysis.newRecordPositionInPage);
+        } catch (Exception e) {
+          // IGNORE IT
+          LogManager.instance().log(this, Level.SEVERE, "Error on wiping out page content", e);
+        }
     }
   }
 
