@@ -170,7 +170,7 @@ public class DatabaseChecker {
           final MutablePage page = database.getTransaction()
               .getPageToModify(new PageId(database, bucket.getFileId(), i), bucket.getPageSize(), false);
 
-          bucket.compressPage(page);
+          bucket.compressPage(page, true);
 
           ++pageBatch;
 
