@@ -497,7 +497,7 @@ public class RemoteHttpComponent extends RWLockContext {
         return new NeedRetryException(detail);
       } else
         // ELSE
-        return new RemoteException(
+          return new RemoteException(
             "Error on executing remote operation " + operation + " (cause:" + exception + " detail:" + detail + ")");
     }
 

@@ -54,7 +54,6 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -103,6 +102,15 @@ public class HAServer implements ServerPlugin {
 
   public record ServerInfo(String host, int port, String alias) {
 
+    public static ServerInfo fromString(String address) {
+      final String[] parts = HostUtil.parseHostAddress(address, DEFAULT_PORT);
+      return new ServerInfo(parts[0], Integer.parseInt(parts[1]), parts[2]);
+    }
+
+    @Override
+    public String toString() {
+      return "{%s}%s:%d".formatted(alias, host, port);
+    }
   }
 
   public enum Quorum {
@@ -223,7 +231,7 @@ public class HAServer implements ServerPlugin {
       serverAddressList.clear();
       for (String entry : serverEntries) {
         final String[] parts = HostUtil.parseHostAddress(entry, DEFAULT_PORT);
-        serverAddressList.add(new ServerInfo(parts[0], Integer.parseInt(parts[1]), parts[2], ));
+        serverAddressList.add(new ServerInfo(parts[0], Integer.parseInt(parts[1]), parts[2]));
       }
 
       for (final ServerInfo serverEntry : serverAddressList) {
@@ -247,10 +255,10 @@ public class HAServer implements ServerPlugin {
 
       final InetAddress localhostAddress = InetAddress.getLocalHost();
 
-      if (localhostAddress.getHostAddress().equals(serverParts[0]) && localServerParts[1].equals(serverParts[1]))
+      if (localhostAddress.getHostAddress().equals(serverEntry.host) && serverAddress.host.equals(serverEntry.host))
         return true;
 
-      if (localhostAddress.getHostName().equals(serverParts[0]) && localServerParts[1].equals(serverParts[1]))
+      if (localhostAddress.getHostName().equals(serverEntry.host) && serverAddress.port == serverEntry.port)
         return true;
 
     } catch (final UnknownHostException e) {
@@ -325,11 +333,11 @@ public class HAServer implements ServerPlugin {
         continue;
 
       try {
-        final String[] parts = HostUtil.parseHostAddress(serverAddress, DEFAULT_PORT);
+//        final String[] parts = HostUtil.parseHostAddress(serverAddress, DEFAULT_PORT);
 
         LogManager.instance().log(this, Level.INFO, "- Sending new Leader to server '%s'...", serverAddress);
 
-        final ChannelBinaryClient channel = createNetworkConnection(parts[0], Integer.parseInt(parts[1]),
+        final ChannelBinaryClient channel = createNetworkConnection(serverAddress.host, serverAddress.port,
             ReplicationProtocol.COMMAND_ELECTION_COMPLETED);
         channel.writeLong(lastElectionVote.getFirst());
         channel.flush();
@@ -477,12 +485,36 @@ public class HAServer implements ServerPlugin {
     return messageFactory;
   }
 
-  public void setServerAddresses(final String serverAddress) {
-    if (serverAddress != null && !serverAddress.isEmpty()) {
-      serverAddressList.clear();
+  public Set<ServerInfo> parseServerList(final String serverList) {
+    final Set<ServerInfo> servers = new HashSet<>();
+    if (serverList != null && !serverList.isEmpty()) {
+      final String[] serverEntries = serverList.split(",");
 
-      final String[] servers = serverAddress.split(",");
-      serverAddressList.addAll(Arrays.asList(servers));
+      for (String entry : serverEntries) {
+        final String[] parts = HostUtil.parseHostAddress(entry, DEFAULT_PORT);
+        servers.add(new ServerInfo(parts[0], Integer.parseInt(parts[1]), parts[2]));
+      }
+    }
+    return servers;
+  }
+
+  public void setServerAddresses(final Set<ServerInfo> serverAddress) {
+    if (serverAddress != null && !serverAddress.isEmpty()) {
+//      serverAddressList.clear();
+
+      for (ServerInfo entry : serverAddress) {
+
+        for (ServerInfo server : serverAddressList) {
+          if (server.equals(entry)) {
+            // ALREADY IN THE LIST
+            continue;
+          } else if (server.host.equals(entry.host)) {
+            // ALREADY IN THE LIST
+            continue;
+          } else
+            serverAddressList.add(entry);
+        }
+      }
 
       this.configuredServers = serverAddressList.size();
     } else
@@ -760,14 +792,15 @@ public class HAServer implements ServerPlugin {
     return configuredServers;
   }
 
-  public String getServerAddressList() {
-    final StringBuilder list = new StringBuilder();
-    for (final String s : serverAddressList) {
-      if (list.length() > 0)
-        list.append(',');
-      list.append(s);
-    }
-    return list.toString();
+  public Set<ServerInfo> getServerAddressList() {
+//    final StringBuilder list = new StringBuilder();
+//    for (final ServerInfo s : serverAddressList) {
+//      if (list.length() > 0)
+//        list.append(',');
+//      list.append(s.host);
+//    }
+//    return list.toString();
+    return serverAddressList;
   }
 
   public void printClusterConfiguration() {
@@ -907,7 +940,7 @@ public class HAServer implements ServerPlugin {
     return result;
   }
 
-  public String getServerAddress() {
+  public ServerInfo getServerAddress() {
     return serverAddress;
   }
 
@@ -967,26 +1000,25 @@ public class HAServer implements ServerPlugin {
 
   public boolean connectToLeader(final ServerInfo serverEntry, final Callable<Void, Exception> errorCallback) {
     try {
-      connectToLeader(serverEntry.address, aserverEntry.port));
+      connectToLeader(serverEntry);
 
       // OK, CONNECTED
       return true;
 
     } catch (final ServerIsNotTheLeaderException e) {
       final String leaderAddress = e.getLeaderAddress();
-      LogManager.instance().log(this, Level.INFO, "Remote server %s:%d is not the Leader, connecting to %s", serverParts[0],
-          Integer.parseInt(serverParts[1]), leaderAddress);
+      LogManager.instance()
+          .log(this, Level.INFO, "Remote server %s is not the Leader, connecting to %s", serverEntry, leaderAddress);
 
       final String[] leader = HostUtil.parseHostAddress(leaderAddress, DEFAULT_PORT);
 
-      connectToLeader(leader[0], Integer.parseInt(leader[1]));
+      connectToLeader(new ServerInfo(leader[0], Integer.parseInt(leader[1]), leader[2]));
 
       // OK, CONNECTED
       return true;
 
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.INFO, "Error connecting to the remote Leader server %s:%d (error=%s)", serverParts[0],
-          Integer.parseInt(serverParts[1]), e);
+      LogManager.instance().log(this, Level.INFO, "Error connecting to the remote Leader server %s (error=%s)", serverEntry, e);
 
       if (errorCallback != null)
         errorCallback.call(e);
@@ -1010,7 +1042,7 @@ public class HAServer implements ServerPlugin {
       r.close();
     replicaConnections.clear();
 
-    leaderConnection.set(new Replica2LeaderNetworkExecutor(this, server.address, server.port));
+    leaderConnection.set(new Replica2LeaderNetworkExecutor(this, server.host, server.port));
     leaderConnection.get().startup();
 
     // START SEPARATE THREAD TO EXECUTE LEADER'S REQUESTS
@@ -1034,7 +1066,7 @@ public class HAServer implements ServerPlugin {
     channel.writeShort(ReplicationProtocol.PROTOCOL_VERSION);
     channel.writeString(clusterName);
     channel.writeString(getServerName());
-    channel.writeString(getServerAddress());
+    channel.writeString(getServerAddress().toString());
     channel.writeString(server.getHttpServer().getListeningAddress());
 
     channel.writeShort(commandId);
@@ -1119,18 +1151,16 @@ public class HAServer implements ServerPlugin {
 
         boolean electionAborted = false;
 
-        final HashSet<String> serverAddressListCopy = new HashSet<>(serverAddressList);
+        final HashSet<ServerInfo> serverAddressListCopy = new HashSet<>(serverAddressList);
 
-        for (final String serverAddressCopy : serverAddressListCopy) {
+        for (final ServerInfo serverAddressCopy : serverAddressListCopy) {
           if (isCurrentServer(serverAddressCopy))
             // SKIP LOCAL SERVER
             continue;
 
           try {
 
-            final String[] parts = HostUtil.parseHostAddress(serverAddressCopy, DEFAULT_PORT);
-
-            final ChannelBinaryClient channel = createNetworkConnection(parts[0], Integer.parseInt(parts[1]),
+            final ChannelBinaryClient channel = createNetworkConnection(serverAddressCopy.host, serverAddressCopy.port,
                 ReplicationProtocol.COMMAND_VOTE_FOR_ME);
             channel.writeLong(electionTurn);
             channel.writeLong(lastReplicationMessage);
@@ -1196,7 +1226,8 @@ public class HAServer implements ServerPlugin {
               LogManager.instance()
                   .log(this, Level.INFO, "Trying to connect to the existing leader '%s' (turn=%d totalVotes=%d majority=%d)",
                       entry.getKey(), electionTurn, entry.getValue(), majorityOfVotes);
-              if (!isCurrentServer(entry.getKey()) && connectToLeader(entry.getKey(), null))
+              ServerInfo serverInfo = new ServerInfo(entry.getKey(), 2424, "");
+              if (!isCurrentServer(serverInfo) && connectToLeader(serverInfo, null))
                 break;
             }
           }

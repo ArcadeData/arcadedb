@@ -211,18 +211,17 @@ public class Replica2LeaderNetworkExecutor extends Thread {
           LogManager.instance()
               .log(this, Level.SEVERE, "Error on re-connecting to the Leader ('%s') (error=%s)", getRemoteServerName(), e1);
 
-          HashSet<String> serverAddressListCopy = new HashSet<>(Arrays.asList(server.getServerAddressList().split(",")));
+          HashSet<HAServer.ServerInfo> serverAddressListCopy = new HashSet<>(server.getServerAddressList());
 
           for (int retry = 0; retry < 3 && !shutdown && !serverAddressListCopy.isEmpty(); ++retry) {
-            for (final String serverAddress : serverAddressListCopy) {
+            for (final HAServer.ServerInfo serverAddress : serverAddressListCopy) {
               try {
                 if (server.isCurrentServer(serverAddress))
                   // SKIP LOCAL SERVER
                   continue;
 
-                final String[] parts = HostUtil.parseHostAddress(serverAddress, HostUtil.HA_DEFAULT_PORT);
-                host = parts[0];
-                port = Integer.parseInt(parts[1]);
+                host = serverAddress.host();
+                port = serverAddress.port();
 
                 connect();
                 startup();
@@ -241,7 +240,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
               return;
             }
 
-            serverAddressListCopy = new HashSet<>(Arrays.asList(server.getServerAddressList().split(",")));
+            serverAddressListCopy = new HashSet<>(server.getServerAddressList());
           }
 
           server.startElection(true);
@@ -380,7 +379,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
         server.lastElectionVote = new Pair<>(leaderElectedAtTurn, leaderServerName);
 
-        server.setServerAddresses(memberList);
+        server.setServerAddresses(server.parseServerList(memberList));
       }
 
     } catch (final Exception e) {

@@ -21,9 +21,9 @@ public class ThreeInstancesScenarioIT extends ResilienceTestTemplate {
     final Proxy arcade3Proxy = toxiproxyClient.createProxy("arcade3Proxy", "0.0.0.0:8668", "arcade3:2424");
 
     logger.info("Creating 3 arcade containers");
-    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "proxy:8667,proxy:8668", "majority", "any", network);
-    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "proxy:8666,proxy:8668", "majority", "replica", network);
-    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "proxy:8666,proxy:8667", "majority", "replica", network);
+    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any", network);
+    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "majority", "replica", network);
+    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "majority", "replica", network);
 
     logger.info("Starting the containers in sequence: arcade1 will be the leader");
     Startables.deepStart(arcade1).join();

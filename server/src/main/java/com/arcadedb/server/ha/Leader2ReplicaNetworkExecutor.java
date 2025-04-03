@@ -37,6 +37,7 @@ import com.conversantmedia.util.concurrent.PushPullBlockingQueue;
 import java.io.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
+import java.util.stream.Collectors;
 
 /**
  * This executor has an intermediate level of buffering managed with a queue. This avoids the Leader to be blocked in case the
@@ -133,7 +134,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
         this.channel.writeString(server.getServerName());
         this.channel.writeLong(server.lastElectionVote != null ? server.lastElectionVote.getFirst() : 1);
         this.channel.writeString(server.getServer().getHttpServer().getListeningAddress());
-        this.channel.writeString(this.server.getServerAddressList());
+        this.channel.writeString(this.server.getServerAddressList().stream().map(HAServer.ServerInfo::toString).collect(Collectors.joining()));
 
         LogManager.instance()
             .log(this, Level.INFO, "Remote Replica server '%s' (%s) successfully connected", remoteServerName, remoteServerAddress);

@@ -229,7 +229,7 @@ public class LeaderNetworkListener extends Thread {
 
     LogManager.instance().log(this, Level.INFO, "Received new leadership from server '%s' (turn=%d)", remoteServerName, voteTurn);
 
-    if (ha.connectToLeader(remoteServerAddress, null)) {
+    if (ha.connectToLeader(HAServer.ServerInfo.fromString(remoteServerAddress), null)) {
       // ELECTION FINISHED, THE SERVER IS A REPLICA
       ha.setElectionStatus(HAServer.ElectionStatus.DONE);
       try {
@@ -256,7 +256,7 @@ public class LeaderNetworkListener extends Thread {
       channel.writeByte((byte) 2);
       ha.lastElectionVote = new Pair<>(voteTurn, "-");
       final Replica2LeaderNetworkExecutor leader = ha.getLeader();
-      channel.writeString(leader != null ? leader.getRemoteAddress() : ha.getServerAddress());
+      channel.writeString(leader != null ? leader.getRemoteAddress() : ha.getServerAddress().toString());
 
       if (leader == null || remoteServerName.equals(leader.getRemoteServerName()))
         // NO LEADER OR THE SERVER ASKING FOR ELECTION IS THE CURRENT LEADER
@@ -276,7 +276,7 @@ public class LeaderNetworkListener extends Thread {
           ha.lastElectionVote.getFirst());
       channel.writeByte((byte) 1);
       final Replica2LeaderNetworkExecutor leader = ha.getLeader();
-      channel.writeString(leader != null ? leader.getRemoteAddress() : ha.getServerAddress());
+      channel.writeString(leader != null ? leader.getRemoteAddress() : ha.getServerAddress().toString());
     }
     channel.flush();
   }
