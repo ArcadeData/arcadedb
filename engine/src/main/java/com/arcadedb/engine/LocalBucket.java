@@ -1070,19 +1070,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private void wipeOutFreeSpace(final MutablePage page, final short recordCountInPage) throws IOException {
     if (database.getConfiguration().getValueAsBoolean(GlobalConfiguration.BUCKET_WIPEOUT_ONDELETE)) {
       // WIPE OUT FREE SPACE IN THE PAGE. THIS HELPS WITH THE BACKUP OF DATABASE INCREASING THE COMPRESSION RATE
-      final PageAnalysis pageAnalysis = new PageAnalysis(page);
-      pageAnalysis.totalRecordsInPage = recordCountInPage;
-      getFreeSpaceInPage(pageAnalysis);
+      try {
+        final PageAnalysis pageAnalysis = new PageAnalysis(page);
+        pageAnalysis.totalRecordsInPage = recordCountInPage;
+        getFreeSpaceInPage(pageAnalysis);
 
-      if (pageAnalysis.spaceAvailableInCurrentPage > 0)
-        // WIPE OUT FREE SPACE
-        try {
+        if (pageAnalysis.spaceAvailableInCurrentPage > 0)
           page.writeZeros(pageAnalysis.newRecordPositionInPage,
               page.getMaxContentSize() - pageAnalysis.newRecordPositionInPage);
-        } catch (Exception e) {
-          // IGNORE IT
-          LogManager.instance().log(this, Level.SEVERE, "Error on wiping out page content", e);
-        }
+      } catch (Exception e) {
+        // IGNORE IT
+        LogManager.instance().log(this, Level.SEVERE, "Error on wiping out page content", e);
+      }
     }
   }
 
