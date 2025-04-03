@@ -44,6 +44,8 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.net.*;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.*;
 
 /**
@@ -101,12 +103,19 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   public void drop() {
     checkDatabaseIsOpen();
     try {
-      final HttpURLConnection connection = createConnection("POST", getUrl("server"));
-      setRequestPayload(connection, new JSONObject().put("command", "drop database " + databaseName));
-      connection.connect();
-      if (connection.getResponseCode() != 200) {
-        final Exception detail = manageException(connection, "drop database");
-        throw new RemoteException("Error on deleting database: " + connection.getResponseMessage(), detail);
+      final JSONObject jsonRequest = new JSONObject().put("command", "drop database " + databaseName);
+      String payload = getRequestPayload(jsonRequest);
+
+      HttpRequest request = createRequestBuilder("POST", getUrl("server"))
+          .POST(HttpRequest.BodyPublishers.ofString(payload))
+          .header("Content-Type", "application/json")
+          .build();
+
+      HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+      if (response.statusCode() != 200) {
+        final Exception detail = manageException(response, "drop database");
+        throw new RemoteException("Error on deleting database", detail);
       }
 
     } catch (final Exception e) {
@@ -222,14 +231,22 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       throw new TransactionException("Transaction already begun");
 
     try {
-      final HttpURLConnection connection = createConnection("POST", getUrl("begin", databaseName));
-      setRequestPayload(connection, new JSONObject().put("isolationLevel", isolationLevel));
-      connection.connect();
-      if (connection.getResponseCode() != 204) {
-        final Exception detail = manageException(connection, "begin transaction");
+      final JSONObject jsonRequest = new JSONObject().put("isolationLevel", isolationLevel);
+      String payload = getRequestPayload(jsonRequest);
+
+      HttpRequest request = createRequestBuilder("POST", getUrl("begin", databaseName))
+          .POST(HttpRequest.BodyPublishers.ofString(payload))
+          .header("Content-Type", "application/json")
+          .build();
+
+      HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+      if (response.statusCode() != 204) {
+        final Exception detail = manageException(response, "begin transaction");
         throw new TransactionException("Error on transaction begin", detail);
       }
-      setSessionId(connection.getHeaderField(ARCADEDB_SESSION_ID));
+
+      setSessionId(response.headers().firstValue(ARCADEDB_SESSION_ID).orElse(null));
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction begin", e);
     }
@@ -243,10 +260,14 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       throw new TransactionException("Transaction not begun");
 
     try {
-      final HttpURLConnection connection = createConnection("POST", getUrl("commit", databaseName));
-      connection.connect();
-      if (connection.getResponseCode() != 204) {
-        final Exception detail = manageException(connection, "commit transaction");
+      HttpRequest request = createRequestBuilder("POST", getUrl("commit", databaseName))
+          .POST(HttpRequest.BodyPublishers.noBody())
+          .build();
+
+      HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+      if (response.statusCode() != 204) {
+        final Exception detail = manageException(response, "commit transaction");
 
         if (detail instanceof DuplicatedKeyException || detail instanceof ConcurrentModificationException)
           // SUPPORT RETRY
@@ -271,10 +292,14 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       throw new TransactionException("Transaction not begun");
 
     try {
-      final HttpURLConnection connection = createConnection("POST", getUrl("rollback", databaseName));
-      connection.connect();
-      if (connection.getResponseCode() != 204) {
-        final Exception detail = manageException(connection, "rollback transaction");
+      HttpRequest request = createRequestBuilder("POST", getUrl("rollback", databaseName))
+          .POST(HttpRequest.BodyPublishers.noBody())
+          .build();
+
+      HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+      if (response.statusCode() != 204) {
+        final Exception detail = manageException(response, "rollback transaction");
         throw new TransactionException("Error on transaction rollback", detail);
       }
     } catch (final Exception e) {
@@ -474,13 +499,13 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     this.sessionId = sessionId;
   }
 
-  HttpURLConnection createConnection(final String httpMethod, final String url) throws IOException {
-    final HttpURLConnection connection = super.createConnection(httpMethod, url);
+  HttpRequest.Builder createRequestBuilder(final String httpMethod, final String url) {
+    HttpRequest.Builder builder = super.createRequestBuilder(httpMethod, url);
 
     if (getSessionId() != null)
-      connection.setRequestProperty(ARCADEDB_SESSION_ID, getSessionId());
+      builder.header(ARCADEDB_SESSION_ID, getSessionId());
 
-    return connection;
+    return builder;
   }
 
   private String getUrl(final String command, final String databaseName) {

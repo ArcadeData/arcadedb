@@ -103,103 +103,106 @@ public class HttpServer implements ServerPlugin {
   @Override
   public void startService() {
     final ContextConfiguration configuration = server.getConfiguration();
-
     final String host = configuration.getValueAsString(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST);
+    final int[] httpPortRange = extractPortRange(configuration.getValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT));
+    final int[] httpsPortRange = getHttpsPortRange(configuration);
 
-    final Object configuredHTTPPort = configuration.getValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT);
-    final int[] httpPortRange = extractPortRange(configuredHTTPPort);
+    LogManager.instance().log(this, Level.INFO, "- Starting HTTP Server (host=%s port=%s httpsPort=%s)...", host, httpPortRange,
+        httpsPortRange != null ? httpsPortRange : "-");
 
+    final PathHandler routes = setupRoutes();
+
+    int httpsPortListening = httpsPortRange != null ? httpsPortRange[0] : 0;
+    for (httpPortListening = httpPortRange[0]; httpPortListening <= httpPortRange[1]; ++httpPortListening) {
+      try {
+        undertow = buildUndertowServer(configuration, host, routes, httpsPortListening);
+        undertow.start();
+
+        LogManager.instance().log(this, Level.INFO, "- HTTP Server started (host=%s port=%d httpsPort=%s)", host, httpPortListening,
+            httpsPortListening > 0 ? httpsPortListening : "-");
+
+        listeningAddress = host.equals("0.0.0.0") ? server.getHostAddress() + ":" + httpPortListening : host + ":" + httpPortListening;
+        return;
+
+      } catch (final Exception e) {
+        handleServerStartException(e, httpsPortListening);
+      }
+    }
+
+    handleServerStartFailure(httpPortRange);
+  }
+
+  private int[] getHttpsPortRange(final ContextConfiguration configuration) {
     final Object configuredHTTPSPort = configuration.getValue(GlobalConfiguration.SERVER_HTTPS_INCOMING_PORT);
-    final int[] httpsPortRange =
-        configuredHTTPSPort != null && !configuredHTTPSPort.toString().isEmpty() ? extractPortRange(configuredHTTPSPort) : null;
+    return configuredHTTPSPort != null && !configuredHTTPSPort.toString().isEmpty() ? extractPortRange(configuredHTTPSPort) : null;
+  }
 
-    LogManager.instance()
-        .log(this, Level.INFO, "- Starting HTTP Server (host=%s port=%s httpsPort=%s)...", host, configuredHTTPPort,
-            httpsPortRange != null ? configuredHTTPSPort : "-");
-
+  private PathHandler setupRoutes() {
     final PathHandler routes = new PathHandler();
-
     final RoutingHandler basicRoutes = Handlers.routing();
 
     routes.addPrefixPath("/ws", new WebSocketConnectionHandler(this, webSocketEventBus));
-
-    routes.addPrefixPath("/api/v1",//
-        basicRoutes//
-            .post("/begin/{database}", new PostBeginHandler(this))//
-            .post("/command/{database}", new PostCommandHandler(this))//
-            .post("/commit/{database}", new PostCommitHandler(this))//
-            .get("/databases", new GetDatabasesHandler(this))//
-            .get("/exists/{database}", new GetExistsDatabaseHandler(this))//
-            .get("/query/{database}/{language}/{command}", new GetQueryHandler(this))//
-            .post("/query/{database}", new PostQueryHandler(this))//
-            .post("/rollback/{database}", new PostRollbackHandler(this))//
-            .get("/server", new GetServerHandler(this))//
-            .post("/server", new PostServerCommandHandler(this))//
-            .get("/ready", new GetReadyHandler(this))//
+    routes.addPrefixPath("/api/v1", basicRoutes
+        .post("/begin/{database}", new PostBeginHandler(this))
+        .post("/command/{database}", new PostCommandHandler(this))
+        .post("/commit/{database}", new PostCommitHandler(this))
+        .get("/databases", new GetDatabasesHandler(this))
+        .get("/exists/{database}", new GetExistsDatabaseHandler(this))
+        .get("/query/{database}/{language}/{command}", new GetQueryHandler(this))
+        .post("/query/{database}", new PostQueryHandler(this))
+        .post("/rollback/{database}", new PostRollbackHandler(this))
+        .get("/server", new GetServerHandler(this))
+        .post("/server", new PostServerCommandHandler(this))
+        .get("/ready", new GetReadyHandler(this))
     );
 
     if (!"production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())) {
       routes.addPrefixPath("/", Handlers.routing().setFallbackHandler(new GetDynamicContentHandler(this)));
     }
 
-    // REGISTER PLUGIN API
     for (final ServerPlugin plugin : server.getPlugins()) {
       plugin.registerAPI(this, routes);
     }
 
-    int httpsPortListening = httpsPortRange != null ? httpsPortRange[0] : 0;
-    for (httpPortListening = httpPortRange[0]; httpPortListening <= httpPortRange[1]; ++httpPortListening) {
-      try {
-        final Undertow.Builder builder = Undertow.builder()//
-            .setServerOption(UndertowOptions.ENABLE_HTTP2, true)
-            .addHttpListener(httpPortListening, host)//
-            .setHandler(routes)//
-            .setSocketOption(Options.READ_TIMEOUT, configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT))
-            .setIoThreads(configuration.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_IO_THREADS))//
-            .setWorkerThreads(500)//
-            .setServerOption(SHUTDOWN_TIMEOUT, 5000);
+    return routes;
+  }
 
-        if (configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL)) {
-          final SSLContext sslContext = createSSLContext();
-          builder.addHttpsListener(httpsPortListening, host, sslContext)
-            .setServerOption(UndertowOptions.ENABLE_HTTP2, true);
-        }
+  private Undertow buildUndertowServer(final ContextConfiguration configuration, final String host, final PathHandler routes, int httpsPortListening) throws Exception {
+    final Undertow.Builder builder = Undertow.builder()//
+        .setServerOption(UndertowOptions.ENABLE_HTTP2, true)
+        .addHttpListener(httpPortListening, host)//
+        .setHandler(routes)//
+        .setSocketOption(Options.READ_TIMEOUT, configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT))
+        .setIoThreads(configuration.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_IO_THREADS))//
+        .setWorkerThreads(500)//
+        .setServerOption(SHUTDOWN_TIMEOUT, 5000);
 
-        undertow = builder.build();
-        undertow.start();
-
-        LogManager.instance().log(this, Level.INFO, "- HTTP Server started (host=%s port=%d httpsPort=%s)", host, httpPortListening,
-            httpsPortListening > 0 ? httpsPortListening : "-");
-
-        if (host.equals("0.0.0.0"))
-          listeningAddress = server.getHostAddress() + ":" + httpPortListening;
-        else
-          listeningAddress = host + ":" + httpPortListening;
-        return;
-
-      } catch (final Exception e) {
-        undertow = null;
-
-        if (e.getCause() instanceof BindException) {
-          // RETRY
-          LogManager.instance().log(this, Level.WARNING, "- HTTP Port %s not available", httpPortListening);
-          if (httpsPortListening > 0) {
-            ++httpsPortListening;
-          }
-
-          continue;
-        }
-
-        throw new ServerException("Error on starting HTTP Server", e);
-      }
+    if (configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL)) {
+      final SSLContext sslContext = createSSLContext();
+      builder.addHttpsListener(httpsPortListening, host, sslContext)
+          .setServerOption(UndertowOptions.ENABLE_HTTP2, true);
     }
 
+    return builder.build();
+  }
+
+  private void handleServerStartException(final Exception e, int httpsPortListening) {
+    undertow = null;
+
+    if (e.getCause() instanceof BindException) {
+      LogManager.instance().log(this, Level.WARNING, "- HTTP Port %s not available", httpPortListening);
+      if (httpsPortListening > 0) {
+        ++httpsPortListening;
+      }
+    } else {
+      throw new ServerException("Error on starting HTTP Server", e);
+    }
+  }
+
+  private void handleServerStartFailure(final int[] httpPortRange) {
     httpPortListening = -1;
-    final String msg = "Unable to listen to a HTTP port in the configured port range %d - %d".formatted(httpPortRange[0],
-      httpPortRange[1]);
-
+    final String msg = "Unable to listen to a HTTP port in the configured port range %d - %d".formatted(httpPortRange[0], httpPortRange[1]);
     LogManager.instance().log(this, Level.SEVERE, msg);
-
     throw new ServerException("Error on starting HTTP Server: " + msg);
   }
 
