@@ -1063,8 +1063,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) newRecordCount);
       }
 
-      wipeOutFreeSpace(page, recordCountInPage);
     }
+    wipeOutFreeSpace(page, recordCountInPage);
   }
 
   private void wipeOutFreeSpace(final MutablePage page, final short recordCountInPage) throws IOException {

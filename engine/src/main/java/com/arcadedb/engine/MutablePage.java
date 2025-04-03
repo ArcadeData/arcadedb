@@ -22,9 +22,11 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.TrackableBinary;
+import com.arcadedb.log.LogManager;
 
 import java.nio.*;
 import java.util.*;
+import java.util.logging.*;
 
 /**
  * Mutable page that accepts updates. It keeps track of the modified bytes.
