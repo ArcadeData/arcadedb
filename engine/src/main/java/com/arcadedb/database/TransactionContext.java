@@ -579,12 +579,12 @@ public class TransactionContext implements Transaction {
       for (MutablePage page : modifiedPages.values()) {
         final LocalBucket bucket = localSchema.getBucketById(page.getPageId().getFileId(), false);
         if (bucket != null)
-          bucket.compressPage(page);
+          bucket.compressPage(page, false);
       }
       for (MutablePage page : newPages.values()) {
         final LocalBucket bucket = localSchema.getBucketById(page.getPageId().getFileId(), false);
         if (bucket != null)
-          bucket.compressPage(page);
+          bucket.compressPage(page, false);
       }
 
       for (final Iterator<MutablePage> it = modifiedPages.values().iterator(); it.hasNext(); ) {
