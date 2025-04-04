@@ -104,22 +104,26 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
   private long compressFile(final ZipOutputStream zipFile, final File inputFile) throws IOException {
     logger.log(2, "- File '%s'...", inputFile.getName());
-    final long origSize = inputFile.length();
+    if (inputFile.exists()) {
+      final long origSize = inputFile.length();
 
-    final ZipEntry zipEntry = new ZipEntry(inputFile.getName());
-    zipFile.putNextEntry(zipEntry);
+      final ZipEntry zipEntry = new ZipEntry(inputFile.getName());
+      zipFile.putNextEntry(zipEntry);
 
-    try (final FileInputStream fileIn = new FileInputStream(inputFile)) {
-      fileIn.transferTo(zipFile);
+      try (final FileInputStream fileIn = new FileInputStream(inputFile)) {
+        fileIn.transferTo(zipFile);
+      }
+      zipFile.closeEntry();
+
+      final long compressedSize = zipEntry.getCompressedSize();
+
+      logger.logLine(2, " %s -> %s (%,d%% compressed)", FileUtils.getSizeAsString(origSize),
+          FileUtils.getSizeAsString(compressedSize),
+          origSize > 0 ? (origSize - compressedSize) * 100 / origSize : 0);
+      return origSize;
     }
-    zipFile.closeEntry();
 
-    final long compressedSize = zipEntry.getCompressedSize();
-
-    logger.logLine(2, " %s -> %s (%,d%% compressed)", FileUtils.getSizeAsString(origSize),
-        FileUtils.getSizeAsString(compressedSize),
-        origSize > 0 ? (origSize - compressedSize) * 100 / origSize : 0);
-
-    return origSize;
+    logger.logLine(2, " not found");
+    return 0;
   }
 }

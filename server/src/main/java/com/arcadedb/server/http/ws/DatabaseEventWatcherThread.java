@@ -43,7 +43,9 @@ final public class DatabaseEventWatcherThread extends Thread {
     this.listener = new WebSocketEventListener(this);
     this.runningLock = new CountDownLatch(1);
 
-    this.database.getEvents().registerListener((AfterRecordCreateListener) listener).registerListener((AfterRecordUpdateListener) listener)
+    this.database.getEvents()
+        .registerListener((AfterRecordCreateListener) listener)
+        .registerListener((AfterRecordUpdateListener) listener)
         .registerListener((AfterRecordDeleteListener) listener);
   }
 
@@ -53,8 +55,10 @@ final public class DatabaseEventWatcherThread extends Thread {
       return;
 
     if (!this.eventQueue.offer(event)) {
-      LogManager.instance().log(this, Level.WARNING, "Skipping event for database %s as eventQueue is full. Consider increasing eventBusQueueSize", null,
-          this.database.getName());
+      LogManager.instance()
+          .log(this, Level.WARNING, "Skipping event for database %s as eventQueue is full. Consider increasing eventBusQueueSize",
+              null,
+              this.database.getName());
     }
   }
 
@@ -86,7 +90,8 @@ final public class DatabaseEventWatcherThread extends Thread {
     } catch (final InterruptedException ignored) {
     } finally {
       try {
-        this.database.getEvents().unregisterListener((AfterRecordCreateListener) listener).unregisterListener((AfterRecordUpdateListener) listener)
+        this.database.getEvents().unregisterListener((AfterRecordCreateListener) listener)
+            .unregisterListener((AfterRecordUpdateListener) listener)
             .unregisterListener((AfterRecordDeleteListener) listener);
 
         eventQueue.clear();
