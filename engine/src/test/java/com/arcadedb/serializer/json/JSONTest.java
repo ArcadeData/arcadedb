@@ -19,6 +19,7 @@
 package com.arcadedb.serializer.json;
 
 import com.arcadedb.TestHelper;
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
@@ -154,8 +155,37 @@ public class JSONTest extends TestHelper {
     assertThat(map.get("boolean")).isEqualTo(true);
     assertThat(map.get("null")).isNull();
     assertThat(map.get("array")).isEqualTo(List.of(1, 2, 3));
-    assertThat(map.get("stringArray")).isEqualTo(List.of( "one", "two", "three" ));
+    assertThat(map.get("stringArray")).isEqualTo(List.of("one", "two", "three"));
     assertThat(map.get("map")).isEqualTo(Map.of("a", 1, "b", 2, "c", 3));
+  }
 
+  // MICRO BENCHMARK
+  public static void main(String[] args) {
+    final JSONObject json = new JSONObject()
+        .put("float", 3.14F)
+        .put("double", 3.14D)
+        .put("int", 3)
+        .put("long", 33426776323232L);
+
+    var beginTime = System.currentTimeMillis();
+    for (int i = 0; i < 100_000_000; i++) {
+      final float value = (float) json.get("float");
+      Assertions.assertThat(value).isEqualTo(3.14F);
+    }
+    System.out.println("JSON float: " + (System.currentTimeMillis() - beginTime) + "ms");
+
+    beginTime = System.currentTimeMillis();
+    for (int i = 0; i < 100_000_000; i++) {
+      final double value = (double) json.get("double");
+      Assertions.assertThat(value).isEqualTo(3.14D);
+    }
+    System.out.println("JSON double: " + (System.currentTimeMillis() - beginTime) + "ms");
+
+    beginTime = System.currentTimeMillis();
+    for (int i = 0; i < 100_000_000; i++) {
+      final long value = (long) json.get("long");
+      Assertions.assertThat(value).isEqualTo(33426776323232L);
+    }
+    System.out.println("JSON long: " + (System.currentTimeMillis() - beginTime) + "ms");
   }
 }
