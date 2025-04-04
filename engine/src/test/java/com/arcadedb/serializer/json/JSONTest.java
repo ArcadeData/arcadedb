@@ -148,9 +148,9 @@ public class JSONTest extends TestHelper {
 
     Map<String, Object> map = json.toMap();
     assertThat(map.get("int")).isEqualTo(10);
-    assertThat(map.get("float")).isEqualTo(10.5);
-    assertThat(map.get("double")).isEqualTo(10.5);
-    assertThat(map.get("long")).isEqualTo(10);
+    assertThat(map.get("float")).isEqualTo(10.5f);
+    assertThat(map.get("double")).isEqualTo(10.5d);
+    assertThat(map.get("long")).isEqualTo(10L);
     assertThat(map.get("string")).isEqualTo("hello");
     assertThat(map.get("boolean")).isEqualTo(true);
     assertThat(map.get("null")).isNull();
