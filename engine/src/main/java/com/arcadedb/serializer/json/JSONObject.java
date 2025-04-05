@@ -30,6 +30,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import com.google.gson.Strictness;
+import com.google.gson.internal.LazilyParsedNumber;
 import com.google.gson.stream.JsonReader;
 
 import java.io.*;
@@ -358,10 +359,13 @@ public class JSONObject {
     else if (element.isJsonPrimitive()) {
       if (VALUE_FIELD != null)
         try {
-          return VALUE_FIELD.get(element.getAsJsonPrimitive());
+          final Object value = VALUE_FIELD.get(element);
+          if (!(value instanceof LazilyParsedNumber))
+            return value;
         } catch (IllegalAccessException e) {
           // IGNORE IT
         }
+
       // DETERMINE FROM THE PRIMITIVE
       final JsonPrimitive primitive = element.getAsJsonPrimitive();
       if (primitive.isString())
