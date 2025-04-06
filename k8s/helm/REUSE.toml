@@ -1,6 +1,6 @@
 version = 1
 
 [[annotations]]
-path = ["*.yaml", "templates/*.yaml"]
+path = ["*.yaml", "templates/*.yaml", "templates/*.tpl", "templates/NOTES.txt"]
 SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)"
 SPDX-License-Identifier = "Apache-2.0"
