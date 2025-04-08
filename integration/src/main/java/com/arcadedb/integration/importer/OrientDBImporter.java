@@ -49,6 +49,7 @@ import java.util.*;
 import java.util.concurrent.atomic.*;
 import java.util.zip.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.google.gson.stream.JsonToken.BEGIN_OBJECT;
 import static com.google.gson.stream.JsonToken.END_ARRAY;
 import static com.google.gson.stream.JsonToken.END_OBJECT;
@@ -540,7 +541,7 @@ public class OrientDBImporter {
   private MutableDocument createRecord(final Map<String, Object> attributes) throws IOException {
     MutableDocument record = null;
 
-    final String rid = (String) attributes.get("@rid");
+    final String rid = (String) attributes.get(RID_PROPERTY);
     if (rid == null)
       // EMBEDDED RECORD?
       return null;
@@ -610,7 +611,7 @@ public class OrientDBImporter {
                 final Map<String, Object> attrValueMap = (Map<String, Object>) attrValue;
                 if (!attrValueMap.containsKey("@class")) {
                   // EMBEDDED MAP
-                } else if (!attrValueMap.containsKey("@rid")) {
+                } else if (!attrValueMap.containsKey(RID_PROPERTY)) {
                   createEmbeddedDocument(record, attrName, attrValueMap);
                   // ALREADY SET BY THE NEW EMBEDDED DOCUMENT API
                   continue;

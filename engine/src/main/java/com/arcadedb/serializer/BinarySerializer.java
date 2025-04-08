@@ -75,19 +75,13 @@ public class BinarySerializer {
   }
 
   public Binary serialize(final DatabaseInternal database, final Record record) {
-    switch (record.getRecordType()) {
-    case Document.RECORD_TYPE:
-    case EmbeddedDocument.RECORD_TYPE:
-      return serializeDocument(database, (MutableDocument) record);
-    case Vertex.RECORD_TYPE:
-      return serializeVertex(database, (MutableVertex) record);
-    case Edge.RECORD_TYPE:
-      return serializeEdge(database, (MutableEdge) record);
-    case EdgeSegment.RECORD_TYPE:
-      return serializeEdgeContainer((EdgeSegment) record);
-    default:
-      throw new IllegalArgumentException("Cannot serialize a record of type=" + record.getRecordType());
-    }
+    return switch (record.getRecordType()) {
+      case Document.RECORD_TYPE, EmbeddedDocument.RECORD_TYPE -> serializeDocument(database, (MutableDocument) record);
+      case Vertex.RECORD_TYPE -> serializeVertex(database, (MutableVertex) record);
+      case Edge.RECORD_TYPE -> serializeEdge(database, (MutableEdge) record);
+      case EdgeSegment.RECORD_TYPE -> serializeEdgeContainer((EdgeSegment) record);
+      default -> throw new IllegalArgumentException("Cannot serialize a record of type=" + record.getRecordType());
+    };
   }
 
   public Binary serializeDocument(final DatabaseInternal database, final Document document) {
@@ -418,7 +412,8 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_LIST: {
-      if (value instanceof Collection) {
+      switch (value) {
+      case Collection collection -> {
         final Collection<Object> list = (Collection<Object>) value;
         content.putUnsignedNumber(list.size());
         for (final Iterator<Object> it = list.iterator(); it.hasNext(); ) {
@@ -427,15 +422,16 @@ public class BinarySerializer {
           content.putByte(entryType);
           serializeValue(database, content, entryType, entryValue);
         }
-      } else if (value instanceof Object[] array) {
+      }
+      case Object[] array -> {
         content.putUnsignedNumber(array.length);
         for (final Object entryValue : array) {
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue, null);
           content.putByte(entryType);
           serializeValue(database, content, entryType, entryValue);
         }
-      } else if (value instanceof Iterable iter) {
-
+      }
+      case Iterable iter -> {
         final List list = new ArrayList();
         for (final Iterator it = iter.iterator(); it.hasNext(); )
           list.add(it.next());
@@ -447,7 +443,8 @@ public class BinarySerializer {
           content.putByte(entryType);
           serializeValue(database, content, entryType, entryValue);
         }
-      } else {
+      }
+      default -> {
         // ARRAY
         final int length = Array.getLength(value);
         content.putUnsignedNumber(length);
@@ -464,6 +461,7 @@ public class BinarySerializer {
                 "Error on serializing array value for element " + i + " = '" + entryValue + "'");
           }
         }
+      }
       }
       break;
     }

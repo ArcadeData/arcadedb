@@ -29,6 +29,8 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.*;
 import java.util.stream.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+
 public class Projection extends SimpleNode {
 
   protected boolean distinct = false;
@@ -124,8 +126,8 @@ public class Projection extends SimpleNode {
         }
 
         record.getElement().ifPresent(doc -> {
-          if (!excludes.contains("@rid")) {
-            result.setProperty("@rid", doc.getIdentity());
+          if (!excludes.contains(RID_PROPERTY)) {
+            result.setProperty(RID_PROPERTY, doc.getIdentity());
           }
           if (!excludes.contains("@type")) {
             result.setProperty("@type", doc.getType().getName());
@@ -158,12 +160,12 @@ public class Projection extends SimpleNode {
       }
 
       if (excludes == null)
-        excludes = Collections.EMPTY_SET;
+        excludes = Collections.emptySet();
     }
   }
 
   public boolean isExpand() {
-    return items != null && items.size() == 1 && items.get(0).isExpand();
+    return items != null && items.size() == 1 && items.getFirst().isExpand();
   }
 
   public void validate() {
@@ -178,18 +180,18 @@ public class Projection extends SimpleNode {
   public Projection getExpandContent() {
     final Projection result = new Projection(-1);
     result.setItems(new ArrayList<>());
-    result.getItems().add(this.getItems().get(0).getExpandContent());
+    result.getItems().add(this.getItems().getFirst().getExpandContent());
     return result;
   }
 
   public List<String> getAllAliases() {
-    return items.stream().map(i -> i.getProjectionAliasAsString()).collect(Collectors.toList());
+    return items.stream().map(ProjectionItem::getProjectionAliasAsString).collect(Collectors.toList());
   }
 
   public Projection copy() {
     final Projection result = new Projection(-1);
     if (items != null)
-      result.items = items.stream().map(x -> x.copy()).collect(Collectors.toList());
+      result.items = items.stream().map(ProjectionItem::copy).collect(Collectors.toList());
 
     result.distinct = distinct;
     return result;

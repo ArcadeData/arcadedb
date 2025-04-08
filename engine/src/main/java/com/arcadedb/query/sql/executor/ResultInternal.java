@@ -28,6 +28,8 @@ import com.arcadedb.database.Record;
 import java.util.*;
 import java.util.stream.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+
 /**
  * Implementation of a {@link Result}.
  * <p>
@@ -240,8 +242,8 @@ public class ResultInternal implements Result {
     if (element != null)
       return Optional.of(element.getIdentity());
 
-    if (hasProperty("@rid")) {
-      final Object rid = getProperty("@rid");
+    if (hasProperty(RID_PROPERTY)) {
+      final Object rid = getProperty(RID_PROPERTY);
       return Optional.of((RID) (rid instanceof RID ? rid : new RID(rid.toString())));
     }
     return Optional.empty();

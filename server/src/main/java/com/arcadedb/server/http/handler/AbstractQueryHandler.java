@@ -41,6 +41,8 @@ import java.util.*;
 import java.util.logging.*;
 import java.util.stream.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+
 public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
   protected static final int DEFAULT_LIMIT = 20_000;
@@ -103,54 +105,52 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       final JSONArray edges = new JSONArray();
       final JSONArray records = new JSONArray();
 
-      if (qResult != null) {
-        while (qResult.hasNext()) {
-          final Result row = qResult.next();
+      while (qResult.hasNext()) {
+        final Result row = qResult.next();
 
-          try {
-            boolean recordIncluded = true;
-            if (row.getIdentity().isPresent()) {
-              final RID rid = row.getIdentity().get();
-              recordIncluded = includedRecords.add(rid);
-              if (recordIncluded)
-                records.put(serializerImpl.serializeResult(database, row));
-            } else
+        try {
+          boolean recordIncluded = true;
+          if (row.getIdentity().isPresent()) {
+            final RID rid = row.getIdentity().get();
+            recordIncluded = includedRecords.add(rid);
+            if (recordIncluded)
               records.put(serializerImpl.serializeResult(database, row));
+          } else
+            records.put(serializerImpl.serializeResult(database, row));
 
-            if (row.isVertex()) {
-              if (recordIncluded) {
-                final Vertex v = row.getVertex().get();
-                if (includedVertices.add(v.getIdentity()))
-                  vertices.put(serializerImpl.serializeGraphElement(v));
-              }
-            } else if (row.isEdge()) {
-              final Edge e = row.getEdge().get();
-              if (recordIncluded)
-                if (includedEdges.add(e.getIdentity())) {
-                  edges.put(serializerImpl.serializeGraphElement(e));
-                  try {
-                    if (includedVertices.add(e.getIn())) {
-                      includedRecords.add(e.getIn());
-                      vertices.put(serializerImpl.serializeGraphElement(e.getInVertex()));
-                    }
-                    if (includedVertices.add(e.getOut())) {
-                      includedRecords.add(e.getOut());
-                      vertices.put(serializerImpl.serializeGraphElement(e.getOutVertex()));
-                    }
-                  } catch (RecordNotFoundException ex) {
-                    LogManager.instance().log(this, Level.SEVERE, "Record %s not found during serialization", ex.getRID());
-                  }
-                }
-            } else {
-              analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, row, limit);
+          if (row.isVertex()) {
+            if (recordIncluded) {
+              final Vertex v = row.getVertex().get();
+              if (includedVertices.add(v.getIdentity()))
+                vertices.put(serializerImpl.serializeGraphElement(v));
             }
-          } catch (Exception e) {
-            LogManager.instance().log(this, Level.SEVERE, "Error on serializing element (error=%s)", e.getMessage());
+          } else if (row.isEdge()) {
+            final Edge e = row.getEdge().get();
+            if (recordIncluded)
+              if (includedEdges.add(e.getIdentity())) {
+                edges.put(serializerImpl.serializeGraphElement(e));
+                try {
+                  if (includedVertices.add(e.getIn())) {
+                    includedRecords.add(e.getIn());
+                    vertices.put(serializerImpl.serializeGraphElement(e.getInVertex()));
+                  }
+                  if (includedVertices.add(e.getOut())) {
+                    includedRecords.add(e.getOut());
+                    vertices.put(serializerImpl.serializeGraphElement(e.getOutVertex()));
+                  }
+                } catch (RecordNotFoundException ex) {
+                  LogManager.instance().log(this, Level.SEVERE, "Record %s not found during serialization", ex.getRID());
+                }
+              }
+          } else {
+            analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, row, limit);
           }
-
-          if (limit > 0 && records.length() >= limit)
-            break;
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on serializing element (error=%s)", e.getMessage());
         }
+
+        if (limit > 0 && records.length() >= limit)
+          break;
       }
 
       // FILTER OUT NOT CONNECTED EDGES
@@ -221,7 +221,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         if (limit > 0 && vertices.length() + edges.length() >= limit)
           break;
 
-        if (prop.equals("@rid") && RID.is(value)) {
+        if (prop.equals(RID_PROPERTY) && RID.is(value)) {
           analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges,
               new RID(database, value.toString()), limit);
         } else

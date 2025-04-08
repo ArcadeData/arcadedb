@@ -31,6 +31,8 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+
 public class RemoteMutableDocument extends MutableDocument {
   protected final RemoteDatabase remoteDatabase;
 
@@ -86,7 +88,7 @@ public class RemoteMutableDocument extends MutableDocument {
       result.put("@cat", "d");
       result.put("@type", getTypeName());
       if (getIdentity() != null)
-        result.put("@rid", getIdentity().toString());
+        result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
   }
@@ -98,7 +100,7 @@ public class RemoteMutableDocument extends MutableDocument {
       result.put("@cat", "d");
       result.put("@type", getTypeName());
       if (getIdentity() != null)
-        result.put("@rid", getIdentity().toString());
+        result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
   }

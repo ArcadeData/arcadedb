@@ -23,16 +23,30 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.serializer.BinaryComparator;
 
-import java.text.*;
-import java.util.*;
-import java.util.Map.*;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Set;
+
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 
 public class TableFormatter {
   public static final  int    DEFAULT_MAX_WIDTH = 150;
   private static final String TYPE_COLUMN       = "@TYPE";
   private static final String RID_COLUMN        = "@RID";
-  private static final String TYPE_PROPERTY     = "@type";
-  private static final String RID_PROPERTY      = "@rid";
 
   public enum ALIGNMENT {
     LEFT, CENTER, RIGHT
@@ -47,9 +61,9 @@ public class TableFormatter {
   protected final Set<String>                      columnHidden         = new HashSet<String>();
   protected       Set<String>                      prefixedColumns      = new LinkedHashSet<>();
   protected final TableOutput                      out;
-  protected       int maxMultiValueEntries = 10;
-  protected final int minColumnSize        = 4;
-  protected       int maxWidthSize         = DEFAULT_MAX_WIDTH;
+  protected       int                              maxMultiValueEntries = 10;
+  protected final int                              minColumnSize        = 4;
+  protected       int                              maxWidthSize         = DEFAULT_MAX_WIDTH;
   protected       String                           nullValue            = "";
   protected       boolean                          leftBorder           = true;
   protected       boolean                          rightBorder          = true;
@@ -173,11 +187,7 @@ public class TableFormatter {
   }
 
   public void setColumnMetadata(final String columnName, final String metadataName, final String metadataValue) {
-    Map<String, String> metadata = columnMetadata.get(columnName);
-    if (metadata == null) {
-      metadata = new LinkedHashMap<String, String>();
-      columnMetadata.put(columnName, metadata);
-    }
+    Map<String, String> metadata = columnMetadata.computeIfAbsent(columnName, k -> new LinkedHashMap<>());
     metadata.put(metadataName, metadataValue);
   }
 
@@ -432,7 +442,8 @@ public class TableFormatter {
 
           if (metadataValue.length() > column.getValue())
             metadataValue = metadataValue.substring(0, column.getValue());
-          buffer.append(String.format("%-" + column.getValue() + "s", formatCell(colName, column.getValue(), metadataValue, colName)));
+          buffer.append(
+              String.format("%-" + column.getValue() + "s", formatCell(colName, column.getValue(), metadataValue, colName)));
         }
       }
 

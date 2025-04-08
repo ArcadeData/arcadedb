@@ -39,6 +39,8 @@ import org.junit.jupiter.api.Test;
 import java.lang.reflect.*;
 import java.util.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
@@ -3152,14 +3154,14 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     final Result elem1Result = item.getProperty("elem1");
     assertThat(elem1Result.<String>getProperty("name")).isEqualTo("a");
-    assertThat(elem1Result.<RID>getProperty("@rid")).isEqualTo(elem1.getIdentity());
-    assertThat(elem1Result.<String>getProperty("@type")).isEqualTo(elem1.getTypeName());
+    assertThat(elem1Result.<RID>getProperty(RID_PROPERTY)).isEqualTo(elem1.getIdentity());
+    assertThat(elem1Result.<String>getProperty(TYPE_PROPERTY)).isEqualTo(elem1.getTypeName());
 
     final Result elem2Result = item.getProperty("elem2");
     assertThat(elem2Result.<String>getProperty("name")).isEqualTo("b");
     assertThat(elem2Result.<String>getProperty("surname")).isNull();
-    assertThat(elem2Result.<RID>getProperty("@rid")).isEqualTo(elem2.getIdentity());
-    assertThat(elem2Result.<String>getProperty("@type")).isEqualTo(elem2.getTypeName());
+    assertThat(elem2Result.<RID>getProperty(RID_PROPERTY)).isEqualTo(elem2.getIdentity());
+    assertThat(elem2Result.<String>getProperty(TYPE_PROPERTY)).isEqualTo(elem2.getTypeName());
 
     result.close();
   }

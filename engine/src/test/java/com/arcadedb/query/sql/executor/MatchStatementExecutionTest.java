@@ -33,6 +33,7 @@ import org.junit.jupiter.api.Test;
 import java.util.*;
 import java.util.stream.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
@@ -1722,7 +1723,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     final Result a = item.getProperty("a");
     assertThat(a.<String>getProperty("name")).isEqualTo("bbb");
     assertThat(a.<String>getProperty("surname")).isEqualTo("ccc");
-    assertThat(a.<RID>getProperty("@rid")).isNotNull();
+    assertThat(a.<RID>getProperty(RID_PROPERTY)).isNotNull();
     assertThat(a.getPropertyNames().size()).isEqualTo(4);
     assertThat(result.hasNext()).isFalse();
     result.close();

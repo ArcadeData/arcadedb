@@ -75,6 +75,7 @@ import com.arcadedb.utility.Pair;
 import java.util.*;
 import java.util.stream.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.schema.Schema.INDEX_TYPE.FULL_TEXT;
 
 /**
@@ -937,7 +938,7 @@ public class SelectExecutionPlanner {
     if (booleanExpression instanceof BinaryCondition) {
       final BinaryCondition cond = ((BinaryCondition) booleanExpression);
       final BinaryCompareOperator operator = cond.getOperator();
-      if (isRangeOperator(operator) && cond.getLeft().toString().equalsIgnoreCase("@rid")) {
+      if (isRangeOperator(operator) && cond.getLeft().toString().equalsIgnoreCase(RID_PROPERTY)) {
         final Object obj;
         if (cond.getRight().getRid() != null) {
           obj = cond.getRight().getRid().toRecordId((Result) null, context);
@@ -2372,7 +2373,7 @@ public class SelectExecutionPlanner {
     if (info.orderBy.getItems().size() == 1) {
       OrderByItem item = info.orderBy.getItems().get(0);
       String recordAttr = item.getRecordAttr();
-      return recordAttr != null && recordAttr.equalsIgnoreCase("@rid") && OrderByItem.DESC.equals(item.getType());
+      return recordAttr != null && recordAttr.equalsIgnoreCase(RID_PROPERTY) && OrderByItem.DESC.equals(item.getType());
     }
     return false;
   }
@@ -2387,7 +2388,7 @@ public class SelectExecutionPlanner {
     if (info.orderBy.getItems().size() == 1) {
       final OrderByItem item = info.orderBy.getItems().get(0);
       final String recordAttr = item.getRecordAttr();
-      return recordAttr != null && recordAttr.equalsIgnoreCase("@rid") && (item.getType() == null || OrderByItem.ASC.equals(
+      return recordAttr != null && recordAttr.equalsIgnoreCase(RID_PROPERTY) && (item.getType() == null || OrderByItem.ASC.equals(
           item.getType()));
     }
     return false;

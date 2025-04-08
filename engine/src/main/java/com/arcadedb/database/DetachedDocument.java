@@ -27,6 +27,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+
 /**
  * Detached document instances are generated from a document and can be accessed outside a transaction.
  *
@@ -94,7 +96,7 @@ public class DetachedDocument extends ImmutableDocument {
       result.put("@cat", "d");
       result.put("@type", type.getName());
       if (getIdentity() != null)
-        result.put("@rid", getIdentity().toString());
+        result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
   }
@@ -106,7 +108,7 @@ public class DetachedDocument extends ImmutableDocument {
       result.put("@cat", "d");
       result.put("@type", type.getName());
       if (getIdentity() != null)
-        result.put("@rid", getIdentity().toString());
+        result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
   }
