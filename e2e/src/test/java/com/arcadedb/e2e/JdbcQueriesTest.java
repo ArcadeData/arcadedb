@@ -269,7 +269,7 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
   }
 
   @Test
-  @Disabled
+//  @Disabled
   void testMultipleInsert() throws SQLException, ClassNotFoundException {
     try (Statement stmt = conn.createStatement()) {
 

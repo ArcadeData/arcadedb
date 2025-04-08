@@ -34,7 +34,12 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
+
+import static com.arcadedb.schema.Property.CAT_PROPERTY;
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 
 public class RemoteMutableVertex extends MutableVertex {
   private final   RemoteVertex   internal;
@@ -84,10 +89,10 @@ public class RemoteMutableVertex extends MutableVertex {
   public Map<String, Object> toMap(final boolean includeMetadata) {
     final Map<String, Object> result = new HashMap<>(map);
     if (includeMetadata) {
-      result.put("@cat", "v");
-      result.put("@type", getTypeName());
+      result.put(CAT_PROPERTY, "v");
+      result.put(TYPE_PROPERTY, getTypeName());
       if (getIdentity() != null)
-        result.put("@rid", getIdentity().toString());
+        result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
   }
@@ -96,10 +101,10 @@ public class RemoteMutableVertex extends MutableVertex {
   public JSONObject toJSON(final boolean includeMetadata) {
     final JSONObject result = new JSONSerializer(database).map2json(map, null);
     if (includeMetadata) {
-      result.put("@cat", "v");
-      result.put("@type", getTypeName());
+      result.put(CAT_PROPERTY, "v");
+      result.put(TYPE_PROPERTY, getTypeName());
       if (getIdentity() != null)
-        result.put("@rid", getIdentity().toString());
+        result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
   }

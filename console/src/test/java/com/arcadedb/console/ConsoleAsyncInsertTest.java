@@ -42,23 +42,25 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.utility.FileUtils;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
-
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.time.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.io.File;
+import java.io.IOException;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.server.StaticBaseServerTest.DEFAULT_PASSWORD_FOR_TESTS;
-import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * From Discussion https://github.com/ArcadeData/arcadedb/discussions/1129#discussioncomment-6226545
+ * From Discussion <a href="https://github.com/ArcadeData/arcadedb/discussions/1129#discussioncomment-6226545">...</a>
  */
 public class ConsoleAsyncInsertTest {
   static final String DATABASE_NAME              = "ConsoleAsyncInsertTest";
@@ -359,7 +361,7 @@ public class ConsoleAsyncInsertTest {
         p.fileName, p.fileType, p.getStartValidity(), p.getStopValidity(), p.getVersion())) {
       assertThat(resultSet.hasNext()).isTrue();
       Result result = resultSet.next();
-      rid = result.getProperty("@rid").toString();
+      rid = result.getProperty(RID_PROPERTY).toString();
     }
     List<CandidateOrder> orders = new ArrayList<>(TOTAL);
     LocalDateTime start, stop, ref;
@@ -415,7 +417,7 @@ public class ConsoleAsyncInsertTest {
       String URL = "remote:localhost/" + DATABASE_NAME + " " + userName + " " + password;
       assertThat(console.parse("connect " + URL)).isTrue();
       final StringBuilder buffer = new StringBuilder();
-      console.setOutput(output -> buffer.append(output));
+      console.setOutput(buffer::append);
       assertThat(console.parse("select count(*) from Product")).isTrue();
       String[] lines = buffer.toString().split("\\r?\\n|\\r");
       int count = Integer.parseInt(lines[4].split("\\|")[2].trim());
@@ -476,7 +478,7 @@ public class ConsoleAsyncInsertTest {
 
   public JSONObject insertOrdersAsync(Database database, List<CandidateOrder> orders) {
     JSONObject result = new JSONObject();
-    if (orders.size() == 0) {
+    if (orders.isEmpty()) {
       result.put("totalRows", 0);
       result.put("firstOrderId", 0);
       result.put("lastOrderId", 0);
@@ -504,9 +506,7 @@ public class ConsoleAsyncInsertTest {
           firstOrderId[0] = (int) record.get("id");
         }
         database.async().updateRecord(record, newRecord -> {
-        }, exception -> {
-          System.out.println(exception.getMessage());
-        });
+        }, exception -> System.out.println(exception.getMessage()));
       } else {
         record = database.newDocument("Order");
         record.set("id", autoIncrementOrderId.incrementAndGet());

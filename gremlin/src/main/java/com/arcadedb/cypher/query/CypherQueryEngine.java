@@ -28,8 +28,16 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+import static com.arcadedb.schema.Property.IN_PROPERTY;
+import static com.arcadedb.schema.Property.OUT_PROPERTY;
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 
 public class CypherQueryEngine implements QueryEngine {
   static final  String      ENGINE_NAME = "cypher";
@@ -85,11 +93,11 @@ public class CypherQueryEngine implements QueryEngine {
     if (value instanceof Map<?, ?> map) {
       final List<ResultInternal> list = transformMap(map);
       if (list.size() == 1)
-        return list.get(0);
+        return list.getFirst();
       return list;
     } else if (value instanceof List<?> listValue) {
       final List<Object> transformed = listValue.stream().map(value1 -> transformValue(value1, false)).collect(Collectors.toList());
-      return flatArrays && transformed.size() == 1 ? transformed.iterator().next() : transformed;
+      return flatArrays && transformed.size() == 1 ? transformed.getFirst() : transformed;
     }
     return value;
   }
@@ -102,11 +110,11 @@ public class CypherQueryEngine implements QueryEngine {
     if (map.containsKey("  cypher.element")) {
       final Object in = map.get("  cypher.inv");
       if (in != null)
-        mapStringObject.put("@in", in);
+        mapStringObject.put(IN_PROPERTY, in);
 
       final Object out = map.get("  cypher.outv");
       if (out != null)
-        mapStringObject.put("@out", out);
+        mapStringObject.put(OUT_PROPERTY, out);
 
       final Object element = map.get("  cypher.element");
       if (element instanceof Map map1)
@@ -122,7 +130,8 @@ public class CypherQueryEngine implements QueryEngine {
     return result;
   }
 
-  private static ResultInternal cypherObjectToResult(final Map<String, Object> mapStringObject, final Map<Object, Object> internalMap) {
+  private static ResultInternal cypherObjectToResult(final Map<String, Object> mapStringObject,
+      final Map<Object, Object> internalMap) {
     boolean isAnObject = false;
     for (final Map.Entry<Object, Object> entry : internalMap.entrySet()) {
       Object mapKey = entry.getKey();
@@ -130,14 +139,11 @@ public class CypherQueryEngine implements QueryEngine {
 
       if (mapKey.getClass().getName().startsWith("org.apache.tinkerpop.gremlin.structure.T$")) {
         isAnObject = true;
-        switch (mapKey.toString()) {
-        case "id":
-          mapKey = "@rid";
-          break;
-        case "label":
-          mapKey = "@type";
-          break;
-        }
+        mapKey = switch (mapKey.toString()) {
+          case "id" -> RID_PROPERTY;
+          case "label" -> TYPE_PROPERTY;
+          default -> mapKey;
+        };
       } else if (mapKey.equals("  cypher.element")) {
       } else {
         mapValue = transformValue(mapValue, isAnObject);

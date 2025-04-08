@@ -26,6 +26,8 @@ import com.arcadedb.serializer.BinaryComparator;
 import java.util.*;
 import java.util.logging.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+
 /**
  * Created by luigidellaquila on 06/02/15.
  */
@@ -87,13 +89,13 @@ public class OrderByItem {
     if (recordAttr != null) {
       aVal = a.getProperty(recordAttr);
       if (aVal == null) {
-        if (recordAttr.equalsIgnoreCase("@rid")) {
+        if (recordAttr.equalsIgnoreCase(RID_PROPERTY)) {
           aVal = a.getIdentity().orElse(null);
         } //TODO check other attributes
       }
       bVal = b.getProperty(recordAttr);
       if (bVal == null) {
-        if (recordAttr.equalsIgnoreCase("@rid")) {
+        if (recordAttr.equalsIgnoreCase(RID_PROPERTY)) {
           bVal = b.getIdentity().orElse(null);
         } //TODO check other attributes
       }

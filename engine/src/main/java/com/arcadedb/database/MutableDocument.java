@@ -25,8 +25,18 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.lang.reflect.*;
-import java.util.*;
+import java.lang.reflect.Array;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import static com.arcadedb.schema.Property.CAT_PROPERTY;
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 
 /**
  * Mutable document implementation. Nested objects are not tracked, so if you update any embedded objects, you need to call {@link #save()} to mark the record
@@ -96,10 +106,10 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     checkForLazyLoadingProperties();
     final Map<String, Object> result = new HashMap<>(map);
     if (includeMetadata) {
-      result.put("@cat", "d");
-      result.put("@type", type.getName());
+      result.put(CAT_PROPERTY, "d");
+      result.put(TYPE_PROPERTY, type.getName());
       if (getIdentity() != null)
-        result.put("@rid", getIdentity().toString());
+        result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
   }
@@ -113,10 +123,10 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     checkForLazyLoadingProperties();
     final JSONObject result = new JSONSerializer(database).map2json(map, type);
     if (includeMetadata) {
-      result.put("@cat", "d");
-      result.put("@type", type.getName());
+      result.put(CAT_PROPERTY, "d");
+      result.put(TYPE_PROPERTY, type.getName());
       if (getIdentity() != null)
-        result.put("@rid", getIdentity().toString());
+        result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
   }

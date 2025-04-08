@@ -26,6 +26,8 @@ import com.arcadedb.query.sql.parser.WhereClause;
 
 import java.util.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+
 /**
  * Created by luigidellaquila on 26/10/16.
  */
@@ -53,17 +55,17 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
       final List<Identifiable> path = new ArrayList<>();
       if (item.getIdentity().isPresent()) {
         path.add(item.getIdentity().get());
-      } else if (item.getProperty("@rid") != null) {
-        path.add(item.getProperty("@rid"));
+      } else if (item.getProperty(RID_PROPERTY) != null) {
+        path.add(item.getProperty(RID_PROPERTY));
       }
       ((ResultInternal) item).setMetadata("$path", path);
 
       if (item.isElement() && !traversed.contains(item.getElement().get().getIdentity())) {
         tryAddEntryPointAtTheEnd(item, context);
         traversed.add(item.getElement().get().getIdentity());
-      } else if (item.getProperty("@rid") != null && item.getProperty("@rid") instanceof Identifiable) {
+      } else if (item.getProperty(RID_PROPERTY) != null && item.getProperty(RID_PROPERTY) instanceof Identifiable) {
         tryAddEntryPointAtTheEnd(item, context);
-        traversed.add(((Identifiable) item.getProperty("@rid")).getIdentity());
+        traversed.add(((Identifiable) item.getProperty(RID_PROPERTY)).getIdentity());
       }
     }
   }
@@ -194,8 +196,8 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
 
     if (res.isElement())
       traversed.add(res.getElement().get().getIdentity());
-    else if (res.getProperty("@rid") != null && res.getProperty("@rid") instanceof Identifiable)
-      traversed.add(((Identifiable) res.getProperty("@rid")).getIdentity());
+    else if (res.getProperty(RID_PROPERTY) != null && res.getProperty(RID_PROPERTY) instanceof Identifiable)
+      traversed.add(((Identifiable) res.getProperty(RID_PROPERTY)).getIdentity());
   }
 
   private void tryAddEntryPointAtTheEnd(final Result res, final CommandContext context) {
@@ -204,8 +206,8 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
 
     if (res.isElement())
       traversed.add(res.getElement().get().getIdentity());
-    else if (res.getProperty("@rid") != null && res.getProperty("@rid") instanceof Identifiable)
-      traversed.add(((Identifiable) res.getProperty("@rid")).getIdentity());
+    else if (res.getProperty(RID_PROPERTY) != null && res.getProperty(RID_PROPERTY) instanceof Identifiable)
+      traversed.add(((Identifiable) res.getProperty(RID_PROPERTY)).getIdentity());
   }
 
   @Override
