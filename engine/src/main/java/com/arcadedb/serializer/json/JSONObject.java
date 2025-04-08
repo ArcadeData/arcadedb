@@ -22,7 +22,6 @@ package com.arcadedb.serializer.json;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.DateUtils;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
@@ -30,17 +29,14 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import com.google.gson.Strictness;
-import com.google.gson.internal.LazilyParsedNumber;
 import com.google.gson.stream.JsonReader;
 
 import java.io.*;
-import java.lang.reflect.*;
 import java.math.*;
 import java.time.*;
 import java.time.format.*;
 import java.time.temporal.*;
 import java.util.*;
-import java.util.logging.*;
 
 /**
  * JSON object.<br>
@@ -56,16 +52,6 @@ public class JSONObject {
   private             DateTimeFormatter dateFormat         = null;
   private             String            dateTimeFormatAsString;
   private             DateTimeFormatter dateTimeFormat;
-  private static      Field             VALUE_FIELD        = null;
-
-  static {
-    try {
-      VALUE_FIELD = JsonPrimitive.class.getDeclaredField("value");
-      VALUE_FIELD.setAccessible(true);
-    } catch (NoSuchFieldException e) {
-      LogManager.instance().log(JSONObject.class, Level.SEVERE, "Error accessing JsonPrimitive value field", e);
-    }
-  }
 
   public JSONObject() {
     this.object = new JsonObject();
@@ -357,41 +343,13 @@ public class JSONObject {
     if (element == null || element == NULL)
       return null;
     else if (element.isJsonPrimitive()) {
-      if (VALUE_FIELD != null)
-        try {
-          final Object value = VALUE_FIELD.get(element);
-          if (!(value instanceof LazilyParsedNumber))
-            return value;
-        } catch (IllegalAccessException e) {
-          // IGNORE IT
-        }
-
       // DETERMINE FROM THE PRIMITIVE
       final JsonPrimitive primitive = element.getAsJsonPrimitive();
       if (primitive.isString())
         return primitive.getAsString();
-      else if (primitive.isNumber()) {
-        final String strValue = primitive.getAsString();
-
-        // Efficient check to determine the appropriate type
-        if (strValue.contains(".") || strValue.contains("e") || strValue.contains("E")) {
-          // Contains decimal point or scientific notation - definitely a double
-          return primitive.getAsDouble();
-        } else {
-
-          // Check if it fits in an Integer
-          try {
-            final long longVal = primitive.getAsLong();
-            if (longVal >= Integer.MIN_VALUE && longVal <= Integer.MAX_VALUE)
-              return (int) longVal;
-            return longVal;
-
-          } catch (NumberFormatException e) {
-            // It could be a very large number, use double as fallback
-            return primitive.getAsDouble();
-          }
-        }
-      } else if (primitive.isBoolean())
+      else if (primitive.isNumber())
+        return primitive.getAsNumber();
+      else if (primitive.isBoolean())
         return primitive.getAsBoolean();
 
     } else if (element.isJsonObject())
