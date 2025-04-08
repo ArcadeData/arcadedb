@@ -32,6 +32,8 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+
 public class RemoteMutableEdge extends MutableEdge {
   protected final RemoteDatabase remoteDatabase;
 
@@ -89,7 +91,7 @@ public class RemoteMutableEdge extends MutableEdge {
       result.put("@cat", "e");
       result.put("@type", getTypeName());
       if (getIdentity() != null)
-        result.put("@rid", getIdentity().toString());
+        result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
   }
@@ -101,7 +103,7 @@ public class RemoteMutableEdge extends MutableEdge {
       result.put("@cat", "e");
       result.put("@type", getTypeName());
       if (getIdentity() != null)
-        result.put("@rid", getIdentity().toString());
+        result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
   }

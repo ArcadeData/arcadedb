@@ -29,6 +29,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.util.HashMap;
 import java.util.Map;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+
 public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge {
   private final RID out;
   private final RID in;
@@ -107,7 +109,7 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
       result.put("@cat", "e");
       result.put("@type", getTypeName());
       if (getIdentity() != null)
-        result.put("@rid", getIdentity().toString());
+        result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
   }
@@ -119,7 +121,7 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
       result.put("@cat", "e");
       result.put("@type", getTypeName());
       if (getIdentity() != null)
-        result.put("@rid", getIdentity().toString());
+        result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
   }

@@ -29,6 +29,8 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+
 public class RemoteImmutableDocument extends ImmutableDocument {
   protected final RemoteDatabase      remoteDatabase;
   protected final Map<String, Object> map;
@@ -38,7 +40,7 @@ public class RemoteImmutableDocument extends ImmutableDocument {
     this.remoteDatabase = remoteDatabase;
     this.map = new HashMap<>(attributes);
 
-    final String ridAsString = (String) map.remove("@rid");
+    final String ridAsString = (String) map.remove(RID_PROPERTY);
     if (ridAsString != null)
       this.rid = new RID(remoteDatabase, ridAsString);
     else
@@ -88,7 +90,7 @@ public class RemoteImmutableDocument extends ImmutableDocument {
       result.put("@cat", "d");
       result.put("@type", getTypeName());
       if (getIdentity() != null)
-        result.put("@rid", getIdentity().toString());
+        result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
   }
@@ -100,7 +102,7 @@ public class RemoteImmutableDocument extends ImmutableDocument {
       result.put("@cat", "d");
       result.put("@type", getTypeName());
       if (getIdentity() != null)
-        result.put("@rid", getIdentity().toString());
+        result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
   }

@@ -64,6 +64,12 @@ import java.util.logging.Level;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static com.arcadedb.schema.Property.CAT_PROPERTY;
+import static com.arcadedb.schema.Property.IN_PROPERTY;
+import static com.arcadedb.schema.Property.OUT_PROPERTY;
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+import static com.arcadedb.schema.Property.TYPE_PROPERTY;
+
 /**
  * Postgres Reference for Protocol Messages: https://www.postgresql.org/docs/9.6/protocol-message-formats.html
  *
@@ -461,9 +467,9 @@ public class PostgresNetworkExecutor extends Thread {
     }
 
     if (atLeastOneElement) {
-      columns.put("@rid", PostgresType.VARCHAR);
-      columns.put("@type", PostgresType.VARCHAR);
-      columns.put("@cat", PostgresType.CHAR);
+      columns.put(RID_PROPERTY, PostgresType.VARCHAR);
+      columns.put(TYPE_PROPERTY, PostgresType.VARCHAR);
+      columns.put(CAT_PROPERTY, PostgresType.CHAR);
     }
 
     return columns;
@@ -518,9 +524,9 @@ public class PostgresNetworkExecutor extends Thread {
         final String propertyName = postgresTypeEntry.getKey();
 
         Object value = switch (propertyName) {
-          case "@rid" -> row.isElement() ? row.getElement().get().getIdentity() : row.getProperty(propertyName);
-          case "@type" -> row.isElement() ? row.getElement().get().getTypeName() : row.getProperty(propertyName);
-          case "@out" -> {
+          case RID_PROPERTY -> row.isElement() ? row.getElement().get().getIdentity() : row.getProperty(propertyName);
+          case TYPE_PROPERTY -> row.isElement() ? row.getElement().get().getTypeName() : row.getProperty(propertyName);
+          case OUT_PROPERTY -> {
             if (row.isElement()) {
               final Document record = row.getElement().get();
               if (record instanceof Vertex vertex)
@@ -530,7 +536,7 @@ public class PostgresNetworkExecutor extends Thread {
             }
             yield row.getProperty(propertyName);
           }
-          case "@in" -> {
+          case IN_PROPERTY -> {
             if (row.isElement()) {
               final Document record = row.getElement().get();
               if (record instanceof Vertex vertex)
@@ -540,7 +546,7 @@ public class PostgresNetworkExecutor extends Thread {
             }
             yield row.getProperty(propertyName);
           }
-          case "@cat" -> {
+          case CAT_PROPERTY -> {
             if (row.isElement()) {
               final Document record = row.getElement().get();
               if (record instanceof Vertex)
