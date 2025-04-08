@@ -27,11 +27,11 @@ public class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
     final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
-    database.command("sql", "create vertex type Person");
-    database.command("sql", "create edge type FriendOf");
+    database.command("sql", "CREATE VERTEX TYPE Person");
+    database.command("sql", "CREATE EDGE TYPE FriendOf UNIDIRECTIONAL");
 
-    MutableVertex me = database.newVertex("Person").set("name", "me") .save();
-    MutableVertex you = database.newVertex("Person").set("name", "you") .save();
+    MutableVertex me = database.newVertex("Person").set("name", "me").save();
+    MutableVertex you = database.newVertex("Person").set("name", "you").save();
 
     MutableEdge friendOf = me.newEdge("FriendOf", you).save();
 
@@ -42,8 +42,8 @@ public class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
     assertThat(me.getVertices(Vertex.DIRECTION.OUT).iterator().next()).isEqualTo(you);
     assertThat(me.getVertices(Vertex.DIRECTION.IN).iterator().hasNext()).isFalse();
 
+    assertThat(you.getVertices(Vertex.DIRECTION.IN).iterator().hasNext()).isTrue();
     assertThat(you.getVertices(Vertex.DIRECTION.OUT).iterator().hasNext()).isFalse();
-    assertThat(you.getVertices(Vertex.DIRECTION.IN).iterator().hasNext()).isFalse();
 
     Iterable<Edge> friends = me.getEdges(Vertex.DIRECTION.IN, "FriendOf");
     assertThat(friends).containsExactly(friendOf);
