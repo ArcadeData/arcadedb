@@ -22,6 +22,7 @@ package com.arcadedb.serializer.json;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.DateUtils;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
@@ -29,14 +30,17 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import com.google.gson.Strictness;
+import com.google.gson.internal.LazilyParsedNumber;
 import com.google.gson.stream.JsonReader;
 
 import java.io.*;
+import java.lang.reflect.*;
 import java.math.*;
 import java.time.*;
 import java.time.format.*;
 import java.time.temporal.*;
 import java.util.*;
+import java.util.logging.*;
 
 /**
  * JSON object.<br>
@@ -345,10 +349,32 @@ public class JSONObject {
     else if (element.isJsonPrimitive()) {
       // DETERMINE FROM THE PRIMITIVE
       final JsonPrimitive primitive = element.getAsJsonPrimitive();
-      if (primitive.isString())
+      if (primitive.isNumber()) {
+        final Number value = primitive.getAsNumber();
+        if (!(value instanceof LazilyParsedNumber))
+          return value;
+        final String strValue = primitive.getAsString();
+
+        // Efficient check to determine the appropriate type
+        if (strValue.contains(".") || strValue.contains("e") || strValue.contains("E")) {
+          // Contains decimal point or scientific notation - definitely a double
+          return primitive.getAsDouble();
+        } else {
+
+          // Check if it fits in an Integer
+          try {
+            final long longVal = primitive.getAsLong();
+            if (longVal >= Integer.MIN_VALUE && longVal <= Integer.MAX_VALUE)
+              return (int) longVal;
+            return longVal;
+
+          } catch (NumberFormatException e) {
+            // It could be a very large number, use double as fallback
+            return primitive.getAsDouble();
+          }
+        }
+      } else if (primitive.isString())
         return primitive.getAsString();
-      else if (primitive.isNumber())
-        return primitive.getAsNumber();
       else if (primitive.isBoolean())
         return primitive.getAsBoolean();
 
