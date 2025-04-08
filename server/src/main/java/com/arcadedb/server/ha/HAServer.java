@@ -113,6 +113,18 @@ public class HAServer implements ServerPlugin {
     }
   }
 
+  public static class HACluster {
+    public final Set<ServerInfo> servers;
+
+    public HACluster(Set<ServerInfo> servers) {
+      this.servers = servers;
+    }
+
+    public String toString() {
+      return servers.toString();
+    }
+  }
+
   public enum Quorum {
     NONE, ONE, TWO, THREE, MAJORITY, ALL;
 
