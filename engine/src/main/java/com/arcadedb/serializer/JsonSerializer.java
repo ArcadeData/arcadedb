@@ -19,18 +19,19 @@
 package com.arcadedb.serializer;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DetachedDocument;
 import com.arcadedb.database.Document;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.google.gson.JsonNull;
 
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class JsonSerializer {
   private boolean useCollectionSize         = false;
@@ -219,7 +220,16 @@ public class JsonSerializer {
   }
 
   private void setMetadata(final Document document, final JSONObject object) {
-    if (document instanceof Vertex vertex1) {
+    if (document instanceof DetachedDocument doc) {
+      final DocumentType docType = doc.getType();
+      if (docType instanceof VertexType)
+        object.put("@cat", "v");
+      else if (docType instanceof EdgeType)
+        object.put("@cat", "e");
+      else
+        object.put("@cat", "d");
+
+    } else if (document instanceof Vertex vertex1) {
       object.put("@cat", "v");
       if (includeVertexEdges) {
         final Vertex vertex = vertex1;
