@@ -310,7 +310,6 @@ public class GraphEngine {
   }
 
   public void deleteEdge(final Edge edge) {
-
     final Database database = edge.getDatabase();
 
     try {
@@ -355,11 +354,12 @@ public class GraphEngine {
     // RETRIEVE ALL THE EDGES TO DELETE AT THE END
     final List<Identifiable> edgesToDelete = new ArrayList<>();
 
-    EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
-    if (outEdges != null) {
-      final EdgeIterator outIterator = (EdgeIterator) outEdges.edgeIterator();
+    EdgeLinkedList outEdges = null;
+    try {
+      outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
+      if (outEdges != null) {
+        final EdgeIterator outIterator = (EdgeIterator) outEdges.edgeIterator();
 
-      try {
         while (outIterator.hasNext()) {
           RID inV = null;
           try {
@@ -373,18 +373,19 @@ public class GraphEngine {
                     vertex.getIdentity());
           }
         }
-      } catch (Exception e) {
-        // LINKED LIST COULD BE BROKEN
-        LogManager.instance()
-            .log(this, Level.WARNING, "Error on deleting outgoing edges connected to vertex %s", vertex.getIdentity());
       }
+    } catch (Exception e) {
+      // LINKED LIST COULD BE BROKEN
+      LogManager.instance()
+          .log(this, Level.WARNING, "Error on deleting outgoing edges connected to vertex %s", vertex.getIdentity());
     }
 
-    EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
-    if (inEdges != null) {
-      final EdgeIterator inIterator = (EdgeIterator) inEdges.edgeIterator();
+    EdgeLinkedList inEdges = null;
+    try {
+      inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
+      if (inEdges != null) {
+        final EdgeIterator inIterator = (EdgeIterator) inEdges.edgeIterator();
 
-      try {
         while (inIterator.hasNext()) {
           RID outV = null;
           try {
@@ -397,11 +398,11 @@ public class GraphEngine {
                 .log(this, Level.FINE, "Error on deleting incoming vertex %s connected to vertex %s", outV, vertex.getIdentity());
           }
         }
-      } catch (Exception e) {
-        // LINKED LIST COULD BE BROKEN
-        LogManager.instance()
-            .log(this, Level.WARNING, "Error on deleting incoming edges connected to vertex %s", vertex.getIdentity());
       }
+    } catch (Exception e) {
+      // LINKED LIST COULD BE BROKEN
+      LogManager.instance()
+          .log(this, Level.WARNING, "Error on deleting incoming edges connected to vertex %s", vertex.getIdentity());
     }
 
     for (Identifiable edge : edgesToDelete)
@@ -411,24 +412,28 @@ public class GraphEngine {
         // ALREADY DELETED, IGNORE IT
       }
 
-    // RELOAD LINKED LISTS
-    outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
-    if (outEdges != null)
-      try {
-        outEdges.deleteAll();
-      } catch (Exception e) {
-        LogManager.instance()
-            .log(this, Level.WARNING, "Error on deleting outgoing edges connected to vertex %s", vertex.getIdentity());
-      }
+    if (outEdges != null) {
+      // RELOAD LINKED LISTS
+      outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
+      if (outEdges != null)
+        try {
+          outEdges.deleteAll();
+        } catch (Exception e) {
+          LogManager.instance()
+              .log(this, Level.WARNING, "Error on deleting outgoing edges connected to vertex %s", vertex.getIdentity());
+        }
+    }
 
-    inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
-    if (inEdges != null)
-      try {
-        inEdges.deleteAll();
-      } catch (Exception e) {
-        LogManager.instance()
-            .log(this, Level.WARNING, "Error on deleting incoming edges connected to vertex %s", vertex.getIdentity());
-      }
+    if (inEdges != null) {
+      inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
+      if (inEdges != null)
+        try {
+          inEdges.deleteAll();
+        } catch (Exception e) {
+          LogManager.instance()
+              .log(this, Level.WARNING, "Error on deleting incoming edges connected to vertex %s", vertex.getIdentity());
+        }
+    }
 
     // DELETE VERTEX RECORD
     vertex.getDatabase().getSchema().getBucketById(vertex.getIdentity().getBucketId()).deleteRecord(vertex.getIdentity());
