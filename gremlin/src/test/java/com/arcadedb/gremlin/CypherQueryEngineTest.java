@@ -193,7 +193,7 @@ public class CypherQueryEngineTest {
           final Result r1 = query.next();
 
           final List<String> columns = new ArrayList<>(r1.toMap().keySet());
-          assertThat(columns.get(0)).isEqualTo("foo.name");
+          assertThat(columns.getFirst()).isEqualTo("foo.name");
           assertThat(columns.get(1)).isEqualTo("foo.field2");
           assertThat(columns.get(2)).isEqualTo("foo.field1");
         }

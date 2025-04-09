@@ -48,7 +48,7 @@ public class FromItem extends SimpleNode {
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (rids != null && rids.size() > 0) {
       if (rids.size() == 1) {
-        rids.get(0).toString(params, builder);
+        rids.getFirst().toString(params, builder);
         return;
       } else {
         builder.append("[");
@@ -65,7 +65,7 @@ public class FromItem extends SimpleNode {
       }
     } else if (inputParams != null && inputParams.size() > 0) {
       if (inputParams.size() == 1) {
-        inputParams.get(0).toString(params, builder);
+        inputParams.getFirst().toString(params, builder);
         return;
       } else {
         builder.append("[");

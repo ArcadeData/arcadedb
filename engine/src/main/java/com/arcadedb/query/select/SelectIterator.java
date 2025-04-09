@@ -145,8 +145,8 @@ public class SelectIterator<T extends Document> implements Iterator<T> {
 
     // CHECK ONLY THE CASE WITH ONE INDEX USED AND ONE ORDER BY
     if (executor.select.orderBy.size() == 1 && executor.usedIndexes != null && executor.usedIndexes.size() == 1) {
-      final Pair<String, Boolean> orderBy = executor.select.orderBy.get(0);
-      final SelectExecutor.IndexInfo usedIndex = executor.usedIndexes.get(0);
+      final Pair<String, Boolean> orderBy = executor.select.orderBy.getFirst();
+      final SelectExecutor.IndexInfo usedIndex = executor.usedIndexes.getFirst();
 
       if (orderBy.getFirst().equals(usedIndex.property) &&//
           orderBy.getSecond() == usedIndex.order) {

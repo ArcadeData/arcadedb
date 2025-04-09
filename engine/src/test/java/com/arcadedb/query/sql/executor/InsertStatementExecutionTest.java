@@ -221,7 +221,7 @@ public class InsertStatementExecutionTest extends TestHelper {
     assertThat(item).isNotNull();
     List<Integer> list = item.getProperty("test");
     assertThat(list.size()).isEqualTo(1);
-    assertThat(list.get(0)).isEqualTo(777);
+    assertThat(list.getFirst()).isEqualTo(777);
     assertThat(result.hasNext()).isFalse();
   }
 
@@ -237,7 +237,7 @@ public class InsertStatementExecutionTest extends TestHelper {
     assertThat(item).isNotNull();
     List<Map> list = item.getProperty("test");
     assertThat(list.size()).isEqualTo(1);
-    Map<String, Integer> map = list.get(0);
+    Map<String, Integer> map = list.getFirst();
     assertThat(map.get("777")).isEqualTo(777);
     assertThat(map.get("888")).isEqualTo(888);
     assertThat(result.hasNext()).isFalse();
@@ -408,7 +408,7 @@ public class InsertStatementExecutionTest extends TestHelper {
       assertThat(list instanceof List).isTrue();
       assertThat(((List) list).size()).isEqualTo(1);
 
-      final Object o = ((List) list).get(0);
+      final Object o = ((List) list).getFirst();
       assertThat(o instanceof Map).isTrue();
       assertThat(((Map) o).get("name")).isEqualTo("foo");
     }
@@ -436,7 +436,7 @@ public class InsertStatementExecutionTest extends TestHelper {
       assertThat(list instanceof List).isTrue();
       assertThat(((List) list).size()).isEqualTo(1);
 
-      final Object o = ((List) list).get(0);
+      final Object o = ((List) list).getFirst();
       assertThat(o instanceof Map).isTrue();
       assertThat(((Map) o).get("name")).isEqualTo("foo");
     }

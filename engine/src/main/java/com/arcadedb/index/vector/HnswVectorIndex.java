@@ -557,7 +557,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     List<SearchResult<Vertex, TDistance>> results = new ArrayList<>(topCandidates.size());
     while (!topCandidates.isEmpty()) {
       NodeIdAndDistance<TDistance> pair = topCandidates.poll();
-      results.add(0, new SearchResult<>(loadVertexFromRID(pair.nodeId), pair.distance, maxValueDistanceComparator));
+      results.addFirst(new SearchResult<>(loadVertexFromRID(pair.nodeId), pair.distance, maxValueDistanceComparator));
     }
 
     return results;

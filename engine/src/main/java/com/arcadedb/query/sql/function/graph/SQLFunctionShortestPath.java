@@ -460,7 +460,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
 
     RID current = neighbor;
     while (current != null) {
-      result.add(0, current);
+      result.addFirst(current);
       current = leftDistances.get(current);
     }
 

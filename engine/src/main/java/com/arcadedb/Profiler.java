@@ -202,7 +202,7 @@ public class Profiler {
         json.put("ramOsTotal", new JSONObject().put("space", osTotalMem));
 
         final double cpuLoad = ManagementFactory.getPlatformMXBean(
-            com.sun.management.OperatingSystemMXBean.class).getSystemCpuLoad();
+            com.sun.management.OperatingSystemMXBean.class).getCpuLoad();
         json.put("cpuLoad", new JSONObject().put("perc", cpuLoad * 100));
       }
 

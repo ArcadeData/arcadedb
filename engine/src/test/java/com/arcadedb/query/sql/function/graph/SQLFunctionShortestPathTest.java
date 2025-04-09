@@ -46,7 +46,7 @@ public class SQLFunctionShortestPathTest {
       final List<RID> result = function.execute(null, null, null, new Object[] { vertices.get(1), vertices.get(4) },
           new BasicCommandContext());
       assertThat(result).hasSize(3);
-      assertThat(result.get(0)).isEqualTo(vertices.get(1).getIdentity());
+      assertThat(result.getFirst()).isEqualTo(vertices.get(1).getIdentity());
       assertThat(result.get(1)).isEqualTo(vertices.get(3).getIdentity());
       assertThat(result.get(2)).isEqualTo(vertices.get(4).getIdentity());
     });
@@ -62,7 +62,7 @@ public class SQLFunctionShortestPathTest {
           new BasicCommandContext());
 
       assertThat(result).hasSize(4);
-      assertThat(result.get(0)).isEqualTo(vertices.get(1).getIdentity());
+      assertThat(result.getFirst()).isEqualTo(vertices.get(1).getIdentity());
       assertThat(result.get(1)).isEqualTo(vertices.get(2).getIdentity());
       assertThat(result.get(2)).isEqualTo(vertices.get(3).getIdentity());
       assertThat(result.get(3)).isEqualTo(vertices.get(4).getIdentity());
@@ -79,7 +79,7 @@ public class SQLFunctionShortestPathTest {
           new BasicCommandContext());
 
       assertThat(result).hasSize(4);
-      assertThat(result.get(0)).isEqualTo(vertices.get(1).getIdentity());
+      assertThat(result.getFirst()).isEqualTo(vertices.get(1).getIdentity());
       assertThat(result.get(1)).isEqualTo(vertices.get(2).getIdentity());
       assertThat(result.get(2)).isEqualTo(vertices.get(3).getIdentity());
       assertThat(result.get(3)).isEqualTo(vertices.get(4).getIdentity());
@@ -96,7 +96,7 @@ public class SQLFunctionShortestPathTest {
           new Object[] { vertices.get(1), vertices.get(4), "BOTH", asList("Edge1", "Edge2") }, new BasicCommandContext());
 
       assertThat(result).hasSize(3);
-      assertThat(result.get(0)).isEqualTo(vertices.get(1).getIdentity());
+      assertThat(result.getFirst()).isEqualTo(vertices.get(1).getIdentity());
       assertThat(result.get(1)).isEqualTo(vertices.get(3).getIdentity());
       assertThat(result.get(2)).isEqualTo(vertices.get(4).getIdentity());
     });
@@ -112,7 +112,7 @@ public class SQLFunctionShortestPathTest {
           new BasicCommandContext());
 
       assertThat(result).hasSize(11);
-      assertThat(result.get(0)).isEqualTo(vertices.get(1).getIdentity());
+      assertThat(result.getFirst()).isEqualTo(vertices.get(1).getIdentity());
       assertThat(result.get(1)).isEqualTo(vertices.get(3).getIdentity());
       int next = 2;
       for (int i = 4; i <= 20; i += 2) {

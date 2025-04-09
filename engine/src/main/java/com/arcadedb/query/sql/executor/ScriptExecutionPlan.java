@@ -131,7 +131,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
   }
 
   public void chain(final InternalExecutionPlan nextPlan) {
-    final ScriptLineStep lastStep = steps.isEmpty() ? null : steps.get(steps.size() - 1);
+    final ScriptLineStep lastStep = steps.isEmpty() ? null : steps.getLast();
     final ScriptLineStep nextStep = new ScriptLineStep(nextPlan, context);
     if (lastStep != null)
       nextStep.setPrevious(lastStep);
@@ -186,7 +186,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
    */
   public ExecutionStepInternal executeUntilReturn() {
     if (!steps.isEmpty()) {
-      lastStep = steps.get(steps.size() - 1);
+      lastStep = steps.getLast();
       for (int i = 0; i < steps.size() - 1; i++) {
         final ScriptLineStep step = steps.get(i);
         if (step.containsReturn()) {
@@ -210,7 +210,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
           lastResult = step.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
         }
       }
-      this.lastStep = steps.get(steps.size() - 1);
+      this.lastStep = steps.getLast();
     }
     return lastStep;
   }

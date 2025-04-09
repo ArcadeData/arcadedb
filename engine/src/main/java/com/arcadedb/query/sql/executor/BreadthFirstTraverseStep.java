@@ -194,7 +194,7 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
 
   private void tryAddEntryPoint(final Result res, final CommandContext context) {
     if (whileClause == null || whileClause.matchesFilters(res, context)) {
-      this.entryPoints.add(0, res);
+      this.entryPoints.addFirst(res);
     }
 
     if (res.isElement()) {

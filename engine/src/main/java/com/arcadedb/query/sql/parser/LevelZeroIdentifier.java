@@ -160,7 +160,7 @@ public class LevelZeroIdentifier extends SimpleNode {
     if (functionCall.getParams().size() != 1) {
       throw new CommandExecutionException("Invalid expand expression: " + functionCall.toString());
     }
-    return functionCall.getParams().get(0);
+    return functionCall.getParams().getFirst();
   }
 
   public boolean isAggregate(final CommandContext context) {
