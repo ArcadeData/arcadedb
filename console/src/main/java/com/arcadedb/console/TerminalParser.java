@@ -88,7 +88,7 @@ public class TerminalParser extends DefaultParser {
 
     if (cursor == line.length()) {
       wordIndex = words.size() - 1;
-      wordCursor = words.get(words.size() - 1).length();
+      wordCursor = words.getLast().length();
       rawWordCursor = cursor - rawWordStart;
       rawWordLength = rawWordCursor;
     }

@@ -97,8 +97,8 @@ public class Projection extends SimpleNode {
       throw new IllegalStateException("This is an expand projection, it cannot be calculated as a single result" + this);
 
     if (items.size() == 1 &&
-        items.get(0).getExpression().toString().equals("@this") &&
-        items.get(0).nestedProjection == null)
+        items.getFirst().getExpression().toString().equals("@this") &&
+        items.getFirst().nestedProjection == null)
       return record;
 
     final ResultInternal result = new ResultInternal(context.getDatabase());

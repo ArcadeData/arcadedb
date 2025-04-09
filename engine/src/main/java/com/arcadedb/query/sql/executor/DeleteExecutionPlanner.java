@@ -99,7 +99,7 @@ public class DeleteExecutionPlanner {
       } else if (flattenedWhereClause.size() > 1) {
         throw new CommandExecutionException("Index queries with this kind of condition are not supported yet: " + whereClause);
       } else {
-        final AndBlock andBlock = flattenedWhereClause.get(0);
+        final AndBlock andBlock = flattenedWhereClause.getFirst();
         if (andBlock.getSubBlocks().size() == 1) {
 
           whereClause = null;//The WHERE clause won't be used anymore, the index does all the filtering

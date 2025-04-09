@@ -64,7 +64,7 @@ public class SelectExecutor {
     else if (select.fromType != null)
       iterator = select.database.iterateType(select.fromType.getName(), select.polymorphic);
     else if (select.fromBuckets.size() == 1)
-      iterator = select.database.iterateBucket(select.fromBuckets.get(0).getName());
+      iterator = select.database.iterateBucket(select.fromBuckets.getFirst().getName());
     else {
       final MultiIterator<? extends Identifiable> multiIterator = new MultiIterator<>();
       for (Bucket b : select.fromBuckets)
