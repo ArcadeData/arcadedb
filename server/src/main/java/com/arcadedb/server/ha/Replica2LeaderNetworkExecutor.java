@@ -24,7 +24,6 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.network.HostUtil;
 import com.arcadedb.network.binary.ChannelBinaryClient;
 import com.arcadedb.network.binary.ConnectionException;
 import com.arcadedb.network.binary.NetworkProtocolException;
@@ -49,18 +48,15 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.net.SocketTimeoutException;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.logging.Level;
 
 public class Replica2LeaderNetworkExecutor extends Thread {
-  private final    HAServer            server;
-  private          String              host;
-  private          int                 port;
-  private          String              leaderServerName             = "?";
+  private final    HAServer         server;
+  private final HAServer.ServerInfo leader;
+  private          String           leaderServerName             = "?";
   private          String              leaderServerHTTPAddress;
   private          ChannelBinaryClient channel;
   private volatile boolean             shutdown                     = false;
@@ -68,10 +64,9 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   private final    Object              channelInputLock             = new Object();
   private          long                installDatabaseLastLogNumber = -1;
 
-  public Replica2LeaderNetworkExecutor(final HAServer ha, final String host, final int port) {
+  public Replica2LeaderNetworkExecutor(final HAServer ha, HAServer.ServerInfo leader) {
     this.server = ha;
-    this.host = host;
-    this.port = port;
+    this.leader = leader;
     connect();
   }
 
@@ -180,7 +175,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   }
 
   public String getRemoteAddress() {
-    return host + ":" + port;
+    return leader.host() + ":" + leader.port();
   }
 
   private void reconnect(final Exception e) {
@@ -211,17 +206,16 @@ public class Replica2LeaderNetworkExecutor extends Thread {
           LogManager.instance()
               .log(this, Level.SEVERE, "Error on re-connecting to the Leader ('%s') (error=%s)", getRemoteServerName(), e1);
 
-          HashSet<HAServer.ServerInfo> serverAddressListCopy = new HashSet<>(server.getServerAddressList());
+//          HashSet<HAServer.ServerInfo> serverAddressListCopy = new HashSet<>(server.);
 
-          for (int retry = 0; retry < 3 && !shutdown && !serverAddressListCopy.isEmpty(); ++retry) {
-            for (final HAServer.ServerInfo serverAddress : serverAddressListCopy) {
+          // RECONNECT TO THE NEXT SERVER
+          for (int retry = 0; retry < 3 && !shutdown && !server.getCluster().getServers().isEmpty(); ++retry) {
+            for (final HAServer.ServerInfo serverAddress : server.getCluster().getServers()) {
               try {
                 if (server.isCurrentServer(serverAddress))
                   // SKIP LOCAL SERVER
                   continue;
 
-                host = serverAddress.host();
-                port = serverAddress.port();
 
                 connect();
                 startup();
@@ -240,7 +234,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
               return;
             }
 
-            serverAddressListCopy = new HashSet<>(server.getServerAddressList());
+//            serverAddressListCopy = new HashSet<>(server.getServerAddressList());
           }
 
           server.startElection(true);
@@ -314,10 +308,10 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   }
 
   public void connect() {
-    LogManager.instance().log(this, Level.FINE, "Connecting to server %s:%d...", host, port);
+    LogManager.instance().log(this, Level.INFO, "Connecting to server %s", leader);
 
     try {
-      channel = server.createNetworkConnection(host, port, ReplicationProtocol.COMMAND_CONNECT);
+      channel = server.createNetworkConnection(leader, ReplicationProtocol.COMMAND_CONNECT);
       channel.flush();
 
       // READ RESPONSE
@@ -369,7 +363,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
           }
 
           closeChannel();
-          throw new ConnectionException(host + ":" + port, reason);
+          throw new ConnectionException(leader.toString(), reason);
         }
 
         leaderServerName = channel.readString();
@@ -383,22 +377,21 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       }
 
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.FINE, "Error on connecting to the server %s:%d (cause=%s)", host, port, e.toString());
+      LogManager.instance().log(this, Level.FINE, "Error on connecting to the server %s (cause=%s)", leader, e.toString());
 
       //shutdown();
-      throw new ConnectionException(host + ":" + port, e);
+      throw new ConnectionException(leader.toString(), e);
     }
   }
 
   public void startup() {
-    LogManager.instance().log(this, Level.INFO, "Server connected to the Leader server %s:%d, members=[%s]", host, port,
-        server.getServerAddressList());
+    LogManager.instance().log(this, Level.INFO, "Server connected to the Leader server %s, members=[%s]", leader,
+        server.getCluster().getServers());
 
     setName(server.getServerName() + " replica2leader<-" + getRemoteServerName());
 
     LogManager.instance()
-        .log(this, Level.INFO, "Server started as Replica in HA mode (cluster=%s leader=%s:%d)", server.getClusterName(), host,
-            port);
+        .log(this, Level.INFO, "Server started as Replica in HA mode (cluster=%s leader=%s)", server.getClusterName(), leader);
 
     installDatabases();
   }

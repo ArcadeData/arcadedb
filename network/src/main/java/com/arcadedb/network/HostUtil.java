@@ -42,7 +42,6 @@ public class HostUtil {
     if (host.startsWith("{")) {
       alias = host.substring(host.indexOf("{") + 1, host.indexOf("}"));
       // REMOVE ALIAS
-      System.out.println("alias = " + alias);
       host = host.substring(host.indexOf("}") + 1);
     }
 

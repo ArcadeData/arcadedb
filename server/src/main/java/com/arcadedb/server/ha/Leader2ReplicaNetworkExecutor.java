@@ -51,8 +51,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   }
 
   private final    HAServer                                           server;
-  private final    String                                             remoteServerName;
-  private final    String                                             remoteServerAddress;
+  private final HAServer.ServerInfo remoteServer;
   private final    String                                             remoteServerHTTPAddress;
   private final    BlockingQueue<Binary>                              senderQueue;
   private          Thread                                             senderThread;
@@ -74,11 +73,9 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   private long latencyMax;
   private long latencyTotalTime;
 
-  public Leader2ReplicaNetworkExecutor(final HAServer ha, final ChannelBinaryServer channel, final String remoteServerName,
-      final String remoteServerAddress, final String remoteServerHTTPAddress) throws IOException {
+  public Leader2ReplicaNetworkExecutor(final HAServer ha, final ChannelBinaryServer channel, HAServer.ServerInfo remoteServer, final String remoteServerHTTPAddress) throws IOException {
     this.server = ha;
-    this.remoteServerName = remoteServerName;
-    this.remoteServerAddress = remoteServerAddress;
+    this.remoteServer = remoteServer;
     this.remoteServerHTTPAddress = remoteServerHTTPAddress;
     this.channel = channel;
 
@@ -126,7 +123,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
           throw new ConnectionException(channel.socket.getInetAddress().toString(), "Election for Leader is pending");
         }
 
-        setName(server.getServer().getServerName() + " leader2replica->" + remoteServerName + "(" + remoteServerAddress + ")");
+        setName(server.getServer().getServerName() + " leader2replica->" + remoteServer.toString());
 
         // CONNECTED
         this.channel.writeBoolean(true);
@@ -134,10 +131,10 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
         this.channel.writeString(server.getServerName());
         this.channel.writeLong(server.lastElectionVote != null ? server.lastElectionVote.getFirst() : 1);
         this.channel.writeString(server.getServer().getHttpServer().getListeningAddress());
-        this.channel.writeString(this.server.getServerAddressList().stream().map(HAServer.ServerInfo::toString).collect(Collectors.joining()));
+        this.channel.writeString(server.getCluster().getServers().stream().map(HAServer.ServerInfo::toString).collect(Collectors.joining()));
 
         LogManager.instance()
-            .log(this, Level.INFO, "Remote Replica server '%s' (%s) successfully connected", remoteServerName, remoteServerAddress);
+            .log(this, Level.INFO, "Remote Replica server '%s'  successfully connected", remoteServer);
 
       } finally {
         this.channel.flush();
@@ -186,10 +183,10 @@ private void startSenderThread() {
                 return;
             }
         }
-        LogManager.instance().log(this, Level.FINE, "Replication thread to remote server '%s' is off (buffered=%d)", remoteServerName, senderQueue.size());
+        LogManager.instance().log(this, Level.FINE, "Replication thread to remote server '%s' is off (buffered=%d)", remoteServer, senderQueue.size());
     });
     senderThread.start();
-    senderThread.setName(server.getServer().getServerName() + " leader2replica-sender->" + remoteServerName);
+    senderThread.setName(server.getServer().getServerName() + " leader2replica-sender->" + remoteServer);
 }
 
 private Binary processSenderQueue(Binary lastMessage) throws IOException, InterruptedException {
@@ -207,11 +204,11 @@ private Binary processSenderQueue(Binary lastMessage) throws IOException, Interr
 
     switch (status) {
         case ONLINE:
-            LogManager.instance().log(this, Level.FINE, "Sending message to replica '%s' (msgSize=%d buffered=%d)...", remoteServerName, lastMessage.size(), senderQueue.size());
+            LogManager.instance().log(this, Level.FINE, "Sending message to replica '%s' (msgSize=%d buffered=%d)...", remoteServer, lastMessage.size(), senderQueue.size());
             sendMessage(lastMessage);
             return null;
         default:
-            LogManager.instance().log(this, Level.FINE, "Replica '%s' is not online, waiting and retry (buffered=%d)...", remoteServerName, senderQueue.size());
+            LogManager.instance().log(this, Level.FINE, "Replica '%s' is not online, waiting and retry (buffered=%d)...", remoteServer, senderQueue.size());
             Thread.sleep(500);
             return lastMessage;
     }
@@ -219,7 +216,7 @@ private Binary processSenderQueue(Binary lastMessage) throws IOException, Interr
 
 private void handleSenderThreadException(Exception e) {
     if (e instanceof IOException) {
-        LogManager.instance().log(this, Level.INFO, "Error on sending replication message to remote server '%s' (error=%s)", remoteServerName, e);
+        LogManager.instance().log(this, Level.INFO, "Error on sending replication message to remote server '%s' (error=%s)", remoteServer, e);
     } else if (e instanceof InterruptedException) {
         Thread.currentThread().interrupt();
     }
@@ -240,7 +237,7 @@ private void startForwarderThread() {
                 return;
             }
         }
-        LogManager.instance().log(this, Level.FINE, "Replication thread to remote server '%s' is off (buffered=%d)", remoteServerName, forwarderQueue.size());
+        LogManager.instance().log(this, Level.FINE, "Replication thread to remote server '%s' is off (buffered=%d)", remoteServer, forwarderQueue.size());
     });
     forwarderThread.start();
     forwarderThread.setName(server.getServer().getServerName() + " leader-forwarder");
@@ -262,7 +259,7 @@ private void processForwarderQueue(Binary buffer) throws IOException, Interrupte
 
 private void handleForwarderThreadException(Exception e) {
     if (e instanceof IOException) {
-        LogManager.instance().log(this, Level.INFO, "Error on sending replication message to remote server '%s' (error=%s)", remoteServerName, e);
+        LogManager.instance().log(this, Level.INFO, "Error on sending replication message to remote server '%s' (error=%s)", remoteServer, e);
     } else if (e instanceof InterruptedException) {
         Thread.currentThread().interrupt();
     }
@@ -279,7 +276,7 @@ private void handleIncomingRequest(Binary buffer) throws IOException, Interrupte
 
     final HACommand command = request.getSecond();
 
-    LogManager.instance().log(this, Level.FINE, "Leader received message %d from replica %s: %s", request.getFirst().messageNumber, remoteServerName, command);
+    LogManager.instance().log(this, Level.FINE, "Leader received message %d from replica %s: %s", request.getFirst().messageNumber, remoteServer, command);
 
     if (command instanceof TxForwardRequest || command instanceof CommandForwardRequest) {
         forwarderQueue.put(request);
@@ -290,13 +287,13 @@ private void handleIncomingRequest(Binary buffer) throws IOException, Interrupte
 
 private void handleIOException(IOException e) {
     LogManager.instance().log(this, Level.FINE, "IO Error from reading requests (cause=%s)", e.getCause());
-    server.setReplicaStatus(remoteServerName, false);
+    server.setReplicaStatus(remoteServer.alias(), false);
     close();
 }
 
 private void handleGenericException(Exception e) {
     LogManager.instance().log(this, Level.SEVERE, "Generic error during applying of request from Leader (cause=%s)", e.toString());
-    server.setReplicaStatus(remoteServerName, false);
+    server.setReplicaStatus(remoteServer.alias(), false);
     close();
 }
 
@@ -307,19 +304,19 @@ private void handleGenericException(Exception e) {
   private void executeMessage(final Binary buffer, final Pair<ReplicationMessage, HACommand> request) throws IOException {
     final ReplicationMessage message = request.getFirst();
 
-    final HACommand response = request.getSecond().execute(server, remoteServerName, message.messageNumber);
+    final HACommand response = request.getSecond().execute(server, remoteServer.host(), message.messageNumber);
 
     if (response != null) {
       // SEND THE RESPONSE BACK (USING THE SAME BUFFER)
       server.getMessageFactory().serializeCommand(response, buffer, message.messageNumber);
 
-      LogManager.instance().log(this, Level.FINE, "Request %s -> %s to '%s'", request.getSecond(), response, remoteServerName);
+      LogManager.instance().log(this, Level.FINE, "Request %s -> %s to '%s'", request.getSecond(), response, remoteServer);
 
       sendMessage(buffer);
 
       if (response instanceof ReplicaConnectHotResyncResponse resyncResponse) {
-        server.resendMessagesToReplica(resyncResponse.getMessageNumber(), remoteServerName);
-        server.setReplicaStatus(remoteServerName, true);
+        server.resendMessagesToReplica(resyncResponse.getMessageNumber(), remoteServer.host());
+        server.setReplicaStatus(remoteServer.host(), true);
       }
     }
   }
@@ -387,7 +384,7 @@ private void handleGenericException(Exception e) {
         // WRITE DIRECTLY TO THE MESSAGE QUEUE
         if (senderQueue.size() > 1)
           LogManager.instance()
-              .log(this, Level.FINE, "Buffering request %d to server '%s' (status=%s buffered=%d)", msgNumber, remoteServerName,
+              .log(this, Level.FINE, "Buffering request %d to server '%s' (status=%s buffered=%d)", msgNumber, remoteServer,
                   status, senderQueue.size());
 
         if (!senderQueue.offer(message)) {
@@ -403,7 +400,7 @@ private void handleGenericException(Exception e) {
           } catch (final InterruptedException e) {
             // IGNORE IT
             Thread.currentThread().interrupt();
-            throw new ReplicationException("Error on replicating to server '" + remoteServerName + "'");
+            throw new ReplicationException("Error on replicating to server '" + remoteServer + "'");
           }
 
           if (status == STATUS.OFFLINE)
@@ -416,10 +413,10 @@ private void handleGenericException(Exception e) {
 //            LogManager.instance().log(this, Level.INFO, "THREAD DUMP:\n%s", FileUtils.threadDump());
 
             senderQueue.clear();
-            server.setReplicaStatus(remoteServerName, false);
+            server.setReplicaStatus(remoteServer.host(), false);
 
             // QUEUE FULL, THE REMOTE SERVER COULD BE STUCK SOMEWHERE. REMOVE THE REPLICA
-            throw new ReplicationException("Replica '" + remoteServerName + "' is not reading replication messages");
+            throw new ReplicationException("Replica '" + remoteServer + "' is not reading replication messages");
           }
         }
 
@@ -439,7 +436,7 @@ private void handleGenericException(Exception e) {
       @Override
       public Object call(final Object iArgument) {
         Leader2ReplicaNetworkExecutor.this.status = status;
-        LogManager.instance().log(this, Level.INFO, "Replica server '%s' is %s", remoteServerName, status);
+        LogManager.instance().log(this, Level.INFO, "Replica server '%s' is %s", remoteServer, status);
 
         Leader2ReplicaNetworkExecutor.this.leftOn = status == STATUS.OFFLINE ? 0 : System.currentTimeMillis();
 
@@ -459,11 +456,11 @@ private void handleGenericException(Exception e) {
   }
 
   public String getRemoteServerName() {
-    return remoteServerName;
+    return remoteServer.alias();
   }
 
   public String getRemoteServerAddress() {
-    return remoteServerAddress;
+    return remoteServer.toString();
   }
 
   public String getRemoteServerHTTPAddress() {
@@ -522,7 +519,7 @@ private void handleGenericException(Exception e) {
 
   @Override
   public String toString() {
-    return remoteServerName;
+    return remoteServer.toString();
   }
 
   // DO I NEED THIS?

@@ -46,15 +46,15 @@ public class LeaderNetworkListener extends Thread {
   private final        String              hostName;
   private              int                 port;
 
-  public LeaderNetworkListener(final HAServer ha, final ServerSocketFactory iSocketFactory, final String iHostName,
-      final String iHostPortRange) {
-    super(ha.getServerName() + " replication listen at " + iHostName + ":" + iHostPortRange);
+  public LeaderNetworkListener(final HAServer ha, final ServerSocketFactory serverSocketFactory, final String hostName,
+      final String hostPortRange) {
+    super(ha.getServerName() + " replication listen at " + hostName + ":" + hostPortRange);
 
     this.ha = ha;
-    this.hostName = iHostName;
-    this.socketFactory = iSocketFactory;
+    this.hostName = hostName;
+    this.socketFactory = serverSocketFactory;
 
-    listen(iHostName, iHostPortRange);
+    listen(hostName, hostPortRange);
 
     start();
   }
@@ -198,12 +198,17 @@ public class LeaderNetworkListener extends Thread {
     LogManager.instance().log(this, Level.INFO,
         "Connection from serverName '%s'  - serverAddress '%s' - httoAddress '%s' ",
         remoteServerName, remoteServerAddress, remoteServerHTTPAddress);
-
+// [LeaderNetworkListener] <arcade1> Connection from serverName 'arcade3'  - serverAddress '{arcade3}f81205203d08:2424' - httoAddress 'f81205203d08:2480'
     final short command = channel.readShort();
 
+    HAServer.HACluster cluster = ha.getCluster();
+
+    HAServer.ServerInfo serverInfo = cluster.getServerInfo(remoteServerName);
+
+      String remoteServerAddress1 = serverInfo.host() + ":" + serverInfo.port();
     switch (command) {
     case ReplicationProtocol.COMMAND_CONNECT:
-      connect(channel, remoteServerName, remoteServerAddress, remoteServerHTTPAddress);
+      connect(channel, serverInfo, remoteServerHTTPAddress);
       break;
 
     case ReplicationProtocol.COMMAND_VOTE_FOR_ME:
@@ -211,7 +216,7 @@ public class LeaderNetworkListener extends Thread {
       break;
 
     case ReplicationProtocol.COMMAND_ELECTION_COMPLETED:
-      electionComplete(channel, remoteServerName, remoteServerAddress);
+      electionComplete(channel, serverInfo.alias(), remoteServerAddress1);
       break;
 
     default:
@@ -281,9 +286,9 @@ public class LeaderNetworkListener extends Thread {
     channel.flush();
   }
 
-  private void connect(final ChannelBinaryServer channel, final String remoteServerName, final String remoteServerAddress,
+  private void connect(final ChannelBinaryServer channel, HAServer.ServerInfo remoteServer,
       final String remoteServerHTTPAddress) throws IOException {
-    if (remoteServerName.equals(ha.getServerName())) {
+    if (remoteServer.alias().equals(ha.getServerName())) {
       channel.writeBoolean(false);
       channel.writeByte(ReplicationProtocol.ERROR_CONNECT_SAME_SERVERNAME);
       channel.writeString("Remote server is attempting to connect with the same server name '" + ha.getServerName() + "'");
@@ -292,8 +297,7 @@ public class LeaderNetworkListener extends Thread {
     }
 
     // CREATE A NEW PROTOCOL INSTANCE
-    final Leader2ReplicaNetworkExecutor connection = new Leader2ReplicaNetworkExecutor(ha, channel, remoteServerName,
-        remoteServerAddress, remoteServerHTTPAddress);
+    final Leader2ReplicaNetworkExecutor connection = new Leader2ReplicaNetworkExecutor(ha, channel,remoteServer, remoteServerHTTPAddress);
 
     ha.registerIncomingConnection(connection.getRemoteServerName(), connection);
 

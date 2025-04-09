@@ -22,8 +22,8 @@ public class ThreeInstancesScenarioIT extends ResilienceTestTemplate {
 
     logger.info("Creating 3 arcade containers");
     GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any", network);
-    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "majority", "replica", network);
-    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "majority", "replica", network);
+    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "majority", "any", network);
+    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "majority", "any", network);
 
     logger.info("Starting the containers in sequence: arcade1 will be the leader");
     Startables.deepStart(arcade1).join();
@@ -33,6 +33,7 @@ public class ThreeInstancesScenarioIT extends ResilienceTestTemplate {
     DatabaseWrapper db1 = new DatabaseWrapper(arcade1, idSupplier);
     logger.info("Creating the database on arcade server 1");
     db1.createDatabase();
+
 
     DatabaseWrapper db2 = new DatabaseWrapper(arcade2, idSupplier);
     DatabaseWrapper db3 = new DatabaseWrapper(arcade3, idSupplier);
