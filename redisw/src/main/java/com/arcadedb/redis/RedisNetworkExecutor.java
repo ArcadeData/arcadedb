@@ -105,7 +105,7 @@ public class RedisNetworkExecutor extends Thread {
       if (list.isEmpty())
         return;
 
-      final Object cmd = list.get(0);
+      final Object cmd = list.getFirst();
       if (!(cmd instanceof String))
         LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid command[0] %s (type=%s)", command, cmd.getClass());
 

@@ -54,9 +54,9 @@ public class JJTSqlParserState {
      stack.  */
   public Node popNode() {
     if (--sp < mk) {
-      mk = marks.remove(marks.size() - 1);
+      mk = marks.removeLast();
     }
-    return nodes.remove(nodes.size() - 1);
+    return nodes.removeLast();
   }
 
   /* Returns the number of children on the stack in the current node
@@ -69,7 +69,7 @@ public class JJTSqlParserState {
     while (sp > mk) {
       popNode();
     }
-    mk = marks.remove(marks.size() - 1);
+    mk = marks.removeLast();
   }
 
   public void openNodeScope(Node n) {
@@ -86,7 +86,7 @@ public class JJTSqlParserState {
   public void closeNodeScope(Node n, boolean condition) {
     if (condition) {
       int a = nodeArity();
-      mk = marks.remove(marks.size() - 1);
+      mk = marks.removeLast();
       while (a-- > 0) {
         Node c = popNode();
         c.jjtSetParent(n);
@@ -95,7 +95,7 @@ public class JJTSqlParserState {
       n.jjtClose();
       pushNode(n);
     } else {
-      mk = marks.remove(marks.size() - 1);
+      mk = marks.removeLast();
     }
   }
 }

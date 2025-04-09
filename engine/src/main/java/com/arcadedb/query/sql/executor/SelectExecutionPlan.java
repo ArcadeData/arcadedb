@@ -81,7 +81,7 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
     if (steps.isEmpty()) {
       lastStep = null;
     } else {
-      lastStep = steps.get(steps.size() - 1);
+      lastStep = steps.getLast();
     }
   }
 

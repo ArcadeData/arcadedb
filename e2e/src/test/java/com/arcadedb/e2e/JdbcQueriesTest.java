@@ -311,7 +311,7 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
     StringBuilder separator = new StringBuilder();
     for (int i = 1; i <= columnCount; i++) {
       String columnName = metaData.getColumnName(i);
-      header.append(String.format("| %-20s ", columnName));
+      header.append("| %-20s ".formatted(columnName));
       separator.append("+----------------------");
     }
     header.append("|");
@@ -329,7 +329,7 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
         value = value != null ? value : "null";
         if (value.length() > 20)
           value = value.substring(0, 17) + "...";
-        row.append(String.format("| %-20s ", value));
+        row.append("| %-20s ".formatted(value));
       }
       row.append("|");
       System.out.println(row);
