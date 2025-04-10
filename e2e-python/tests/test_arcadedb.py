@@ -215,9 +215,8 @@ def test_psycopg2_with_named_parameterized_query():
         conn.close()
 
 
-def test_psycopg2_with_positional_parametrized_query():
-    """Check if the driver correctly handles parametrized positional queries"""
-
+def test_psycopg2_with_positional_parameterized_query():
+    """Check if the driver correctly handles parameterized positional queries"""
     params = get_connection_params(arcadedb)
     conn = psycopg.connect(**params)
     conn.autocommit = True
