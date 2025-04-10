@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
@@ -76,6 +77,21 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
       }
     }
   }
+
+  @Test
+  void preparedStatement() throws Exception {
+
+    try (final PreparedStatement st = conn.prepareStatement("SELECT * FROM Beer where name = ?")) {
+      st.setString(1, "Stout");
+      try (final ResultSet rs = st.executeQuery()) {
+        while (rs.next()) {
+          assertThat(rs.getString("name")).isEqualTo("Stout");
+        }
+      }
+    }
+  }
+
+
 
   @Test
   void bigResultSetSQLQuery() throws Exception {

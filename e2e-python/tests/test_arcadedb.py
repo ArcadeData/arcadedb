@@ -197,3 +197,36 @@ def test_psycopg2_return_array_common():
                                    datas), f"For {type_name}: Not all items are of type {type_name}"
     finally:
         conn.close()
+
+
+def test_psycopg2_with_named_parametrized_query():
+    """Check if the driver correctly handles parametrized named queries"""
+
+    params = get_connection_params(arcadedb)
+    conn = psycopg.connect(**params)
+    conn.autocommit = True
+
+    try:
+        with conn.cursor() as cursor:
+            params = {'name': 'Stout'}
+            cursor.execute('SELECT * FROM Beer WHERE name = %(name)s', params)
+            beer = cursor.fetchall()[0]
+            assert 'Stout' in beer
+    finally:
+        conn.close()
+
+
+def test_psycopg2_with_positional_parametrized_query():
+    """Check if the driver correctly handles parametrized positional queries"""
+
+    params = get_connection_params(arcadedb)
+    conn = psycopg.connect(**params)
+    conn.autocommit = True
+
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute('SELECT * FROM Beer WHERE name = %s', ("Stout",))
+            beer = cursor.fetchall()[0]
+            assert 'Stout' in beer
+    finally:
+        conn.close()
