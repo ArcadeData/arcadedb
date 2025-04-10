@@ -40,8 +40,8 @@ public class UpdateClusterConfiguration extends HAAbstractCommand {
   }
 
   @Override
-  public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
-    LogManager.instance().log(this, Level.FINE, "Updating server list=%s replicaHTTPs=%s", servers, replicaServersHTTPAddresses);
+  public HACommand execute(final HAServer server, final HAServer.ServerInfo remoteServerName, final long messageNumber) {
+    LogManager.instance().log(this, Level.INFO, "Updating server list=%s replicaHTTPs=%s", servers, replicaServersHTTPAddresses);
     server.setServerAddresses(servers);
     server.setReplicasHTTPAddresses(replicaServersHTTPAddresses);
     return null;
@@ -49,7 +49,7 @@ public class UpdateClusterConfiguration extends HAAbstractCommand {
 
   @Override
   public void toStream(final Binary stream) {
-    stream.putString(servers.stream().map(HAServer.ServerInfo::toString).collect(Collectors.joining()));
+    stream.putString(servers.stream().map(HAServer.ServerInfo::toString).collect(Collectors.joining(",")));
     stream.putString(replicaServersHTTPAddresses);
   }
 

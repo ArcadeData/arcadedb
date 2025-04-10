@@ -74,11 +74,17 @@ import com.arcadedb.server.ha.message.InstallDatabaseRequest;
 import com.arcadedb.server.ha.message.TxForwardRequest;
 import com.arcadedb.server.ha.message.TxRequest;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
 
 public class ReplicatedDatabase implements DatabaseInternal {
   private final ArcadeDBServer  server;
@@ -851,7 +857,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
         if (responsePayloads != null) {
           for (final Object o : responsePayloads) {
             final DatabaseAlignResponse response = (DatabaseAlignResponse) o;
-            result.put(response.getRemoteServerName(), response.getAlignedPages());
+            result.put(response.getRemoteServerName().alias(), response.getAlignedPages());
           }
         }
       });

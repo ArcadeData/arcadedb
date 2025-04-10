@@ -41,7 +41,7 @@ public class DatabaseStructureRequest extends HAAbstractCommand {
   }
 
   @Override
-  public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
+  public HACommand execute(final HAServer server, final HAServer.ServerInfo remoteServerName, final long messageNumber) {
     final DatabaseInternal db = server.getServer().getOrCreateDatabase(databaseName);
 
     final File file = new File(db.getDatabasePath() + File.separator + LocalSchema.SCHEMA_FILE_NAME);

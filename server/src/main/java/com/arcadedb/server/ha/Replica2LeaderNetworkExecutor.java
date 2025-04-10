@@ -54,9 +54,8 @@ import java.util.Set;
 import java.util.logging.Level;
 
 public class Replica2LeaderNetworkExecutor extends Thread {
-  private final    HAServer         server;
-  private final HAServer.ServerInfo leader;
-  private          String           leaderServerName             = "?";
+  private final    HAServer            server;
+  private final    HAServer.ServerInfo leader;
   private          String              leaderServerHTTPAddress;
   private          ChannelBinaryClient channel;
   private volatile boolean             shutdown                     = false;
@@ -105,10 +104,11 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
         if (reqId > -1)
           LogManager.instance()
-              .log(this, Level.FINE, "Received request %d from the Leader (threadId=%d)", reqId, Thread.currentThread().getId());
+              .log(this, Level.FINE, "Received request %d from the Leader (threadId=%d)", reqId, Thread.currentThread().threadId());
         else
           LogManager.instance()
-              .log(this, Level.FINE, "Received response %d from the Leader (threadId=%d)", reqId, Thread.currentThread().getId());
+              .log(this, Level.FINE, "Received response %d from the Leader (threadId=%d)", reqId,
+                  Thread.currentThread().threadId());
 
         // NUMBERS <0 ARE FORWARD FROM REPLICA TO LEADER WITHOUT A VALID SEQUENCE
         if (reqId > -1) {
@@ -135,7 +135,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
         // TODO: LOG THE TX BEFORE EXECUTING TO RECOVER THE DB IN CASE OF CRASH
 
-        final HACommand response = request.getSecond().execute(server, leaderServerName, reqId);
+        final HACommand response = request.getSecond().execute(server, leader, reqId);
 
         if (reqId > -1) {
           if (!server.getReplicationLogFile().appendMessage(message)) {
@@ -157,7 +157,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
         // IGNORE IT
       } catch (final Exception e) {
         LogManager.instance()
-            .log(this, Level.INFO, "Exception during execution of request %d (shutdown=%s name=%s error=%s)", reqId, shutdown,
+            .log(this, Level.INFO, "Exception during execution of request %d (shutdown=%s name=%s error=%s)", e, reqId, shutdown,
                 getName(), e.toString());
         reconnect(e);
       } finally {
@@ -171,7 +171,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   }
 
   public String getRemoteServerName() {
-    return leaderServerName;
+    return leader.alias();
   }
 
   public String getRemoteAddress() {
@@ -216,7 +216,6 @@ public class Replica2LeaderNetworkExecutor extends Thread {
                   // SKIP LOCAL SERVER
                   continue;
 
-
                 connect();
                 startup();
                 return;
@@ -256,7 +255,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       final ChannelBinaryClient c = channel;
       if (c == null)
         throw new ReplicationException(
-            "Error on sending command back to the leader server '" + leaderServerName + "' (cause=socket closed)");
+            "Error on sending command back to the leader server '" + leader + "' (cause=socket closed)");
 
       c.writeVarLengthBytes(buffer.getContent(), buffer.size());
       c.flush();
@@ -298,7 +297,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
   @Override
   public String toString() {
-    return leaderServerName;
+    return leader.toString();
   }
 
   private byte[] receiveResponse() throws IOException {
@@ -308,7 +307,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   }
 
   public void connect() {
-    LogManager.instance().log(this, Level.INFO, "Connecting to server %s", leader);
+    LogManager.instance().log(this, Level.INFO, "Connecting to leader %s", leader);
 
     try {
       channel = server.createNetworkConnection(leader, ReplicationProtocol.COMMAND_CONNECT);
@@ -366,14 +365,14 @@ public class Replica2LeaderNetworkExecutor extends Thread {
           throw new ConnectionException(leader.toString(), reason);
         }
 
-        leaderServerName = channel.readString();
+        String leaderServerName = channel.readString();
         final long leaderElectedAtTurn = channel.readLong();
         leaderServerHTTPAddress = channel.readString();
         final String memberList = channel.readString();
 
         server.lastElectionVote = new Pair<>(leaderElectedAtTurn, leaderServerName);
 
-        server.setServerAddresses(server.parseServerList(memberList));
+//        server.setServerAddresses(server.parseServerList(memberList));
       }
 
     } catch (final Exception e) {

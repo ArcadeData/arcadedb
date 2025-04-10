@@ -196,7 +196,7 @@ public class LeaderNetworkListener extends Thread {
     final String remoteServerAddress = channel.readString();
     final String remoteServerHTTPAddress = channel.readString();
     LogManager.instance().log(this, Level.INFO,
-        "Connection from serverName '%s'  - serverAddress '%s' - httoAddress '%s' ",
+        "Connection from serverName '%s'  - serverAddress '%s' - httpAddress '%s' ",
         remoteServerName, remoteServerAddress, remoteServerHTTPAddress);
 // [LeaderNetworkListener] <arcade1> Connection from serverName 'arcade3'  - serverAddress '{arcade3}f81205203d08:2424' - httoAddress 'f81205203d08:2480'
     final short command = channel.readShort();
@@ -233,8 +233,9 @@ public class LeaderNetworkListener extends Thread {
     channel.close();
 
     LogManager.instance().log(this, Level.INFO, "Received new leadership from server '%s' (turn=%d)", remoteServerName, voteTurn);
+    HAServer.ServerInfo serverInfo = ha.getCluster().getServerInfo(remoteServerName);
 
-    if (ha.connectToLeader(HAServer.ServerInfo.fromString(remoteServerAddress), null)) {
+    if (ha.connectToLeader(serverInfo, null)) {
       // ELECTION FINISHED, THE SERVER IS A REPLICA
       ha.setElectionStatus(HAServer.ElectionStatus.DONE);
       try {

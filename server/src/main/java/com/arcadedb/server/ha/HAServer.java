@@ -80,7 +80,7 @@ public class HAServer implements ServerPlugin {
   private final       ContextConfiguration                           configuration;
   private final       String                                         clusterName;
   private final       long                                           startedOn;
-  private final       Map<String, Leader2ReplicaNetworkExecutor>     replicaConnections                = new ConcurrentHashMap<>();
+  private final       Map<ServerInfo, Leader2ReplicaNetworkExecutor>     replicaConnections                = new ConcurrentHashMap<>();
   private final       AtomicReference<Replica2LeaderNetworkExecutor> leaderConnection                  = new AtomicReference<>();
   private final       AtomicLong                                     lastDistributedOperationNumber    = new AtomicLong(-1);
   private final       AtomicLong                                     lastForwardOperationNumber        = new AtomicLong(0);
@@ -142,7 +142,8 @@ public class HAServer implements ServerPlugin {
           return server;
         }
       }
-      LogManager.instance().log(this, Level.SEVERE, "NOT Found server %s", remoteServerName);
+
+      LogManager.instance().log(this, Level.SEVERE, "NOT Found server %s on %s", remoteServerName, servers);
       return null;
     }
   }
@@ -396,7 +397,7 @@ public class HAServer implements ServerPlugin {
     configuredServers = 1;
   }
 
-  public void setReplicaStatus(final String remoteServerName, final boolean online) {
+  public void setReplicaStatus(final ServerInfo remoteServerName, final boolean online) {
     final Leader2ReplicaNetworkExecutor c = replicaConnections.get(remoteServerName);
     if (c == null) {
       LogManager.instance().log(this, Level.SEVERE, "Replica '%s' was not registered", remoteServerName);
@@ -419,7 +420,7 @@ public class HAServer implements ServerPlugin {
     }
   }
 
-  public void receivedResponse(final String remoteServerName, final long messageNumber, final Object payload) {
+  public void receivedResponse(final ServerInfo remoteServerName, final long messageNumber, final Object payload) {
     final long receivedOn = System.currentTimeMillis();
 
     final QuorumMessage msg = messagesWaitingForQuorum.get(messageNumber);
@@ -484,7 +485,7 @@ public class HAServer implements ServerPlugin {
     return clusterName;
   }
 
-  public void registerIncomingConnection(final String replicaServerName, final Leader2ReplicaNetworkExecutor connection) {
+  public void registerIncomingConnection(final ServerInfo replicaServerName, final Leader2ReplicaNetworkExecutor connection) {
     final Leader2ReplicaNetworkExecutor previousConnection = replicaConnections.put(replicaServerName, connection);
     if (previousConnection != null && previousConnection != connection) {
       // MERGE CONNECTIONS
@@ -635,7 +636,7 @@ public class HAServer implements ServerPlugin {
     synchronized (sendingLock) {
       messageFactory.serializeCommand(command, buffer, -1);
 
-      LogManager.instance().log(this, Level.FINE, "Sending request (%s) to %s", -1, command, replicas);
+      LogManager.instance().log(this, Level.INFO, "Sending request (%s) to %s", -1, command, replicas);
 
       for (final Leader2ReplicaNetworkExecutor replicaConnection : replicas) {
         // STARTING FROM THE SECOND SERVER, COPY THE BUFFER
@@ -782,6 +783,7 @@ public class HAServer implements ServerPlugin {
       final StringBuilder list = new StringBuilder();
       for (final Leader2ReplicaNetworkExecutor r : replicaConnections.values()) {
         final String addr = r.getRemoteServerHTTPAddress();
+        LogManager.instance().log(this, Level.FINE, "Replica http %s", addr);
         if (addr == null)
           // HTTP SERVER NOT AVAILABLE YET
           continue;
@@ -982,7 +984,7 @@ public class HAServer implements ServerPlugin {
     return getServerName();
   }
 
-  public void resendMessagesToReplica(final long fromMessageNumber, final String replicaName) {
+  public void resendMessagesToReplica(final long fromMessageNumber, final ServerInfo replicaName) {
     // SEND THE REQUEST TO ALL THE REPLICAS
     final Leader2ReplicaNetworkExecutor replica = replicaConnections.get(replicaName);
 
@@ -1054,8 +1056,7 @@ public class HAServer implements ServerPlugin {
 
     } catch (final Exception e) {
       //[HAServer] <arcade2> Error connecting to the remote Leader server {proxy}proxy:8666 (error=com.arcadedb.network.binary.ConnectionException: Error on connecting to server '{proxy}proxy:8666' (cause=java.lang.IllegalArgumentException: Invalid host proxy:8667{arcade3}proxy:8668))
-      LogManager.instance().log(this, Level.INFO, "Error connecting to the remote Leader server %s (error=%s)", serverEntry, e);
-
+      LogManager.instance().log(this, Level.INFO, "Error connecting to the remote Leader server %s ",  e, serverEntry);
       if (errorCallback != null)
         errorCallback.call(e);
     }
@@ -1066,7 +1067,7 @@ public class HAServer implements ServerPlugin {
    * Connects to a remote server. The connection succeed only if the remote server is the leader.
    */
   private void connectToLeader(ServerInfo server) {
-    LogManager.instance().log(this, Level.INFO, "Connecting to remote server %s", server);
+    LogManager.instance().log(this, Level.INFO, "Connecting to leader server %s", server);
     final Replica2LeaderNetworkExecutor lc = leaderConnection.get();
     if (lc != null) {
       // CLOSE ANY LEADER CONNECTION STILL OPEN

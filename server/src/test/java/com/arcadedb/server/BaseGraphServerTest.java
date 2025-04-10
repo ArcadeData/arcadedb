@@ -280,7 +280,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       if (i > 0)
         serverURLs += ",";
 
-      serverURLs += "localhost:" + (port++);
+      serverURLs += "{ArcadeDB_"+i+"}localhost:" + (port++);
     }
     return serverURLs;
   }
