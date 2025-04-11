@@ -125,7 +125,7 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
         }
       }
 
-      if (users.isEmpty() || (users.containsKey("root") && users.get("root").getPassword() == null))
+      if (users.isEmpty() || !users.containsKey("root") || (users.containsKey("root") && users.get("root").getPassword() == null))
         askForRootPassword();
 
       final long fileLastModified = usersRepository.getFileLastModified();
