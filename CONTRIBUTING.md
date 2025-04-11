@@ -89,6 +89,12 @@ To run additional integration test locally use:
 $ mvn clean install -P integration
 ```
 
+Rebuild Docker images for `e2e` tests:
+
+```shell
+$ mvn clean install -DskipTests -Pdocker
+```
+
 Build and run in fail-at-end mode:
 
 ```shell
