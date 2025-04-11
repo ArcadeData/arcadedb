@@ -51,7 +51,7 @@ public class ACIDTransactionTest extends TestHelper {
   public void testAsyncTX() {
     final Database db = database;
 
-    db.async().setTransactionSync(WALFile.FLUSH_TYPE.YES_NOMETADATA);
+    db.async().setTransactionSync(WALFile.FlushType.YES_NOMETADATA);
     db.async().setTransactionUseWAL(true);
     db.async().setCommitEvery(1);
 
@@ -200,7 +200,7 @@ public class ACIDTransactionTest extends TestHelper {
 
     final AtomicInteger errors = new AtomicInteger(0);
 
-    db.async().setTransactionSync(WALFile.FLUSH_TYPE.YES_NOMETADATA);
+    db.async().setTransactionSync(WALFile.FlushType.YES_NOMETADATA);
     db.async().setTransactionUseWAL(true);
     db.async().setCommitEvery(1);
     db.async().onError(exception -> errors.incrementAndGet());
@@ -263,8 +263,8 @@ public class ACIDTransactionTest extends TestHelper {
     final AtomicInteger total = new AtomicInteger(0);
     final AtomicInteger errors = new AtomicInteger(0);
 
-    db.async().setTransactionSync(WALFile.FLUSH_TYPE.YES_NOMETADATA);
-    assertThat(db.async().getTransactionSync()).isEqualTo(WALFile.FLUSH_TYPE.YES_NOMETADATA);
+    db.async().setTransactionSync(WALFile.FlushType.YES_NOMETADATA);
+    assertThat(db.async().getTransactionSync()).isEqualTo(WALFile.FlushType.YES_NOMETADATA);
 
     db.async().setTransactionUseWAL(true);
     assertThat(db.async().isTransactionUseWAL()).isTrue();
@@ -404,8 +404,8 @@ public class ACIDTransactionTest extends TestHelper {
     final AtomicInteger total = new AtomicInteger(0);
     final AtomicInteger errors = new AtomicInteger(0);
 
-    db.async().setTransactionSync(WALFile.FLUSH_TYPE.YES_NOMETADATA);
-    assertThat(db.async().getTransactionSync()).isEqualTo(WALFile.FLUSH_TYPE.YES_NOMETADATA);
+    db.async().setTransactionSync(WALFile.FlushType.YES_NOMETADATA);
+    assertThat(db.async().getTransactionSync()).isEqualTo(WALFile.FlushType.YES_NOMETADATA);
 
     db.async().setTransactionUseWAL(true);
     assertThat(db.async().isTransactionUseWAL()).isTrue();
