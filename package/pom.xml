@@ -47,7 +47,7 @@
                 <version>${maven-assembly-plugin.version}</version>
                 <executions>
                     <execution>
-                        <id>full-package</id>
+                        <id>full</id>
                         <phase>package</phase>
                         <goals>
                             <goal>single</goal>
@@ -63,14 +63,14 @@
                         </configuration>
                     </execution>
                     <execution>
-                        <id>minimal-package</id>
+                        <id>minimal</id>
                         <phase>package</phase>
                         <goals>
                             <goal>single</goal>
                         </goals>
                         <configuration>
-                            <appendAssemblyId>false</appendAssemblyId>
-                            <finalName>arcadedb-minimal-${project.version}</finalName>
+                            <appendAssemblyId>true</appendAssemblyId>
+                            <finalName>arcadedb-${project.version}</finalName>
                             <descriptors>
                                 <descriptor>./src/main/assembly/minimal.xml</descriptor>
                             </descriptors>
@@ -79,14 +79,14 @@
                         </configuration>
                     </execution>
                     <execution>
-                        <id>headless-package</id>
+                        <id>headless</id>
                         <phase>package</phase>
                         <goals>
                             <goal>single</goal>
                         </goals>
                         <configuration>
-                            <appendAssemblyId>false</appendAssemblyId>
-                            <finalName>arcadedb-headless-${project.version}</finalName>
+                            <appendAssemblyId>true</appendAssemblyId>
+                            <finalName>arcadedb-${project.version}</finalName>
                             <descriptors>
                                 <descriptor>./src/main/assembly/headless.xml</descriptor>
                             </descriptors>
@@ -232,7 +232,7 @@
                                     <goal>copy-resources</goal>
                                 </goals>
                                 <configuration>
-                                    <outputDirectory>${project.build.directory}/arcadedb-minimal-${project.version}.dir
+                                    <outputDirectory>${project.build.directory}/arcadedb-${project.version}-minimal.dir
                                     </outputDirectory>
                                     <resources>
                                         <resource>
@@ -252,7 +252,7 @@
                                     <goal>copy-resources</goal>
                                 </goals>
                                 <configuration>
-                                    <outputDirectory>${project.build.directory}/arcadedb-headless-${project.version}.dir
+                                    <outputDirectory>${project.build.directory}/arcadedb-${project.version}-headless.dir
                                     </outputDirectory>
                                     <resources>
                                         <resource>
@@ -309,7 +309,7 @@
                                 <image>
                                     <name>arcadedata/arcadedb-minimal</name>
                                     <build>
-                                        <contextDir>${project.build.directory}/arcadedb-minimal-${project.version}.dir
+                                        <contextDir>${project.build.directory}/arcadedb-${project.version}-minimal.dir
                                         </contextDir>
                                         <buildx>
                                             <platforms>
@@ -325,7 +325,7 @@
                                 <image>
                                     <name>arcadedata/arcadedb-headless</name>
                                     <build>
-                                        <contextDir>${project.build.directory}/arcadedb-headless-${project.version}.dir
+                                        <contextDir>${project.build.directory}/arcadedb-${project.version}-headless.dir
                                         </contextDir>
                                         <buildx>
                                             <platforms>
