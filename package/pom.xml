@@ -47,7 +47,7 @@
                 <version>${maven-assembly-plugin.version}</version>
                 <executions>
                     <execution>
-                        <id>full-package</id>
+                        <id>full</id>
                         <phase>package</phase>
                         <goals>
                             <goal>single</goal>
@@ -63,14 +63,14 @@
                         </configuration>
                     </execution>
                     <execution>
-                        <id>minimal-package</id>
+                        <id>minimal</id>
                         <phase>package</phase>
                         <goals>
                             <goal>single</goal>
                         </goals>
                         <configuration>
-                            <appendAssemblyId>false</appendAssemblyId>
-                            <finalName>arcadedb-minimal-${project.version}</finalName>
+                            <appendAssemblyId>true</appendAssemblyId>
+                            <finalName>arcadedb-${project.version}</finalName>
                             <descriptors>
                                 <descriptor>./src/main/assembly/minimal.xml</descriptor>
                             </descriptors>
@@ -79,59 +79,19 @@
                         </configuration>
                     </execution>
                     <execution>
-                        <id>headless-package</id>
+                        <id>headless</id>
                         <phase>package</phase>
                         <goals>
                             <goal>single</goal>
                         </goals>
                         <configuration>
-                            <appendAssemblyId>false</appendAssemblyId>
-                            <finalName>arcadedb-headless-${project.version}</finalName>
+                            <appendAssemblyId>true</appendAssemblyId>
+                            <finalName>arcadedb-${project.version}</finalName>
                             <descriptors>
                                 <descriptor>./src/main/assembly/headless.xml</descriptor>
                             </descriptors>
                             <ignoreDirFormatExtensions>false</ignoreDirFormatExtensions>
                             <tarLongFileMode>gnu</tarLongFileMode>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-deploy-plugin</artifactId>
-                <version>${maven-deploy-plugin.version}</version>
-                <executions>
-                    <execution>
-                        <id>deploy-full</id>
-                        <phase>deploy</phase>
-                        <goals>
-                            <goal>deploy-file</goal>
-                        </goals>
-                        <configuration>
-                            <file>${project.build.directory}/arcadedb-${project.version}.tar.gz</file>
-                            <classifier>full</classifier>
-                        </configuration>
-                    </execution>
-                    <execution>
-                        <id>deploy-minimal</id>
-                        <phase>deploy</phase>
-                        <goals>
-                            <goal>deploy-file</goal>
-                        </goals>
-                        <configuration>
-                            <file>${project.build.directory}/arcadedb-minimal-${project.version}.tar.gz</file>
-                            <classifier>minimal</classifier>
-                        </configuration>
-                    </execution>
-                    <execution>
-                        <id>deploy-headless</id>
-                        <phase>deploy</phase>
-                        <goals>
-                            <goal>deploy-file</goal>
-                        </goals>
-                        <configuration>
-                            <file>${project.build.directory}/arcadedb-headless-${project.version}.tar.gz</file>
-                            <classifier>headless</classifier>
                         </configuration>
                     </execution>
                 </executions>
