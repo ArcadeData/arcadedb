@@ -188,8 +188,8 @@ public class BinaryCondition extends BooleanExpression {
         if (right.isEarlyCalculated(info.getContext())) {
           if (operator instanceof EqualsCompareOperator) {
             Object vl = this.right.execute((Result) null, info.getContext());
-            if (vl instanceof Collection<?>) {
-              return !((Collection) vl).isEmpty();
+            if (vl instanceof Collection<?> collection) {
+              return !collection.isEmpty();
             }
             return true;
           } else if (operator instanceof ContainsKeyOperator

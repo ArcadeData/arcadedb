@@ -148,7 +148,7 @@ public final class ArcadeCustomFunctions {
   }
 
   public static Function<Traverser, Object> cypherRound() {
-    return cypherFunction(a -> (Math.round((Double) a.get(0))), Double.class);
+    return cypherFunction(a -> (Math.round((Double) a.getFirst())), Double.class);
   }
 
   public static Function<Traverser, Object> cypherProperties() {
@@ -175,7 +175,7 @@ public final class ArcadeCustomFunctions {
   public static Function<Traverser, Object> cypherContainerIndex() {
     return traverser -> {
       List<?> args = (List<?>) traverser.get();
-      Object container = args.get(0);
+      Object container = args.getFirst();
       Object index = args.get(1);
 
       if (container == Tokens.NULL || index == Tokens.NULL) {
@@ -220,7 +220,7 @@ public final class ArcadeCustomFunctions {
   public static Function<Traverser, Object> cypherListSlice() {
     return traverser -> {
       List<?> args = (List<?>) traverser.get();
-      Object container = args.get(0);
+      Object container = args.getFirst();
       Object from = args.get(1);
       Object to = args.get(2);
 
@@ -298,7 +298,7 @@ public final class ArcadeCustomFunctions {
         throw new IllegalArgumentException("Number out of range: " + percentile);
       }
 
-      Collection<?> coll = (Collection<?>) args.get(0);
+      Collection<?> coll = (Collection<?>) args.getFirst();
       boolean invalid = coll.stream()
           .anyMatch(o -> !(o == null || o instanceof Number));
       if (invalid) {
@@ -314,7 +314,7 @@ public final class ArcadeCustomFunctions {
       if (size == 0) {
         return Tokens.NULL;
       } else if (size == 1) {
-        return data.get(0);
+        return data.getFirst();
       }
 
       return percentileStrategy.apply(data, percentile);
@@ -339,7 +339,7 @@ public final class ArcadeCustomFunctions {
   public static Function<Traverser, Object> cypherPlus() {
     return traverser -> {
       List<?> args = (List<?>) traverser.get();
-      Object a = args.get(0);
+      Object a = args.getFirst();
       Object b = args.get(1);
 
       if (a == Tokens.NULL || b == Tokens.NULL) {
@@ -400,7 +400,7 @@ public final class ArcadeCustomFunctions {
   public static Function<Traverser, Object> cypherSubstring() {
     return traverser -> {
       List<?> args = (List<?>) traverser.get();
-      Object a = args.get(0);
+      Object a = args.getFirst();
       Object b = args.get(1);
 
       if (a == Tokens.NULL) {
@@ -444,24 +444,24 @@ public final class ArcadeCustomFunctions {
   }
 
   public static Function<Traverser, Object> cypherTrim() {
-    return cypherFunction(a -> ((String) a.get(0)).trim(), String.class);
+    return cypherFunction(a -> ((String) a.getFirst()).trim(), String.class);
   }
 
   public static Function<Traverser, Object> cypherToUpper() {
-    return cypherFunction(a -> ((String) a.get(0)).toUpperCase(), String.class);
+    return cypherFunction(a -> ((String) a.getFirst()).toUpperCase(), String.class);
   }
 
   public static Function<Traverser, Object> cypherToLower() {
-    return cypherFunction(a -> ((String) a.get(0)).toLowerCase(), String.class);
+    return cypherFunction(a -> ((String) a.getFirst()).toLowerCase(), String.class);
   }
 
   public static Function<Traverser, Object> cypherSplit() {
-    return cypherFunction(a -> asList(((String) a.get(0)).split((String) a.get(1))), String.class, String.class);
+    return cypherFunction(a -> asList(((String) a.getFirst()).split((String) a.get(1))), String.class, String.class);
   }
 
   public static Function<Traverser, Object> cypherReplace() {
     return cypherFunction(a ->
-            ((String) a.get(0)).replace((String) a.get(1), (String) a.get(2)),
+            ((String) a.getFirst()).replace((String) a.get(1), (String) a.get(2)),
         String.class, String.class, String.class);
   }
 

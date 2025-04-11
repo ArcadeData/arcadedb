@@ -56,7 +56,7 @@ public class SQLFunctionLineString extends SQLFunctionAbstract {
       if (point instanceof Point point1)
         lineString.pointXY(point1.getX(), point1.getY());
       else if (point instanceof List list)
-        lineString.pointXY(GeoUtils.getDoubleValue(list.get(0)), GeoUtils.getDoubleValue(list.get(1)));
+        lineString.pointXY(GeoUtils.getDoubleValue(list.getFirst()), GeoUtils.getDoubleValue(list.get(1)));
     }
     return lineString.build();
   }

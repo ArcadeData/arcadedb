@@ -27,6 +27,7 @@ import java.net.*;
 import java.util.*;
 import java.util.logging.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class HTTP2ServersCreateReplicatedDatabaseIT extends BaseGraphServerTest {
@@ -78,7 +79,7 @@ public class HTTP2ServersCreateReplicatedDatabaseIT extends BaseGraphServerTest 
         final String v1 = new JSONObject(
             command(serverIndex, "create vertex VertexType" + serverIndex
                 + " content {\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}")).getJSONArray(
-            "result").getJSONObject(0).getString("@rid");
+            "result").getJSONObject(0).getString(RID_PROPERTY);
 
         testEachServer((checkServer) -> {
           try {

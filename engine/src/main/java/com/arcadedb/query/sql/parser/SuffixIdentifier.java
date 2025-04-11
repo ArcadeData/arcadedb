@@ -35,6 +35,10 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
 
+import static com.arcadedb.schema.Property.CAT_PROPERTY;
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+import static com.arcadedb.schema.Property.TYPE_PROPERTY;
+
 public class SuffixIdentifier extends SimpleNode {
   protected Identifier      identifier;
   protected RecordAttribute recordAttribute;
@@ -77,11 +81,11 @@ public class SuffixIdentifier extends SimpleNode {
       return varName;
     }
     if (recordAttribute != null) {
-      if ("@rid".equalsIgnoreCase(recordAttribute.name))
+      if (RID_PROPERTY.equalsIgnoreCase(recordAttribute.name))
         return currentRecord.getIdentity();
-      else if ("@type".equalsIgnoreCase(recordAttribute.name))
+      else if (TYPE_PROPERTY.equalsIgnoreCase(recordAttribute.name))
         return currentRecord.asDocument().getTypeName();
-      else if ("@cat".equalsIgnoreCase(recordAttribute.name)) {
+      else if (CAT_PROPERTY.equalsIgnoreCase(recordAttribute.name)) {
         final Document doc = currentRecord.asDocument();
         if (doc instanceof Vertex)
           return "v";

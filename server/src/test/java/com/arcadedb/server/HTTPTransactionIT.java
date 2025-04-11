@@ -29,6 +29,7 @@ import java.net.*;
 import java.util.*;
 import java.util.logging.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.server.http.HttpSessionManager.ARCADEDB_SESSION_ID;
 import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -83,7 +84,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
         LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
         final JSONObject responseAsJson = new JSONObject(response);
         assertThat(responseAsJson.has("result")).isTrue();
-        rid = responseAsJson.getJSONArray("result").getJSONObject(0).getString("@rid");
+        rid = responseAsJson.getJSONArray("result").getJSONObject(0).getString(RID_PROPERTY);
         assertThat(rid.contains("#")).isTrue();
       } finally {
         connection.disconnect();
@@ -250,7 +251,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       final JSONObject object = responseAsJson.getJSONArray("result").getJSONObject(0);
       assertThat(connection.getResponseCode()).isEqualTo(200);
       assertThat(connection.getResponseMessage()).isEqualTo("OK");
-      assertThat(object.remove("@rid").toString()).isEqualTo(rid);
+      assertThat(object.remove(RID_PROPERTY).toString()).isEqualTo(rid);
       assertThat(object.remove("@cat")).isEqualTo("d");
       assertThat(object.toMap()).isEqualTo(payload.toMap());
 

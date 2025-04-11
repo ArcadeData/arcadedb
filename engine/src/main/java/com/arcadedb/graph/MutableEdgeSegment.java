@@ -31,6 +31,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.util.*;
 import java.util.concurrent.atomic.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+
 public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, RecordInternal {
   public static final byte RECORD_TYPE            = 3;
   public static final int  CONTENT_START_POSITION =
@@ -171,7 +173,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
-    final JSONObject json = new JSONObject().put("@rid", getIdentity().toString());
+    final JSONObject json = new JSONObject().put(RID_PROPERTY, getIdentity().toString());
     final int used = getUsed();
     if (used > 0) {
       final JSONArray entries = new JSONArray();

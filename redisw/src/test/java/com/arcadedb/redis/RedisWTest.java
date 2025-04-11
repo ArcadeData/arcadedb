@@ -31,6 +31,9 @@ import redis.clients.jedis.exceptions.JedisDataException;
 import java.util.ArrayList;
 import java.util.List;
 
+import static com.arcadedb.schema.Property.CAT_PROPERTY;
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
@@ -160,44 +163,44 @@ public class RedisWTest extends BaseGraphServerTest {
 
       // RETRIEVE BY ID (LONG)
       JSONObject doc = new JSONObject(jedis.hget(getDatabaseName() + ".Account[id]", String.valueOf(i)));
-      assertThat(doc.getString("@rid")).isNotNull();
-      assertThat(doc.getString("@type")).isEqualTo("Account");
-      doc.remove("@type");
-      doc.remove("@rid");
-      doc.remove("@cat");
+      assertThat(doc.getString(RID_PROPERTY)).isNotNull();
+      assertThat(doc.getString(TYPE_PROPERTY)).isEqualTo("Account");
+      doc.remove(TYPE_PROPERTY);
+      doc.remove(RID_PROPERTY);
+      doc.remove(CAT_PROPERTY);
 
       assertThat(doc.toMap()).isEqualTo(expectedJson.toMap());
 
       // RETRIEVE BY EMAIL (STRING)
       doc = new JSONObject(jedis.hget(getDatabaseName() + ".Account[email]", "jay.miner" + i + "@commodore.com"));
-      assertThat(doc.getString("@rid")).isNotNull();
-      assertThat(doc.getString("@type")).isEqualTo("Account");
-      doc.remove("@type");
-      doc.remove("@rid");
-      doc.remove("@cat");
+      assertThat(doc.getString(RID_PROPERTY)).isNotNull();
+      assertThat(doc.getString(TYPE_PROPERTY)).isEqualTo("Account");
+      doc.remove(TYPE_PROPERTY);
+      doc.remove(RID_PROPERTY);
+      doc.remove(CAT_PROPERTY);
 
       assertThat(doc.toMap()).isEqualTo(expectedJson.toMap());
 
       // RETRIEVE BY EMAIL (STRING)
       doc = new JSONObject(jedis.hget(getDatabaseName() + ".Account[email]", "jay.miner" + i + "@commodore.com"));
-      assertThat(doc.getString("@rid")).isNotNull();
-      assertThat(doc.getString("@type")).isEqualTo("Account");
-      doc.remove("@type");
-      doc.remove("@cat");
+      assertThat(doc.getString(RID_PROPERTY)).isNotNull();
+      assertThat(doc.getString(TYPE_PROPERTY)).isEqualTo("Account");
+      doc.remove(TYPE_PROPERTY);
+      doc.remove(CAT_PROPERTY);
 
       // SAVE THE RID TO BE RETRIEVED IN THE MGET
-      final Object rid = doc.remove("@rid");
+      final Object rid = doc.remove(RID_PROPERTY);
       rids.add(new RID(database, rid.toString()));
 
       assertThat(doc.toMap()).isEqualTo(expectedJson.toMap());
 
       // RETRIEVE BY RID
       doc = new JSONObject(jedis.hget(getDatabaseName(), rid.toString()));
-      assertThat(doc.getString("@rid")).isNotNull();
-      assertThat(doc.getString("@type")).isEqualTo("Account");
-      doc.remove("@rid");
-      doc.remove("@type");
-      doc.remove("@cat");
+      assertThat(doc.getString(RID_PROPERTY)).isNotNull();
+      assertThat(doc.getString(TYPE_PROPERTY)).isEqualTo("Account");
+      doc.remove(RID_PROPERTY);
+      doc.remove(TYPE_PROPERTY);
+      doc.remove(CAT_PROPERTY);
 
       assertThat(doc.toMap()).isEqualTo(expectedJson.toMap());
     }
@@ -218,7 +221,7 @@ public class RedisWTest extends BaseGraphServerTest {
 
       for (int k = 0; k < 10; ++k) {
         final JSONObject doc = new JSONObject(result.get(k));
-        assertThat(doc.getString("@type")).isEqualTo("Account");
+        assertThat(doc.getString(TYPE_PROPERTY)).isEqualTo("Account");
       }
     }
 
