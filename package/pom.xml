@@ -232,7 +232,7 @@
                                     <goal>copy-resources</goal>
                                 </goals>
                                 <configuration>
-                                    <outputDirectory>${project.build.directory}/arcadedb-minimal-${project.version}.dir
+                                    <outputDirectory>${project.build.directory}/arcadedb-${project.version}-minimal.dir
                                     </outputDirectory>
                                     <resources>
                                         <resource>
@@ -252,7 +252,7 @@
                                     <goal>copy-resources</goal>
                                 </goals>
                                 <configuration>
-                                    <outputDirectory>${project.build.directory}/arcadedb-headless-${project.version}.dir
+                                    <outputDirectory>${project.build.directory}/arcadedb-${project.version}-headless.dir
                                     </outputDirectory>
                                     <resources>
                                         <resource>
@@ -309,7 +309,7 @@
                                 <image>
                                     <name>arcadedata/arcadedb-minimal</name>
                                     <build>
-                                        <contextDir>${project.build.directory}/arcadedb-minimal-${project.version}.dir
+                                        <contextDir>${project.build.directory}/arcadedb-${project.version}-minimal.dir
                                         </contextDir>
                                         <buildx>
                                             <platforms>
@@ -325,7 +325,7 @@
                                 <image>
                                     <name>arcadedata/arcadedb-headless</name>
                                     <build>
-                                        <contextDir>${project.build.directory}/arcadedb-headless-${project.version}.dir
+                                        <contextDir>${project.build.directory}/arcadedb-${project.version}-headless.dir
                                         </contextDir>
                                         <buildx>
                                             <platforms>
