@@ -146,6 +146,63 @@ def test_psycopg2_return_array_floats():
         conn.close()
 
 
+def test_psycopg2_mass_spam():
+    """Checks if we can spam a crazy amount of queries without crashing"""
+    # Get connection parameters
+    params = get_connection_params(arcadedb)
+
+    # Connect to the database
+    conn = psycopg.connect(**params)
+    conn.autocommit = True
+    count = 512
+    ranges = [0,1,2,16,512,2048,2**32]
+    try:
+        for max_r in ranges:
+            with conn.cursor() as cursor:
+                for _ in range(count):
+                    random_num = random.randint(0, max_r)
+                    cursor.execute(f"SELECT {random_num}")
+                    assert cursor.fetchone()[0] == random_num
+
+    finally:
+        conn.close()
+
+
+def test_psycopg2_portal_errors():
+    """https://github.com/ArcadeData/arcadedb/issues/2117 test"""
+    # Get connection parameters
+    params = get_connection_params(arcadedb)
+
+    # Connect to the database
+    conn = psycopg.connect(**params)
+    conn.autocommit = True
+
+    try:
+
+        with conn.cursor() as cursor:
+            cursor.execute("create vertex type `IMAGE` if not exists;")
+        for i in range(64):
+            query = 'INSERT INTO `IMAGE` RETURN @rid;'
+            cursor.execute(query)
+            cursor.fetchall()
+
+
+        for i in range(64):
+            query = '{cypher}CREATE (c:IMAGE) RETURN id(c)'
+            cursor.execute(query)
+            cursor.fetchall()
+
+
+        for i in range(64):
+            query = '{sqlscript}INSERT INTO `IMAGE` RETURN @rid;'
+            cursor.execute(query)
+            cursor.fetchall()
+
+
+
+    finally:
+        conn.close()
+
 def random_values(_type, size=64):
     if _type == bool:  # Note: fixed the '=' to '==' for comparison
         return [random.choice([True, False]) for _ in range(size)]
