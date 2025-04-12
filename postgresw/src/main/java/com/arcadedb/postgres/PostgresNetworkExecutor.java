@@ -52,6 +52,7 @@ import java.io.IOException;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -274,14 +275,24 @@ public class PostgresNetworkExecutor extends Thread {
     }
 
     if (type == 'P') {
-      if (portal.sqlStatement != null) {
-        final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
+      if (portal.statement != null) {
+        Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
+        if (portal.language.equals("cypher")) {
 
-        final ResultSet resultSet = portal.sqlStatement.execute(database, parameters, createCommandContext());
+          Object[] parametersCypher = new Object[parameters.length * 2];
+          for (int i = 0; i < parameters.length; i++) {
+            parametersCypher[i] = "" + (i + 1);
+            parametersCypher[i + 1] = portal.parameterValues.get(i);
+          }
+          parameters = parametersCypher;
+        }
+        Arrays.stream(parameters).forEach(System.out::println);
+        System.out.println("portal = " + portal.statement);
+        final ResultSet resultSet = database.command(portal.language, portal.statement, parameters);
         portal.executed = true;
         if (portal.isExpectingResult) {
-          portal.cachedResultset = browseAndCacheResultSet(resultSet, 0);
-          portal.columns = getColumns(portal.cachedResultset);
+          portal.cachedResultSet = browseAndCacheResultSet(resultSet, 0);
+          portal.columns = getColumns(portal.cachedResultSet);
           writeRowDescription(portal.columns);
         } else
           writeNoData();
@@ -688,7 +699,7 @@ public class PostgresNetworkExecutor extends Thread {
               ignoreQueries.contains(portal.query))) {
         // RETURN EMPTY RESULT
         portal.executed = true;
-        portal.cachedResultset = new ArrayList<>();
+        portal.cachedResultSet= new ArrayList<>();
       } else if (upperCaseText.startsWith("SAVEPOINT ")) {
         portal.ignoreExecution = true;
       } else if (upperCaseText.startsWith("SET ")) {
@@ -716,14 +727,14 @@ public class PostgresNetworkExecutor extends Thread {
           // SPECIAL CASE DB VISUALIZER
 
           portal.executed = true;
-          portal.cachedResultset = new ArrayList<>();
+          portal.cachedResultSet = new ArrayList<>();
 
           final Map<String, Object> map = new HashMap<>();
           map.put("TABLE_CATALOG", null);
           map.put("TABLE_SCHEM", "");
 
           final Result result = new ResultInternal(map);
-          portal.cachedResultset.add(result);
+          portal.cachedResultSet.add(result);
 
           portal.columns = new HashMap<>();
           portal.columns.put("TABLE_CATALOG", PostgresType.VARCHAR);
@@ -731,7 +742,7 @@ public class PostgresNetworkExecutor extends Thread {
 
         } else if (portal.query.contains("ORDER BY TABLE_TYPE,TABLE_SCHEM,TABLE_NAME ")) {
           portal.executed = true;
-          portal.cachedResultset = new ArrayList<>();
+          portal.cachedResultSet = new ArrayList<>();
           for (final DocumentType t : database.getSchema().getTypes()) {
             final Map<String, Object> map = new HashMap<>();
             map.put("TABLE_CAT", "");
@@ -746,7 +757,7 @@ public class PostgresNetworkExecutor extends Thread {
             map.put("REF_GENERATION", "");
 
             final Result result = new ResultInternal(map);
-            portal.cachedResultset.add(result);
+            portal.cachedResultSet.add(result);
 
             portal.columns = new HashMap<>();
             portal.columns.put("TABLE_CAT", PostgresType.VARCHAR);
@@ -764,13 +775,13 @@ public class PostgresNetworkExecutor extends Thread {
       } else if (portal.query.equals(
           "select distinct GRANTEE as USER_NAME, 'N' as IS_EXPIRED, 'N' as IS_LOCKED from INFORMATION_SCHEMA.USAGE_PRIVILEGES order by GRANTEE asc")) {
         portal.executed = true;
-        portal.cachedResultset = new ArrayList<>();
+        portal.cachedResultSet = new ArrayList<>();
         final Map<String, Object> map = new HashMap<>();
         map.put("USER_NAME", "root");
         map.put("IS_EXPIRED", 'N');
         map.put("IS_LOCKED", 'N');
         final Result result = new ResultInternal(map);
-        portal.cachedResultset.add(result);
+        portal.cachedResultSet.add(result);
 
         portal.columns = new HashMap<>();
         portal.columns.put("USER_NAME", PostgresType.VARCHAR);
@@ -780,12 +791,12 @@ public class PostgresNetworkExecutor extends Thread {
       } else if (portal.query.equals(
           "select CHARACTER_SET_NAME as CHARSET_NAME, -1 as MAX_LENGTH from INFORMATION_SCHEMA.CHARACTER_SETS order by CHARACTER_SET_NAME asc")) {
         portal.executed = true;
-        portal.cachedResultset = new ArrayList<>();
+        portal.cachedResultSet = new ArrayList<>();
         final Map<String, Object> map = new HashMap<>();
         map.put("CHARSET_NAME", "UTF-8");
         map.put("MAX_LENGTH", -1);
         final Result result = new ResultInternal(map);
-        portal.cachedResultset.add(result);
+        portal.cachedResultSet.add(result);
 
         portal.columns = new HashMap<>();
         portal.columns.put("CHARSET_NAME", PostgresType.VARCHAR);
@@ -797,7 +808,7 @@ public class PostgresNetworkExecutor extends Thread {
               "select SCHEMA_NAME, case when lower(SCHEMA_NAME)='pg_catalog' then 'Y' else 'N' end as IS_PUBLIC, case when lower(SCHEMA_NAME)='information_schema' then 'Y' else 'N' end as IS_SYSTEM, 'N' as IS_EMPTY from INFORMATION_SCHEMA.SCHEMATA order by SCHEMA_NAME asc")) {
 
         portal.executed = true;
-        portal.cachedResultset = new ArrayList<>();
+        portal.cachedResultSet = new ArrayList<>();
 
         for (final String dbName : server.getDatabaseNames()) {
           final Map<String, Object> map = new HashMap<>();
@@ -806,7 +817,7 @@ public class PostgresNetworkExecutor extends Thread {
           map.put("IS_SYSTEM", "N");
           map.put("IS_EMPTY", "N");
           final Result result = new ResultInternal(map);
-          portal.cachedResultset.add(result);
+          portal.cachedResultSet.add(result);
         }
 
         portal.columns = new HashMap<>();
@@ -818,14 +829,14 @@ public class PostgresNetworkExecutor extends Thread {
           "SELECT nspname AS TABLE_SCHEM, NULL AS TABLE_CATALOG FROM pg_catalog.pg_namespace  WHERE nspname <> 'pg_toast' AND (nspname !~ '^pg_temp_'  OR nspname = (pg_catalog.current_schemas(true))[1]) AND (nspname !~ '^pg_toast_temp_'  OR nspname = replace((pg_catalog.current_schemas(true))[1], 'pg_temp_', 'pg_toast_temp_'))  AND nspname LIKE E'%' ORDER BY TABLE_SCHEM")) {
 
         portal.executed = true;
-        portal.cachedResultset = new ArrayList<>();
+        portal.cachedResultSet = new ArrayList<>();
 
         for (final DocumentType t : database.getSchema().getTypes()) {
           final Map<String, Object> map = new HashMap<>();
           map.put("TABLE_SCHEM", t.getName());
           map.put("TABLE_CATALOG", database.getName());
           final Result result = new ResultInternal(map);
-          portal.cachedResultset.add(result);
+          portal.cachedResultSet.add(result);
         }
 
         portal.columns = new HashMap<>();
@@ -833,7 +844,6 @@ public class PostgresNetworkExecutor extends Thread {
         portal.columns.put("TABLE_CATALOG", PostgresType.VARCHAR);
       } else {
         final Query query = getLanguageAndQuery(portal.query);
-
         switch (query.language) {
         case "sql":
           final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
@@ -894,8 +904,8 @@ public class PostgresNetworkExecutor extends Thread {
   private void setEmptyResultSet(final PostgresPortal portal) {
     portal.executed = true;
     portal.isExpectingResult = true;
-    portal.cachedResultset = Collections.emptyList();
-    portal.columns = getColumns(portal.cachedResultset);
+    portal.cachedResultSet = Collections.emptyList();
+    portal.columns = getColumns(portal.cachedResultSet);
   }
 
   private void sendServerParameter(final String name, final String value) {
@@ -1186,8 +1196,8 @@ public class PostgresNetworkExecutor extends Thread {
 
   private void createResultSet(final PostgresPortal portal, final Object... elements) {
     portal.executed = true;
-    portal.cachedResultset = createResultSet(elements);
-    portal.columns = getColumns(portal.cachedResultset);
+    portal.cachedResultSet = createResultSet(elements);
+    portal.columns = getColumns(portal.cachedResultSet);
   }
 
   private List<Result> createResultSet(final Object... elements) {

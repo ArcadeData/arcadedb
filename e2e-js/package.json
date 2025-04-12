@@ -3,14 +3,14 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "jest --runInBand --ci --reporters=default --reporters=jest-junit"
+    "test": "jest --runInBand --ci --reporters=default --reporters=jest-junit --detectOpenHandles"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "pg": "^8.13.1"
+    "pg": "^8.14.1"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "^10.17.2",
