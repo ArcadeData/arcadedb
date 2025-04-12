@@ -28,8 +28,11 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 public class CypherQueryEngine implements QueryEngine {
   static final  String      ENGINE_NAME = "cypher";
@@ -46,6 +49,8 @@ public class CypherQueryEngine implements QueryEngine {
 
   @Override
   public AnalyzedQuery analyze(final String query) {
+    ArcadeCypher cypher = arcadeGraph.cypher(query);
+
     return new AnalyzedQuery() {
       @Override
       public boolean isIdempotent() {
@@ -72,7 +77,7 @@ public class CypherQueryEngine implements QueryEngine {
   @Override
   public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
     try {
-      final ArcadeCypher arcadeCypher = arcadeGraph.cypher(query, parameters);
+      final ArcadeCypher arcadeCypher = arcadeGraph.cypher(query);
       arcadeCypher.setParameters(parameters);
       return arcadeCypher.execute();
 
@@ -122,7 +127,8 @@ public class CypherQueryEngine implements QueryEngine {
     return result;
   }
 
-  private static ResultInternal cypherObjectToResult(final Map<String, Object> mapStringObject, final Map<Object, Object> internalMap) {
+  private static ResultInternal cypherObjectToResult(final Map<String, Object> mapStringObject,
+      final Map<Object, Object> internalMap) {
     boolean isAnObject = false;
     for (final Map.Entry<Object, Object> entry : internalMap.entrySet()) {
       Object mapKey = entry.getKey();
@@ -156,6 +162,7 @@ public class CypherQueryEngine implements QueryEngine {
     final Map<String, Object> map = new LinkedHashMap<>(parameters.length / 2);
     for (int i = 0; i < parameters.length; i += 2)
       map.put((String) parameters[i], parameters[i + 1]);
+
     return command(query, null, map);
   }
 
