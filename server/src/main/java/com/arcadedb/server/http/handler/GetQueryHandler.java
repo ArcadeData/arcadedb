@@ -55,7 +55,7 @@ public class GetQueryHandler extends AbstractQueryHandler {
     else
       limit = Integer.parseInt(limitPar);
 
-    final JSONObject response = createResult(user, database);
+    final JSONObject response = new JSONObject();
 
     try {
 

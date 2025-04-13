@@ -49,7 +49,7 @@ public class GetExistsDatabaseHandler extends AbstractServerHttpHandler {
 
     final boolean existsDatabase = installedDatabases.contains(databaseName.getFirst());
 
-    final JSONObject response = createResult(user, null);
+    final JSONObject response = new JSONObject();
     response.put("result", existsDatabase);
 
     return new ExecutionResponse(200, response.toString());

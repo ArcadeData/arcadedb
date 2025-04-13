@@ -83,7 +83,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (command == null)
       return new ExecutionResponse(400, "{ \"error\" : \"Server command is null\"}");
 
-    final JSONObject response = createResult(user, null).put("result", "ok");
+    final JSONObject response = new JSONObject().put("result", "ok");
 
     final String command_lc = command.toLowerCase(Locale.ENGLISH).trim();
 
@@ -147,7 +147,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (!allowedDatabases.contains("*"))
       installedDatabases.retainAll(allowedDatabases);
 
-    final JSONObject response = createResult(user, null).put("result", new JSONArray(installedDatabases));
+    final JSONObject response = new JSONObject().put("result", new JSONArray(installedDatabases));
 
     return new ExecutionResponse(200, response.toString());
   }
