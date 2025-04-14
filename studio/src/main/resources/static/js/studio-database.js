@@ -44,9 +44,8 @@ function updateDatabases(callback) {
 
   jQuery
     .ajax({
-      type: "POST",
-      url: "api/v1/server",
-      data: "{ command: 'list databases' }",
+      type: "GET",
+      url: "api/v1/databases",
       beforeSend: function (xhr) {
         xhr.setRequestHeader("Authorization", globalCredentials);
       },
