@@ -41,13 +41,9 @@ import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.StatusCodes;
 
-import java.io.IOException;
-import java.rmi.ServerException;
-import java.util.HashSet;
-import java.util.Locale;
-import java.util.Set;
-import java.util.Timer;
-import java.util.TimerTask;
+import java.io.*;
+import java.rmi.*;
+import java.util.*;
 
 public class PostServerCommandHandler extends AbstractServerHttpHandler {
   final String LIST_DATABASES       = "list databases";
@@ -139,7 +135,6 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private ExecutionResponse listDatabases(final ServerSecurityUser user) {
     final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.list-databases").increment();
-    ;
 
     final Set<String> installedDatabases = new HashSet<>(server.getDatabaseNames());
     final Set<String> allowedDatabases = user.getAuthorizedDatabases();
@@ -147,14 +142,13 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (!allowedDatabases.contains("*"))
       installedDatabases.retainAll(allowedDatabases);
 
-    final JSONObject response = new JSONObject().put("result", new JSONArray(installedDatabases));
+    final JSONObject response = createResult(user, null).put("result", new JSONArray(installedDatabases));
 
     return new ExecutionResponse(200, response.toString());
   }
 
   private void shutdownServer(final String serverName) throws IOException {
     Metrics.counter("http.server-shutdown").increment();
-    ;
 
     if (serverName.isEmpty()) {
       // SHUTDOWN CURRENT SERVER
@@ -185,7 +179,6 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.create-database").increment();
-    ;
 
     final ServerDatabase db = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
 
@@ -202,7 +195,6 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final ServerDatabase database = httpServer.getServer().getDatabase(databaseName);
 
     Metrics.counter("http.drop-database").increment();
-    ;
 
     database.getEmbedded().drop();
     httpServer.getServer().removeDatabase(database.getName());
@@ -216,7 +208,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     database.getEmbedded().close();
 
     Metrics.counter("http.close-database").increment();
-    ;
+
     httpServer.getServer().removeDatabase(database.getName());
   }
 
@@ -226,7 +218,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     httpServer.getServer().getDatabase(databaseName);
     Metrics.counter("http.open-database").increment();
-    ;
+
   }
 
   private void createUser(final String payload) {
@@ -244,7 +236,6 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     json.put("password", httpServer.getServer().getSecurity().encodePassword(userPassword));
 
     Metrics.counter("http.create-user").increment();
-    ;
 
     httpServer.getServer().getSecurity().createUser(json);
   }
@@ -254,7 +245,6 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       throw new IllegalArgumentException("User name was missing");
 
     Metrics.counter("http.drop-user").increment();
-    ;
 
     final boolean result = httpServer.getServer().getSecurity().dropUser(userName);
     if (!result)
@@ -265,7 +255,6 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final HAServer ha = getHA();
 
     Metrics.counter("http.connect-cluster").increment();
-    ;
 
     return ha.connectToLeader(serverAddress, exception -> {
       exchange.setStatusCode(StatusCodes.INTERNAL_SERVER_ERROR);
@@ -276,7 +265,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
   private void disconnectCluster() {
     Metrics.counter("http.server-disconnect").increment();
-    ;
+
     final HAServer ha = getHA();
 
     final Replica2LeaderNetworkExecutor leader = ha.getLeader();
@@ -324,7 +313,6 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private String getServerEvents(final String fileName) {
     final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.get-server-events").increment();
-    ;
 
     final JSONArray events = fileName.isEmpty() ?
         server.getEventLog().getCurrentEvents() :
@@ -341,7 +329,6 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final Database database = httpServer.getServer().getDatabase(databaseName);
 
     Metrics.counter("http.align-database").increment();
-    ;
 
     database.command("sql", "align database");
   }
