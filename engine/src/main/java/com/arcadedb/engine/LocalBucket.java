@@ -964,7 +964,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             if (recordSize[0] != NEXT_CHUNK)
               throw new DatabaseOperationException("Error on fetching multi page record " + rid + " chunk " + chunkId);
 
-            deleteRecordInternal(new RID(database, fileId, nextChunkPointer), false, true);
+            try {
+              deleteRecordInternal(new RID(database, fileId, nextChunkPointer), false, true);
+            } catch (RecordNotFoundException e) {
+              // PARTIAL RECORD NOT FOUND
+            }
           }
 
         } else if (recordSize[0] == NEXT_CHUNK) {
