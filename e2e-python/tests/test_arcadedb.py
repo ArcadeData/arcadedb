@@ -155,7 +155,7 @@ def test_psycopg2_mass_spam():
     conn = psycopg.connect(**params)
     conn.autocommit = True
     count = 512
-    ranges = [0,1,2,16,512,2048,2**32]
+    ranges = [0, 1, 2, 16, 512, 2048, 2 ** 32]
     try:
         for max_r in ranges:
             with conn.cursor() as cursor:
@@ -181,27 +181,26 @@ def test_psycopg2_portal_errors():
 
         with conn.cursor() as cursor:
             cursor.execute("create vertex type `IMAGE` if not exists;")
-        for i in range(64):
-            query = 'INSERT INTO `IMAGE` RETURN @rid;'
-            cursor.execute(query)
-            cursor.fetchall()
+            for i in range(64):
+                query = 'INSERT INTO `IMAGE` RETURN @rid;'
+                cursor.execute(query)
+                cursor.fetchall()
 
+            for i in range(64):
+                query = '{cypher}CREATE (c:IMAGE) RETURN id(c)'
+                cursor.execute(query)
+                cursor.fetchall()
 
-        for i in range(64):
-            query = '{cypher}CREATE (c:IMAGE) RETURN id(c)'
-            cursor.execute(query)
-            cursor.fetchall()
-
-
-        for i in range(64):
-            query = '{sqlscript}INSERT INTO `IMAGE` RETURN @rid;'
-            cursor.execute(query)
-            cursor.fetchall()
+            for i in range(64):
+                query = '{sqlscript}INSERT INTO `IMAGE` RETURN @rid;'
+                cursor.execute(query)
+                cursor.fetchall()
 
 
 
     finally:
         conn.close()
+
 
 def random_values(_type, size=64):
     if _type == bool:  # Note: fixed the '=' to '==' for comparison
