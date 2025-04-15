@@ -435,7 +435,6 @@ public class PostgresNetworkExecutor extends Thread {
     final Map<String, PostgresType> columns = new LinkedHashMap<>();
 
     if (resultSet == null) {
-      System.out.println("ResultSet is null");
       return columns; // Return empty columns instead of throwing NPE
     }
 
