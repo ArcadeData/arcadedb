@@ -60,7 +60,7 @@ function globalNotify(title, message, type) {
 }
 
 function globalActivateTab(tab) {
-  $('.nav a[href="#' + tab + '"]').tab("show");
+  $('.nav a[href="#' + tab + '"]')?.tab("show");
 }
 
 function globalSetCookie(key, value, expiry) {
