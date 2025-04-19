@@ -34,10 +34,16 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
-import java.util.stream.*;
+import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
+import static com.arcadedb.schema.Property.CAT_PROPERTY;
+import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class CypherQueryEngineTest {
@@ -69,7 +75,7 @@ public class CypherQueryEngineTest {
           final List<Result> results = IteratorUtils.toList(query, 1);
           assertThat(results).hasSize(1);
 
-          final Result result = results.get(0);
+          final Result result = results.getFirst();
           assertThat(result).isNotNull();
           assertThat(result.isProjection()).isTrue();
           assertThat(result.getPropertyNames()).contains("parent", "children");
@@ -77,16 +83,16 @@ public class CypherQueryEngineTest {
           // Transform rid from result to string as in vertex
           final Result parentAsResult = result.getProperty("parent");
           final Map<String, Object> parent = parentAsResult.toMap();
-          parent.computeIfPresent("@rid", (k, v) -> Objects.toString(v));
-          parent.put("@cat", "v");
+          parent.computeIfPresent(RID_PROPERTY, (k, v) -> Objects.toString(v));
+          parent.put(CAT_PROPERTY, "v");
           final Map<String, Object> vertexMap = v1.toJSON().toMap();
           assertThat(parent).isEqualTo(vertexMap);
 
           // Transform rid from result to string as in vertex
           final List<Result> childrenAsResult = result.getProperty("children");
           final List<Map<String, Object>> children = childrenAsResult.stream().map(Result::toMap).collect(Collectors.toList());
-          children.forEach(c -> c.computeIfPresent("@rid", (k, v) -> Objects.toString(v)));
-          children.forEach(c -> c.put("@cat", "v"));
+          children.forEach(c -> c.computeIfPresent(RID_PROPERTY, (k, v) -> Objects.toString(v)));
+          children.forEach(c -> c.put(CAT_PROPERTY, "v"));
           final List<Map<String, Object>> childVertices = Stream.of(v2, v3).map(MutableVertex::toJSON).map(JSONObject::toMap)
               .collect(Collectors.toList());
 
@@ -97,7 +103,7 @@ public class CypherQueryEngineTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/383
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/383">...</a>
    */
   @Test
   public void returnPath() {
@@ -187,7 +193,7 @@ public class CypherQueryEngineTest {
           final Result r1 = query.next();
 
           final List<String> columns = new ArrayList<>(r1.toMap().keySet());
-          assertThat(columns.get(0)).isEqualTo("foo.name");
+          assertThat(columns.getFirst()).isEqualTo("foo.name");
           assertThat(columns.get(1)).isEqualTo("foo.field2");
           assertThat(columns.get(2)).isEqualTo("foo.field1");
         }

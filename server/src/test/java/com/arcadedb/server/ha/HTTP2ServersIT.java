@@ -32,6 +32,7 @@ import java.net.*;
 import java.util.*;
 import java.util.logging.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -112,7 +113,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       final String v1 = new JSONObject(
           command(serverIndex, "create vertex V1 content {\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}")).getJSONArray(
-          "result").getJSONObject(0).getString("@rid");
+          "result").getJSONObject(0).getString(RID_PROPERTY);
 
       if (!getServer(serverIndex).getHA().isLeader())
         Thread.sleep(300);
@@ -129,7 +130,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       final String v2 = new JSONObject(
           command(serverIndex, "create vertex V1 content {\"name\":\"John\",\"surname\":\"Red\",\"age\":50}")).getJSONArray(
-          "result").getJSONObject(0).getString("@rid");
+          "result").getJSONObject(0).getString(RID_PROPERTY);
 
       if (!getServer(serverIndex).getHA().isLeader())
         Thread.sleep(300);
@@ -146,7 +147,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       });
 
       final String e1 = new JSONObject(command(serverIndex, "create edge E1 from " + v1 + " to " + v2)).getJSONArray("result")
-          .getJSONObject(0).getString("@rid");
+          .getJSONObject(0).getString(RID_PROPERTY);
 
       if (!getServer(serverIndex).getHA().isLeader())
         Thread.sleep(300);
@@ -163,7 +164,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       final String v3 = new JSONObject(
           command(serverIndex, "create vertex V1 content {\"name\":\"Nikola\",\"surname\":\"Tesla\",\"age\":150}")).getJSONArray(
-          "result").getJSONObject(0).getString("@rid");
+          "result").getJSONObject(0).getString(RID_PROPERTY);
 
       if (!getServer(serverIndex).getHA().isLeader())
         Thread.sleep(300);
@@ -179,7 +180,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       });
 
       final String e2 = new JSONObject(command(serverIndex, "create edge E2 from " + v2 + " to " + v3)).getJSONArray("result")
-          .getJSONObject(0).getString("@rid");
+          .getJSONObject(0).getString(RID_PROPERTY);
 
       if (!getServer(serverIndex).getHA().isLeader())
         Thread.sleep(300);

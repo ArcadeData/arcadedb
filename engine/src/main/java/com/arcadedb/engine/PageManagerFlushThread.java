@@ -49,7 +49,7 @@ public class PageManagerFlushThread extends Thread {
 
     public PagesToFlush(final List<MutablePage> pages) {
       this.pages = pages;
-      this.database = pages == null || pages.isEmpty() ? null : pages.get(0).pageId.getDatabase();
+      this.database = pages == null || pages.isEmpty() ? null : pages.getFirst().pageId.getDatabase();
     }
   }
 

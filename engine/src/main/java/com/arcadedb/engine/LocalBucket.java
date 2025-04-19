@@ -1133,7 +1133,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int[] pointer = orderedRecordContentInPage.get(i);
       final int lastPointerEnd = lastPointer[0] + lastPointer[1];
       if (pointer[0] != lastPointerEnd) {
-        final int[] lastHole = holes.isEmpty() ? null : holes.get(holes.size() - 1);
+        final int[] lastHole = holes.isEmpty() ? null : holes.getLast();
         if (lastHole != null && lastHole[0] + lastHole[1] == pointer[0]) {
           // UPDATE PREVIOUS HOLE
           lastHole[1] += pointer[1];
@@ -1720,7 +1720,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
             int freeSpaceInPage = getPageSize() - contentHeaderSize;
             if (!orderedRecordContentInPage.isEmpty()) {
-              final int[] lastRecord = orderedRecordContentInPage.get(orderedRecordContentInPage.size() - 1);
+              final int[] lastRecord = orderedRecordContentInPage.getLast();
               freeSpaceInPage = getPageSize() - (lastRecord[0] + lastRecord[1]);
             }
 

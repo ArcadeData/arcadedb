@@ -59,7 +59,7 @@ public class JVMGCHistogramReporter {
       String site;
       RecordedStackTrace stackTrace = event.getStackTrace();
       if (stackTrace != null && !stackTrace.getFrames().isEmpty()) {
-        RecordedFrame frame = stackTrace.getFrames().get(0);
+        RecordedFrame frame = stackTrace.getFrames().getFirst();
         site = frame.getMethod().getType().getName() + "." +
             frame.getMethod().getName() + ":" +
             frame.getLineNumber();

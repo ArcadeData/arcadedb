@@ -81,7 +81,7 @@ public class SQLFunctionDijkstraTest {
           new BasicCommandContext());
 
       assertThat(result).hasSize(4);
-      assertThat(result.get(0)).isEqualTo(v1);
+      assertThat(result.getFirst()).isEqualTo(v1);
       assertThat(result.get(1)).isEqualTo(v2);
       assertThat(result.get(2)).isEqualTo(v3);
       assertThat(result.get(3)).isEqualTo(v4);

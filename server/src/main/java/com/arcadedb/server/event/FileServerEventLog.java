@@ -89,7 +89,7 @@ public class FileServerEventLog implements ServerEventLog {
       if (existentFiles.size() > KEEP_FILES) {
         // REMOVE THE OLDEST FILES
         while (existentFiles.size() > KEEP_FILES) {
-          final String removed = existentFiles.remove(existentFiles.size() - 1);
+          final String removed = existentFiles.removeLast();
           FileUtils.deleteFile(new File(logDirectory, removed));
           LogManager.instance().log(this, Level.FINE, "Deleted server event log file %s (keep max %d files)", removed, KEEP_FILES);
         }

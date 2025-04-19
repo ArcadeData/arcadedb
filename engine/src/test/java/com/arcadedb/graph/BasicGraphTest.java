@@ -473,7 +473,7 @@ public class BasicGraphTest extends BaseGraphTest {
           assertThat(sp).isNotNull();
           assertThat(sp).hasSize(2);
 
-          assertThat(sp.get(0)).isEqualTo(v1);
+          assertThat(sp.getFirst()).isEqualTo(v1);
           assertThat(sp.get(1)).isEqualTo(v2);
         }
       }

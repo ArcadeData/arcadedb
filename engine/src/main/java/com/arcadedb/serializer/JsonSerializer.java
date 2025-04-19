@@ -31,7 +31,15 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+
+import static com.arcadedb.schema.Property.CAT_PROPERTY;
+import static com.arcadedb.schema.Property.IN_PROPERTY;
+import static com.arcadedb.schema.Property.OUT_PROPERTY;
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 
 public class JsonSerializer {
   private boolean useCollectionSize         = false;
@@ -53,22 +61,22 @@ public class JsonSerializer {
         .setDateTimeFormat(database.getSchema().getDateTimeFormat());
 
     if (document.getIdentity() != null)
-      object.put("@rid", document.getIdentity().toString());
-    object.put("@type", document.getTypeName());
+      object.put(RID_PROPERTY, document.getIdentity().toString());
+    object.put(TYPE_PROPERTY, document.getTypeName());
 
     final Map<String, Object> documentAsMap = document.toMap();
     for (final Map.Entry<String, Object> documentEntry : documentAsMap.entrySet()) {
       final String p = documentEntry.getKey();
       Object value = documentEntry.getValue();
 
-      if (value == null)
-        value = JSONObject.NULL;
-      else if (value instanceof Document document1)
-        value = serializeDocument(document1);
-      else if (value instanceof Collection<?> collection)
-        serializeCollection(database, collection);
-      else if (value instanceof Map)
-        value = serializeMap(database, (Map<Object, Object>) value);
+      switch (value) {
+      case null -> value = JSONObject.NULL;
+      case Document document1 -> value = serializeDocument(document1);
+      case Collection<?> collection -> serializeCollection(database, collection);
+      case Map map -> value = serializeMap(database, (Map<Object, Object>) map);
+      default -> {
+      }
+      }
 
       value = convertNonNumbers(value);
 
@@ -88,8 +96,8 @@ public class JsonSerializer {
     if (result.isElement()) {
       final Document document = result.toElement();
       if (document.getIdentity() != null)
-        object.put("@rid", document.getIdentity().toString());
-      object.put("@type", document.getTypeName());
+        object.put(RID_PROPERTY, document.getIdentity().toString());
+      object.put(TYPE_PROPERTY, document.getTypeName());
 
       setMetadata(document, object);
     }
@@ -220,46 +228,47 @@ public class JsonSerializer {
   }
 
   private void setMetadata(final Document document, final JSONObject object) {
-    if (document instanceof DetachedDocument doc) {
+    switch (document) {
+    case DetachedDocument doc -> {
       final DocumentType docType = doc.getType();
       if (docType instanceof VertexType)
-        object.put("@cat", "v");
+        object.put(CAT_PROPERTY, "v");
       else if (docType instanceof EdgeType)
-        object.put("@cat", "e");
+        object.put(CAT_PROPERTY, "e");
       else
-        object.put("@cat", "d");
-
-    } else if (document instanceof Vertex vertex1) {
-      object.put("@cat", "v");
+        object.put(CAT_PROPERTY, "d");
+    }
+    case Vertex vertex -> {
+      object.put(CAT_PROPERTY, "v");
       if (includeVertexEdges) {
-        final Vertex vertex = vertex1;
         if (useVertexEdgeSize) {
-          object.put("@out", vertex.countEdges(Vertex.DIRECTION.OUT, null));
-          object.put("@in", vertex.countEdges(Vertex.DIRECTION.IN, null));
+          object.put(OUT_PROPERTY, vertex.countEdges(Vertex.DIRECTION.OUT, null));
+          object.put(IN_PROPERTY, vertex.countEdges(Vertex.DIRECTION.IN, null));
 
         } else {
           final JSONArray outEdges = new JSONArray();
           for (final Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
             outEdges.put(e.getIdentity().toString());
-          object.put("@out", outEdges);
+          object.put(OUT_PROPERTY, outEdges);
 
           final JSONArray inEdges = new JSONArray();
           for (final Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
             inEdges.put(e.getIdentity().toString());
-          object.put("@in", inEdges);
+          object.put(IN_PROPERTY, inEdges);
         }
       }
-    } else if (document instanceof Edge edge1) {
-      final Edge edge = edge1;
-      object.put("@cat", "e");
-      object.put("@in", edge.getIn());
-      object.put("@out", edge.getOut());
-    } else
-      object.put("@cat", "d");
+    }
+    case Edge edge -> {
+      object.put(CAT_PROPERTY, "e");
+      object.put(IN_PROPERTY, edge.getIn());
+      object.put(OUT_PROPERTY, edge.getOut());
+    }
+    case null, default -> object.put(CAT_PROPERTY, "d");
+    }
 
   }
 
-  private static Object convertNonNumbers(Object value) {
+  private Object convertNonNumbers(Object value) {
     if (value != null)
       if (value.equals(Double.NaN) || value.equals(Float.NaN))
         // JSON DOES NOT SUPPORT NaN

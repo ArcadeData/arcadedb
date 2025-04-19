@@ -37,11 +37,16 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.io.File;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.Iterator;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -317,7 +322,7 @@ public class ACIDTransactionTest extends TestHelper {
   @Test
   public void multiThreadConcurrentTransactions() {
     database.transaction(() -> {
-      final DocumentType type = database.getSchema().createDocumentType("Stock", 32);
+      final DocumentType type = database.getSchema().buildDocumentType().withName("Stock").withTotalBuckets(32).create();
       type.createProperty("symbol", Type.STRING);
       type.createProperty("date", Type.DATETIME);
       type.createProperty("history", Type.LIST);
@@ -354,7 +359,7 @@ public class ACIDTransactionTest extends TestHelper {
             final List<Document> history = new ArrayList<>();
             for (int e = 0; e < TOT_MINS; ++e) {
               final MutableDocument embedded = ((DatabaseInternal) database).newEmbeddedDocument(null, "Aggregate");
-              embedded.set("volume", 1_000_000l);
+              embedded.set("volume", 1_000_000L);
               history.add(embedded);
             }
 
@@ -454,22 +459,21 @@ public class ACIDTransactionTest extends TestHelper {
 
   @Test
   public void testDeleteOverwriteCompositeKeyInTx() {
-    database.transaction(() -> {
-      database.command("sqlscript", """
-          CREATE VERTEX TYPE zone;
-          CREATE PROPERTY zone.id STRING;
-          CREATE VERTEX TYPE device;
-          CREATE PROPERTY device.id STRING;
-          CREATE EDGE TYPE zone_device;
-          CREATE PROPERTY zone_device.from_id STRING;
-          CREATE PROPERTY zone_device.to_id STRING;
-          CREATE INDEX ON zone_device (from_id, to_id) UNIQUE;
-          CREATE VERTEX zone SET id='zone1';
-          CREATE VERTEX zone SET id='zone2';
-          CREATE VERTEX device SET id='device1';
-          CREATE EDGE zone_device FROM (SELECT FROM zone WHERE id='zone1') TO (SELECT FROM device WHERE id='device1') SET from_id='zone1', to_id='device1';
-          """);
-    });
+    database.transaction(() ->
+        database.command("sqlscript", """
+            CREATE VERTEX TYPE zone;
+            CREATE PROPERTY zone.id STRING;
+            CREATE VERTEX TYPE device;
+            CREATE PROPERTY device.id STRING;
+            CREATE EDGE TYPE zone_device;
+            CREATE PROPERTY zone_device.from_id STRING;
+            CREATE PROPERTY zone_device.to_id STRING;
+            CREATE INDEX ON zone_device (from_id, to_id) UNIQUE;
+            CREATE VERTEX zone SET id='zone1';
+            CREATE VERTEX zone SET id='zone2';
+            CREATE VERTEX device SET id='device1';
+            CREATE EDGE zone_device FROM (SELECT FROM zone WHERE id='zone1') TO (SELECT FROM device WHERE id='device1') SET from_id='zone1', to_id='device1';
+            """));
 
     database.transaction(() -> {
       database.command("sqlscript", """
