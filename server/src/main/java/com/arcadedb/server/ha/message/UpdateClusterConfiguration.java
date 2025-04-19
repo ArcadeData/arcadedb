@@ -23,23 +23,25 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 
+import java.util.Set;
 import java.util.logging.*;
+import java.util.stream.Collectors;
 
 public class UpdateClusterConfiguration extends HAAbstractCommand {
-  private String servers;
-  private String replicaServersHTTPAddresses;
+  private Set<HAServer.ServerInfo> servers;
+  private String                   replicaServersHTTPAddresses;
 
   public UpdateClusterConfiguration() {
   }
 
-  public UpdateClusterConfiguration(final String servers, final String replicaServersHTTPAddresses) {
+  public UpdateClusterConfiguration(final Set<HAServer.ServerInfo> servers, final String replicaServersHTTPAddresses) {
     this.servers = servers;
     this.replicaServersHTTPAddresses = replicaServersHTTPAddresses;
   }
 
   @Override
-  public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
-    LogManager.instance().log(this, Level.FINE, "Updating server list=%s replicaHTTPs=%s", servers, replicaServersHTTPAddresses);
+  public HACommand execute(final HAServer server, final HAServer.ServerInfo remoteServerName, final long messageNumber) {
+    LogManager.instance().log(this, Level.INFO, "Updating server list=%s replicaHTTPs=%s", servers, replicaServersHTTPAddresses);
     server.setServerAddresses(servers);
     server.setReplicasHTTPAddresses(replicaServersHTTPAddresses);
     return null;
@@ -47,13 +49,13 @@ public class UpdateClusterConfiguration extends HAAbstractCommand {
 
   @Override
   public void toStream(final Binary stream) {
-    stream.putString(servers);
+    stream.putString(servers.stream().map(HAServer.ServerInfo::toString).collect(Collectors.joining(",")));
     stream.putString(replicaServersHTTPAddresses);
   }
 
   @Override
   public void fromStream(final ArcadeDBServer server, final Binary stream) {
-    servers = stream.getString();
+    servers = server.getHA().parseServerList(stream.getString());
     replicaServersHTTPAddresses = stream.getString();
   }
 

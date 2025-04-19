@@ -54,9 +54,9 @@ public class ReplicationLogFile extends LockContext {
   private static final long                          MAGIC_NUMBER         = 93719829258702L;
   private              long                          lastMessageNumber    = -1L;
   private final static long                          CHUNK_SIZE           = 64L * 1024L * 1024L;
-  private              long                          chunkNumber          = 0L;
-  private              WALFile.FLUSH_TYPE            flushPolicy          = WALFile.FLUSH_TYPE.NO;
-  private              ReplicationLogArchiveCallback archiveChunkCallback = null;
+  private long                          chunkNumber          = 0L;
+  private WALFile.FlushType             flushPolicy          = WALFile.FlushType.NO;
+  private ReplicationLogArchiveCallback archiveChunkCallback = null;
   private              long                          totalArchivedChunks  = 0L;
   private              long                          maxArchivedChunks    = 200L;
 
@@ -371,11 +371,11 @@ public class ReplicationLogFile extends LockContext {
     });
   }
 
-  public WALFile.FLUSH_TYPE getFlushPolicy() {
+  public WALFile.FlushType getFlushPolicy() {
     return flushPolicy;
   }
 
-  public void setFlushPolicy(final WALFile.FLUSH_TYPE flushPolicy) {
+  public void setFlushPolicy(final WALFile.FlushType flushPolicy) {
     this.flushPolicy = flushPolicy;
   }
 

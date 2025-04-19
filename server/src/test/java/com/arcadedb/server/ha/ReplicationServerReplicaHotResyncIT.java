@@ -64,7 +64,7 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
     if (server.getServerName().equals("ArcadeDB_2")) {
       server.registerTestEventListener(new ReplicationCallback() {
         @Override
-        public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
+        public void onEvent(final Type type, final Object object, final ArcadeDBServer server) {
           if (!serversSynchronized)
             return;
 
@@ -80,10 +80,10 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
               }
             }
           } else {
-            if (type == TYPE.REPLICA_HOT_RESYNC) {
+            if (type == Type.REPLICA_HOT_RESYNC) {
               LogManager.instance().log(this, Level.INFO, "TEST: Received hot resync request");
               hotResyncLatch.countDown();
-            } else if (type == TYPE.REPLICA_FULL_RESYNC) {
+            } else if (type == Type.REPLICA_FULL_RESYNC) {
               LogManager.instance().log(this, Level.INFO, "TEST: Received full resync request");
               fullResyncLatch.countDown();
             }
@@ -95,11 +95,11 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
     if (server.getServerName().equals("ArcadeDB_0")) {
       server.registerTestEventListener(new ReplicationCallback() {
         @Override
-        public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
+        public void onEvent(final Type type, final Object object, final ArcadeDBServer server) {
           if (!serversSynchronized)
             return;
 
-          if ("ArcadeDB_2".equals(object) && type == TYPE.REPLICA_OFFLINE) {
+          if ("ArcadeDB_2".equals(object) && type == Type.REPLICA_OFFLINE) {
             LogManager.instance().log(this, Level.INFO, "TEST: Replica 2 is offline removing latency...");
             slowDown = false;
           }
