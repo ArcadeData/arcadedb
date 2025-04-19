@@ -26,10 +26,8 @@ import java.io.*;
 import java.lang.management.*;
 import java.net.*;
 import java.nio.channels.*;
+import java.nio.file.*;
 import java.nio.file.FileSystem;
-import java.nio.file.FileSystems;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.*;
 import java.util.logging.*;
 import java.util.zip.*;
@@ -64,7 +62,8 @@ public class FileUtils {
     if (s == null)
       return null;
 
-    if (s.length() > 1 && (s.charAt(0) == '\'' && s.charAt(s.length() - 1) == '\'' || s.charAt(0) == '"' && s.charAt(s.length() - 1) == '"'))
+    if (s.length() > 1 && (s.charAt(0) == '\'' && s.charAt(s.length() - 1) == '\''
+        || s.charAt(0) == '"' && s.charAt(s.length() - 1) == '"'))
       return s.substring(1, s.length() - 1);
 
     if (s.length() > 1 && (s.charAt(0) == '`' && s.charAt(s.length() - 1) == '`'))
