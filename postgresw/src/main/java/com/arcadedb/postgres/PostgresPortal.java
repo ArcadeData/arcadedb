@@ -36,6 +36,7 @@ public class PostgresPortal {
   public Map<String, PostgresType> columns;
   public boolean                   isExpectingResult;
   public boolean                   executed        = false;
+  public boolean                   rowDescriptionSent = false;
 
   public PostgresPortal(final String query) {
     this.query = query;
