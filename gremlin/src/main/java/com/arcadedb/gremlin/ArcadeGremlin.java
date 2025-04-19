@@ -222,6 +222,7 @@ public class ArcadeGremlin extends ArcadeQuery {
       bindings.put("g", graph.traversal());
       if (parameters != null)
         bindings.putAll(parameters);
+
       result = gremlinEngineImpl.eval(query, bindings);
 
     } else if ("groovy".equals(gremlinEngine)) {

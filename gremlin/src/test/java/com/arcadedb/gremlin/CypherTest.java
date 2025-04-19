@@ -25,15 +25,16 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
-
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
+import java.io.File;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -51,7 +52,8 @@ public class CypherTest {
 
       graph.getDatabase().transaction(() -> {
         for (int i = 0; i < 50; i++)
-          graph.getDatabase().newVertex("Person").set("name", "Jay").set("age", i).save();
+          graph.cypher(" CREATE (n:Person {name: $1 , age: $2 }) return n", Map.of("1", "Jay", "2", i))
+              .execute();
       });
 
       final ResultSet result = graph.cypher("MATCH (p:Person) WHERE p.age >= $p1 RETURN p.name, p.age ORDER BY p.age")//
@@ -63,7 +65,7 @@ public class CypherTest {
         final Result row = result.next();
         assertThat(row.<String>getProperty("p.name")).isEqualTo("Jay");
         assertThat(row.getProperty("p.age") instanceof Number).isTrue();
-        assertThat((int) row.getProperty("p.age") > lastAge).isTrue();
+        assertThat(row.<Integer>getProperty("p.age") > lastAge).isTrue();
 
         lastAge = row.getProperty("p.age");
       }
@@ -142,13 +144,15 @@ public class CypherTest {
 
       final ArcadeCypher cypherReadOnly = graph.cypher("MATCH (p:Person) WHERE p.age >= 25 RETURN p.name, p.age ORDER BY p.age");
 
-      assertThat(cypherReadOnly.parse().isIdempotent()).isTrue();
-      assertThat(cypherReadOnly.parse().isDDL()).isFalse();
+      QueryEngine.AnalyzedQuery parse = cypherReadOnly.parse();
+      assertThat(parse.isIdempotent()).isTrue();
+      assertThat(parse.isDDL()).isFalse();
 
       final ArcadeGremlin cypherWrite = graph.cypher("CREATE (n:Person)");
 
-      assertThat(cypherWrite.parse().isIdempotent()).isFalse();
-      assertThat(cypherWrite.parse().isDDL()).isFalse();
+      QueryEngine.AnalyzedQuery parse1 = cypherWrite.parse();
+      assertThat(parse1.isIdempotent()).isFalse();
+      assertThat(parse1.isDDL()).isFalse();
 
     } finally {
       graph.drop();
