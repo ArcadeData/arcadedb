@@ -32,7 +32,7 @@ function renderTable() {
 
   var tableColumns = [];
   var tableRecords = [];
-  var metadataColumns = [RID_PROPERTY, "@type", "@cat", "@in", "@out"];
+  var metadataColumns = ["@rid", "@type", "@cat", "@in", "@out"];
 
   if (globalResultset.records.length > 0) {
     let columns = {};
@@ -45,7 +45,7 @@ function renderTable() {
     }
 
     let orderedColumns = [];
-    if (columns[RID_PROPERTY]) orderedColumns.push(RID_PROPERTY);
+    if (columns["@rid"]) orderedColumns.push("@rid");
     if (columns["@type"]) orderedColumns.push("@type");
 
     for (let colName in columns) {
@@ -56,7 +56,7 @@ function renderTable() {
     if (columns["@out"]) orderedColumns.push("@out");
 
     for (let i in orderedColumns) {
-      if (orderedColumns[i] == RID_PROPERTY)
+      if (orderedColumns[i] == "@rid")
         tableColumns.push({
           sTitle: escapeHtml(orderedColumns[i]),
           mRender: function (data, type, full) {
@@ -76,7 +76,7 @@ function renderTable() {
         let colName = orderedColumns[i];
         let value = row[colName];
 
-        if (colName == RID_PROPERTY) {
+        if (colName == "@rid") {
           //RID
           value = "<a class='link' onclick=\"addNodeFromRecord('" + value + "')\">" + value + "</a>";
         } else if (value != null && (typeof value === "string" || value instanceof String) && value.toString().length > 30) {
