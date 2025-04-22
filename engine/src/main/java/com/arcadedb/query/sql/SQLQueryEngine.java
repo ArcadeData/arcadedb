@@ -40,17 +40,20 @@ import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.MultiIterator;
 
-import java.util.*;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Set;
 
 import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
 
 public class SQLQueryEngine implements QueryEngine {
   public static final String                    ENGINE_NAME             = "sql";
+  public static final Set<String>               RESERVED_VARIABLE_NAMES = Set.of(
+      "parent", "current", "depth",
+      "path", "stack", "history");
   protected final     DatabaseInternal          database;
   protected final     DefaultSQLFunctionFactory functions;
   protected final     DefaultSQLMethodFactory   methods;
-  public static final Set<String>               RESERVED_VARIABLE_NAMES = Set.of("parent", "current", "depth",
-      "path", "stack", "history");
 
   public static class SQLQueryEngineFactory implements QueryEngineFactory {
     @Override
@@ -212,7 +215,7 @@ public class SQLQueryEngine implements QueryEngine {
     return methods.createMethod(name);
   }
 
-  public static Statement parse(final String query, final DatabaseInternal database) {
+  public Statement parse(final String query, final DatabaseInternal database) {
     return database.getStatementCache().get(query);
   }
 

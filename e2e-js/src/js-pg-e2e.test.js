@@ -11,9 +11,9 @@ describe("E2E tests using pg client", () => {
     arcadedbContainer = await new GenericContainer("arcadedata/arcadedb:latest")
       .withExposedPorts(2480, 6379, 5432, 8182)
       .withEnvironment({
-        JAVA_OPTS:
+      JAVA_OPTS:
           "-Darcadedb.server.rootPassword=playwithdata -Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} -Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin",
-      })
+    })
       .withStartupTimeout(60000)
       .withWaitStrategy(Wait.forHttp("/api/v1/ready", 2480).forStatusCodeMatching((statusCode) => statusCode === 204))
       .start();
@@ -34,6 +34,7 @@ describe("E2E tests using pg client", () => {
     expect(res.rows.length).toBe(10);
   });
 
+
   it("should run schema query", async () => {
     const query = "select * from schema:types limit -1";
     const res = await postgresClient.query(query);
@@ -42,4 +43,12 @@ describe("E2E tests using pg client", () => {
       console.log(row);
     });
   });
+
+//  it("should run parametrixed query", async () => {
+//    const query = "select from Beer where name = $1 limit 10";
+//    const res = await postgresClient.query(query, ['Stout']);
+//    expect(res.rows.length).toBe(10);
+//  });
+
+
 });

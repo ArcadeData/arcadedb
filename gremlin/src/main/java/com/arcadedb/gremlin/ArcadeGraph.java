@@ -28,7 +28,6 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
-import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.gremlin.io.ArcadeIoRegistry;
@@ -66,11 +65,19 @@ import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 import org.apache.tinkerpop.gremlin.util.ser.GraphBinaryMessageSerializerV1;
 import org.opencypher.gremlin.traversal.CustomPredicate;
-import org.opencypher.v9_0.util.SyntaxException;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.Closeable;
+import java.io.File;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.logging.Level;
 
 /**
  * Created by Enrico Risa on 30/07/2018.
@@ -157,15 +164,13 @@ public class ArcadeGraph implements Graph, Closeable {
   }
 
   public ArcadeCypher cypher(final String query) {
-    return cypher(query, null);
+    return cypher(query, Collections.emptyMap());
   }
 
   public ArcadeCypher cypher(final String query, final Map<String, Object> parameters) {
-    try {
-      return new ArcadeCypher(this, query, parameters);
-    } catch (final SyntaxException e) {
-      throw new CommandParsingException(e);
-    }
+    ArcadeCypher arcadeCypher = new ArcadeCypher(this, query);
+    arcadeCypher.setParameters(parameters);
+    return arcadeCypher;
   }
 
   public ArcadeGremlin gremlin(final String query) {

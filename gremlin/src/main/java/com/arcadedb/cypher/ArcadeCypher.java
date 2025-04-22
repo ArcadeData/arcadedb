@@ -22,8 +22,10 @@ package com.arcadedb.cypher;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.cypher.query.CypherQueryEngine;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.gremlin.ArcadeGremlin;
+import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
@@ -32,9 +34,13 @@ import org.opencypher.gremlin.translation.CypherAst;
 import org.opencypher.gremlin.translation.TranslationFacade;
 import org.opencypher.gremlin.translation.groovy.GroovyPredicate;
 import org.opencypher.gremlin.translation.translator.Translator;
+import org.opencypher.v9_0.util.SyntaxException;
 
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Cypher Expression builder. Transform a cypher expression into Gremlin.
@@ -45,6 +51,7 @@ import java.util.concurrent.*;
 public class ArcadeCypher extends ArcadeGremlin {
   private static final Map<String, CachedStatement> STATEMENT_CACHE = new ConcurrentHashMap<>();
   private static final int                          CACHE_SIZE      = GlobalConfiguration.CYPHER_STATEMENT_CACHE.getValueAsInteger();
+  private              String                       cypher;
 
   private static class CachedStatement {
     public final String cypher;
@@ -57,14 +64,22 @@ public class ArcadeCypher extends ArcadeGremlin {
     }
   }
 
-  public ArcadeCypher(final ArcadeGraph graph, final String cypherQuery, final Map<String, Object> parameters) {
-    super(graph, compileToGremlin(graph, cypherQuery, parameters));
+  public ArcadeCypher(final ArcadeGraph graph, final String cypherQuery) {
+    super(graph, null);
+    this.cypher = cypherQuery;
   }
 
   @Override
   public ResultSet execute() {
-    final ResultSet resultSet = super.execute();
+    if (query == null) {
+      try {
+        compileToGremlin(graph, parameters);
+      } catch (final SyntaxException e) {
+        throw new CommandParsingException(e);
+      }
 
+    }
+    final ResultSet resultSet = super.execute();
     final InternalResultSet result = new InternalResultSet() {
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
@@ -90,24 +105,48 @@ public class ArcadeCypher extends ArcadeGremlin {
     return result;
   }
 
-  public static String compileToGremlin(final ArcadeGraph graph, final String cypher, final Map<String, Object> parameters) {
+  @Override
+  public QueryEngine.AnalyzedQuery parse() {
+    if (query == null) {
+      try {
+        compileToGremlin(graph, parameters);
+      } catch (final SyntaxException e) {
+        throw new CommandParsingException(e);
+      }
+    }
+
+    return super.parse();
+  }
+
+  record CypherQueryAndParameters(String cypherQuery, Map<String, Object> parameters) {
+  }
+
+  public void compileToGremlin(final ArcadeGraph graph, final Map<String, Object> parameters) {
+
+    CypherQueryAndParameters queryAndParameters = replaceParameterNames(cypher, Optional.ofNullable(parameters).orElse(Map.of()));
+
+    this.parameters = queryAndParameters.parameters;
     if (CACHE_SIZE == 0)
       // NO CACHE
-      return parameters != null ? new TranslationFacade().toGremlinGroovy(cypher, parameters) : new TranslationFacade().toGremlinGroovy(cypher);
+      query = parameters != null ?
+          new TranslationFacade().toGremlinGroovy(queryAndParameters.cypherQuery, queryAndParameters.parameters) :
+          new TranslationFacade().toGremlinGroovy(queryAndParameters.cypherQuery);
 
     final String db = graph.getDatabase().getDatabasePath();
 
-    final String mapKey = db + ":" + cypher;
+    final String mapKey = db + ":" + queryAndParameters.cypherQuery;
 
     final CachedStatement cached = STATEMENT_CACHE.get(mapKey);
     // FOUND
     if (cached != null) {
       ++cached.used;
-      return cached.gremlin;
+      query = cached.gremlin;
     }
 
     // TRANSLATE TO GREMLIN AND CACHE THE STATEMENT FOR FURTHER USAGE
-    final CypherAst ast = parameters == null ? CypherAst.parse(cypher) : CypherAst.parse(cypher, parameters);
+    final CypherAst ast = parameters == null ?
+        CypherAst.parse(queryAndParameters.cypherQuery) :
+        CypherAst.parse(queryAndParameters.cypherQuery, queryAndParameters.parameters);
     final Translator<String, GroovyPredicate> translator = Translator.builder().gremlinGroovy().enableCypherExtensions().build();
     String gremlin = ast.buildTranslation(translator);
 
@@ -116,7 +155,45 @@ public class ArcadeCypher extends ArcadeGremlin {
 
     cacheLastStatement(cypher, gremlin);
 
-    return gremlin;
+    query = gremlin;
+  }
+
+  public static CypherQueryAndParameters replaceParameterNames(String cypher, Map<String, Object> parameters) {
+    Map<String, String> replacementMap = new HashMap<>();
+    String newCypher = cypher;
+
+    for (String oldKey : parameters.keySet()) {
+      // Generate a random 4-character string
+      String newKey;
+      do {
+        newKey = generateRandomString(4);
+      } while (replacementMap.containsValue(newKey)); // Ensure uniqueness
+
+      // Replace occurrences of the old key in the cypher cypherQuery
+      String placeholder = "\\$" + oldKey; // Escape the $ symbol for regex
+      newCypher = newCypher.replaceAll(placeholder, "\\$" + newKey);
+
+      // Add the new key to the replacement map
+      replacementMap.put(oldKey, newKey);
+    }
+
+    // Update the parameters map with the new keys
+    Map<String, Object> updatedParameters = new HashMap<>();
+    for (Map.Entry<String, Object> entry : parameters.entrySet()) {
+      updatedParameters.put(replacementMap.get(entry.getKey()), entry.getValue());
+    }
+
+    return new CypherQueryAndParameters(newCypher.toString(), updatedParameters);
+  }
+
+  private static String generateRandomString(int length) {
+    String chars = "abcdefghijklmnopqrstuvwxyz";
+    StringBuilder sb = new StringBuilder(length);
+    ThreadLocalRandom random = ThreadLocalRandom.current();
+    for (int i = 0; i < length; i++) {
+      sb.append(chars.charAt(random.nextInt(chars.length())));
+    }
+    return sb.toString();
   }
 
   public static void closeDatabase(final ArcadeGraph graph) {
