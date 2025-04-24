@@ -33,6 +33,7 @@ import org.junit.jupiter.api.Test;
 import java.util.*;
 import java.util.stream.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
@@ -1379,7 +1380,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     assertThat(foo).isNotNull();
     assertThat(foo instanceof List).isTrue();
     assertThat(((List) foo).size()).isEqualTo(1);
-    final Vertex resultVertex = (Vertex) ((List) foo).get(0);
+    final Vertex resultVertex = (Vertex) ((List) foo).getFirst();
     assertThat(resultVertex.getInteger("uid")).isEqualTo(2);
     result.close();
   }
@@ -1722,7 +1723,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     final Result a = item.getProperty("a");
     assertThat(a.<String>getProperty("name")).isEqualTo("bbb");
     assertThat(a.<String>getProperty("surname")).isEqualTo("ccc");
-    assertThat(a.<RID>getProperty("@rid")).isNotNull();
+    assertThat(a.<RID>getProperty(RID_PROPERTY)).isNotNull();
     assertThat(a.getPropertyNames().size()).isEqualTo(4);
     assertThat(result.hasNext()).isFalse();
     result.close();
@@ -1966,16 +1967,16 @@ public class MatchStatementExecutionTest extends TestHelper {
       case "aaa" -> assertThat(thePath.size()).isEqualTo(0);
       case "bbb" -> {
         assertThat(thePath.size()).isEqualTo(1);
-        assertThat(thePath.get(0).getRecord().asDocument().getString("name")).isEqualTo("bbb");
+        assertThat(thePath.getFirst().getRecord().asDocument().getString("name")).isEqualTo("bbb");
       }
       case "ccc" -> {
         assertThat(thePath.size()).isEqualTo(2);
-        assertThat(thePath.get(0).getRecord().asDocument().getString("name")).isEqualTo("bbb");
+        assertThat(thePath.getFirst().getRecord().asDocument().getString("name")).isEqualTo("bbb");
         assertThat(thePath.get(1).getRecord().asDocument().getString("name")).isEqualTo("ccc");
       }
       case "ddd" -> {
         assertThat(thePath.size()).isEqualTo(3);
-        assertThat(thePath.get(0).getRecord().asDocument().getString("name")).isEqualTo("bbb");
+        assertThat(thePath.getFirst().getRecord().asDocument().getString("name")).isEqualTo("bbb");
         assertThat(thePath.get(1).getRecord().asDocument().getString("name")).isEqualTo("ccc");
         assertThat(thePath.get(2).getRecord().asDocument().getString("name")).isEqualTo("ddd");
       }

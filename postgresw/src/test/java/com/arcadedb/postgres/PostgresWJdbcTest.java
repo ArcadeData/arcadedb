@@ -43,6 +43,9 @@ import java.util.Random;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import static com.arcadedb.schema.Property.CAT_PROPERTY;
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
@@ -217,13 +220,13 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
 
         i = 0;
         while (rs.next()) {
-          assertThat(rs.findColumn("@rid") > -1).isTrue();
-          assertThat(rs.findColumn("@type") > -1).isTrue();
-          assertThat(rs.findColumn("@cat") > -1).isTrue();
+          assertThat(rs.findColumn(RID_PROPERTY) > -1).isTrue();
+          assertThat(rs.findColumn(TYPE_PROPERTY) > -1).isTrue();
+          assertThat(rs.findColumn(CAT_PROPERTY) > -1).isTrue();
 
-          assertThat(rs.getString(rs.findColumn("@rid")).startsWith("#")).isTrue();
-          assertThat(rs.getString(rs.findColumn("@type"))).isEqualTo("V");
-          assertThat(rs.getString(rs.findColumn("@cat"))).isEqualTo("v");
+          assertThat(rs.getString(rs.findColumn(RID_PROPERTY)).startsWith("#")).isTrue();
+          assertThat(rs.getString(rs.findColumn(TYPE_PROPERTY))).isEqualTo("V");
+          assertThat(rs.getString(rs.findColumn(CAT_PROPERTY))).isEqualTo("v");
 
           ++i;
         }
@@ -313,7 +316,7 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/1325#issuecomment-1816145926
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/1325#issuecomment-1816145926">...</a>
    *
    * @throws Exception
    */

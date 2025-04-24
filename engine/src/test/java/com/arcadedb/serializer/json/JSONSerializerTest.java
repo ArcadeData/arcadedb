@@ -13,6 +13,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class JSONSerializerTest extends TestHelper {
@@ -55,7 +56,7 @@ public class JSONSerializerTest extends TestHelper {
 
       // check AnotherType
       assertThat(json.getString("@type")).isEqualTo("AnotherType");
-      assertThat(json.getString("@rid")).isNotNull();
+      assertThat(json.getString(RID_PROPERTY)).isNotNull();
       assertThat(json.getJSONArray("list")).containsExactly("value1", "value2");
       assertThat(json.getJSONObject("map")).satisfies(map -> {
         assertThat(map.getString("key1")).isEqualTo("value1");

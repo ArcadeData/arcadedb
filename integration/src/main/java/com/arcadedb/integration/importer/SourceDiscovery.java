@@ -287,7 +287,7 @@ public class SourceDiscovery {
           return o1.getValue().get() < o2.getValue().get() ? 1 : -1;
         });
 
-        final Map.Entry<Character, AtomicInteger> bestSeparator = list.get(0);
+        final Map.Entry<Character, AtomicInteger> bestSeparator = list.getFirst();
 
         if (bestSeparator.getKey() == ' ') {
           // CHECK IF IS A VECTOR EMBEDDING TEXT FILE
@@ -369,7 +369,7 @@ public class SourceDiscovery {
 
       if (!delimiters.isEmpty() && beginTag == endTag) {
         boolean allDelimitersAreTheSame = true;
-        final char delimiter = delimiters.get(0);
+        final char delimiter = delimiters.getFirst();
         for (int i = 1; i < delimiters.size() - 1; ++i) {
           if (delimiters.get(i) != delimiter) {
             allDelimitersAreTheSame = false;
@@ -380,7 +380,7 @@ public class SourceDiscovery {
         if (allDelimitersAreTheSame) {
           // RDF
           settings.typeIdProperty = "id";
-          settings.options.put("delimiter", "" + delimiters.get(0));
+          settings.options.put("delimiter", "" + delimiters.getFirst());
           return new RDFImporterFormat();
         }
       }

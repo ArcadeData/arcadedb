@@ -19,7 +19,7 @@ FROM eclipse-temurin:21@sha256:6634936b2e8d90ee16eeb94420d71cd5e36ca677a4cf795a9
 
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 
-ENV JAVA_OPTS=" "
+ENV JAVA_OPTS="-XX:+UseZGC -XX:+ZGenerational"
 
 ENV ARCADEDB_OPTS_MEMORY="-Xms2G -Xmx2G"
 

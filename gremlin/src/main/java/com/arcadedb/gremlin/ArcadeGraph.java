@@ -188,7 +188,7 @@ public class ArcadeGraph implements Graph, Closeable {
 
         final String[] hosts = new String[remoteAddresses.size()];
         for (int i = 0; i < remoteAddresses.size(); i++)
-          hosts[i] = HostUtil.parseHostAddress(remoteAddresses.get(0), "" + GREMLIN_SERVER_PORT)[0];
+          hosts[i] = HostUtil.parseHostAddress(remoteAddresses.getFirst(), "" + GREMLIN_SERVER_PORT)[0];
 
         final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
             new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));

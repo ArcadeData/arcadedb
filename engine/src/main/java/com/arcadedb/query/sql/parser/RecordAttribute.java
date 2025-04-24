@@ -28,6 +28,12 @@ import com.arcadedb.query.sql.executor.Result;
 
 import java.util.*;
 
+import static com.arcadedb.schema.Property.CAT_PROPERTY;
+import static com.arcadedb.schema.Property.IN_PROPERTY;
+import static com.arcadedb.schema.Property.OUT_PROPERTY;
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+import static com.arcadedb.schema.Property.TYPE_PROPERTY;
+
 public class RecordAttribute extends SimpleNode {
   protected String name;
 
@@ -71,11 +77,11 @@ public class RecordAttribute extends SimpleNode {
   }
 
   public Object evaluate(final Result currentRecord, final CommandContext context) {
-    if (name.equalsIgnoreCase("@rid")) {
+    if (name.equalsIgnoreCase(RID_PROPERTY)) {
       return currentRecord.getIdentity().orElse(null);
-    } else if (name.equalsIgnoreCase("@type")) {
+    } else if (name.equalsIgnoreCase(TYPE_PROPERTY)) {
       return currentRecord.getElement().map(Document::getTypeName).orElse(null);
-    } else if (name.equalsIgnoreCase("@cat") && currentRecord.getElement().isPresent()) {
+    } else if (name.equalsIgnoreCase(CAT_PROPERTY) && currentRecord.getElement().isPresent()) {
       final Document record = currentRecord.getElement().get();
       if (record instanceof Vertex)
         return "v";
@@ -84,10 +90,10 @@ public class RecordAttribute extends SimpleNode {
       else
         return "d";
 
-    } else if (name.equalsIgnoreCase("@in") && //
+    } else if (name.equalsIgnoreCase(IN_PROPERTY) && //
         currentRecord.getElement().isPresent() && currentRecord.getElement().get() instanceof Edge) {
       return currentRecord.getElement().get().asEdge().getIn();
-    } else if (name.equalsIgnoreCase("@out") && //
+    } else if (name.equalsIgnoreCase(OUT_PROPERTY) && //
         currentRecord.getElement().isPresent() && currentRecord.getElement().get() instanceof Edge) {
       return currentRecord.getElement().get().asEdge().getOut();
     }

@@ -30,6 +30,7 @@ import org.xnio.http.UpgradeFailedException;
 
 import java.util.logging.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -257,7 +258,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
         json = getJsonMessageOrFail(client);
         assertThat(json.get("changeType")).isEqualTo("update");
         record = json.getJSONObject("record");
-        assertThat(record.get("@rid")).isEqualTo(v1.getIdentity().toString());
+        assertThat(record.get(RID_PROPERTY)).isEqualTo(v1.getIdentity().toString());
         assertThat(record.getBoolean("updated")).isTrue();
 
         v1.delete();

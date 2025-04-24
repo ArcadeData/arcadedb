@@ -112,7 +112,7 @@ public class UnwindStep extends AbstractExecutionStep {
     if (unwindFields.isEmpty()) {
       result.add(doc);
     } else {
-      final String firstField = unwindFields.get(0);
+      final String firstField = unwindFields.getFirst();
       final List<String> nextFields = unwindFields.subList(1, unwindFields.size());
 
       final Object fieldValue = doc.getProperty(firstField);

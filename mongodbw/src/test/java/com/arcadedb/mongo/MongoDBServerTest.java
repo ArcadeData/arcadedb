@@ -30,6 +30,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import static com.arcadedb.schema.Property.CAT_PROPERTY;
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 import static com.mongodb.client.model.Filters.and;
 import static com.mongodb.client.model.Filters.eq;
 import static com.mongodb.client.model.Filters.exists;
@@ -79,9 +82,9 @@ public class MongoDBServerTest extends BaseGraphServerTest {
   }
 
   private Document stripMetadata(Document doc) {
-    doc.remove("@rid");
-    doc.remove("@type");
-    doc.remove("@cat");
+    doc.remove(RID_PROPERTY);
+    doc.remove(TYPE_PROPERTY);
+    doc.remove(CAT_PROPERTY);
     return doc;
   }
 

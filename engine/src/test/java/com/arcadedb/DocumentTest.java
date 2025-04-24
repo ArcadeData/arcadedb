@@ -92,7 +92,7 @@ public class DocumentTest extends TestHelper {
       assertThat(map.get("embeddedObj")).isEqualTo(embeddedObj);
       assertThat(((DetachedDocument) map.get("embeddedObj")).getBoolean("embeddedObj")).isTrue();
       assertThat(map.get("embeddedList")).isEqualTo(embeddedList);
-      assertThat(((List<DetachedDocument>) map.get("embeddedList")).get(0).getBoolean("embeddedList")).isTrue();
+      assertThat(((List<DetachedDocument>) map.get("embeddedList")).getFirst().getBoolean("embeddedList")).isTrue();
       assertThat(map.get("embeddedMap")).isEqualTo(embeddedMap);
       assertThat(((Map<String, DetachedDocument>) map.get("embeddedMap")).get("first").getBoolean("embeddedMap")).isTrue();
 
@@ -103,7 +103,7 @@ public class DocumentTest extends TestHelper {
       try {
         detached.modify();
         fail("modify");
-      } catch (final UnsupportedOperationException e) {
+      } catch (final UnsupportedOperationException ignored) {
       }
 
       detached.reload();
@@ -111,7 +111,7 @@ public class DocumentTest extends TestHelper {
       try {
         detached.setBuffer(null);
         fail("setBuffer");
-      } catch (final UnsupportedOperationException e) {
+      } catch (final UnsupportedOperationException ignored) {
       }
 
       assertThat(detached.getString("name")).isNull();

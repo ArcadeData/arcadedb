@@ -633,25 +633,25 @@ public class MathExpression extends SimpleNode {
         else if (b instanceof BigDecimal decimal)
           return operation.apply(BigDecimal.valueOf((Float) a), decimal);
 
-      } else if (a instanceof Double) {
+      } else if (a instanceof Double double1) {
         if (b instanceof Short || b instanceof Integer || b instanceof Long || b instanceof Float || b instanceof Double)
           return operation.apply(a.doubleValue(), b.doubleValue());
         else if (b instanceof BigDecimal decimal)
-          return operation.apply(BigDecimal.valueOf((Double) a), decimal);
+          return operation.apply(BigDecimal.valueOf(double1), decimal);
 
-      } else if (a instanceof BigDecimal) {
+      } else if (a instanceof BigDecimal bigDecimal) {
         if (b instanceof Integer integer)
-          return operation.apply((BigDecimal) a, new BigDecimal(integer));
+          return operation.apply(bigDecimal, new BigDecimal(integer));
         else if (b instanceof Long long1)
-          return operation.apply((BigDecimal) a, new BigDecimal(long1));
+          return operation.apply(bigDecimal, new BigDecimal(long1));
         else if (b instanceof Short short1)
-          return operation.apply((BigDecimal) a, new BigDecimal(short1));
+          return operation.apply(bigDecimal, new BigDecimal(short1));
         else if (b instanceof Float float1)
-          return operation.apply((BigDecimal) a, BigDecimal.valueOf(float1));
+          return operation.apply(bigDecimal, BigDecimal.valueOf(float1));
         else if (b instanceof Double double1)
-          return operation.apply((BigDecimal) a, BigDecimal.valueOf(double1));
+          return operation.apply(bigDecimal, BigDecimal.valueOf(double1));
         else if (b instanceof BigDecimal decimal)
-          return operation.apply((BigDecimal) a, decimal);
+          return operation.apply(bigDecimal, decimal);
       }
 
       throw new IllegalArgumentException(
@@ -678,12 +678,12 @@ public class MathExpression extends SimpleNode {
       return null;
 
     if (childExpressions.size() == 1)
-      return childExpressions.get(0).execute(currentRecord, context);
+      return childExpressions.getFirst().execute(currentRecord, context);
 
     if (childExpressions.size() == 2) {
-      final Object leftValue = childExpressions.get(0).execute(currentRecord, context);
+      final Object leftValue = childExpressions.getFirst().execute(currentRecord, context);
       final Object rightValue = childExpressions.get(1).execute(currentRecord, context);
-      return operators.get(0).apply(leftValue, rightValue);
+      return operators.getFirst().apply(leftValue, rightValue);
     }
 
     return calculateWithOpPriority(currentRecord, context);
@@ -694,12 +694,12 @@ public class MathExpression extends SimpleNode {
       return null;
 
     if (childExpressions.size() == 1)
-      return childExpressions.get(0).execute(currentRecord, context);
+      return childExpressions.getFirst().execute(currentRecord, context);
 
     if (childExpressions.size() == 2) {
-      final Object leftValue = childExpressions.get(0).execute(currentRecord, context);
+      final Object leftValue = childExpressions.getFirst().execute(currentRecord, context);
       final Object rightValue = childExpressions.get(1).execute(currentRecord, context);
-      return operators.get(0).apply(leftValue, rightValue);
+      return operators.getFirst().apply(leftValue, rightValue);
     }
 
     return calculateWithOpPriority(currentRecord, context);
@@ -709,7 +709,7 @@ public class MathExpression extends SimpleNode {
     final Deque valuesStack = new ArrayDeque<>();
     final Deque<Operator> operatorsStack = new ArrayDeque<Operator>();
 
-    final MathExpression nextExpression = childExpressions.get(0);
+    final MathExpression nextExpression = childExpressions.getFirst();
     final Object val = nextExpression.execute(currentRecord, context);
     valuesStack.push(val == null ? NULL_VALUE : val);
 
@@ -737,7 +737,7 @@ public class MathExpression extends SimpleNode {
     final Deque valuesStack = new ArrayDeque<>();
     final Deque<Operator> operatorsStack = new ArrayDeque<Operator>();
 
-    final MathExpression nextExpression = childExpressions.get(0);
+    final MathExpression nextExpression = childExpressions.getFirst();
     final Object val = nextExpression.execute(currentRecord, context);
     valuesStack.push(val == null ? NULL_VALUE : val);
 
@@ -865,7 +865,7 @@ public class MathExpression extends SimpleNode {
     if (this.childExpressions.size() != 1) {
       return false;
     }
-    return this.childExpressions.get(0).isIndexedFunctionCall(context);
+    return this.childExpressions.getFirst().isIndexedFunctionCall(context);
   }
 
   public long estimateIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
@@ -873,7 +873,7 @@ public class MathExpression extends SimpleNode {
     if (this.childExpressions.size() != 1) {
       return -1;
     }
-    return this.childExpressions.get(0).estimateIndexedFunction(target, context, operator, right);
+    return this.childExpressions.getFirst().estimateIndexedFunction(target, context, operator, right);
   }
 
   public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context,
@@ -882,7 +882,7 @@ public class MathExpression extends SimpleNode {
     if (this.childExpressions.size() != 1) {
       return null;
     }
-    return this.childExpressions.get(0).executeIndexedFunction(target, context, operator, right);
+    return this.childExpressions.getFirst().executeIndexedFunction(target, context, operator, right);
   }
 
   /**
@@ -900,7 +900,7 @@ public class MathExpression extends SimpleNode {
     if (this.childExpressions.size() != 1) {
       return false;
     }
-    return this.childExpressions.get(0).canExecuteIndexedFunctionWithoutIndex(target, context, operator, right);
+    return this.childExpressions.getFirst().canExecuteIndexedFunctionWithoutIndex(target, context, operator, right);
   }
 
   /**
@@ -917,7 +917,7 @@ public class MathExpression extends SimpleNode {
     if (this.childExpressions.size() != 1)
       return false;
 
-    return this.childExpressions.get(0).allowsIndexedFunctionExecutionOnTarget(target, context, operator, right);
+    return this.childExpressions.getFirst().allowsIndexedFunctionExecutionOnTarget(target, context, operator, right);
   }
 
   /**
@@ -936,12 +936,12 @@ public class MathExpression extends SimpleNode {
     if (this.childExpressions.size() != 1)
       return false;
 
-    return this.childExpressions.get(0).executeIndexedFunctionAfterIndexSearch(target, context, operator, right);
+    return this.childExpressions.getFirst().executeIndexedFunctionAfterIndexSearch(target, context, operator, right);
   }
 
   public boolean isBaseIdentifier() {
     if (this.childExpressions != null && childExpressions.size() == 1)
-      return childExpressions.get(0).isBaseIdentifier();
+      return childExpressions.getFirst().isBaseIdentifier();
 
     return false;
   }
@@ -978,7 +978,7 @@ public class MathExpression extends SimpleNode {
     if (this.childExpressions.size() != 1)
       return false;
 
-    return this.childExpressions.get(0).isCount();
+    return this.childExpressions.getFirst().isCount();
   }
 
   public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
@@ -1053,7 +1053,7 @@ public class MathExpression extends SimpleNode {
     if (childExpressions.size() != 1)
       throw new CommandExecutionException("cannot apply REMOVE " + this);
 
-    childExpressions.get(0).applyRemove(result, context);
+    childExpressions.getFirst().applyRemove(result, context);
   }
 }
 /* JavaCC - OriginalChecksum=c255bea24e12493e1005ba2a4d1dbb9d (do not edit this line) */

@@ -23,6 +23,8 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -34,7 +36,7 @@ public class GraphQLResult extends ResultInternal {
 
   public GraphQLResult(final Map<String, Object> map) {
     super(map);
-    identity = (RID) map.get("@rid");
+    identity = (RID) map.get(RID_PROPERTY);
   }
 
   @Override

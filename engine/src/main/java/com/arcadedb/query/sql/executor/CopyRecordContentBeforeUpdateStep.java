@@ -23,6 +23,9 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+import static com.arcadedb.schema.Property.TYPE_PROPERTY;
+
 /**
  * <p>Reads an upstream result set and returns a new result set that contains copies of the original OResult instances
  * </p>
@@ -55,9 +58,9 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
           if (result instanceof UpdatableResult updatableResult) {
             final ResultInternal prevValue = new ResultInternal(context.getDatabase());
             final Record rec = result.getElement().get().getRecord();
-            prevValue.setProperty("@rid", rec.getIdentity());
+            prevValue.setProperty(RID_PROPERTY, rec.getIdentity());
             if (rec instanceof Document document)
-              prevValue.setProperty("@type", document.getTypeName());
+              prevValue.setProperty(TYPE_PROPERTY, document.getTypeName());
 
             for (final String propName : result.getPropertyNames())
               prevValue.setProperty(propName, result.getProperty(propName));

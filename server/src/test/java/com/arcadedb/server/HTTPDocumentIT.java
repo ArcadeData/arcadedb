@@ -35,6 +35,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.*;
 
 public class  HTTPDocumentIT extends BaseGraphServerTest {
@@ -355,7 +356,7 @@ public class  HTTPDocumentIT extends BaseGraphServerTest {
         LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
         final JSONObject responseAsJson = new JSONObject(response);
         assertThat(responseAsJson.has("result")).isTrue();
-        rid = responseAsJson.getJSONArray("result").getJSONObject(0).getString("@rid");
+        rid = responseAsJson.getJSONArray("result").getJSONObject(0).getString(RID_PROPERTY);
         assertThat(rid.contains("#")).isTrue();
       } finally {
         connection.disconnect();

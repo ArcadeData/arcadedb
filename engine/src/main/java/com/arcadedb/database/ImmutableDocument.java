@@ -30,6 +30,10 @@ import java.lang.reflect.*;
 import java.util.*;
 import java.util.logging.*;
 
+import static com.arcadedb.schema.Property.CAT_PROPERTY;
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+import static com.arcadedb.schema.Property.TYPE_PROPERTY;
+
 /**
  * Immutable document implementation. To modify the record, you need to get the mutable representation by calling {@link #modify()}. This implementation keeps the
  * information in a byte[] to reduce the amount of objects to be managed by the Garbage Collector. For recurrent access to the record property you could evaluate
@@ -100,10 +104,10 @@ public class ImmutableDocument extends BaseDocument {
         .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
     final JSONObject result = new JSONSerializer(database).map2json(map, null);
     if (includeMetadata) {
-      result.put("@cat", "d");
-      result.put("@type", type.getName());
+      result.put(CAT_PROPERTY, "d");
+      result.put(TYPE_PROPERTY, type.getName());
       if (getIdentity() != null)
-        result.put("@rid", getIdentity().toString());
+        result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
   }
@@ -127,10 +131,10 @@ public class ImmutableDocument extends BaseDocument {
     final Map<String, Object> result = new LinkedHashMap<>(
         database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid));
     if (includeMetadata) {
-      result.put("@cat", "d");
-      result.put("@type", type.getName());
+      result.put(CAT_PROPERTY, "d");
+      result.put(TYPE_PROPERTY, type.getName());
       if (getIdentity() != null)
-        result.put("@rid", getIdentity().toString());
+        result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
   }

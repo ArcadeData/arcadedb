@@ -96,7 +96,7 @@ public class GraphQLSchema {
     final Map<String, Object> arguments = null;
 
     try {
-      final Selection selection = op.getSelectionSet().getSelections().get(0);
+      final Selection selection = op.getSelectionSet().getSelections().getFirst();
       queryName = selection.getName();
       if (queryDefinition != null) {
         for (final FieldDefinition f : queryDefinition.getFieldDefinitions()) {

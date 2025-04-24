@@ -39,6 +39,10 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
 
+import static com.arcadedb.schema.Property.CAT_PROPERTY;
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+import static com.arcadedb.schema.Property.TYPE_PROPERTY;
+
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -158,9 +162,9 @@ public class GraphQLResultSet implements ResultSet {
       final Document element = current.getElement().get();
       final RID rid = element.getIdentity();
       if (rid != null)
-        map.put("@rid", rid);
-      map.put("@type", element.getTypeName());
-      map.put("@cat", element instanceof Vertex ? "v" : element instanceof Edge ? "e" : "d");
+        map.put(RID_PROPERTY, rid);
+      map.put(TYPE_PROPERTY, element.getTypeName());
+      map.put(CAT_PROPERTY, element instanceof Vertex ? "v" : element instanceof Edge ? "e" : "d");
     }
 
     for (final Projection entry : projections) {
@@ -197,13 +201,11 @@ public class GraphQLResultSet implements ResultSet {
       final ObjectTypeDefinition projectionType = entry.type;
 
       if (selectionSet != null) {
-        if (projectionValue instanceof Map m)
-          projectionValue = mapBySelections(new ResultInternal(m), selectionSet);
-        else if (projectionValue instanceof EmbeddedDocument emb)
-          projectionValue = mapBySelections(new ResultInternal(emb), selectionSet);
-        else if (projectionValue instanceof Result result)
-          projectionValue = mapBySelections(result, selectionSet);
-        else if (projectionValue instanceof Iterable iterable) {
+        switch (projectionValue) {
+        case Map m -> projectionValue = mapBySelections(new ResultInternal(m), selectionSet);
+        case EmbeddedDocument emb -> projectionValue = mapBySelections(new ResultInternal(emb), selectionSet);
+        case Result result -> projectionValue = mapBySelections(result, selectionSet);
+        case Iterable iterable -> {
           final List<Result> subResults = new ArrayList<>();
           for (final Object o : iterable) {
             final Result item;
@@ -217,16 +219,17 @@ public class GraphQLResultSet implements ResultSet {
             subResults.add(item);
           }
           projectionValue = subResults;
-        } else
+        }
+        case null, default -> {
           continue;
+        }
+        }
       } else if (projectionType != null) {
-        if (projectionValue instanceof Map m)
-          projectionValue = mapByReturnType(new ResultInternal(m), projectionType);
-        else if (projectionValue instanceof EmbeddedDocument emb)
-          projectionValue = mapBySelections(new ResultInternal(emb), selectionSet);
-        else if (projectionValue instanceof Result result)
-          projectionValue = mapByReturnType(result, projectionType);
-        else if (projectionValue instanceof Iterable iterable) {
+        switch (projectionValue) {
+        case Map m -> projectionValue = mapByReturnType(new ResultInternal(m), projectionType);
+        case EmbeddedDocument emb -> projectionValue = mapBySelections(new ResultInternal(emb), selectionSet);
+        case Result result -> projectionValue = mapByReturnType(result, projectionType);
+        case Iterable iterable -> {
           final List<Result> subResults = new ArrayList<>();
           for (final Object o : iterable) {
             final Result item;
@@ -240,8 +243,11 @@ public class GraphQLResultSet implements ResultSet {
             subResults.add(item);
           }
           projectionValue = subResults;
-        } else
+        }
+        case null, default -> {
           continue;
+        }
+        }
       }
 
       map.put(projName, projectionValue);

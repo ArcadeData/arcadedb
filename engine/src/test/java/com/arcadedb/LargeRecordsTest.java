@@ -45,7 +45,7 @@ public class LargeRecordsTest extends TestHelper {
     database.begin();
 
     final DocumentType type = database.getSchema().getType("BigRecords");
-    final long pageOverSize = ((LocalBucket) type.getBuckets(true).get(0)).getPageSize() * 3;
+    final long pageOverSize = ((LocalBucket) type.getBuckets(true).getFirst()).getPageSize() * 3;
 
     database.scanType("BigRecords", true, record -> {
       assertThat(record).isNotNull();
@@ -64,7 +64,7 @@ public class LargeRecordsTest extends TestHelper {
     database.transaction(() -> {
       final DocumentType type = database.getSchema().getOrCreateDocumentType("BigRecords");
 
-      final long pageOverSize = ((LocalBucket) type.getBuckets(true).get(0)).getPageSize() * 3L;
+      final long pageOverSize = ((LocalBucket) type.getBuckets(true).getFirst()).getPageSize() * 3L;
 
       final StringBuilder buffer = new StringBuilder();
       for (int k = 0; k < pageOverSize; ++k)

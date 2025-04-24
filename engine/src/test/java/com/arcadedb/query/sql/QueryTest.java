@@ -35,6 +35,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Fail.fail;
 
@@ -74,8 +75,7 @@ public class QueryTest extends TestHelper {
         final Result record = rs.next();
         assertThat(record).isNotNull();
 
-        final Set<String> prop = new HashSet<>();
-        prop.addAll(record.getPropertyNames());
+        final Set<String> prop = new HashSet<>(record.getPropertyNames());
 
         assertThat(record.getPropertyNames().size()).isEqualTo(3);
         assertThat(prop).contains("id", "name", "surname");
@@ -510,7 +510,7 @@ public class QueryTest extends TestHelper {
         prop.addAll(record.getPropertyNames());
 
         assertThat(record.getPropertyNames()).hasSize(2);
-        assertThat(prop.contains("@rid")).isTrue();
+        assertThat(prop.contains(RID_PROPERTY)).isTrue();
         assertThat(prop.contains("name")).isTrue();
 
         total.incrementAndGet();
@@ -524,15 +524,15 @@ public class QueryTest extends TestHelper {
   public void testFlattenWhereCondition() {
     database.transaction(() -> {
       database.getSchema().createDocumentType("test");
-      String query = "SELECT FROM test WHERE (";
+      StringBuilder query = new StringBuilder("SELECT FROM test WHERE (");
       for (int i = 1; i < 10; i++) {
         if (i > 1)
-          query += " and ";
-        query += "((property" + i + " is null) or (property" + i + " = #107:150))";
+          query.append(" and ");
+        query.append("((property").append(i).append(" is null) or (property").append(i).append(" = #107:150))");
       }
-      query += ")";
+      query.append(")");
 
-      try (ResultSet set = database.query("sql", query)) {
+      try (ResultSet set = database.query("sql", query.toString())) {
         assertThat(set.stream().count()).isEqualTo(0);
       }
     });

@@ -30,6 +30,8 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+
 public class RemoteImmutableVertex extends RemoteImmutableDocument implements Vertex {
   private final RemoteVertex internal;
 
@@ -150,7 +152,7 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
       result.put("@cat", "v");
       result.put("@type", getTypeName());
       if (getIdentity() != null)
-        result.put("@rid", getIdentity().toString());
+        result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
   }
@@ -162,7 +164,7 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
       result.put("@cat", "v");
       result.put("@type", getTypeName());
       if (getIdentity() != null)
-        result.put("@rid", getIdentity().toString());
+        result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
   }

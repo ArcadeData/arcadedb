@@ -548,10 +548,10 @@ public class SelectStatementTest {
   public void testFlatten() {
     final SelectStatement stm = (SelectStatement) checkRightSyntax("select from ouser where name = 'foo'");
     final List<AndBlock> flattened = stm.whereClause.flatten();
-    assertThat(((BinaryCondition) flattened.get(0).subBlocks.get(0)).left.isBaseIdentifier()).isTrue();
-    assertThat(((BinaryCondition) flattened.get(0).subBlocks.get(0)).right.isBaseIdentifier()).isFalse();
-    assertThat(((BinaryCondition) flattened.get(0).subBlocks.get(0)).left.isEarlyCalculated(new BasicCommandContext())).isFalse();
-    assertThat(((BinaryCondition) flattened.get(0).subBlocks.get(0)).right.isEarlyCalculated(new BasicCommandContext())).isTrue();
+    assertThat(((BinaryCondition) flattened.getFirst().subBlocks.getFirst()).left.isBaseIdentifier()).isTrue();
+    assertThat(((BinaryCondition) flattened.getFirst().subBlocks.getFirst()).right.isBaseIdentifier()).isFalse();
+    assertThat(((BinaryCondition) flattened.getFirst().subBlocks.getFirst()).left.isEarlyCalculated(new BasicCommandContext())).isFalse();
+    assertThat(((BinaryCondition) flattened.getFirst().subBlocks.getFirst()).right.isEarlyCalculated(new BasicCommandContext())).isTrue();
   }
 
   @Test

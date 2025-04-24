@@ -20,8 +20,12 @@ package com.arcadedb.utility;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.Property;
 
 import java.util.*;
+
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 
 public class RecordTableFormatter extends TableFormatter {
 
@@ -34,10 +38,10 @@ public class RecordTableFormatter extends TableFormatter {
 
     @Override
     public Object getField(final String field) {
-      if (field.equalsIgnoreCase("@rid")) {
+      if (field.equalsIgnoreCase(RID_PROPERTY)) {
         if (result.getIdentity().isPresent())
           return result.getIdentity().get();
-      } else if (field.equalsIgnoreCase("@type")) {
+      } else if (field.equalsIgnoreCase(TYPE_PROPERTY)) {
         if (result.getRecord().isPresent())
           return ((Document) result.getRecord().get()).getTypeName();
       }

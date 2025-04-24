@@ -42,13 +42,12 @@ public final class StringTranslationUtils {
   }
 
   public static String toLiteral(Object argument) {
-    if (argument instanceof List) {
-      return ((List<?>) argument).stream()
+    if (argument instanceof List<?> list) {
+      return list.stream()
           .map(StringTranslationUtils::toLiteral)
           .collect(Collectors.joining(", ", "[", "]"));
     }
-    if (argument instanceof Map) {
-      Map<?, ?> map = (Map<?, ?>) argument;
+    if (argument instanceof Map<?, ?> map) {
       if (map.isEmpty()) {
         return "[:]";
       }
@@ -63,8 +62,8 @@ public final class StringTranslationUtils {
     if (argument instanceof Double || argument instanceof Float) {
       return argument.toString() + "d";
     }
-    if (argument instanceof String) {
-      return toStringLiteral((String) argument);
+    if (argument instanceof String string) {
+      return toStringLiteral(string);
     }
     if (argument instanceof Double || argument instanceof Float) {
       return argument.toString() + "d";
@@ -72,8 +71,8 @@ public final class StringTranslationUtils {
     if (argument == null) {
       return "null";
     }
-    if (argument instanceof Verbatim) {
-      return ((Verbatim) argument).getValue();
+    if (argument instanceof Verbatim verbatim) {
+      return verbatim.getValue();
     }
 
     return argument.toString();
