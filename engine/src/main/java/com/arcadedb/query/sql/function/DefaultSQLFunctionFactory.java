@@ -67,6 +67,7 @@ import com.arcadedb.query.sql.function.misc.SQLFunctionCoalesce;
 import com.arcadedb.query.sql.function.misc.SQLFunctionDecode;
 import com.arcadedb.query.sql.function.misc.SQLFunctionEncode;
 import com.arcadedb.query.sql.function.misc.SQLFunctionIf;
+import com.arcadedb.query.sql.function.misc.SQLFunctionIfEmpty;
 import com.arcadedb.query.sql.function.misc.SQLFunctionIfNull;
 import com.arcadedb.query.sql.function.misc.SQLFunctionUUID;
 import com.arcadedb.query.sql.function.misc.SQLFunctionVersion;
@@ -141,6 +142,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionDecode.NAME, new SQLFunctionDecode());
     register(SQLFunctionEncode.NAME, new SQLFunctionEncode());
     register(SQLFunctionIf.NAME, new SQLFunctionIf());
+    register(SQLFunctionIfEmpty.NAME, new SQLFunctionIfEmpty());
     register(SQLFunctionIfNull.NAME, new SQLFunctionIfNull());
     register(SQLFunctionUUID.NAME, SQLFunctionUUID.class);
     register(SQLFunctionVersion.NAME, SQLFunctionVersion.class);
