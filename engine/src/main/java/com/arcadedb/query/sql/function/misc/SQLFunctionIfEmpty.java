@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
-import java.util.*;
+import java.util.Collection;
 
 /**
  * Returns the passed {@literal field/value} (or optional parameter {@literal return_value_if_not_empty}) if
@@ -74,14 +74,15 @@ public class SQLFunctionIfEmpty extends SQLFunctionAbstract {
     /*
      * iFuncParams [0] field/value to check for empty [1] return value if [0] is empty [2] optional return value if [0] is not empty
      */
-    if ( (params[0] instanceof String && params[0].toString().length() == 0)
-         || (params[0] instanceof Collection<?> && MultiValue.getSize(params[0]) == 0) ) {
+    if ((params[0] instanceof String && params[0].toString().length() == 0)
+        || (params[0] instanceof Collection<?> && MultiValue.getSize(params[0]) == 0)
+        || (params[0] instanceof Object[] && ((Object[]) params[0]).length == 0)) {
       return params[1];
     }
-      if (params.length == 3) {
-        return params[2];
-      }
-      return params[0];
+    if (params.length == 3) {
+      return params[2];
+    }
+    return params[0];
   }
 
   @Override
