@@ -23,13 +23,13 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
-import java.util.logging.*;
+import java.util.logging.Level;
 
 /**
  * Returns different values based on the condition. If it's true the first value is returned, otherwise the second one.
  * <br>
  * Syntax: <blockquote>
- *
+ * <p>
  * {@literal if(&lt;field|value|expression&gt;, &lt;return_value_if_true&gt; [,&lt;return_value_if_false&gt;])}
  *
  * </blockquote>
@@ -57,20 +57,21 @@ public class SQLFunctionIf extends SQLFunctionAbstract {
   }
 
   @Override
-  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params, final CommandContext context) {
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
 
     final boolean result;
 
     try {
       final Object condition = params[0];
-      if (condition instanceof Boolean boolean1)
-        result = boolean1;
-      else if (condition instanceof String)
-        result = Boolean.parseBoolean(condition.toString());
-      else if (condition instanceof Number number)
-        result = number.intValue() > 0;
-      else
+      switch (condition) {
+      case Boolean boolean1 -> result = boolean1;
+      case String s -> result = Boolean.parseBoolean(condition.toString());
+      case Number number -> result = number.intValue() > 0;
+      case null, default -> {
         return null;
+      }
+      }
 
       return result ? params[1] : params[2];
 
