@@ -21,22 +21,21 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.Identifier;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class SaveElementStep extends AbstractExecutionStep {
-
   private final Identifier bucket;
+  private final boolean    createAlways;
 
-  public SaveElementStep(final CommandContext context, final Identifier bucket) {
+  public SaveElementStep(final CommandContext context, final Identifier bucket, final boolean createAlways) {
     super(context);
     this.bucket = bucket;
-  }
-
-  public SaveElementStep(final CommandContext context) {
-    this(context, null);
+    this.createAlways = createAlways;
   }
 
   @Override
@@ -54,7 +53,18 @@ public class SaveElementStep extends AbstractExecutionStep {
         if (result != null && result.isElement()) {
           final Document doc = result.getElement().orElse(null);
 
-          final MutableDocument modifiableDoc = doc.modify();
+          final MutableDocument modifiableDoc;
+          if (createAlways) {
+            // STRIPE OFF ANY IDENTITY TO FORCE AN INSERT. THIS IS NECESSARY IF THE RECORD IS COMING FROM A SELECT
+            if (doc instanceof Vertex)
+              modifiableDoc = context.getDatabase().newVertex(doc.getTypeName()).fromMap(doc.toMap(false));
+            else if (doc instanceof Edge)
+              throw new IllegalArgumentException("Cannot duplicate an edge");
+            else
+              modifiableDoc = context.getDatabase().newDocument(doc.getTypeName()).fromMap(doc.toMap(false));
+          } else
+            modifiableDoc = doc.modify();
+
           if (bucket == null)
             modifiableDoc.save();
           else
@@ -86,6 +96,6 @@ public class SaveElementStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new SaveElementStep(context, bucket == null ? null : bucket.copy());
+    return new SaveElementStep(context, bucket == null ? null : bucket.copy(), createAlways);
   }
 }

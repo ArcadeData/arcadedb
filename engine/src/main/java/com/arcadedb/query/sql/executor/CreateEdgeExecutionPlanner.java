@@ -124,7 +124,7 @@ public class CreateEdgeExecutionPlanner {
   }
 
   private void handleSave(final InsertExecutionPlan result, final Identifier targetClusterName, final CommandContext context) {
-    result.chain(new SaveElementStep(context, targetClusterName));
+    result.chain(new SaveElementStep(context, targetClusterName, true));
   }
 
   private void handleSetFields(final InsertExecutionPlan result, final InsertBody insertBody, final CommandContext context) {

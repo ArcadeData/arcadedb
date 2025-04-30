@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.graph.Edge;
 import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -130,9 +129,9 @@ public class UpdateExecutionPlanner {
           bucket.getBucketName() != null ?
               bucket.getBucketName() :
               context.getDatabase().getSchema().getBucketById(bucket.getBucketNumber()).getName();
-      result.chain(new SaveElementStep(context, new Identifier(bucketName)));
+      result.chain(new SaveElementStep(context, new Identifier(bucketName), false));
     } else
-      result.chain(new SaveElementStep(context));
+      result.chain(new SaveElementStep(context, null, false));
   }
 
   private void handleTimeout(final UpdateExecutionPlan result, final CommandContext context, final Timeout timeout) {

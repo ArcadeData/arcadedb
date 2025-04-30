@@ -79,7 +79,7 @@ public class InsertExecutionPlanner {
   }
 
   private void handleSave(final InsertExecutionPlan result, final Identifier targetClusterName, final CommandContext context) {
-    result.chain(new SaveElementStep(context, targetClusterName));
+    result.chain(new SaveElementStep(context, targetClusterName, true));
   }
 
   private void handleReturn(final InsertExecutionPlan result, final Projection returnStatement, final CommandContext context) {

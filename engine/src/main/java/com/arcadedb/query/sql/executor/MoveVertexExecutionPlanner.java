@@ -63,7 +63,7 @@ public class MoveVertexExecutionPlanner {
   }
 
   private void handleSave(final UpdateExecutionPlan result, final CommandContext ctx) {
-    result.chain(new SaveElementStep(ctx));
+    result.chain(new SaveElementStep(ctx, null, true));
   }
 
   private void handleOperations(final UpdateExecutionPlan plan, final CommandContext ctx, final UpdateOperations op) {
