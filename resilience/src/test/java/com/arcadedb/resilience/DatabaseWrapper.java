@@ -18,20 +18,17 @@ import static com.arcadedb.resilience.ResilienceTestTemplate.PASSWORD;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class DatabaseWrapper {
-
-  private final RemoteDatabase      db;
-  private final GenericContainer<?> arcadeServer;
-  private final String              name;
-  private final Supplier<Integer>   idSupplier;
-  private final Timer               photosTimer;
-  private final Timer               usersTimer;
-  private final Timer               friendshipTimer;
-  protected     Logger              logger = LoggerFactory.getLogger(getClass());
+  private static final Logger              logger = LoggerFactory.getLogger(DatabaseWrapper.class);
+  private final        RemoteDatabase      db;
+  private final        GenericContainer<?> arcadeServer;
+  private final        Supplier<Integer>   idSupplier;
+  private final        Timer               photosTimer;
+  private final        Timer               usersTimer;
+  private final        Timer               friendshipTimer;
 
   public DatabaseWrapper(GenericContainer<?> arcadeContainer, Supplier<Integer> idSupplier) {
     this.arcadeServer = arcadeContainer;
     this.db = connectToDatabase(arcadeContainer);
-    this.name = arcadeContainer.getContainerName();
     this.idSupplier = idSupplier;
     usersTimer = Metrics.timer("arcadedb.test.inserted.users");
     photosTimer = Metrics.timer("arcadedb.test.inserted.photos");
