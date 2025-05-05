@@ -91,7 +91,8 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
 
     exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, contentType);
 
-    Metrics.counter("http.static-content").increment(); ;
+    Metrics.counter("http.static-content").increment();
+    ;
 
     LogManager.instance().log(this, Level.FINE, "Loading file %s ", "/static" + uri);
 
@@ -105,7 +106,8 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
     byte[] bytes = fileContent.toByteArray();
 
     if (processTemplate)
-      bytes = templating(exchange, new String(bytes, DatabaseFactory.getDefaultCharset()), new HashMap<>()).getBytes(DatabaseFactory.getDefaultCharset());
+      bytes = templating(exchange, new String(bytes, DatabaseFactory.getDefaultCharset()), new HashMap<>()).getBytes(
+          DatabaseFactory.getDefaultCharset());
 
     if (!processTemplate)
       exchange.getResponseHeaders().put(Headers.CACHE_CONTROL, "max-age=86400");
@@ -113,7 +115,8 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
     return new ExecutionResponse(200, bytes);
   }
 
-  protected String templating(final HttpServerExchange exchange, final String file, final Map<String, Object> variables) throws IOException {
+  protected String templating(final HttpServerExchange exchange, final String file, final Map<String, Object> variables)
+      throws IOException {
     int beginTokenPos = file.indexOf("${");
     if (beginTokenPos < 0)
       return file;
@@ -151,8 +154,10 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
 
         final InputStream fis = getClass().getClassLoader().getResourceAsStream("static/" + include);
         if (fis == null) {
-          LogManager.instance().log(this, Level.SEVERE, "Could not find file to include '%s' to include", include);
-          return file;
+          LogManager.instance().log(this, Level.WARNING, "Could not find file to include '%s' to include", include);
+          pos = endTokenPos + "}".length();
+          beginTokenPos = file.indexOf("${", pos);
+          continue;
         }
 
         byte[] includeBytes = FileUtils.readStreamAsBinary(fis).toByteArray();
@@ -168,9 +173,13 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
         if (assignmentPos < 0) {
           // READ
           final String variableName = command.substring("var:".length());
-          if (variableName.equalsIgnoreCase("swVersion")) {
+          if (variableName.equalsIgnoreCase("swVersion"))
             buffer.append(Constants.getVersion());
-          } else
+          else if (variableName.equalsIgnoreCase("now"))
+            buffer.append(System.currentTimeMillis());
+          else if (variableName.equalsIgnoreCase("uuid"))
+            buffer.append(UUID.randomUUID());
+          else
             buffer.append(variables.get(variableName));
         } else {
           // WRITE
