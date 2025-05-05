@@ -21,8 +21,6 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.Identifier;
 
 /**
@@ -53,17 +51,20 @@ public class SaveElementStep extends AbstractExecutionStep {
         if (result != null && result.isElement()) {
           final Document doc = result.getElement().orElse(null);
 
+          if (doc == null)
+            throw new IllegalArgumentException("Cannot save a null document");
+
           final MutableDocument modifiableDoc;
-          if (createAlways) {
-            // STRIPE OFF ANY IDENTITY TO FORCE AN INSERT. THIS IS NECESSARY IF THE RECORD IS COMING FROM A SELECT
-            if (doc instanceof Vertex)
-              modifiableDoc = context.getDatabase().newVertex(doc.getTypeName()).fromMap(doc.toMap(false));
-            else if (doc instanceof Edge)
-              throw new IllegalArgumentException("Cannot duplicate an edge");
-            else
-              modifiableDoc = context.getDatabase().newDocument(doc.getTypeName()).fromMap(doc.toMap(false));
-          } else
-            modifiableDoc = doc.modify();
+//          if (createAlways) {
+//            // STRIPE OFF ANY IDENTITY TO FORCE AN INSERT. THIS IS NECESSARY IF THE RECORD IS COMING FROM A SELECT
+//            if (doc instanceof Vertex)
+//              modifiableDoc = context.getDatabase().newVertex(doc.getTypeName()).fromMap(doc.toMap(false));
+//            else if (doc instanceof Edge)
+//              throw new IllegalArgumentException("Cannot duplicate an edge");
+//            else
+//              modifiableDoc = context.getDatabase().newDocument(doc.getTypeName()).fromMap(doc.toMap(false));
+//          } else
+          modifiableDoc = doc.modify();
 
           if (bucket == null)
             modifiableDoc.save();
