@@ -1,4 +1,4 @@
-package com.arcadedb.resilience;
+package com.arcadedb.containers.support;
 
 import com.arcadedb.utility.FileUtils;
 import eu.rekawek.toxiproxy.ToxiproxyClient;
@@ -6,6 +6,7 @@ import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.logging.LoggingMeterRegistry;
 import io.micrometer.core.instrument.logging.LoggingRegistryConfig;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.slf4j.Logger;
@@ -26,18 +27,22 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
-public abstract class ResilienceTestTemplate {
-  public static final String                 IMAGE      = "arcadedata/arcadedb:latest";
-  public static final String                 PASSWORD   = "playwithdata";
-  private             LoggingMeterRegistry   loggingMeterRegistry;
-  private             AtomicInteger          id         = new AtomicInteger();
-  protected           Logger                 logger     = LoggerFactory.getLogger(getClass());
-  protected           Network                network;
-  protected           ToxiproxyContainer     toxiproxy;
-  protected           ToxiproxyClient        toxiproxyClient;
-  protected           List<GenericContainer> containers = new ArrayList<>();
+public abstract class ContainersTestTemplate {
+  public static final String                    IMAGE      = "arcadedata/arcadedb:latest";
+  public static final String                    PASSWORD   = "playwithdata";
+  private             LoggingMeterRegistry      loggingMeterRegistry;
+  protected           Logger                    logger     = LoggerFactory.getLogger(getClass());
+  protected           Network                   network;
+  protected           ToxiproxyContainer        toxiproxy;
+  protected           ToxiproxyClient           toxiproxyClient;
+  protected           List<GenericContainer<?>> containers = new ArrayList<>();
 
+  /**
+   * Supplier to generate unique IDs.
+   */
   protected Supplier<Integer> idSupplier = new Supplier<>() {
+
+    private final AtomicInteger id = new AtomicInteger();
 
     @Override
     public Integer get() {
@@ -47,22 +52,20 @@ public abstract class ResilienceTestTemplate {
 
   @BeforeEach
   void setUp() throws IOException, InterruptedException {
-    logger.info("Cleaning up the target directory");
-    FileUtils.deleteRecursively(Path.of("./target/databases").toFile());
-    FileUtils.deleteRecursively(Path.of("./target/replication").toFile());
-    FileUtils.deleteRecursively(Path.of("./target/logs").toFile());
+    deleteContainersDirectories();
 
     LoggingRegistryConfig config = new LoggingRegistryConfig() {
       @Override
-      public String get(String key) {
+      public String get(@NotNull String key) {
         return null;
       }
 
       @Override
-      public Duration step() {
+      public @NotNull Duration step() {
         return Duration.ofSeconds(10);
       }
     };
+
     Metrics.addRegistry(new SimpleMeterRegistry());
     loggingMeterRegistry = LoggingMeterRegistry.builder(config).build();
     Metrics.addRegistry(loggingMeterRegistry);
@@ -85,14 +88,21 @@ public abstract class ResilienceTestTemplate {
     logger.info("Stopping the Toxiproxy container");
     toxiproxy.stop();
 
-    logger.info("Removing the target directory");
-    FileUtils.deleteRecursively(Path.of("./target/databases").toFile());
-    FileUtils.deleteRecursively(Path.of("./target/replication").toFile());
-    FileUtils.deleteRecursively(Path.of("./target/logs").toFile());
+    deleteContainersDirectories();
 
     Metrics.removeRegistry(loggingMeterRegistry);
   }
 
+  private void deleteContainersDirectories() {
+    logger.info("Deleting containers directories");
+    FileUtils.deleteRecursively(Path.of("./target/databases").toFile());
+    FileUtils.deleteRecursively(Path.of("./target/replication").toFile());
+    FileUtils.deleteRecursively(Path.of("./target/logs").toFile());
+  }
+
+  /**
+   * Stops all containers and clears the list of containers.
+   */
   protected void stopContainers() {
     logger.info("Stopping all containers");
     containers.stream()
@@ -100,6 +110,16 @@ public abstract class ResilienceTestTemplate {
         .peek(container -> logger.info("Stopping container {}", container.getContainerName()))
         .forEach(GenericContainer::stop);
     containers.clear();
+  }
+
+  /**
+   * Starts all containers that are not already running.
+   */
+  protected void startContainers() {
+    logger.info("Starting all containers");
+    containers.stream()
+        .filter(container -> !container.isRunning())
+        .forEach(container -> Startables.deepStart(container).join());
   }
 
   /**
@@ -112,7 +132,7 @@ public abstract class ResilienceTestTemplate {
    *
    * @return A GenericContainer instance representing the ArcadeDB container.
    */
-  protected GenericContainer createArcadeContainer(String name,
+  protected GenericContainer<?> createArcadeContainer(String name,
       String serverList,
       String quorum,
       String role,
@@ -132,7 +152,7 @@ public abstract class ResilienceTestTemplate {
    *
    * @return A GenericContainer instance representing the ArcadeDB container.
    */
-  protected GenericContainer createArcadeContainer(String name,
+  protected GenericContainer<?> createArcadeContainer(String name,
       String serverList,
       String quorum,
       String role,

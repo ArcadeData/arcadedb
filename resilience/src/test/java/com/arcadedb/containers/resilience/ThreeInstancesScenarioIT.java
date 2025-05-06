@@ -1,5 +1,7 @@
-package com.arcadedb.resilience;
+package com.arcadedb.containers.resilience;
 
+import com.arcadedb.containers.support.ContainersTestTemplate;
+import com.arcadedb.containers.support.DatabaseWrapper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseComparator;
 import com.arcadedb.database.DatabaseFactory;
@@ -11,12 +13,11 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.lifecycle.Startables;
 
 import java.io.IOException;
 import java.util.concurrent.TimeUnit;
 
-public class ThreeInstancesScenarioIT extends ResilienceTestTemplate {
+public class ThreeInstancesScenarioIT extends ContainersTestTemplate {
 
   @AfterEach
   void compareDatabases() {
@@ -42,8 +43,8 @@ public class ThreeInstancesScenarioIT extends ResilienceTestTemplate {
   }
 
   @Test
-  @DisplayName("Test with 3 instances: 1 leader and 2 replicas")
-  void oneLeaderAndTwoReplicas() throws IOException, InterruptedException {
+  @DisplayName("Test resync after network crash with 3 servers in HA mode: one leader and two replicas")
+  void oneLeaderAndTwoReplicas() throws IOException {
 
     logger.info("Creating a proxy for each arcade container");
     final Proxy arcade1Proxy = toxiproxyClient.createProxy("arcade1Proxy", "0.0.0.0:8666", "arcade1:2424");
@@ -59,9 +60,7 @@ public class ThreeInstancesScenarioIT extends ResilienceTestTemplate {
         network);
 
     logger.info("Starting the containers in sequence: arcade1 will be the leader");
-    Startables.deepStart(arcade1).join();
-    Startables.deepStart(arcade2).join();
-    Startables.deepStart(arcade3).join();
+    startContainers();
 
     DatabaseWrapper db1 = new DatabaseWrapper(arcade1, idSupplier);
     DatabaseWrapper db2 = new DatabaseWrapper(arcade2, idSupplier);
@@ -99,9 +98,15 @@ public class ThreeInstancesScenarioIT extends ResilienceTestTemplate {
     logger.info("Adding data to arcade1");
     db1.addUserAndPhotos(100, 10);
 
+    logger.info("Check that all the data are replicated only on arcade1 and arcade2");
+    db1.assertThatUserCountIs(130);
+    db2.assertThatUserCountIs(130);
+    db3.assertThatUserCountIs(30);
+
     logger.info("Reconnecting arcade3 ");
     arcade3Proxy.toxics().get("CUT_CONNECTION_DOWNSTREAM").remove();
     arcade3Proxy.toxics().get("CUT_CONNECTION_UPSTREAM").remove();
+
 
     logger.info("Adding data to database");
     db1.addUserAndPhotos(100, 10);
