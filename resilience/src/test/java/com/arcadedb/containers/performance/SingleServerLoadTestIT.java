@@ -1,10 +1,10 @@
-package com.arcadedb.resilience;
+package com.arcadedb.containers.performance;
 
-import org.assertj.core.api.Assertions;
+import com.arcadedb.containers.support.ContainersTestTemplate;
+import com.arcadedb.containers.support.DatabaseWrapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.lifecycle.Startables;
 
 import java.io.IOException;
 import java.util.List;
@@ -12,15 +12,17 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-public class SingleServerIT extends ResilienceTestTemplate {
+import static org.assertj.core.api.Assertions.assertThat;
+
+public class SingleServerLoadTestIT extends ContainersTestTemplate {
 
   @Test
   @DisplayName("Test single server under heavy load")
   void singleServerUnderMassiveLoad() throws InterruptedException, IOException {
 
-    GenericContainer arcadeContainer = createArcadeContainer("arcade", "none", "none", "any", false, network);
+    GenericContainer<?> arcadeContainer = createArcadeContainer("arcade", "none", "none", "any", false, network);
 
-    Startables.deepStart(arcadeContainer).join();
+    startContainers();
 
     DatabaseWrapper db = new DatabaseWrapper(arcadeContainer, idSupplier);
     db.createDatabase();
@@ -28,7 +30,7 @@ public class SingleServerIT extends ResilienceTestTemplate {
 
     final int numOfThreads = 5;
     final int numOfUsers = 1000;
-
+    logger.info("Creating {} users using {} threads", numOfUsers, numOfThreads);
     ExecutorService executor = Executors.newFixedThreadPool(numOfThreads);
     for (int i = 0; i < numOfThreads; i++) {
       executor.submit(() -> {
@@ -42,7 +44,7 @@ public class SingleServerIT extends ResilienceTestTemplate {
       executor.submit(() -> {
         DatabaseWrapper db1 = new DatabaseWrapper(arcadeContainer, idSupplier);
         for (int f = 0; f < 10; f++) {
-          List<String> userIds = db.getUserIds(10, f * 10);
+          List<Integer> userIds = db.getUserIds(10, f * 10);
           for (int j = 0; j < userIds.size(); j++) {
             db1.addFriendship(userIds.get(j), userIds.get((j + 1) % userIds.size()));
           }
@@ -66,7 +68,7 @@ public class SingleServerIT extends ResilienceTestTemplate {
     }
     db.assertThatUserCountIs(numOfUsers * numOfThreads);
 
-    Assertions.assertThat(db.countFriendships()).isEqualTo(500);
+    assertThat(db.countFriendships()).isEqualTo(500);
 
   }
 }
