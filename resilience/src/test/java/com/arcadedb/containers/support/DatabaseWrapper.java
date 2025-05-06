@@ -1,4 +1,4 @@
-package com.arcadedb.resilience;
+package com.arcadedb.containers.support;
 
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
@@ -14,7 +14,7 @@ import org.testcontainers.containers.GenericContainer;
 import java.util.List;
 import java.util.function.Supplier;
 
-import static com.arcadedb.resilience.ResilienceTestTemplate.PASSWORD;
+import static com.arcadedb.containers.support.ContainersTestTemplate.PASSWORD;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class DatabaseWrapper {
@@ -64,16 +64,16 @@ public class DatabaseWrapper {
       server.create("ha-test");
   }
 
-  void createSchema() {
+  public void createSchema() {
     //this is a test-double of HTTPGraphIT.testOneEdgePerTx test
     db.command("sqlscript",
         """
             CREATE VERTEX TYPE User;
-            CREATE PROPERTY User.id STRING;
+            CREATE PROPERTY User.id INTEGER;
             CREATE INDEX ON User (id) UNIQUE;
 
             CREATE VERTEX TYPE Photo;
-            CREATE PROPERTY Photo.id STRING;
+            CREATE PROPERTY Photo.id INTEGER;
             CREATE INDEX ON Photo (id) UNIQUE;
 
             CREATE EDGE TYPE HasUploaded;
@@ -93,13 +93,20 @@ public class DatabaseWrapper {
     assertThat(schema.existsType("Likes")).isTrue();
   }
 
-  void addUserAndPhotos(int numberOfUsers, int numberOfPhotos) {
+  /**
+   * This method creates a number of users and photos for each user.
+   * The photos are created in a transaction with the user.
+   *
+   * @param numberOfUsers  the number of users to create
+   * @param numberOfPhotos the number of photos to create for each user
+   */
+  public void addUserAndPhotos(int numberOfUsers, int numberOfPhotos) {
     for (int userIndex = 1; userIndex <= numberOfUsers; userIndex++) {
-      String userId = String.format("u%09d", idSupplier.get());
+      int userId = idSupplier.get();
       try {
         usersTimer.record(() -> {
           db.transaction(() ->
-                  db.command("sql", String.format("CREATE VERTEX User SET id = '%s'", userId))
+                  db.command("sql", "CREATE VERTEX User SET id = ?", userId)
               , true);
         });
 
@@ -113,9 +120,9 @@ public class DatabaseWrapper {
     }
   }
 
-  private void addPhotosOfUser(String userId, int numberOfPhotos) {
+  private void addPhotosOfUser(int userId, int numberOfPhotos) {
     for (int photoIndex = 1; photoIndex <= numberOfPhotos; photoIndex++) {
-      String photoId = String.format("p%09d", idSupplier.get());
+      int photoId = idSupplier.get();
       String photoName = String.format("download-%s.jpg", photoId);
       String sqlScript = """
           BEGIN;
@@ -138,7 +145,14 @@ public class DatabaseWrapper {
     }
   }
 
-  public void addFriendship(String userId1, String userId2) {
+  /**
+   * This method creates a friendship between two users.
+   * The friendship is created in a transaction with the users.
+   *
+   * @param userId1 the id of the first user
+   * @param userId2 the id of the second user
+   */
+  public void addFriendship(int userId1, int userId2) {
     try {
       friendshipTimer.record(() -> {
         db.transaction(() ->
@@ -155,14 +169,40 @@ public class DatabaseWrapper {
     }
   }
 
+  /**
+   * This method creates a friendship between two users.
+   * The friendship is created in a transaction with the users.
+   *
+   * @param userId1 the id of the first user
+   * @param userId2 the id of the second user
+   */
+  public void addFriendshipScript(int userId1, int userId2) {
+    try {
+      friendshipTimer.record(() -> {
+        db.transaction(() ->
+            db.command("sqlscript",
+                """
+                    BEGIN;
+                    CREATE EDGE IsFriendOf
+                    FROM (SELECT FROM User WHERE id = ?) TO (SELECT FROM User WHERE id = ?);
+                    COMMIT RETRY 30;
+                    """, userId1, userId2), true);
+      });
+
+    } catch (Exception e) {
+      Metrics.counter("arcadedb.test.inserted.friendship.error").increment();
+      logger.error("Error creating friendship between {} and {}: {}", userId1, userId2, e.getMessage());
+    }
+  }
+
   public void assertThatUserCountIs(int expectedCount) {
     assertThat(countUsers()).isEqualTo(expectedCount);
   }
 
-  public List<String> getUserIds(int numOfUsers, int skip) {
+  public List<Integer> getUserIds(int numOfUsers, int skip) {
     ResultSet resultSet = db.query("sql", "SELECT id  FROM User ORDER BY id SKIP ? LIMIT ?", skip, numOfUsers);
     return resultSet.stream()
-        .map(r -> r.<String>getProperty("id"))
+        .map(r -> r.<Integer>getProperty("id"))
         .toList();
   }
 
