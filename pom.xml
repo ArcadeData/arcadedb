@@ -68,6 +68,9 @@
         <license-maven-plugin.version>5.0.0</license-maven-plugin.version>
         <maven-central-publishing-plugin.version>0.7.0</maven-central-publishing-plugin.version>
 
+
+        <testcontainers.version>1.21.0</testcontainers.version>
+        <logback-classic.version>1.5.18</logback-classic.version>
         <micrometer.version>1.14.6</micrometer.version>
         <assertj-core.version>3.27.3</assertj-core.version>
         <junit.jupiter.version>5.12.2</junit.jupiter.version>
