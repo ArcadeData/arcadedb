@@ -131,7 +131,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             executingTask.set(true);
             try {
               LogManager.instance()
-                  .log(this, Level.FINE, "Received async message %s (threadId=%d)", message, Thread.currentThread().getId());
+                  .log(this, Level.FINE, "Received async message %s (threadId=%d)", message, Thread.currentThread().threadId());
 
               if (message == FORCE_EXIT) {
                 break;

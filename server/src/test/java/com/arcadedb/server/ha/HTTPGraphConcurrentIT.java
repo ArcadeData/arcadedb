@@ -69,7 +69,7 @@ public class HTTPGraphConcurrentIT extends BaseGraphServerTest {
               atomic.incrementAndGet();
 
               if (responseAsJson == null) {
-                LogManager.instance().log(this, Level.SEVERE, "Error on execution from thread %d", Thread.currentThread().getId());
+                LogManager.instance().log(this, Level.SEVERE, "Error on execution from thread %d", Thread.currentThread().threadId());
                 continue;
               }
 

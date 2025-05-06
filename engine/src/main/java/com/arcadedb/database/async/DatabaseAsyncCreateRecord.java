@@ -49,7 +49,7 @@ public class DatabaseAsyncCreateRecord implements DatabaseAsyncTask {
 
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on executing async create record operation (threadId=%d)", e,
-          Thread.currentThread().getId());
+          Thread.currentThread().threadId());
 
       async.onError(e);
 

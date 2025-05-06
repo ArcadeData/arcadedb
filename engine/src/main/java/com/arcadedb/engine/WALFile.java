@@ -255,7 +255,7 @@ public class WALFile extends LockContext {
 
       LogManager.instance()
           .log(WALFile.class, Level.FINE, "Writing page %s v%d range %d-%d into buffer (txId=%d threadId=%d)", null, newPage.getPageId(), newPage.version + 1,
-              deltaRange[0], deltaRange[1], txId, Thread.currentThread().getId());
+              deltaRange[0], deltaRange[1], txId, Thread.currentThread().threadId());
 
       bufferChanges.putInt(newPage.getPageId().getFileId());
       bufferChanges.putInt(newPage.getPageId().getPageNumber());
@@ -284,7 +284,7 @@ public class WALFile extends LockContext {
       final Binary buffer) throws IOException {
 
     LogManager.instance()
-        .log(this, Level.FINE, "Appending WAL for txId=%d (size=%d file=%s threadId=%d)", null, txId, buffer.size(), filePath, Thread.currentThread().getId());
+        .log(this, Level.FINE, "Appending WAL for txId=%d (size=%d file=%s threadId=%d)", null, txId, buffer.size(), filePath, Thread.currentThread().threadId());
 
     file.append(buffer.getByteBuffer());
 

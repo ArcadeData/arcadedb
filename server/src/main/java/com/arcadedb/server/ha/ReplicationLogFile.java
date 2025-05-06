@@ -281,14 +281,14 @@ public class ReplicationLogFile extends LockContext {
       if (message.messageNumber < lastMessageNumber) {
         LogManager.instance().log(this, Level.WARNING,
             "Wrong sequence in message numbers. Last was %d and now receiving %d. Skip saving this entry (threadId=%d)",
-            lastMessageNumber, message.messageNumber, Thread.currentThread().getId());
+            lastMessageNumber, message.messageNumber, Thread.currentThread().threadId());
         return false;
       }
 
       if (message.messageNumber != lastMessageNumber + 1) {
         LogManager.instance().log(this, Level.WARNING,
             "Found a jump (%d) in message numbers. Last was %d and now receiving %d. Skip saving this entry (threadId=%d)",
-            (message.messageNumber - lastMessageNumber), lastMessageNumber, message.messageNumber, Thread.currentThread().getId());
+            (message.messageNumber - lastMessageNumber), lastMessageNumber, message.messageNumber, Thread.currentThread().threadId());
 
         return false;
       }

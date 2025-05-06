@@ -1654,7 +1654,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
             "Database '" + name + "' is locked by another process (path=" + new File(databasePath).getAbsolutePath() + ")");
       }
 
-      //LogManager.instance().log(this, Level.INFO, "LOCKED DATABASE FILE '%s' (thread=%s)", null, lockFile, Thread.currentThread().getId());
+      //LogManager.instance().log(this, Level.INFO, "LOCKED DATABASE FILE '%s' (thread=%s)", null, lockFile, Thread.currentThread().threadId());
 
     } catch (final Exception e) {
       try {
@@ -1750,7 +1750,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         try {
           if (lockFileLock != null) {
             lockFileLock.release();
-            //LogManager.instance().log(this, Level.INFO, "RELEASED DATABASE FILE '%s' (thread=%s)", null, lockFile, Thread.currentThread().getId());
+            //LogManager.instance().log(this, Level.INFO, "RELEASED DATABASE FILE '%s' (thread=%s)", null, lockFile, Thread.currentThread().threadId());
           }
           if (lockFileIOChannel != null)
             lockFileIOChannel.close();
@@ -1896,7 +1896,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (retryDelay > 0) {
       LogManager.instance()
           .log(this, Level.FINE, "Wait %d ms before the next retry for transaction commit (threadId=%d)", retryDelay,
-              Thread.currentThread().getId());
+              Thread.currentThread().threadId());
 
       try {
         Thread.sleep(1 + new Random().nextInt(retryDelay));
