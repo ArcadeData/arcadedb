@@ -68,6 +68,9 @@
         <license-maven-plugin.version>5.0.0</license-maven-plugin.version>
         <nexus-staging-maven-plugin.version>1.7.0</nexus-staging-maven-plugin.version>
 
+
+        <testcontainers.version>1.21.0</testcontainers.version>
+        <logback-classic.version>1.5.18</logback-classic.version>
         <micrometer.version>1.14.6</micrometer.version>
         <assertj-core.version>3.27.3</assertj-core.version>
         <junit.jupiter.version>5.12.2</junit.jupiter.version>
@@ -216,9 +219,9 @@
                         <!--                        <exclude>**/IndexOperations3ServersIT.java</exclude>-->
                         <!--                        <exclude>**/ArcadeGraphProcessDebugTest.java</exclude>-->
                         <!--                        <exclude>**/ArcadeGraphStructureDebugTest.java</exclude>-->
-<!--                        <exclude>**/*ReplicationServerReplicaRestartForceDbInstallIT.java</exclude>-->
-<!--                        <exclude>**/*HARandomCrashIT.java</exclude>-->
-<!--                        <exclude>**/*ReplicationServerLeaderDownIT</exclude>-->
+                        <!--                        <exclude>**/*ReplicationServerReplicaRestartForceDbInstallIT.java</exclude>-->
+                        <!--                        <exclude>**/*HARandomCrashIT.java</exclude>-->
+                        <!--                        <exclude>**/*ReplicationServerLeaderDownIT</exclude>-->
                         <exclude>**/*ReplicationServerLeaderChanges3TimesIT</exclude>
                     </excludes>
                     <skipITs>${skipIntegration}</skipITs>
