@@ -504,7 +504,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       if (LogManager.instance().isDebugEnabled())
         LogManager.instance().log(this, Level.FINE, "Put entry %s=%s in index '%s' (page=%s countInPage=%d newPage=%s thread=%d)",
             Arrays.toString(keys), Arrays.toString(rids), componentName, currentPage.getPageId(), count + 1, newPage,
-            Thread.currentThread().getId());
+            Thread.currentThread().threadId());
 
     } catch (final IOException e) {
       throw new DatabaseOperationException(

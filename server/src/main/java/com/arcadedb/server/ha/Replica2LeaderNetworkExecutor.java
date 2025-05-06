@@ -90,7 +90,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
         if (request == null) {
           LogManager.instance().log(this, Level.SEVERE, "Error on receiving message NULL, reconnecting (threadId=%d)",
-              Thread.currentThread().getId());
+              Thread.currentThread().threadId());
           reconnect(null);
           continue;
         }
@@ -103,10 +103,10 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
         if (reqId > -1)
           LogManager.instance()
-              .log(this, Level.FINE, "Received request %d from the Leader (threadId=%d)", reqId, Thread.currentThread().getId());
+              .log(this, Level.FINE, "Received request %d from the Leader (threadId=%d)", reqId, Thread.currentThread().threadId());
         else
           LogManager.instance()
-              .log(this, Level.FINE, "Received response %d from the Leader (threadId=%d)", reqId, Thread.currentThread().getId());
+              .log(this, Level.FINE, "Received response %d from the Leader (threadId=%d)", reqId, Thread.currentThread().threadId());
 
         // NUMBERS <0 ARE FORWARD FROM REPLICA TO LEADER WITHOUT A VALID SEQUENCE
         if (reqId > -1) {
@@ -165,7 +165,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
     LogManager.instance()
         .log(this, Level.INFO, "Replica message thread closed (shutdown=%s name=%s threadId=%d lastReqId=%d)", shutdown, getName(),
-            Thread.currentThread().getId(), lastReqId);
+            Thread.currentThread().threadId(), lastReqId);
   }
 
   public String getRemoteServerName() {

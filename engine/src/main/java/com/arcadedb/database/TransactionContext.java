@@ -204,7 +204,7 @@ public class TransactionContext implements Transaction {
   public void rollback() {
     LogManager.instance()
         .log(this, Level.FINE, "Rollback transaction newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
-            Thread.currentThread().getId());
+            Thread.currentThread().threadId());
 
     if (database.isOpen() && database.getSchema().getDictionary() != null) {
       if (modifiedPages != null) {
@@ -613,7 +613,7 @@ public class TransactionContext implements Transaction {
 
       if (useWAL) {
         txId = database.getTransactionManager().getNextTransactionId();
-        //LogManager.instance().log(this, Level.FINE, "Creating buffer for TX %d (threadId=%d)", txId, Thread.currentThread().getId());
+        //LogManager.instance().log(this, Level.FINE, "Creating buffer for TX %d (threadId=%d)", txId, Thread.currentThread().threadId());
         result = database.getTransactionManager().createTransactionBuffer(txId, pages);
       }
 
@@ -624,7 +624,7 @@ public class TransactionContext implements Transaction {
       throw e;
     } catch (final Exception e) {
       LogManager.instance()
-          .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().getId());
+          .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
       rollback();
       throw new TransactionException("Transaction error on commit", e);
     }
@@ -651,7 +651,7 @@ public class TransactionContext implements Transaction {
       // UPDATE PAGE COUNTER FIRST
       LogManager.instance()
           .log(this, Level.FINE, "TX committing pages newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
-              Thread.currentThread().getId());
+              Thread.currentThread().threadId());
 
       database.getPageManager().updatePages(newPages, modifiedPages, asyncFlush);
 
@@ -687,7 +687,7 @@ public class TransactionContext implements Transaction {
       throw e;
     } catch (final Exception e) {
       LogManager.instance()
-          .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().getId());
+          .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
       throw new TransactionException("Transaction error on commit", e);
     } finally {
       reset();

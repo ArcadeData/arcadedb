@@ -289,7 +289,7 @@ public class ArcadeGraph implements Graph, Closeable {
       query.append("]");
 
       final ResultSet resultset = this.database.query("sql", query.toString());
-      return resultset.stream().filter((a) -> a.getIdentity().isPresent() ? database.existsRecord(a.getIdentity().get()) : true)
+      return resultset.stream().filter((a) -> a.getIdentity().isEmpty() || database.existsRecord(a.getIdentity().get()))
           .map(result -> (Vertex) new ArcadeVertex(this, (com.arcadedb.graph.Vertex) (result.toElement()))).iterator();
     }
 
@@ -297,18 +297,20 @@ public class ArcadeGraph implements Graph, Closeable {
 
     for (final Object o : vertexIds) {
       final RID rid;
-      if (o instanceof RID iD)
-        rid = iD;
-      else if (o instanceof Vertex vertex) {
+      switch (o) {
+      case RID iD -> rid = iD;
+      case Vertex vertex -> {
         final Object objectId = vertex.id();
         if (objectId != null)
           rid = objectId instanceof RID rid1 ? rid1 : new RID(database, objectId.toString());
         else
           continue;
-      } else if (o instanceof String string)
-        rid = new RID(database, string);
-      else
+      }
+      case String string -> rid = new RID(database, string);
+      case null, default -> {
         continue;
+      }
+      }
 
       try {
         final Record r = database.lookupByRID(rid, true);
@@ -352,7 +354,7 @@ public class ArcadeGraph implements Graph, Closeable {
       query.append("]");
 
       final ResultSet resultSet = this.database.query("sql", query.toString());
-      return resultSet.stream().filter((a) -> a.getIdentity().isPresent() ? database.existsRecord(a.getIdentity().get()) : true)
+      return resultSet.stream().filter((a) -> a.getIdentity().isEmpty() || database.existsRecord(a.getIdentity().get()))
           .map(result -> (Edge) new ArcadeEdge(this, (com.arcadedb.graph.Edge) result.toElement())).iterator();
 
     }
@@ -361,18 +363,20 @@ public class ArcadeGraph implements Graph, Closeable {
 
     for (final Object o : edgeIds) {
       final RID rid;
-      if (o instanceof RID iD)
-        rid = iD;
-      else if (o instanceof Edge edge) {
+      switch (o) {
+      case RID iD -> rid = iD;
+      case Edge edge -> {
         final Object objectId = edge.id();
         if (objectId != null)
           rid = objectId instanceof RID rid1 ? rid1 : new RID(database, objectId.toString());
         else
           continue;
-      } else if (o instanceof String string)
-        rid = new RID(database, string);
-      else
+      }
+      case String string -> rid = new RID(database, string);
+      case null, default -> {
         continue;
+      }
+      }
 
       try {
         final Record r = database.lookupByRID(rid, true);
@@ -471,15 +475,11 @@ public class ArcadeGraph implements Graph, Closeable {
   }
 
   public static com.arcadedb.graph.Vertex.DIRECTION mapDirection(final Direction direction) {
-    switch (direction) {
-    case OUT:
-      return com.arcadedb.graph.Vertex.DIRECTION.OUT;
-    case IN:
-      return com.arcadedb.graph.Vertex.DIRECTION.IN;
-    case BOTH:
-      return com.arcadedb.graph.Vertex.DIRECTION.BOTH;
-    }
-    throw new IllegalArgumentException("Cannot get direction for argument %s".formatted(direction));
+    return switch (direction) {
+      case OUT -> com.arcadedb.graph.Vertex.DIRECTION.OUT;
+      case IN -> com.arcadedb.graph.Vertex.DIRECTION.IN;
+      case BOTH -> com.arcadedb.graph.Vertex.DIRECTION.BOTH;
+    };
   }
 
   public GremlinLangScriptEngine getGremlinJavaEngine() {

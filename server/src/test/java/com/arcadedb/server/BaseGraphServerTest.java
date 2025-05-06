@@ -46,6 +46,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintWriter;
 import java.net.HttpURLConnection;
+import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -275,14 +276,14 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
 
   protected String getServerAddresses() {
     int port = 2424;
-    String serverURLs = "";
+    StringBuilder serverURLs = new StringBuilder();
     for (int i = 0; i < getServerCount(); ++i) {
       if (i > 0)
-        serverURLs += ",";
+        serverURLs.append(",");
 
-      serverURLs += "localhost:" + (port++);
+      serverURLs.append("localhost:").append(port++);
     }
-    return serverURLs;
+    return serverURLs.toString();
   }
 
   protected void startServers() {
@@ -358,7 +359,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   protected boolean areAllReplicasAreConnected() {
     final int serverCount = getServerCount();
 
-    int lastTotalConnectedReplica = 0;
+    int lastTotalConnectedReplica;
 
     for (int i = 0; i < serverCount; ++i) {
       if (getServerRole(i) == HAServer.SERVER_ROLE.ANY) {
@@ -516,9 +517,9 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
 
   protected void deleteDatabaseFolders() {
     if (databases != null)
-      for (int i = 0; i < databases.length; ++i) {
-        if (databases[i] != null && databases[i].isOpen())
-          ((DatabaseInternal) databases[i]).getEmbedded().drop();
+      for (Database database : databases) {
+        if (database != null && database.isOpen())
+          ((DatabaseInternal) database).getEmbedded().drop();
       }
 
     if (servers != null)
@@ -587,8 +588,10 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   }
 
   protected String command(final int serverIndex, final String command) throws Exception {
-    final HttpURLConnection initialConnection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+    final HttpURLConnection initialConnection = (HttpURLConnection) new URI(
+        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph")
+        .toURL()
+        .openConnection();
     try {
 
       initialConnection.setRequestMethod("POST");
