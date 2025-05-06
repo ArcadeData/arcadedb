@@ -1,5 +1,7 @@
-package com.arcadedb.resilience;
+package com.arcadedb.containers.resilience;
 
+import com.arcadedb.containers.support.ContainersTestTemplate;
+import com.arcadedb.containers.support.DatabaseWrapper;
 import eu.rekawek.toxiproxy.Proxy;
 import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
@@ -7,16 +9,15 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.lifecycle.Startables;
 
 import java.io.IOException;
 import java.util.concurrent.TimeUnit;
 
 @Testcontainers
-public class SimpleHaScenarioIT extends ResilienceTestTemplate {
+public class SimpleHaScenarioIT extends ContainersTestTemplate {
 
   @Test
-  @DisplayName("Test resync after network crash")
+  @DisplayName("Test resync after network crash with 2 sewers in HA mode")
   void twoInstancesResyncAfterNetworkCrash() throws InterruptedException, IOException {
 
     logger.info("Creating a proxy for each arcade container");
@@ -28,8 +29,7 @@ public class SimpleHaScenarioIT extends ResilienceTestTemplate {
     GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666", "none", "any", network);
 
     logger.info("Starting the containers in sequence: arcade1 will be the leader");
-    Startables.deepStart(arcade1).join();
-    Startables.deepStart(arcade2).join();
+    startContainers();
 
     logger.info("Creating the database on the first arcade container");
     DatabaseWrapper db1 = new DatabaseWrapper(arcade1, idSupplier);
