@@ -1,5 +1,7 @@
-package com.arcadedb.resilience;
+package com.arcadedb.containers.performance;
 
+import com.arcadedb.containers.support.ContainersTestTemplate;
+import com.arcadedb.containers.support.DatabaseWrapper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseComparator;
 import com.arcadedb.database.DatabaseFactory;
@@ -9,14 +11,18 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.lifecycle.Startables;
 
 import java.io.IOException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-public class TwoServerPerformanceIT extends ResilienceTestTemplate {
+/**
+ * This test is designed to check the behavior of two servers under heavy load.
+ * It creates two servers, adds data to one of them, and checks that the data is replicated to the other server.
+ * It also checks that the schema is replicated correctly.
+ */
+public class TwoServersLoadTestIT extends ContainersTestTemplate {
 
   @AfterEach
   void compareDatabases() {
@@ -35,7 +41,7 @@ public class TwoServerPerformanceIT extends ResilienceTestTemplate {
   }
 
   @Test
-  @DisplayName("Test two servers under heavy load")
+  @DisplayName("Load test 2 servers in HA mode")
   void twoServersMassiveInert() throws InterruptedException, IOException {
 
     logger.info("Creating two arcade containers");
@@ -43,9 +49,7 @@ public class TwoServerPerformanceIT extends ResilienceTestTemplate {
     GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}arcade1", "none", "any", network);
 
     logger.info("Starting the containers in sequence: arcade1 will be the leader");
-    Startables.deepStart(arcade1).join();
-    Startables.deepStart(arcade2).join();
-
+    startContainers();
     logger.info("Creating the database on the first arcade container");
     DatabaseWrapper db1 = new DatabaseWrapper(arcade1, idSupplier);
     logger.info("Creating the database on arcade server 1");
@@ -59,11 +63,10 @@ public class TwoServerPerformanceIT extends ResilienceTestTemplate {
     db1.checkSchema();
     db2.checkSchema();
 
-    logger.info("Adding data to database 1");
-
     final int numOfThreads = 5;
     final int numOfUsers = 1000;
     int numOfPhotos = 5;
+    logger.info("Adding {} users with {} photos per user to database 1 using {} threads", numOfUsers, numOfPhotos, numOfThreads);
     ExecutorService executor = Executors.newFixedThreadPool(numOfThreads);
 
     for (int i = 0; i < numOfThreads; i++) {
@@ -114,8 +117,6 @@ public class TwoServerPerformanceIT extends ResilienceTestTemplate {
           }
         });
 
-    db1.command("CHECK DATABASE FIX COMPRESS").stream().forEach(System.out::println);
-    db2.command("CHECK DATABASE FIX COMPRESS").stream().forEach(System.out::println);
 
     db1.close();
     db2.close();
