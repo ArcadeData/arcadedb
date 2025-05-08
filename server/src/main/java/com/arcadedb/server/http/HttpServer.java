@@ -54,13 +54,12 @@ import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
-import java.io.IOException;
-import java.net.BindException;
-import java.security.KeyStore;
-import java.security.KeyStoreException;
-import java.security.NoSuchAlgorithmException;
-import java.security.cert.CertificateException;
-import java.util.logging.Level;
+import java.io.*;
+import java.net.*;
+import java.security.*;
+import java.security.cert.*;
+import java.util.*;
+import java.util.logging.*;
 
 import static com.arcadedb.GlobalConfiguration.NETWORK_SSL_KEYSTORE;
 import static com.arcadedb.GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD;
@@ -108,7 +107,7 @@ public class HttpServer implements ServerPlugin {
     final int[] httpsPortRange = getHttpsPortRange(configuration);
 
     LogManager.instance().log(this, Level.INFO, "- Starting HTTP Server (host=%s port=%s httpsPort=%s)...", host, httpPortRange,
-        httpsPortRange != null ? httpsPortRange : "-");
+        httpsPortRange != null ? Arrays.toString(httpsPortRange) : "-");
 
     final PathHandler routes = setupRoutes();
 
@@ -121,7 +120,9 @@ public class HttpServer implements ServerPlugin {
         LogManager.instance().log(this, Level.INFO, "- HTTP Server started (host=%s port=%d httpsPort=%s)", host, httpPortListening,
             httpsPortListening > 0 ? httpsPortListening : "-");
 
-        listeningAddress = host.equals("0.0.0.0") ? server.getHostAddress() + ":" + httpPortListening : host + ":" + httpPortListening;
+        listeningAddress = host.equals("0.0.0.0") ?
+            server.getHostAddress() + ":" + httpPortListening :
+            host + ":" + httpPortListening;
         return;
 
       } catch (final Exception e) {
@@ -167,7 +168,8 @@ public class HttpServer implements ServerPlugin {
     return routes;
   }
 
-  private Undertow buildUndertowServer(final ContextConfiguration configuration, final String host, final PathHandler routes, int httpsPortListening) throws Exception {
+  private Undertow buildUndertowServer(final ContextConfiguration configuration, final String host, final PathHandler routes,
+      int httpsPortListening) throws Exception {
     final Undertow.Builder builder = Undertow.builder()//
         .setServerOption(UndertowOptions.ENABLE_HTTP2, true)
         .addHttpListener(httpPortListening, host)//
@@ -201,7 +203,8 @@ public class HttpServer implements ServerPlugin {
 
   private void handleServerStartFailure(final int[] httpPortRange) {
     httpPortListening = -1;
-    final String msg = "Unable to listen to a HTTP port in the configured port range %d - %d".formatted(httpPortRange[0], httpPortRange[1]);
+    final String msg = "Unable to listen to a HTTP port in the configured port range %d - %d".formatted(httpPortRange[0],
+        httpPortRange[1]);
     LogManager.instance().log(this, Level.SEVERE, msg);
     throw new ServerException("Error on starting HTTP Server: " + msg);
   }
