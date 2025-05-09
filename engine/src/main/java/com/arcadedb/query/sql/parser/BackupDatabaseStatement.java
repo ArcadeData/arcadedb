@@ -49,7 +49,7 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
     if (targetUrl != null)
       result.setProperty("target", targetUrl);
 
-    if (context.getDatabase().isTransactionActive()) {
+    if (context.getDatabase().isTransactionActive() && context.getDatabase().getTransaction().hasChanges()) {
       LogManager.instance().log(this, Level.SEVERE, "Found pending transaction. Rolling it back before the backup...");
       context.getDatabase().rollback();
     }

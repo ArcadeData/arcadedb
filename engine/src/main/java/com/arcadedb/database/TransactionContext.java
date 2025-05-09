@@ -19,7 +19,6 @@
 package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Record;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.ImmutablePage;
@@ -410,6 +409,11 @@ public class TransactionContext implements Transaction {
     return map;
   }
 
+  public boolean hasChanges() {
+    final int totalImpactedPages = modifiedPages.size() + (newPages != null ? newPages.size() : 0);
+    return totalImpactedPages > 0 || !indexChanges.isEmpty();
+  }
+
   public int getModifiedPages() {
     int result = 0;
     if (modifiedPages != null)
@@ -550,11 +554,9 @@ public class TransactionContext implements Transaction {
       updatedRecords = null;
     }
 
-    final int totalImpactedPages = modifiedPages.size() + (newPages != null ? newPages.size() : 0);
-    if (totalImpactedPages == 0 && indexChanges.isEmpty()) {
+    if (!hasChanges())
       // EMPTY TRANSACTION = NO CHANGES
       return null;
-    }
 
     status = STATUS.COMMIT_1ST_PHASE;
 
