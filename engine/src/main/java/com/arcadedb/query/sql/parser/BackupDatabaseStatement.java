@@ -75,7 +75,9 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
         rs.add(result);
         return rs;
       }catch (Exception e){
-        LogManager.instance().log(this, Level.SEVERE, "Error on backup database", e);
+        LogManager.instance().log(this, Level.SEVERE, 
+          String.format("Error on backup database '%s' to file '%s'", 
+            context.getDatabase().getName(), backupFile), e);
         result.setProperty("result", "ERROR");
         result.setProperty("error", e.getMessage());
         final InternalResultSet rs = new InternalResultSet();
