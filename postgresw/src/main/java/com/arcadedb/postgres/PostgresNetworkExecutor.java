@@ -275,10 +275,8 @@ public class PostgresNetworkExecutor extends Thread {
     if (type == 'P') {
       if (portal.sqlStatement != null) {
         final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
-        BasicCommandContext commandContext = new BasicCommandContext();
-        commandContext.setConfiguration(server.getConfiguration());
 
-        final ResultSet resultSet = portal.sqlStatement.execute(database, parameters, commandContext);
+        final ResultSet resultSet = portal.sqlStatement.execute(database, parameters, createCommandContext());
         portal.executed = true;
         if (portal.isExpectingResult) {
           portal.cachedResultset = browseAndCacheResultSet(resultSet, 0);
@@ -320,8 +318,7 @@ public class PostgresNetworkExecutor extends Thread {
       else {
         if (!portal.executed) {
           final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
-          BasicCommandContext commandContext = createCommandContext();
-          final ResultSet resultSet = portal.sqlStatement.execute(database, parameters, commandContext);
+          final ResultSet resultSet = portal.sqlStatement.execute(database, parameters, createCommandContext());
           portal.executed = true;
           if (portal.isExpectingResult) {
             portal.cachedResultset = browseAndCacheResultSet(resultSet, limit);
@@ -346,6 +343,12 @@ public class PostgresNetworkExecutor extends Thread {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), "XX000");
     }
+  }
+
+  private BasicCommandContext createCommandContext() {
+    BasicCommandContext commandContext = new BasicCommandContext();
+    commandContext.setConfiguration(server.getConfiguration());
+    return commandContext;
   }
 
   private void queryCommand() {
