@@ -320,8 +320,7 @@ public class PostgresNetworkExecutor extends Thread {
       else {
         if (!portal.executed) {
           final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
-          BasicCommandContext commandContext = new BasicCommandContext();
-          commandContext.setConfiguration(server.getConfiguration());
+          BasicCommandContext commandContext = createCommandContext();
           final ResultSet resultSet = portal.sqlStatement.execute(database, parameters, commandContext);
           portal.executed = true;
           if (portal.isExpectingResult) {
