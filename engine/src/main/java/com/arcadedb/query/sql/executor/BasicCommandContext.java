@@ -26,7 +26,7 @@ import com.arcadedb.database.Document;
 import java.util.*;
 
 /**
- * Basic implementation of OCommandContext interface that stores variables in a map. Supports parent/child context to build a tree
+ * Basic implementation of CommandContext interface that stores variables in a map. Supports parent/child context to build a tree
  * of contexts. If a variable is not found on current object the search is applied recursively on child contexts.
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)

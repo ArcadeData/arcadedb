@@ -65,6 +65,15 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
   }
 
   @Test
+  void testBackupDatabase() throws Exception {
+    try (final Connection conn = getConnection()) {
+      try (final Statement st = conn.createStatement()) {
+        st.execute("BACKUP DATABASE");
+      }
+    }
+  }
+
+  @Test
   public void testTypeNotExistsErrorManagement() throws Exception {
     try (final Connection conn = getConnection()) {
       try (final Statement st = conn.createStatement()) {

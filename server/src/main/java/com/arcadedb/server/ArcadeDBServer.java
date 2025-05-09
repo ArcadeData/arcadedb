@@ -40,7 +40,6 @@ import com.arcadedb.server.event.ServerEventLog;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.monitor.ServerMonitor;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -167,6 +166,8 @@ public class ArcadeDBServer {
     security = new ServerSecurity(this, configuration, serverRootPath + "/config");
     security.startService();
 
+    createDirectories();
+
     loadDatabases();
 
     security.loadUsers();
@@ -199,7 +200,7 @@ public class ArcadeDBServer {
     final String mode = GlobalConfiguration.SERVER_MODE.getValueAsString();
 
     final String msg = "ArcadeDB Server started in '%s' mode (CPUs=%d MAXRAM=%s)".formatted(mode,
-      Runtime.getRuntime().availableProcessors(), FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));
+        Runtime.getRuntime().availableProcessors(), FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));
     LogManager.instance().log(this, Level.INFO, msg);
 
     getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.INFO, "Server", null, msg);
@@ -219,6 +220,23 @@ public class ArcadeDBServer {
     }
 
 //    serverMonitor.start();
+  }
+
+  private void createDirectories() {
+
+    LogManager.instance().log(this, Level.INFO, "Server root path: %s", serverRootPath);
+    LogManager.instance().log(this, Level.INFO, "Databases directory: %s", configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
+    final File databaseDir = new File(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
+    if (!databaseDir.exists()) {
+      databaseDir.mkdirs();
+    }
+
+    LogManager.instance().log(this, Level.INFO, "Backups directory: %s", configuration.getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY));
+    final File backupsDir = new File(configuration.getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY));
+    if (!backupsDir.exists()) {
+      backupsDir.mkdirs();
+    }
+
   }
 
   private void welcomeBanner() {

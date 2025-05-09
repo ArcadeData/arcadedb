@@ -62,16 +62,27 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
       String backupDirectory = context.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY);
       if (!backupDirectory.endsWith(File.separator))
         backupDirectory += File.separator;
+
       clazz.getMethod("setDirectory", String.class).invoke(backup, backupDirectory + context.getDatabase().getName());
-      clazz.getMethod("setVerboseLevel", Integer.TYPE).invoke(backup, 1);
+      clazz.getMethod("setVerboseLevel", Integer.TYPE).invoke(backup, 0);
+      try {
+
       final String backupFile = (String) clazz.getMethod("backupDatabase").invoke(backup);
+        result.setProperty("result", "OK");
+        result.setProperty("backupFile", backupFile);
 
-      result.setProperty("result", "OK");
-      result.setProperty("backupFile", backupFile);
+        final InternalResultSet rs = new InternalResultSet();
+        rs.add(result);
+        return rs;
+      }catch (Exception e){
+        LogManager.instance().log(this, Level.SEVERE, "Error on backup database", e);
+        result.setProperty("result", "ERROR");
+        result.setProperty("error", e.getMessage());
+        final InternalResultSet rs = new InternalResultSet();
+        rs.add(result);
+        return rs;
+      }
 
-      final InternalResultSet rs = new InternalResultSet();
-      rs.add(result);
-      return rs;
 
     } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
       throw new CommandExecutionException("Error on backing up database, backup libs not found in classpath", e);

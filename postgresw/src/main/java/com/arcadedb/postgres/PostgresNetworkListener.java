@@ -44,7 +44,9 @@ public class PostgresNetworkListener extends Thread {
     void connected();
   }
 
-  public PostgresNetworkListener(final ArcadeDBServer server, final ServerSocketFactory iSocketFactory, final String hostName,
+  public PostgresNetworkListener(final ArcadeDBServer server,
+      final ServerSocketFactory iSocketFactory,
+      final String hostName,
       final String hostPortRange) {
     super(server.getServerName() + " PostgresW listening at " + hostName + ":" + hostPortRange);
 

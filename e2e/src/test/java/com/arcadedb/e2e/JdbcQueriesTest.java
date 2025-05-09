@@ -91,8 +91,6 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
     }
   }
 
-
-
   @Test
   void bigResultSetSQLQuery() throws Exception {
 
@@ -269,7 +267,19 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
   }
 
   @Test
-//  @Disabled
+  void testBackupDatabase() throws SQLException {
+    try (final Statement stmt = conn.createStatement()) {
+      assertThat(stmt.execute("{sql}BACKUP DATABASE;")).isTrue();
+    }
+
+    try (final Statement stmt = conn.createStatement()) {
+      assertThat(stmt.execute("{sqlscript}BACKUP DATABASE;")).isTrue();
+    }
+
+  }
+
+  @Test
+  @Disabled
   void testMultipleInsert() throws SQLException, ClassNotFoundException {
     try (Statement stmt = conn.createStatement()) {
 

@@ -18,9 +18,12 @@
  */
 package com.arcadedb.integration.backup;
 
-import java.io.*;
-import java.text.*;
-import java.util.*;
+import java.io.File;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
 
 public class BackupSettings {
   public       String              format        = "full";
@@ -52,33 +55,38 @@ public class BackupSettings {
 
     if (file == null)
       // ASSIGN DEFAULT FILENAME
-      switch (format) {
-      case "full":
+      if (format.equals("full")) {
         final DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd-HHmmssSSS");
         file = "%s-backup-%s.zip".formatted(databaseName, dateFormat.format(System.currentTimeMillis()));
-        break;
       }
   }
 
   public int parseParameter(final String name, final String value) {
-    if ("format".equals(name)) {
+    switch (name) {
+    case "format" -> {
       if (value != null)
         format = value.toLowerCase(Locale.ENGLISH);
-    } else if ("dir".equals(name)) {
+    }
+    case "dir" -> {
       if (value != null)
         directory = value.endsWith(File.separator) ? value : value + File.separator;
-    } else if ("f".equals(name)) {
+    }
+    case "f" -> {
       if (value != null)
         file = value;
-    } else if ("d".equals(name)) {
+    }
+    case "d" -> {
       if (value != null)
         databaseURL = value;
-    } else if ("o".equals(name)) {
+    }
+    case "o" -> {
       overwriteFile = true;
       return 1;
-    } else
+    }
+    case null, default ->
       // ADDITIONAL OPTIONS
-      options.put(name, value);
+        options.put(name, value);
+    }
     return 2;
   }
 }

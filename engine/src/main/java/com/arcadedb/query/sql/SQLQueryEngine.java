@@ -40,7 +40,9 @@ import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.MultiIterator;
 
-import java.util.*;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Set;
 
 import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
 
@@ -212,7 +214,7 @@ public class SQLQueryEngine implements QueryEngine {
     return methods.createMethod(name);
   }
 
-  public static Statement parse(final String query, final DatabaseInternal database) {
+  public Statement parse(final String query, final DatabaseInternal database) {
     return database.getStatementCache().get(query);
   }
 
