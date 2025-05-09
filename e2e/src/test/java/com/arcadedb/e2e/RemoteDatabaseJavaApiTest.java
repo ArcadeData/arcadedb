@@ -51,8 +51,6 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
   void tearDown() {
     if (database != null)
       database.close();
-    System.out.println("result = " + ARCADE.getLogs());
-
   }
 
   @Test
@@ -65,6 +63,17 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
     assertThat(result.<String>getProperty("backupFile")).startsWith("beer-backup-");
 
     resultSet = database.command("sqlscript", "BACKUP DATABASE");
+
+    result = resultSet.next();
+    assertThat(result.<String>getProperty("result")).isEqualTo("OK");
+    assertThat(result.<String>getProperty("backupFile")).startsWith("beer-backup-");
+
+    resultSet = database.command("sqlscript", """
+        BEGIN;
+        INSERT INTO Beer SET name = 'beer1';
+        COMMIT;
+        BACKUP DATABASE;
+        """);
 
     result = resultSet.next();
     assertThat(result.<String>getProperty("result")).isEqualTo("OK");
