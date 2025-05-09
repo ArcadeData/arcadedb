@@ -228,13 +228,19 @@ public class ArcadeDBServer {
     LogManager.instance().log(this, Level.INFO, "Databases directory: %s", configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
     final File databaseDir = new File(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
     if (!databaseDir.exists()) {
-      databaseDir.mkdirs();
+      if (!databaseDir.mkdirs()) {
+        LogManager.instance().log(this, Level.SEVERE, "Failed to create databases directory: %s", databaseDir.getAbsolutePath());
+        throw new ServerException("Unable to create databases directory: " + databaseDir.getAbsolutePath());
+      }
     }
 
     LogManager.instance().log(this, Level.INFO, "Backups directory: %s", configuration.getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY));
     final File backupsDir = new File(configuration.getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY));
     if (!backupsDir.exists()) {
-      backupsDir.mkdirs();
+      if (!backupsDir.mkdirs()) {
+        LogManager.instance().log(this, Level.SEVERE, "Failed to create backups directory: %s", backupsDir.getAbsolutePath());
+        throw new ServerException("Unable to create backups directory: " + backupsDir.getAbsolutePath());
+      }
     }
 
   }
