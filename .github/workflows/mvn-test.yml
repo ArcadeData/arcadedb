@@ -54,12 +54,12 @@ jobs:
         run: echo "tag=arcadedata/arcadedb:build-${{ github.run_id }}" >> $GITHUB_OUTPUT
 
       - name: Build and package with Maven Docker profile
-        run: ./mvnw clean package -Pdocker -DskipTests -Ddocker.image.tag=build-${{ github.run_id }}
+        run: ./mvnw clean package -Pdocker -DskipTests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Save docker image
-        run: docker save arcadedata/arcadedb:build-${{ github.run_id }} > /tmp/arcadedb-image.tar
+        run: docker save arcadedata/arcadedb:latest > /tmp/arcadedb-image.tar
 
       - name: Cache Docker image
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
@@ -136,17 +136,8 @@ jobs:
           path: ~/.m2/repository
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
-      - name: Restore Docker image
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
-
-      - name: Load Docker image
-        run: docker load < /tmp/arcadedb-image.tar
-
       - name: Run Integration Tests with Coverage
-        run: ./mvnw verify -Pintegration -Pcoverage -Pdocker --batch-mode --errors --fail-never --show-version -pl !e2e -DskipTests -DskipITs=false
+        run: ./mvnw verify -Pintegration -Pcoverage --batch-mode --errors --fail-never --show-version -pl !e2e -DskipTests -DskipITs=false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
