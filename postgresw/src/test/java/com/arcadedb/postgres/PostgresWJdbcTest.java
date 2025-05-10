@@ -68,7 +68,18 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
   void testBackupDatabase() throws Exception {
     try (final Connection conn = getConnection()) {
       try (final Statement st = conn.createStatement()) {
-        st.execute("BACKUP DATABASE");
+        ResultSet backupDatabase = st.executeQuery("{sql}BACKUP DATABASE");
+        while (backupDatabase.next()) {
+          assertThat(backupDatabase.getString("result")).isEqualTo("OK");
+          assertThat(backupDatabase.getString("backupFile")).startsWith("postgresdb-backup-");
+        }
+      }
+      try (final Statement st = conn.createStatement()) {
+        ResultSet backupDatabase = st.executeQuery("{sqlscript}BACKUP DATABASE");
+        while (backupDatabase.next()) {
+          assertThat(backupDatabase.getString("result")).isEqualTo("OK");
+          assertThat(backupDatabase.getString("backupFile")).startsWith("postgresdb-backup-");
+        }
       }
     }
   }

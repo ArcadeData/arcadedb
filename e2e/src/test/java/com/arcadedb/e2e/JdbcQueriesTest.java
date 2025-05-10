@@ -269,11 +269,20 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
   @Test
   void testBackupDatabase() throws SQLException {
     try (final Statement stmt = conn.createStatement()) {
-      assertThat(stmt.execute("{sql}BACKUP DATABASE;")).isTrue();
+      ResultSet backupDatabase = stmt.executeQuery("{sqlscript}BACKUP DATABASE");
+      while (backupDatabase.next()) {
+        assertThat(backupDatabase.getString("result")).isEqualTo("OK");
+        assertThat(backupDatabase.getString("backupFile")).startsWith("beer-backup-");
+      }
     }
 
     try (final Statement stmt = conn.createStatement()) {
-      assertThat(stmt.execute("{sqlscript}BACKUP DATABASE;")).isTrue();
+      ResultSet backupDatabase = stmt.executeQuery("{sql}BACKUP DATABASE");
+      while (backupDatabase.next()) {
+        assertThat(backupDatabase.getString("result")).isEqualTo("OK");
+        assertThat(backupDatabase.getString("backupFile")).startsWith("beer-backup-");
+      }
+
     }
 
   }
