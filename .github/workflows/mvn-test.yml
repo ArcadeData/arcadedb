@@ -62,13 +62,13 @@ jobs:
         run: docker save arcadedata/arcadedb:build-${{ github.run_id }} > /tmp/arcadedb-image.tar
 
       - name: Cache Docker image
-        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: /tmp/arcadedb-image.tar
           key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Cache Maven artifacts
-        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ~/.m2/repository
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
@@ -87,7 +87,7 @@ jobs:
           cache: "maven"
 
       - name: Restore Maven artifacts
-        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ~/.m2/repository
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
@@ -131,13 +131,13 @@ jobs:
           cache: "maven"
 
       - name: Restore Maven artifacts
-        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ~/.m2/repository
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Restore Docker image
-        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: /tmp/arcadedb-image.tar
           key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
@@ -185,13 +185,13 @@ jobs:
           cache: "maven"
 
       - name: Restore Maven artifacts
-        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ~/.m2/repository
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Restore Docker image
-        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: /tmp/arcadedb-image.tar
           key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
@@ -229,7 +229,7 @@ jobs:
           cache-dependency-path: "e2e-js/package-lock.json"
 
       - name: Restore Docker image
-        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: /tmp/arcadedb-image.tar
           key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
@@ -265,7 +265,7 @@ jobs:
           uv --version
 
       - name: Restore Docker image
-        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: /tmp/arcadedb-image.tar
           key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
