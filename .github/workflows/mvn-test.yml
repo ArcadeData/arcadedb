@@ -124,7 +124,7 @@ jobs:
           cache: "maven"
 
       - name: Run Integration Tests with Coverage
-        run: ./mvnw verify -Pintegration -Pcoverage -DskipTests --batch-mode --errors --fail-never --show-version -pl !e2e
+        run:  ./mvnw failsafe:integration-test -Pintegration -Pcoverage --batch-mode --errors --fail-never --show-version -pl !e2e
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
@@ -167,9 +167,6 @@ jobs:
           distribution: "temurin"
           java-version: 21
           cache: "maven"
-      - name: Check m2
-        run: |
-          ls -la ~/.m2/repository/com/arcadedb/
 
       - name: Restore Docker image
         uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
