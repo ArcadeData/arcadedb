@@ -129,12 +129,10 @@ jobs:
           path: ~/.m2/repository
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
-
       - name: Run Integration Tests with Coverage
         run: ./mvnw failsafe:integration-test -Pintegration -Pcoverage --batch-mode --errors --fail-never --show-version -pl !e2e
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
 
       - name: IT Tests Reporter
         uses: dorny/test-reporter@6e6a65b7a0bd2c9197df7d0ae36ac5cee784230c # v2.0.0
