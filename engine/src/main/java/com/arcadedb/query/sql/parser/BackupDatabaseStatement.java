@@ -60,6 +60,8 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
 
       // ASSURE THE DIRECTORY CANNOT BE CHANGED
       String backupDirectory = context.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY);
+      LogManager.instance().log(this, Level.INFO,
+          String.format("Backing up database '%s' to directory '%s'", context.getDatabase().getName(), backupDirectory));
       if (!backupDirectory.endsWith(File.separator))
         backupDirectory += File.separator;
 

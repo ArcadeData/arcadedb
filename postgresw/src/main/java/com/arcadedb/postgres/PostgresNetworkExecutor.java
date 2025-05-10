@@ -34,6 +34,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -318,6 +319,7 @@ public class PostgresNetworkExecutor extends Thread {
       else {
         if (!portal.executed) {
           final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
+
           final ResultSet resultSet = portal.sqlStatement.execute(database, parameters, createCommandContext());
           portal.executed = true;
           if (portal.isExpectingResult) {
@@ -345,8 +347,8 @@ public class PostgresNetworkExecutor extends Thread {
     }
   }
 
-  private BasicCommandContext createCommandContext() {
-    BasicCommandContext commandContext = new BasicCommandContext();
+  private CommandContext createCommandContext() {
+    CommandContext commandContext = new BasicCommandContext();
     commandContext.setConfiguration(server.getConfiguration());
     return commandContext;
   }
@@ -836,7 +838,6 @@ public class PostgresNetworkExecutor extends Thread {
         case "sql":
           final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
           portal.sqlStatement = sqlEngine.parse(query.query, (DatabaseInternal) database);
-
           if (portal.query.equalsIgnoreCase("BEGIN") || portal.query.equalsIgnoreCase("BEGIN TRANSACTION")) {
             explicitTransactionStarted = true;
             setEmptyResultSet(portal);

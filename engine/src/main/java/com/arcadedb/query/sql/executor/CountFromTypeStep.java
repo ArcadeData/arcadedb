@@ -40,7 +40,6 @@ public class CountFromTypeStep extends AbstractExecutionStep {
    * @param targetClass      An identifier containing the name of the class to count
    * @param alias            the name of the property returned in the result-set
    * @param context          the query context
-   * @param profilingEnabled true to enable the profiling of the execution (for SQL PROFILE)
    */
   public CountFromTypeStep(final String targetClass, final String alias, final CommandContext context) {
     super(context);

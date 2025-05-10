@@ -224,7 +224,7 @@ public class ArcadeDBServer {
 
   private void createDirectories() {
 
-    LogManager.instance().log(this, Level.INFO, "Server root path: %s", serverRootPath);
+    LogManager.instance().log(this, Level.INFO, "Server root path: %s", configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH));
     LogManager.instance().log(this, Level.INFO, "Databases directory: %s", configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
     final File databaseDir = new File(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
     if (!databaseDir.exists()) {

@@ -48,6 +48,10 @@ public abstract class SimpleExecStatement extends Statement {
     }
     context.setDatabase(db);
     context.setInputParameters(args);
+
+    if (parentContext != null)
+      context.setConfiguration(parentContext.getConfiguration());
+
     final SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(context);
     return executionPlan.executeInternal();
   }

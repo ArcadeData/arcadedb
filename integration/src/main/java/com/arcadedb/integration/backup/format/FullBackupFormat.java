@@ -65,7 +65,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
         throw new BackupException("The backup file '%s' cannot be created".formatted(backupFile));
     }
 
-    if (database.isTransactionActive())
+    if (database.isTransactionActive() && database.getTransaction().hasChanges())
       throw new BackupException("Transaction in progress found");
 
     logger.logLine(0, "Executing full backup of database to '%s'...", backupFile);
