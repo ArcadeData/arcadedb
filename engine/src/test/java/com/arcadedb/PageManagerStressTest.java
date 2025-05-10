@@ -76,7 +76,7 @@ public class PageManagerStressTest {
       database.async().setCommitEvery(5000);
       database.async().setParallelLevel(parallel);
       database.async().setTransactionUseWAL(true);
-      database.async().setTransactionSync(WALFile.FLUSH_TYPE.NO);
+      database.async().setTransactionSync(WALFile.FlushType.NO);
 
       database.async().onError(exception -> {
         System.out.println("ERROR: " + exception);
