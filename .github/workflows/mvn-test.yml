@@ -130,7 +130,7 @@ jobs:
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Run Integration Tests with Coverage
-        run: ./mvnw failsafe:integration-test -Pintegration -Pcoverage --batch-mode --errors --fail-never --show-version -pl !e2e
+        run: ./mvnw verify -Pintegration -Pcoverage -DskipUnit=true --batch-mode --errors --fail-never --show-version -pl !e2e
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

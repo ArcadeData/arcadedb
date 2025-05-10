@@ -75,6 +75,7 @@
         <json-path.version>2.9.0</json-path.version>
 
         <skipIntegration>true</skipIntegration>
+        <skipUnit>false</skipUnit>
 
         <itCoverageAgent></itCoverageAgent>
         <argLine></argLine>
@@ -193,6 +194,7 @@
                         --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED
                         --add-opens java.base/java.nio.channels.spi=ALL-UNNAMED
                     </argLine>
+                    <skipTests>${skipUnit}</skipTests>
                 </configuration>
             </plugin>
             <plugin>
