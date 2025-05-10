@@ -55,11 +55,27 @@
         </fileSet>
         <fileSet> <!-- Create empty directory -->
             <outputDirectory>databases</outputDirectory>
-            <excludes><exclude>**/*</exclude></excludes>
+            <excludes>
+                <exclude>**/*</exclude>
+            </excludes>
+        </fileSet>
+        <fileSet> <!-- Create empty directory -->
+            <outputDirectory>backups</outputDirectory>
+            <excludes>
+                <exclude>**/*</exclude>
+            </excludes>
+        </fileSet>
+        <fileSet> <!-- Create empty directory -->
+            <outputDirectory>replication</outputDirectory>
+            <excludes>
+                <exclude>**/*</exclude>
+            </excludes>
         </fileSet>
         <fileSet> <!-- Create empty directory -->
             <outputDirectory>log</outputDirectory>
-            <excludes><exclude>**/*</exclude></excludes>
+            <excludes>
+                <exclude>**/*</exclude>
+            </excludes>
         </fileSet>
 
     </fileSets>

@@ -123,7 +123,6 @@ public class PostCommandHandler extends AbstractQueryHandler {
         qResult.getExecutionPlan().ifPresent(x -> response.put("explain", qResult.getExecutionPlan().get().prettyPrint(0, 2)));
 
       Metrics.counter("http.command").increment();
-      ;
 
       return new ExecutionResponse(200, response.toString());
     }

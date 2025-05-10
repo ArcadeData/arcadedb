@@ -148,6 +148,7 @@ public abstract class TestHelper {
 
   @BeforeEach
   public void beforeTest() {
+    GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
     if (autoStartTx && !database.isTransactionActive())
       database.begin();
     beginTest();
@@ -173,6 +174,7 @@ public abstract class TestHelper {
 
     checkActiveDatabases();
     FileUtils.deleteRecursively(new File(getDatabasePath()));
+    GlobalConfiguration.resetAll();
   }
 
   @AfterAll

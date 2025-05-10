@@ -29,10 +29,10 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.io.*;
-import java.lang.reflect.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.File;
+import java.lang.reflect.InvocationTargetException;
+import java.util.Map;
+import java.util.logging.Level;
 
 public class BackupDatabaseStatement extends SimpleExecStatement {
   protected Url url;
@@ -62,16 +62,28 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
       String backupDirectory = context.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY);
       if (!backupDirectory.endsWith(File.separator))
         backupDirectory += File.separator;
+
       clazz.getMethod("setDirectory", String.class).invoke(backup, backupDirectory + context.getDatabase().getName());
-      clazz.getMethod("setVerboseLevel", Integer.TYPE).invoke(backup, 1);
-      final String backupFile = (String) clazz.getMethod("backupDatabase").invoke(backup);
+      clazz.getMethod("setVerboseLevel", Integer.TYPE).invoke(backup, 0);
+      try {
 
-      result.setProperty("result", "OK");
-      result.setProperty("backupFile", backupFile);
+        final String backupFile = (String) clazz.getMethod("backupDatabase").invoke(backup);
+        result.setProperty("result", "OK");
+        result.setProperty("backupFile", backupFile);
 
-      final InternalResultSet rs = new InternalResultSet();
-      rs.add(result);
-      return rs;
+        final InternalResultSet rs = new InternalResultSet();
+        rs.add(result);
+        return rs;
+      } catch (Exception e) {
+        LogManager.instance().log(this, Level.SEVERE,
+            String.format("Error on backup database '%s' to directory '%s'",
+                context.getDatabase().getName(), backupDirectory), e);
+        result.setProperty("result", "ERROR");
+        result.setProperty("error", e.getMessage());
+        final InternalResultSet rs = new InternalResultSet();
+        rs.add(result);
+        return rs;
+      }
 
     } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
       throw new CommandExecutionException("Error on backing up database, backup libs not found in classpath", e);

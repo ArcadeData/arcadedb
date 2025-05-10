@@ -21,12 +21,15 @@ package com.arcadedb.e2e;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -48,6 +51,34 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
   void tearDown() {
     if (database != null)
       database.close();
+  }
+
+  @Test
+  void backupDatabase() throws IOException, InterruptedException {
+
+    ResultSet resultSet = database.command("sql", "BACKUP DATABASE");
+
+    Result result = resultSet.next();
+    assertThat(result.<String>getProperty("result")).isEqualTo("OK");
+    assertThat(result.<String>getProperty("backupFile")).startsWith("beer-backup-");
+
+    resultSet = database.command("sqlscript", "BACKUP DATABASE");
+
+    result = resultSet.next();
+    assertThat(result.<String>getProperty("result")).isEqualTo("OK");
+    assertThat(result.<String>getProperty("backupFile")).startsWith("beer-backup-");
+
+    resultSet = database.command("sqlscript", """
+        BEGIN;
+        INSERT INTO Beer SET name = 'beer1';
+        COMMIT;
+        BACKUP DATABASE;
+        """);
+
+    result = resultSet.next();
+    assertThat(result.<String>getProperty("result")).isEqualTo("OK");
+    assertThat(result.<String>getProperty("backupFile")).startsWith("beer-backup-");
+
   }
 
   @Test
@@ -119,7 +150,7 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
   }
 
   @Test
-//  @Disabled
+  @Disabled
   void testMultipleInsert() throws SQLException, ClassNotFoundException {
     database.command("sqlscript", """
         create vertex type `TEXT_EMBEDDING` if not exists;
@@ -129,15 +160,13 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
 
     LocalDateTime start = LocalDateTime.now();
 
-//    database.transaction(() -> {
-      IntStream.range(1, 100001).forEach(i -> {
+    IntStream.range(1, 100001).forEach(i -> {
 
-        database.command("sqlscript",
-            "INSERT INTO `TEXT_EMBEDDING` SET str = meow_%d, embedding = [0.1,0.2,0.3] RETURN embedding;".formatted(i));
+      database.command("sqlscript",
+          "INSERT INTO `TEXT_EMBEDDING` SET str = meow_%d, embedding = [0.1,0.2,0.3] RETURN embedding;".formatted(i));
 
-      });
+    });
 
-//    });
     LocalDateTime end = LocalDateTime.now();
     System.out.println("Execution time: " + Duration.between(start, end).toSeconds() + " seconds");
 
@@ -147,7 +176,7 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
   }
 
   @Test
-//  @Disabled
+  @Disabled
   void testMultipleInsertBAtched() throws SQLException, ClassNotFoundException {
     database.command("sqlscript", """
         create vertex type `TEXT_EMBEDDING` if not exists;

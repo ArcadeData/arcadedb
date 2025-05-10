@@ -41,11 +41,16 @@ COPY --chown=arcadedb:arcadedb ./arcadedb-* ./
 RUN chmod +x ./bin/*.sh
 
 # Volumes available
+VOLUME [ "/home/arcadedb/config"]
+
 VOLUME [ "/home/arcadedb/databases"]
+
+VOLUME [ "/home/arcadedb/replication"]
+
+VOLUME [ "/home/arcadedb/backups"]
 
 VOLUME [ "/home/arcadedb/log"]
 
-VOLUME [ "/home/arcadedb/config"]
 
 # ArcadeDB HTTP API & STUDIO
 EXPOSE 2480

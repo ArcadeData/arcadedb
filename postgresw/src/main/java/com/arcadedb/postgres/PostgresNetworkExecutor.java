@@ -33,6 +33,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.query.sql.SQLQueryEngine;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -274,7 +275,8 @@ public class PostgresNetworkExecutor extends Thread {
     if (type == 'P') {
       if (portal.sqlStatement != null) {
         final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
-        final ResultSet resultSet = portal.sqlStatement.execute(database, parameters);
+
+        final ResultSet resultSet = portal.sqlStatement.execute(database, parameters, createCommandContext());
         portal.executed = true;
         if (portal.isExpectingResult) {
           portal.cachedResultset = browseAndCacheResultSet(resultSet, 0);
@@ -316,7 +318,7 @@ public class PostgresNetworkExecutor extends Thread {
       else {
         if (!portal.executed) {
           final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
-          final ResultSet resultSet = portal.sqlStatement.execute(database, parameters);
+          final ResultSet resultSet = portal.sqlStatement.execute(database, parameters, createCommandContext());
           portal.executed = true;
           if (portal.isExpectingResult) {
             portal.cachedResultset = browseAndCacheResultSet(resultSet, limit);
@@ -341,6 +343,12 @@ public class PostgresNetworkExecutor extends Thread {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), "XX000");
     }
+  }
+
+  private BasicCommandContext createCommandContext() {
+    BasicCommandContext commandContext = new BasicCommandContext();
+    commandContext.setConfiguration(server.getConfiguration());
+    return commandContext;
   }
 
   private void queryCommand() {
@@ -376,9 +384,9 @@ public class PostgresNetworkExecutor extends Thread {
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else if (ignoreQueries.contains(query.query))
         resultSet = new IteratorResultSet(Collections.emptyIterator());
-      else
-        resultSet = database.command(query.language, query.query);
-
+      else {
+        resultSet = database.command(query.language, query.query, server.getConfiguration());
+      }
       final List<Result> cachedResultSet = browseAndCacheResultSet(resultSet, 0);
 
       final Map<String, PostgresType> columns = getColumns(cachedResultSet);
@@ -840,7 +848,7 @@ public class PostgresNetworkExecutor extends Thread {
 
         default:
           portal.executed = true;
-          final ResultSet resultSet = database.command(query.language, query.query);
+          final ResultSet resultSet = database.command(query.language, query.query, server.getConfiguration());
           portal.cachedResultset = browseAndCacheResultSet(resultSet, 0);
           portal.columns = getColumns(portal.cachedResultset);
         }
