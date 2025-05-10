@@ -193,7 +193,7 @@ jobs:
         if: success() || failure()
         with:
           name: Java E2E Tests Report
-          path: "e2e/target/failsafe-reports/TEST*.xml"
+          path: "e2e/target/surefire-reports/TEST*.xml"
           list-suites: "failed"
           list-tests: "failed"
           reporter: java-junit
