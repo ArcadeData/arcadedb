@@ -291,34 +291,49 @@ jobs:
           name: integration-coverage-reports
           path: integration-coverage
 
-      - name: Install JaCoCo CLI
-        run: |
-          mkdir -p jacoco-cli
-          wget -O jacoco-cli/jacococli.jar https://repo1.maven.org/maven2/org/jacoco/org.jacoco.cli/0.8.13/org.jacoco.cli-0.8.13-nodeps.jar
+#      - name: Install JaCoCo CLI
+#        run: |
+#          mkdir -p jacoco-cli
+#          wget -O jacoco-cli/jacococli.jar https://repo1.maven.org/maven2/org/jacoco/org.jacoco.cli/0.8.13/org.jacoco.cli-0.8.13-nodeps.jar
+#
+#      - name: Merge coverage reports
+#        run: |
+#          java -jar jacoco-cli/jacococli.jar merge $(find . -name "*.exec") --destfile merged-coverage.exec
+#
+#      - name: Generate merged report
+#        run: |
+#          # Create directories for report
+#          mkdir -p target/site/jacoco-merged
+#
+#          # Get source dirs and class dirs for report generation
+#          SRCDIR=$(find . -path "*/src/main/java" -type d | tr '\n' ',')
+#          CLASSDIR=$(find . -path "*/target/classes" -type d | tr '\n' ',')
+#
+#          # Generate merged report
+#          java -jar jacoco-cli/jacococli.jar report merged-coverage.exec \
+#            --sourcefiles $SRCDIR \
+#            --classfiles $CLASSDIR \
+#            --html target/site/jacoco-merged \
+#            --xml target/jacoco-merged.xml
+#
+#
+#      - name: Codacy coverage reporter
+#        uses: codacy/codacy-coverage-reporter-action@89d6c85cfafaec52c72b6c5e8b2878d33104c699 # v1.3.0
+#        with:
+#          language: java
+#          project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
+#          coverage-reports: target/jacoco-merged.xml
+#
 
-      - name: Merge coverage reports
-        run: |
-          java -jar jacoco-cli/jacococli.jar merge $(find . -name "*.exec") --destfile merged-coverage.exec
-
-      - name: Generate merged report
-        run: |
-          # Create directories for report
-          mkdir -p target/site/jacoco-merged
-
-          # Get source dirs and class dirs for report generation
-          SRCDIR=$(find . -path "*/src/main/java" -type d | tr '\n' ',')
-          CLASSDIR=$(find . -path "*/target/classes" -type d | tr '\n' ',')
-
-          # Generate merged report
-          java -jar jacoco-cli/jacococli.jar report merged-coverage.exec \
-            --sourcefiles $SRCDIR \
-            --classfiles $CLASSDIR \
-            --html target/site/jacoco-merged \
-            --xml target/jacoco-merged.xml
+      - name: Get coverage files
+        id: coverage-files-generator
+        if: success() || failure()
+        run: echo "COVERAGE_FILES=$(find . -path **/jacoco*.xml -printf '%p,')" >> "$GITHUB_OUTPUT"
 
       - name: Codacy coverage reporter
         uses: codacy/codacy-coverage-reporter-action@89d6c85cfafaec52c72b6c5e8b2878d33104c699 # v1.3.0
+        if: success() || failure()
         with:
           language: java
           project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
-          coverage-reports: target/jacoco-merged.xml
+          coverage-reports: ${{ steps.coverage-files-generator.outputs.COVERAGE_FILES }}
