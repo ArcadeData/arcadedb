@@ -46,6 +46,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintWriter;
 import java.net.HttpURLConnection;
+import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -280,7 +281,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       if (i > 0)
         serverURLs.append(",");
 
-      serverURLs.append("{ArcadeDB_"+i).append("localhost:").append(port++);
+      serverURLs.append("{ArcadeDB_" + i).append("localhost:").append(port++);
     }
     return serverURLs.toString();
   }
