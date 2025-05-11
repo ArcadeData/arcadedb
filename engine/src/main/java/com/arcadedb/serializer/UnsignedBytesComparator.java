@@ -1,25 +1,57 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.arcadedb.serializer;
 
-import java.nio.ByteBuffer;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.nio.ByteOrder;
 
 /**
  * This class was inspired by Guava's UnsignedBytes, under Apache 2 license.
+ * Updated to use java.lang.foreign.MemorySegment instead of sun.misc.Unsafe
+ * according to JEP 471 recommendations.
  *
  * @author Louis Wasserman
  * @author Brian Milch
  * @author Colin Evans
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+
 public final class UnsignedBytesComparator {
   private static final int                 UNSIGNED_MASK        = 0xFF;
   public static final  PureJavaComparator  PURE_JAVA_COMPARATOR = new PureJavaComparator();
-  public static final  ByteArrayComparator BEST_COMPARATOR      = new ByteBufferComparator();
+  public static final  ByteArrayComparator BEST_COMPARATOR;
+
+  static {
+    // Fall back to the pure Java implementation unless we're in a 64-bit JVM
+    // Note: We don't need to check the offset alignment as with MemorySegment API
+    if (!"64".equals(System.getProperty("sun.arch.data.model"))) {
+      BEST_COMPARATOR = PURE_JAVA_COMPARATOR;  // force fallback to PureJavaComparator
+    } else {
+      BEST_COMPARATOR = new ModernComparator();
+    }
+  }
 
   private UnsignedBytesComparator() {
   }
 
-  public static class ByteBufferComparator implements ByteArrayComparator {
+  public static class ModernComparator implements ByteArrayComparator {
     static final boolean BIG_ENDIAN = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN);
 
     @Override
@@ -29,21 +61,30 @@ public final class UnsignedBytesComparator {
       final int strideLimit = minLength & -stride;
       int i;
 
-      ByteBuffer leftBuffer = ByteBuffer.wrap(left).order(ByteOrder.nativeOrder());
-      ByteBuffer rightBuffer = ByteBuffer.wrap(right).order(ByteOrder.nativeOrder());
+      try (Arena arena = Arena.ofConfined()) {
+        MemorySegment leftSegment = MemorySegment.ofArray(left);
+        MemorySegment rightSegment = MemorySegment.ofArray(right);
 
-      for (i = 0; i < strideLimit; i += stride) {
-        final long lw = leftBuffer.getLong(i);
-        final long rw = rightBuffer.getLong(i);
-        if (lw != rw) {
-          if (BIG_ENDIAN) {
-            return unsignedLongsCompare(lw, rw);
+        /*
+         * Compare 8 bytes at a time. Benchmarking on x86 shows a stride of 8 bytes is no slower
+         * than 4 bytes even on 32-bit. On the other hand, it is substantially faster on 64-bit.
+         */
+        for (i = 0; i < strideLimit; i += stride) {
+          final long lw = leftSegment.get(ValueLayout.JAVA_LONG_UNALIGNED, i);
+          final long rw = rightSegment.get(ValueLayout.JAVA_LONG_UNALIGNED, i);
+
+          if (lw != rw) {
+            if (BIG_ENDIAN) {
+              return unsignedLongsCompare(lw, rw);
+            }
+
+            final int n = Long.numberOfTrailingZeros(lw ^ rw) & ~0x7;
+            return ((int) ((lw >>> n) & UNSIGNED_MASK)) - ((int) ((rw >>> n) & UNSIGNED_MASK));
           }
-          final int n = Long.numberOfTrailingZeros(lw ^ rw) & ~0x7;
-          return ((int) ((lw >>> n) & UNSIGNED_MASK)) - ((int) ((rw >>> n) & UNSIGNED_MASK));
         }
       }
 
+      // The epilogue to cover the last (minLength % stride) elements.
       for (; i < minLength; i++) {
         final int result = UnsignedBytesComparator.compare(left[i], right[i]);
         if (result != 0)
@@ -59,16 +100,24 @@ public final class UnsignedBytesComparator {
       final int strideLimit = length & -stride;
       int i;
 
-      ByteBuffer leftBuffer = ByteBuffer.wrap(left).order(ByteOrder.nativeOrder());
-      ByteBuffer rightBuffer = ByteBuffer.wrap(right).order(ByteOrder.nativeOrder());
+      try (Arena arena = Arena.ofConfined()) {
+        MemorySegment leftSegment = MemorySegment.ofArray(left);
+        MemorySegment rightSegment = MemorySegment.ofArray(right);
 
-      for (i = 0; i < strideLimit; i += stride) {
-        final long lw = leftBuffer.getLong(i);
-        final long rw = rightBuffer.getLong(i);
-        if (lw != rw)
-          return false;
+        /*
+         * Compare 8 bytes at a time. Benchmarking on x86 shows a stride of 8 bytes is no slower
+         * than 4 bytes even on 32-bit. On the other hand, it is substantially faster on 64-bit.
+         */
+        for (i = 0; i < strideLimit; i += stride) {
+          final long lw = leftSegment.get(ValueLayout.JAVA_LONG_UNALIGNED, i);
+          final long rw = rightSegment.get(ValueLayout.JAVA_LONG_UNALIGNED, i);
+
+          if (lw != rw)
+            return false;
+        }
       }
 
+      // The epilogue to cover the last (minLength % stride) elements.
       for (; i < length; i++) {
         final int result = UnsignedBytesComparator.compare(left[i], right[i]);
         if (result != 0)
@@ -80,7 +129,7 @@ public final class UnsignedBytesComparator {
 
     @Override
     public String toString() {
-      return "UnsignedBytes.lexicographicalComparator() (ByteBuffer version)";
+      return "UnsignedBytes.lexicographicalComparator() (java.lang.foreign.MemorySegment version)";
     }
   }
 
@@ -99,6 +148,7 @@ public final class UnsignedBytesComparator {
 
     @Override
     public boolean equals(final byte[] left, final byte[] right, final int length) {
+      // OPTIMIZATION: TEST LAST BYTE FIRST
       int result = UnsignedBytesComparator.compare(left[length - 1], right[length - 1]);
       if (result != 0)
         return false;
