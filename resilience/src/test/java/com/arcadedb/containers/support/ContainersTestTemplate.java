@@ -169,7 +169,7 @@ public abstract class ContainersTestTemplate {
       boolean ha,
       Network network) {
 
-    makeContainersDirectories(name);
+//    makeContainersDirectories(name);
 
     GenericContainer container = new GenericContainer(IMAGE)
         .withExposedPorts(2480, 5432)
@@ -192,6 +192,7 @@ public abstract class ContainersTestTemplate {
             -Darcadedb.ha.serverList=%s
             -Darcadedb.ha.replicationQueueSize=1024
             """, name, ha, quorum, role, serverList))
+        .withCreateContainerCmdModifier(cmd -> cmd.withUser("1000:1000")); // Set user ID and group ID
         .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
     containers.add(container);
     return container;
