@@ -1,6 +1,7 @@
 package com.arcadedb.containers.support;
 
 import com.arcadedb.utility.FileUtils;
+import com.github.dockerjava.api.command.CreateContainerCmd;
 import eu.rekawek.toxiproxy.ToxiproxyClient;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.logging.LoggingMeterRegistry;
@@ -25,6 +26,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 public abstract class ContainersTestTemplate {
@@ -169,7 +171,13 @@ public abstract class ContainersTestTemplate {
       boolean ha,
       Network network) {
 
-//    makeContainersDirectories(name);
+    Consumer<CreateContainerCmd> consumer = new Consumer<>() {
+      @Override
+      public void accept(CreateContainerCmd createContainerCmd) {
+        createContainerCmd.withUser("1000:1000");
+      }
+    };
+
 
     GenericContainer container = new GenericContainer(IMAGE)
         .withExposedPorts(2480, 5432)
@@ -192,8 +200,8 @@ public abstract class ContainersTestTemplate {
             -Darcadedb.ha.serverList=%s
             -Darcadedb.ha.replicationQueueSize=1024
             """, name, ha, quorum, role, serverList))
-        .withCreateContainerCmdModifier(cmd -> cmd.withUser("1000:1000")) // Set user ID and group ID
-        .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
+        .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204))
+        .withCreateContainerCmdModifier(consumer);
     containers.add(container);
     return container;
   }
