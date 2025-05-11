@@ -21,7 +21,6 @@ package com.arcadedb.database;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.Profiler;
-import com.arcadedb.database.Record;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.async.ErrorCallback;
@@ -81,14 +80,33 @@ import com.arcadedb.utility.LockException;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.RWLockContext;
 
-import java.io.*;
-import java.nio.channels.*;
-import java.nio.file.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.concurrent.locks.*;
-import java.util.logging.*;
+import java.io.File;
+import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.logging.Level;
 
 /**
  * Local implementation of {@link Database}. It is based on files opened on the local file system.
@@ -1332,7 +1350,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public ResultSet command(final String language, final String query, final Object... parameters) {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
-    return getQueryEngine(language).command(query, null, parameters);
+    return getQueryEngine(language).command(query, new ContextConfiguration(), parameters);
   }
 
   @Override
@@ -1345,7 +1363,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public ResultSet command(final String language, final String query, final Map<String, Object> parameters) {
-    return command(language, query, null, parameters);
+    return command(language, query, new ContextConfiguration(), parameters);
   }
 
   @Override
@@ -1376,14 +1394,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public ResultSet query(final String language, final String query, final Object... parameters) {
     checkDatabaseIsOpen();
     stats.queries.incrementAndGet();
-    return getQueryEngine(language).query(query, null, parameters);
+    return getQueryEngine(language).query(query, new ContextConfiguration(), parameters);
   }
 
   @Override
   public ResultSet query(final String language, final String query, final Map<String, Object> parameters) {
     checkDatabaseIsOpen();
     stats.queries.incrementAndGet();
-    return getQueryEngine(language).query(query, null, parameters);
+    return getQueryEngine(language).query(query, new ContextConfiguration(), parameters);
   }
 
   @Override
