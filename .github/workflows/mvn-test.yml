@@ -86,7 +86,8 @@ jobs:
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Run Unit Tests with Coverage
-        run: ./mvnw test -Pcoverage --batch-mode --errors --fail-never --show-version -pl !e2e
+        # verify because it runs the tests and generates the coverage report, ITs are skipped
+        run: ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -pl !e2e
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
