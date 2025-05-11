@@ -391,7 +391,7 @@ jobs:
         run: docker load < /tmp/arcadedb-image.tar
 
       - name: Resilience Tests
-        run: ./mvnw verify -pl resilience
+        run: ./mvnw verify -Pintegration -pl resilience
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
