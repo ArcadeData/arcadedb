@@ -100,6 +100,13 @@ public abstract class ContainersTestTemplate {
     FileUtils.deleteRecursively(Path.of("./target/logs").toFile());
   }
 
+  private void makeContainersDirectories(String name) {
+    logger.info("Creating containers directories");
+    Path.of("./target/databases/" + name).toFile().mkdirs();
+    Path.of("./target/replication/" + name).toFile().mkdirs();
+    Path.of("./target/logs/" + name).toFile().mkdirs();
+  }
+
   /**
    * Stops all containers and clears the list of containers.
    */
@@ -158,6 +165,9 @@ public abstract class ContainersTestTemplate {
       String role,
       boolean ha,
       Network network) {
+
+    makeContainersDirectories(name);
+
     GenericContainer container = new GenericContainer(IMAGE)
         .withExposedPorts(2480, 5432)
         .withNetwork(network)
