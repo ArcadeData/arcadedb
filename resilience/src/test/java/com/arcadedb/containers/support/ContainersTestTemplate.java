@@ -103,11 +103,11 @@ public abstract class ContainersTestTemplate {
   private void makeContainersDirectories(String name) {
     logger.info("Creating containers directories");
     Path.of("./target/databases/" + name).toFile().mkdirs();
-    Path.of("./target/databases/" + name).toFile().setWritable(true);
+    Path.of("./target/databases/" + name).toFile().setWritable(true, false);
     Path.of("./target/replication/" + name).toFile().mkdirs();
-    Path.of("./target/replication/" + name).toFile().setWritable(true);
+    Path.of("./target/replication/" + name).toFile().setWritable(true, false);
     Path.of("./target/logs/" + name).toFile().mkdirs();
-    Path.of("./target/logs/" + name).toFile().setWritable(true);
+    Path.of("./target/logs/" + name).toFile().setWritable(true, false);
   }
 
   /**
