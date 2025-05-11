@@ -74,8 +74,9 @@
         <mockito-core.version>5.16.0</mockito-core.version>
         <json-path.version>2.9.0</json-path.version>
 
-        <skipIntegration>true</skipIntegration>
-        <skipUnit>false</skipUnit>
+        <skipITs>true</skipITs>
+        <skipTests>false</skipTests>
+<!--        <skipUnit>false</skipUnit>-->
 
         <itCoverageAgent></itCoverageAgent>
         <argLine></argLine>
@@ -194,7 +195,8 @@
                         --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED
                         --add-opens java.base/java.nio.channels.spi=ALL-UNNAMED
                     </argLine>
-                    <skipTests>${skipUnit}</skipTests>
+                    <skipTests>${skipTests}</skipTests>
+<!--                    <skipTests>${skipUnit}</skipTests>-->
                 </configuration>
             </plugin>
             <plugin>
@@ -224,7 +226,8 @@
 <!--                        <exclude>**/*ReplicationServerLeaderDownIT</exclude>-->
                         <exclude>**/*ReplicationServerLeaderChanges3TimesIT</exclude>
                     </excludes>
-                    <skipITs>${skipIntegration}</skipITs>
+                    <skipTests>${skipITs}</skipTests>
+                    <skipITs>${skipITs}</skipITs>
                     <argLine>${itCoverageAgent}</argLine>
                     <reuseForks>true</reuseForks>
                     <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
@@ -536,13 +539,13 @@
         <profile>
             <id>full</id>
             <properties>
-                <skipIntegration>false</skipIntegration>
+                <skipITs>false</skipITs>
             </properties>
         </profile>
         <profile>
             <id>integration</id>
             <properties>
-                <skipIntegration>false</skipIntegration>
+                <skipITs>false</skipITs>
             </properties>
         </profile>
         <profile>
