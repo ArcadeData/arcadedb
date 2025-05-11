@@ -25,9 +25,11 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.DateUtils;
 
-import java.math.*;
-import java.time.temporal.*;
-import java.util.*;
+import java.math.BigDecimal;
+import java.time.temporal.ChronoUnit;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
 
 public class BinaryComparator {
   public int compare(final Object value1, final byte type1, final Object value2, final byte type2) {
@@ -329,8 +331,7 @@ public class BinaryComparator {
     }
 
     case BinaryTypes.TYPE_LIST: {
-      switch (type2) {
-      case BinaryTypes.TYPE_LIST:
+      if (type2 == BinaryTypes.TYPE_LIST) {
         final List v1 = value1.getClass().isArray() ? Arrays.asList((Object[]) value1) : (List) value1;
         final List v2 = value2.getClass().isArray() ? Arrays.asList((Object[]) value2) : (List) value2;
 
@@ -340,8 +341,7 @@ public class BinaryComparator {
     }
 
     case BinaryTypes.TYPE_MAP: {
-      switch (type2) {
-      case BinaryTypes.TYPE_MAP:
+      if (type2 == BinaryTypes.TYPE_MAP) {
         return CollectionUtils.compare((Map) value1, (Map) value2);
       }
       break;
