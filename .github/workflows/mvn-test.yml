@@ -401,7 +401,7 @@ jobs:
         if: success() || failure()
         with:
           name: Java Resilience Tests Report
-          path: "resilience/target/surefire-reports/TEST*.xml"
+          path: "resilience/target/failsafe-reports/TEST*.xml"
           list-suites: "failed"
           list-tests: "failed"
           reporter: java-junit
