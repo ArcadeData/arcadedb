@@ -390,6 +390,10 @@ jobs:
       - name: Load Docker image
         run: docker load < /tmp/arcadedb-image.tar
 
+      - name: some checks
+        run: |
+          whoami
+          id
       - name: Resilience Tests
         run: ./mvnw verify -Pintegration -pl resilience
         env:
