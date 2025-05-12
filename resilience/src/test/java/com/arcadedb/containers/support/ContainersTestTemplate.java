@@ -173,6 +173,8 @@ public abstract class ContainersTestTemplate {
       boolean ha,
       Network network) {
 
+    makeContainersDirectories(name);
+
     GenericContainer<?> container = new GenericContainer<>(IMAGE)
         .withExposedPorts(2480, 5432)
         .withNetwork(network)
