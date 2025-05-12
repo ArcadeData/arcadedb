@@ -1,7 +1,6 @@
 package com.arcadedb.containers.support;
 
 import com.arcadedb.utility.FileUtils;
-import com.github.dockerjava.api.command.CreateContainerCmd;
 import eu.rekawek.toxiproxy.ToxiproxyClient;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.logging.LoggingMeterRegistry;
@@ -26,7 +25,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 public abstract class ContainersTestTemplate {
@@ -56,6 +54,7 @@ public abstract class ContainersTestTemplate {
   void setUp() throws IOException, InterruptedException {
     deleteContainersDirectories();
 
+    // METRICS
     LoggingRegistryConfig config = new LoggingRegistryConfig() {
       @Override
       public String get(@NotNull String key) {
@@ -72,14 +71,17 @@ public abstract class ContainersTestTemplate {
     loggingMeterRegistry = LoggingMeterRegistry.builder(config).build();
     Metrics.addRegistry(loggingMeterRegistry);
 
+    // NETWORK
     network = Network.newNetwork();
 
+    // Toxiproxy
     logger.info("Creating a Toxiproxy container");
     toxiproxy = new ToxiproxyContainer("ghcr.io/shopify/toxiproxy:2.12.0")
         .withNetwork(network)
         .withNetworkAliases("proxy");
     Startables.deepStart(toxiproxy).join();
     toxiproxyClient = new ToxiproxyClient(toxiproxy.getHost(), toxiproxy.getControlPort());
+
 
   }
 
@@ -171,15 +173,7 @@ public abstract class ContainersTestTemplate {
       boolean ha,
       Network network) {
 
-    Consumer<CreateContainerCmd> consumer = new Consumer<>() {
-      @Override
-      public void accept(CreateContainerCmd createContainerCmd) {
-        createContainerCmd.withUser("1000:1000");
-      }
-    };
-
-
-    GenericContainer container = new GenericContainer(IMAGE)
+    GenericContainer<?> container = new GenericContainer<>(IMAGE)
         .withExposedPorts(2480, 5432)
         .withNetwork(network)
         .withNetworkAliases(name)
@@ -200,8 +194,7 @@ public abstract class ContainersTestTemplate {
             -Darcadedb.ha.serverList=%s
             -Darcadedb.ha.replicationQueueSize=1024
             """, name, ha, quorum, role, serverList))
-        .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204))
-        .withCreateContainerCmdModifier(consumer);
+        .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
     containers.add(container);
     return container;
   }
