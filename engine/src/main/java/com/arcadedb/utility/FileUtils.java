@@ -179,17 +179,6 @@ public class FileUtils {
         break;
 
       } catch (final IOException e) {
-//        if (System.getProperty("os.name").toLowerCase().contains("win")) {
-//          // AVOID LOCKING UNDER WINDOWS
-//          try {
-//            LogManager.instance()
-//                .log(rootFile, Level.WARNING, "Cannot delete directory '%s'. Forcing GC cleanup and try again (attempt=%d)", e, rootFile, attempt);
-//            System.gc();
-//            Thread.sleep(1000);
-//          } catch (Exception ex) {
-//            // IGNORE IT
-//          }
-//        } else
         LogManager.instance().log(rootFile, Level.WARNING, "Cannot delete directory '%s'", e, rootFile);
       }
     }

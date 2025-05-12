@@ -82,7 +82,6 @@ public abstract class ContainersTestTemplate {
     Startables.deepStart(toxiproxy).join();
     toxiproxyClient = new ToxiproxyClient(toxiproxy.getHost(), toxiproxy.getControlPort());
 
-
   }
 
   @AfterEach
