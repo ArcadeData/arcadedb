@@ -623,15 +623,13 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
   }
 
   @Test
-//@Disabled
   void createVertexCypherQueryParams() throws Exception {
     try (Connection conn = getConnection()) {
       try (final Statement st = conn.createStatement()) {
         st.execute("create vertex type City");
       }
 
-      try (final PreparedStatement pst = conn.prepareStatement(
-          "create vertex City set id = ? ;")) {
+      try (final PreparedStatement pst = conn.prepareStatement("create vertex City set id = ? ;")) {
         pst.setString(1, "C1");
         pst.execute();
       }
@@ -643,7 +641,6 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
 
       }
       try (final PreparedStatement st = conn.prepareStatement("{cypher} MATCH (n:City) WHERE n.id = ? RETURN n")) {
-        System.out.println("querying vertex");
         st.setString(1, "C2");
         try (final ResultSet rs = st.executeQuery()) {
           assertThat(rs.next()).isTrue();
