@@ -185,7 +185,7 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
         """);
 
     LocalDateTime start = LocalDateTime.now();
-    StringBuilder sb = new StringBuilder();
+      StringBuilder sb = new StringBuilder();
 
     IntStream.range(1, 100001).forEach(i -> {
 
@@ -201,6 +201,34 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
         });
         sb.setLength(0);
       }
+
+    });
+    LocalDateTime end = LocalDateTime.now();
+    System.out.println("Execution time: " + Duration.between(start, end).toSeconds() + " seconds");
+
+    ResultSet resultSet = database.query("sql", "SELECT count() as count FROM `TEXT_EMBEDDING`");
+    System.out.println("Count: " + resultSet.stream().findFirst().get().getProperty("count"));
+  }
+
+  @Test
+  @Disabled
+  void testMultipleInsertSingleTransaction() throws SQLException, ClassNotFoundException {
+    database.command("sqlscript", """
+        create vertex type `TEXT_EMBEDDING` if not exists;
+        create property TEXT_EMBEDDING.str if not exists STRING;
+        create property TEXT_EMBEDDING.embedding if not exists ARRAY_OF_FLOATS;
+        """);
+
+    LocalDateTime start = LocalDateTime.now();
+    StringBuilder sb = new StringBuilder();
+
+    database.transaction(() -> {
+      IntStream.range(1, 100001).forEach(i -> {
+
+        database.command("sql",
+            "INSERT INTO `TEXT_EMBEDDING` SET str = meow_%d, embedding = [0.1,0.2,0.3];".formatted(i));
+
+      });
 
     });
     LocalDateTime end = LocalDateTime.now();

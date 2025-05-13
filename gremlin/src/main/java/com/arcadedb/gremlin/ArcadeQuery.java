@@ -22,7 +22,9 @@ package com.arcadedb.gremlin;
 
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Base class for query implementation from Gremlin/Tinkerpop.
@@ -74,11 +76,6 @@ public abstract class ArcadeQuery {
 
   public String getQuery() {
     return query;
-  }
-
-  public ArcadeQuery setQuery(final String query) {
-    this.query = query;
-    return this;
   }
 
 }

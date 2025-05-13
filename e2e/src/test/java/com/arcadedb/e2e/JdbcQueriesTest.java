@@ -133,24 +133,6 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
   }
 
   @Test
-  void createVertexCypherQuery() throws Exception {
-    try (final Statement st = conn.createStatement()) {
-
-      try (final ResultSet rs = st.executeQuery("{cypher} CREATE (n:City {id:'C1'}) RETURN n")) {
-        assertThat(rs.next()).isTrue();
-        assertThat(rs.getString("id")).isEqualTo("C1");
-        assertThat(rs.next()).isFalse();
-      }
-
-      try (final ResultSet rs = st.executeQuery("{cypher} MATCH (n:City) WHERE n.id = 'C1' RETURN n")) {
-        assertThat(rs.next()).isTrue();
-        assertThat(rs.getString("id")).isEqualTo("C1");
-        assertThat(rs.next()).isFalse();
-      }
-    }
-  }
-
-  @Test
   void createSchemaWithSqlScript() throws SQLException {
     try (final Statement st = conn.createStatement()) {
 
@@ -285,6 +267,33 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
 
     }
 
+  }
+
+  @Test
+  void createVertexCypherQueryParams() throws Exception {
+    try (final Statement st = conn.createStatement()) {
+      st.execute("create vertex type City");
+    }
+
+    try (final PreparedStatement pst = conn.prepareStatement("create vertex City set id = ? ;")) {
+      pst.setString(1, "C1");
+      pst.execute();
+    }
+
+    try (final PreparedStatement st = conn.prepareStatement("{cypher} CREATE (n:City {id: ? }) RETURN n")) {
+      st.setString(1, "C2");
+      boolean execute = st.execute();
+      assertThat(execute).isTrue();
+
+    }
+    try (final PreparedStatement st = conn.prepareStatement("{cypher} MATCH (n:City) WHERE n.id = ? RETURN n")) {
+      st.setString(1, "C2");
+      try (final ResultSet rs = st.executeQuery()) {
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getString("id")).isEqualTo("C2");
+        assertThat(rs.next()).isFalse();
+      }
+    }
   }
 
   @Test

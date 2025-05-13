@@ -54,6 +54,8 @@ public class CypherQueryEngine implements QueryEngine {
 
   @Override
   public AnalyzedQuery analyze(final String query) {
+    ArcadeCypher cypher = arcadeGraph.cypher(query);
+
     return new AnalyzedQuery() {
       @Override
       public boolean isIdempotent() {
@@ -80,7 +82,7 @@ public class CypherQueryEngine implements QueryEngine {
   @Override
   public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
     try {
-      final ArcadeCypher arcadeCypher = arcadeGraph.cypher(query, parameters);
+      final ArcadeCypher arcadeCypher = arcadeGraph.cypher(query);
       arcadeCypher.setParameters(parameters);
       return arcadeCypher.execute();
 

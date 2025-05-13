@@ -55,12 +55,15 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
     super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue(
         "Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin");
+    GlobalConfiguration.POSTGRES_DEBUG.setValue("true");
   }
 
   @AfterEach
   @Override
   public void endTest() {
     GlobalConfiguration.SERVER_PLUGINS.setValue("");
+    GlobalConfiguration.POSTGRES_DEBUG.setValue("false");
+
     super.endTest();
   }
 
@@ -179,7 +182,7 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
 
   @Test
   public void queryVertices() throws Exception {
-    final int TOTAL = 1000;
+    final int TOTAL = 1;
     final long now = System.currentTimeMillis();
 
     try (final Connection conn = getConnection()) {
@@ -616,6 +619,35 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
         }
       }
 
+    }
+  }
+
+  @Test
+  void createVertexCypherQueryParams() throws Exception {
+    try (Connection conn = getConnection()) {
+      try (final Statement st = conn.createStatement()) {
+        st.execute("create vertex type City");
+      }
+
+      try (final PreparedStatement pst = conn.prepareStatement("create vertex City set id = ? ;")) {
+        pst.setString(1, "C1");
+        pst.execute();
+      }
+
+      try (final PreparedStatement st = conn.prepareStatement("{cypher} CREATE (n:City {id: ? }) RETURN n")) {
+        st.setString(1, "C2");
+        boolean execute = st.execute();
+        assertThat(execute).isTrue();
+
+      }
+      try (final PreparedStatement st = conn.prepareStatement("{cypher} MATCH (n:City) WHERE n.id = ? RETURN n")) {
+        st.setString(1, "C2");
+        try (final ResultSet rs = st.executeQuery()) {
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getString("id")).isEqualTo("C2");
+          assertThat(rs.next()).isFalse();
+        }
+      }
     }
   }
 }

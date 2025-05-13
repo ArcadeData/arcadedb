@@ -26,19 +26,21 @@ import java.util.Map;
 
 public class PostgresPortal {
   public String                    query;
+  public String                    language;
+  public Statement                 sqlStatement;
   public List<Long>                parameterTypes;
   public List<Integer>             parameterFormats;
   public List<Object>              parameterValues;
   public List<Integer>             resultFormats;
-  public Statement                 sqlStatement;
-  public boolean                   ignoreExecution = false;
-  public List<Result>              cachedResultset;
+  public List<Result>              cachedResultSet;
   public Map<String, PostgresType> columns;
+  public boolean                   ignoreExecution = false;
   public boolean                   isExpectingResult;
   public boolean                   executed        = false;
 
-  public PostgresPortal(final String query) {
+  public PostgresPortal(final String query, String language) {
     this.query = query;
+    this.language = language;
     this.isExpectingResult = true;
   }
 
