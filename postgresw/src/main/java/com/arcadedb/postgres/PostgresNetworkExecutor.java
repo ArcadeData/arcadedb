@@ -52,7 +52,6 @@ import java.io.IOException;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -275,20 +274,9 @@ public class PostgresNetworkExecutor extends Thread {
     }
 
     if (type == 'P') {
-      if (portal.statement != null) {
-        Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
-        if (portal.language.equals("cypher")) {
-
-          Object[] parametersCypher = new Object[parameters.length * 2];
-          for (int i = 0; i < parameters.length; i++) {
-            parametersCypher[i] = "" + (i + 1);
-            parametersCypher[i + 1] = portal.parameterValues.get(i);
-          }
-          parameters = parametersCypher;
-        }
-        Arrays.stream(parameters).forEach(System.out::println);
-        System.out.println("portal = " + portal.statement);
-        final ResultSet resultSet = database.command(portal.language, portal.statement, parameters);
+      if (portal.sqlStatement != null) {
+        final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
+        final ResultSet resultSet = portal.sqlStatement.execute(database, parameters, createCommandContext());
         portal.executed = true;
         if (portal.isExpectingResult) {
           portal.cachedResultSet = browseAndCacheResultSet(resultSet, 0);
@@ -329,23 +317,27 @@ public class PostgresNetworkExecutor extends Thread {
         writeNoData();
       else {
         if (!portal.executed) {
-          final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
-
-          final ResultSet resultSet = portal.sqlStatement.execute(database, parameters, createCommandContext());
+          ResultSet resultSet;
+          if (portal.sqlStatement != null) {
+            final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
+            resultSet = portal.sqlStatement.execute(database, parameters, createCommandContext());
+          } else {
+            resultSet = database.command(portal.language, portal.query, server.getConfiguration(), getParams(portal));
+          }
           portal.executed = true;
           if (portal.isExpectingResult) {
-            portal.cachedResultset = browseAndCacheResultSet(resultSet, limit);
-            portal.columns = getColumns(portal.cachedResultset);
+            portal.cachedResultSet = browseAndCacheResultSet(resultSet, limit);
+            portal.columns = getColumns(portal.cachedResultSet);
             writeRowDescription(portal.columns);
           }
         }
 
         if (portal.isExpectingResult) {
           if (portal.columns == null)
-            portal.columns = getColumns(portal.cachedResultset);
+            portal.columns = getColumns(portal.cachedResultSet);
 
-          writeDataRows(portal.cachedResultset, portal.columns);
-          writeCommandComplete(portal.query, portal.cachedResultset == null ? 0 : portal.cachedResultset.size());
+          writeDataRows(portal.cachedResultSet, portal.columns);
+          writeCommandComplete(portal.query, portal.cachedResultSet == null ? 0 : portal.cachedResultSet.size());
         } else
           writeNoData();
       }
@@ -443,6 +435,21 @@ public class PostgresNetworkExecutor extends Thread {
       }
     }
     return cachedResultSet;
+  }
+
+  private Object[] getParams(PostgresPortal portal) {
+    Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
+
+    if (portal.language.equals("cypher")) {
+      Object[] parametersCypher = new Object[parameters.length * 2];
+      for (int i = 0; i < parameters.length; i++) {
+        parametersCypher[i] = "" + (i + 1);
+        parametersCypher[i + 1] = portal.parameterValues.get(i);
+      }
+      return parametersCypher;
+    }
+
+    return parameters;
   }
 
   private Map<String, PostgresType> getColumns(final List<Result> resultSet) {
@@ -668,7 +675,10 @@ public class PostgresNetworkExecutor extends Thread {
     try {
       // PARSE
       final String portalName = readString();
-      final PostgresPortal portal = new PostgresPortal(readString());
+
+      final Query query = getLanguageAndQuery(readString());
+
+      final PostgresPortal portal = new PostgresPortal(query.query, query.language);
       final int paramCount = channel.readShort();
 
       if (paramCount > 0) {
@@ -699,7 +709,7 @@ public class PostgresNetworkExecutor extends Thread {
               ignoreQueries.contains(portal.query))) {
         // RETURN EMPTY RESULT
         portal.executed = true;
-        portal.cachedResultSet= new ArrayList<>();
+        portal.cachedResultSet = new ArrayList<>();
       } else if (upperCaseText.startsWith("SAVEPOINT ")) {
         portal.ignoreExecution = true;
       } else if (upperCaseText.startsWith("SET ")) {
@@ -843,8 +853,7 @@ public class PostgresNetworkExecutor extends Thread {
         portal.columns.put("TABLE_SCHEM", PostgresType.VARCHAR);
         portal.columns.put("TABLE_CATALOG", PostgresType.VARCHAR);
       } else {
-        final Query query = getLanguageAndQuery(portal.query);
-        switch (query.language) {
+        switch (portal.language) {
         case "sql":
           final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
           portal.sqlStatement = sqlEngine.parse(query.query, (DatabaseInternal) database);
@@ -858,10 +867,7 @@ public class PostgresNetworkExecutor extends Thread {
           break;
 
         default:
-          portal.executed = true;
-          final ResultSet resultSet = database.command(query.language, query.query, server.getConfiguration());
-          portal.cachedResultset = browseAndCacheResultSet(resultSet, 0);
-          portal.columns = getColumns(portal.cachedResultset);
+          //nooop
         }
       }
 

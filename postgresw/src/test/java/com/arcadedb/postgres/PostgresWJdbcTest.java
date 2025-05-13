@@ -624,7 +624,7 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
 
   @Test
 //@Disabled
-  void createVertexCypherQueryPArams() throws Exception {
+  void createVertexCypherQueryParams() throws Exception {
     try (Connection conn = getConnection()) {
       try (final Statement st = conn.createStatement()) {
         st.execute("create vertex type City");
