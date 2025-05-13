@@ -17,7 +17,9 @@ import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.ToxiproxyContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
+import org.testcontainers.images.builder.Transferable;
 import org.testcontainers.lifecycle.Startables;
+import org.testcontainers.utility.MountableFile;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -179,9 +181,9 @@ public abstract class ContainersTestTemplate {
         .withNetwork(network)
         .withNetworkAliases(name)
         .withStartupTimeout(Duration.ofSeconds(90))
-        .withFileSystemBind("./target/databases/" + name, "/home/arcadedb/databases", BindMode.READ_WRITE)
-        .withFileSystemBind("./target/replication/" + name, "/home/arcadedb/replication", BindMode.READ_WRITE)
-        .withFileSystemBind("./target/logs/" + name, "/home/arcadedb/log", BindMode.READ_WRITE)
+        .withCopyToContainer(MountableFile.forHostPath("./target/databases/" + name, 0777), "/home/arcadedb/databases")
+        .withCopyToContainer(MountableFile.forHostPath("./target/replication/" + name, 0777), "/home/arcadedb/replication")
+        .withCopyToContainer(MountableFile.forHostPath("./target/logs/" + name, 0777), "/home/arcadedb/logs")
         .withEnv("JAVA_OPTS", String.format("""
             -Darcadedb.server.rootPassword=playwithdata
             -Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin
