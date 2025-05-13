@@ -397,6 +397,7 @@ jobs:
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
 
       - name: some checks
+        if: success() || failure()
         run: |
           ls -la ./resilience/target/databases
           ls -la ./resilience/target/databases/arcade
