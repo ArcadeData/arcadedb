@@ -391,16 +391,10 @@ jobs:
         run: docker load < /tmp/arcadedb-image.tar
 
       - name: Resilience Tests
-        run: ./mvnw verify -Pintegration -pl resilience -Dit.test=SingleServerLoadTestIT
+        run: ./mvnw verify -Pintegration -pl resilience
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
-
-      - name: some checks
-        if: success() || failure()
-        run: |
-          ls -la ./resilience/target/databases
-          ls -la ./resilience/target/databases/arcade
 
       - name: Resilinece Tests Reporter
         uses: dorny/test-reporter@6e6a65b7a0bd2c9197df7d0ae36ac5cee784230c # v2.0.0
