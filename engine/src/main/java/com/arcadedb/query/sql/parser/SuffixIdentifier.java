@@ -120,8 +120,7 @@ public class SuffixIdentifier extends SimpleNode {
         if (currentRecord.getMetadataKeys().contains(varName)) {
           return currentRecord.getMetadata(varName);
         }
-        if (currentRecord instanceof ResultInternal internal && internal.getTemporaryProperties()
-            .contains(varName)) {
+        if (currentRecord instanceof ResultInternal internal && internal.getTemporaryProperties().contains(varName)) {
           return internal.getTemporaryProperty(varName);
         }
       }
@@ -275,15 +274,16 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   public void setValue(final Object target, final Object value, final CommandContext context) {
-    if (target instanceof Result result)
-      setValue(result, value, context);
-    else if (target instanceof Identifiable identifiable)
-      setValue(identifiable, value, context);
-    else if (target instanceof Map map)
-      setValue(map, value, context);
+    switch (target) {
+    case Result result -> setValueAsResult(result, value, context);
+    case Identifiable identifiable -> setValueAsIdentifiable(identifiable, value, context);
+    case Map map -> setValueAsMap(map, value, context);
+    case JSONObject json -> setValueAsMap(json.toMap(), value, context);
+    default -> throw new IllegalStateException("Unexpected value: " + target);
+    }
   }
 
-  public void setValue(final Identifiable target, final Object value, final CommandContext context) {
+  public void setValueAsIdentifiable(final Identifiable target, final Object value, final CommandContext context) {
     if (target == null)
       return;
 
@@ -299,7 +299,7 @@ public class SuffixIdentifier extends SimpleNode {
       throw new CommandExecutionException("Cannot set record attribute " + recordAttribute + " on existing document");
   }
 
-  public void setValue(final Map target, final Object value, final CommandContext context) {
+  public void setValueAsMap(final Map target, final Object value, final CommandContext context) {
     if (target == null)
       return;
 
@@ -309,7 +309,7 @@ public class SuffixIdentifier extends SimpleNode {
       target.put(recordAttribute.getName(), value);
   }
 
-  public void setValue(final Result target, final Object value, final CommandContext context) {
+  public void setValueAsResult(final Result target, final Object value, final CommandContext context) {
     if (target == null)
       return;
 
@@ -339,6 +339,8 @@ public class SuffixIdentifier extends SimpleNode {
         doc.remove(identifier.getStringValue());
       } else if (currentValue instanceof Map map) {
         map.remove(identifier.getStringValue());
+      } else if (currentValue instanceof JSONObject json) {
+        json.remove(identifier.getStringValue());
       }
     }
   }
