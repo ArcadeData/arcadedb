@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
@@ -210,29 +211,17 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   public Object execute(final Object currentValue, final CommandContext context) {
-    if (currentValue instanceof Result result)
-      return execute(result, context);
-
-    if (currentValue instanceof Identifiable identifiable)
-      return execute(identifiable, context);
-
-    if (currentValue instanceof Map map)
-      return execute(map, context);
-
-    if (currentValue instanceof CommandContext commandContext)
-      return execute(commandContext);
-
-    if (currentValue instanceof Iterable iterable)
-      return execute(iterable, context);
-
-    if (currentValue instanceof Iterator iterator)
-      return execute(iterator, context);
-
-    if (currentValue == null)
-      return execute((Result) null, context);
-
-    return null;
-    // TODO other cases?
+    return switch (currentValue) {
+      case Result result -> execute(result, context);
+      case Identifiable identifiable -> execute(identifiable, context);
+      case Map map -> execute(map, context);
+      case JSONObject json -> execute(json.toMap(), context);
+      case CommandContext commandContext -> execute(commandContext);
+      case Iterable iterable -> execute(iterable, context);
+      case Iterator iterator -> execute(iterator, context);
+      case null -> execute((Result) null, context);
+      default -> null; // TODO other cases?
+    };
   }
 
   public boolean isBaseIdentifier() {

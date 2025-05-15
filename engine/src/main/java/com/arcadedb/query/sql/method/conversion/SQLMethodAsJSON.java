@@ -61,13 +61,13 @@ public class SQLMethodAsJSON extends AbstractSQLMethod {
     if (me == null)
       return null;
 
-    if (me instanceof Result result) {
+    if (me instanceof Result result)
       return result.toJSON();
-    } else if (me instanceof Document document) {
+    else if (me instanceof Document document)
       return document.toJSON();
-    } else if (me instanceof Map map) {
+    else if (me instanceof Map map)
       return new JSONObject(map);
-    } else if (me instanceof String string) {
+    else if (me instanceof String string) {
       if (string.isEmpty())
         return new JSONObject();
       if (string.charAt(0) == '[')
@@ -80,6 +80,7 @@ public class SQLMethodAsJSON extends AbstractSQLMethod {
         json.put(execute(o, currentRecord, context, params));
       return json;
     }
+
     return null;
   }
 }
