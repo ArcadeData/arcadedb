@@ -39,10 +39,18 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.conversantmedia.util.concurrent.PushPullBlockingQueue;
 
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private final DatabaseInternal     database;
@@ -53,7 +61,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private       int                  commitEvery;
   private       int                  backPressurePercentage        = 0;
   private       boolean              transactionUseWAL             = true;
-  private       WALFile.FLUSH_TYPE   transactionSync               = WALFile.FLUSH_TYPE.NO;
+  private       WALFile.FlushType    transactionSync               = WALFile.FlushType.NO;
   private       long                 checkForStalledQueuesMaxDelay = 5_000;
   private final AtomicLong           transactionCounter            = new AtomicLong();
   private final AtomicLong           commandRoundRobinIndex        = new AtomicLong();
@@ -228,12 +236,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   }
 
   @Override
-  public WALFile.FLUSH_TYPE getTransactionSync() {
+  public WALFile.FlushType getTransactionSync() {
     return transactionSync;
   }
 
   @Override
-  public void setTransactionSync(final WALFile.FLUSH_TYPE transactionSync) {
+  public void setTransactionSync(final WALFile.FlushType transactionSync) {
     this.transactionSync = transactionSync;
     createThreads(parallelLevel);
   }

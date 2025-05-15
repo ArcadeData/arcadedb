@@ -80,7 +80,7 @@ public class PerformanceInsertIndexTest extends TestHelper {
         database.setReadYourWrites(false);
         database.async().setParallelLevel(PARALLEL);
         database.async().setTransactionUseWAL(false);
-        database.async().setTransactionSync(WALFile.FLUSH_TYPE.NO);
+        database.async().setTransactionSync(WALFile.FlushType.NO);
         database.async().setCommitEvery(10_000);
         database.async().onError(new ErrorCallback() {
           @Override
