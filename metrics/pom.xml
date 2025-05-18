@@ -33,7 +33,7 @@
     <packaging>jar</packaging>
 
     <properties>
-        <micrometer.version>1.14.6</micrometer.version>
+        <micrometer.version>1.15.0</micrometer.version>
     </properties>
 
     <dependencies>
