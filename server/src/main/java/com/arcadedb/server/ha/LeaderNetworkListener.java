@@ -35,6 +35,7 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
+import java.util.Optional;
 import java.util.logging.Level;
 
 public class LeaderNetworkListener extends Thread {
@@ -194,52 +195,65 @@ public class LeaderNetworkListener extends Thread {
 
     final String remoteServerName = channel.readString();
     final String remoteServerAddress = channel.readString();
-//    final String remoteServerHTTPAddress = channel.readString();
     LogManager.instance().log(this, Level.INFO,
         "Connection from serverName '%s'  - serverAddress '%s' ",
-        remoteServerName, remoteServerAddress );
-// [LeaderNetworkListener] <arcade1> Connection from serverName 'arcade3'  - serverAddress '{arcade3}f81205203d08:2424' - httoAddress 'f81205203d08:2480'
+        remoteServerName, remoteServerAddress);
     final short command = channel.readShort();
 
     HAServer.HACluster cluster = ha.getCluster();
 
-    HAServer.ServerInfo serverInfo = cluster.getServerInfo(remoteServerName);
+    Optional<HAServer.ServerInfo> serverInfo = cluster.findByAlias(remoteServerName);
+    serverInfo.ifPresent(server -> {
 
-    String remoteServerAddress1 = serverInfo.host() + ":" + serverInfo.port();
-    switch (command) {
-    case ReplicationProtocol.COMMAND_CONNECT:
-      connect(channel, serverInfo);
-      break;
+          switch (command) {
+          case ReplicationProtocol.COMMAND_CONNECT:
+            try {
+              connect(channel, server);
+            } catch (IOException e) {
+              handleConnectionException(e);
+            }
+            break;
 
-    case ReplicationProtocol.COMMAND_VOTE_FOR_ME:
-      voteForMe(channel, remoteServerName);
-      break;
+          case ReplicationProtocol.COMMAND_VOTE_FOR_ME:
+            try {
+              voteForMe(channel, remoteServerName);
+            } catch (IOException e) {
+              handleConnectionException(e);
+            }
+            break;
 
-    case ReplicationProtocol.COMMAND_ELECTION_COMPLETED:
-      electionComplete(channel, serverInfo.alias(), remoteServerAddress1);
-      break;
+          case ReplicationProtocol.COMMAND_ELECTION_COMPLETED:
+            try {
+              electionComplete(channel, server);
+            } catch (IOException e) {
+              handleConnectionException(e);
+            }
+            break;
 
-    default:
-      throw new ConnectionException(channel.socket.getInetAddress().toString(),
-          "Replication command '" + command + "' not supported");
-    }
+          default:
+            throw new ConnectionException(channel.socket.getInetAddress().toString(),
+                "Replication command '" + command + "' not supported");
+          }
+        }
+
+    );
+
   }
 
-  private void electionComplete(final ChannelBinaryServer channel, final String remoteServerName, final String remoteServerAddress)
+  private void electionComplete(final ChannelBinaryServer channel, final HAServer.ServerInfo serverInfo)
       throws IOException {
     final long voteTurn = channel.readLong();
 
-    ha.lastElectionVote = new Pair<>(voteTurn, remoteServerName);
+    ha.lastElectionVote = new Pair<>(voteTurn, serverInfo.alias());
     channel.close();
 
-    LogManager.instance().log(this, Level.INFO, "Received new leadership from server '%s' (turn=%d)", remoteServerName, voteTurn);
-    HAServer.ServerInfo serverInfo = ha.getCluster().getServerInfo(remoteServerName);
+    LogManager.instance().log(this, Level.INFO, "Received new leadership from server '%s' (turn=%d)", serverInfo.alias(), voteTurn);
 
     if (ha.connectToLeader(serverInfo, null)) {
       // ELECTION FINISHED, THE SERVER IS A REPLICA
       ha.setElectionStatus(HAServer.ElectionStatus.DONE);
       try {
-        ha.getServer().lifecycleEvent(ReplicationCallback.Type.LEADER_ELECTED, remoteServerName);
+        ha.getServer().lifecycleEvent(ReplicationCallback.Type.LEADER_ELECTED, serverInfo.alias());
       } catch (final Exception e) {
         throw new ArcadeDBException("Error on propagating election status", e);
       }

@@ -92,8 +92,9 @@ public class ThreeInstancesScenarioIT extends ContainersTestTemplate {
     db3.assertThatPhotoCountIs(300);
 
     logger.info("Disconnecting arcade3 form others");
-    arcade3Proxy.toxics().bandwidth("CUT_CONNECTION_DOWNSTREAM", ToxicDirection.DOWNSTREAM, 0);
-    arcade3Proxy.toxics().bandwidth("CUT_CONNECTION_UPSTREAM", ToxicDirection.UPSTREAM, 0);
+    arcade1Proxy.toxics().bandwidth("CUT_CONNECTION_DOWNSTREAM", ToxicDirection.DOWNSTREAM, 0);
+    arcade1Proxy.toxics().bandwidth("CUT_CONNECTION_UPSTREAM", ToxicDirection.UPSTREAM, 0);
+
 
     logger.info("Adding data to arcade1");
     db1.addUserAndPhotos(100, 10);
@@ -104,8 +105,8 @@ public class ThreeInstancesScenarioIT extends ContainersTestTemplate {
     db3.assertThatUserCountIs(30);
 
     logger.info("Reconnecting arcade3 ");
-    arcade3Proxy.toxics().get("CUT_CONNECTION_DOWNSTREAM").remove();
-    arcade3Proxy.toxics().get("CUT_CONNECTION_UPSTREAM").remove();
+    arcade1Proxy.toxics().get("CUT_CONNECTION_DOWNSTREAM").remove();
+    arcade1Proxy.toxics().get("CUT_CONNECTION_UPSTREAM").remove();
 
 
     logger.info("Adding data to database");
