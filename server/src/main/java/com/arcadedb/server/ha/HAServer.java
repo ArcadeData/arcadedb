@@ -61,6 +61,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -99,7 +100,7 @@ public class HAServer implements ServerPlugin {
   private         LeaderNetworkListener listener;
   private         long                  lastConfigurationOutputHash = 0;
   private         ServerInfo            serverAddress;
-//  private         String                replicasHTTPAddresses;
+  //  private         String                replicasHTTPAddresses;
   private         boolean               started;
   private         Thread                electionThread;
   private         ReplicationLogFile    replicationLogFile;
@@ -141,18 +142,17 @@ public class HAServer implements ServerPlugin {
           '}';
     }
 
-    public ServerInfo getServerInfo(String remoteServerName) {
+    public Optional<ServerInfo> findByAlias(String serverAlias) {
       for (ServerInfo server : servers) {
-        if (server.alias.equals(remoteServerName)) {
-          LogManager.instance().log(this, Level.INFO, "Found server %s", server);
-          return server;
+        if (server.alias.equals(serverAlias)) {
+          LogManager.instance().log(this, Level.INFO, "find by alias %s - Found server %s", serverAlias, server);
+          return Optional.of(server);
         }
       }
 
-      LogManager.instance().log(this, Level.SEVERE, "NOT Found server %s on %s", remoteServerName, servers);
-      return null;
+      LogManager.instance().log(this, Level.SEVERE, "NOT Found server %s on %s", serverAlias, servers);
+      return Optional.empty();
     }
-
 
   }
 
@@ -1100,6 +1100,9 @@ public class HAServer implements ServerPlugin {
     } catch (final Exception e) {
       throw new ConnectionException(dest.toString(), e);
     }
+
+    LogManager.instance()
+        .log(this, Level.INFO, "Creating client connection to  '%s' ", dest);
 
     final ChannelBinaryClient channel = new ChannelBinaryClient(dest.host, dest.port, this.configuration);
 
