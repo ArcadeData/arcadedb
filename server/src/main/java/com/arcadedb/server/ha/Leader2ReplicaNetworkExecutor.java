@@ -103,12 +103,12 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
 
     synchronized (channelOutputLock) {
       try {
-        if (!ha.isLeader()) {
+        if (!server.isLeader()) {
           final Replica2LeaderNetworkExecutor leader = server.getLeader();
 
           this.channel.writeBoolean(false);
           this.channel.writeByte(ReplicationProtocol.ERROR_CONNECT_NOLEADER);
-          this.channel.writeString("Current server '" + ha.getServerName() + "' is not the Leader");
+          this.channel.writeString("Current server '" + server.getServerName() + "' is not the Leader");
           this.channel.writeString(leader != null ? leader.getRemoteServerName() : "");
           this.channel.writeString(leader != null ? leader.getRemoteAddress() : "");
           throw new ConnectionException(channel.socket.getInetAddress().toString(),
@@ -286,7 +286,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
     final HACommand command = request.getSecond();
 
     LogManager.instance()
-        .log(this, Level.INFO, "Leader received message %d from replica %s: %s", request.getFirst().messageNumber, remoteServer,
+        .log(this, Level.FINE, "Leader received message %d from replica %s: %s", request.getFirst().messageNumber, remoteServer,
             command);
 
     if (command instanceof TxForwardRequest || command instanceof CommandForwardRequest) {
