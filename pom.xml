@@ -76,7 +76,7 @@
 
         <skipITs>true</skipITs>
         <skipTests>false</skipTests>
-<!--        <skipUnit>false</skipUnit>-->
+        <!--        <skipUnit>false</skipUnit>-->
 
         <itCoverageAgent></itCoverageAgent>
         <argLine></argLine>
@@ -105,16 +105,16 @@
         <tag>HEAD</tag>
     </scm>
 
-    <distributionManagement>
-        <snapshotRepository>
-            <id>ossrh</id>
-            <url>https://s01.oss.sonatype.org/content/repositories/snapshots/</url>
-        </snapshotRepository>
-        <repository>
-            <id>ossrh</id>
-            <url>https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/</url>
-        </repository>
-    </distributionManagement>
+<!--    <distributionManagement>-->
+<!--        <snapshotRepository>-->
+<!--            <id>ossrh</id>-->
+<!--            <url>https://s01.oss.sonatype.org/content/repositories/snapshots/</url>-->
+<!--        </snapshotRepository>-->
+<!--        <repository>-->
+<!--            <id>ossrh</id>-->
+<!--            <url>https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/</url>-->
+<!--        </repository>-->
+<!--    </distributionManagement>-->
 
     <modules>
         <module>engine</module>
@@ -196,7 +196,7 @@
                         --add-opens java.base/java.nio.channels.spi=ALL-UNNAMED
                     </argLine>
                     <skipTests>${skipTests}</skipTests>
-<!--                    <skipTests>${skipUnit}</skipTests>-->
+                    <!--                    <skipTests>${skipUnit}</skipTests>-->
                 </configuration>
             </plugin>
             <plugin>
@@ -221,9 +221,9 @@
                         <!--                        <exclude>**/IndexOperations3ServersIT.java</exclude>-->
                         <!--                        <exclude>**/ArcadeGraphProcessDebugTest.java</exclude>-->
                         <!--                        <exclude>**/ArcadeGraphStructureDebugTest.java</exclude>-->
-<!--                        <exclude>**/*ReplicationServerReplicaRestartForceDbInstallIT.java</exclude>-->
-<!--                        <exclude>**/*HARandomCrashIT.java</exclude>-->
-<!--                        <exclude>**/*ReplicationServerLeaderDownIT</exclude>-->
+                        <!--                        <exclude>**/*ReplicationServerReplicaRestartForceDbInstallIT.java</exclude>-->
+                        <!--                        <exclude>**/*HARandomCrashIT.java</exclude>-->
+                        <!--                        <exclude>**/*ReplicationServerLeaderDownIT</exclude>-->
                         <exclude>**/*ReplicationServerLeaderChanges3TimesIT</exclude>
                     </excludes>
                     <skipTests>${skipITs}</skipTests>
@@ -251,14 +251,14 @@
                     <allowIncompleteProjects>true</allowIncompleteProjects>
                 </configuration>
             </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-deploy-plugin</artifactId>
-                <version>${maven-deploy-plugin.version}</version>
-                <configuration>
-                    <deployAtEnd>true</deployAtEnd>
-                </configuration>
-            </plugin>
+<!--            <plugin>-->
+<!--                <groupId>org.apache.maven.plugins</groupId>-->
+<!--                <artifactId>maven-deploy-plugin</artifactId>-->
+<!--                <version>${maven-deploy-plugin.version}</version>-->
+<!--                <configuration>-->
+<!--                    <deployAtEnd>true</deployAtEnd>-->
+<!--                </configuration>-->
+<!--            </plugin>-->
             <plugin>
                 <groupId>com.mycila</groupId>
                 <artifactId>license-maven-plugin</artifactId>
@@ -443,27 +443,38 @@
                             <generateBackupPoms>false</generateBackupPoms>
                         </configuration>
                     </plugin>
+
                     <plugin>
-                        <groupId>org.sonatype.plugins</groupId>
-                        <artifactId>nexus-staging-maven-plugin</artifactId>
-                        <version>${nexus-staging-maven-plugin.version}</version>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>0.7.0</version>
                         <extensions>true</extensions>
                         <configuration>
-                            <serverId>ossrh</serverId>
-                            <nexusUrl>https://s01.oss.sonatype.org</nexusUrl>
-                            <autoReleaseAfterClose>false</autoReleaseAfterClose>
+                            <publishingServerId>central</publishingServerId>
                         </configuration>
-                        <executions>
-                            <execution>
-                                <id>deploy-to-sonatype</id>
-                                <phase>deploy</phase>
-                                <goals>
-                                    <goal>deploy</goal>
-                                    <goal>release</goal>
-                                </goals>
-                            </execution>
-                        </executions>
                     </plugin>
+
+                    <!--                    <plugin>-->
+                    <!--                        <groupId>org.sonatype.plugins</groupId>-->
+                    <!--                        <artifactId>nexus-staging-maven-plugin</artifactId>-->
+                    <!--                        <version>${nexus-staging-maven-plugin.version}</version>-->
+                    <!--                        <extensions>true</extensions>-->
+                    <!--                        <configuration>-->
+                    <!--                            <serverId>ossrh</serverId>-->
+                    <!--                            <nexusUrl>https://s01.oss.sonatype.org</nexusUrl>-->
+                    <!--                            <autoReleaseAfterClose>false</autoReleaseAfterClose>-->
+                    <!--                        </configuration>-->
+                    <!--                        <executions>-->
+                    <!--                            <execution>-->
+                    <!--                                <id>deploy-to-sonatype</id>-->
+                    <!--                                <phase>deploy</phase>-->
+                    <!--                                <goals>-->
+                    <!--                                    <goal>deploy</goal>-->
+                    <!--                                    <goal>release</goal>-->
+                    <!--                                </goals>-->
+                    <!--                            </execution>-->
+                    <!--                        </executions>-->
+                    <!--                    </plugin>-->
                 </plugins>
             </build>
         </profile>
