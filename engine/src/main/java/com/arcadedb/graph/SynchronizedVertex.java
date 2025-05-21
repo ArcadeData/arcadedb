@@ -90,22 +90,22 @@ public class SynchronizedVertex implements Vertex {
   }
 
   @Override
-  public synchronized Iterable<Edge> getEdges() {
+  public synchronized IterableGraph<Edge> getEdges() {
     return delegate.getEdges();
   }
 
   @Override
-  public synchronized Iterable<Edge> getEdges(final DIRECTION direction, final String... edgeTypes) {
+  public synchronized IterableGraph<Edge> getEdges(final DIRECTION direction, final String... edgeTypes) {
     return delegate.getEdges(direction, edgeTypes);
   }
 
   @Override
-  public synchronized Iterable<Vertex> getVertices() {
+  public synchronized IterableGraph<Vertex> getVertices() {
     return delegate.getVertices();
   }
 
   @Override
-  public synchronized Iterable<Vertex> getVertices(final DIRECTION direction, final String... edgeTypes) {
+  public synchronized IterableGraph<Vertex> getVertices(final DIRECTION direction, final String... edgeTypes) {
     return delegate.getVertices(direction, edgeTypes);
   }
 

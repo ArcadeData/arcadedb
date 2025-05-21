@@ -22,6 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.ImmutableLightEdge;
+import com.arcadedb.graph.IterableGraph;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -47,7 +48,6 @@ public class RemoteVertex {
   }
 
   public long countEdges(final Vertex.DIRECTION direction, final String edgeType) {
-
     StringBuilder query = new StringBuilder("select " + direction.toString().toLowerCase(Locale.ENGLISH) + "(");
     if (edgeType != null)
       query.append("'").append(edgeType).append("'");
@@ -57,11 +57,11 @@ public class RemoteVertex {
     return resultSet.next().<Number>getProperty("count").longValue();
   }
 
-  public Iterable<Edge> getEdges() {
+  public IterableGraph<Edge> getEdges() {
     return getEdges(Vertex.DIRECTION.BOTH);
   }
 
-  public Iterable<Edge> getEdges(final Vertex.DIRECTION direction, final String... edgeTypes) {
+  public IterableGraph<Edge> getEdges(final Vertex.DIRECTION direction, final String... edgeTypes) {
     final ResultSet resultSet = fetch("E", direction, edgeTypes);
     return () -> new Iterator<>() {
       @Override
@@ -76,11 +76,11 @@ public class RemoteVertex {
     };
   }
 
-  public Iterable<Vertex> getVertices() {
+  public IterableGraph<Vertex> getVertices() {
     return getVertices(Vertex.DIRECTION.BOTH);
   }
 
-  public Iterable<Vertex> getVertices(final Vertex.DIRECTION direction, final String... edgeTypes) {
+  public IterableGraph<Vertex> getVertices(final Vertex.DIRECTION direction, final String... edgeTypes) {
     final ResultSet resultSet = fetch("", direction, edgeTypes);
     return () -> new Iterator<>() {
       @Override

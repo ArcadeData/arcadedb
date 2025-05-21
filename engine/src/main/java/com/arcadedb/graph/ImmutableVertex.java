@@ -152,22 +152,22 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
-  public Iterable<Edge> getEdges() {
+  public IterableGraph<Edge> getEdges() {
     return database.getGraphEngine().getEdges(getMostUpdatedVertex(this));
   }
 
   @Override
-  public Iterable<Edge> getEdges(final DIRECTION direction, final String... edgeTypes) {
+  public IterableGraph<Edge> getEdges(final DIRECTION direction, final String... edgeTypes) {
     return database.getGraphEngine().getEdges(getMostUpdatedVertex(this), direction, edgeTypes);
   }
 
   @Override
-  public Iterable<Vertex> getVertices() {
+  public IterableGraph<Vertex> getVertices() {
     return database.getGraphEngine().getVertices(getMostUpdatedVertex(this));
   }
 
   @Override
-  public Iterable<Vertex> getVertices(final DIRECTION direction, final String... edgeTypes) {
+  public IterableGraph<Vertex> getVertices(final DIRECTION direction, final String... edgeTypes) {
     return database.getGraphEngine().getVertices(getMostUpdatedVertex(this), direction, edgeTypes);
   }
 

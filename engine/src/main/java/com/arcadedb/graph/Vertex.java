@@ -57,16 +57,16 @@ public interface Vertex extends Document {
 
   long countEdges(DIRECTION direction, String edgeType);
 
-  Iterable<Edge> getEdges();
+  IterableGraph<Edge> getEdges();
 
-  Iterable<Edge> getEdges(DIRECTION direction, String... edgeTypes);
+  IterableGraph<Edge> getEdges(DIRECTION direction, String... edgeTypes);
 
   /**
    * Returns all the connected vertices, both directions, any edge type.
    *
    * @return An iterator of PIndexCursorEntry entries
    */
-  Iterable<Vertex> getVertices();
+  IterableGraph<Vertex> getVertices();
 
   /**
    * Returns the connected vertices.
@@ -75,7 +75,7 @@ public interface Vertex extends Document {
    *
    * @return An iterator of PIndexCursorEntry entries
    */
-  Iterable<Vertex> getVertices(DIRECTION direction, String... edgeTypes);
+  IterableGraph<Vertex> getVertices(DIRECTION direction, String... edgeTypes);
 
   boolean isConnectedTo(Identifiable toVertex);
 

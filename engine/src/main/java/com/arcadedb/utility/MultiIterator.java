@@ -19,6 +19,7 @@
 package com.arcadedb.utility;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.IterableGraph;
 
 import java.lang.reflect.*;
 import java.util.*;
@@ -26,7 +27,7 @@ import java.util.*;
 /**
  * Iterator that allow to iterate against multiple collection of elements.
  */
-public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
+public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T> {
   private List<Object> sources;
   private Iterator<?>  sourcesIterator;
   private Iterator<T>  partialIterator;

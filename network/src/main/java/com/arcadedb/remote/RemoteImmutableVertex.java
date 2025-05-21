@@ -23,6 +23,7 @@ import com.arcadedb.database.JSONSerializer;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.ImmutableLightEdge;
+import com.arcadedb.graph.IterableGraph;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.EdgeType;
@@ -60,22 +61,22 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
   }
 
   @Override
-  public Iterable<Edge> getEdges() {
+  public IterableGraph<Edge> getEdges() {
     return internal.getEdges(DIRECTION.BOTH);
   }
 
   @Override
-  public Iterable<Edge> getEdges(final DIRECTION direction, final String... edgeTypes) {
+  public IterableGraph<Edge> getEdges(final DIRECTION direction, final String... edgeTypes) {
     return internal.getEdges(direction, edgeTypes);
   }
 
   @Override
-  public Iterable<Vertex> getVertices() {
+  public IterableGraph<Vertex> getVertices() {
     return internal.getVertices(DIRECTION.BOTH);
   }
 
   @Override
-  public Iterable<Vertex> getVertices(final DIRECTION direction, final String... edgeTypes) {
+  public IterableGraph<Vertex> getVertices(final DIRECTION direction, final String... edgeTypes) {
     return internal.getVertices(direction, edgeTypes);
   }
 
