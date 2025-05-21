@@ -275,14 +275,7 @@
                     <publishingServerId>central</publishingServerId>
                     <autoPublish>true</autoPublish>
                     <excludeArtifacts>
-                        <excludeArtifact>
-                            <groupId>com.arcadedb</groupId>
-                            <artifactId>arcadedb-coverage</artifactId>
-                        </excludeArtifact>
-                        <excludeArtifact>
-                            <groupId>com.arcadedb</groupId>
-                            <artifactId>arcadedb-e2e</artifactId>
-                        </excludeArtifact>
+                        arcadedb-coverage,arcadedb-e2e
                     </excludeArtifacts>
                 </configuration>
             </plugin>
