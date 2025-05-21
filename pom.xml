@@ -66,7 +66,7 @@
         <maven-deploy-plugin.version>3.1.4</maven-deploy-plugin.version>
         <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
         <license-maven-plugin.version>5.0.0</license-maven-plugin.version>
-        <nexus-staging-maven-plugin.version>1.7.0</nexus-staging-maven-plugin.version>
+        <central-publishing-maven-plugin.version>0.7.0</central-publishing-maven-plugin.version>
 
         <assertj-core.version>3.27.3</assertj-core.version>
         <junit.jupiter.version>5.12.2</junit.jupiter.version>
@@ -76,7 +76,6 @@
 
         <skipITs>true</skipITs>
         <skipTests>false</skipTests>
-<!--        <skipUnit>false</skipUnit>-->
 
         <itCoverageAgent></itCoverageAgent>
         <argLine></argLine>
@@ -104,17 +103,6 @@
         <url>https://github.com/ArcadeData/arcadedb</url>
         <tag>HEAD</tag>
     </scm>
-
-    <distributionManagement>
-        <snapshotRepository>
-            <id>ossrh</id>
-            <url>https://s01.oss.sonatype.org/content/repositories/snapshots/</url>
-        </snapshotRepository>
-        <repository>
-            <id>ossrh</id>
-            <url>https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/</url>
-        </repository>
-    </distributionManagement>
 
     <modules>
         <module>engine</module>
@@ -196,7 +184,7 @@
                         --add-opens java.base/java.nio.channels.spi=ALL-UNNAMED
                     </argLine>
                     <skipTests>${skipTests}</skipTests>
-<!--                    <skipTests>${skipUnit}</skipTests>-->
+                    <!--                    <skipTests>${skipUnit}</skipTests>-->
                 </configuration>
             </plugin>
             <plugin>
@@ -221,9 +209,9 @@
                         <!--                        <exclude>**/IndexOperations3ServersIT.java</exclude>-->
                         <!--                        <exclude>**/ArcadeGraphProcessDebugTest.java</exclude>-->
                         <!--                        <exclude>**/ArcadeGraphStructureDebugTest.java</exclude>-->
-<!--                        <exclude>**/*ReplicationServerReplicaRestartForceDbInstallIT.java</exclude>-->
-<!--                        <exclude>**/*HARandomCrashIT.java</exclude>-->
-<!--                        <exclude>**/*ReplicationServerLeaderDownIT</exclude>-->
+                        <!--                        <exclude>**/*ReplicationServerReplicaRestartForceDbInstallIT.java</exclude>-->
+                        <!--                        <exclude>**/*HARandomCrashIT.java</exclude>-->
+                        <!--                        <exclude>**/*ReplicationServerLeaderDownIT</exclude>-->
                         <exclude>**/*ReplicationServerLeaderChanges3TimesIT</exclude>
                     </excludes>
                     <skipTests>${skipITs}</skipTests>
@@ -252,14 +240,6 @@
                 </configuration>
             </plugin>
             <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-deploy-plugin</artifactId>
-                <version>${maven-deploy-plugin.version}</version>
-                <configuration>
-                    <deployAtEnd>true</deployAtEnd>
-                </configuration>
-            </plugin>
-            <plugin>
                 <groupId>com.mycila</groupId>
                 <artifactId>license-maven-plugin</artifactId>
                 <version>${license-maven-plugin.version}</version>
@@ -284,6 +264,16 @@
                             </excludes>
                         </licenseSet>
                     </licenseSets>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <version>${central-publishing-maven-plugin.version}</version>
+                <extensions>true</extensions>
+                <configuration>
+                    <publishingServerId>central</publishingServerId>
+                    <autoPublish>true</autoPublish>
                 </configuration>
             </plugin>
         </plugins>
@@ -442,27 +432,6 @@
                         <configuration>
                             <generateBackupPoms>false</generateBackupPoms>
                         </configuration>
-                    </plugin>
-                    <plugin>
-                        <groupId>org.sonatype.plugins</groupId>
-                        <artifactId>nexus-staging-maven-plugin</artifactId>
-                        <version>${nexus-staging-maven-plugin.version}</version>
-                        <extensions>true</extensions>
-                        <configuration>
-                            <serverId>ossrh</serverId>
-                            <nexusUrl>https://s01.oss.sonatype.org</nexusUrl>
-                            <autoReleaseAfterClose>false</autoReleaseAfterClose>
-                        </configuration>
-                        <executions>
-                            <execution>
-                                <id>deploy-to-sonatype</id>
-                                <phase>deploy</phase>
-                                <goals>
-                                    <goal>deploy</goal>
-                                    <goal>release</goal>
-                                </goals>
-                            </execution>
-                        </executions>
                     </plugin>
                 </plugins>
             </build>
