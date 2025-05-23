@@ -115,6 +115,8 @@ There are three variants of (about monthly) releases:
 - `minimal` - this package excludes the `gremlin`, `redisw`, `mongodbw`, `graphql` modules
 - `headless` - this package excludes the `gremlin`, `redisw`, `mongodbw`, `graphql`, `studio` modules
 
+The nightly builds of the repository head can be found [here](https://central.sonatype.com/service/rest/repository/browse/maven-snapshots/com/arcadedb/arcadedb-package/).
+
 ### Community
 
 Join our growing community around the world, for ideas, discussions and help regarding ArcadeDB.
@@ -145,7 +147,6 @@ Recurrent and One-Time tiers. All the sponsorship received will be distributed t
 
 We would love for you to get involved with ArcadeDB project.
 If you wish to help, you can learn more about how you can contribute to this project in the [contribution guide](CONTRIBUTING.md).
-The nightly builds of the repository head can be found [here](https://s01.oss.sonatype.org/content/repositories/snapshots/com/arcadedb/arcadedb-package/).
 
 Have fun with data!
 
