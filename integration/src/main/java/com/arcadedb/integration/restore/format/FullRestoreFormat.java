@@ -27,6 +27,7 @@ import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
 import java.net.*;
+import java.nio.charset.*;
 import java.util.*;
 import java.util.zip.*;
 
@@ -183,9 +184,9 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
       // Wrap the input stream with CipherInputStream
       final javax.crypto.CipherInputStream cis = new javax.crypto.CipherInputStream(fis, cipher);
-      zipFile = new ZipInputStream(cis, DatabaseFactory.getDefaultCharset());
+      zipFile = new ZipInputStream(cis, StandardCharsets.UTF_8);
     } else
-      zipFile = new ZipInputStream(fis, DatabaseFactory.getDefaultCharset());
+      zipFile = new ZipInputStream(fis, StandardCharsets.UTF_8);
 
     try {
       callback.restore(zipFile);

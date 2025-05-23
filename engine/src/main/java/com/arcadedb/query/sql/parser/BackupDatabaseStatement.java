@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -72,13 +73,16 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
       clazz.getMethod("setVerboseLevel", Integer.TYPE).invoke(backup, 0);
 
       if (!settings.isEmpty()) {
-        for (Map.Entry<Expression, Expression> entry : settings.entrySet())
+        for (Map.Entry<Expression, Expression> entry : settings.entrySet()) {
+          final String stringValue = entry.getValue().execute((Identifiable) null, context).toString();
+
           switch (entry.getKey().toString()) {
           case "encryptionAlgorithm" -> clazz.getMethod("setEncryptionAlgorithm", String.class)
-              .invoke(backup, ((BaseExpression) entry.getValue().value).string);
-          case "encryptionKey" ->
-              clazz.getMethod("setEncryptionKey", String.class).invoke(backup, ((BaseExpression) entry.getValue().value).string);
+              .invoke(backup, stringValue);
+          case "encryptionKey" -> clazz.getMethod("setEncryptionKey", String.class)
+              .invoke(backup, stringValue);
           }
+        }
       }
 
       try {

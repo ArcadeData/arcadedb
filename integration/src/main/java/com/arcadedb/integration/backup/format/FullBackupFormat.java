@@ -18,7 +18,6 @@
  */
 package com.arcadedb.integration.backup.format;
 
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
@@ -32,6 +31,7 @@ import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
 import java.io.*;
+import java.nio.charset.*;
 import java.security.spec.*;
 import java.util.*;
 import java.util.zip.*;
@@ -161,9 +161,9 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
         // Wrap the output stream with CipherOutputStream
         final javax.crypto.CipherOutputStream cos = new javax.crypto.CipherOutputStream(fos, cipher);
-        zipFile = new ZipOutputStream(cos, DatabaseFactory.getDefaultCharset());
+        zipFile = new ZipOutputStream(cos, StandardCharsets.UTF_8);
       } else
-        zipFile = new ZipOutputStream(fos, DatabaseFactory.getDefaultCharset());
+        zipFile = new ZipOutputStream(fos, StandardCharsets.UTF_8);
 
       zipFile.setLevel(9);
       try {
