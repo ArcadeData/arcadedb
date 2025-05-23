@@ -78,15 +78,20 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
       long databaseOrigSize = 0L;
 
+      int restoredFiles = 0;
       ZipEntry compressedFile = zipFile.getNextEntry();
       while (compressedFile != null) {
         databaseOrigSize += uncompressFile(zipFile, compressedFile, databaseDirectory);
         compressedFile = zipFile.getNextEntry();
+        ++restoredFiles;
       }
 
       zipFile.close();
 
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
+
+      if (restoredFiles == 0)
+        throw new RestoreException("Unable to perform restore");
 
       logger.logLine(0, "Full restore completed in %d seconds %s -> %s (%,d%% compression)", elapsedInSecs,
           FileUtils.getSizeAsString(databaseOrigSize), FileUtils.getSizeAsString((inputSource.fileSize)),
@@ -151,10 +156,20 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
   private void decryptFile(final InputStream fis, final FullRestoreFormat.RestoreCallback callback) throws Exception {
     final ZipInputStream zipFile;
     if (settings.encryptionKey != null) {
-      // Prepare AES key
-      final byte[] keyBytes = Arrays.copyOf(settings.encryptionKey.getBytes(DatabaseFactory.getDefaultCharset()), 32);
-      final javax.crypto.SecretKey secretKey = new javax.crypto.spec.SecretKeySpec(keyBytes, settings.encryptionAlgorithm);
+      // Read salt from the beginning of the file (16 bytes)
+      final byte[] salt = new byte[16];
+      if (fis.read(salt) != salt.length) {
+        throw new IOException("Unable to read salt from encrypted file");
+      }
 
+      // Derive the key using PBKDF2 with the salt
+      final javax.crypto.SecretKeyFactory factory = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+      final java.security.spec.KeySpec spec = new javax.crypto.spec.PBEKeySpec(settings.encryptionKey.toCharArray(), salt, 65536,
+          256);
+      final javax.crypto.SecretKey tmp = factory.generateSecret(spec);
+      final byte[] keyBytes = tmp.getEncoded();
+
+      final javax.crypto.SecretKey secretKey = new javax.crypto.spec.SecretKeySpec(keyBytes, settings.encryptionAlgorithm);
       // Read IV from the beginning of the file
       final byte[] iv = new byte[16];
       if (fis.read(iv) != iv.length) {

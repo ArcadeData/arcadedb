@@ -28,7 +28,11 @@ import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.FileUtils;
 
+import javax.crypto.SecretKey;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
 import java.io.*;
+import java.security.spec.*;
 import java.util.*;
 import java.util.zip.*;
 
@@ -130,9 +134,20 @@ public class FullBackupFormat extends AbstractBackupFormat {
     try (final FileOutputStream fos = new FileOutputStream(backupFile)) {
       final ZipOutputStream zipFile;
       if (settings.encryptionKey != null) {
-        // Generate a random AES key
-        final byte[] keyBytes = Arrays.copyOf(settings.encryptionKey.getBytes(DatabaseFactory.getDefaultCharset()), 32);
-        final javax.crypto.SecretKey secretKey = new javax.crypto.spec.SecretKeySpec(keyBytes, settings.encryptionAlgorithm);
+        // Generate a random salt (e.g., 16 bytes)
+        final byte[] salt = new byte[16];
+
+        new java.security.SecureRandom().nextBytes(salt);
+        // Store this salt at the beginning of the backup file, similar to the IV.
+
+        fos.write(salt);
+
+        final SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+        // Iteration count should be high, e.g., 65536 or more
+        final KeySpec spec = new PBEKeySpec(settings.encryptionKey.toCharArray(), salt, 65536, 256); // 256-bit key
+        final SecretKey tmp = factory.generateSecret(spec);
+        final byte[] derivedKeyBytes = tmp.getEncoded();
+        final javax.crypto.SecretKey secretKey = new javax.crypto.spec.SecretKeySpec(derivedKeyBytes, settings.encryptionAlgorithm);
 
         // Initialize cipher
         final javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance(settings.encryptionAlgorithm + "/CTR/NoPadding");
