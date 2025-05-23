@@ -74,16 +74,22 @@ import com.arcadedb.server.ha.message.InstallDatabaseRequest;
 import com.arcadedb.server.ha.message.TxForwardRequest;
 import com.arcadedb.server.ha.message.TxRequest;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
 
 public class ReplicatedDatabase implements DatabaseInternal {
   private final ArcadeDBServer  server;
   private final LocalDatabase   proxied;
-  private final HAServer.QUORUM quorum;
+  private final HAServer.Quorum quorum;
   private final long            timeout;
 
   public ReplicatedDatabase(final ArcadeDBServer server, final LocalDatabase proxied) {
@@ -95,16 +101,16 @@ public class ReplicatedDatabase implements DatabaseInternal {
     this.timeout = proxied.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
     this.proxied.setWrappedDatabaseInstance(this);
 
-    HAServer.QUORUM quorum;
+    HAServer.Quorum quorum;
     final String quorumValue = proxied.getConfiguration().getValueAsString(GlobalConfiguration.HA_QUORUM)
         .toUpperCase(Locale.ENGLISH);
     try {
-      quorum = HAServer.QUORUM.valueOf(quorumValue);
+      quorum = HAServer.Quorum.valueOf(quorumValue);
     } catch (Exception e) {
       LogManager.instance()
           .log(this, Level.SEVERE, "Error on setting quorum to '%s' for database '%s'. Setting it to MAJORITY", e, quorumValue,
               getName());
-      quorum = HAServer.QUORUM.MAJORITY;
+      quorum = HAServer.Quorum.MAJORITY;
     }
     this.quorum = quorum;
   }
@@ -708,7 +714,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public Database setWALFlush(final WALFile.FLUSH_TYPE flush) {
+  public Database setWALFlush(final WALFile.FlushType flush) {
     return proxied.setWALFlush(flush);
   }
 
@@ -803,7 +809,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
     return proxied.getOpenedOn();
   }
 
-  public HAServer.QUORUM getQuorum() {
+  public HAServer.Quorum getQuorum() {
     return quorum;
   }
 
@@ -851,7 +857,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
         if (responsePayloads != null) {
           for (final Object o : responsePayloads) {
             final DatabaseAlignResponse response = (DatabaseAlignResponse) o;
-            result.put(response.getRemoteServerName(), response.getAlignedPages());
+            result.put(response.getRemoteServerName().alias(), response.getAlignedPages());
           }
         }
       });

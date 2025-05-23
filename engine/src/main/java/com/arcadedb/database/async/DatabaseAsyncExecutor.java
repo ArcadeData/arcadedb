@@ -28,7 +28,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.util.*;
+import java.util.Map;
 
 /**
  * Asynchronous executor returned by {@link Database#async()}. Use this interface to execute operations against the database in asynchronous way and in parallel,
@@ -380,16 +380,16 @@ public interface DatabaseAsyncExecutor {
    *
    * @return NO (no flush), YES_NOMETADATA (flush only data, no metadata), YES_FULL (full flush)
    */
-  WALFile.FLUSH_TYPE getTransactionSync();
+  WALFile.FlushType getTransactionSync();
 
   /**
    * Sets the WAL (Write Ahead Log - Transaction Journal) flush strategy for asynchronous operations.
    *
    * @param transactionSync The new value contained in the enum: `NO` (no flush), `YES_NOMETADATA` (flush only data, no metadata), `YES_FULL` (full flush)
    *
-   * @see Database#setWALFlush(WALFile.FLUSH_TYPE)
+   * @see Database#setWALFlush(WALFile.FlushType)
    */
-  void setTransactionSync(WALFile.FLUSH_TYPE transactionSync);
+  void setTransactionSync(WALFile.FlushType transactionSync);
 
   /**
    * Defines a global callback to handle all the returns from asynchronous operations completed without errors.
