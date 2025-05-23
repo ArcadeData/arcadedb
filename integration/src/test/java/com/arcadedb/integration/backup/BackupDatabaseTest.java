@@ -25,7 +25,14 @@ public class BackupDatabaseTest extends TestHelper {
     Result result = resultSet.next();
     assertThat(result.<String>getProperty("result")).isEqualTo("OK");
     assertThat(result.<String>getProperty("backupFile")).isEqualTo("file://test-backup.zip");
-
   }
 
+  @Test
+  public void testBackupEncryption() {
+    ResultSet resultSet = database.command("sql", "backup database file://test-backup.zip with encryptionKey = 'SuperSecretKey'");
+
+    Result result = resultSet.next();
+    assertThat(result.<String>getProperty("result")).isEqualTo("OK");
+    assertThat(result.<String>getProperty("backupFile")).isEqualTo("file://test-backup.zip");
+  }
 }

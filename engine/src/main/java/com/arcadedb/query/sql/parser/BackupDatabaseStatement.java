@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -29,13 +30,16 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.io.File;
-import java.lang.reflect.InvocationTargetException;
-import java.util.Map;
-import java.util.logging.Level;
+import java.io.*;
+import java.lang.reflect.*;
+import java.util.*;
+import java.util.logging.*;
 
 public class BackupDatabaseStatement extends SimpleExecStatement {
-  protected Url url;
+  protected       Url                         url;
+  protected       Expression                  key;
+  protected       Expression                  value;
+  protected final Map<Expression, Expression> settings = new HashMap<>();
 
   public BackupDatabaseStatement(final int id) {
     super(id);
@@ -67,8 +71,21 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
 
       clazz.getMethod("setDirectory", String.class).invoke(backup, backupDirectory + context.getDatabase().getName());
       clazz.getMethod("setVerboseLevel", Integer.TYPE).invoke(backup, 0);
-      try {
 
+      if (!settings.isEmpty()) {
+        for (Map.Entry<Expression, Expression> entry : settings.entrySet()) {
+          final String stringValue = entry.getValue().execute((Identifiable) null, context).toString();
+
+          switch (entry.getKey().toString()) {
+          case "encryptionAlgorithm" -> clazz.getMethod("setEncryptionAlgorithm", String.class)
+              .invoke(backup, stringValue);
+          case "encryptionKey" -> clazz.getMethod("setEncryptionKey", String.class)
+              .invoke(backup, stringValue);
+          }
+        }
+      }
+
+      try {
         final String backupFile = (String) clazz.getMethod("backupDatabase").invoke(backup);
         result.setProperty("result", "OK");
         result.setProperty("backupFile", backupFile);

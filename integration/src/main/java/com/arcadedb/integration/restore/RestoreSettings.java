@@ -27,6 +27,8 @@ public class RestoreSettings {
   public       String              databaseDirectory;
   public       boolean             overwriteDestination = false;
   public       int                 verboseLevel         = 2;
+  public       String              encryptionAlgorithm  = "AES";
+  public       String              encryptionKey;
   public final Map<String, String> options              = new HashMap<>();
 
   protected void parseParameters(final String[] args) {
@@ -38,22 +40,40 @@ public class RestoreSettings {
   }
 
   public int parseParameter(final String name, final String value) {
-    if ("format".equals(name)) {
-      if (value != null)
-        format = value.toLowerCase(Locale.ENGLISH);
-    } else if ("f".equals(name)) {
-      if (value != null)
-        inputFileURL = value;
-    } else if ("d".equals(name)) {
-      if (value != null)
-        databaseDirectory = value;
-    } else if ("o".equals(name)) {
-      overwriteDestination = true;
-      return 1;
-    } else
-      // ADDITIONAL OPTIONS
-      options.put(name, value);
-    return 2;
+    return switch (name) {
+      case "encryptionAlgorithm" -> {
+        encryptionAlgorithm = value;
+        yield 2;
+      }
+      case "encryptionKey" -> {
+        encryptionKey = value;
+        yield 2;
+      }
+      case "format" -> {
+        if (value != null)
+          format = value.toLowerCase(Locale.ENGLISH);
+        yield 2;
+      }
+      case "f" -> {
+        if (value != null)
+          inputFileURL = value;
+        yield 2;
+      }
+      case "d" -> {
+        if (value != null)
+          databaseDirectory = value;
+        yield 2;
+      }
+      case "o" -> {
+        overwriteDestination = true;
+        yield 1;
+      }
+      default -> {
+        // ADDITIONAL OPTIONS
+        options.put(name, value);
+        yield 2;
+      }
+    };
   }
 
   public void validate() {
