@@ -80,6 +80,16 @@ public class Backup {
     }
   }
 
+  public Backup setEncryptionAlgorithm(final String algorithm) {
+    settings.encryptionAlgorithm = algorithm;
+    return this;
+  }
+
+  public Backup setEncryptionKey(final String key) {
+    settings.encryptionKey = key;
+    return this;
+  }
+
   public Backup setDirectory(final String directory) {
     settings.directory = directory;
     return this;

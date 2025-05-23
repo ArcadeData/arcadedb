@@ -73,6 +73,26 @@ public class FullBackupIT {
     }
     TestHelper.checkActiveDatabases();
   }
+  @Test
+  public void testEncryptedFullBackupCommandLineOK() throws Exception {
+    final Database importedDatabase = importDatabase();
+    importedDatabase.close();
+
+    new Backup(("-f " + FILE + " -d " + DATABASE_PATH + " -o -encryptionKey AnotherTestWithHard2GuessPassword").split(" ")).backupDatabase();
+
+    assertThat(file.exists()).isTrue();
+    assertThat(file.length() > 0).isTrue();
+
+    new Restore(("-f " + FILE + " -d " + restoredDirectory + " -o -encryptionKey AnotherTestWithHard2GuessPassword").split(" ")).restoreDatabase();
+
+    try (final Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(ComponentFile.MODE.READ_ONLY)) {
+      try (final Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(
+          ComponentFile.MODE.READ_ONLY)) {
+        new DatabaseComparator().compare(originalDatabase, restoredDatabase);
+      }
+    }
+    TestHelper.checkActiveDatabases();
+  }
 
   @Test
   public void testFullBackupAPIOK() throws Exception {
