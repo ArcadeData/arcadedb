@@ -1107,9 +1107,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         delayBetweenRetries(retryDelay);
 
       } catch (final Throwable e) {
-        final TransactionContext tx = getTransaction();
-        if (tx != null && tx.isActive())
-          rollback();
+        if (wrappedDatabaseInstance.isTransactionActive())
+          wrappedDatabaseInstance.rollback();
 
         if (error != null)
           error.call(e);
