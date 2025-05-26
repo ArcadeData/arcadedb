@@ -9,9 +9,7 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -59,15 +57,15 @@ public class JSONSerializerTest extends TestHelper {
       assertThat(json.getString(RID_PROPERTY)).isNotNull();
       assertThat(json.getJSONArray("list")).containsExactly("value1", "value2");
       assertThat(json.getJSONObject("map")).satisfies(map -> {
-        assertThat(map.getString("key1")).isEqualTo("value1");
-        assertThat(map.getString("key2")).isEqualTo("value2");
+        assertThat(map.get("key1")).isEqualTo("value1");
+        assertThat(map.get("key2")).isEqualTo("value2");
       });
 
       // check embedded TestType
       assertThat(json.getJSONObject("embedded")).satisfies(map -> {
-        assertThat(map.getString("@type")).isEqualTo("TestType");
-        assertThat(map.getString("key1")).isEqualTo("foo");
-        assertThat(map.getInt("key2")).isEqualTo(11);
+        assertThat(map.get("@type")).isEqualTo("TestType");
+        assertThat(map.get("key1")).isEqualTo("foo");
+        assertThat(map.get("key2")).isEqualTo(11);
       });
 
     });

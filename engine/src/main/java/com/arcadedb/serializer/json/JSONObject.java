@@ -46,10 +46,12 @@ import java.util.logging.*;
  * JSON object.<br>
  * This API is compatible with org.json Java API, but uses Google GSON library under the hood. The main reason why we created this wrapper is
  * because the maintainer of the project org.json are not open to support ordered attributes as an option.
+ * <p>
+ * The class also implements Map to be managed by GraalVM as a native object.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class JSONObject {
+public class JSONObject implements Map<String, Object> {
   public static final JsonNull          NULL               = JsonNull.INSTANCE;
   private final       JsonObject        object;
   private             String            dateFormatAsString = null;
@@ -179,6 +181,19 @@ public class JSONObject {
     return this;
   }
 
+  @Override
+  public Object remove(final Object key) {
+    return key == null ? null : remove(key.toString());
+  }
+
+  @Override
+  public void putAll(Map<? extends String, ?> m) {
+    if (m != null) {
+      for (Map.Entry<? extends String, ?> entry : m.entrySet())
+        put(entry.getKey(), entry.getValue());
+    }
+  }
+
   public String getString(final String name) {
     return getElement(name).getAsString();
   }
@@ -267,6 +282,24 @@ public class JSONObject {
     return object.keySet();
   }
 
+  @Override
+  public Collection<Object> values() {
+    final List<Object> values = new ArrayList<>(object.size());
+    for (String key : object.keySet())
+      values.add(elementToObject(object.get(key)));
+    return values;
+  }
+
+  @Override
+  public Set<Entry<String, Object>> entrySet() {
+    final Set<Entry<String, Object>> entrySet = new LinkedHashSet<>();
+    for (String key : object.keySet()) {
+      final JsonElement value = object.get(key);
+      entrySet.add(new AbstractMap.SimpleEntry<>(key, elementToObject(value)));
+    }
+    return entrySet;
+  }
+
   public int length() {
     return keySet().size();
   }
@@ -284,8 +317,33 @@ public class JSONObject {
     return JSONFactory.INSTANCE.getGson().toJson(object);
   }
 
+  @Override
+  public int size() {
+    return length();
+  }
+
   public boolean isEmpty() {
     return object.size() == 0;
+  }
+
+  @Override
+  public boolean containsKey(final Object key) {
+    return key == null ? false : has(key.toString());
+  }
+
+  @Override
+  public boolean containsValue(final Object value) {
+    for (String key : object.keySet()) {
+      Object val = elementToObject(object.get(key));
+      if (Objects.equals(val, value))
+        return true;
+    }
+    return false;
+  }
+
+  @Override
+  public Object get(Object key) {
+    return key != null ? opt(key.toString()) : null;
   }
 
   public void clear() {

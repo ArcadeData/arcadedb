@@ -213,8 +213,8 @@ public class SuffixIdentifier extends SimpleNode {
     return switch (currentValue) {
       case Result result -> execute(result, context);
       case Identifiable identifiable -> execute(identifiable, context);
-      case Map map -> execute(map, context);
       case JSONObject json -> execute(json.toMap(), context);
+      case Map map -> execute(map, context);
       case CommandContext commandContext -> execute(commandContext);
       case Iterable iterable -> execute(iterable, context);
       case Iterator iterator -> execute(iterator, context);
@@ -277,8 +277,8 @@ public class SuffixIdentifier extends SimpleNode {
     switch (target) {
     case Result result -> setValueAsResult(result, value, context);
     case Identifiable identifiable -> setValueAsIdentifiable(identifiable, value, context);
-    case Map map -> setValueAsMap(map, value, context);
     case JSONObject json -> setValueAsMap(json.toMap(), value, context);
+    case Map map -> setValueAsMap(map, value, context);
     default -> throw new IllegalStateException("Unexpected value: " + target);
     }
   }

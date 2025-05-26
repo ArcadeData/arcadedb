@@ -69,23 +69,15 @@ public class SQLScriptTest extends TestHelper {
           let $a = insert into V set test = 'sql script test';
           return $a.asJSON();
           """;
-      String qResult = database.command("SQLScript", script).next().getProperty("value").toString();
+      JSONObject qResult = database.command("SQLScript", script).next().toJSON();
       assertThat(qResult).isNotNull();
-      // VALIDATE JSON
-      new JSONObject(qResult);
 
       script = """
           let $a = select from V limit 2;
           return $a.asJSON();
           """;
-      String result = database.command("SQLScript", script).next().getProperty("value").toString();
-
+      JSONObject result = database.command("SQLScript", script).next().toJSON();
       assertThat(result).isNotNull();
-      result = result.trim();
-      assertThat(result).startsWith("{").endsWith("}");
-
-      // VALIDATE JSON
-      new JSONObject(result);
     });
 
   }
