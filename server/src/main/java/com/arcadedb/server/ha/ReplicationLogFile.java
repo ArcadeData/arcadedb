@@ -421,7 +421,7 @@ public class ReplicationLogFile extends LockContext {
 
     totalArchivedChunks = fileChunks.isEmpty() ? 0 : fileChunks.size() - 1;
 
-    final File lastFile = fileChunks.isEmpty() ? new File(logFile.getAbsolutePath() + ".0") : fileChunks.getLast();
+    final File lastFile = fileChunks.isEmpty() ? new File(logFile.getAbsolutePath() + ".0") : fileChunks.get(fileChunks.size() - 1);
 
     this.lastChunkChannel = new RandomAccessFile(lastFile, "rw").getChannel();
 

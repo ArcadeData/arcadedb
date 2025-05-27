@@ -69,13 +69,14 @@ public class JsonSerializer {
       final String p = documentEntry.getKey();
       Object value = documentEntry.getValue();
 
-      switch (value) {
-      case null -> value = JSONObject.NULL;
-      case Document document1 -> value = serializeDocument(document1);
-      case Collection<?> collection -> serializeCollection(database, collection);
-      case Map map -> value = serializeMap(database, (Map<Object, Object>) map);
-      default -> {
-      }
+      if (value == null) {
+        value = JSONObject.NULL;
+      } else if (value instanceof Document document1) {
+        value = serializeDocument(document1);
+      } else if (value instanceof Collection<?> collection) {
+        serializeCollection(database, collection);
+      } else if (value instanceof Map map) {
+        value = serializeMap(database, (Map<Object, Object>) map);
       }
 
       value = convertNonNumbers(value);
@@ -228,8 +229,7 @@ public class JsonSerializer {
   }
 
   private void setMetadata(final Document document, final JSONObject object) {
-    switch (document) {
-    case DetachedDocument doc -> {
+    if (document instanceof DetachedDocument doc) {
       final DocumentType docType = doc.getType();
       if (docType instanceof VertexType)
         object.put(CAT_PROPERTY, "v");
@@ -237,8 +237,7 @@ public class JsonSerializer {
         object.put(CAT_PROPERTY, "e");
       else
         object.put(CAT_PROPERTY, "d");
-    }
-    case Vertex vertex -> {
+    } else if (document instanceof Vertex vertex) {
       object.put(CAT_PROPERTY, "v");
       if (includeVertexEdges) {
         if (useVertexEdgeSize) {
@@ -257,13 +256,12 @@ public class JsonSerializer {
           object.put(IN_PROPERTY, inEdges);
         }
       }
-    }
-    case Edge edge -> {
+    } else if (document instanceof Edge edge) {
       object.put(CAT_PROPERTY, "e");
       object.put(IN_PROPERTY, edge.getIn());
       object.put(OUT_PROPERTY, edge.getOut());
-    }
-    case null, default -> object.put(CAT_PROPERTY, "d");
+    } else {
+      object.put(CAT_PROPERTY, "d");
     }
 
   }

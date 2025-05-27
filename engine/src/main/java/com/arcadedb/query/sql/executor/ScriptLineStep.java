@@ -72,7 +72,7 @@ public class ScriptLineStep extends AbstractExecutionStep {
         return true;
 
     } else if (plan instanceof IfExecutionPlan) {
-      final IfStep step = (IfStep) plan.getSteps().getFirst();
+      final IfStep step = (IfStep) plan.getSteps().get(0);
       if (step.positivePlan != null && step.positivePlan.containsReturn())
         return true;
       else if (step.positiveStatements != null) {

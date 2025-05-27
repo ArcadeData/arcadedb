@@ -242,7 +242,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
       //     "Test finished in " + (System.currentTimeMillis() - begin) + "ms, mvccExceptions=" + mvccErrors.get() + " otherExceptions=" + otherErrors.size());
 
       for (final Pair<Integer, Exception> entry : otherErrors) {
-        //System.out.println(" = threadId=" + entry.getFirst() + " exception=" + entry.getSecond());
+        //System.out.println(" = threadId=" + entry.get(0) + " exception=" + entry.getSecond());
       }
     }
   }

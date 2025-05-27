@@ -71,7 +71,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
         total++;
         assertThat(results).hasSize(1);
-        assertThat((int) results.getFirst()).isEqualTo(i);
+        assertThat((int) results.get(0)).isEqualTo(i);
       }
 
       assertThat(total).isEqualTo(TOT);

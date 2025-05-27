@@ -145,7 +145,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
           return;
         }
-        cursor = nextCursors.removeFirst();
+        cursor = nextCursors.remove(0);
       }
       if (cursor.hasNext()) {
         final Object value = cursor.next();
@@ -350,7 +350,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
     }
     if (nextCursors.size() > 0) {
-      cursor = nextCursors.removeFirst();
+      cursor = nextCursors.remove(0);
       fetchNextEntry();
     }
   }
@@ -376,7 +376,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     if (key.getExpressions().isEmpty())
       return List.of(head);
 
-    final Expression nextElementInKey = key.getExpressions().getFirst();
+    final Expression nextElementInKey = key.getExpressions().get(0);
     final Object value = nextElementInKey.execute(new ResultInternal(context.getDatabase()), context);
     if (value instanceof Iterable<?> iterable && !(value instanceof Identifiable)) {
       final List<PCollection> result = new ArrayList<>();
@@ -387,7 +387,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
         newHead.add(toExpression(elemInKey));
         final PCollection tail = key.copy();
-        tail.getExpressions().removeFirst();
+        tail.getExpressions().remove(0);
         result.addAll(cartesianProduct(newHead, tail));
       }
       return result;
@@ -398,7 +398,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
       newHead.add(nextElementInKey);
       final PCollection tail = key.copy();
-      tail.getExpressions().removeFirst();
+      tail.getExpressions().remove(0);
       return cartesianProduct(newHead, tail);
     }
 

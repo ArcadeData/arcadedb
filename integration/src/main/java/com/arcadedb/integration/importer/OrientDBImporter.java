@@ -1263,7 +1263,7 @@ public class OrientDBImporter {
     final Collection<TypeIndex> indexes = type.getAllIndexes(true);
     for (final Index index : indexes) {
       if (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.ERROR) {
-        final String indexedPropName = index.getPropertyNames().getFirst();
+        final String indexedPropName = index.getPropertyNames().get(0);
         final Object value = properties.get(indexedPropName);
         if (value == null) {
           ++skippedRecordBecauseNullKey;

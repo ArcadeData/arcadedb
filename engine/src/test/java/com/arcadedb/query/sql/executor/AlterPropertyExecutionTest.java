@@ -72,7 +72,7 @@ public class AlterPropertyExecutionTest extends TestHelper {
       final Result result = resultset.next();
       List properties =  result.getProperty("properties");
 
-      final Object custom = ((Result) properties.getFirst()).getProperty("custom");
+      final Object custom = ((Result) properties.get(0)).getProperty("custom");
       assertThat(custom instanceof Map).isTrue();
       assertThat((Map<?, ?>) custom).isNotEmpty();
     }

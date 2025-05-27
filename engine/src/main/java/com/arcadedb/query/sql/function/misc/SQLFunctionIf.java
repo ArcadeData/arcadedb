@@ -64,13 +64,14 @@ public class SQLFunctionIf extends SQLFunctionAbstract {
 
     try {
       final Object condition = params[0];
-      switch (condition) {
-      case Boolean boolean1 -> result = boolean1;
-      case String s -> result = Boolean.parseBoolean(condition.toString());
-      case Number number -> result = number.intValue() > 0;
-      case null, default -> {
+      if (condition instanceof Boolean boolean1) {
+        result = boolean1;
+      } else if (condition instanceof String) {
+        result = Boolean.parseBoolean(condition.toString());
+      } else if (condition instanceof Number number) {
+        result = number.intValue() > 0;
+      } else {
         return null;
-      }
       }
 
       return result ? params[1] : params[2];

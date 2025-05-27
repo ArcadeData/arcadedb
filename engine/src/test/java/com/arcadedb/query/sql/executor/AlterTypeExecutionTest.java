@@ -87,7 +87,7 @@ public class AlterTypeExecutionTest extends TestHelper {
 
     final BucketSelectionStrategy strategy = database.getSchema().getType("Account").getBucketSelectionStrategy();
     assertThat(strategy.getName()).isEqualTo("partitioned");
-    assertThat(((PartitionedBucketSelectionStrategy) strategy).getProperties().getFirst()).isEqualTo("id");
+    assertThat(((PartitionedBucketSelectionStrategy) strategy).getProperties().get(0)).isEqualTo("id");
   }
 
   @Test

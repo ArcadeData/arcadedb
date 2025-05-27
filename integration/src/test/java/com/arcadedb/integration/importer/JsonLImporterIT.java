@@ -78,7 +78,7 @@ public class JsonLImporterIT {
       assertThat(schema.getType("Person")).isNotNull()
           .satisfies(type -> {
             assertThat(type.getProperty("id").getType()).isEqualTo(Type.INTEGER);
-            assertThat(type.getIndexesByProperties("id").getFirst())
+            assertThat(type.getIndexesByProperties("id").get(0))
                 .satisfies(index -> {
                   assertThat(index.getType()).isEqualTo(Schema.INDEX_TYPE.LSM_TREE);
                   assertThat(index.getNullStrategy()).isEqualTo(NULL_STRATEGY.SKIP);
@@ -88,7 +88,7 @@ public class JsonLImporterIT {
       assertThat(schema.getType("Friend")).isNotNull()
           .satisfies(type -> {
             assertThat(type.getProperty("id").getType()).isEqualTo(Type.INTEGER);
-            assertThat(type.getIndexesByProperties("id").getFirst())
+            assertThat(type.getIndexesByProperties("id").get(0))
                 .satisfies(index -> {
                   assertThat(index.getType()).isEqualTo(Schema.INDEX_TYPE.LSM_TREE);
                   assertThat(index.getNullStrategy()).isEqualTo(NULL_STRATEGY.SKIP);

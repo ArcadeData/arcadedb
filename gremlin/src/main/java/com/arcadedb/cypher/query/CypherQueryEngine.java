@@ -95,11 +95,11 @@ public class CypherQueryEngine implements QueryEngine {
     if (value instanceof Map<?, ?> map) {
       final List<ResultInternal> list = transformMap(map);
       if (list.size() == 1)
-        return list.getFirst();
+        return list.get(0);
       return list;
     } else if (value instanceof List<?> listValue) {
       final List<Object> transformed = listValue.stream().map(value1 -> transformValue(value1, false)).collect(Collectors.toList());
-      return flatArrays && transformed.size() == 1 ? transformed.getFirst() : transformed;
+      return flatArrays && transformed.size() == 1 ? transformed.get(0) : transformed;
     }
     return value;
   }

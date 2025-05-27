@@ -187,7 +187,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final Object pipelineObject = Aggregation.parse(document.get("pipeline"));
     final List<Document> pipeline = Aggregation.parse(pipelineObject);
     if (!pipeline.isEmpty()) {
-      final Document changeStream = (Document) pipeline.getFirst().get("$changeStream");
+      final Document changeStream = (Document) pipeline.get(0).get("$changeStream");
       if (changeStream != null) {
         final Aggregation aggregation = Aggregation.fromPipeline(pipeline.subList(1, pipeline.size()), plugin, this, collection,
             oplog);
@@ -386,7 +386,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   private synchronized void putLastResult(final Channel channel, final Document result) {
     final List<Document> results = this.lastResults.get(channel);
-    final Document last = results.getLast();
+    final Document last = results.get(results.size() - 1);
     if (last != null)
       throw new IllegalStateException("last result already set: " + last);
     results.set(results.size() - 1, result);

@@ -1380,7 +1380,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     assertThat(foo).isNotNull();
     assertThat(foo instanceof List).isTrue();
     assertThat(((List) foo).size()).isEqualTo(1);
-    final Vertex resultVertex = (Vertex) ((List) foo).getFirst();
+    final Vertex resultVertex = (Vertex) ((List) foo).get(0);
     assertThat(resultVertex.getInteger("uid")).isEqualTo(2);
     result.close();
   }
@@ -1967,16 +1967,16 @@ public class MatchStatementExecutionTest extends TestHelper {
       case "aaa" -> assertThat(thePath.size()).isEqualTo(0);
       case "bbb" -> {
         assertThat(thePath.size()).isEqualTo(1);
-        assertThat(thePath.getFirst().getRecord().asDocument().getString("name")).isEqualTo("bbb");
+        assertThat(thePath.get(0).getRecord().asDocument().getString("name")).isEqualTo("bbb");
       }
       case "ccc" -> {
         assertThat(thePath.size()).isEqualTo(2);
-        assertThat(thePath.getFirst().getRecord().asDocument().getString("name")).isEqualTo("bbb");
+        assertThat(thePath.get(0).getRecord().asDocument().getString("name")).isEqualTo("bbb");
         assertThat(thePath.get(1).getRecord().asDocument().getString("name")).isEqualTo("ccc");
       }
       case "ddd" -> {
         assertThat(thePath.size()).isEqualTo(3);
-        assertThat(thePath.getFirst().getRecord().asDocument().getString("name")).isEqualTo("bbb");
+        assertThat(thePath.get(0).getRecord().asDocument().getString("name")).isEqualTo("bbb");
         assertThat(thePath.get(1).getRecord().asDocument().getString("name")).isEqualTo("ccc");
         assertThat(thePath.get(2).getRecord().asDocument().getString("name")).isEqualTo("ddd");
       }

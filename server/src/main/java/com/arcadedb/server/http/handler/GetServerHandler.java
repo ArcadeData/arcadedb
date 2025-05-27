@@ -96,7 +96,7 @@ public class GetServerHandler extends AbstractServerHttpHandler {
 
         try {
           connection.setRequestMethod("GET");
-          connection.setRequestProperty("Authorization", exchange.getRequestHeaders().get("Authorization").getFirst());
+          connection.setRequestProperty("Authorization", exchange.getRequestHeaders().get("Authorization").get(0));
           connection.connect();
 
           JSONObject leaderResponse = new JSONObject(readResponse(connection));

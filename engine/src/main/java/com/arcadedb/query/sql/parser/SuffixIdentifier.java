@@ -210,17 +210,29 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   public Object execute(final Object currentValue, final CommandContext context) {
-    return switch (currentValue) {
-      case Result result -> execute(result, context);
-      case Identifiable identifiable -> execute(identifiable, context);
-      case JSONObject json -> execute(json.toMap(), context);
-      case Map map -> execute(map, context);
-      case CommandContext commandContext -> execute(commandContext);
-      case Iterable iterable -> execute(iterable, context);
-      case Iterator iterator -> execute(iterator, context);
-      case null -> execute((Result) null, context);
-      default -> null; // TODO other cases?
-    };
+    if (currentValue instanceof Result)
+      return execute((Result) currentValue, context);
+
+    if (currentValue instanceof Identifiable)
+      return execute((Identifiable) currentValue, context);
+
+    if (currentValue instanceof Map)
+      return execute((Map) currentValue, context);
+
+    if (currentValue instanceof CommandContext)
+      return execute((CommandContext) currentValue);
+
+    if (currentValue instanceof Iterable)
+      return execute((Iterable) currentValue, context);
+
+    if (currentValue instanceof Iterator)
+      return execute((Iterator) currentValue, context);
+
+    if (currentValue == null)
+      return execute((Result) null, context);
+
+    return null;
+    // TODO other cases?
   }
 
   public boolean isBaseIdentifier() {
@@ -274,13 +286,12 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   public void setValue(final Object target, final Object value, final CommandContext context) {
-    switch (target) {
-    case Result result -> setValueAsResult(result, value, context);
-    case Identifiable identifiable -> setValueAsIdentifiable(identifiable, value, context);
-    case JSONObject json -> setValueAsMap(json.toMap(), value, context);
-    case Map map -> setValueAsMap(map, value, context);
-    default -> throw new IllegalStateException("Unexpected value: " + target);
-    }
+    if (target instanceof Result)
+      setValue((Result) target, value, context);
+    else if (target instanceof Identifiable)
+      setValue((Identifiable) target, value, context);
+    else if (target instanceof Map)
+      setValue((Map) target, value, context);
   }
 
   public void setValueAsIdentifiable(final Identifiable target, final Object value, final CommandContext context) {
