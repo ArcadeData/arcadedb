@@ -18,21 +18,20 @@
  */
 package com.arcadedb.integration.backup;
 
-import java.io.File;
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
-import java.util.HashMap;
-import java.util.Locale;
-import java.util.Map;
+import java.io.*;
+import java.text.*;
+import java.util.*;
 
 public class BackupSettings {
-  public       String              format        = "full";
+  public       String              format              = "full";
   public       String              databaseURL;
   public       String              directory;
   public       String              file;
-  public       boolean             overwriteFile = false;
-  public       int                 verboseLevel  = 2;
-  public final Map<String, String> options       = new HashMap<>();
+  public       boolean             overwriteFile       = false;
+  public       int                 verboseLevel        = 2;
+  public       String              encryptionAlgorithm = "AES";
+  public       String              encryptionKey;
+  public final Map<String, String> options             = new HashMap<>();
   public       String              databaseName;
 
   protected void parseParameters(final String[] args) {
@@ -63,6 +62,8 @@ public class BackupSettings {
 
   public int parseParameter(final String name, final String value) {
     switch (name) {
+    case "encryptionAlgorithm" -> encryptionAlgorithm = value;
+    case "encryptionKey" -> encryptionKey = value;
     case "format" -> {
       if (value != null)
         format = value.toLowerCase(Locale.ENGLISH);
@@ -83,6 +84,7 @@ public class BackupSettings {
       overwriteFile = true;
       return 1;
     }
+
     case null, default ->
       // ADDITIONAL OPTIONS
         options.put(name, value);

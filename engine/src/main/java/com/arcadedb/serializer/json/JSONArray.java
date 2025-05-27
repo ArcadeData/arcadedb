@@ -24,7 +24,6 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import java.util.*;
@@ -88,6 +87,34 @@ public class JSONArray implements Iterable<Object> {
     }
 
     return result;
+  }
+
+  public List<String> toListOfStrings() {
+    return toList().stream().map(Object::toString).toList();
+  }
+
+  public List<Integer> toListOfIntegers() {
+    return toList().stream().map(o -> ((Number) o).intValue()).toList();
+  }
+
+  public List<Long> toListOfLongs() {
+    return toList().stream().map(o -> ((Number) o).longValue()).toList();
+  }
+
+  public List<Float> toListOfFloats() {
+    return toList().stream().map(o -> ((Number) o).floatValue()).toList();
+  }
+
+  public List<Double> toListOfDoubles() {
+    return toList().stream().map(o -> ((Number) o).doubleValue()).toList();
+  }
+
+  public List<Boolean> toListOfBooleans() {
+    return toList().stream().map(o -> (Boolean) o).toList();
+  }
+
+  public List<JSONObject> toListOfObjects() {
+    return toList().stream().map(o -> o instanceof Map map ? new JSONObject(map) : (JSONObject) o).toList();
   }
 
   public int length() {

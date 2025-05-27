@@ -27,9 +27,15 @@ import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
 import java.net.*;
+import java.nio.charset.*;
+import java.util.*;
 import java.util.zip.*;
 
 public class FullRestoreFormat extends AbstractRestoreFormat {
+  private interface RestoreCallback {
+    void restore(ZipInputStream zipFile) throws Exception;
+  }
+
   private final byte[] BUFFER = new byte[8192];
 
   private static class RestoreInputSource {
@@ -56,37 +62,42 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
     if (databaseDirectory.exists()) {
       if (!settings.overwriteDestination)
         throw new RestoreException(
-          "The database directory '%s' already exist and '-o' setting is false".formatted(settings.databaseDirectory));
+            "The database directory '%s' already exist and '-o' setting is false".formatted(settings.databaseDirectory));
 
       FileUtils.deleteRecursively(databaseDirectory);
     }
 
     if (!databaseDirectory.mkdirs())
       throw new RestoreException(
-        "Error on restoring database: the database directory '%s' cannot be created".formatted(settings.databaseDirectory));
+          "Error on restoring database: the database directory '%s' cannot be created".formatted(settings.databaseDirectory));
 
     logger.logLine(0, "Executing full restore of database from file '%s' to '%s'...", settings.inputFileURL,
         settings.databaseDirectory);
 
-    try (final ZipInputStream zipFile = new ZipInputStream(inputSource.inputStream, DatabaseFactory.getDefaultCharset())) {
+    decryptFile(inputSource.inputStream, zipFile -> {
       final long beginTime = System.currentTimeMillis();
 
       long databaseOrigSize = 0L;
 
+      int restoredFiles = 0;
       ZipEntry compressedFile = zipFile.getNextEntry();
       while (compressedFile != null) {
         databaseOrigSize += uncompressFile(zipFile, compressedFile, databaseDirectory);
         compressedFile = zipFile.getNextEntry();
+        ++restoredFiles;
       }
 
       zipFile.close();
 
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
 
+      if (restoredFiles == 0)
+        throw new RestoreException("Unable to perform restore");
+
       logger.logLine(0, "Full restore completed in %d seconds %s -> %s (%,d%% compression)", elapsedInSecs,
           FileUtils.getSizeAsString(databaseOrigSize), FileUtils.getSizeAsString((inputSource.fileSize)),
           databaseOrigSize > 0 ? (databaseOrigSize - inputSource.fileSize) * 100 / databaseOrigSize : 0);
-    }
+    });
   }
 
   private long uncompressFile(final ZipInputStream inputFile, final ZipEntry compressedFile, final File databaseDirectory)
@@ -138,8 +149,49 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
     final File file = new File(path);
     if (!file.exists())
       throw new RestoreException("The backup file '%s' does not exist (local path=%s)".formatted(//
-        settings.inputFileURL, new File(".").getAbsolutePath()));
+          settings.inputFileURL, new File(".").getAbsolutePath()));
 
     return new RestoreInputSource(new FileInputStream(file), file.length());
+  }
+
+  private void decryptFile(final InputStream fis, final FullRestoreFormat.RestoreCallback callback) throws Exception {
+    final ZipInputStream zipFile;
+    if (settings.encryptionKey != null) {
+      // Read salt from the beginning of the file (16 bytes)
+      final byte[] salt = new byte[16];
+      if (fis.read(salt) != salt.length) {
+        throw new IOException("Unable to read salt from encrypted file");
+      }
+
+      // Derive the key using PBKDF2 with the salt
+      final javax.crypto.SecretKeyFactory factory = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+      final java.security.spec.KeySpec spec = new javax.crypto.spec.PBEKeySpec(settings.encryptionKey.toCharArray(), salt, 65536,
+          256);
+      final javax.crypto.SecretKey tmp = factory.generateSecret(spec);
+      final byte[] keyBytes = tmp.getEncoded();
+
+      final javax.crypto.SecretKey secretKey = new javax.crypto.spec.SecretKeySpec(keyBytes, settings.encryptionAlgorithm);
+      // Read IV from the beginning of the file
+      final byte[] iv = new byte[16];
+      if (fis.read(iv) != iv.length) {
+        throw new IOException("Unable to read IV from encrypted file");
+      }
+      final javax.crypto.spec.IvParameterSpec ivSpec = new javax.crypto.spec.IvParameterSpec(iv);
+
+      // Initialize cipher for decryption
+      final javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance(settings.encryptionAlgorithm + "/CTR/NoPadding");
+      cipher.init(javax.crypto.Cipher.DECRYPT_MODE, secretKey, ivSpec);
+
+      // Wrap the input stream with CipherInputStream
+      final javax.crypto.CipherInputStream cis = new javax.crypto.CipherInputStream(fis, cipher);
+      zipFile = new ZipInputStream(cis, StandardCharsets.UTF_8);
+    } else
+      zipFile = new ZipInputStream(fis, StandardCharsets.UTF_8);
+
+    try {
+      callback.restore(zipFile);
+    } finally {
+      zipFile.close();
+    }
   }
 }
