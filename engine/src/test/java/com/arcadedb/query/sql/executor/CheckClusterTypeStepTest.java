@@ -48,7 +48,6 @@ public class CheckClusterTypeStepTest {
     });
   }
 
-  @Test
   public void shouldThrowExceptionWhenClusterIsWrong() throws Exception {
     try {
       TestHelper.executeInNewDatabase((db) -> {

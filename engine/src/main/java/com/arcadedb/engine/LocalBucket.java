@@ -669,7 +669,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       LogManager.instance()
           .log(this, Level.FINE, "Creating record (%s records=%d threadId=%d)", selectedPage, availablePositionIndex,
-              Thread.currentThread().threadId());
+              Thread.currentThread().getId());
       final RID rid = new RID(database, file.getFileId(),
           ((long) selectedPage.getPageId().getPageNumber()) * maxRecordsInPage + availablePositionIndex);
 
@@ -699,7 +699,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       LogManager.instance()
           .log(this, Level.FINE, "Created record %s (%s records=%d threadId=%d)", rid, selectedPage, recordCountInPage,
-              Thread.currentThread().threadId());
+              Thread.currentThread().getId());
 
       if (!discardRecordAfter)
         ((RecordInternal) record).setBuffer(buffer.getNotReusable());
@@ -745,7 +745,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
 //      LogManager.instance()
-//          .log(this, Level.SEVERE, "UPDATE %s pageV=%d content %s (threadId=%d)", rid, page.getVersion(), record.toJSON(), Thread.currentThread().threadId());
+//          .log(this, Level.SEVERE, "UPDATE %s pageV=%d content %s (threadId=%d)", rid, page.getVersion(), record.toJSON(), Thread.currentThread().getId());
 
       boolean isPlaceHolder = false;
       if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
@@ -844,7 +844,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
           LogManager.instance()
               .log(this, Level.FINE, "Updated record %s by allocating new space on the same page (%s threadId=%d)", null, rid, page,
-                  Thread.currentThread().threadId());
+                  Thread.currentThread().getId());
 
           updatePageStatistics(pageId, spaceAvailableInCurrentPage, -additionalSpaceNeeded);
 
@@ -864,14 +864,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
             LogManager.instance()
                 .log(this, Level.FINE, "Updated record %s by allocating new space with a placeholder (%s threadId=%d)", null, rid,
-                    page, Thread.currentThread().threadId());
+                    page, Thread.currentThread().getId());
           } else {
             // SPLIT THE RECORD IN CHUNKS AS LINKED LIST AND STORE THE FIRST PART ON CURRENT PAGE ISSUE https://github.com/ArcadeData/arcadedb/issues/332
             writeMultiPageRecord(rid, buffer, page, recordPositionInPage, availableSpaceForChunk);
 
             LogManager.instance().log(this, Level.FINE,
                 "Updated record %s by splitting it in multiple chunks to be saved in multiple pages (%s threadId=%d)", null, rid,
-                page, Thread.currentThread().threadId());
+                page, Thread.currentThread().getId());
           }
         }
       } else {
@@ -883,7 +883,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         LogManager.instance()
             .log(this, Level.FINE, "Updated record %s with the same size or less as before (%s threadId=%d)", null, rid, page,
-                Thread.currentThread().threadId());
+                Thread.currentThread().getId());
       }
 
       if (!discardRecordAfter)
@@ -1010,7 +1010,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       }
 
       LogManager.instance()
-          .log(this, Level.FINE, "Deleted record %s (%s threadId=%d)", null, rid, page, Thread.currentThread().threadId());
+          .log(this, Level.FINE, "Deleted record %s (%s threadId=%d)", null, rid, page, Thread.currentThread().getId());
 
     } catch (final RecordNotFoundException e) {
       throw e;

@@ -358,7 +358,7 @@ public class CompressedRID2RIDsIndex {
 
   private void checkThreadAccess() {
     if (!readOnly && lastThreadAccessed != null && lastThreadAccessed != Thread.currentThread())
-      LogManager.instance().log(this, Level.WARNING, "Access by a different thread %d (%s). Previously it was %d (%s)", null, Thread.currentThread().threadId(),
+      LogManager.instance().log(this, Level.WARNING, "Access by a different thread %d (%s). Previously it was %d (%s)", null, Thread.currentThread().getId(),
           Thread.currentThread().getName(), lastThreadAccessed.getId(), lastThreadAccessed.getName());
     lastThreadAccessed = Thread.currentThread();
   }

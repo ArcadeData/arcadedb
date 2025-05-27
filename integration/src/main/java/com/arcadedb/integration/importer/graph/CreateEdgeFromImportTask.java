@@ -66,7 +66,7 @@ public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
 
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
 
-//    LogManager.instance().log(this, Level.INFO, "Using context %s from theadId=%d", null, threadContext, Thread.currentThread().threadId());
+//    LogManager.instance().log(this, Level.INFO, "Using context %s from theadId=%d", null, threadContext, Thread.currentThread().getId());
 
     // TODO: LOAD FROM INDEX
     final RID destinationVertexRID = context.graphImporter.getVertex(threadContext.vertexIndexThreadBuffer, destinationVertexKey);
@@ -101,7 +101,7 @@ public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
           .log(this, Level.INFO, "Creation of back connections, reached %s size (max=%s), flushing %d connections (slots=%d thread=%d)...", null,
               FileUtils.getSizeAsString(threadContext.incomingConnectionsIndexThread.getChunkSize()), FileUtils.getSizeAsString(settings.maxRAMIncomingEdges),
               threadContext.incomingConnectionsIndexThread.size(), threadContext.incomingConnectionsIndexThread.getTotalUsedSlots(),
-              Thread.currentThread().threadId());
+              Thread.currentThread().getId());
 
       createIncomingEdgesInBatch(database, threadContext.incomingConnectionsIndexThread, linked -> context.linkedEdges.addAndGet(linked));
 

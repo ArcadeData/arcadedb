@@ -60,7 +60,7 @@ public class DatabaseAsyncDeleteRecord implements DatabaseAsyncTask {
         onOkCallback.call(record);
 
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on executing async delete record operation (threadId=%d)", e, Thread.currentThread().threadId());
+      LogManager.instance().log(this, Level.SEVERE, "Error on executing async delete record operation (threadId=%d)", e, Thread.currentThread().getId());
 
       async.onError(e);
 
