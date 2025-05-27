@@ -54,7 +54,7 @@ public class JJTSqlParserState {
      stack.  */
   public Node popNode() {
     if (--sp < mk) {
-      mk = marks.remove(nodes.size() - 1);
+      mk = marks.remove(marks.size() - 1);
     }
     return nodes.remove(nodes.size() - 1);
   }
