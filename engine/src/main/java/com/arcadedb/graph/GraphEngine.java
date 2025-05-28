@@ -439,7 +439,7 @@ public class GraphEngine {
     vertex.getDatabase().getSchema().getBucketById(vertex.getIdentity().getBucketId()).deleteRecord(vertex.getIdentity());
   }
 
-  public Iterable<Edge> getEdges(final VertexInternal vertex) {
+  public IterableGraph<Edge> getEdges(final VertexInternal vertex) {
     final MultiIterator<Edge> result = new MultiIterator<>();
 
     final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
@@ -453,7 +453,7 @@ public class GraphEngine {
     return result;
   }
 
-  public Iterable<Edge> getEdges(final VertexInternal vertex, final Vertex.DIRECTION direction, final String... edgeTypes) {
+  public IterableGraph<Edge> getEdges(final VertexInternal vertex, final Vertex.DIRECTION direction, final String... edgeTypes) {
     if (direction == null)
       throw new IllegalArgumentException("Direction is null");
 
@@ -486,7 +486,7 @@ public class GraphEngine {
     default:
       throw new IllegalArgumentException("Invalid direction " + direction);
     }
-    return Collections.emptyList();
+    return IterableGraph.emptyList();
   }
 
   /**
@@ -494,7 +494,7 @@ public class GraphEngine {
    *
    * @return An iterator of PVertex instances
    */
-  public Iterable<Vertex> getVertices(final VertexInternal vertex) {
+  public IterableGraph<Vertex> getVertices(final VertexInternal vertex) {
     final MultiIterator<Vertex> result = new MultiIterator<>();
 
     final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
@@ -516,7 +516,7 @@ public class GraphEngine {
    *
    * @return An iterator of PVertex instances
    */
-  public Iterable<Vertex> getVertices(final VertexInternal vertex, final Vertex.DIRECTION direction, final String... edgeTypes) {
+  public IterableGraph<Vertex> getVertices(final VertexInternal vertex, final Vertex.DIRECTION direction, final String... edgeTypes) {
     if (direction == null)
       throw new IllegalArgumentException("Direction is null");
 
@@ -549,7 +549,7 @@ public class GraphEngine {
     default:
       throw new IllegalArgumentException("Invalid direction " + direction);
     }
-    return Collections.emptyList();
+    return IterableGraph.emptyList();
   }
 
   public boolean isVertexConnectedTo(final VertexInternal vertex, final Identifiable toVertex) {
