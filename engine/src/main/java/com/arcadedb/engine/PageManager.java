@@ -176,7 +176,7 @@ public class PageManager extends LockContext {
   private int getMostRecentVersionOfPage(final PageId pageId, final int pageSize) throws IOException {
     CachedPage page = readCache.get(pageId);
     if (page == null)
-      page = loadPage(pageId, pageSize, false, false);
+      page = loadPage(pageId, pageSize, false, true);
 
     if (page != null)
       return page.getVersion();
