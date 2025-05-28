@@ -22,9 +22,11 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
 import com.arcadedb.engine.WALException;
 import com.arcadedb.engine.WALFile;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.MutableVertex;
@@ -37,16 +39,11 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Calendar;
-import java.util.Iterator;
-import java.util.List;
-import java.util.concurrent.Callable;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -455,6 +452,83 @@ public class ACIDTransactionTest extends TestHelper {
 
     database.transaction(() -> assertThat(database.countType("Node", true)).isEqualTo(TOT));
     database.transaction(() -> assertThat(database.countType("Arc", true)).isEqualTo(TOT - 1));
+  }
+
+  @Test
+  public void testExceptionInsideTransaction() {
+    final Database db = database;
+
+    final int TOT = 100;
+
+    final VertexType type = database.getSchema().getOrCreateVertexType("Node");
+    //type.getOrCreateProperty("id", Type.STRING).getOrCreateIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+
+    final AtomicInteger thrownExceptions = new AtomicInteger(0);
+    final AtomicInteger caughtExceptions = new AtomicInteger(0);
+    final AtomicInteger committed = new AtomicInteger(0);
+
+    final RID[] rid = new RID[1];
+
+    database.transaction(() -> {
+      final MutableVertex v = db.newVertex("Node");
+      v.set("id", 0);
+      v.set("name", "Exception(al)");
+      v.set("surname", "Test");
+      v.save();
+      rid[0] = v.getIdentity();
+    });
+
+    final int CONCURRENT_THREADS = 4;
+
+    // SPAWN ALL THE THREADS
+    final Thread[] threads = new Thread[CONCURRENT_THREADS];
+    for (int i = 0; i < CONCURRENT_THREADS; i++) {
+      threads[i] = new Thread(() -> {
+        for (int k = 0; k < TOT; ++k) {
+          final int id = k;
+
+          try {
+            database.transaction(() -> {
+              MutableVertex v = rid[0].asVertex().modify();
+              v.set("id", id);
+              v.save();
+
+              if ((id + 1) % 100 == 0) {
+                thrownExceptions.incrementAndGet();
+//                System.out.println("Simulating exception at id=" + id + " (thread=" + Thread.currentThread().getName() + ")");
+                //throw new  DuplicatedKeyException("indexName", "key", rid[0]);
+                throw new RuntimeException("Test exception at " + id);
+              }
+            });
+            committed.incrementAndGet();
+
+          } catch (Exception e) {
+            caughtExceptions.incrementAndGet();
+//            System.out.println("Caught: " + e.getMessage() + " (id=" + id + ", thread=" + Thread.currentThread().getName() + ")");
+          }
+        }
+
+      });
+      threads[i].start();
+    }
+
+    // WAIT FOR ALL THE THREADS
+    for (int i = 0; i < CONCURRENT_THREADS; i++)
+      try {
+        threads[i].join();
+      } catch (InterruptedException e) {
+        // IGNORE IT
+      }
+
+    assertThat(database.countType("Node", true)).isEqualTo(1);
+
+    assertThat(committed.get()).isGreaterThan(0);
+    assertThat(thrownExceptions.get()).isGreaterThan(0);
+    assertThat(caughtExceptions.get()).isGreaterThan(0);
+    assertThat(committed.get() + caughtExceptions.get()).isEqualTo(TOT * CONCURRENT_THREADS);
+
+//    System.out.println(
+//        "Committed: " + committed.get() + ", Thrown: " + thrownExceptions.get() + ", Caught: " + caughtExceptions.get());
   }
 
   @Test
