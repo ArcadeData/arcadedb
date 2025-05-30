@@ -11,13 +11,11 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.testcontainers.containers.BindMode;
 import org.testcontainers.containers.ContainerState;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.ToxiproxyContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.images.builder.Transferable;
 import org.testcontainers.lifecycle.Startables;
 import org.testcontainers.utility.MountableFile;
 
@@ -123,12 +121,12 @@ public abstract class ContainersTestTemplate {
     containers.stream()
         .filter(ContainerState::isRunning)
         .peek(container -> logger.info("Stopping container {}", container.getContainerName()))
-        .peek(container-> {
+        .peek(container -> {
           try {
             container.execInContainer("rm -rf", "/home/arcadedb/databases/*");
             container.execInContainer("rm -rf", "/home/arcadedb/replication/*");
             container.execInContainer("rm -rf", "/home/arcadedb/logs/*");
-          } catch (IOException | InterruptedException e ) {
+          } catch (IOException | InterruptedException e) {
             logger.error("Error while stopping container {}", container.getContainerName(), e);
           }
         })
