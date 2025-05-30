@@ -54,6 +54,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
 
     final JSONObject json = new JSONObject(payload);
 
+    LogManager.instance().log(this, Level.FINE, "Executing command: %s", null, json.toString());
     final Map<String, Object> requestMap = json.toMap();
 
     if (requestMap.get("command") == null)

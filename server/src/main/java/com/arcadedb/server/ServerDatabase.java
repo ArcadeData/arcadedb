@@ -57,9 +57,11 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.BinarySerializer;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.*;
+import java.io.IOException;
+import java.util.Collection;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.concurrent.Callable;
 
 /**
  * Wrapper of database returned from the server when runs embedded that prevents the close(), drop() and kill() by the user.
@@ -279,7 +281,7 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public Database setWALFlush(final WALFile.FLUSH_TYPE flush) {
+  public Database setWALFlush(final WALFile.FlushType flush) {
     return wrapped.setWALFlush(flush);
   }
 
