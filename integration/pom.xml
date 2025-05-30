@@ -30,7 +30,7 @@
     </parent>
 
     <properties>
-        <univocity-parsers.version>2.10.1</univocity-parsers.version>
+        <univocity-parsers.version>2.10.2</univocity-parsers.version>
     </properties>
 
     <artifactId>arcadedb-integration</artifactId>
