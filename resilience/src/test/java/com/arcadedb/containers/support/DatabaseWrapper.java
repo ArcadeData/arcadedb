@@ -107,7 +107,7 @@ public class DatabaseWrapper {
         usersTimer.record(() -> {
           db.transaction(() ->
                   db.command("sql", "CREATE VERTEX User SET id = ?", userId)
-              , true);
+              , true, 10);
         });
 
         addPhotosOfUser(userId, numberOfPhotos);
@@ -135,7 +135,7 @@ public class DatabaseWrapper {
         photosTimer.record(() -> {
           db.transaction(() ->
                   db.command("sqlscript", sqlScript, photoId, photoName, userId)
-              , true);
+              , true, 10);
         });
 
       } catch (Exception e) {
@@ -160,7 +160,7 @@ public class DatabaseWrapper {
                 """
                     CREATE EDGE IsFriendOf
                     FROM (SELECT FROM User WHERE id = ?) TO (SELECT FROM User WHERE id = ?)
-                    """, userId1, userId2), true);
+                    """, userId1, userId2), true, 10);
       });
 
     } catch (Exception e) {
