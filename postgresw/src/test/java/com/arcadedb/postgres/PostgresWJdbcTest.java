@@ -55,7 +55,7 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
     super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue(
         "Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin");
-    GlobalConfiguration.POSTGRES_DEBUG.setValue("true");
+    GlobalConfiguration.POSTGRES_DEBUG.setValue("false"); // SET THIS TO TRUE TO DEBUG THE PROTOCOL
   }
 
   @AfterEach
