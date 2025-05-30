@@ -43,6 +43,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
@@ -1074,6 +1075,11 @@ public class PostgresNetworkExecutor extends Thread {
 
   private boolean readMessage(final String messageName, final ReadMessageCallback callback, final char... expectedMessageCodes) {
     try {
+      if (!channel.inputHasData()) {
+        CodeUtils.sleep(100);
+        return false;
+      }
+
       final char type = (char) readNextByte();
       final long length = channel.readUnsignedInt();
 
