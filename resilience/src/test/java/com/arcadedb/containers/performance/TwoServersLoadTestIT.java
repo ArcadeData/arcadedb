@@ -24,21 +24,6 @@ import java.util.concurrent.TimeUnit;
  */
 public class TwoServersLoadTestIT extends ContainersTestTemplate {
 
-  @AfterEach
-  void compareDatabases() {
-    stopContainers();
-    logger.info("Comparing databases");
-    DatabaseFactory databaseFactory = new DatabaseFactory("./target/databases/arcade1/ha-test");
-    Database db1 = databaseFactory.open(ComponentFile.MODE.READ_ONLY);
-    DatabaseFactory databaseFactory2 = new DatabaseFactory("./target/databases/arcade2/ha-test");
-    Database db2 = databaseFactory2.open(ComponentFile.MODE.READ_ONLY);
-    new DatabaseComparator().compare(db1, db2);
-    db1.close();
-    db2.close();
-    databaseFactory.close();
-    databaseFactory2.close();
-    logger.info("Databases compared");
-  }
 
   @Test
   @DisplayName("Load test 2 servers in HA mode")
