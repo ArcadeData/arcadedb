@@ -32,6 +32,7 @@ import com.google.gson.Strictness;
 import com.google.gson.internal.LazilyParsedNumber;
 import com.google.gson.stream.JsonReader;
 
+<<<<<<< HEAD
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.StringReader;
@@ -54,6 +55,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+=======
+import java.io.*;
+import java.math.*;
+import java.time.*;
+import java.time.format.*;
+import java.time.temporal.*;
+import java.util.*;
+>>>>>>> a6549097 (chore: supported additional type in JSON serialization)
 
 /**
  * JSON object.<br>
@@ -128,6 +137,7 @@ public class JSONObject implements Map<String, Object> {
     if (name == null)
       throw new IllegalArgumentException("Property name is null");
 
+<<<<<<< HEAD
     // GENERIC CASE: TRANSFORM IT TO STRING
     if (value == null) {
       object.add(name, NULL);
@@ -146,6 +156,22 @@ public class JSONObject implements Map<String, Object> {
     } else if (value instanceof String[] string1s) {
       object.add(name, new JSONArray(string1s).getInternal());
     } else if (value instanceof Iterable<?> iterable) {// RETRY UP TO 10 TIMES IN CASE OF CONCURRENT UPDATE
+=======
+    switch (value) {
+    case null -> object.add(name, NULL);
+    case JsonNull jsonNull -> object.add(name, NULL);
+    case JsonElement jsonElement -> object.add(name, jsonElement);
+    case String string -> object.addProperty(name, string);
+    case Number number -> object.addProperty(name, number);
+    case Boolean bool -> object.addProperty(name, bool);
+    case Character character -> object.addProperty(name, character);
+    case JSONObject nObject -> object.add(name, nObject.getInternal());
+    case JSONArray array -> object.add(name, array.getInternal());
+    case Document doc -> object.add(name, doc.toJSON().getInternal());
+    case String[] string1s -> object.add(name, new JSONArray(string1s).getInternal());
+    case Iterable<?> iterable -> {
+      // RETRY UP TO 10 TIMES IN CASE OF CONCURRENT UPDATE
+>>>>>>> a6549097 (chore: supported additional type in JSON serialization)
       for (int i = 0; i < 10; i++) {
         final JSONArray array = new JSONArray();
         try {
@@ -183,6 +209,7 @@ public class JSONObject implements Map<String, Object> {
       else
         // SAVE AS STRING
         object.addProperty(name, dateTimeFormat.format(temporalAccessor));
+<<<<<<< HEAD
     } else if (value instanceof Duration duration) {
       object.addProperty(name,
           Double.valueOf("%d.%d".formatted(duration.toSeconds(), duration.toNanosPart())));
@@ -195,6 +222,17 @@ public class JSONObject implements Map<String, Object> {
       object.addProperty(name, clazz.getName());
     } else {
       object.addProperty(name, value.toString());
+=======
+    }
+    case Duration duration -> object.addProperty(name,
+        Double.valueOf("%d.%d".formatted(duration.toSeconds(), duration.toNanosPart())));
+    case Identifiable identifiable -> object.addProperty(name, identifiable.getIdentity().toString());
+    case Map map -> object.add(name, new JSONObject(map).getInternal());
+    case Class<?> clazz -> object.addProperty(name, clazz.getName());
+    default ->
+      // GENERIC CASE: TRANSFORM IT TO STRING
+        object.addProperty(name, value.toString());
+>>>>>>> a6549097 (chore: supported additional type in JSON serialization)
     }
     return this;
   }
@@ -460,6 +498,7 @@ public class JSONObject implements Map<String, Object> {
   }
 
   protected static JsonElement objectToElement(final Object object) {
+<<<<<<< HEAD
     if (object == null) {
       return JsonNull.INSTANCE;
     } else if (object instanceof String string) {
@@ -486,6 +525,23 @@ public class JSONObject implements Map<String, Object> {
       throw new IllegalArgumentException("Object of type " + object.getClass() + " not supported");
     }
 
+=======
+    return switch (object) {
+      case null -> JsonNull.INSTANCE;
+      case JsonElement jsonElement -> jsonElement;
+      case String string -> new JsonPrimitive(string);
+      case Number number -> new JsonPrimitive(number);
+      case Boolean boolean1 -> new JsonPrimitive(boolean1);
+      case Character character -> new JsonPrimitive(character);
+      case JSONObject nObject -> nObject.getInternal();
+      case JSONArray array -> array.getInternal();
+      case Collection collection -> new JSONArray(collection).getInternal();
+      case Map map -> new JSONObject(map).getInternal();
+      case Document document -> document.toJSON().getInternal();
+      case Identifiable identifiable -> new JsonPrimitive(identifiable.getIdentity().toString());
+      default -> throw new IllegalArgumentException("Object of type " + object.getClass() + " not supported");
+    };
+>>>>>>> a6549097 (chore: supported additional type in JSON serialization)
   }
 
   private JsonElement getElement(final String name) {
