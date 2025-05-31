@@ -35,6 +35,7 @@
 
     <artifactId>arcadedb-console</artifactId>
     <packaging>jar</packaging>
+    <name>ArcadeDB Console</name>
 
     <dependencies>
         <dependency>

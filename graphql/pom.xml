@@ -30,6 +30,7 @@
 
     <artifactId>arcadedb-graphql</artifactId>
     <packaging>jar</packaging>
+    <name>ArcadeDB GraphQL</name>
 
     <properties>
         <ph-javacc-maven-plugin.version>4.1.5</ph-javacc-maven-plugin.version>
