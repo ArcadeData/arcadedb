@@ -35,6 +35,7 @@
 
     <artifactId>arcadedb-integration</artifactId>
     <packaging>jar</packaging>
+    <name>ArcadeDB Integration</name>
 
     <dependencies>
         <dependency>

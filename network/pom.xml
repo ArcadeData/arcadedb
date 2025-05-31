@@ -31,7 +31,7 @@
 
     <artifactId>arcadedb-network</artifactId>
     <packaging>jar</packaging>
-
+    <name>ArcadeDB Network</name>
     <properties>
         <mockito.version>5.15.2</mockito.version>
     </properties>

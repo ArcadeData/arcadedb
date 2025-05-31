@@ -39,6 +39,7 @@
 
     <artifactId>arcadedb-e2e</artifactId>
     <packaging>jar</packaging>
+    <name>ArcadeDB End-to-End Tests</name>
 
     <build>
         <plugins>

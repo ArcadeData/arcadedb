@@ -31,6 +31,7 @@
 
     <artifactId>arcadedb-postgresw</artifactId>
     <packaging>jar</packaging>
+    <name>ArcadeDB PostgresW</name>
 
     <properties>
         <postgres.version>42.7.5</postgres.version>

@@ -31,6 +31,7 @@
 
     <artifactId>arcadedb-metrics</artifactId>
     <packaging>jar</packaging>
+    <name>ArcadeDB Metrics</name>
 
     <properties>
         <micrometer.version>1.15.0</micrometer.version>
