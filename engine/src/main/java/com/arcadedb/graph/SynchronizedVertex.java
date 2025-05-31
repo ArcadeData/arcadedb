@@ -136,12 +136,12 @@ public class SynchronizedVertex implements Vertex {
 
   @Override
   public synchronized Vertex asVertex() {
-    return delegate.asVertex();
+    return this;
   }
 
   @Override
   public synchronized Vertex asVertex(boolean loadContent) {
-    return delegate.asVertex(loadContent);
+    return this;
   }
 
   @Override

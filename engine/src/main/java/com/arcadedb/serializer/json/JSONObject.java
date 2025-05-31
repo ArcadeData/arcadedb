@@ -22,7 +22,6 @@ package com.arcadedb.serializer.json;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.DateUtils;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
@@ -34,13 +33,11 @@ import com.google.gson.internal.LazilyParsedNumber;
 import com.google.gson.stream.JsonReader;
 
 import java.io.*;
-import java.lang.reflect.*;
 import java.math.*;
 import java.time.*;
 import java.time.format.*;
 import java.time.temporal.*;
 import java.util.*;
-import java.util.logging.*;
 
 /**
  * JSON object.<br>
@@ -118,11 +115,14 @@ public class JSONObject implements Map<String, Object> {
     switch (value) {
     case null -> object.add(name, NULL);
     case JsonNull jsonNull -> object.add(name, NULL);
+    case JsonElement jsonElement -> object.add(name, jsonElement);
     case String string -> object.addProperty(name, string);
     case Number number -> object.addProperty(name, number);
     case Boolean bool -> object.addProperty(name, bool);
     case Character character -> object.addProperty(name, character);
     case JSONObject nObject -> object.add(name, nObject.getInternal());
+    case JSONArray array -> object.add(name, array.getInternal());
+    case Document doc -> object.add(name, doc.toJSON().getInternal());
     case String[] string1s -> object.add(name, new JSONArray(string1s).getInternal());
     case Iterable<?> iterable -> {
       // RETRY UP TO 10 TIMES IN CASE OF CONCURRENT UPDATE
@@ -169,10 +169,7 @@ public class JSONObject implements Map<String, Object> {
     case Duration duration -> object.addProperty(name,
         Double.valueOf("%d.%d".formatted(duration.toSeconds(), duration.toNanosPart())));
     case Identifiable identifiable -> object.addProperty(name, identifiable.getIdentity().toString());
-    case Map map -> {
-      final JSONObject embedded = new JSONObject((Map<String, Object>) value);
-      object.add(name, embedded.getInternal());
-    }
+    case Map map -> object.add(name, new JSONObject(map).getInternal());
     case Class<?> clazz -> object.addProperty(name, clazz.getName());
     default ->
       // GENERIC CASE: TRANSFORM IT TO STRING
@@ -444,6 +441,7 @@ public class JSONObject implements Map<String, Object> {
   protected static JsonElement objectToElement(final Object object) {
     return switch (object) {
       case null -> JsonNull.INSTANCE;
+      case JsonElement jsonElement -> jsonElement;
       case String string -> new JsonPrimitive(string);
       case Number number -> new JsonPrimitive(number);
       case Boolean boolean1 -> new JsonPrimitive(boolean1);
@@ -456,7 +454,6 @@ public class JSONObject implements Map<String, Object> {
       case Identifiable identifiable -> new JsonPrimitive(identifiable.getIdentity().toString());
       default -> throw new IllegalArgumentException("Object of type " + object.getClass() + " not supported");
     };
-
   }
 
   private JsonElement getElement(final String name) {
