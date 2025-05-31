@@ -602,169 +602,106 @@ public enum Type {
     if (a == null || b == null)
       throw new IllegalArgumentException("Cannot increment a null value");
 
-    switch (a) {
-    case Integer i -> {
-      switch (b) {
-      case Integer integer -> {
+    if (a instanceof Integer) {
+      if (b instanceof Integer) {
         final int sum = a.intValue() + b.intValue();
         if (sum < 0 && a.intValue() > 0 && b.intValue() > 0)
           // SPECIAL CASE: UPGRADE TO LONG
           return (long) (a.intValue() + b.intValue());
         return sum;
-      }
-      case Long l -> {
+      } else if (b instanceof Long) {
         return a.intValue() + b.longValue();
-      }
-      case Short aShort -> {
+      } else if (b instanceof Short) {
         final int sum = a.intValue() + b.shortValue();
         if (sum < 0 && a.intValue() > 0 && b.shortValue() > 0)
           // SPECIAL CASE: UPGRADE TO LONG
           return (long) (a.intValue() + b.shortValue());
         return sum;
-      }
-      case Float v -> {
+      } else if (b instanceof Float) {
         return a.intValue() + b.floatValue();
-      }
-      case Double v -> {
+      } else if (b instanceof Double) {
         return a.intValue() + b.doubleValue();
-      }
-      case BigDecimal decimal -> {
+      } else if (b instanceof BigDecimal decimal) {
         return new BigDecimal(a.intValue()).add(decimal);
       }
-      default -> {
-      }
-      }
-    }
-    case Long l -> {
-      switch (b) {
-      case Integer i -> {
+    } else if (a instanceof Long) {
+      if (b instanceof Integer) {
         return a.longValue() + b.intValue();
-      }
-      case Long aLong -> {
+      } else if (b instanceof Long) {
         return a.longValue() + b.longValue();
-      }
-      case Short i -> {
+      } else if (b instanceof Short) {
         return a.longValue() + b.shortValue();
-      }
-      case Float v -> {
+      } else if (b instanceof Float) {
         return a.longValue() + b.floatValue();
-      }
-      case Double v -> {
+      } else if (b instanceof Double) {
         return a.longValue() + b.doubleValue();
-      }
-      case BigDecimal decimal -> {
+      } else if (b instanceof BigDecimal decimal) {
         return new BigDecimal(a.longValue()).add(decimal);
       }
-      default -> {
-      }
-      }
-    }
-    case Short i -> {
-      switch (b) {
-      case Integer integer -> {
+    } else if (a instanceof Short) {
+      if (b instanceof Integer) {
         final int sum = a.shortValue() + b.intValue();
         if (sum < 0 && a.shortValue() > 0 && b.intValue() > 0)
           // SPECIAL CASE: UPGRADE TO LONG
           return Long.valueOf(a.shortValue() + b.intValue());
         return sum;
-      }
-      case Long l -> {
+      } else if (b instanceof Long) {
         return Long.valueOf(a.shortValue() + b.longValue());
-      }
-      case Short aShort -> {
+      } else if (b instanceof Short) {
         final int sum = a.shortValue() + b.shortValue();
         if (sum < 0 && a.shortValue() > 0 && b.shortValue() > 0)
           // SPECIAL CASE: UPGRADE TO INTEGER
           return a.intValue() + b.intValue();
         return sum;
-      }
-      case Float v -> {
+      } else if (b instanceof Float) {
         return a.shortValue() + b.floatValue();
-      }
-      case Double v -> {
+      } else if (b instanceof Double) {
         return a.shortValue() + b.doubleValue();
-      }
-      case BigDecimal decimal -> {
+      } else if (b instanceof BigDecimal decimal) {
         return new BigDecimal(a.shortValue()).add(decimal);
       }
-      default -> {
-      }
-      }
-    }
-    case Float v -> {
-      switch (b) {
-      case Integer i -> {
+    } else if (a instanceof Float) {
+      if (b instanceof Integer) {
         return a.floatValue() + b.intValue();
-      }
-      case Long l -> {
+      } else if (b instanceof Long) {
         return a.floatValue() + b.longValue();
-      }
-      case Short i -> {
+      } else if (b instanceof Short) {
         return a.floatValue() + b.shortValue();
-      }
-      case Float aFloat -> {
+      } else if (b instanceof Float) {
         return a.floatValue() + b.floatValue();
-      }
-      case Double aDouble -> {
+      } else if (b instanceof Double) {
         return a.floatValue() + b.doubleValue();
-      }
-      case BigDecimal decimal -> {
+      } else if (b instanceof BigDecimal decimal) {
         return BigDecimal.valueOf(a.floatValue()).add(decimal);
       }
-      default -> {
-      }
-      }
-    }
-    case Double v -> {
-      switch (b) {
-      case Integer i -> {
+    } else if (a instanceof Double) {
+      if (b instanceof Integer) {
         return a.doubleValue() + b.intValue();
-      }
-      case Long l -> {
+      } else if (b instanceof Long) {
         return a.doubleValue() + b.longValue();
-      }
-      case Short i -> {
+      } else if (b instanceof Short) {
         return a.doubleValue() + b.shortValue();
-      }
-      case Float aFloat -> {
+      } else if (b instanceof Float) {
         return a.doubleValue() + b.floatValue();
-      }
-      case Double aDouble -> {
+      } else if (b instanceof Double) {
         return a.doubleValue() + b.doubleValue();
-      }
-      case BigDecimal decimal -> {
+      } else if (b instanceof BigDecimal decimal) {
         return BigDecimal.valueOf(a.doubleValue()).add(decimal);
       }
-      default -> {
-      }
-      }
-    }
-    case BigDecimal bigDecimal -> {
-      switch (b) {
-      case Integer i -> {
+    } else if (a instanceof BigDecimal) {
+      if (b instanceof Integer) {
         return ((BigDecimal) a).add(new BigDecimal(b.intValue()));
-      }
-      case Long l -> {
+      } else if (b instanceof Long) {
         return ((BigDecimal) a).add(new BigDecimal(b.longValue()));
-      }
-      case Short i -> {
+      } else if (b instanceof Short) {
         return ((BigDecimal) a).add(new BigDecimal(b.shortValue()));
-      }
-      case Float v -> {
+      } else if (b instanceof Float) {
         return ((BigDecimal) a).add(BigDecimal.valueOf(b.floatValue()));
-      }
-      case Double v -> {
+      } else if (b instanceof Double) {
         return ((BigDecimal) a).add(BigDecimal.valueOf(b.doubleValue()));
-      }
-      case BigDecimal decimal -> {
+      } else if (b instanceof BigDecimal decimal) {
         return ((BigDecimal) a).add(decimal);
       }
-      default -> {
-      }
-      }
-    }
-    default -> {
-    }
     }
 
     throw new IllegalArgumentException(
@@ -775,96 +712,65 @@ public enum Type {
     if (a == null || b == null)
       throw new IllegalArgumentException("Cannot decrement a null value");
 
-    switch (a) {
-    case Integer i -> {
-      switch (b) {
-      case Integer integer -> {
+    if (a instanceof Integer) {
+      if (b instanceof Integer) {
         final int sum = a.intValue() - b.intValue();
         if (sum < 0 && a.intValue() > 0 && b.intValue() > 0)
           // SPECIAL CASE: UPGRADE TO LONG
           return (long) (a.intValue() - b.intValue());
         return sum;
-      }
-      case Long l -> {
+      } else if (b instanceof Long) {
         return a.intValue() - b.longValue();
-      }
-      case Short aShort -> {
+      } else if (b instanceof Short) {
         final int sum = a.intValue() - b.shortValue();
         if (sum < 0 && a.intValue() > 0 && b.shortValue() > 0)
           // SPECIAL CASE: UPGRADE TO LONG
           return (long) (a.intValue() - b.shortValue());
         return sum;
-      }
-      case Float v -> {
+      } else if (b instanceof Float) {
         return a.intValue() - b.floatValue();
-      }
-      case Double v -> {
+      } else if (b instanceof Double) {
         return a.intValue() - b.doubleValue();
-      }
-      case BigDecimal decimal -> {
+      } else if (b instanceof BigDecimal decimal) {
         return new BigDecimal(a.intValue()).subtract(decimal);
       }
-      default -> {
-      }
-      }
-    }
-    case Long l -> {
-      switch (b) {
-      case Integer i -> {
+    } else if (a instanceof Long) {
+      if (b instanceof Integer) {
         return a.longValue() - b.intValue();
-      }
-      case Long aLong -> {
+      } else if (b instanceof Long) {
         return a.longValue() - b.longValue();
-      }
-      case Short i -> {
+      } else if (b instanceof Short) {
         return a.longValue() - b.shortValue();
-      }
-      case Float v -> {
+      } else if (b instanceof Float) {
         return a.longValue() - b.floatValue();
-      }
-      case Double v -> {
+      } else if (b instanceof Double) {
         return a.longValue() - b.doubleValue();
-      }
-      case BigDecimal decimal -> {
+      } else if (b instanceof BigDecimal decimal) {
         return new BigDecimal(a.longValue()).subtract(decimal);
       }
-      default -> {
-      }
-      }
-    }
-    case Short i -> {
-      switch (b) {
-      case Integer integer -> {
+    } else if (a instanceof Short) {
+      if (b instanceof Integer) {
         final int sum = a.shortValue() - b.intValue();
         if (sum < 0 && a.shortValue() > 0 && b.intValue() > 0)
           // SPECIAL CASE: UPGRADE TO LONG
           return (long) (a.shortValue() - b.intValue());
         return sum;
-      }
-      case Long l -> {
+      } else if (b instanceof Long) {
         return a.shortValue() - b.longValue();
-      }
-      case Short aShort -> {
+      } else if (b instanceof Short) {
         final int sum = a.shortValue() - b.shortValue();
         if (sum < 0 && a.shortValue() > 0 && b.shortValue() > 0)
           // SPECIAL CASE: UPGRADE TO INTEGER
           return a.intValue() - b.intValue();
         return sum;
-      }
-      case Float v -> {
+      } else if (b instanceof Float) {
         return a.shortValue() - b.floatValue();
-      }
-      case Double v -> {
+      } else if (b instanceof Double) {
         return a.shortValue() - b.doubleValue();
-      }
-      case BigDecimal decimal -> {
+      } else if (b instanceof BigDecimal decimal) {
         return new BigDecimal(a.shortValue()).subtract(decimal);
       }
-      default -> {
-      }
-      }
-    }
-    case Float v -> {
+    } else if (a instanceof Float) {
       if (b instanceof Integer)
         return a.floatValue() - b.intValue();
       else if (b instanceof Long)
@@ -877,57 +783,34 @@ public enum Type {
         return a.floatValue() - b.doubleValue();
       else if (b instanceof BigDecimal decimal)
         return BigDecimal.valueOf(a.floatValue()).subtract(decimal);
-    }
-    case Double v -> {
-      switch (b) {
-      case Integer i -> {
+    } else if (a instanceof Double) {
+      if (b instanceof Integer) {
         return a.doubleValue() - b.intValue();
-      }
-      case Long l -> {
+      } else if (b instanceof Long) {
         return a.doubleValue() - b.longValue();
-      }
-      case Short i -> {
+      } else if (b instanceof Short) {
         return a.doubleValue() - b.shortValue();
-      }
-      case Float aFloat -> {
+      } else if (b instanceof Float) {
         return a.doubleValue() - b.floatValue();
-      }
-      case Double aDouble -> {
+      } else if (b instanceof Double) {
         return a.doubleValue() - b.doubleValue();
-      }
-      case BigDecimal decimal -> {
+      } else if (b instanceof BigDecimal decimal) {
         return BigDecimal.valueOf(a.doubleValue()).subtract(decimal);
       }
-      default -> {
-      }
-      }
-    }
-    case BigDecimal bigDecimal -> {
-      switch (b) {
-      case Integer i -> {
+    } else if (a instanceof BigDecimal) {
+      if (b instanceof Integer) {
         return ((BigDecimal) a).subtract(new BigDecimal(b.intValue()));
-      }
-      case Long l -> {
+      } else if (b instanceof Long) {
         return ((BigDecimal) a).subtract(new BigDecimal(b.longValue()));
-      }
-      case Short i -> {
+      } else if (b instanceof Short) {
         return ((BigDecimal) a).subtract(new BigDecimal(b.shortValue()));
-      }
-      case Float v -> {
+      } else if (b instanceof Float) {
         return ((BigDecimal) a).subtract(BigDecimal.valueOf(b.floatValue()));
-      }
-      case Double v -> {
+      } else if (b instanceof Double) {
         return ((BigDecimal) a).subtract(BigDecimal.valueOf(b.doubleValue()));
-      }
-      case BigDecimal decimal -> {
+      } else if (b instanceof BigDecimal decimal) {
         return ((BigDecimal) a).subtract(decimal);
       }
-      default -> {
-      }
-      }
-    }
-    default -> {
-    }
     }
 
     throw new IllegalArgumentException(

@@ -110,7 +110,7 @@ public class RetryStep extends AbstractExecutionStep {
     if (retryDelay > 0) {
       LogManager.instance()
           .log(this, Level.FINE, "Wait %d ms before the next retry for transaction commit (threadId=%d)", retryDelay,
-              Thread.currentThread().threadId());
+              Thread.currentThread().getId());
 
       try {
         Thread.sleep(1 + new Random().nextInt(retryDelay));

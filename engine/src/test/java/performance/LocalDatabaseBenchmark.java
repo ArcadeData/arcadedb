@@ -203,7 +203,7 @@ public class LocalDatabaseBenchmark {
               final MutableVertex user = database.newVertex("User").set("id", id);
               user.save();
 
-              //LogManager.instance().log(this, Level.WARNING, "Saving user id %d as %s (threadId=%d)", id, user.getIdentity(), Thread.currentThread().threadId());
+              //LogManager.instance().log(this, Level.WARNING, "Saving user id %d as %s (threadId=%d)", id, user.getIdentity(), Thread.currentThread().getId());
 
             } catch (Throwable t) {
               incrementError(t);

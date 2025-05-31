@@ -188,7 +188,7 @@ public class RecordRecyclingTest {
   private void deleteLastVertex(Database db, int deleteRecords) {
     db.transaction(() -> {
       for (int i = 0; i < deleteRecords; i++) {
-        db.query("sql", "select from " + VERTEX_TYPE + " order by @rid desc limit 1").toVertices().getFirst().delete();
+        db.query("sql", "select from " + VERTEX_TYPE + " order by @rid desc limit 1").toVertices().get(0).delete();
       }
     });
   }

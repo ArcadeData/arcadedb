@@ -25,9 +25,10 @@ import java.time.Duration;
 
 public abstract class ArcadeContainerTemplate {
   static final GenericContainer<?> ARCADE;
+  static final String              VERSION = "latest"; // Use "latest" to always get the latest version
 
   static {
-    ARCADE = new GenericContainer<>("arcadedata/arcadedb:latest")
+    ARCADE = new GenericContainer<>("arcadedata/arcadedb:" + VERSION)
         .withExposedPorts(2480, 6379, 5432, 8182)
         .withStartupTimeout(Duration.ofSeconds(90))
         .withEnv("JAVA_OPTS", """

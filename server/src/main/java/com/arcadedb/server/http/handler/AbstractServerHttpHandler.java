@@ -100,7 +100,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       ServerSecurityUser user = null;
       if (authorization != null) {
         try {
-          final String auth = authorization.getFirst();
+          final String auth = authorization.get(0);
           if (!auth.startsWith(AUTHORIZATION_BASIC)) {
             sendErrorResponse(exchange, 403, "Authentication not supported", null, null);
             return;

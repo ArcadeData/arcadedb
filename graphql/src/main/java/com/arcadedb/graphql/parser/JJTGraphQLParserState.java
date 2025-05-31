@@ -48,9 +48,9 @@ public class JJTGraphQLParserState implements Serializable {
   public Node popNode() {
     --sp;
     if (sp < mk) {
-      mk = marks.removeLast();
+      mk = marks.remove(marks.size() - 1);
     }
-    return nodes.removeLast();
+    return nodes.remove(nodes.size() - 1);
   }
 
   /* Returns the number of children on the stack in the current node
@@ -64,7 +64,7 @@ public class JJTGraphQLParserState implements Serializable {
     while (sp > mk) {
       popNode();
     }
-    mk = marks.removeLast();
+    mk = marks.remove(marks.size() - 1);
   }
 
   public void openNodeScope(final Node n) {
@@ -81,7 +81,7 @@ public class JJTGraphQLParserState implements Serializable {
   public void closeNodeScope(final Node n, final boolean condition) {
     if (condition) {
       int a = nodeArity();
-      mk = marks.removeLast();
+      mk = marks.remove(marks.size() - 1);
       while (a-- > 0) {
         final Node c = popNode();
         c.jjtSetParent(n);
@@ -90,7 +90,7 @@ public class JJTGraphQLParserState implements Serializable {
       n.jjtClose();
       pushNode(n);
     } else {
-      mk = marks.removeLast();
+      mk = marks.remove(marks.size() - 1);
     }
   }
 }

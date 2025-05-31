@@ -174,8 +174,7 @@ public class ArraySingleValuesSelector extends SimpleNode {
     }
     final List values = this.items.stream().map(x -> x.getValue(originalRecord, null, context)).collect(Collectors.toList());
 
-    switch (currentValue) {
-    case List list -> {
+    if (currentValue instanceof List list) {
       values.sort(this::compareKeysForRemoval);
       for (final Object val : values) {
         if (val instanceof Integer) {
@@ -184,8 +183,7 @@ public class ArraySingleValuesSelector extends SimpleNode {
           list.remove(val);
         }
       }
-    }
-    case Set set -> {
+    } else if (currentValue instanceof Set set) {
       final Iterator iterator = set.iterator();
       final int count = 0;
       while (iterator.hasNext()) {
@@ -194,19 +192,17 @@ public class ArraySingleValuesSelector extends SimpleNode {
           iterator.remove();
         }
       }
-    }
-    case Map map -> {
+    } else if (currentValue instanceof Map) {
       for (final Object val : values) {
         ((Map) currentValue).remove(val);
       }
-    }
-    case Result result -> {
+    } else if (currentValue instanceof Result) {
       for (final Object val : values) {
         ((ResultInternal) currentValue).removeProperty("" + val);
       }
-    }
-    default -> throw new CommandExecutionException(
-        "Trying to remove elements from " + currentValue + " (" + currentValue.getClass().getSimpleName() + ")");
+    } else {
+      throw new CommandExecutionException(
+          "Trying to remove elements from " + currentValue + " (" + currentValue.getClass().getSimpleName() + ")");
     }
   }
 

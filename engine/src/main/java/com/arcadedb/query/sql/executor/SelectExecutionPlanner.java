@@ -160,8 +160,11 @@ public class SelectExecutionPlanner {
     if (info.timeout != null)
       selectExecutionPlan.chain(new AccumulatingTimeoutStep(info.timeout, context));
 
-    if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && selectExecutionPlan.canBeCached()
-        && db.getExecutionPlanCache().getLastInvalidation() < planningStart)
+    if (useCache &&
+        !context.isProfiling() &&
+        statement.executionPlanCanBeCached() &&
+        selectExecutionPlan.canBeCached() &&
+        db.getExecutionPlanCache().getLastInvalidation() < planningStart)
       db.getExecutionPlanCache().put(statement.getOriginalStatement(), selectExecutionPlan);
 
     return selectExecutionPlan;
@@ -222,12 +225,12 @@ public class SelectExecutionPlanner {
    */
   protected static Projection translateDistinct(Projection projection) {
     if (projection != null && projection.getItems().size() == 1) {
-      if (isDistinct(projection.getItems().getFirst())) {
+      if (isDistinct(projection.getItems().get(0))) {
         projection = projection.copy();
-        final ProjectionItem item = projection.getItems().getFirst();
+        final ProjectionItem item = projection.getItems().get(0);
         final FunctionCall function = ((BaseExpression) item.getExpression().getMathExpression()).getIdentifier().getLevelZero()
             .getFunctionCall();
-        final Expression exp = function.getParams().getFirst();
+        final Expression exp = function.getParams().get(0);
         final ProjectionItem resultItem = new ProjectionItem(-1);
         resultItem.setAlias(item.getAlias());
         resultItem.setExpression(exp.copy());
@@ -298,7 +301,7 @@ public class SelectExecutionPlanner {
     if (!isMinimalQuery(info))
       return false;
 
-    result.chain(new CountFromTypeStep(info.target.toString(), info.projection.getAllAliases().getFirst(), context));
+    result.chain(new CountFromTypeStep(info.target.toString(), info.projection.getAllAliases().get(0), context));
     return true;
   }
 
@@ -320,7 +323,7 @@ public class SelectExecutionPlanner {
     if (!isMinimalQuery(info)) {
       return false;
     }
-    result.chain(new CountFromIndexStep(targetIndex, info.projection.getAllAliases().getFirst(), context));
+    result.chain(new CountFromIndexStep(targetIndex, info.projection.getAllAliases().get(0), context));
     return true;
   }
 
@@ -340,7 +343,7 @@ public class SelectExecutionPlanner {
         || info.projection.getItems().size() != 1) {
       return false;
     }
-    final ProjectionItem item = info.aggregateProjection.getItems().getFirst();
+    final ProjectionItem item = info.aggregateProjection.getItems().get(0);
     return item.getExpression().toString().equalsIgnoreCase("count(*)");
   }
 
@@ -350,7 +353,7 @@ public class SelectExecutionPlanner {
             .count() != 1) {
       return false;
     }
-    final ProjectionItem item = info.aggregateProjection.getItems().getFirst();
+    final ProjectionItem item = info.aggregateProjection.getItems().get(0);
     final Expression exp = item.getExpression();
     if (exp.getMathExpression() != null && exp.getMathExpression() instanceof BaseExpression) {
       final BaseExpression base = (BaseExpression) exp.getMathExpression();
@@ -364,7 +367,7 @@ public class SelectExecutionPlanner {
         || projection.getItems().size() != 1) {
       return false;
     }
-    final ProjectionItem item = aggregateProjection.getItems().getFirst();
+    final ProjectionItem item = aggregateProjection.getItems().get(0);
     return item.getExpression().isCount();
   }
 
@@ -404,7 +407,7 @@ public class SelectExecutionPlanner {
         result.chain(new AggregateProjectionCalculationStep(info.aggregateProjection, info.groupBy, aggregationLimit, context,
             info.timeout != null ? info.timeout.getVal().longValue() : -1));
         if (isCountOnly(info) && info.groupBy == null) {
-          result.chain(new GuaranteeEmptyCountStep(info.aggregateProjection.getItems().getFirst(), context));
+          result.chain(new GuaranteeEmptyCountStep(info.aggregateProjection.getItems().get(0), context));
         }
       }
       result.chain(new ProjectionCalculationStep(info.projection, context));
@@ -503,7 +506,7 @@ public class SelectExecutionPlanner {
   private static void addOrderByProjections(final QueryPlanningInfo info) {
     if (info.orderApplied || info.expand || info.unwind != null || info.orderBy == null || info.orderBy.getItems().size() == 0
         || info.projection == null || info.projection.getItems() == null || (info.projection.getItems().size() == 1
-        && info.projection.getItems().getFirst().isAll())) {
+        && info.projection.getItems().get(0).isAll())) {
       return;
     }
 
@@ -925,7 +928,7 @@ public class SelectExecutionPlanner {
       return result;
 
     //TODO optimization: merge multiple conditions
-    for (final BooleanExpression booleanExpression : flattenedWhereClause.getFirst().getSubBlocks()) {
+    for (final BooleanExpression booleanExpression : flattenedWhereClause.get(0).getSubBlocks()) {
       if (isRidRange(booleanExpression, context)) {
         result.getSubBlocks().add(booleanExpression.copy());
       }
@@ -1069,7 +1072,7 @@ public class SelectExecutionPlanner {
       } else if (info.flattenedWhereClause.size() > 1) {
         throw new CommandExecutionException("Index queries with this kind of condition are not supported yet: " + info.whereClause);
       } else {
-        final AndBlock andBlock = info.flattenedWhereClause.getFirst();
+        final AndBlock andBlock = info.flattenedWhereClause.get(0);
         if (andBlock.getSubBlocks().size() == 1) {
 
           info.whereClause = null;//The WHERE clause won't be used anymore, the index does all the filtering
@@ -1594,7 +1597,7 @@ public class SelectExecutionPlanner {
     final List<DocumentType> stack = new ArrayList<>();
     stack.add(typez);
     while (!stack.isEmpty()) {
-      final DocumentType current = stack.removeFirst();
+      final DocumentType current = stack.remove(0);
       traversed.add(current);
       for (final DocumentType sub : current.getSubTypes()) {
         if (traversed.contains(sub))
@@ -1673,7 +1676,7 @@ public class SelectExecutionPlanner {
       final QueryPlanningInfo info, final CommandContext context, List<IndexSearchDescriptor> optimumIndexSearchDescriptors) {
     List<ExecutionStepInternal> result;
     if (optimumIndexSearchDescriptors.size() == 1) {
-      final IndexSearchDescriptor desc = optimumIndexSearchDescriptors.getFirst();
+      final IndexSearchDescriptor desc = optimumIndexSearchDescriptors.get(0);
       result = new ArrayList<>();
 
       final Boolean orderAsc = getOrderDirection(info);
@@ -1756,8 +1759,8 @@ public class SelectExecutionPlanner {
       if (orderItems.isEmpty()) {
         return true;//nothing to sort, the conditions completely overlap the ORDER BY
       }
-      if (s.equals(orderItems.getFirst())) {
-        orderItems.removeFirst();
+      if (s.equals(orderItems.get(0))) {
+        orderItems.remove(0);
         overlapping = true; //start overlapping
       } else if (overlapping) {
         return false; //overlapping, but next order item does not match...
@@ -1882,7 +1885,7 @@ public class SelectExecutionPlanner {
     if (sortedDescriptors.isEmpty()) {
       descriptors = Collections.emptyList();
     } else {
-      descriptors = sortedDescriptors.stream().filter(x -> x.getFirst().equals(sortedDescriptors.getFirst().getFirst()))
+      descriptors = sortedDescriptors.stream().filter(x -> x.getFirst().equals(sortedDescriptors.get(0).getFirst()))
           .map(Pair::getSecond).collect(Collectors.toList());
     }
 
@@ -1890,7 +1893,7 @@ public class SelectExecutionPlanner {
     descriptors = descriptors.stream().sorted(Comparator.comparingInt(x -> x.blockCount())).collect(Collectors.toList());
 
     // get the one that has more indexed fields
-    return descriptors.isEmpty() ? null : descriptors.getLast();
+    return descriptors.isEmpty() ? null : descriptors.get(descriptors.size() - 1);
   }
 
   /**
@@ -1956,7 +1959,7 @@ public class SelectExecutionPlanner {
     if (sortedDescriptors.isEmpty()) {
       descriptors = Collections.emptyList();
     } else {
-      descriptors = sortedDescriptors.stream().filter(x -> x.getFirst().equals(sortedDescriptors.getFirst().getFirst()))
+      descriptors = sortedDescriptors.stream().filter(x -> x.getFirst().equals(sortedDescriptors.get(0).getFirst()))
           .map(x -> x.getSecond()).collect(Collectors.toList());
     }
 
@@ -1964,7 +1967,7 @@ public class SelectExecutionPlanner {
     descriptors = descriptors.stream().sorted(Comparator.comparingInt(x -> x.getSubBlocks().size())).collect(Collectors.toList());
 
     // get the one that has more indexed fields
-    return descriptors.isEmpty() ? null : descriptors.getFirst();
+    return descriptors.isEmpty() ? null : descriptors.get(0);
   }
 
   /**
@@ -2314,7 +2317,7 @@ public class SelectExecutionPlanner {
       info.orderApplied = true;
 
     if (buckets.size() == 1) {
-      final Bucket parserBucket = buckets.getFirst();
+      final Bucket parserBucket = buckets.get(0);
 
       Integer bucketId = parserBucket.getBucketNumber();
       if (bucketId == null) {
@@ -2370,7 +2373,7 @@ public class SelectExecutionPlanner {
       return false;
 
     if (info.orderBy.getItems().size() == 1) {
-      OrderByItem item = info.orderBy.getItems().getFirst();
+      OrderByItem item = info.orderBy.getItems().get(0);
       String recordAttr = item.getRecordAttr();
       return recordAttr != null && recordAttr.equalsIgnoreCase(RID_PROPERTY) && OrderByItem.DESC.equals(item.getType());
     }
@@ -2385,7 +2388,7 @@ public class SelectExecutionPlanner {
       return false;
 
     if (info.orderBy.getItems().size() == 1) {
-      final OrderByItem item = info.orderBy.getItems().getFirst();
+      final OrderByItem item = info.orderBy.getItems().get(0);
       final String recordAttr = item.getRecordAttr();
       return recordAttr != null && recordAttr.equalsIgnoreCase(RID_PROPERTY) && (item.getType() == null || OrderByItem.ASC.equals(
           item.getType()));
@@ -2437,7 +2440,7 @@ public class SelectExecutionPlanner {
 
     if (item.getRids() != null && !item.getRids().isEmpty()) {
       if (item.getRids().size() == 1) {
-        final PInteger bucket = item.getRids().getFirst().getBucket();
+        final PInteger bucket = item.getRids().get(0).getBucket();
         buckets.add(db.getSchema().getBucketById(bucket.getValue().intValue()).getName());
       } else {
         for (final Rid rid : item.getRids()) {

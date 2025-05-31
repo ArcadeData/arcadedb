@@ -139,12 +139,14 @@ public class OrientDBImporter {
       else if (arg.equals("-v"))
         state = "verboseLevel";
       else if (state != null) {
-        switch (state) {
-        case "databasePath" -> databasePath = arg;
-        case "inputFile" -> inputFile = arg;
-        case "batchSize" -> batchSize = Integer.parseInt(arg);
-        case "verboseLevel" -> settings.verboseLevel = Integer.parseInt(arg);
-        }
+        if (state.equals("databasePath"))
+          databasePath = arg;
+        else if (state.equals("inputFile"))
+          inputFile = arg;
+        else if (state.equals("batchSize"))
+          batchSize = Integer.parseInt(arg);
+        else if (state.equals("verboseLevel"))
+          settings.verboseLevel = Integer.parseInt(arg);
       }
     }
 
@@ -1261,7 +1263,7 @@ public class OrientDBImporter {
     final Collection<TypeIndex> indexes = type.getAllIndexes(true);
     for (final Index index : indexes) {
       if (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.ERROR) {
-        final String indexedPropName = index.getPropertyNames().getFirst();
+        final String indexedPropName = index.getPropertyNames().get(0);
         final Object value = properties.get(indexedPropName);
         if (value == null) {
           ++skippedRecordBecauseNullKey;

@@ -82,6 +82,34 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
   }
 
   @Test
+  void backupDatabaseWithPassword() throws IOException, InterruptedException {
+
+    ResultSet resultSet = database.command("sql", "BACKUP DATABASE WITH encryptionKey = 'SuperSecretKey'");
+
+    Result result = resultSet.next();
+    assertThat(result.<String>getProperty("result")).isEqualTo("OK");
+    assertThat(result.<String>getProperty("backupFile")).startsWith("beer-backup-");
+
+    resultSet = database.command("sqlscript", "BACKUP DATABASE WITH encryptionKey = 'SuperSecretKey'");
+
+    result = resultSet.next();
+    assertThat(result.<String>getProperty("result")).isEqualTo("OK");
+    assertThat(result.<String>getProperty("backupFile")).startsWith("beer-backup-");
+
+    resultSet = database.command("sqlscript", """
+        BEGIN;
+        INSERT INTO Beer SET name = 'beer1';
+        COMMIT;
+        BACKUP DATABASE WITH encryptionKey = 'SuperSecretKey';
+        """);
+
+    result = resultSet.next();
+    assertThat(result.<String>getProperty("result")).isEqualTo("OK");
+    assertThat(result.<String>getProperty("backupFile")).startsWith("beer-backup-");
+
+  }
+
+  @Test
   void createUnidirectionalEdge() {
 
     database.command("sql", "create vertex type Person");
@@ -147,6 +175,15 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
             """);
 
     assertThat(resultSet.stream()).hasSize(3);
+
+    resultSet = database.command("sql",
+        """
+            SELECT outE('HasUploaded')[kind = "User_Photos"].size() as Count
+            FROM Users WHERE id = "u1111"
+            """);
+
+    assertThat(resultSet.stream().findFirst().get().<Integer>getProperty("Count")).isEqualTo(3);
+
   }
 
   @Test

@@ -912,7 +912,7 @@ public class LocalDocumentType implements DocumentType {
 
   @Override
   public int getFirstBucketId() {
-    return buckets.getFirst().getFileId();
+    return buckets.get(0).getFileId();
   }
 
   @Override

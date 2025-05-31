@@ -94,7 +94,7 @@ public class UpsertStatementExecutionTest extends TestHelper {
         .toList();
 
     assertThat(resultSet.size()).isEqualTo(1);
-    final Document record = resultSet.getFirst();
+    final Document record = resultSet.get(0);
 
     final String bucketName = database.getSchema().getBucketById(record.getIdentity().getBucketId()).getName();
 
@@ -118,7 +118,7 @@ public class UpsertStatementExecutionTest extends TestHelper {
     assertThat(result.hasNext()).isFalse();
     result.close();
 
-    result = database.query("sql", "SElect from bucket:" + buckets.getFirst().getName());
+    result = database.query("sql", "SElect from bucket:" + buckets.get(0).getName());
     assertThat(result.hasNext()).isTrue();
 
     while (result.hasNext()) {

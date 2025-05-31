@@ -64,7 +64,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       database = httpServer.getServer().getDatabase(databaseName.getFirst(), false, false);
 
       current = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
-      if (current != null && !current.transactions.isEmpty() && current.transactions.getFirst().isActive()) {
+      if (current != null && !current.transactions.isEmpty() && current.transactions.get(0).isActive()) {
         LogManager.instance().log(this, Level.WARNING, "Found a pending transaction from a previous operation. Rolling it back...");
         cleanTL(database, current);
       }
@@ -153,7 +153,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
     if (sessionId != null && !sessionId.isEmpty()) {
       // LOOK UP FOR THE SESSION ID
-      final HttpSession session = httpServer.getSessionManager().getSessionById(user, sessionId.getFirst());
+      final HttpSession session = httpServer.getSessionManager().getSessionById(user, sessionId.get(0));
       if (session == null) {
         exchange.setStatusCode(StatusCodes.UNAUTHORIZED);
         throw new TransactionException("Remote transaction not found or expired");

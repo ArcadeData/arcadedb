@@ -496,6 +496,6 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
     if (indexesOnBuckets.isEmpty())
       throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
-    return indexesOnBuckets.getFirst();
+    return indexesOnBuckets.get(0);
   }
 }

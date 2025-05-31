@@ -283,8 +283,8 @@ public class SQLFunctionsTest {
 
     assertThat(myresult.size()).isEqualTo(1);
 
-    assertThat(myresult.getFirst() instanceof Map).as("The object is: " + myresult.getClass()).isTrue();
-    final Map map = (Map) myresult.getFirst();
+    assertThat(myresult.get(0) instanceof Map).as("The object is: " + myresult.getClass()).isTrue();
+    final Map map = (Map) myresult.get(0);
 
     final String value = (String) map.get("kAA");
     assertThat(value).isEqualTo("vAA");
@@ -551,7 +551,7 @@ public class SQLFunctionsTest {
     }
     database.transaction(() -> {
       database.newDocument("V").set("sequence", sequence).save();
-      sequence.removeFirst();
+      sequence.remove(0);
       database.newDocument("V").set("sequence", sequence).save();
     });
 
@@ -597,7 +597,7 @@ public class SQLFunctionsTest {
 
     database.transaction(() -> {
       database.newDocument("V").set("sequence2", sequence).save();
-      sequence.removeLast();
+      sequence.remove(sequence.size() - 1);
       database.newDocument("V").set("sequence2", sequence).save();
     });
 

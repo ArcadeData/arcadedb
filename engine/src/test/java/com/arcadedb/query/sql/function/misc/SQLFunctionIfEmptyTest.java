@@ -101,7 +101,7 @@ public class SQLFunctionIfEmptyTest extends TestHelper {
       Object tags = result.next().getProperty("tags");
       assertThat(tags).isInstanceOf(List.class);
       assertThat((List<?>) tags).hasSize(1);
-      assertThat(((List<?>) tags).getFirst()).isEqualTo("default");
+      assertThat(((List<?>) tags).get(0)).isEqualTo("default");
 
       // Third record has null tags (not considered empty)
       assertThat(result.hasNext()).isTrue();

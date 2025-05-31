@@ -50,7 +50,7 @@ public class SQLFunctionModeTest {
     }
 
     final Object result = mode.getResult();
-    assertThat((int) ((List<Integer>) result).getFirst()).isEqualTo(3);
+    assertThat((int) ((List<Integer>) result).get(0)).isEqualTo(3);
   }
 
   @Test
@@ -79,6 +79,6 @@ public class SQLFunctionModeTest {
     }
 
     final Object result = mode.getResult();
-    assertThat((int) ((List<Integer>) result).getFirst()).isEqualTo(1);
+    assertThat((int) ((List<Integer>) result).get(0)).isEqualTo(1);
   }
 }

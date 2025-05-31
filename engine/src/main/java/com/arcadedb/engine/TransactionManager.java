@@ -148,7 +148,7 @@ public class TransactionManager {
     final long begin = System.currentTimeMillis();
 
     while (true) {
-      final WALFile file = activeWALFilePool[(int) (Thread.currentThread().threadId() % activeWALFilePool.length)];
+      final WALFile file = activeWALFilePool[(int) (Thread.currentThread().getId() % activeWALFilePool.length)];
 
       if (file != null && file.acquire(() -> {
         file.writeTransactionToFile(database, pages, sync, file, txId, bufferChanges);
@@ -324,7 +324,7 @@ public class TransactionManager {
           throw new ConcurrentModificationException(
               "Concurrent modification on page " + pageId + " in file '" + database.getFileManager().getFile(pageId.getFileId())
                   .getFileName() + "' (current v." + txPage.currentPageVersion + " <= database v." + page.getVersion()
-                  + "). Please retry the operation (threadId=" + Thread.currentThread().threadId() + ")");
+                  + "). Please retry the operation (threadId=" + Thread.currentThread().getId() + ")");
         }
 
         if (txPage.currentPageVersion > page.getVersion() + 1) {
@@ -475,7 +475,7 @@ public class TransactionManager {
 
     // OK: ALL LOCKED
     LogManager.instance()
-        .log(this, Level.FINE, "Locked files %s (threadId=%d)", null, orderedFilesIds, Thread.currentThread().threadId());
+        .log(this, Level.FINE, "Locked files %s (threadId=%d)", null, orderedFilesIds, Thread.currentThread().getId());
     // RETURN ONLY THE LOCKED FILES
     return lockedFiles;
   }
@@ -486,7 +486,7 @@ public class TransactionManager {
         unlockFile(fileId);
 
       LogManager.instance()
-          .log(this, Level.FINE, "Unlocked files %s (threadId=%d)", null, lockedFileIds, Thread.currentThread().threadId());
+          .log(this, Level.FINE, "Unlocked files %s (threadId=%d)", null, lockedFileIds, Thread.currentThread().getId());
     }
   }
 

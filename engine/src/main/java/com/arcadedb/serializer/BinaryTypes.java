@@ -134,14 +134,18 @@ public class BinaryTypes {
     } else if (value.getClass().isArray()) {
       if (value.getClass().getComponentType().isPrimitive()) {
         final Object firstElement = Array.getLength(value) > 0 ? Array.get(value, 0) : null;
-        type = switch (firstElement) {
-          case Short i -> TYPE_ARRAY_OF_SHORTS;
-          case Integer i -> TYPE_ARRAY_OF_INTEGERS;
-          case Long l -> TYPE_ARRAY_OF_LONGS;
-          case Float v -> TYPE_ARRAY_OF_FLOATS;
-          case Double v -> TYPE_ARRAY_OF_DOUBLES;
-          case null, default -> TYPE_LIST;
-        };
+        if (firstElement instanceof Short)
+          type = TYPE_ARRAY_OF_SHORTS;
+        else if (firstElement instanceof Integer)
+          type = TYPE_ARRAY_OF_INTEGERS;
+        else if (firstElement instanceof Long)
+          type = TYPE_ARRAY_OF_LONGS;
+        else if (firstElement instanceof Float)
+          type = TYPE_ARRAY_OF_FLOATS;
+        else if (firstElement instanceof Double)
+          type = TYPE_ARRAY_OF_DOUBLES;
+        else
+          type = TYPE_LIST;
       } else
         type = TYPE_LIST;
 
