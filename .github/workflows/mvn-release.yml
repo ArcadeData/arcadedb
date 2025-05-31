@@ -5,10 +5,18 @@ on:
       releaseversion:
         description: "Release version"
         required: true
-        default: "2.4.0"
+      nextversion:
+        description: "Next development version"
+        required: true
+
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      attestations: write
+      id-token: write
     steps:
       - run: echo "Will start a Maven Central upload with version ${{ github.event.inputs.releaseversion }}"
 
@@ -52,3 +60,17 @@ jobs:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+
+      - name: Set next development version
+        if: success()
+        run: mvn versions:set "-DnewVersion=${{ github.event.inputs.nextversion }}" --no-transfer-progress
+
+      - name: Commit next development version
+        if: success()
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git commit -am "Set next development version to ${{ github.event.inputs.nextversion }}"
+          git push origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
