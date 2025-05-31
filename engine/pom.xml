@@ -31,6 +31,7 @@
 
     <artifactId>arcadedb-engine</artifactId>
     <packaging>jar</packaging>
+    <name>ArcadeDB Engine</name>
 
     <properties>
         <javacc-maven-plugin.version>3.1.1</javacc-maven-plugin.version>

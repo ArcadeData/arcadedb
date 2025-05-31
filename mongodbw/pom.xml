@@ -30,6 +30,7 @@
 
     <artifactId>arcadedb-mongodbw</artifactId>
     <packaging>jar</packaging>
+    <name>ArcadeDB MongoDB Wire Protocol</name>
 
     <properties>
         <mongo-java-server.version>1.46.0</mongo-java-server.version>

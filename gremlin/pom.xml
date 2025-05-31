@@ -31,6 +31,7 @@
 
     <artifactId>arcadedb-gremlin</artifactId>
     <packaging>jar</packaging>
+    <name>ArcadeDB Gremlin</name>
 
     <properties>
         <gremlin.version>3.7.3</gremlin.version>
