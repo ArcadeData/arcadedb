@@ -1,6 +1,7 @@
 /*
  *
  *  * Copyright 2010-2016 OrientDB LTD (http://orientdb.com)
+ *  * Copyright 2014 Orient Technologies.
  *  *
  *  * Licensed under the Apache License, Version 2.0 (the "License");
  *  * you may not use this file except in compliance with the License.
@@ -18,12 +19,12 @@
 
 package com.arcadedb.lucene.engine;
 
-import com.arcadedb.lucene.query.OLuceneQueryContext;
-import com.arcadedb.lucene.tx.OLuceneTxChanges;
-import com.arcadedb.database.OIdentifiable;
-import com.arcadedb.database.id.OContextualRecordId;
-import com.arcadedb.database.index.engine.OIndexEngine;
-import com.arcadedb.database.storage.impl.local.OFreezableStorageComponent;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RecordId;
+import com.arcadedb.engine.WALFile; // For Freezeable
+import com.arcadedb.index.IndexEngine;
+import com.arcadedb.lucene.query.LuceneQueryContext; // Will be refactored
+import com.arcadedb.lucene.tx.LuceneTxChanges; // Will be refactored
 import java.io.IOException;
 import java.util.Set;
 import org.apache.lucene.analysis.Analyzer;
@@ -33,14 +34,14 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 
 /** Created by Enrico Risa on 04/09/15. */
-public interface OLuceneIndexEngine extends OIndexEngine, OFreezableStorageComponent {
+public interface LuceneIndexEngine extends IndexEngine, WALFile.Freezeable { // Changed interface name and extended interfaces
 
   String indexName();
 
-  void onRecordAddedToResultSet(
-      OLuceneQueryContext queryContext, OContextualRecordId recordId, Document ret, ScoreDoc score);
+  void onRecordAddedToResultSet( // Changed parameter types
+      LuceneQueryContext queryContext, RecordId recordId, Document ret, ScoreDoc score);
 
-  Document buildDocument(Object key, OIdentifiable value);
+  Document buildDocument(Object key, Identifiable value); // Changed parameter type
 
   Query buildQuery(Object query);
 
@@ -48,7 +49,7 @@ public interface OLuceneIndexEngine extends OIndexEngine, OFreezableStorageCompo
 
   Analyzer queryAnalyzer();
 
-  boolean remove(Object key, OIdentifiable value);
+  boolean remove(Object key, Identifiable value); // Changed parameter type
 
   boolean remove(Object key);
 
@@ -56,13 +57,13 @@ public interface OLuceneIndexEngine extends OIndexEngine, OFreezableStorageCompo
 
   void release(IndexSearcher searcher);
 
-  Set<OIdentifiable> getInTx(Object key, OLuceneTxChanges changes);
+  Set<Identifiable> getInTx(Object key, LuceneTxChanges changes); // Changed parameter and return types
 
-  long sizeInTx(OLuceneTxChanges changes);
+  long sizeInTx(LuceneTxChanges changes); // Changed parameter type
 
-  OLuceneTxChanges buildTxChanges() throws IOException;
+  LuceneTxChanges buildTxChanges() throws IOException; // Changed return type
 
-  Query deleteQuery(Object key, OIdentifiable value);
+  Query deleteQuery(Object key, Identifiable value); // Changed parameter type
 
   boolean isCollectionIndex();
 }

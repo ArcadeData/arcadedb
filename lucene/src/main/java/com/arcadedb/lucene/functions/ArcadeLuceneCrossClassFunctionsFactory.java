@@ -1,5 +1,6 @@
 /*
  * Copyright 2010-2016 OrientDB LTD (http://orientdb.com)
+ * Copyright 2023 Arcade Data Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,13 +16,13 @@
  */
 package com.arcadedb.lucene.functions;
 
-import com.arcadedb.database.sql.functions.OSQLFunctionFactoryTemplate;
+import com.arcadedb.query.sql.SQLFunctionRegistry; // Assuming this is the ArcadeDB equivalent
 
-public class OLuceneFunctionsFactory extends OSQLFunctionFactoryTemplate {
-  public OLuceneFunctionsFactory() {
-    register(new OLuceneSearchOnIndexFunction());
-    register(new OLuceneSearchOnFieldsFunction());
-    register(new OLuceneSearchOnClassFunction());
-    register(new OLuceneSearchMoreLikeThisFunction());
+// FIXME: The actual function class (ArcadeLuceneCrossClassSearchFunction) will need to be created/refactored separately.
+
+public class ArcadeLuceneCrossClassFunctionsFactory { // Changed class name
+
+  public static void onStartup() { // Changed to a static method for registration
+    SQLFunctionRegistry.INSTANCE.register(new ArcadeLuceneCrossClassSearchFunction()); // FIXME: Placeholder for refactored class
   }
 }

@@ -1,8 +1,8 @@
 package com.arcadedb.lucene.analyzer;
 
-import static com.arcadedb.lucene.engine.OLuceneIndexEngineAbstract.RID;
+import static com.arcadedb.lucene.engine.OLuceneIndexEngineAbstract.RID; // FIXME: This might need to be ArcadeDB specific constant if RID definition changes
 
-import com.arcadedb.lucene.builder.OLuceneIndexType;
+import com.arcadedb.lucene.index.ArcadeLuceneIndexType; // FIXME: Ensure this is the correct refactored class for OLuceneIndexType
 import java.util.HashMap;
 import java.util.Map;
 import org.apache.lucene.analysis.Analyzer;
@@ -17,7 +17,7 @@ import org.apache.lucene.analysis.core.KeywordAnalyzer;
  * delegate analyzer, but not allocated on this analyzer (limit memory consumption). Uses a per
  * field reuse strategy.
  */
-public class OLucenePerFieldAnalyzerWrapper extends DelegatingAnalyzerWrapper {
+public class ArcadeLucenePerFieldAnalyzerWrapper extends DelegatingAnalyzerWrapper {
   private final Analyzer defaultDelegateAnalyzer;
   private final Map<String, Analyzer> fieldAnalyzers;
 
@@ -27,7 +27,7 @@ public class OLucenePerFieldAnalyzerWrapper extends DelegatingAnalyzerWrapper {
    * @param defaultAnalyzer Any fields not specifically defined to use a different analyzer will use
    *     the one provided here.
    */
-  public OLucenePerFieldAnalyzerWrapper(final Analyzer defaultAnalyzer) {
+  public ArcadeLucenePerFieldAnalyzerWrapper(final Analyzer defaultAnalyzer) {
     this(defaultAnalyzer, new HashMap<>());
   }
 
@@ -38,7 +38,7 @@ public class OLucenePerFieldAnalyzerWrapper extends DelegatingAnalyzerWrapper {
    *     the one provided here.
    * @param fieldAnalyzers a Map (String field name to the Analyzer) to be used for those fields
    */
-  public OLucenePerFieldAnalyzerWrapper(
+  public ArcadeLucenePerFieldAnalyzerWrapper(
       final Analyzer defaultAnalyzer, final Map<String, Analyzer> fieldAnalyzers) {
     super(PER_FIELD_REUSE_STRATEGY);
     this.defaultDelegateAnalyzer = defaultAnalyzer;
@@ -47,7 +47,7 @@ public class OLucenePerFieldAnalyzerWrapper extends DelegatingAnalyzerWrapper {
     this.fieldAnalyzers.putAll(fieldAnalyzers);
 
     this.fieldAnalyzers.put(RID, new KeywordAnalyzer());
-    this.fieldAnalyzers.put(OLuceneIndexType.RID_HASH, new KeywordAnalyzer());
+    this.fieldAnalyzers.put(ArcadeLuceneIndexType.RID_HASH, new KeywordAnalyzer());
     this.fieldAnalyzers.put("_CLASS", new KeywordAnalyzer());
     this.fieldAnalyzers.put("_CLUSTER", new KeywordAnalyzer());
     this.fieldAnalyzers.put("_JSON", new KeywordAnalyzer());
@@ -61,24 +61,24 @@ public class OLucenePerFieldAnalyzerWrapper extends DelegatingAnalyzerWrapper {
 
   @Override
   public String toString() {
-    return "PerFieldAnalyzerWrapper("
+    return "ArcadeLucenePerFieldAnalyzerWrapper(" // Updated class name in toString
         + fieldAnalyzers
         + ", default="
         + defaultDelegateAnalyzer
         + ")";
   }
 
-  public OLucenePerFieldAnalyzerWrapper add(final String field, final Analyzer analyzer) {
+  public ArcadeLucenePerFieldAnalyzerWrapper add(final String field, final Analyzer analyzer) {
     fieldAnalyzers.put(field, analyzer);
     return this;
   }
 
-  public OLucenePerFieldAnalyzerWrapper add(final OLucenePerFieldAnalyzerWrapper analyzer) {
-    fieldAnalyzers.putAll(analyzer.getAnalyzers());
+  public ArcadeLucenePerFieldAnalyzerWrapper add(final ArcadeLucenePerFieldAnalyzerWrapper wrapper) { // Changed parameter type
+    fieldAnalyzers.putAll(wrapper.getAnalyzers());
     return this;
   }
 
-  public OLucenePerFieldAnalyzerWrapper remove(final String field) {
+  public ArcadeLucenePerFieldAnalyzerWrapper remove(final String field) {
     fieldAnalyzers.remove(field);
     return this;
   }
