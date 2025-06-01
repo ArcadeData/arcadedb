@@ -91,68 +91,11 @@ public class LuceneDocumentBuilder {
                     boolean storeField = isToStore(indexDefinition, fieldName, metadata);
                     boolean sortField = isToSort(indexDefinition, fieldName, metadata);
 
-                    if (fieldValue instanceof Collection && (fieldType == Type.EMBEDDEDLIST || fieldType == Type.EMBEDDEDSET || fieldType == Type.LIST)) {
-                        Collection<?> collection = (Collection<?>) fieldValue;
-                        Type linkedType = (property != null && property.getOfType() != null) ? property.getOfType() : null;
+                    // Get schema type of the field, and for collections/maps, the linked type
+                    Type linkedType = (property != null) ? property.getOfType() : null;
 
-                        if (linkedType == null && !collection.isEmpty()) { // Try to infer from first element if not specified in schema
-                            Object firstElement = collection.iterator().next();
-                            if (firstElement instanceof Document) linkedType = Type.EMBEDDED; // Or specific DocumentType if available
-                            else if (firstElement != null) linkedType = Type.getTypeByValue(firstElement);
-                        }
-
-                        if (linkedType != null && linkedType != Type.EMBEDDED && linkedType != Type.EMBEDDEDMAP) { // Scalar list/set
-                            for (Object item : collection) {
-                                if (item != null) {
-                                    List<Field> itemFields = ArcadeLuceneIndexType.createFields(fieldName, item,
-                                            storeField ? Field.Store.YES : Field.Store.NO,
-                                            sortField, // Note: Sorting on multi-value fields needs specific Lucene setup.
-                                                       // createFields will add DocValues for the type if sortField is true.
-                                            linkedType);
-                                    for (Field f : itemFields) {
-                                        luceneDoc.add(f);
-                                    }
-                                }
-                            }
-                        } else { // EMBEDDEDLIST/SET of Documents, or list of EMBEDDEDMAP (unlikely for direct indexing here)
-                            // FIXME: Implement flattening strategy for embedded documents in collections.
-                            // Example: fieldName_embeddedField. This needs recursive calls or a helper.
-                            // For now, logging a warning and indexing toString() for each item if it's a Document.
-                            logger.warning("Full indexing of embedded documents within collection '" + fieldName + "' is not yet implemented. Indexing toString().");
-                            if (linkedType == Type.EMBEDDED || (linkedType == null && collection.iterator().hasNext() && collection.iterator().next() instanceof Document)) {
-                                for (Object item : collection) {
-                                    if (item != null) {
-                                         List<Field> itemFields = ArcadeLuceneIndexType.createFields(fieldName, item.toString(),
-                                            storeField ? Field.Store.YES : Field.Store.NO, false, Type.STRING); // Index as string
-                                         for (Field f : itemFields) { luceneDoc.add(f); }
-                                    }
-                                }
-                            }
-                        }
-                    } else if (fieldValue instanceof Map && fieldType == Type.EMBEDDEDMAP) {
-                        // FIXME: Implement flattening strategy for embedded maps.
-                        // Example: fieldName_mapKey_embeddedField or index map entries as JSON/string.
-                        logger.warning("Indexing embedded maps is not yet fully implemented for field: " + fieldName + ". Indexing toString().");
-                        List<Field> mapFields = ArcadeLuceneIndexType.createFields(fieldName, fieldValue.toString(),
-                            storeField ? Field.Store.YES : Field.Store.NO, false, Type.STRING);
-                        for (Field f : mapFields) { luceneDoc.add(f); }
-
-                    } else if (fieldValue instanceof Document && fieldType == Type.EMBEDDED) {
-                        // FIXME: Implement flattening strategy for single embedded documents.
-                        // Example: fieldName_embeddedField. This needs recursive calls or a helper.
-                        logger.warning("Indexing single embedded documents is not yet fully implemented for field: " + fieldName + ". Indexing toString().");
-                        List<Field> embeddedFields = ArcadeLuceneIndexType.createFields(fieldName, fieldValue.toString(),
-                            storeField ? Field.Store.YES : Field.Store.NO, false, Type.STRING);
-                        for (Field f : embeddedFields) { luceneDoc.add(f); }
-                    } else { // Scalar field
-                        List<Field> luceneFields = ArcadeLuceneIndexType.createFields(fieldName, fieldValue,
-                                storeField ? Field.Store.YES : Field.Store.NO,
-                                sortField,
-                                fieldType);
-                        for (Field f : luceneFields) {
-                            luceneDoc.add(f);
-                        }
-                    }
+                    indexValue(luceneDoc, fieldName, fieldValue, fieldType, linkedType,
+                               storeField, sortField, 1, indexDefinition, metadata, db);
                 }
             }
         } else if (identifiableValue != null) {
@@ -184,31 +127,56 @@ public class LuceneDocumentBuilder {
 
     /**
      * Determines if a field should be stored in the Lucene index based on index definition options.
-                        }
-                    }
-                }
+     * Convention:
+     * - "storeFields": "*" or "ALL" means store all.
+     * - "storeFields": "fieldA,fieldB" means store only these.
+     * - "dontStoreFields": "fieldC,fieldD" means do not store these (takes precedence).
+     * - "store.<fieldName>": "true" or "false" for field-specific setting.
+     * Defaults to Field.Store.NO if not specified otherwise for full-text search efficiency.
+     */
+    private boolean isToStore(IndexDefinition indexDefinition, String fieldName, com.arcadedb.document.Document metadata) {
+        Map<String, String> options = indexDefinition.getOptions();
+        // Query-time metadata can override index-time options
+        if (metadata != null) {
+            Object fieldSpecificStoreMeta = metadata.get("store." + fieldName);
+            if (fieldSpecificStoreMeta != null) return Boolean.parseBoolean(fieldSpecificStoreMeta.toString());
+
+            List<String> queryStoredFields = metadata.get("storedFields"); // Assuming list of strings
+            if (queryStoredFields != null) {
+                if (queryStoredFields.contains(fieldName)) return true;
+                if (queryStoredFields.contains("*") || queryStoredFields.contains("ALL")) return true;
             }
-        } else if (identifiableValue != null) {
-            // If the value is an Identifiable but not a Document (e.g. just an RID for a manual index key)
-            // and fields are defined in the index, this implies we should load the document
-            // and then process its fields. This case should ideally be handled by the caller
-            // by passing the actual Document record.
-            // If only key and RID are indexed for non-Document identifiables, current logic is okay.
+            List<String> queryDontStoreFields = metadata.get("dontStoreFields");
+             if (queryDontStoreFields != null && queryDontStoreFields.contains(fieldName)) return false;
         }
 
+        // Index definition options
+        if (options != null) {
+            String fieldSpecificStoreOpt = options.get("store." + fieldName);
+            if (fieldSpecificStoreOpt != null) return Boolean.parseBoolean(fieldSpecificStoreOpt);
 
-        // Add _CLASS field if type is available
-        String typeName = indexDefinition.getTypeName();
-        if (typeName != null && !typeName.isEmpty()) {
-             luceneDoc.add(new StringField("_CLASS", typeName, Field.Store.YES)); // Non-analyzed
+            String dontStoreFieldsOpt = options.get("dontStoreFields");
+            if (dontStoreFieldsOpt != null) {
+                List<String> dontStoreList = Arrays.asList(dontStoreFieldsOpt.toLowerCase().split("\\s*,\\s*"));
+                if (dontStoreList.contains(fieldName.toLowerCase())) return false;
+            }
+
+            String storeFieldsOpt = options.get("storeFields");
+            if (storeFieldsOpt != null) {
+                if ("*".equals(storeFieldsOpt) || "ALL".equalsIgnoreCase(storeFieldsOpt)) return true;
+                List<String> storeList = Arrays.asList(storeFieldsOpt.toLowerCase().split("\\s*,\\s*"));
+                if (storeList.contains(fieldName.toLowerCase())) return true;
+                // If storeFields is specified but doesn't list this field, and no "*" or "ALL", assume don't store (unless dontStoreFields also doesn't list it).
+                // This means explicit list in storeFields acts as a whitelist if present.
+                return false;
+            }
         }
-
-
-        return luceneDoc;
+        // Default if no specific rules found: DO NOT STORE fields unless specified.
+        return false;
     }
 
     /**
-     * Determines if a field should be stored in the Lucene index based on index definition options.
+     * Determines if a field should have DocValues for sorting.
      * Convention:
      * - "storeFields": "*" or "ALL" means store all.
      * - "storeFields": "fieldA,fieldB" means store only these.
@@ -294,5 +262,129 @@ public class LuceneDocumentBuilder {
             }
         }
         return false; // Default to not sortable
+    }
+
+    private void indexValue(org.apache.lucene.document.Document luceneDoc, String fieldName, Object fieldValue,
+                            Type fieldType, Type linkedType, boolean storeField, boolean sortField,
+                            int currentDepth, IndexDefinition rootIndexDefinition,
+                            com.arcadedb.document.Document rootMetadata, DatabaseInternal database) {
+
+        int maxDepth = getMaxDepth(rootIndexDefinition, fieldName);
+        if (currentDepth > maxDepth) {
+            logger.finer("Max indexing depth ("+ maxDepth +") reached for field: " + fieldName);
+            return;
+        }
+
+        if (fieldValue instanceof Collection && (fieldType == Type.EMBEDDEDLIST || fieldType == Type.EMBEDDEDSET || fieldType == Type.LIST)) {
+            Collection<?> collection = (Collection<?>) fieldValue;
+            Type actualLinkedType = linkedType;
+            if (actualLinkedType == null && !collection.isEmpty()) {
+                Object firstElement = collection.iterator().next();
+                if (firstElement instanceof Document) actualLinkedType = Type.EMBEDDED;
+                else if (firstElement != null) actualLinkedType = Type.getTypeByValue(firstElement);
+            }
+
+            if (actualLinkedType != null && actualLinkedType != Type.EMBEDDED && actualLinkedType != Type.EMBEDDEDMAP) { // Scalar list/set
+                for (Object item : collection) {
+                    if (item != null) {
+                        List<Field> itemFields = ArcadeLuceneIndexType.createFields(fieldName, item,
+                                storeField ? Field.Store.YES : Field.Store.NO, sortField, actualLinkedType);
+                        for (Field f : itemFields) luceneDoc.add(f);
+                    }
+                }
+            } else if (actualLinkedType == Type.EMBEDDED || (actualLinkedType == null && collection.iterator().hasNext() && collection.iterator().next() instanceof Document)){ // EMBEDDEDLIST/SET of Documents
+                for (Object item : collection) {
+                    if (item instanceof Document) {
+                        indexEmbeddedContent(luceneDoc, fieldName, (Document) item, currentDepth, rootIndexDefinition, rootMetadata, database);
+                    } else if (item != null) { // Non-document item in what was expected to be an embedded list
+                         logger.finer("Item in embedded list for field '" + fieldName + "' is not a Document, indexing toString(): " + item.getClass());
+                         List<Field> itemFields = ArcadeLuceneIndexType.createFields(fieldName, item.toString(), storeField ? Field.Store.YES : Field.Store.NO, false, Type.STRING);
+                         for (Field f : itemFields) luceneDoc.add(f);
+                    }
+                }
+            } else {
+                 logger.finer("Collection field '" + fieldName + "' contains unhandled linked type: " + actualLinkedType + " or collection is empty/mixed.");
+                 // Optionally index toString() for each item as a fallback
+                 for (Object item : collection) {
+                     if (item != null) {
+                        List<Field> itemFields = ArcadeLuceneIndexType.createFields(fieldName, item.toString(), storeField ? Field.Store.YES : Field.Store.NO, false, Type.STRING);
+                        for (Field f : itemFields) luceneDoc.add(f);
+                     }
+                 }
+            }
+        } else if (fieldValue instanceof Map && fieldType == Type.EMBEDDEDMAP) {
+            indexEmbeddedContent(luceneDoc, fieldName, (Map<String, Object>) fieldValue, currentDepth, rootIndexDefinition, rootMetadata, database);
+        } else if (fieldValue instanceof Document && fieldType == Type.EMBEDDED) {
+            indexEmbeddedContent(luceneDoc, fieldName, (Document) fieldValue, currentDepth, rootIndexDefinition, rootMetadata, database);
+        } else { // Scalar field or unhandled complex type treated as scalar
+            List<Field> luceneFields = ArcadeLuceneIndexType.createFields(fieldName, fieldValue,
+                    storeField ? Field.Store.YES : Field.Store.NO, sortField, fieldType);
+            for (Field f : luceneFields) luceneDoc.add(f);
+        }
+    }
+
+    private void indexEmbeddedContent(org.apache.lucene.document.Document luceneDoc, String baseFieldName,
+                                      Object embeddedObject, int currentDepth,
+                                      IndexDefinition rootIndexDefinition, com.arcadedb.document.Document rootMetadata,
+                                      DatabaseInternal database) {
+        if (embeddedObject instanceof Document) {
+            Document embeddedDoc = (Document) embeddedObject;
+            DocumentType embeddedSchemaType = embeddedDoc.getType();
+
+            for (String innerFieldName : embeddedDoc.getPropertyNames()) {
+                Object innerFieldValue = embeddedDoc.get(innerFieldName);
+                if (innerFieldValue == null) continue;
+
+                String prefixedFieldName = baseFieldName + "." + innerFieldName;
+                // TODO: Add options to include/exclude specific embedded fields `rootIndexDefinition.getOptions().get("includeEmbedded." + prefixedFieldName)`
+
+                Property innerProperty = (embeddedSchemaType != null) ? embeddedSchemaType.getProperty(innerFieldName) : null;
+                Type innerFieldType = (innerProperty != null) ? innerProperty.getType() : Type.getTypeByValue(innerFieldValue);
+                Type innerLinkedType = (innerProperty != null) ? innerProperty.getOfType() : null;
+
+                boolean storeField = isToStore(rootIndexDefinition, prefixedFieldName, rootMetadata);
+                boolean sortField = isToSort(rootIndexDefinition, prefixedFieldName, rootMetadata);
+
+                indexValue(luceneDoc, prefixedFieldName, innerFieldValue, innerFieldType, innerLinkedType,
+                           storeField, sortField, currentDepth + 1, rootIndexDefinition, rootMetadata, database);
+            }
+        } else if (embeddedObject instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> map = (Map<String, Object>) embeddedObject;
+            for (Map.Entry<String, Object> entry : map.entrySet()) {
+                String mapKey = entry.getKey();
+                Object mapValue = entry.getValue();
+                if (mapValue == null) continue;
+
+                String prefixedFieldName = baseFieldName + "." + mapKey;
+                // TODO: Add options to include/exclude specific embedded fields
+
+                Type valueType = Type.getTypeByValue(mapValue); // Infer type from map value
+                // For maps, linkedType is generally not applicable unless map values are consistently typed Documents.
+
+                boolean storeField = isToStore(rootIndexDefinition, prefixedFieldName, rootMetadata);
+                boolean sortField = isToSort(rootIndexDefinition, prefixedFieldName, rootMetadata);
+
+                // Here, we treat map values. If a map value is another Document/Map/Collection, it will be handled by recursive call.
+                indexValue(luceneDoc, prefixedFieldName, mapValue, valueType, null, // Pass null for linkedType for map values for now
+                           storeField, sortField, currentDepth + 1, rootIndexDefinition, rootMetadata, database);
+            }
+        }
+        // Collections within embedded content are handled by the recursive call to indexValue
+    }
+
+    private int getMaxDepth(IndexDefinition indexDefinition, String fieldName) {
+        Map<String, String> options = indexDefinition.getOptions();
+        if (options != null) {
+            String specificDepth = options.get("embeddedIndexingDepth." + fieldName);
+            if (specificDepth != null) {
+                try { return Integer.parseInt(specificDepth); } catch (NumberFormatException e) { /* ignore */ }
+            }
+            String globalDepth = options.get("embeddedIndexingDepth");
+            if (globalDepth != null) {
+                try { return Integer.parseInt(globalDepth); } catch (NumberFormatException e) { /* ignore */ }
+            }
+        }
+        return 1; // Default depth if not specified
     }
 }

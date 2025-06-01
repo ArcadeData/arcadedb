@@ -46,7 +46,13 @@ public class LuceneQueryContext { // Changed class name
   private final Query query;
   private final Sort sort;
   private Optional<LuceneTxChanges> changes; // FIXME: Needs refactoring
-  private HashMap<String, TextFragment[]> fragments;
+  // private HashMap<String, TextFragment[]> fragments; // Replaced by on-demand highlighting
+
+  // Highlighter components - to be initialized if highlighting is requested
+  private org.apache.lucene.search.highlight.Highlighter highlighter;
+  private org.apache.lucene.analysis.Analyzer highlightingAnalyzer; // Analyzer used for highlighting (might be queryAnalyzer)
+  private String[] highlightingFields;
+
 
   public LuceneQueryContext( // Changed
       final CommandContext context, final IndexSearcher searcher, final Query query) {
@@ -67,8 +73,48 @@ public class LuceneQueryContext { // Changed class name
       sort = new Sort(sortFields.toArray(new SortField[0])); // Changed to new SortField[0]
     }
     changes = Optional.empty();
-    fragments = new HashMap<>();
+    // fragments = new HashMap<>(); // Not pre-cached anymore
+
+    // Check metadata for highlighting setup
+    if (this.context != null && this.context.getVariable("highlight") instanceof Map) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> highlightParams = (Map<String, Object>) this.context.getVariable("highlight");
+        // Simple setup for now, more advanced formatting can be added
+        // String preTag = (String) highlightParams.getOrDefault("preTag", "<em>");
+        // String postTag = (String) highlightParams.getOrDefault("postTag", "</em>");
+        // org.apache.lucene.search.highlight.Formatter formatter = new org.apache.lucene.search.highlight.SimpleHTMLFormatter(preTag, postTag);
+        org.apache.lucene.search.highlight.Formatter formatter = new org.apache.lucene.search.highlight.SimpleHTMLFormatter();
+        org.apache.lucene.search.highlight.QueryScorer queryScorer = new org.apache.lucene.search.highlight.QueryScorer(query);
+        this.highlighter = new org.apache.lucene.search.highlight.Highlighter(formatter, queryScorer);
+        // Fragmenter:
+        // this.highlighter.setTextFragmenter(new org.apache.lucene.search.highlight.SimpleFragmenter(100)); // Example: 100 chars per fragment
+
+        Object fieldsToHighlightObj = highlightParams.get("fields");
+        if (fieldsToHighlightObj instanceof String) {
+            this.highlightingFields = ((String) fieldsToHighlightObj).split(",");
+        } else if (fieldsToHighlightObj instanceof List) {
+            @SuppressWarnings("unchecked")
+            List<String> list = (List<String>) fieldsToHighlightObj;
+            this.highlightingFields = list.toArray(new String[0]);
+        }
+        // Analyzer for highlighting should ideally be the one used for querying the specific fields.
+        // This is a simplification; a more robust solution would fetch field-specific analyzers.
+        // If the engine provides a general queryAnalyzer, use it.
+        // this.highlightingAnalyzer = searcher.getAnalyzer(); // This is not standard on IndexSearcher
+        // Analyzer must be passed or retrieved from engine/index definition
+    }
+
   }
+
+  public boolean isHighlightingEnabled() {
+      return this.highlighter != null && this.highlightingFields != null && this.highlightingFields.length > 0;
+  }
+
+  public LuceneQueryContext setHighlightingAnalyzer(Analyzer analyzer) {
+      this.highlightingAnalyzer = analyzer;
+      return this;
+  }
+
 
   public boolean isInTx() {
     return changes.isPresent();
@@ -79,11 +125,7 @@ public class LuceneQueryContext { // Changed class name
     return this;
   }
 
-  public LuceneQueryContext addHighlightFragment(
-      final String field, final TextFragment[] fieldFragment) {
-    fragments.put(field, fieldFragment);
-    return this;
-  }
+  // addHighlightFragment removed as highlights are generated on demand by getHighlights
 
   public CommandContext getContext() { // Changed
     return context;
@@ -169,9 +211,42 @@ public class LuceneQueryContext { // Changed class name
     return changes.map(c -> c.isDeleted(doc, key, value)).orElse(false);
   }
 
-  public Map<String, TextFragment[]> getFragments() {
-    return fragments;
+  /**
+   * Generates highlighted snippets for the given Lucene document and configured fields.
+   * Requires highlightingAnalyzer to be set.
+   */
+  public Map<String, String> getHighlights(Document luceneDoc, IndexReader reader) {
+    if (!isHighlightingEnabled() || luceneDoc == null || this.highlightingAnalyzer == null) {
+        return Collections.emptyMap();
+    }
+
+    Map<String, String> highlights = new HashMap<>();
+    for (String field : highlightingFields) {
+        String text = luceneDoc.get(field);
+        if (text != null) {
+            try {
+                // Get best fragments. Last param is maxNoFragments.
+                TextFragment[] frags = highlighter.getBestTextFragments(this.highlightingAnalyzer, field, text, 3);
+                StringBuilder sb = new StringBuilder();
+                for (TextFragment frag : frags) {
+                    if (frag != null && frag.getScore() > 0) {
+                        sb.append(frag.toString());
+                        sb.append("... "); // Separator for multiple fragments
+                    }
+                }
+                if (sb.length() > 0) {
+                    highlights.put("$" + field + "_hl", sb.toString().trim());
+                }
+            } catch (IOException | org.apache.lucene.search.highlight.InvalidTokenOffsetsException e) {
+                // Log error or handle as needed
+                System.err.println("Error highlighting field " + field + ": " + e.getMessage());
+            }
+        }
+    }
+    return highlights;
   }
+
+  // getFragments() method removed, replaced by getHighlights() logic integrated into LuceneIndexCursor
 
   // getLimit() and onRecord() were not in the provided OLuceneQueryContext,
   // they might be from a different class or an older version.

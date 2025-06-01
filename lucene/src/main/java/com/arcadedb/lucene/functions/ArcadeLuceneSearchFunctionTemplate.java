@@ -6,81 +6,43 @@ import com.arcadedb.lucene.collections.LuceneResultSet; // FIXME: Needs refactor
 import com.arcadedb.lucene.index.ArcadeLuceneFullTextIndex; // FIXME: Needs refactoring
 import com.arcadedb.query.sql.executor.CommandContext; // Changed
 import com.arcadedb.query.sql.executor.Result; // Changed
-import com.arcadedb.query.sql.function.IndexableSQLFunction; // Assuming this exists
-import com.arcadedb.query.sql.function.SQLFunctionAbstract; // Assuming this is the base class
+import com.arcadedb.query.sql.function.SQLFunction; // Standard ArcadeDB SQLFunction if SQLFunctionAbstract is not public or is different
 import com.arcadedb.query.sql.parser.BinaryCompareOperator; // Changed
 import com.arcadedb.query.sql.parser.Expression; // Changed
 import com.arcadedb.query.sql.parser.FromClause; // Changed
 import java.util.Map;
 
 /** Created by frank on 25/05/2017. */
-// Changed base class and interface
-public abstract class ArcadeLuceneSearchFunctionTemplate extends SQLFunctionAbstract
-    implements IndexableSQLFunction {
+// Changed base class and removed IndexableSQLFunction interface
+public abstract class ArcadeLuceneSearchFunctionTemplate implements SQLFunction {
 
-  public ArcadeLuceneSearchFunctionTemplate(String iName, int iMinParams, int iMaxParams) {
-    super(iName, iMinParams, iMaxParams);
-  }
+  protected final String name;
 
-  // FIXME: Signature of these methods depends heavily on the actual ArcadeDB interfaces for IndexableSQLFunction
-  @Override
-  public boolean canExecuteInline(
-      FromClause target,
-      BinaryCompareOperator operator,
-      Object rightValue,
-      CommandContext ctx,
-      Expression... args) { // Changed parameter types
-    return allowsIndexedExecution(target, operator, rightValue, ctx, args);
+  public ArcadeLuceneSearchFunctionTemplate(final String name) {
+    this.name = name;
+    // Parameter count checks will be done in each concrete class's execute method
   }
 
   @Override
-  public boolean allowsIndexedExecution(
-      FromClause target,
-      BinaryCompareOperator operator,
-      Object rightValue,
-      CommandContext ctx,
-      Expression... args) { // Changed parameter types
-    ArcadeLuceneFullTextIndex index = searchForIndex(target, ctx, args); // FIXME
-    return index != null;
+  public String getName() {
+    return name;
   }
 
-  @Override
-  public boolean shouldExecuteAfterSearch(
-      FromClause target,
-      BinaryCompareOperator operator,
-      Object rightValue,
-      CommandContext ctx,
-      Expression... args) { // Changed parameter types
-    return false;
-  }
+  // The following methods are from the old IndexableSQLFunction interface and will be removed.
+  // If ArcadeDB has a new way for functions to declare index usability, that would be a separate implementation.
+  // public abstract boolean canExecuteInline(...);
+  // public abstract boolean allowsIndexedExecution(...);
+  // public abstract boolean shouldExecuteAfterSearch(...);
+  // public abstract long estimate(...);
+  // public abstract Iterable<Identifiable> searchFromTarget(...); // This logic moves into execute
 
-  @Override
-  public long estimate(
-      FromClause target,
-      BinaryCompareOperator operator,
-      Object rightValue,
-      CommandContext ctx,
-      Expression... args) { // Changed parameter types
+  // The execute method is abstract in SQLFunction and must be implemented by concrete subclasses.
+  // public abstract Object execute(Object self, Identifiable currentRecord, Object currentResult, Object[] params, CommandContext context);
 
-    // FIXME: searchFromTarget is not defined in this template, assuming it's from OIndexableSQLFunction or a subclass
-    // For now, commenting out as its direct equivalent/necessity in ArcadeDB is unclear without seeing concrete function implementation
-    /*
-    Iterable<Identifiable> a = searchFromTarget(target, operator, rightValue, ctx, args); // Changed OIdentifiable
-    if (a instanceof LuceneResultSet) { // FIXME
-      return ((LuceneResultSet) a).size(); // FIXME
-    }
-    long count = 0;
-    for (Object o : a) {
-      count++;
-    }
-    return count;
-    */
-    return 0; // Placeholder
-  }
-
-  protected Document getMetadata(Expression metadata, CommandContext ctx) { // Changed ODocument, OExpression, OCommandContext
-    final Object md = metadata.execute((Result) null, ctx); // Changed OResult
-    if (md instanceof Document) { // Changed ODocument
+  protected Document getMetadata(Expression metadataExpression, CommandContext ctx) {
+    if (metadataExpression == null) return new Document(ctx.getDatabase());
+    final Object md = metadataExpression.execute((Result) null, ctx);
+    if (md instanceof Document) {
       return (Document) md;
     } else if (md instanceof Map) {
       return new Document().fromMap((Map<String, ?>) md); // Changed ODocument

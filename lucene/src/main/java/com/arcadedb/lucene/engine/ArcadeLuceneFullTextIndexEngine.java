@@ -68,27 +68,38 @@ public class ArcadeLuceneFullTextIndexEngine extends OLuceneIndexEngineAbstract 
   private static final Logger logger =
       Logger.getLogger(ArcadeLuceneFullTextIndexEngine.class.getName()); // Changed logger
 
-  private final LuceneDocumentBuilder builder; // FIXME: Needs refactoring
-  private LuceneQueryBuilder queryBuilder; // FIXME: Needs refactoring
-  private final AtomicLong bonsayFileId = new AtomicLong(0); // TODO: Review if bonsayFileId is still relevant in ArcadeDB context
+  private final LuceneDocumentBuilder builder;
+  private LuceneQueryBuilder queryBuilder;
+  // bonsayFileId removed as it's not used for standard Lucene updates.
+  // If a specific versioning or optimistic locking mechanism is needed for index entries,
+  // it would require a different design, possibly involving specific fields in Lucene documents.
 
-  // Removed 'id' parameter as it's not used by the superclass OLuceneIndexEngineAbstract
-  // and not used internally in this class.
-  public ArcadeLuceneFullTextIndexEngine(Storage storage, String idxName) { // Changed OStorage
+  public ArcadeLuceneFullTextIndexEngine(Storage storage, String idxName) {
     super(storage, idxName);
-    builder = new LuceneDocumentBuilder(); // FIXME: Needs refactoring
+    builder = new LuceneDocumentBuilder();
   }
 
   @Override
-  public void init(IndexMetadata im) { // Changed OIndexMetadata
-    super.init(im.getName(), im.getType(), im.getDefinition(), im.isAutomatic(), im.getMetadata()); // FIXME: super.init might have changed
-    // FIXME: getMetadata() on IndexMetadata might be different from OIndexMetadata.getMetadata()
-    // queryBuilder = new LuceneQueryBuilder(im.getMetadata()); // FIXME: Needs refactoring and correct metadata access
-    if (im.getDefinition() != null && im.getDefinition().getOptions() != null) {
-       queryBuilder = new LuceneQueryBuilder(new Document(getDatabase(), im.getDefinition().getOptions())); // FIXME Needs correct metadata Document
-    } else {
-       queryBuilder = new LuceneQueryBuilder(new Document(getDatabase())); // Empty metadata if not available
+  public void init(IndexMetadata indexMetadata) {
+    // The super.init in OLuceneIndexEngineAbstract expects:
+    // (String indexName, String indexType, IndexDefinition indexDefinition, boolean isAutomatic, Document metadata)
+    // IndexMetadata (ArcadeDB) has: name, typeName (of Schema Type), algorithm, propertyNames, keyTypes, options, unique, automatic, associatedToBucket, nullStrategy.
+    // It does not directly have a single "indexType" string in the sense of "LUCENE" or "FULLTEXT" - that's algorithm.
+    // The "metadata" Document for super.init should be created from indexMetadata.getOptions().
+
+    com.arcadedb.document.Document engineInitMetadata = new com.arcadedb.document.Document(getDatabase());
+    if (indexMetadata.getOptions() != null) {
+        engineInitMetadata.fromMap(indexMetadata.getOptions());
     }
+
+    super.init(indexMetadata.getName(),
+               indexMetadata.getAlgorithm(), // Pass algorithm as indexType
+               indexMetadata, // Pass the whole IndexMetadata as IndexDefinition (it implements it)
+               indexMetadata.isAutomatic(),
+               engineInitMetadata);
+
+    // queryBuilder uses the same options Document
+    queryBuilder = new LuceneQueryBuilder(engineInitMetadata);
   }
 
   @Override
@@ -141,12 +152,68 @@ public class ArcadeLuceneFullTextIndexEngine extends OLuceneIndexEngineAbstract 
   }
 
   @Override
-  public void update( // Changed OAtomicOperation, OIndexKeyUpdater
-      final TransactionContext atomicOperation,
+  public void update(
+      final TransactionContext txContext, // Changed parameter name for clarity
       final Object key,
       final IndexKeyUpdater<Object> updater) {
-    // FIXME: bonsayFileId might not be relevant. updater.update might change.
-    put(atomicOperation, key, updater.update(null, bonsayFileId).getValue());
+    // A Lucene update is typically a delete followed by an add.
+    // The 'key' here is what identifies the document(s) to be updated.
+    // The 'updater' provides the new value(s)/Identifiable(s).
+
+    // 1. Determine the new Identifiable that results from the update.
+    // The updater.update(oldValue, ...) is meant to get the new value.
+    // 'oldValue' for an index is usually the set of RIDs mapped to the key.
+    // Since this is a full-text index, the 'key' itself might be complex.
+    // For simplicity, if we assume the updater gives the *new complete Identifiable* to index:
+    Object newValue = updater.update(null, null).getValue(); // Passing null for oldValue and bonsayFileId.
+
+    if (!(newValue instanceof Identifiable)) {
+        throw new IndexException("Updater did not provide an Identifiable value for Lucene index update. Key: " + key);
+    }
+    Identifiable newIdentifiable = (Identifiable) newValue;
+
+    // 2. Delete old document(s) associated with the key.
+    // This requires a query that uniquely identifies the old document(s) for this key.
+    // If the key is the RID itself (e.g. auto index on @rid), then it's simple.
+    // If the key is field values, and these values *might have changed*, then deleting by
+    // the *old* key is important. The current `key` parameter should represent the old key.
+    // However, IndexKeyUpdater is often used when the key itself doesn't change, but the RID does (e.g. unique index).
+    // Or when the indexed content of the RID changes, but the RID (and key) remains the same.
+
+    // Let's assume 'key' can identify the old document(s) and 'newIdentifiable' is the new state to index.
+    // If the RID is constant and only content changes:
+    // We need to re-build the Lucene document for newIdentifiable and use Lucene's updateDocument.
+
+    // Simplest approach for now: delete by key, then put new document.
+    // This assumes 'key' can uniquely identify the document via a query.
+    // If 'key' is the set of indexed fields from the *old* version of the document:
+    if (key != null) {
+        Query deleteByOldKeyQuery = this.queryBuilder.query(this.indexDefinition, key, EMPTY_METADATA, this.queryAnalyzer(), getDatabase());
+        try {
+            this.deleteDocument(deleteByOldKeyQuery); // From OLuceneIndexEngineAbstract
+        } catch (IOException e) {
+            throw new IndexException("Error deleting old document during update for key: " + key, e);
+        }
+    } else if (newIdentifiable != null && newIdentifiable.getIdentity() != null) {
+        // If key is null, but we have the new Identifiable's RID, try to delete by RID.
+        // This is only safe if we are sure this RID was previously indexed and this is a true update.
+        Query deleteByRidQuery = ArcadeLuceneIndexType.createQueryId(newIdentifiable);
+         try {
+            this.deleteDocument(deleteByRidQuery);
+        } catch (IOException e) {
+            throw new IndexException("Error deleting old document by RID during update for: " + newIdentifiable.getIdentity(), e);
+        }
+    } else {
+         throw new IndexException("Cannot determine document to update for Lucene index. Key and new Identifiable are null.");
+    }
+
+    // 3. Put the new document state
+    // The 'key' for put should be derived from the newIdentifiable's fields if it's an automatic index.
+    // If it's a manual index, the 'key' might remain the same or be derived.
+    // For now, assuming the 'key' parameter to 'update' is what we use to identify the document,
+    // and the new content comes from 'newIdentifiable'.
+    // The 'put' method will call buildDocument(key, newIdentifiable).
+    put(txContext, key, newIdentifiable); // Pass the original key for now
   }
 
   @Override
@@ -315,15 +382,13 @@ public class ArcadeLuceneFullTextIndexEngine extends OLuceneIndexEngineAbstract 
   public Query buildQuery(final Object maybeQuery) {
     try {
       if (maybeQuery instanceof String) {
-        // FIXME: queryBuilder (LuceneQueryBuilder) needs refactoring
-        return queryBuilder.query(indexDefinition, (String) maybeQuery, new Document(getDatabase()) /*EMPTY_METADATA*/, queryAnalyzer());
+        return queryBuilder.query(indexDefinition, (String) maybeQuery, new com.arcadedb.document.Document(getDatabase()) /*EMPTY_METADATA*/, queryAnalyzer(), getDatabase());
       } else {
         LuceneKeyAndMetadata q = (LuceneKeyAndMetadata) maybeQuery; // FIXME: LuceneKeyAndMetadata needs refactoring
-        // FIXME: queryBuilder (LuceneQueryBuilder) needs refactoring
-        return queryBuilder.query(indexDefinition, q.key, q.metadata, queryAnalyzer());
+        return queryBuilder.query(indexDefinition, q.key, q.metadata, queryAnalyzer(), getDatabase());
       }
     } catch (final ParseException e) {
-      throw new IndexException("Error parsing query", e); // Changed exception
+      throw new IndexException("Error parsing query for index '" + name + "'", e); // Changed exception
     }
   }
 
@@ -334,24 +399,22 @@ public class ArcadeLuceneFullTextIndexEngine extends OLuceneIndexEngineAbstract 
     try {
       if (key instanceof LuceneKeyAndMetadata) { // FIXME: LuceneKeyAndMetadata needs refactoring
         LuceneKeyAndMetadata q = (LuceneKeyAndMetadata) key;
-        // FIXME: queryBuilder (LuceneQueryBuilder) needs refactoring
-        Query query = queryBuilder.query(indexDefinition, q.key, q.metadata, queryAnalyzer());
+        Query luceneQuery = queryBuilder.query(indexDefinition, q.key, q.metadata, queryAnalyzer(), getDatabase());
 
-        CommandContext commandContext = q.key.getContext(); // FIXME: LuceneKeyAndMetadata.key might not have getContext
-        return getResults(query, commandContext, changes, q.metadata);
+        CommandContext commandContext = q.getContext(); // LuceneKeyAndMetadata now has getContext()
+        return getResults(luceneQuery, commandContext, changes, q.metadata);
 
       } else {
-        // FIXME: queryBuilder (LuceneQueryBuilder) needs refactoring
-        Query query = queryBuilder.query(indexDefinition, key, new Document(getDatabase()) /*EMPTY_METADATA*/, queryAnalyzer());
+        Query luceneQuery = queryBuilder.query(indexDefinition, key, new com.arcadedb.document.Document(getDatabase()) /*EMPTY_METADATA*/, queryAnalyzer(), getDatabase());
 
         CommandContext commandContext = null;
         if (key instanceof LuceneCompositeKey) { // FIXME: LuceneCompositeKey needs refactoring
-          commandContext = ((LuceneCompositeKey) key).getContext();
+          commandContext = ((LuceneCompositeKey) key).getContext(); // Assuming LuceneCompositeKey might have a context
         }
-        return getResults(query, commandContext, changes, new Document(getDatabase())/*EMPTY_METADATA*/);
+        return getResults(luceneQuery, commandContext, changes, new com.arcadedb.document.Document(getDatabase())/*EMPTY_METADATA*/);
       }
     } catch (ParseException e) {
-      throw new IndexException("Error parsing lucene query", e); // Changed exception
+      throw new IndexException("Error parsing lucene query for index '" + name + "'", e); // Changed exception
     }
   }
 }

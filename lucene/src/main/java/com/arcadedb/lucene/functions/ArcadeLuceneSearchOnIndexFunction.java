@@ -28,159 +28,112 @@ import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.memory.MemoryIndex;
 
 /** Created by frank on 15/01/2017. */
-public class ArcadeLuceneSearchOnIndexFunction extends ArcadeLuceneSearchFunctionTemplate { // Changed base class
+public class ArcadeLuceneSearchOnIndexFunction extends ArcadeLuceneSearchFunctionTemplate {
 
-  // public static final String MEMORY_INDEX = "_memoryIndex"; // Already in ArcadeLuceneFunctionsUtils
-  public static final String NAME = "search_index"; // OrientDB's name was luceneMatch, but class name implies search_index
+  public static final String NAME = "search_index";
 
   public ArcadeLuceneSearchOnIndexFunction() {
-    super(NAME, 2, 3); // Using "search_index" as function name
+    super(NAME);
   }
 
   @Override
-  public String getName() {
-    return NAME;
-  }
-
-  @Override
-  public Object execute( // FIXME: Signature might change based on actual SQLFunctionAbstract in ArcadeDB
-      Object iThis,
-      Identifiable iCurrentRecord, // Changed
-      Object iCurrentResult,
+  public Object execute(
+      Object self, // Is the target of the function, could be null, or an identifier (index name) or a collection
+      Identifiable currentRecord,
+      Object currentResult,
       Object[] params,
-      CommandContext ctx) { // Changed
-    if (iThis instanceof RID) { // Changed
-      iThis = ((RID) iThis).getRecord();
+      CommandContext ctx) {
+
+    validateParameterCount(params, 2, 3);
+
+    String indexName = params[0].toString();
+    String query = params[1].toString();
+    Document metadata = params.length == 3 ? getMetadata((Expression) params[2], ctx) : new Document(ctx.getDatabase());
+
+    ArcadeLuceneFullTextIndex index = ArcadeLuceneFunctionsUtils.getLuceneFullTextIndex(ctx, indexName);
+
+    if (index == null) {
+      // If used in a WHERE clause for a specific record, returning false means "filter out"
+      // If used as a standalone function returning a set, return empty set.
+      // The `filterResult` method in template handles boolean conversion.
+      return currentRecord != null ? false : Collections.emptySet();
     }
-    if (iThis instanceof Identifiable) { // Changed
-      iThis = new ResultInternal((Identifiable) iThis); // Changed
-    }
-    Result result = (Result) iThis; // Changed
 
-    String indexName = (String) params[0];
+    // If currentRecord is not null, this function is likely used in a WHERE clause context.
+    // It needs to determine if the currentRecord matches the Lucene query *within its own fields*.
+    if (currentRecord != null && currentRecord.getIdentity() != null) {
+      MemoryIndex memoryIndex = ArcadeLuceneFunctionsUtils.getOrCreateMemoryIndex(ctx);
 
-    ArcadeLuceneFullTextIndex index = searchForIndex(ctx, indexName); // FIXME
+      // We need the Lucene Document for the currentRecord
+      // The 'key' for buildDocument in this context is not a separate key, but derived from the record itself if auto index.
+      // Or, if the index has specific fields, those are used.
+      // Since we are in context of a specific record, we use its fields.
+      org.apache.lucene.document.Document luceneDoc = index.buildDocument(null, currentRecord); // Pass null for key if derived from record
 
-    if (index == null) return false;
-
-    String query = (String) params[1];
-
-    MemoryIndex memoryIndex = ArcadeLuceneFunctionsUtils.getOrCreateMemoryIndex(ctx); // Use refactored util
-
-    // FIXME: index.getDefinition() might be different.
-    List<Object> key =
-        index.getDefinition().getFields().stream()
-            .map(s -> result.getProperty(s))
-            .collect(Collectors.toList());
-
-    // FIXME: index.buildDocument and index.indexAnalyzer might not exist or have different signatures
-    // This part is highly dependent on ArcadeLuceneFullTextIndex refactoring.
-    org.apache.lucene.document.Document luceneDoc = index.buildDocument(key, iCurrentRecord);
-    if (luceneDoc != null) {
-      for (IndexableField field : luceneDoc.getFields()) {
-        memoryIndex.addField(field.name(), field.stringValue(), index.indexAnalyzer()); // Simplified, assuming stringValue is appropriate
+      if (luceneDoc != null) {
+        for (IndexableField field : luceneDoc.getFields()) {
+          // Simplified: use stringValue. Actual field data might be needed for MemoryIndex if not string.
+          // MemoryIndex.addField can take Analyzer, which it gets from the IndexableFieldType.
+          // If the field is not indexed with an analyzer (e.g. StringField), it's fine.
+          // If it is (e.g. TextField), index.indexAnalyzer() should be used.
+          // For simplicity, assuming MemoryIndex handles it or we use the general indexAnalyzer.
+          memoryIndex.addField(field.name(), field.stringValue(), index.indexAnalyzer());
+        }
+      } else {
+        return false; // Cannot build Lucene doc for current record
       }
+
+      // The query here is the main Lucene query from params[1]
+      // Metadata for this specific sub-query within MemoryIndex.
+      LuceneKeyAndMetadata keyAndMeta = new LuceneKeyAndMetadata(query, metadata, ctx);
+      org.apache.lucene.search.Query luceneQuery = index.buildQuery(keyAndMeta); // Build query using index's config
+
+      return memoryIndex.search(luceneQuery) > 0.0f;
+    } else {
+      // If currentRecord is null, this function is likely used to return a set of results from the specified index.
+      // This is the "searchFromTarget" equivalent.
+      LuceneKeyAndMetadata keyAndMeta = new LuceneKeyAndMetadata(query, metadata, ctx);
+      // The `index.get(keyAndMeta)` should return a LuceneResultSet or similar.
+      // The `ArcadeLuceneFullTextIndex.get(Object[])` was changed to return IndexCursor.
+      // We might need a direct way to execute a query via engine and get results.
+      // For now, assuming `index.get(keyAndMeta)` returns a Set<Identifiable> or IndexCursor via engine.
+
+      // The `get` method on `ArcadeLuceneFullTextIndex` takes `Object[] keys`.
+      // We need to wrap `keyAndMeta` or pass its components.
+      // Let's assume the engine's getInTx is what we want.
+      if (index.getEngine() instanceof LuceneIndexEngine) {
+        LuceneIndexEngine luceneEngine = (LuceneIndexEngine) index.getEngine();
+        // LuceneKeyAndMetadata is already the 'key' for getInTx
+        return luceneEngine.getInTx(keyAndMeta, null); // Passing null for LuceneTxChanges for non-transactional view
+      }
+      return Collections.emptySet();
     }
-
-    Document metadata = getMetadataDoc(params); // Changed ODocument
-    // FIXME: LuceneCompositeKey and LuceneKeyAndMetadata need refactoring
-    LuceneKeyAndMetadata keyAndMetadata =
-        new LuceneKeyAndMetadata(
-            new LuceneCompositeKey(Arrays.asList(query)).setContext(ctx), metadata);
-
-    // FIXME: index.buildQuery might not exist or have different signature
-    return memoryIndex.search(index.buildQuery(keyAndMetadata)) > 0.0f;
   }
 
-  private Document getMetadataDoc(Object[] params) { // Changed ODocument
-    if (params.length == 3) {
-      if (params[2] instanceof Map) {
-        return new Document().fromMap((Map<String, ?>) params[2]); // Changed
-      } else if (params[2] instanceof String) {
-        return new Document().fromJSON((String) params[2]);
-      }
-      // Fallback for other types, or throw error
-      return new Document().fromJSON(params[2].toString());
+  private Document getMetadata(Object[] params, CommandContext ctx) { // Kept for direct param access if needed
+    if (params.length == 3 && params[2] != null) {
+        if (params[2] instanceof Map) {
+            return new Document(ctx.getDatabase()).fromMap((Map<String, Object>) params[2]);
+        } else if (params[2] instanceof String) {
+            return new Document(ctx.getDatabase()).fromJSON((String) params[2]);
+        } else if (params[2] instanceof Expression) { // If metadata is an expression
+            return getMetadata((Expression) params[2], ctx);
+        } else if (params[2] instanceof Document) {
+            return (Document) params[2];
+        }
+        try {
+            return new Document(ctx.getDatabase()).fromJSON(params[2].toString());
+        } catch (Exception e) { /* ignore, return empty */ }
     }
-    // FIXME: LuceneQueryBuilder.EMPTY_METADATA needs to be accessible or defined differently
-    return new Document(); // LuceneQueryBuilder.EMPTY_METADATA;
+    return new Document(ctx.getDatabase()); // LuceneQueryBuilder.EMPTY_METADATA;
   }
 
-  // getOrCreateMemoryIndex was moved to ArcadeLuceneFunctionsUtils
 
   @Override
   public String getSyntax() {
-    return "search_index( <indexName>, <query>, [ <metadata> ] )"; // Updated syntax
+    return getName() + "( <indexName>, <query> [, <metadata> ] )";
   }
 
-  @Override
-  public boolean filterResult() {
-    return true;
-  }
-
-  // FIXME: This method's signature and logic are highly dependent on ArcadeDB's IndexableSQLFunction interface
-  @Override
-  public Iterable<Identifiable> searchFromTarget( // Changed
-      FromClause target, // Changed
-      BinaryCompareOperator operator, // Changed
-      Object rightValue,
-      CommandContext ctx, // Changed
-      Expression... args) { // Changed
-
-    ArcadeLuceneFullTextIndex index = searchForIndex(target, ctx, args); // FIXME
-
-    Expression expression = args[1];
-    String query = (String) expression.execute((Result) null, ctx); // Changed
-    if (index != null && query != null) {
-
-      Document meta = getMetadata(args, ctx); // Changed
-
-      List<Identifiable> luceneResultSet; // Changed
-      try (Stream<RID> rids = // Changed
-          // FIXME: index.getInternal().getRids() needs to be replaced with ArcadeDB equivalent
-          // This whole block is highly dependent on ArcadeLuceneFullTextIndex and LuceneKeyAndMetadata refactoring
-          index
-              .getAssociatedIndex() // Assuming getAssociatedIndex() is the way, or index might be the LuceneIndexEngine itself
-              .getRids( // This method might not exist on ArcadeDB's Index interface or ArcadeLuceneFullTextIndex
-                  new LuceneKeyAndMetadata( // FIXME
-                      new LuceneCompositeKey(Arrays.asList(query)).setContext(ctx), meta))) { // FIXME
-        luceneResultSet = rids.collect(Collectors.toList());
-      }
-
-      return luceneResultSet;
-    }
-    return Collections.emptyList();
-  }
-
-  private Document getMetadata(Expression[] args, CommandContext ctx) { // Changed types
-    if (args.length == 3) {
-      return getMetadata(args[2], ctx); // Calls the method in ArcadeLuceneSearchFunctionTemplate
-    }
-    // FIXME: LuceneQueryBuilder.EMPTY_METADATA
-    return new Document(); // LuceneQueryBuilder.EMPTY_METADATA;
-  }
-
-  @Override
-  protected ArcadeLuceneFullTextIndex searchForIndex( // Changed types
-      FromClause target, CommandContext ctx, Expression... args) { // FIXME
-
-    FromItem item = target.getItem(); // Changed
-    Identifier identifier = item.getIdentifier(); // Changed
-    // FIXME: This was calling a private searchForIndex, now it should call the one from ArcadeLuceneFunctionsUtils or similar.
-    // For now, assuming the util class will be used by the concrete implementations.
-    // This abstract method in template might need rethinking or this class needs its own way to get the index.
-    // Let's assume for now it will use the utility.
-    String indexNameFromArg = (String) args[0].execute((Result) null, ctx);
-    // String className = identifier.getStringValue(); // This would be the class from FROM clause
-    // We need the index name from the function argument.
-    return ArcadeLuceneFunctionsUtils.getLuceneFullTextIndex(ctx, indexNameFromArg); // FIXME
-  }
-
-  // Removed private searchForIndex methods, assuming logic will consolidate or use ArcadeLuceneFunctionsUtils
-
-  // getResult(OCommandContext) is part of OSQLFunction and likely not needed if SQLFunctionAbstract is different
-  // @Override
-  // public Object getResult(CommandContext ctx) { // Changed OCommandContext
-  // return super.getResult(ctx);
-  // }
+  // Removed searchFromTarget, estimate, canExecuteInline, allowsIndexedExecution, shouldExecuteAfterSearch
+  // searchForIndex is not needed here as index name is a direct parameter.
 }

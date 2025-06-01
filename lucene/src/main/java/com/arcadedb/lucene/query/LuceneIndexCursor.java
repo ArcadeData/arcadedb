@@ -195,35 +195,30 @@ public class LuceneIndexCursor implements IndexCursor {
             this.currentProximityInfo = new HashMap<>();
             this.currentProximityInfo.put("$score", this.currentScore);
 
-            if (engine != null && queryContext != null) {
-                // The RecordId for context needs a way to carry this info if onRecordAddedToResultSet modifies it.
-                // Let's assume RecordId is primarily for identity, and contextual info is managed by this cursor
-                // or passed directly to some wrapper if needed.
-                // For now, `onRecordAddedToResultSet` might populate `queryContext.fragments`
-                // which we can then retrieve here if needed.
-                RecordId contextualRid = new RecordId(this.currentRID); // Create a new RecordId instance for context
+            if (queryContext != null && queryContext.isHighlightingEnabled()) {
+                if (engine != null && engine.queryAnalyzer() != null) { // Ensure we have an analyzer for highlighting
+                    queryContext.setHighlightingAnalyzer(engine.queryAnalyzer()); // Use engine's query analyzer
 
-                // Call engine callback to potentially populate highlights in queryContext or for other processing
-                engine.onRecordAddedToResultSet(queryContext, contextualRid, luceneDoc, scoreDoc);
-
-                // Retrieve fragments if populated by the callback
-                if (queryContext.getFragments() != null && !queryContext.getFragments().isEmpty()) {
-                    queryContext.getFragments().forEach((field, frags) -> {
-                        if (frags != null && frags.length > 0) {
-                            StringBuilder sb = new StringBuilder();
-                            for (org.apache.lucene.search.highlight.TextFragment frag : frags) {
-                                if (frag != null && frag.getScore() > 0) { // frag.getScore() might not exist, check TextFragment API
-                                    sb.append(frag.toString());
-                                }
-                            }
-                            if (sb.length() > 0) {
-                                this.currentProximityInfo.put("$" + field + "_hl", sb.toString());
-                            }
-                        }
-                    });
-                     queryContext.getFragments().clear(); // Clear for next record
+                    // We need an IndexReader to pass to getHighlights if it needs one.
+                    // The searcher in queryContext already has one.
+                    IndexReader reader = queryContext.getSearcher().getIndexReader();
+                    Map<String, String> highlights = queryContext.getHighlights(luceneDoc, reader);
+                    if (highlights != null && !highlights.isEmpty()) {
+                        this.currentProximityInfo.putAll(highlights);
+                    }
+                } else {
+                    logger.warning("Highlighting enabled but no queryAnalyzer available from engine to set on LuceneQueryContext.");
                 }
             }
+
+            // The engine.onRecordAddedToResultSet callback is now less critical for highlights,
+            // but can be kept if it serves other purposes (e.g. security, logging, complex context data).
+            // For now, let's assume its primary highlight-related role is superseded.
+            if (engine != null && queryContext != null) {
+                 RecordId contextualRid = new RecordId(this.currentRID);
+                 engine.onRecordAddedToResultSet(queryContext, contextualRid, luceneDoc, scoreDoc);
+            }
+
 
             // IndexCursor traditionally returns Identifiable (which can be just the RID)
             // If the caller needs the full record, they call getRecord().
