@@ -1,6 +1,6 @@
 package com.arcadedb.lucene.analyzer;
 
-import static com.arcadedb.lucene.engine.OLuceneIndexEngineAbstract.RID; // FIXME: This might need to be ArcadeDB specific constant if RID definition changes
+import static com.arcadedb.lucene.engine.ArcadeLuceneIndexEngineAbstract.RID; // FIXME: This might need to be ArcadeDB specific constant if RID definition changes
 
 import com.arcadedb.lucene.index.ArcadeLuceneIndexType; // FIXME: Ensure this is the correct refactored class for OLuceneIndexType
 import java.util.HashMap;

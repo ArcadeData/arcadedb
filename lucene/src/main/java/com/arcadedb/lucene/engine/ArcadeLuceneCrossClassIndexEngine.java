@@ -319,7 +319,7 @@ public class ArcadeLuceneCrossClassIndexEngine implements LuceneIndexEngine { //
   public void onRecordAddedToResultSet( // Changed parameter types
       LuceneQueryContext queryContext, // FIXME
       RecordId recordId, // Changed OContextualRecordId
-      Document ret, // Lucene Document
+      org.apache.lucene.document.Document ret, // Lucene Document
       final ScoreDoc score) {
 
     // FIXME: RecordId in ArcadeDB does not have setContext. How to pass this data?
@@ -345,7 +345,7 @@ public class ArcadeLuceneCrossClassIndexEngine implements LuceneIndexEngine { //
   }
 
   @Override
-  public Document buildDocument(Object key, Identifiable value) { // Changed OIdentifiable, Lucene Document
+  public org.apache.lucene.document.Document buildDocument(Object key, Identifiable value) { // Changed OIdentifiable, Lucene Document
     return null;
   }
 

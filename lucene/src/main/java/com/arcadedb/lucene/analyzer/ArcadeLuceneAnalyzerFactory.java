@@ -32,19 +32,19 @@ public class ArcadeLuceneAnalyzerFactory {
     final String defaultAnalyzerFQN = metadata.getString("default");
     final String prefix = index.getTypeName() + ".";
 
-    final OLucenePerFieldAnalyzerWrapper analyzer = // FIXME: Needs to be ArcadeLucenePerFieldAnalyzerWrapper
+    final ArcadeLucenePerFieldAnalyzerWrapper analyzer = // FIXME: Needs to be ArcadeLucenePerFieldAnalyzerWrapper
         geLucenePerFieldPresetAnalyzerWrapperForAllFields(defaultAnalyzerFQN);
     setDefaultAnalyzerForRequestedKind(index, kind, metadata, prefix, analyzer);
     setSpecializedAnalyzersForEachField(index, kind, metadata, prefix, analyzer);
     return analyzer;
   }
 
-  private OLucenePerFieldAnalyzerWrapper geLucenePerFieldPresetAnalyzerWrapperForAllFields( // FIXME: Needs to be ArcadeLucenePerFieldAnalyzerWrapper
+  private ArcadeLucenePerFieldAnalyzerWrapper geLucenePerFieldPresetAnalyzerWrapperForAllFields( // FIXME: Needs to be ArcadeLucenePerFieldAnalyzerWrapper
       final String defaultAnalyzerFQN) {
     if (defaultAnalyzerFQN == null) {
-      return new OLucenePerFieldAnalyzerWrapper(new StandardAnalyzer()); // FIXME: Needs to be ArcadeLucenePerFieldAnalyzerWrapper
+      return new ArcadeLucenePerFieldAnalyzerWrapper(new StandardAnalyzer()); // FIXME: Needs to be ArcadeLucenePerFieldAnalyzerWrapper
     } else {
-      return new OLucenePerFieldAnalyzerWrapper(buildAnalyzer(defaultAnalyzerFQN)); // FIXME: Needs to be ArcadeLucenePerFieldAnalyzerWrapper
+      return new ArcadeLucenePerFieldAnalyzerWrapper(buildAnalyzer(defaultAnalyzerFQN)); // FIXME: Needs to be ArcadeLucenePerFieldAnalyzerWrapper
     }
   }
 
@@ -53,7 +53,7 @@ public class ArcadeLuceneAnalyzerFactory {
       final AnalyzerKind kind,
       final Document metadata,
       final String prefix,
-      final OLucenePerFieldAnalyzerWrapper analyzer) { // FIXME: Needs to be ArcadeLucenePerFieldAnalyzerWrapper
+      final ArcadeLucenePerFieldAnalyzerWrapper analyzer) { // FIXME: Needs to be ArcadeLucenePerFieldAnalyzerWrapper
     final String specializedAnalyzerFQN = metadata.getString(kind.toString());
     if (specializedAnalyzerFQN != null) {
       for (final String field : index.getFields()) {
@@ -68,7 +68,7 @@ public class ArcadeLuceneAnalyzerFactory {
       final AnalyzerKind kind,
       final Document metadata,
       final String prefix,
-      final OLucenePerFieldAnalyzerWrapper analyzer) { // FIXME: Needs to be ArcadeLucenePerFieldAnalyzerWrapper
+      final ArcadeLucenePerFieldAnalyzerWrapper analyzer) { // FIXME: Needs to be ArcadeLucenePerFieldAnalyzerWrapper
     for (final String field : index.getFields()) {
       final String analyzerName = field + "_" + kind.toString();
       final String analyzerStopwords = analyzerName + "_stopwords";

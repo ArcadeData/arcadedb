@@ -39,9 +39,9 @@ public interface LuceneIndexEngine extends IndexEngine, WALFile.Freezeable { // 
   String indexName();
 
   void onRecordAddedToResultSet( // Changed parameter types
-      LuceneQueryContext queryContext, RecordId recordId, Document ret, ScoreDoc score);
+      LuceneQueryContext queryContext, RecordId recordId, org.apache.lucene.document.Document ret, ScoreDoc score);
 
-  Document buildDocument(Object key, Identifiable value); // Changed parameter type
+  org.apache.lucene.document.Document buildDocument(Object key, Identifiable value); // Changed parameter type
 
   Query buildQuery(Object query);
 

@@ -115,7 +115,7 @@ public class ArcadeLuceneFullTextIndexEngine extends OLuceneIndexEngineAbstract 
   public void onRecordAddedToResultSet( // Changed parameter types
       final LuceneQueryContext queryContext,
       final RecordId recordId, // Changed OContextualRecordId
-      final Document ret, // Lucene Document
+      final org.apache.lucene.document.Document ret, // Lucene Document
       final ScoreDoc score) {
     HashMap<String, Object> data = new HashMap<String, Object>();
 
@@ -220,7 +220,7 @@ public class ArcadeLuceneFullTextIndexEngine extends OLuceneIndexEngineAbstract 
   public void put(final TransactionContext atomicOperation, final Object key, final Object value) { // Changed OAtomicOperation
     updateLastAccess();
     openIfClosed();
-    final Document doc = buildDocument(key, (Identifiable) value); // Lucene Document
+    final org.apache.lucene.document.Document doc = buildDocument(key, (Identifiable) value); // Lucene Document
     addDocument(doc);
   }
 
@@ -228,7 +228,7 @@ public class ArcadeLuceneFullTextIndexEngine extends OLuceneIndexEngineAbstract 
   public void put(TransactionContext atomicOperation, Object key, RID value) { // Changed OAtomicOperation, ORID
     updateLastAccess();
     openIfClosed();
-    final Document doc = buildDocument(key, value); // Lucene Document
+    final org.apache.lucene.document.Document doc = buildDocument(key, value); // Lucene Document
     addDocument(doc);
   }
 
@@ -304,7 +304,7 @@ public class ArcadeLuceneFullTextIndexEngine extends OLuceneIndexEngineAbstract 
   }
 
   @Override
-  public Document buildDocument(Object key, Identifiable value) { // Changed OIdentifiable, Lucene Document
+  public org.apache.lucene.document.Document buildDocument(Object key, Identifiable value) { // Changed OIdentifiable, Lucene Document
     if (indexDefinition.isAutomatic()) {
       // builder is an instance of LuceneDocumentBuilder
       // LuceneDocumentBuilder.build expects: IndexDefinition, Object key, Identifiable value, Map<String, Boolean> collectionFields, Document metadata
@@ -315,8 +315,8 @@ public class ArcadeLuceneFullTextIndexEngine extends OLuceneIndexEngineAbstract 
     }
   }
 
-  private static Document putInManualindex(Object key, Identifiable oIdentifiable) { // Changed OIdentifiable, Lucene Document
-    Document luceneDoc = new Document(); // Lucene Document
+  private static org.apache.lucene.document.Document putInManualindex(Object key, Identifiable oIdentifiable) { // Changed OIdentifiable, Lucene Document
+    org.apache.lucene.document.Document luceneDoc = new org.apache.lucene.document.Document(); // Lucene Document
     luceneDoc.add(ArcadeLuceneIndexType.createRidField(oIdentifiable));
     // The ID field for manual indexes might store the key itself if simple, or a hash if complex.
     // createIdField might be more about a specific format if needed.

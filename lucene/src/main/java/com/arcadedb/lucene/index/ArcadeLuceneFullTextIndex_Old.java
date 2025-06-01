@@ -26,9 +26,9 @@ import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.search.Query;
 
-public class OLuceneFullTextIndex extends OLuceneIndexNotUnique {
+public class ArcadeLuceneFullTextIndex_Old extends OLuceneIndexNotUnique {
 
-  public OLuceneFullTextIndex(OIndexMetadata im, final OStorage storage) {
+  public ArcadeLuceneFullTextIndex_Old(OIndexMetadata im, final OStorage storage) {
     super(im, storage);
   }
 
