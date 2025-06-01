@@ -72,8 +72,10 @@ public class ArcadeLuceneFullTextIndexEngine extends OLuceneIndexEngineAbstract 
   private LuceneQueryBuilder queryBuilder; // FIXME: Needs refactoring
   private final AtomicLong bonsayFileId = new AtomicLong(0); // TODO: Review if bonsayFileId is still relevant in ArcadeDB context
 
-  public ArcadeLuceneFullTextIndexEngine(Storage storage, String idxName, int id) { // Changed OStorage
-    super(storage, idxName); // FIXME: OLuceneIndexEngineAbstract constructor might have changed
+  // Removed 'id' parameter as it's not used by the superclass OLuceneIndexEngineAbstract
+  // and not used internally in this class.
+  public ArcadeLuceneFullTextIndexEngine(Storage storage, String idxName) { // Changed OStorage
+    super(storage, idxName);
     builder = new LuceneDocumentBuilder(); // FIXME: Needs refactoring
   }
 
@@ -237,49 +239,76 @@ public class ArcadeLuceneFullTextIndexEngine extends OLuceneIndexEngineAbstract 
   @Override
   public Document buildDocument(Object key, Identifiable value) { // Changed OIdentifiable, Lucene Document
     if (indexDefinition.isAutomatic()) {
-      // FIXME: builder (LuceneDocumentBuilder) needs refactoring
-      // return builder.build(indexDefinition, key, value, collectionFields, metadata);
-      throw new UnsupportedOperationException("Automatic index document building not yet fully refactored.");
+      // builder is an instance of LuceneDocumentBuilder
+      // LuceneDocumentBuilder.build expects: IndexDefinition, Object key, Identifiable value, Map<String, Boolean> collectionFields, Document metadata
+      // collectionFields and metadata are available as protected members from OLuceneIndexEngineAbstract
+      return builder.build(indexDefinition, key, value, this.collectionFields, this.metadata);
     } else {
       return putInManualindex(key, value);
     }
   }
 
   private static Document putInManualindex(Object key, Identifiable oIdentifiable) { // Changed OIdentifiable, Lucene Document
-    Document doc = new Document(); // Lucene Document
-    doc.add(ArcadeLuceneIndexType.createRidField(oIdentifiable));
-    doc.add(ArcadeLuceneIndexType.createIdField(oIdentifiable, key));
+    Document luceneDoc = new Document(); // Lucene Document
+    luceneDoc.add(ArcadeLuceneIndexType.createRidField(oIdentifiable));
+    // The ID field for manual indexes might store the key itself if simple, or a hash if complex.
+    // createIdField might be more about a specific format if needed.
+    // For now, let's assume the key itself or its parts are added below with specific field names.
+    // If a single "ID" field representing the whole key is desired for searching the key:
+    // luceneDoc.add(ArcadeLuceneIndexType.createIdField(oIdentifiable, key));
 
-    // FIXME: This manual field creation is CRITICAL and needs to use ArcadeLuceneIndexType.createFields
-    // with proper Type resolution for each object 'o'.
-    if (key instanceof CompositeKey) { // Changed OCompositeKey
+
+    if (key instanceof CompositeKey) {
       List<Object> keys = ((CompositeKey) key).getKeys();
-      int k = 0;
-      for (Object o : keys) {
-        // Determine Type of 'o' here. For now, defaulting to String.
-        // Type type = Type.STRING; // Placeholder - this needs to be dynamic
-        // doc.add(ArcadeLuceneIndexType.createFields("k" + k, o, Field.Store.YES, false, type));
-        doc.add(ArcadeLuceneIndexType.createField("k" + k, o, Field.Store.YES)); // Simplified call, needs type
-        k++;
+      // If this manual index has a definition with field names for composite parts:
+      List<String> definedFields = null;
+      // Type[] definedTypes = null; // Not directly available for manual index key parts in IndexDefinition easily
+      // if (indexDefinition != null) { // indexDefinition is not available in this static context directly
+      //    definedFields = indexDefinition.getFields();
+      //    // definedTypes = indexDefinition.getTypes(); // This is for the main value, not necessarily for key parts
+      // }
+
+      for (int i = 0; i < keys.size(); i++) {
+        Object subKey = keys.get(i);
+        if (subKey == null) continue;
+        String fieldName = (definedFields != null && i < definedFields.size()) ? definedFields.get(i) : "k" + i;
+        Type type = Type.getTypeByValue(subKey);
+        // For manual keys, typically store and index them. Sorting is less common for manual keys.
+        List<Field> fields = ArcadeLuceneIndexType.createFields(fieldName, subKey, Field.Store.YES, false, type);
+        for (Field f : fields) {
+            luceneDoc.add(f);
+        }
       }
     } else if (key instanceof Collection) {
       @SuppressWarnings("unchecked")
       Collection<Object> keys = (Collection<Object>) key;
-      int k = 0;
-      for (Object o : keys) {
-        // Determine Type of 'o' here. For now, defaulting to String.
-        // Type type = Type.STRING; // Placeholder - this needs to be dynamic
-        // doc.add(ArcadeLuceneIndexType.createFields("k" + k, o, Field.Store.YES, false, type));
-        doc.add(ArcadeLuceneIndexType.createField("k" + k, o, Field.Store.YES)); // Simplified call, needs type
-        k++;
+      int i = 0;
+      for (Object item : keys) {
+        if (item == null) continue;
+        String fieldName = "k" + i; // Implicit field name for collection items
+        Type type = Type.getTypeByValue(item);
+        List<Field> fields = ArcadeLuceneIndexType.createFields(fieldName, item, Field.Store.YES, false, type);
+         for (Field f : fields) {
+            luceneDoc.add(f);
+        }
+        i++;
       }
-    } else {
-      // Determine Type of 'key' here. For now, defaulting to String.
-      // Type type = Type.STRING; // Placeholder - this needs to be dynamic
-      // doc.add(ArcadeLuceneIndexType.createFields("k0", key, Field.Store.NO, false, type));
-      doc.add(ArcadeLuceneIndexType.createField("k0", key, Field.Store.NO)); // Simplified call, needs type
+    } else if (key != null) {
+      // Single key
+      // String fieldName = (indexDefinition != null && !indexDefinition.getFields().isEmpty()) ? indexDefinition.getFields().get(0) : "k0";
+      String fieldName = "k0"; // Default field name for single manual key
+      Type type = Type.getTypeByValue(key);
+      // Store.NO was used in original for single key; this means it's indexed but not retrievable from Lucene doc.
+      // Let's make it configurable or default to YES for consistency if this key is what user searches.
+      // For now, keeping Store.NO to match original hint, but this is questionable.
+      // If it's the actual key to be searched, it should likely be YES or its components stored.
+      // Given createFields also adds Point fields which are not stored, this might be okay.
+      List<Field> fields = ArcadeLuceneIndexType.createFields(fieldName, key, Field.Store.NO, false, type);
+       for (Field f : fields) {
+            luceneDoc.add(f);
+        }
     }
-    return doc;
+    return luceneDoc;
   }
 
   @Override

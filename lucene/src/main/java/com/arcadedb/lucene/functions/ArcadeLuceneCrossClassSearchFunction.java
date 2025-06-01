@@ -38,6 +38,8 @@ public class ArcadeLuceneCrossClassSearchFunction extends ArcadeLuceneSearchFunc
   public static final String NAME = "search_cross"; // Changed from SEARCH_CROSS
   private static final String LUCENE_CROSS_CLASS_ALGORITHM = "LUCENE_CROSS_CLASS"; // Placeholder
 
+  private ArcadeLuceneCrossClassIndexEngine crossClassEngineInstance = null; // Cache for the engine
+
   public ArcadeLuceneCrossClassSearchFunction() {
     super(NAME, 1, 2); // query, [metadata]
   }
@@ -146,33 +148,53 @@ public class ArcadeLuceneCrossClassSearchFunction extends ArcadeLuceneSearchFunc
   }
 
   // Helper to get the specific cross-class engine instance
-  // This assumes there's a way to identify and retrieve this engine.
-  // It might be registered with a specific name or type.
-  private ArcadeLuceneCrossClassIndexEngine getCrossClassEngine(CommandContext ctx) { // FIXME
-    DatabaseInternal database = (DatabaseInternal) ((DatabaseContext) ctx).getDatabase(); // FIXME: Verify
-    Collection<? extends Index> indexes = database.getSchema().getIndexes();
-    for (Index index : indexes) {
-      // FIXME: Need a reliable way to identify the CrossClassEngine.
-      // This could be by a specific name, or if the engine itself is registered as an Index.
-      // The original code checked index.getAlgorithm().equalsIgnoreCase(LUCENE_CROSS_CLASS)
-      // and then cast index.getInternal() to OLuceneFullTextIndex, which seems problematic as the
-      // cross class engine is not a typical "full text index" on a specific class.
-      // For now, assuming the ArcadeLuceneCrossClassIndexEngine might be registered as an Index itself
-      // with a specific algorithm name.
-      if (index.getAlgorithm().equalsIgnoreCase(LUCENE_CROSS_CLASS_ALGORITHM) && index instanceof ArcadeLuceneCrossClassIndexEngine) {
-         return (ArcadeLuceneCrossClassIndexEngine) index;
-      }
-      // Alternative: if the engine is not an Index, how is it accessed?
-      // Perhaps it's a global component or registered differently.
-      // The original code `(OLuceneFullTextIndex) index.getInternal()` suggests the index itself was a shell.
+  private ArcadeLuceneCrossClassIndexEngine getCrossClassEngine(CommandContext ctx) {
+    if (this.crossClassEngineInstance != null && this.crossClassEngineInstance.getDatabase() == ctx.getDatabase()) {
+        // Ensure cached engine is for the same database instance, though typically SQL functions are per-query.
+        // If function instances are per-query, caching might offer little benefit unless getCrossClassEngine is called multiple times in one execution.
+        // If functions are singletons, then caching is more useful but needs to be thread-safe or per-database-instance.
+        // For now, simple instance caching. If SQLFunctions are per-query, this cache won't persist across queries.
+        return this.crossClassEngineInstance;
     }
-    // Fallback: Try to find an index whose *engine* is the cross-class one.
-    // This is speculative.
-     for (Index index : indexes) {
-        if (index.getAssociatedIndex() instanceof ArcadeLuceneCrossClassIndexEngine) { // getAssociatedIndex might be getEngine()
-             return (ArcadeLuceneCrossClassIndexEngine) index.getAssociatedIndex();
+
+    DatabaseInternal database = null;
+    if (ctx instanceof DatabaseContext) { // Check if CommandContext is or provides DatabaseContext
+        database = (DatabaseInternal) ((DatabaseContext) ctx).getDatabase();
+    } else if (ctx.getDatabase() instanceof DatabaseInternal) { // Standard way to get Database
+        database = (DatabaseInternal) ctx.getDatabase();
+    }
+
+    if (database == null) {
+        logger.warning("Database not found in CommandContext for getCrossClassEngine. CommandContext type: " + ctx.getClass().getName());
+        return null;
+    }
+
+    for (Index idx : database.getSchema().getIndexes()) {
+        IndexEngine engine = idx.getAssociatedIndex(); // Index.getAssociatedIndex() returns IndexEngine
+        if (engine instanceof ArcadeLuceneCrossClassIndexEngine) {
+            this.crossClassEngineInstance = (ArcadeLuceneCrossClassIndexEngine) engine;
+            logger.fine("Found ArcadeLuceneCrossClassIndexEngine via associated engine of index: " + idx.getName());
+            return this.crossClassEngineInstance;
         }
-     }
+        // Check if the index itself is a wrapper for the engine (less likely with getAssociatedIndex)
+        // or if algorithm matches (if factory handler associates this engine type with an algorithm for a "marker" index)
+        if (LUCENE_CROSS_CLASS_ALGORITHM.equals(idx.getAlgorithm())) {
+             if (engine instanceof ArcadeLuceneCrossClassIndexEngine) { // Should be true if factory did its job
+                this.crossClassEngineInstance = (ArcadeLuceneCrossClassIndexEngine) engine;
+                logger.fine("Found ArcadeLuceneCrossClassIndexEngine via algorithm on index: " + idx.getName());
+                return this.crossClassEngineInstance;
+             } else if (engine == null && idx instanceof ArcadeLuceneCrossClassIndexEngine) {
+                // This case is if the Index object itself *is* the engine, which is not standard for ArcadeDB.
+                // But keeping a check for robustness during refactoring.
+                this.crossClassEngineInstance = (ArcadeLuceneCrossClassIndexEngine) idx;
+                logger.warning("Found ArcadeLuceneCrossClassIndexEngine directly as an Index instance (unusual): " + idx.getName());
+                return this.crossClassEngineInstance;
+             }
+        }
+    }
+
+    logger.warning("ArcadeLuceneCrossClassIndexEngine not found. Ensure an index of type '" + LUCENE_CROSS_CLASS_ALGORITHM +
+                   "' (which uses this engine) is defined, or that an existing index correctly associates this engine.");
     return null;
   }
 

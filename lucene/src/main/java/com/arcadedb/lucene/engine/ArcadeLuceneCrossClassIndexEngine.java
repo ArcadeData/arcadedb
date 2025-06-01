@@ -26,6 +26,7 @@ import com.arcadedb.lucene.tx.LuceneTxChanges; // FIXME: Needs refactoring
 import com.arcadedb.schema.DocumentType; // Changed from OClass
 import com.arcadedb.schema.Type; // Changed from OType
 import com.arcadedb.utility.Pair; // Changed from ORawPair
+import com.arcadedb.lucene.engine.ArcadeLuceneEngineUtils; // Added import
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -61,6 +62,8 @@ public class ArcadeLuceneCrossClassIndexEngine implements LuceneIndexEngine { //
   private final String indexName;
   private final int indexId;
   private static final String LUCENE_ALGORITHM = "LUCENE"; // Placeholder for algorithm name
+  private IndexMetadata markerIndexMetadata; // Optional: if you need to store it
+
 
   public ArcadeLuceneCrossClassIndexEngine(int indexId, Storage storage, String indexName) { // Changed OStorage
     this.indexId = indexId;
@@ -69,7 +72,26 @@ public class ArcadeLuceneCrossClassIndexEngine implements LuceneIndexEngine { //
   }
 
   @Override
-  public void init(IndexMetadata metadata) {} // Changed OIndexMetadata
+  public void init(IndexMetadata metadata) { // Changed OIndexMetadata
+    // This engine orchestrates queries across other Lucene indexes.
+    // It doesn't manage its own Lucene directory or writers in the same way
+    // a full-text index engine does.
+    // The 'metadata' here belongs to the "marker" index that caused this
+    // cross-class engine to be instantiated.
+
+    this.markerIndexMetadata = metadata; // Store if needed for any config
+
+    // For now, primarily log initialization.
+    // Any specific configurations for the cross-class behavior that might
+    // be stored in the markerIndexMetadata.getOptions() could be parsed here.
+    logger.info("ArcadeLuceneCrossClassIndexEngine initialized for marker index: " + (metadata != null ? metadata.getName() : "null"));
+
+    // Example: If you had a default list of fields to use for cross-class searches
+    // if not specified in query metadata, you could load it from metadata.getOptions().
+    // Map<String, String> options = metadata.getOptions();
+    // String defaultFieldsStr = options.get("crossClassDefaultFields");
+    // if (defaultFieldsStr != null) { ... parse and store ... }
+  }
 
   @Override
   public void flush() {}
@@ -182,8 +204,7 @@ public class ArcadeLuceneCrossClassIndexEngine implements LuceneIndexEngine { //
       Object params = keyAndMeta.key.getKeys().get(0); // FIXME: keyAndMeta.key structure might change
       Query query = p.parse(params.toString());
 
-      // FIXME: OLuceneIndexEngineUtils.buildSortFields needs refactoring
-      final List<SortField> sortFields = Collections.emptyList(); // Placeholder
+      final List<SortField> sortFields = ArcadeLuceneEngineUtils.buildSortFields(arcadedbMetadata, null, DatabaseThreadLocal.INSTANCE.get());
       // final List<SortField> fields = OLuceneIndexEngineUtils.buildSortFields(arcadedbMetadata);
 
       LuceneQueryContext ctx = new LuceneQueryContext(null, searcher, query, sortFields); // FIXME
