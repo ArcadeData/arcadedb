@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.arcadedb</groupId>
+        <artifactId>arcadedb-parent</artifactId>
+        <version>25.6.1-SNAPSHOT</version> <!-- Use the current ArcadeDB version -->
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>arcadedb-lucene</artifactId>
+    <packaging>jar</packaging>
+    <name>ArcadeDB Lucene</name>
+    <description>Lucene full-text search engine integration for ArcadeDB.</description>
+
+    <properties>
+        <!-- Define Lucene version, ensure it aligns with arcadedb-engine if not inherited -->
+        <!-- arcadedb-engine already defines lucene.version as 10.2.1 -->
+        <!-- spatial4j.version and jts-core.version are also defined in engine's POM -->
+        <lucene.version>10.2.1</lucene.version>
+        <spatial4j.version>0.8</spatial4j.version>
+        <jts-core.version>1.20.0</jts-core.version>
+    </properties>
+
+    <dependencies>
+        <!-- ArcadeDB Core Dependency -->
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-engine</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Apache Lucene Dependencies -->
+        <!-- These versions will be managed by the lucene.version property in arcadedb-engine's pom -->
+        <dependency>
+            <groupId>org.apache.lucene</groupId>
+            <artifactId>lucene-core</artifactId>
+            <version>${lucene.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.lucene</groupId>
+            <artifactId>lucene-analysis-common</artifactId>
+            <version>${lucene.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.lucene</groupId>
+            <artifactId>lucene-queryparser</artifactId>
+            <version>${lucene.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.lucene</groupId>
+            <artifactId>lucene-queries</artifactId>
+            <version>${lucene.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.lucene</groupId>
+            <artifactId>lucene-misc</artifactId>
+            <version>${lucene.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.lucene</groupId>
+            <artifactId>lucene-facet</artifactId>
+            <version>${lucene.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.lucene</groupId>
+            <artifactId>lucene-memory</artifactId>
+            <version>${lucene.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.lucene</groupId>
+            <artifactId>lucene-highlighter</artifactId>
+            <version>${lucene.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.lucene</groupId>
+            <artifactId>lucene-codecs</artifactId>
+            <version>${lucene.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.lucene</groupId>
+            <artifactId>lucene-backward-codecs</artifactId>
+            <version>${lucene.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.lucene</groupId>
+            <artifactId>lucene-spatial-extras</artifactId>
+            <version>${lucene.version}</version>
+        </dependency>
+
+        <!-- Spatial Dependencies -->
+        <!-- These versions will be managed by properties in arcadedb-engine's pom -->
+        <dependency>
+            <groupId>org.locationtech.spatial4j</groupId>
+            <artifactId>spatial4j</artifactId>
+            <version>${spatial4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.locationtech.jts</groupId>
+            <artifactId>jts-core</artifactId>
+            <version>${jts-core.version}</version>
+        </dependency>
+
+        <!-- SLF4J for logging -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>1.7.36</version> <!-- Specify a common version -->
+        </dependency>
+
+        <!-- Test Dependencies (Optional for now, can be added in Test Migration step) -->
+        <!--
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <scope>test</scope>
+        </dependency>
+        -->
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <addDefaultImplementationEntries>true</addDefaultImplementationEntries>
+                            <addDefaultSpecificationEntries>true</addDefaultSpecificationEntries>
+                        </manifest>
+                    </archive>
+                </configuration>
+            </plugin>
+            <!--
+            Consider adding maven-shade-plugin here if an uber-jar is desired,
+            similar to how arcadedb-server and other modules might be packaged.
+            For now, a regular JAR is fine. Configuration can be adapted from parent POM.
+            -->
+        </plugins>
+    </build>
+</project>

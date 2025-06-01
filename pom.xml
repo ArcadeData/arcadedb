@@ -120,6 +120,7 @@
         <module>studio</module>
         <module>package</module>
         <module>e2e</module>
+        <module>lucene</module>
     </modules>
 
     <build>
