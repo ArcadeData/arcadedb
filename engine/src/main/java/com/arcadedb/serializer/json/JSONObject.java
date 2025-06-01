@@ -167,7 +167,7 @@ public class JSONObject implements Map<String, Object> {
     case Character character -> object.addProperty(name, character);
     case JSONObject nObject -> object.add(name, nObject.getInternal());
     case JSONArray array -> object.add(name, array.getInternal());
-    case Document doc -> object.add(name, doc.toJSON().getInternal());
+    case Document doc -> object.add(name, doc.toJSON(false).getInternal());
     case String[] string1s -> object.add(name, new JSONArray(string1s).getInternal());
     case Iterable<?> iterable -> {
       // RETRY UP TO 10 TIMES IN CASE OF CONCURRENT UPDATE
@@ -537,7 +537,7 @@ public class JSONObject implements Map<String, Object> {
       case JSONArray array -> array.getInternal();
       case Collection collection -> new JSONArray(collection).getInternal();
       case Map map -> new JSONObject(map).getInternal();
-      case Document document -> document.toJSON().getInternal();
+      case Document document -> document.toJSON(false).getInternal();
       case Identifiable identifiable -> new JsonPrimitive(identifiable.getIdentity().toString());
       default -> throw new IllegalArgumentException("Object of type " + object.getClass() + " not supported");
     };
