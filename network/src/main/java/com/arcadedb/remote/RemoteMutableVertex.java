@@ -35,8 +35,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
@@ -84,6 +83,11 @@ public class RemoteMutableVertex extends MutableVertex {
       dirty = false;
     } else
       throw new RecordNotFoundException("Record " + rid + " not found", rid);
+  }
+
+  @Override
+  public Map<String, Object> propertiesAsMap() {
+    return new HashMap<>(map);
   }
 
   @Override
