@@ -110,6 +110,11 @@
             <name>GitHub ArcadeDb Apache Maven Packages</name>
             <url>https://maven.pkg.github.com/ArcadeData/arcadedb</url>
         </repository>
+        <snapshotRepository>
+            <id>github</id>
+            <name>GitHub ArcadeDb Apache Maven Packages Snapshots</name>
+            <url>https://maven.pkg.github.com/ArcadeData/arcadedb</url>
+        </snapshotRepository>
     </distributionManagement>
 
     <modules>
