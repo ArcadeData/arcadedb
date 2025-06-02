@@ -147,6 +147,11 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
   }
 
   @Override
+  public Map<String, Object> propertiesAsMap() {
+    return new HashMap<>(map);
+  }
+
+  @Override
   public Map<String, Object> toMap(final boolean includeMetadata) {
     final Map<String, Object> result = new HashMap<>(map);
     if (includeMetadata) {
