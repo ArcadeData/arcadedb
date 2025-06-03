@@ -9,6 +9,8 @@
   &nbsp;
   <a href="https://docs.oracle.org/en/java/21/"><img src="https://img.shields.io/badge/Java-%3D21-green.svg"></a>
   &nbsp;
+  <a href="https://docs.oracle.org/en/java/17/"><img src="https://img.shields.io/badge/Java-%3D17-green.svg"></a>
+  &nbsp;
   <a href="https://api.reuse.software/info/github.com/ArcadeData/arcadedb"><img src="https://api.reuse.software/badge/github.com/ArcadeData/arcadedb"></a>
   &nbsp;
   <a href="https://maven-badges.herokuapp.com/maven-central/com.arcadedb/arcadedb-parent"><img src="https://maven-badges.herokuapp.com/maven-central/com.arcadedb/arcadedb-parent/badge.svg"></a>
@@ -116,6 +118,39 @@ There are three variants of (about monthly) releases:
 - `headless` - this package excludes the `gremlin`, `redisw`, `mongodbw`, `graphql`, `studio` modules
 
 The nightly builds of the repository head can be found [here](https://central.sonatype.com/service/rest/repository/browse/maven-snapshots/com/arcadedb/arcadedb-package/).
+
+### Java Versions
+
+Starting from ArcadeDB 24.4.1 code is compatible with Java 21.
+
+Java 21 packages are available on [Maven central](https://repo.maven.apache.org/maven2/com/arcadedb/) and docker images on [Docker Hub](https://hub.docker.com/r/arcadedata/arcadedb).
+
+We also support Java 17 on a separate branch `java17` for those who cannot upgrade to Java 21 yet through GitHub packages.
+
+To use Java 17 inside your project, add the repository to your `pom.xml` and reference dependencies as follows:
+
+```xml
+    <repositories>
+        <repository>
+            <name>github</name>
+            <id>github</id>
+            <url>https://maven.pkg.github.com/ArcadeData/arcadedb</url>
+        </repository>
+    </repositories>
+    <dependencies>
+      <dependency>
+          <groupId>com.arcadedb</groupId>
+          <artifactId>arcadedb-engine</artifactId>
+          <version>25.5.1-java17</version>
+      </dependency>
+    </dependencies>
+```
+
+Docker images are available on ghcr.io too:
+
+```shell
+docker pull ghcr.io/arcadedata/arcadedb:25.5.1-java17
+```
 
 ### Community
 
