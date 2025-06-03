@@ -81,7 +81,7 @@ import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 public class PostgresNetworkExecutor extends Thread {
   public enum ERROR_SEVERITY {FATAL, ERROR}
 
-  public static final String PG_SERVER_VERSION = "10.5";
+  public static final String PG_SERVER_VERSION = "12.0";
 
   private static final int                                            BUFFER_LENGTH   = 32 * 1024;
   private static final Map<Long, Pair<Long, PostgresNetworkExecutor>> ACTIVE_SESSIONS = new ConcurrentHashMap<>();
