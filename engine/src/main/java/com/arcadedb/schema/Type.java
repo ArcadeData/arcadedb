@@ -548,7 +548,7 @@ public enum Type {
               if (valueAsString.length() == DATE_FORMAT_DAYS.length())
                 return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(DATE_FORMAT_DAYS));
               else if (valueAsString.length() == DATE_FORMAT_SECONDS.length())
-                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyyyyyy-MM-dd HH:mm:ss"));
+                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(DATE_FORMAT_SECONDS));
               else if (valueAsString.length() == DATE_FORMAT_MILLIS.length())
                 return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(DATE_FORMAT_MILLIS));
             }
