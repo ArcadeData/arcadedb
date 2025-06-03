@@ -123,13 +123,15 @@ public enum Type {
       new Class<?>[] { double[].class, Double[].class }),
   ;
 
+  public static final  String              DATE_FORMAT_DAYS    = "yyyy-MM-dd";
+  public static final  String              DATE_FORMAT_SECONDS = "yyyy-MM-dd HH:mm:ss";
+  public static final  String              DATE_FORMAT_MILLIS  = "yyyy-MM-dd HH:mm:ss.SSS";
   // Don't change the order, the type discover get broken if you change the order.
-  private static final Type[] TYPES = new Type[] { LIST, MAP, LINK, STRING, DATETIME };
-
-  private static final Type[]              TYPES_BY_ID       = new Type[24];
+  private static final Type[]              TYPES               = new Type[] { LIST, MAP, LINK, STRING, DATETIME };
+  private static final Type[]              TYPES_BY_ID         = new Type[24];
   // Values previously stored in javaTypes
-  private static final Map<Class<?>, Type> TYPES_BY_USERTYPE = new HashMap<Class<?>, Type>();
-  private static final Map<String, Type>   TYPES_BY_NAME     = new HashMap<String, Type>();
+  private static final Map<Class<?>, Type> TYPES_BY_USERTYPE   = new HashMap<Class<?>, Type>();
+  private static final Map<String, Type>   TYPES_BY_NAME       = new HashMap<String, Type>();
 
   static {
     for (final Type type : values()) {
@@ -483,8 +485,8 @@ public enum Type {
             }
           else {
             // GUESS FORMAT BY STRING LENGTH
-            if (valueAsString.length() == "yyyy-MM-dd".length())
-              return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
+            if (valueAsString.length() == DATE_FORMAT_DAYS.length())
+              return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(DATE_FORMAT_DAYS));
           }
         }
       } else if (targetClass.equals(LocalDateTime.class)) {
@@ -514,12 +516,12 @@ public enum Type {
               }
             else {
               // GUESS FORMAT BY STRING LENGTH
-              if (valueAsString.length() == "yyyy-MM-dd".length())
-                return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-              else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss".length())
-                return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyyyyyy-MM-dd HH:mm:ss"));
-              else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss.SSS".length())
-                return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"));
+              if (valueAsString.length() == DATE_FORMAT_DAYS.length())
+                return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(DATE_FORMAT_DAYS));
+              else if (valueAsString.length() == DATE_FORMAT_SECONDS.length())
+                return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(DATE_FORMAT_SECONDS));
+              else if (valueAsString.length() == DATE_FORMAT_MILLIS.length())
+                return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(DATE_FORMAT_MILLIS));
             }
           }
         }
@@ -543,12 +545,12 @@ public enum Type {
               }
             else {
               // GUESS FORMAT BY STRING LENGTH
-              if (valueAsString.length() == "yyyy-MM-dd".length())
-                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-              else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss".length())
+              if (valueAsString.length() == DATE_FORMAT_DAYS.length())
+                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(DATE_FORMAT_DAYS));
+              else if (valueAsString.length() == DATE_FORMAT_SECONDS.length())
                 return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyyyyyy-MM-dd HH:mm:ss"));
-              else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss.SSS".length())
-                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"));
+              else if (valueAsString.length() == DATE_FORMAT_MILLIS.length())
+                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(DATE_FORMAT_MILLIS));
             }
           }
         }
@@ -1165,12 +1167,12 @@ public enum Type {
         }
       else {
         // GUESS FORMAT BY STRING LENGTH
-        if (valueAsString.length() == "yyyy-MM-dd".length())
-          return new SimpleDateFormat("yyyy-MM-dd").parse(valueAsString);
-        else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss".length())
-          return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").parse(valueAsString);
-        else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss.SSS".length())
-          return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS").parse(valueAsString);
+        if (valueAsString.length() == DATE_FORMAT_DAYS.length())
+          return new SimpleDateFormat(DATE_FORMAT_DAYS).parse(valueAsString);
+        else if (valueAsString.length() == DATE_FORMAT_SECONDS.length())
+          return new SimpleDateFormat(DATE_FORMAT_SECONDS).parse(valueAsString);
+        else if (valueAsString.length() == DATE_FORMAT_MILLIS.length())
+          return new SimpleDateFormat(DATE_FORMAT_MILLIS).parse(valueAsString);
       }
     }
     throw new IllegalArgumentException("Object of class " + value.getClass() + " cannot be converted to Date");
