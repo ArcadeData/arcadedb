@@ -538,11 +538,12 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
     if (map.containsKey(CAT_PROPERTY)) {
       final String cat = result.getString(CAT_PROPERTY);
-      switch (cat) {
-      case "d" -> new RemoteImmutableDocument(this, map);
-      case "v" -> new RemoteImmutableVertex(this, map);
-      case "e" -> new RemoteImmutableEdge(this, map);
-      }
+      return switch (cat) {
+        case "d" -> new RemoteImmutableDocument(this, map);
+        case "v" -> new RemoteImmutableVertex(this, map);
+        case "e" -> new RemoteImmutableEdge(this, map);
+        default -> null; // Or throw an exception for unknown category
+      };
     }
     return null;
   }
