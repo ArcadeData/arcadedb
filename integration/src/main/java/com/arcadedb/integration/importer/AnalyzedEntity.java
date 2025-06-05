@@ -20,19 +20,22 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.schema.Type;
 
-import java.util.*;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
 
 public class AnalyzedEntity {
-  public enum ENTITY_TYPE {DATABASE, DOCUMENT, VERTEX, EDGE}
+  public enum EntityType {DATABASE, DOCUMENT, VERTEX, EDGE}
 
   private final String                        name;
-  private final ENTITY_TYPE                   type;
+  private final EntityType                    type;
   private final Map<String, AnalyzedProperty> properties;
+  private final long                          maxValueSampling;
   private       long                          totalRowLength = 0;
-  private       long analyzedRows   = 0;
-  private final long maxValueSampling;
+  private       long                          analyzedRows   = 0;
 
-  public AnalyzedEntity(final String name, final ENTITY_TYPE type, final long maxValueSampling) {
+  public AnalyzedEntity(final String name, final EntityType type, final long maxValueSampling) {
     this.name = name;
     this.type = type;
     this.properties = new LinkedHashMap<>();
@@ -62,9 +65,9 @@ public class AnalyzedEntity {
   }
 
   public void setRowSize(final String[] row) {
-    for (int i = 0; i < row.length; ++i) {
-      if (row[i] != null)
-        totalRowLength += row[i].length();
+    for (String s : row) {
+      if (s != null)
+        totalRowLength += s.length();
 
       ++totalRowLength; // Delimiter
     }
@@ -77,7 +80,7 @@ public class AnalyzedEntity {
     return name;
   }
 
-  public ENTITY_TYPE getType() {
+  public EntityType getType() {
     return type;
   }
 

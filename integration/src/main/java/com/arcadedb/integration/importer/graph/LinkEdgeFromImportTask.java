@@ -28,7 +28,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.utility.Pair;
 
-import java.util.*;
+import java.util.List;
 
 /**
  * Asynchronous Task that links the destination vertex back to the edges/vertices.
@@ -38,13 +38,15 @@ public class LinkEdgeFromImportTask implements DatabaseAsyncTask {
   private final List<Pair<Identifiable, Identifiable>> connections;
   private final EdgeLinkedCallback                     callback;
 
-  public LinkEdgeFromImportTask(final Identifiable destinationVertex, final List<Pair<Identifiable, Identifiable>> connections,
+  public LinkEdgeFromImportTask(final Identifiable destinationVertex,
+      final List<Pair<Identifiable, Identifiable>> connections,
       final EdgeLinkedCallback callback) {
     this.destinationVertex = destinationVertex;
     this.connections = connections;
     this.callback = callback;
   }
 
+  @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
 
     final MutableVertex toVertexRecord = ((Vertex) destinationVertex.getRecord()).modify();

@@ -20,11 +20,12 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.integration.importer.format.FormatImporter;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
 
 public class SourceSchema {
-  private final FormatImporter formatImporter;
-  private final Source         source;
+  private final FormatImporter      formatImporter;
+  private final Source              source;
   private final AnalyzedSchema      schema;
   private final Map<String, String> options = new HashMap<>();
 

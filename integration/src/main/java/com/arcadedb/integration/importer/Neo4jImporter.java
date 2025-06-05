@@ -38,13 +38,24 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.Pair;
 
-import java.io.*;
-import java.math.*;
-import java.text.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.stream.*;
-import java.util.zip.*;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.math.BigDecimal;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+import java.util.zip.GZIPInputStream;
 
 /**
  * Importer of a Neo4j database exported in JSONL format. To export a Neo4j database follow the instructions in https://neo4j.com/labs/apoc/4.3/export/json/.
@@ -78,8 +89,6 @@ public class Neo4jImporter {
   private final        Map<String, Map<String, Type>> schemaProperties         = new HashMap<>();
   private final static SimpleDateFormat               dateTimeISO8601Format    = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
   private static final int                            MAX_RETRIES              = 3;
-
-  private enum PHASE {OFF, CREATE_SCHEMA, CREATE_VERTICES, CREATE_EDGES}
 
   public Neo4jImporter(final InputStream inputStream, final String... args) {
     parseArguments(args);

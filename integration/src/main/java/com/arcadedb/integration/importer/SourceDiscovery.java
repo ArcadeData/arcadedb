@@ -31,14 +31,25 @@ import com.arcadedb.integration.importer.format.XMLImporterFormat;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.*;
-import java.lang.reflect.*;
-import java.net.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
-import java.util.zip.*;
+import java.io.BufferedInputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.lang.reflect.InvocationTargetException;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 public class SourceDiscovery {
   private static final String RESOURCE_SEPARATOR = ":::";
@@ -52,7 +63,9 @@ public class SourceDiscovery {
     this.url = url;
   }
 
-  public SourceSchema getSchema(final ImporterSettings settings, final AnalyzedEntity.ENTITY_TYPE entityType, final AnalyzedSchema analyzedSchema,
+  public SourceSchema getSchema(final ImporterSettings settings,
+      final AnalyzedEntity.EntityType entityType,
+      final AnalyzedSchema analyzedSchema,
       final ConsoleLogger logger) throws IOException {
     LogManager.instance().log(this, Level.INFO, "Analyzing url: %s...", url);
 
@@ -65,16 +78,14 @@ public class SourceDiscovery {
 
     SourceSchema sourceSchema = null;
 
-    if (formatImporter == null)
-      LogManager.instance().log(this, Level.INFO, "Unknown format");
-    else {
-      sourceSchema = formatImporter.analyze(entityType, parser, settings, analyzedSchema);
-      LogManager.instance().log(this, Level.INFO, "Recognized format %s (parsingLimitBytes=%s parsingLimitEntries=%d)", formatImporter.getFormat(),
-          FileUtils.getSizeAsString(limitBytes), limitEntries);
-      if (sourceSchema != null && !sourceSchema.getOptions().isEmpty()) {
-        for (final Map.Entry<String, String> o : sourceSchema.getOptions().entrySet())
-          LogManager.instance().log(this, Level.INFO, "- %s = %s", o.getKey(), o.getValue());
-      }
+    sourceSchema = formatImporter.analyze(entityType, parser, settings, analyzedSchema);
+    LogManager.instance()
+        .log(this, Level.INFO, "Recognized format %s (parsingLimitBytes=%s parsingLimitEntries=%d)", formatImporter.getFormat(),
+            FileUtils.getSizeAsString(limitBytes), limitEntries);
+
+    if (sourceSchema != null && !sourceSchema.getOptions().isEmpty()) {
+      for (final Map.Entry<String, String> o : sourceSchema.getOptions().entrySet())
+        LogManager.instance().log(this, Level.INFO, "- %s = %s", o.getKey(), o.getValue());
     }
 
     source.close();
@@ -102,30 +113,31 @@ public class SourceDiscovery {
 
     connection.connect();
 
-    return getSourceFromContent(new BufferedInputStream(connection.getInputStream()), connection.getContentLengthLong(), resource, source -> {
-      try {
-        connection.disconnect();
+    return getSourceFromContent(new BufferedInputStream(connection.getInputStream()), connection.getContentLengthLong(), resource,
+        source -> {
+          try {
+            connection.disconnect();
 
-        final HttpURLConnection connection1 = (HttpURLConnection) new URL(urlPath).openConnection();
-        connection1.setRequestMethod("GET");
-        connection1.setDoOutput(true);
-        connection1.connect();
+            final HttpURLConnection connection1 = (HttpURLConnection) new URL(urlPath).openConnection();
+            connection1.setRequestMethod("GET");
+            connection1.setDoOutput(true);
+            connection1.connect();
 
-        if (source.inputStream instanceof GZIPInputStream)
-          source.inputStream = new GZIPInputStream(connection1.getInputStream(), 2048);
-        else if (source.inputStream instanceof ZipInputStream stream) {
-          source.inputStream = new ZipInputStream(connection1.getInputStream());
-          stream.getNextEntry();
-        } else
-          source.inputStream = new BufferedInputStream(connection1.getInputStream());
-      } catch (final Exception e) {
-        throw new ImportException("Error on reset remote resource", e);
-      }
-      return null;
-    }, () -> {
-      connection.disconnect();
-      return null;
-    });
+            if (source.inputStream instanceof GZIPInputStream)
+              source.inputStream = new GZIPInputStream(connection1.getInputStream(), 2048);
+            else if (source.inputStream instanceof ZipInputStream stream) {
+              source.inputStream = new ZipInputStream(connection1.getInputStream());
+              stream.getNextEntry();
+            } else
+              source.inputStream = new BufferedInputStream(connection1.getInputStream());
+          } catch (final Exception e) {
+            throw new ImportException("Error on reset remote resource", e);
+          }
+          return null;
+        }, () -> {
+          connection.disconnect();
+          return null;
+        });
   }
 
   private Source getSourceFromFile(final String path) throws IOException {
@@ -171,7 +183,8 @@ public class SourceDiscovery {
     });
   }
 
-  private FormatImporter analyzeSourceContent(final Parser parser, final AnalyzedEntity.ENTITY_TYPE entityType, final ImporterSettings settings,
+  private FormatImporter analyzeSourceContent(final Parser parser, final AnalyzedEntity.EntityType entityType,
+      final ImporterSettings settings,
       final ConsoleLogger logger) throws IOException {
 
     String knownFileType = null;
@@ -215,23 +228,28 @@ public class SourceDiscovery {
       } else if (knownFileType.equalsIgnoreCase("graphml")) {
 
         try {
-          final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName("com.arcadedb.gremlin.integration.importer.format.GraphMLImporterFormat");
+          final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName(
+              "com.arcadedb.gremlin.integration.importer.format.GraphMLImporterFormat");
           return clazz.getConstructor().newInstance();
-        } catch (final ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
+        } catch (final ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException |
+                       NoSuchMethodException e) {
           LogManager.instance().log(this, Level.SEVERE, "Impossible to find importer for 'graphml' ", e);
         }
 
       } else if (knownFileType.equalsIgnoreCase("graphson")) {
 
         try {
-          final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName("com.arcadedb.gremlin.integration.importer.format.GraphSONImporterFormat");
+          final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName(
+              "com.arcadedb.gremlin.integration.importer.format.GraphSONImporterFormat");
           return clazz.getConstructor().newInstance();
-        } catch (final ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
+        } catch (final ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException |
+                       NoSuchMethodException e) {
           LogManager.instance().log(this, Level.SEVERE, "Impossible to find importer for 'graphson' ", e);
         }
 
       } else {
-        LogManager.instance().log(this, Level.WARNING, "File type '%s' is not supported. Trying to understand file type...", knownFileType);
+        LogManager.instance()
+            .log(this, Level.WARNING, "File type '%s' is not supported. Trying to understand file type...", knownFileType);
       }
     }
 
@@ -305,7 +323,8 @@ public class SourceDiscovery {
         }
 
         if (format == null) {
-          LogManager.instance().log(this, Level.INFO, "Best separator candidate='%s' (all candidates=%s)", bestSeparator.getKey(), list);
+          LogManager.instance()
+              .log(this, Level.INFO, "Best separator candidate='%s' (all candidates=%s)", bestSeparator.getKey(), list);
           settings.options.put("delimiter", "" + bestSeparator.getKey());
           format = new CSVImporterFormat();
         }
