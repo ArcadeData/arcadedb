@@ -791,7 +791,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
-  public LocalDatabase setWALFlush(final WALFile.FLUSH_TYPE flush) {
+  public LocalDatabase setWALFlush(final WALFile.FlushType flush) {
     getTransaction().setWALFlush(flush);
     return this;
   }

@@ -308,9 +308,9 @@ public interface Database extends BasicDatabase {
    *
    * @return Current Database instance to execute setter methods in chain.
    *
-   * @see DatabaseAsyncExecutor#setTransactionSync(WALFile.FLUSH_TYPE)
+   * @see DatabaseAsyncExecutor#setTransactionSync(WALFile.FlushType)
    */
-  Database setWALFlush(WALFile.FLUSH_TYPE flush);
+  Database setWALFlush(WALFile.FlushType flush);
 
   /**
    * Returns the asynchronous flush setting. If enabled, modified pages in transactions are flushed to disk by using an asynchronous thread. This is the default

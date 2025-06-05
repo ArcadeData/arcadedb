@@ -52,7 +52,7 @@ public class TraversalTest {
     RID firstRid = null;
     RID lastRid = null;
     db.begin();
-    db.setWALFlush(WALFile.FLUSH_TYPE.YES_FULL);
+    db.setWALFlush(WALFile.FlushType.YES_FULL);
     for (int i = 0; i < SIZE; i++) {
       final MutableVertex v = db.newVertex("V");
 

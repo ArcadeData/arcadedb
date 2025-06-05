@@ -35,7 +35,7 @@ import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public class WALFile extends LockContext {
-  public enum FLUSH_TYPE {
+  public enum FlushType {
     NO, YES_NOMETADATA, YES_FULL
   }
 
@@ -280,7 +280,7 @@ public class WALFile extends LockContext {
     return bufferChanges;
   }
 
-  public void writeTransactionToFile(final DatabaseInternal database, final List<MutablePage> pages, final FLUSH_TYPE sync, final WALFile file, final long txId,
+  public void writeTransactionToFile(final DatabaseInternal database, final List<MutablePage> pages, final FlushType sync, final WALFile file, final long txId,
       final Binary buffer) throws IOException {
 
     LogManager.instance()
@@ -299,9 +299,9 @@ public class WALFile extends LockContext {
 
     statsBytesWritten += buffer.size();
 
-    if (sync == FLUSH_TYPE.YES_NOMETADATA)
+    if (sync == FlushType.YES_NOMETADATA)
       channel.force(false);
-    else if (sync == FLUSH_TYPE.YES_FULL)
+    else if (sync == FlushType.YES_FULL)
       channel.force(true);
 
     database.executeCallbacks(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE);
@@ -327,14 +327,14 @@ public class WALFile extends LockContext {
     return map;
   }
 
-  public static FLUSH_TYPE getWALFlushType(final int txFlushType) {
+  public static FlushType getWALFlushType(final int txFlushType) {
     switch (txFlushType) {
     case 0:
-      return WALFile.FLUSH_TYPE.NO;
+      return FlushType.NO;
     case 1:
-      return WALFile.FLUSH_TYPE.YES_NOMETADATA;
+      return FlushType.YES_NOMETADATA;
     case 2:
-      return WALFile.FLUSH_TYPE.YES_FULL;
+      return FlushType.YES_FULL;
     default:
       throw new ConfigurationException("Invalid TX_WAL_FLUSH setting " + txFlushType);
     }

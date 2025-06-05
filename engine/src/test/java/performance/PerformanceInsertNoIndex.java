@@ -71,7 +71,7 @@ public class PerformanceInsertNoIndex extends TestHelper {
         database.setReadYourWrites(false);
         database.async().setParallelLevel(PARALLEL);
         database.async().setTransactionUseWAL(false);
-        database.async().setTransactionSync(WALFile.FLUSH_TYPE.NO);
+        database.async().setTransactionSync(WALFile.FlushType.NO);
         database.async().setCommitEvery(5000);
         database.async().onError(new ErrorCallback() {
           @Override
