@@ -28,7 +28,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.util.Map;
+import java.util.*;
 
 /**
  * Asynchronous executor returned by {@link Database#async()}. Use this interface to execute operations against the database in asynchronous way and in parallel,
