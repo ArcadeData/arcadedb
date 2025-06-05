@@ -36,6 +36,7 @@
     </properties>
 
     <artifactId>arcadedb-resilience-tests</artifactId>
+    <name>ArcadeDB resilience and performance tests</name>
     <packaging>jar</packaging>
 
     <build>
