@@ -36,7 +36,7 @@ import java.io.*;
 
 public class GraphMLImporterFormat extends CSVImporterFormat {
   @Override
-  public void load(final SourceSchema sourceSchema, final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
+  public void load(final SourceSchema sourceSchema, final AnalyzedEntity.EntityType entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
 
     final ArcadeGraph graph = ArcadeGraph.open(database);
@@ -49,7 +49,7 @@ public class GraphMLImporterFormat extends CSVImporterFormat {
   }
 
   @Override
-  public SourceSchema analyze(final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final ImporterSettings settings, final AnalyzedSchema analyzedSchema)
+  public SourceSchema analyze(final AnalyzedEntity.EntityType entityType, final Parser parser, final ImporterSettings settings, final AnalyzedSchema analyzedSchema)
       throws IOException {
     return new SourceSchema(this, parser.getSource(), analyzedSchema);
   }

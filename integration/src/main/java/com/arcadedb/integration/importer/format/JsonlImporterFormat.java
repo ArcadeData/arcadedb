@@ -10,7 +10,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.CompressedRID2RIDIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
-import com.arcadedb.integration.importer.AnalyzedEntity.ENTITY_TYPE;
+import com.arcadedb.integration.importer.AnalyzedEntity.EntityType;
 import com.arcadedb.integration.importer.AnalyzedSchema;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.importer.ImporterContext;
@@ -41,7 +41,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
   @Override
   public void load(SourceSchema sourceSchema,
-      ENTITY_TYPE entityType,
+      EntityType entityType,
       Parser parser,
       DatabaseInternal database,
       ImporterContext context,
@@ -240,7 +240,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   }
 
   @Override
-  public SourceSchema analyze(ENTITY_TYPE entityType,
+  public SourceSchema analyze(EntityType entityType,
       Parser parser,
       ImporterSettings settings,
       AnalyzedSchema analyzedSchema) throws IOException {

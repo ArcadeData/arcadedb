@@ -66,7 +66,7 @@ public class JSONImporterFormat implements FormatImporter {
   }
 
   @Override
-  public void load(final SourceSchema sourceSchema, final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser,
+  public void load(final SourceSchema sourceSchema, final AnalyzedEntity.EntityType entityType, final Parser parser,
       final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws IOException {
 
@@ -110,7 +110,7 @@ public class JSONImporterFormat implements FormatImporter {
   }
 
   @Override
-  public SourceSchema analyze(final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final ImporterSettings settings,
+  public SourceSchema analyze(final AnalyzedEntity.EntityType entityType, final Parser parser, final ImporterSettings settings,
       final AnalyzedSchema analyzedSchema) {
     return new SourceSchema(this, parser.getSource(), null);
   }

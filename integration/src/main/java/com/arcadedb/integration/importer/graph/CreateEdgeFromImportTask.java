@@ -38,8 +38,9 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.logging.Level;
 
 /**
  * Asynchronous Task that creates the relationship between the sourceVertex and the destinationVertex as outgoing.
@@ -53,8 +54,13 @@ public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
   private final ImporterContext                          context;
   private final ImporterSettings                         settings;
 
-  public CreateEdgeFromImportTask(final GraphImporter.GraphImporterThreadContext threadContext, final String edgeTypeName, final long sourceVertexKey,
-      final long destinationVertexKey, final Object[] edgeProperties, final ImporterContext context, final ImporterSettings settings) {
+  public CreateEdgeFromImportTask(final GraphImporter.GraphImporterThreadContext threadContext,
+      final String edgeTypeName,
+      final long sourceVertexKey,
+      final long destinationVertexKey,
+      final Object[] edgeProperties,
+      final ImporterContext context,
+      final ImporterSettings settings) {
     this.threadContext = threadContext;
     this.edgeTypeName = edgeTypeName;
     this.sourceVertexKey = sourceVertexKey;
@@ -64,6 +70,7 @@ public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
     this.settings = settings;
   }
 
+  @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
 
 //    LogManager.instance().log(this, Level.INFO, "Using context %s from theadId=%d", null, threadContext, Thread.currentThread().getId());
@@ -98,16 +105,20 @@ public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
 
     if (threadContext.incomingConnectionsIndexThread.getChunkSize() >= settings.maxRAMIncomingEdges) {
       LogManager.instance()
-          .log(this, Level.INFO, "Creation of back connections, reached %s size (max=%s), flushing %d connections (slots=%d thread=%d)...", null,
-              FileUtils.getSizeAsString(threadContext.incomingConnectionsIndexThread.getChunkSize()), FileUtils.getSizeAsString(settings.maxRAMIncomingEdges),
+          .log(this, Level.INFO,
+              "Creation of back connections, reached %s size (max=%s), flushing %d connections (slots=%d thread=%d)...", null,
+              FileUtils.getSizeAsString(threadContext.incomingConnectionsIndexThread.getChunkSize()),
+              FileUtils.getSizeAsString(settings.maxRAMIncomingEdges),
               threadContext.incomingConnectionsIndexThread.size(), threadContext.incomingConnectionsIndexThread.getTotalUsedSlots(),
               Thread.currentThread().getId());
 
-      createIncomingEdgesInBatch(database, threadContext.incomingConnectionsIndexThread, linked -> context.linkedEdges.addAndGet(linked));
+      createIncomingEdgesInBatch(database, threadContext.incomingConnectionsIndexThread,
+          linked -> context.linkedEdges.addAndGet(linked));
 
       // CREATE A NEW CHUNK BEFORE CONTINUING
       try {
-        threadContext.incomingConnectionsIndexThread = new CompressedRID2RIDsIndex(database, threadContext.incomingConnectionsIndexThread.getKeys(),
+        threadContext.incomingConnectionsIndexThread = new CompressedRID2RIDsIndex(database,
+            threadContext.incomingConnectionsIndexThread.getKeys(),
             (int) settings.expectedEdges);
       } catch (ClassNotFoundException e) {
         throw new ImportException("Error on creating internal component", e);
@@ -117,16 +128,20 @@ public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
     }
 
     if (threadContext.importedEdges % settings.commitEvery == 0) {
-      LogManager.instance().log(this, Level.FINE, "Committing batch of outgoing edges (chunkSize=%s max=%s entries=%d slots=%d)...", null,
-          FileUtils.getSizeAsString(threadContext.incomingConnectionsIndexThread.getChunkSize()), FileUtils.getSizeAsString(settings.maxRAMIncomingEdges),
-          threadContext.incomingConnectionsIndexThread.size(), threadContext.incomingConnectionsIndexThread.getTotalUsedSlots());
+      LogManager.instance()
+          .log(this, Level.FINE, "Committing batch of outgoing edges (chunkSize=%s max=%s entries=%d slots=%d)...", null,
+              FileUtils.getSizeAsString(threadContext.incomingConnectionsIndexThread.getChunkSize()),
+              FileUtils.getSizeAsString(settings.maxRAMIncomingEdges),
+              threadContext.incomingConnectionsIndexThread.size(),
+              threadContext.incomingConnectionsIndexThread.getTotalUsedSlots());
 
       createEdgesInBatch(database, threadContext.incomingConnectionsIndexThread, context, settings, threadContext.connections);
       threadContext.connections = new ArrayList<>();
     }
   }
 
-  private void createEdgesInBatch(final DatabaseInternal database, final CompressedRID2RIDsIndex edgeIndex, final ImporterContext context,
+  private void createEdgesInBatch(final DatabaseInternal database, final CompressedRID2RIDsIndex edgeIndex,
+      final ImporterContext context,
       final ImporterSettings settings, final List<GraphEngine.CreateEdgeOperation> connections) {
     if (!connections.isEmpty()) {
       // CREATE EDGES ALL TOGETHER FOR THE PREVIOUS BATCH
@@ -145,12 +160,15 @@ public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
     }
   }
 
-  protected static void createIncomingEdgesInBatch(final DatabaseInternal database, final CompressedRID2RIDsIndex index, final EdgeLinkedCallback callback) {
+  protected static void createIncomingEdgesInBatch(final DatabaseInternal database, final CompressedRID2RIDsIndex index,
+      final EdgeLinkedCallback callback) {
     Vertex lastVertex = null;
 
     LogManager.instance()
-        .log(CreateEdgeFromImportTask.class, Level.INFO, "Linking %d incoming connections (chunk=%s allocated=%s totalSlotUsed=%d keys=%d)...", null,
-            index.size(), FileUtils.getSizeAsString(index.getChunkSize()), FileUtils.getSizeAsString(index.getChunkAllocated()), index.getTotalUsedSlots(),
+        .log(CreateEdgeFromImportTask.class, Level.INFO,
+            "Linking %d incoming connections (chunk=%s allocated=%s totalSlotUsed=%d keys=%d)...", null,
+            index.size(), FileUtils.getSizeAsString(index.getChunkSize()), FileUtils.getSizeAsString(index.getChunkAllocated()),
+            index.getTotalUsedSlots(),
             index.getKeys());
 
     List<Pair<Identifiable, Identifiable>> connections = new ArrayList<>();
@@ -184,7 +202,8 @@ public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
         ++totalEdges;
       } catch (final Exception e) {
         LogManager.instance()
-            .log(CreateEdgeFromImportTask.class, Level.SEVERE, "Error on creating incoming edge from %s -[%s]-> %s", e, it.getVertexRID(), it.getEdgeRID(),
+            .log(CreateEdgeFromImportTask.class, Level.SEVERE, "Error on creating incoming edge from %s -[%s]-> %s", e,
+                it.getVertexRID(), it.getEdgeRID(),
                 it.getKeyRID(), it.getVertexRID());
       }
     }
@@ -193,7 +212,8 @@ public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
       connectIncomingEdges(database, lastVertex, connections, callback);
 
     LogManager.instance()
-        .log(CreateEdgeFromImportTask.class, Level.INFO, "Created %d back connections from %d vertices (min=%d max=%d avg=%d)", null, totalEdges, totalVertices,
+        .log(CreateEdgeFromImportTask.class, Level.INFO, "Created %d back connections from %d vertices (min=%d max=%d avg=%d)",
+            null, totalEdges, totalVertices,
             minEdges, maxEdges, totalVertices > 0 ? totalEdges / totalVertices : 0);
 
   }

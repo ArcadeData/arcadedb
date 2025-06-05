@@ -40,7 +40,7 @@ import java.util.logging.*;
 
 public class XMLImporterFormat implements FormatImporter {
   @Override
-  public void load(final SourceSchema sourceSchema, final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser,
+  public void load(final SourceSchema sourceSchema, final AnalyzedEntity.EntityType entityType, final Parser parser,
       final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws IOException {
     try {
@@ -137,7 +137,7 @@ public class XMLImporterFormat implements FormatImporter {
   }
 
   @Override
-  public SourceSchema analyze(final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final ImporterSettings settings,
+  public SourceSchema analyze(final AnalyzedEntity.EntityType entityType, final Parser parser, final ImporterSettings settings,
       final AnalyzedSchema analyzedSchema) {
     final int analyzingLimitEntries = settings.getIntValue("analyzingLimitEntries", 0);
     final int objectNestLevel = settings.getIntValue("objectNestLevel", 1);

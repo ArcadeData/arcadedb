@@ -28,13 +28,8 @@ public class AnalyzedSchema {
     this.maxValueSampling = maxValueSampling;
   }
 
-  public AnalyzedEntity getOrCreateEntity(final String entityName, final AnalyzedEntity.ENTITY_TYPE entityType) {
-    AnalyzedEntity entity = entities.get(entityName);
-    if (entity == null) {
-      entity = new AnalyzedEntity(entityName, entityType, maxValueSampling);
-      entities.put(entityName, entity);
-    }
-    return entity;
+  public AnalyzedEntity getOrCreateEntity(final String entityName, final AnalyzedEntity.EntityType entityType) {
+    return entities.computeIfAbsent(entityName, n -> new AnalyzedEntity(n, entityType, maxValueSampling));
   }
 
   public void endParsing() {

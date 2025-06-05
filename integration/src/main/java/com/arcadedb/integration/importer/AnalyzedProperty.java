@@ -20,15 +20,16 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.schema.Type;
 
-import java.util.*;
+import java.util.HashSet;
+import java.util.Set;
 
 public class AnalyzedProperty {
   private final String      name;
   private final long        maxValueSampling;
-  private       Type        type;
   private final int         index;
-  private       String      lastContent;
   private final Set<String> contents            = new HashSet<>();
+  private       Type        type;
+  private       String      lastContent;
   private       boolean     candidateForInteger = true;
   private       boolean     candidateForDecimal = true;
   private       boolean     collectingSamples   = true;

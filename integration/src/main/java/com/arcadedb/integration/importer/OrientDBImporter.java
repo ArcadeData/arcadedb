@@ -44,10 +44,22 @@ import com.arcadedb.utility.FileUtils;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.zip.*;
+import java.io.EOFException;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.zip.GZIPInputStream;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.google.gson.stream.JsonToken.BEGIN_OBJECT;
@@ -87,7 +99,7 @@ public class OrientDBImporter {
   private              DatabaseFactory            factory;
   private              Database                   database;
   private              int                        batchSize                       = 10_000;
-  private              PHASE                      phase                           = PHASE.OFF; // phase1 = create DB and cache edges in RAM, phase2 = create vertices and edges
+  private              Phase                      phase                           = Phase.OFF; // phase1 = create DB and cache edges in RAM, phase2 = create vertices and edges
   private              long                       skippedRecordBecauseNullKey     = 0L;
   private              long                       skippedEdgeBecauseMissingVertex = 0l;
   private              long                       beginTime;
@@ -97,7 +109,7 @@ public class OrientDBImporter {
   private              boolean                    error                           = false;
   private              ImporterContext            context                         = new ImporterContext();
 
-  private enum PHASE {OFF, ANALYZE, CREATE_SCHEMA, CREATE_RECORDS, CREATE_EDGES}
+  private enum Phase {OFF, ANALYZE, CREATE_SCHEMA, CREATE_RECORDS, CREATE_EDGES}
 
   private static class OrientDBProperty {
     String              type;
@@ -198,7 +210,7 @@ public class OrientDBImporter {
 
     if (settings.expectedVertices < 1) {
       // COUNT RECORDS FIRST
-      phase = PHASE.ANALYZE;
+      phase = Phase.ANALYZE;
 
       // PARSE THE FILE THE 1ST TIME TO CREATE THE SCHEMA AND CACHE EDGES IN RAM
       logger.logLine(1, "No `expectedVertex` setting specified: parsing the file to count the total documents and vertex");
@@ -215,14 +227,14 @@ public class OrientDBImporter {
     this.compressedRecordsRidMap = new CompressedRID2RIDIndex(database, (int) settings.expectedVertices,
         (int) settings.expectedEdges);
 
-    phase = PHASE.CREATE_SCHEMA;
+    phase = Phase.CREATE_SCHEMA;
     totalAttributesParsed = 0L;
 
     // PARSE THE FILE THE 1ST TIME TO CREATE THE SCHEMA AND CACHE EDGES IN RAM
     logger.logLine(1, "Creation of the schema: types, properties and indexes");
     parseInputFile();
 
-    phase = PHASE.CREATE_EDGES;
+    phase = Phase.CREATE_EDGES;
 
     // PARSE THE FILE AGAIN TO CREATE RECORDS AND EDGES
     logger.logLine(1, "Creation of edges started: creating edges between vertices");
@@ -436,11 +448,11 @@ public class OrientDBImporter {
 
       final String className = (String) attributes.get("@class");
 
-      if (phase == PHASE.CREATE_SCHEMA || phase == PHASE.CREATE_RECORDS)
+      if (phase == Phase.CREATE_SCHEMA || phase == Phase.CREATE_RECORDS)
         createRecords(processedItems, attributes, className);
-      else if (phase == PHASE.CREATE_EDGES)
+      else if (phase == Phase.CREATE_EDGES)
         createEdges(processedItems, attributes, className);
-      else if (phase == PHASE.ANALYZE) {
+      else if (phase == Phase.ANALYZE) {
         if (!edgeClasses.contains(className))
           context.parsedDocumentAndVertices.incrementAndGet();
       }
@@ -569,9 +581,9 @@ public class OrientDBImporter {
             // INTERNAL ORIENTDB RECORD INDEX MGR, EXTRACT INDEXES
             parsedIndexes = (List<Map<String, Object>>) attributes.get("indexes");
 
-            if (phase == PHASE.CREATE_SCHEMA) {
+            if (phase == Phase.CREATE_SCHEMA) {
               logger.logLine(1, "Creation of records started: creating vertices and documents records (edges on the next phase)");
-              phase = PHASE.CREATE_RECORDS;
+              phase = Phase.CREATE_RECORDS;
               beginTimeRecordsCreation = System.currentTimeMillis();
             }
           } else {

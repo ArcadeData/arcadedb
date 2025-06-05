@@ -555,15 +555,22 @@ public enum Type {
           }
         }
       } else if (targetClass.equals(Instant.class)) {
-        if (value instanceof Instant instant) {
+        switch (value) {
+        case Instant instant -> {
           if (property != null)
             return instant.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
-        } else if (value instanceof Date date)
+        }
+        case Date date -> {
           return DateUtils.dateTime(database, date.getTime(), ChronoUnit.MILLIS, LocalDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
-        else if (value instanceof Calendar calendar)
+        }
+        case Calendar calendar -> {
           return DateUtils.dateTime(database, calendar.getTimeInMillis(), ChronoUnit.MILLIS, Instant.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
+        }
+        default -> {
+        }
+        }
       } else if (targetClass.equals(Identifiable.class) || targetClass.equals(RID.class)) {
         if (MultiValue.isMultiValue(value)) {
           final List<Identifiable> result = new ArrayList<>();

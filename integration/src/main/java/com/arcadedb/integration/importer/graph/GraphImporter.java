@@ -34,22 +34,23 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.Pair;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.logging.Level;
 
 public class GraphImporter {
   private final CompressedAny2RIDIndex       verticesIndex;
   private final DatabaseInternal             database;
   private final GraphImporterThreadContext[] threadContexts;
 
-  enum STATUS {IMPORTING_VERTEX, IMPORTING_EDGE, CLOSED}
+  enum Status {IMPORTING_VERTEX, IMPORTING_EDGE, CLOSED}
 
-  private STATUS status = STATUS.IMPORTING_VERTEX;
+  private Status status = Status.IMPORTING_VERTEX;
 
   public class GraphImporterThreadContext {
-    Binary                  vertexIndexThreadBuffer;
-    CompressedRID2RIDsIndex incomingConnectionsIndexThread;
-
+    Binary                                vertexIndexThreadBuffer;
+    CompressedRID2RIDsIndex               incomingConnectionsIndexThread;
     Long                                  lastSourceKey    = null;
     VertexInternal                        lastSourceVertex = null;
     List<GraphEngine.CreateEdgeOperation> connections      = new ArrayList<>();
@@ -60,7 +61,8 @@ public class GraphImporter {
     }
   }
 
-  public GraphImporter(final DatabaseInternal database, final int expectedVertices, final int expectedEdges, final Type idType) throws ClassNotFoundException {
+  public GraphImporter(final DatabaseInternal database, final int expectedVertices, final int expectedEdges, final Type idType)
+      throws ClassNotFoundException {
     this.database = database;
 
     final int parallel = database.async().getParallelLevel();
@@ -79,21 +81,21 @@ public class GraphImporter {
   }
 
   public void close(final EdgeLinkedCallback callback) {
-    database.commit();
+    if (database.isTransactionActive())
+      database.commit();
 
     database.async().waitCompletion();
 
-    for (int i = 0; i < threadContexts.length; ++i)
-      threadContexts[i].incomingConnectionsIndexThread.setReadOnly();
+    for (GraphImporterThreadContext threadContext : threadContexts)
+      threadContext.incomingConnectionsIndexThread.setReadOnly();
 
     createIncomingEdges(database, callback);
 
     database.async().waitCompletion();
 
-    for (int i = 0; i < threadContexts.length; ++i)
-      threadContexts[i] = null;
+    Arrays.fill(threadContexts, null);
 
-    status = STATUS.CLOSED;
+    status = Status.CLOSED;
   }
 
   public RID getVertex(final Binary vertexIndexThreadBuffer, final long vertexId) {
@@ -116,9 +118,8 @@ public class GraphImporter {
 
       database.async().createRecord(sourceVertex, newDocument -> {
         // PRE-CREATE OUT/IN CHUNKS TO SPEEDUP EDGE CREATION
-        final DatabaseInternal db = database;
-        db.getGraphEngine().createOutEdgeChunk(sourceVertex);
-        db.getGraphEngine().createInEdgeChunk(sourceVertex);
+        database.getGraphEngine().createOutEdgeChunk(sourceVertex);
+        database.getGraphEngine().createInEdgeChunk(sourceVertex);
 
         verticesIndex.put(transformedVertexId, newDocument.getIdentity());
       });
@@ -126,20 +127,25 @@ public class GraphImporter {
   }
 
   //TODO SUPPORT NOT ONLY LONGS AS VERTICES KEYS
-  public void createEdge(final long sourceVertexKey, final String edgeTypeName, final long destinationVertexKey, final Object[] edgeProperties,
-      final ImporterContext context, final ImporterSettings settings) {
+  public void createEdge(final long sourceVertexKey,
+      final String edgeTypeName,
+      final long destinationVertexKey,
+      final Object[] edgeProperties,
+      final ImporterContext context,
+      final ImporterSettings settings) {
     final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) database.async();
     final int slot = async.getSlot((int) sourceVertexKey);
 
     async.scheduleTask(slot,
-        new CreateEdgeFromImportTask(threadContexts[slot], edgeTypeName, sourceVertexKey, destinationVertexKey, edgeProperties, context, settings), true, 70);
+        new CreateEdgeFromImportTask(threadContexts[slot], edgeTypeName, sourceVertexKey, destinationVertexKey, edgeProperties,
+            context, settings), true, 70);
   }
 
   public void startImportingEdges() {
-    if (status != STATUS.IMPORTING_VERTEX)
+    if (status != Status.IMPORTING_VERTEX)
       throw new IllegalStateException("Cannot import edges on current status " + status);
 
-    status = STATUS.IMPORTING_EDGE;
+    status = Status.IMPORTING_EDGE;
 
     for (int i = 0; i < threadContexts.length; ++i)
       threadContexts[i].vertexIndexThreadBuffer = verticesIndex.getInternalBuffer().slice();
@@ -168,8 +174,7 @@ public class GraphImporter {
       for (int t = 0; t < threadContexts.length; ++t) {
         final List<Pair<RID, RID>> edges = threadContexts[t].incomingConnectionsIndexThread.get(destinationVertex);
         if (edges != null) {
-          for (int e = 0; e < edges.size(); ++e) {
-            final Pair<RID, RID> edge = edges.get(e);
+          for (final Pair<RID, RID> edge : edges) {
             connections.add(new Pair<>(edge.getFirst(), edge.getSecond()));
             ++browsedEdges;
           }
@@ -187,7 +192,8 @@ public class GraphImporter {
     }
 
     LogManager.instance()
-        .log(this, Level.INFO, "Linking back edges completed: browsedVertices=%d browsedEdges=%d verticesWithEdges=%d verticesWithNoEdges=%d", null,
+        .log(this, Level.INFO,
+            "Linking back edges completed: browsedVertices=%d browsedEdges=%d verticesWithEdges=%d verticesWithNoEdges=%d", null,
             browsedVertices, browsedEdges, verticesWithEdges, verticesWithNoEdges);
   }
 }

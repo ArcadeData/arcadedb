@@ -27,9 +27,14 @@ import com.arcadedb.database.RID;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
 
+import static com.arcadedb.schema.Property.CAT_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
+import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 
 public class RemoteImmutableDocument extends ImmutableDocument {
   protected final RemoteDatabase      remoteDatabase;
@@ -75,6 +80,7 @@ public class RemoteImmutableDocument extends ImmutableDocument {
   }
 
   public synchronized Object get(final String propertyName) {
+
     return map.get(propertyName);
   }
 
@@ -87,8 +93,8 @@ public class RemoteImmutableDocument extends ImmutableDocument {
   public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
     final HashMap<String, Object> result = new HashMap<>(map);
     if (includeMetadata) {
-      result.put("@cat", "d");
-      result.put("@type", getTypeName());
+      result.put(CAT_PROPERTY, "d");
+      result.put(TYPE_PROPERTY, getTypeName());
       if (getIdentity() != null)
         result.put(RID_PROPERTY, getIdentity().toString());
     }
@@ -99,8 +105,8 @@ public class RemoteImmutableDocument extends ImmutableDocument {
   public synchronized JSONObject toJSON(final boolean includeMetadata) {
     final JSONObject result = new JSONSerializer(database).map2json(map, null);
     if (includeMetadata) {
-      result.put("@cat", "d");
-      result.put("@type", getTypeName());
+      result.put(CAT_PROPERTY, "d");
+      result.put(TYPE_PROPERTY, getTypeName());
       if (getIdentity() != null)
         result.put(RID_PROPERTY, getIdentity().toString());
     }

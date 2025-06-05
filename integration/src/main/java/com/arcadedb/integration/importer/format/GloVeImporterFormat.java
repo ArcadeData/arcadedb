@@ -41,7 +41,7 @@ public class GloVeImporterFormat extends AbstractImporterFormat {
   private TextEmbeddingsImporter importer;
 
   @Override
-  public void load(final SourceSchema sourceSchema, final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
+  public void load(final SourceSchema sourceSchema, final AnalyzedEntity.EntityType entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
 
     context.parsed.set(0);
@@ -56,7 +56,7 @@ public class GloVeImporterFormat extends AbstractImporterFormat {
   }
 
   @Override
-  public SourceSchema analyze(final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final ImporterSettings settings,
+  public SourceSchema analyze(final AnalyzedEntity.EntityType entityType, final Parser parser, final ImporterSettings settings,
       final AnalyzedSchema analyzedSchema) throws IOException {
     return new SourceSchema(this, parser.getSource(), analyzedSchema);
   }
