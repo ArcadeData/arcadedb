@@ -320,7 +320,7 @@
                     <publishingServerId>central</publishingServerId>
                     <autoPublish>true</autoPublish>
                     <excludeArtifacts>
-                        arcadedb-coverage,arcadedb-e2e,arcadedb-e2e-perf
+                        arcadedb-coverage,arcadedb-e2e,arcadedb-e2e-perf,arcadedb-resilience-tests
                     </excludeArtifacts>
                 </configuration>
             </plugin>
