@@ -708,7 +708,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public Database setWALFlush(final WALFile.FLUSH_TYPE flush) {
+  public Database setWALFlush(final WALFile.FlushType flush) {
     return proxied.setWALFlush(flush);
   }
 

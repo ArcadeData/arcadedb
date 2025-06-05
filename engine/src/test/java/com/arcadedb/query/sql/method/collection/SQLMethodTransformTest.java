@@ -64,7 +64,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
@@ -531,7 +530,7 @@ class SQLMethodTransformTest {
       }
 
       @Override
-      public Database setWALFlush(WALFile.FLUSH_TYPE flush) {
+      public Database setWALFlush(WALFile.FlushType flush) {
         return null;
       }
 

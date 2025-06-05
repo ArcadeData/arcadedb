@@ -65,9 +65,9 @@ public class TransactionContext implements Transaction {
   private       Map<PageId, MutablePage>             modifiedPages;
   private       Map<PageId, MutablePage>             newPages;
   private       boolean                              useWAL;
-  private       boolean                              asyncFlush            = true;
-  private       WALFile.FLUSH_TYPE                   walFlush;
-  private       List<Integer>                        lockedFiles;
+  private boolean           asyncFlush            = true;
+  private WALFile.FlushType walFlush;
+  private List<Integer>     lockedFiles;
   private       long                                 txId                  = -1;
   private       STATUS                               status                = STATUS.INACTIVE;
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
@@ -195,7 +195,7 @@ public class TransactionContext implements Transaction {
   }
 
   @Override
-  public void setWALFlush(final WALFile.FLUSH_TYPE flush) {
+  public void setWALFlush(final WALFile.FlushType flush) {
     this.walFlush = flush;
   }
 

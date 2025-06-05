@@ -110,7 +110,7 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
 
     if (!USE_WAL) {
       database.setUseWAL(false);
-      database.setWALFlush(WALFile.FLUSH_TYPE.NO);
+      database.setWALFlush(WALFile.FlushType.NO);
     }
 
     final long begin = System.currentTimeMillis();
@@ -149,7 +149,7 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
           database.begin();
           if (!USE_WAL) {
             database.setUseWAL(false);
-            database.setWALFlush(WALFile.FLUSH_TYPE.NO);
+            database.setWALFlush(WALFile.FlushType.NO);
           }
         }
       }
@@ -205,7 +205,7 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
       //database.async().setBackPressure(0);
       database.async().setParallelLevel(PARALLEL);
       database.async().setTransactionUseWAL(false);
-      database.async().setTransactionSync(WALFile.FLUSH_TYPE.NO);
+      database.async().setTransactionSync(WALFile.FlushType.NO);
       database.async().setCommitEvery(5000);
       database.async().onError(new ErrorCallback() {
         @Override
