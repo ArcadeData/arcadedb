@@ -37,16 +37,21 @@ import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.serializer.JsonGraphSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
-import java.util.zip.*;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.logging.Level;
+import java.util.zip.GZIPOutputStream;
 
 public class JsonlExporterFormat extends AbstractExporterFormat {
   public static final  String             NAME       = "jsonl";
-  protected final      JSONObject         sharedJson = new JSONObject();
-  private              OutputStreamWriter writer;
   private final static int                VERSION    = 1;
+  private              OutputStreamWriter writer;
+  protected final      JSONObject         sharedJson = new JSONObject();
 
   public JsonlExporterFormat(final DatabaseInternal database, final ExporterSettings settings, final ExporterContext context,
       final ConsoleLogger logger) {

@@ -20,9 +20,10 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.log.LogManager;
 
-import java.io.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.concurrent.Callable;
+import java.util.logging.Level;
 
 public class Source {
   public final  String                                      url;

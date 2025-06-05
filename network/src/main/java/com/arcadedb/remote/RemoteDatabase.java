@@ -42,11 +42,13 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.io.*;
-import java.net.*;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.util.*;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+
+import static com.arcadedb.schema.Property.CAT_PROPERTY;
 
 /**
  * Remote Database implementation. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
@@ -534,17 +536,12 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   protected Record json2Record(final JSONObject result) {
     final Map<String, Object> map = result.toMap();
 
-    if (map.containsKey("@cat")) {
-      final String cat = result.getString("@cat");
+    if (map.containsKey(CAT_PROPERTY)) {
+      final String cat = result.getString(CAT_PROPERTY);
       switch (cat) {
-      case "d":
-        return new RemoteImmutableDocument(this, map);
-
-      case "v":
-        return new RemoteImmutableVertex(this, map);
-
-      case "e":
-        return new RemoteImmutableEdge(this, map);
+      case "d" -> new RemoteImmutableDocument(this, map);
+      case "v" -> new RemoteImmutableVertex(this, map);
+      case "e" -> new RemoteImmutableEdge(this, map);
       }
     }
     return null;

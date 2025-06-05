@@ -58,8 +58,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   public static final  int      _32MB     = 32 * 1024 * 1024;
 
   @Override
-  public void load(final SourceSchema sourceSchema, final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser,
-      final DatabaseInternal database, final ImporterContext context, final ImporterSettings settings) throws ImportException {
+  public void load(final SourceSchema sourceSchema,
+      final AnalyzedEntity.EntityType entityType, final Parser parser,
+      final DatabaseInternal database,
+      final ImporterContext context,
+      final ImporterSettings settings) throws ImportException {
 
     context.parsed.set(0);
 
@@ -428,7 +431,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   }
 
   @Override
-  public SourceSchema analyze(final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final ImporterSettings settings,
+  public SourceSchema analyze(final AnalyzedEntity.EntityType entityType, final Parser parser, final ImporterSettings settings,
       final AnalyzedSchema analyzedSchema) throws IOException {
     parser.reset();
 
@@ -470,9 +473,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     final List<String> fieldNames = new ArrayList<>();
 
-    final String entityName = entityType == AnalyzedEntity.ENTITY_TYPE.VERTEX ?
+    final String entityName = entityType == AnalyzedEntity.EntityType.VERTEX ?
         settings.vertexTypeName :
-        entityType == AnalyzedEntity.ENTITY_TYPE.EDGE ? settings.edgeTypeName : settings.documentTypeName;
+        entityType == AnalyzedEntity.EntityType.EDGE ? settings.edgeTypeName : settings.documentTypeName;
 
     long skipEntries = 0;
     final String header;

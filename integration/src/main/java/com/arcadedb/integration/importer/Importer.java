@@ -50,10 +50,10 @@ public class Importer extends AbstractImporter {
 
       startImporting();
 
-      loadFromSource(settings.url, AnalyzedEntity.ENTITY_TYPE.DATABASE, analyzedSchema);
-      loadFromSource(settings.documents, AnalyzedEntity.ENTITY_TYPE.DOCUMENT, analyzedSchema);
-      loadFromSource(settings.vertices, AnalyzedEntity.ENTITY_TYPE.VERTEX, analyzedSchema);
-      loadFromSource(settings.edges, AnalyzedEntity.ENTITY_TYPE.EDGE, analyzedSchema);
+      loadFromSource(settings.url, AnalyzedEntity.EntityType.DATABASE, analyzedSchema);
+      loadFromSource(settings.documents, AnalyzedEntity.EntityType.DOCUMENT, analyzedSchema);
+      loadFromSource(settings.vertices, AnalyzedEntity.EntityType.VERTEX, analyzedSchema);
+      loadFromSource(settings.edges, AnalyzedEntity.EntityType.EDGE, analyzedSchema);
 
       if (settings.probeOnly)
         return null;
@@ -77,7 +77,7 @@ public class Importer extends AbstractImporter {
     return context.toMap();
   }
 
-  protected void loadFromSource(final String url, AnalyzedEntity.ENTITY_TYPE entityType, final AnalyzedSchema analyzedSchema)
+  protected void loadFromSource(final String url, AnalyzedEntity.EntityType entityType, final AnalyzedSchema analyzedSchema)
       throws IOException {
     if (url == null)
       // SKIP IT

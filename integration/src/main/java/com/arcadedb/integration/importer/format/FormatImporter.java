@@ -31,10 +31,10 @@ import com.arcadedb.integration.importer.SourceSchema;
 import java.io.*;
 
 public interface FormatImporter {
-  void load(SourceSchema sourceSchema, AnalyzedEntity.ENTITY_TYPE entityType, Parser parser, DatabaseInternal database, ImporterContext context,
+  void load(SourceSchema sourceSchema, AnalyzedEntity.EntityType entityType, Parser parser, DatabaseInternal database, ImporterContext context,
       ImporterSettings settings) throws IOException;
 
-  SourceSchema analyze(AnalyzedEntity.ENTITY_TYPE entityType, Parser parser, ImporterSettings settings, AnalyzedSchema analyzedSchema) throws IOException;
+  SourceSchema analyze(AnalyzedEntity.EntityType entityType, Parser parser, ImporterSettings settings, AnalyzedSchema analyzedSchema) throws IOException;
 
   String getFormat();
 
