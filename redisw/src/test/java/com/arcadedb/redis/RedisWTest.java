@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
+import static com.arcadedb.schema.Property.PROPERTY_TYPES_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -168,6 +169,7 @@ public class RedisWTest extends BaseGraphServerTest {
       doc.remove(TYPE_PROPERTY);
       doc.remove(RID_PROPERTY);
       doc.remove(CAT_PROPERTY);
+      doc.remove(PROPERTY_TYPES_PROPERTY);
 
       assertThat(doc.toMap()).isEqualTo(expectedJson.toMap());
 
@@ -178,6 +180,7 @@ public class RedisWTest extends BaseGraphServerTest {
       doc.remove(TYPE_PROPERTY);
       doc.remove(RID_PROPERTY);
       doc.remove(CAT_PROPERTY);
+      doc.remove(PROPERTY_TYPES_PROPERTY);
 
       assertThat(doc.toMap()).isEqualTo(expectedJson.toMap());
 
@@ -187,6 +190,7 @@ public class RedisWTest extends BaseGraphServerTest {
       assertThat(doc.getString(TYPE_PROPERTY)).isEqualTo("Account");
       doc.remove(TYPE_PROPERTY);
       doc.remove(CAT_PROPERTY);
+      doc.remove(PROPERTY_TYPES_PROPERTY);
 
       // SAVE THE RID TO BE RETRIEVED IN THE MGET
       final Object rid = doc.remove(RID_PROPERTY);
@@ -201,6 +205,7 @@ public class RedisWTest extends BaseGraphServerTest {
       doc.remove(RID_PROPERTY);
       doc.remove(TYPE_PROPERTY);
       doc.remove(CAT_PROPERTY);
+      doc.remove(PROPERTY_TYPES_PROPERTY);
 
       assertThat(doc.toMap()).isEqualTo(expectedJson.toMap());
     }

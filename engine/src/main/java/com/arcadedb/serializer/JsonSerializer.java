@@ -27,13 +27,12 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
 import static com.arcadedb.schema.Property.IN_PROPERTY;
@@ -93,6 +92,7 @@ public class JsonSerializer {
         .setDateFormat(database.getSchema().getDateFormat())
         .setDateTimeFormat(database.getSchema().getDateTimeFormat());
 
+    DocumentType type = null;
     if (result.isElement()) {
       final Document document = result.toElement();
       if (document.getIdentity() != null)
@@ -100,10 +100,28 @@ public class JsonSerializer {
       object.put(TYPE_PROPERTY, document.getTypeName());
 
       setMetadata(document, object);
+
+      type = document.getType();
     }
 
-    for (final String p : result.getPropertyNames()) {
-      Object value = result.getProperty(p);
+    final StringBuilder propertyTypes = new StringBuilder();
+
+    for (final String propertyName : result.getPropertyNames()) {
+      Object value = result.getProperty(propertyName);
+
+      final Type propertyType;
+      if (type != null && type.existsProperty(propertyName))
+        propertyType = type.getProperty(propertyName).getType();
+      else if (value != null)
+        propertyType = Type.getTypeByClass(value.getClass());
+      else
+        propertyType = null;
+
+      if (propertyType != null) {
+        if (propertyTypes.length() > 0)
+          propertyTypes.append(",");
+        propertyTypes.append(propertyName).append(":").append(propertyType.getId());
+      }
 
       if (value == null)
         value = JSONObject.NULL;
@@ -120,7 +138,7 @@ public class JsonSerializer {
 
       value = convertNonNumbers(value);
 
-      object.put(p, value);
+      object.put(propertyName, value);
     }
 
     return object;

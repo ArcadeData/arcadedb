@@ -18,7 +18,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.util.Set;
+import java.util.*;
 
 /**
  * Schema Property.
@@ -28,11 +28,15 @@ import java.util.Set;
 @ExcludeFromJacocoGeneratedReport
 public interface Property {
 
-  String RID_PROPERTY  = "@rid";
-  String TYPE_PROPERTY = "@type";
-  String IN_PROPERTY   = "@in";
-  String OUT_PROPERTY  = "@out";
-  String CAT_PROPERTY  = "@cat";
+  String RID_PROPERTY            = "@rid";
+  String TYPE_PROPERTY           = "@type";
+  String IN_PROPERTY             = "@in";
+  String OUT_PROPERTY            = "@out";
+  String CAT_PROPERTY            = "@cat";
+  String PROPERTY_TYPES_PROPERTY = "@props";
+
+  Set<String> METADATA_PROPERTIES = Set.of(RID_PROPERTY, TYPE_PROPERTY, IN_PROPERTY, OUT_PROPERTY, CAT_PROPERTY,
+      PROPERTY_TYPES_PROPERTY);
 
   Index createIndex(Schema.INDEX_TYPE type, boolean unique);
 

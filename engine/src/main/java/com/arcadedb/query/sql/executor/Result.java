@@ -111,12 +111,12 @@ public interface Result {
 
     final JSONObject result = new JSONObject();
     for (final String prop : getPropertyNames())
-      result.put(prop, toJson(getProperty(prop)));
+      result.put(prop, valueToJSON(getProperty(prop)));
 
     return result;
   }
 
-  default Object toJson(final Object val) {
+  default Object valueToJSON(final Object val) {
     if (val != null) {
       if (val instanceof Result result) {
         return result.toJSON();
@@ -125,12 +125,12 @@ public interface Result {
       } else if (val instanceof Iterable<?> iterable) {
         final JSONArray array = new JSONArray();
         for (final Object o : iterable)
-          array.put(toJson(o));
+          array.put(valueToJSON(o));
         return array;
       } else if (val instanceof Iterator<?> iterator) {
         final JSONArray array = new JSONArray();
         while (iterator.hasNext())
-          array.put(toJson(iterator.next()));
+          array.put(valueToJSON(iterator.next()));
         return array;
       } else if (val instanceof Map) {
         return new JSONObject((Map<String, Object>) val);

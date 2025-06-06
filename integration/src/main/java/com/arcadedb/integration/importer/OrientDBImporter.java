@@ -557,7 +557,7 @@ public class OrientDBImporter {
       return null;
 
     final RID recordRid = new RID(database, rid);
-    final String recordType = (String) attributes.get("@type");
+    final String recordType = (String) attributes.get(Property.TYPE_PROPERTY);
     if (recordType != null) {
       switch (recordType) {
       case "b":
@@ -727,7 +727,7 @@ public class OrientDBImporter {
   }
 
   private void createEdges(final Map<String, Object> attributes) {
-    final String recordType = (String) attributes.get("@type");
+    final String recordType = (String) attributes.get(Property.TYPE_PROPERTY);
     if (recordType == null || !recordType.equals("d"))
       return;
 

@@ -24,13 +24,14 @@ import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.JSONSerializer;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
+import java.util.logging.*;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
@@ -41,27 +42,40 @@ public class RemoteImmutableDocument extends ImmutableDocument {
   protected final Map<String, Object> map;
 
   protected RemoteImmutableDocument(final RemoteDatabase remoteDatabase, final Map<String, Object> attributes) {
-    super(null, remoteDatabase.getSchema().getType((String) attributes.get("@type")), null, null);
+    super(null, remoteDatabase.getSchema().getType((String) attributes.get(Property.TYPE_PROPERTY)), null, null);
     this.remoteDatabase = remoteDatabase;
-    this.map = new HashMap<>(attributes);
 
-    final String ridAsString = (String) map.remove(RID_PROPERTY);
+    this.map = new HashMap<>(attributes.size());
+
+    final Map<String, Type> propTypes = parsePropertyTypes((String) attributes.get(Property.PROPERTY_TYPES_PROPERTY));
+
+    for (Map.Entry<String, Object> entry : attributes.entrySet()) {
+      final String fieldName = entry.getKey();
+      if (!Property.METADATA_PROPERTIES.contains(fieldName)) {
+        Object value = entry.getValue();
+
+        final Property property = type.getPolymorphicPropertyIfExists(fieldName);
+        final Type propType = property != null ? property.getType() : propTypes.get(fieldName);
+
+        Class javaImplementation = value != null ? value.getClass() : null;
+        if (propType == Type.DATE)
+          javaImplementation = remoteDatabase.getSerializer().getDateImplementation();
+        else if (propType == Type.DATETIME)
+          javaImplementation = remoteDatabase.getSerializer().getDateTimeImplementation();
+        else if (propType != null)
+          javaImplementation = propType.getDefaultJavaType();
+
+        value = Type.convert(null, value, javaImplementation, property);
+
+        map.put(fieldName, value);
+      }
+    }
+
+    final String ridAsString = (String) attributes.get(RID_PROPERTY);
     if (ridAsString != null)
       this.rid = new RID(remoteDatabase, ridAsString);
     else
       this.rid = null;
-
-    map.remove("@type");
-    map.remove("@out");
-    map.remove("@in");
-    map.remove("@cat");
-  }
-
-  protected RemoteImmutableDocument(final RemoteDatabase remoteDatabase, final Map<String, Object> attributes,
-      final String typeName, final RID rid) {
-    super(null, remoteDatabase.getSchema().getType(typeName), rid, null);
-    this.remoteDatabase = remoteDatabase;
-    this.map = new HashMap<>(attributes);
   }
 
   @Override
@@ -103,7 +117,7 @@ public class RemoteImmutableDocument extends ImmutableDocument {
 
   @Override
   public synchronized JSONObject toJSON(final boolean includeMetadata) {
-    final JSONObject result = new JSONSerializer(database).map2json(map, null);
+    final JSONObject result = new JSONSerializer(database).map2json(map, type, includeMetadata);
     if (includeMetadata) {
       result.put(CAT_PROPERTY, "d");
       result.put(TYPE_PROPERTY, getTypeName());
@@ -136,5 +150,24 @@ public class RemoteImmutableDocument extends ImmutableDocument {
   @Override
   protected boolean checkForLazyLoading() {
     return false;
+  }
+
+  private Map<String, Type> parsePropertyTypes(final String propTypesAsString) {
+    Map<String, Type> propTypes = null;
+    if (propTypesAsString != null) {
+      for (String entry : propTypesAsString.split(",")) {
+        try {
+          final String[] entryPair = entry.split(":");
+          if (entryPair.length == 2) {
+            final Type propType = Type.getById((byte) Integer.parseInt(entryPair[1]));
+            propTypes.put(entryPair[0], propType);
+          } else
+            LogManager.instance().log(this, Level.SEVERE, "Error parsing property types " + entryPair);
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error parsing property types", e);
+        }
+      }
+    }
+    return propTypes != null ? propTypes : Collections.emptyMap();
   }
 }

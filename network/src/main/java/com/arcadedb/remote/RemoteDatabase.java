@@ -35,18 +35,18 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.Map;
+import java.net.http.*;
+import java.util.*;
+import java.util.logging.*;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
 
@@ -59,6 +59,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   public static final String ARCADEDB_SESSION_ID = "arcadedb-session-id";
 
   private final String                               databaseName;
+  private       BinarySerializer                     serializer;
   private       String                               sessionId;
   private       Database.TRANSACTION_ISOLATION_LEVEL transactionIsolationLevel = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private final RemoteSchema                         schema                    = new RemoteSchema(this);
@@ -73,6 +74,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       final String userPassword, final ContextConfiguration configuration) {
     super(server, port, userName, userPassword, configuration);
     this.databaseName = databaseName;
+    try {
+      this.serializer = new BinarySerializer(configuration);
+    } catch (ClassNotFoundException e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error creating BinarySerializer", e);
+    }
   }
 
   @Override
@@ -145,24 +151,24 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   @Override
-  public void transaction(final BasicDatabase.TransactionScope txBlock) {
+  public void transaction(final TransactionScope txBlock) {
     transaction(txBlock, true, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES), null, null);
   }
 
   @Override
-  public boolean transaction(final BasicDatabase.TransactionScope txBlock, final boolean joinCurrentTransaction) {
+  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTransaction) {
     return transaction(txBlock, joinCurrentTransaction, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES), null,
         null);
   }
 
   @Override
-  public boolean transaction(final BasicDatabase.TransactionScope txBlock, final boolean joinCurrentTransaction, int attempts) {
+  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTransaction, int attempts) {
     return transaction(txBlock, joinCurrentTransaction, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES), null,
         null);
   }
 
   @Override
-  public boolean transaction(final BasicDatabase.TransactionScope txBlock, final boolean joinCurrentTransaction, int attempts,
+  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTransaction, int attempts,
       final OkCallback ok, final ErrorCallback error) {
     checkDatabaseIsOpen();
     if (txBlock == null)
@@ -591,5 +597,13 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   protected void checkDatabaseIsOpen() {
     if (!open)
       throw new DatabaseIsClosedException(databaseName);
+  }
+
+  public BinarySerializer getSerializer() {
+    return serializer;
+  }
+
+  public void setSerializer(final BinarySerializer serializer) {
+    this.serializer = serializer;
   }
 }

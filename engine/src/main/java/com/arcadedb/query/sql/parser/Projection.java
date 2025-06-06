@@ -25,6 +25,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.schema.Property;
 
 import java.util.*;
 import java.util.stream.*;
@@ -129,8 +130,8 @@ public class Projection extends SimpleNode {
           if (!excludes.contains(RID_PROPERTY)) {
             result.setProperty(RID_PROPERTY, doc.getIdentity());
           }
-          if (!excludes.contains("@type")) {
-            result.setProperty("@type", doc.getType().getName());
+          if (!excludes.contains(Property.TYPE_PROPERTY)) {
+            result.setProperty(Property.TYPE_PROPERTY, doc.getType().getName());
           }
 
           Document detached = doc.detach(true);

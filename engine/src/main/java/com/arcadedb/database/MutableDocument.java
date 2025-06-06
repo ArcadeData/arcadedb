@@ -25,14 +25,8 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.lang.reflect.Array;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.lang.reflect.*;
+import java.util.*;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
@@ -121,7 +115,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
     checkForLazyLoadingProperties();
-    final JSONObject result = new JSONSerializer(database).map2json(map, type);
+    final JSONObject result = new JSONSerializer(database).map2json(map, type, includeMetadata);
     if (includeMetadata) {
       result.put(CAT_PROPERTY, "d");
       result.put(TYPE_PROPERTY, type.getName());
@@ -407,7 +401,6 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     if (property != null) {
       try {
         final Type propType = property.getType();
-        final String ofType = property.getOfType();
 
         final Class javaImplementation;
         if (propType == Type.DATE)
@@ -423,6 +416,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
               final Map<String, Object> map = (Map<String, Object>) value;
               final String embType = (String) map.get("@type");
 
+              final String ofType = property.getOfType();
               if (ofType != null) {
                 // VALIDATE CONSTRAINT
                 if (!ofType.equals(embType)) {

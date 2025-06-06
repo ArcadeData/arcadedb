@@ -25,14 +25,10 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.schema.Property;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.stream.*;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.schema.Property.TYPE_PROPERTY;
@@ -128,8 +124,8 @@ public class NestedProjection extends SimpleNode {
     final Document elem = input;
     final ResultInternal result = new ResultInternal(context.getDatabase());
     if (starItem != null || includeItems.isEmpty()) {
-      addPropertyToResult(expression, context, recursion, RID_PROPERTY, elem.getIdentity(), result);
-      addPropertyToResult(expression, context, recursion, "@type", elem.getTypeName(), result);
+      addPropertyToResult(expression, context, recursion, Property.RID_PROPERTY, elem.getIdentity(), result);
+      addPropertyToResult(expression, context, recursion, Property.TYPE_PROPERTY, elem.getTypeName(), result);
 
       for (final String property : elem.getPropertyNames())
         addPropertyToResult(expression, context, recursion, property, elem.get(property), result);

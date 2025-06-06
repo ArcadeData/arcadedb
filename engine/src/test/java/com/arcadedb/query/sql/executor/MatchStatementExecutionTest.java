@@ -28,6 +28,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.schema.Property;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -752,7 +753,7 @@ public class MatchStatementExecutionTest extends TestHelper {
     assertThat(qResult.hasNext()).isFalse();
     qResult.close();
 
-    assertThat(item.<String>getProperty("@type")).isEqualTo("Employee");
+    assertThat(item.<String>getProperty(Property.TYPE_PROPERTY)).isEqualTo("Employee");
   }
 
   private Document getManager(final String personName) {

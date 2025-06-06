@@ -5,6 +5,7 @@ import com.arcadedb.database.JSONSerializer;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -53,8 +54,8 @@ public class JSONSerializerTest extends TestHelper {
       JSONObject json = document.toJSON(true);
 
       // check AnotherType
-      assertThat(json.getString("@type")).isEqualTo("AnotherType");
-      assertThat(json.getString(RID_PROPERTY)).isNotNull();
+      assertThat(json.getString(Property.TYPE_PROPERTY)).isEqualTo("AnotherType");
+      assertThat(json.getString(Property.RID_PROPERTY)).isNotNull();
       assertThat(json.getJSONArray("list")).containsExactly("value1", "value2");
       assertThat(json.getJSONObject("map")).satisfies(map -> {
         assertThat(map.get("key1")).isEqualTo("value1");
@@ -63,7 +64,7 @@ public class JSONSerializerTest extends TestHelper {
 
       // check embedded TestType
       assertThat(json.getJSONObject("embedded")).satisfies(map -> {
-        assertThat(map.get("@type")).isEqualTo("TestType");
+        assertThat(map.get(Property.TYPE_PROPERTY)).isEqualTo("TestType");
         assertThat(map.get("key1")).isEqualTo("foo");
         assertThat(map.get("key2")).isEqualTo(11);
       });
@@ -78,7 +79,7 @@ public class JSONSerializerTest extends TestHelper {
     map.put("key1", "value1");
     map.put("key2", 123);
 
-    JSONObject json = jsonSerializer.map2json(map, testType);
+    JSONObject json = jsonSerializer.map2json(map, testType, false);
 
     assertThat(json.getString("key1")).isEqualTo("value1");
     assertThat(json.getInt("key2")).isEqualTo(123);
@@ -102,7 +103,7 @@ public class JSONSerializerTest extends TestHelper {
     map.put("key1", "value1");
     map.put("key2", 123);
 
-    Object jsonType = jsonSerializer.map2json(map, testType);
+    Object jsonType = jsonSerializer.map2json(map, testType, false);
 
     assertThat(jsonType).isInstanceOf(JSONObject.class);
     JSONObject json = (JSONObject) jsonType;

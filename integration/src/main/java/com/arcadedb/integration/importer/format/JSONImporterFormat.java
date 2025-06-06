@@ -261,22 +261,22 @@ public class JSONImporterFormat implements FormatImporter {
       return null;
     //return saveAnonymousRecord(database, settings, (Map<String, Object>) attributes.map);
 
-    if (!mapping.has("@cat")) {
+    if (!mapping.has(Property.CAT_PROPERTY)) {
       LogManager.instance()
           .log(this, Level.WARNING, "No @cat tag defined in mapping object. The following object will be skipped %s", attributes);
       context.errors.incrementAndGet();
       return null;
     }
 
-    if (!mapping.has("@type")) {
+    if (!mapping.has(Property.TYPE_PROPERTY)) {
       LogManager.instance()
           .log(this, Level.WARNING, "No @type tag defined in mapping object. The following object will be skipped %s", attributes);
       context.errors.incrementAndGet();
       return null;
     }
 
-    String category = mapping.getString("@cat");
-    String typeName = mapping.getString("@type");
+    String category = mapping.getString(Property.CAT_PROPERTY);
+    String typeName = mapping.getString(Property.TYPE_PROPERTY);
 
     if (typeName.startsWith("<") && typeName.endsWith(">")) {
       // GET TYPE NAME FROM THE OBJECT
@@ -479,8 +479,8 @@ public class JSONImporterFormat implements FormatImporter {
         // TREAT THE VALUE AS ID
         attributeMap = new LinkedHashMap<>();
 
-      final String subCategory = mappingObject.has("@cat") ? mappingObject.getString("@cat") : null;
-      final String subTypeName = mappingObject.has("@type") ? mappingObject.getString("@type") : null;
+      final String subCategory = mappingObject.has(Property.CAT_PROPERTY) ? mappingObject.getString(Property.CAT_PROPERTY) : null;
+      final String subTypeName = mappingObject.has(Property.TYPE_PROPERTY) ? mappingObject.getString(Property.TYPE_PROPERTY) : null;
 
       if ("e".equals(subCategory)) {
         // TRANSFORM INTO AN EDGE
