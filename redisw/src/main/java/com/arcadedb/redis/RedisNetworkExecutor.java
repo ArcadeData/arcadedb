@@ -282,7 +282,7 @@ public class RedisNetworkExecutor extends Thread {
     final String key = (String) list.get(2);
 
     final Record record = getRecord(bucketName, key);
-    respondValue(record != null ? record.toJSON() : null, true);
+    respondValue(record != null ? record.toJSON(true) : null, true);
   }
 
   private void hMGet(final List<Object> list) {
@@ -297,7 +297,7 @@ public class RedisNetworkExecutor extends Thread {
     for (int i = 0; i < records.size(); i++) {
       appendCrLf();
       final Record record = records.get(i);
-      respondValue(record != null ? record.toJSON() : null, true);
+      respondValue(record != null ? record.toJSON(true) : null, true);
     }
   }
 

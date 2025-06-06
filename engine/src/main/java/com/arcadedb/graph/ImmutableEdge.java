@@ -27,6 +27,7 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -89,9 +90,9 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
 
   @Override
   public synchronized Object get(final String propertyName) {
-    if ("@in".equals(propertyName))
+    if (Property.IN_PROPERTY.equals(propertyName))
       return in;
-    else if ("@out".equals(propertyName))
+    else if (Property.OUT_PROPERTY.equals(propertyName))
       return out;
     return super.get(propertyName);
   }
@@ -150,9 +151,9 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
     final Map<String, Object> map = super.toMap(includeMetadata);
     if (includeMetadata) {
-      map.put("@cat", "e");
-      map.put("@in", in);
-      map.put("@out", out);
+      map.put(Property.CAT_PROPERTY, "e");
+      map.put(Property.IN_PROPERTY, in);
+      map.put(Property.OUT_PROPERTY, out);
     }
     return map;
   }
@@ -161,7 +162,7 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   public synchronized JSONObject toJSON(final boolean includeMetadata) {
     final JSONObject json = super.toJSON(includeMetadata);
     if (includeMetadata)
-      json.put("@cat", "e").put("@in", in).put("@out", out);
+      json.put(Property.CAT_PROPERTY, "e").put(Property.IN_PROPERTY, in).put(Property.OUT_PROPERTY, out);
     return json;
   }
 

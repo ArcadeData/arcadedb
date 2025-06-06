@@ -27,6 +27,7 @@ import com.arcadedb.graph.IterableGraph;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
@@ -155,8 +156,8 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
   public Map<String, Object> toMap(final boolean includeMetadata) {
     final Map<String, Object> result = new HashMap<>(map);
     if (includeMetadata) {
-      result.put("@cat", "v");
-      result.put("@type", getTypeName());
+      result.put(Property.CAT_PROPERTY, "v");
+      result.put(Property.TYPE_PROPERTY, getTypeName());
       if (getIdentity() != null)
         result.put(RID_PROPERTY, getIdentity().toString());
     }
@@ -165,10 +166,10 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
 
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
-    final JSONObject result = new JSONSerializer(database).map2json(map, null);
+    final JSONObject result = new JSONSerializer(database).map2json(map, type, includeMetadata);
     if (includeMetadata) {
-      result.put("@cat", "v");
-      result.put("@type", getTypeName());
+      result.put(Property.CAT_PROPERTY, "v");
+      result.put(Property.TYPE_PROPERTY, getTypeName());
       if (getIdentity() != null)
         result.put(RID_PROPERTY, getIdentity().toString());
     }

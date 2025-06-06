@@ -25,6 +25,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.Property;
 
 import java.util.*;
 import java.util.stream.*;
@@ -113,7 +114,7 @@ public class Json extends SimpleNode {
 
     for (final JsonItem item : items) {
       final String left = item.getLeftValue();
-      if (left != null && left.toLowerCase(Locale.ENGLISH).equals("@type")) {
+      if (left != null && left.toLowerCase(Locale.ENGLISH).equals(Property.TYPE_PROPERTY)) {
         return String.valueOf(item.right.execute((Result) null, context));
       }
     }

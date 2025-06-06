@@ -28,6 +28,7 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
@@ -88,8 +89,8 @@ public class RemoteMutableEdge extends MutableEdge {
   public Map<String, Object> toMap(final boolean includeMetadata) {
     final Map<String, Object> result = new HashMap<>(map);
     if (includeMetadata) {
-      result.put("@cat", "e");
-      result.put("@type", getTypeName());
+      result.put(Property.CAT_PROPERTY, "e");
+      result.put(Property.TYPE_PROPERTY, getTypeName());
       if (getIdentity() != null)
         result.put(RID_PROPERTY, getIdentity().toString());
     }
@@ -98,10 +99,10 @@ public class RemoteMutableEdge extends MutableEdge {
 
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
-    final JSONObject result = new JSONSerializer(database).map2json(map, null);
+    final JSONObject result = new JSONSerializer(database).map2json(map, type, includeMetadata);
     if (includeMetadata) {
-      result.put("@cat", "e");
-      result.put("@type", getTypeName());
+      result.put(Property.CAT_PROPERTY, "e");
+      result.put(Property.TYPE_PROPERTY, getTypeName());
       if (getIdentity() != null)
         result.put(RID_PROPERTY, getIdentity().toString());
     }

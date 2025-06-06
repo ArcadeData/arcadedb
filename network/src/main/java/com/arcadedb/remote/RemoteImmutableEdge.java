@@ -24,10 +24,10 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 
@@ -37,11 +37,8 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
 
   public RemoteImmutableEdge(final RemoteDatabase database, final Map<String, Object> properties) {
     super(database, properties);
-    this.out = new RID(remoteDatabase, (String) properties.get("@out"));
-    this.in = new RID(remoteDatabase, (String) properties.get("@in"));
-
-    map.remove("@cat");
-    map.remove("@type");
+    this.out = new RID(remoteDatabase, (String) properties.get(RemoteProperty.OUT_PROPERTY));
+    this.in = new RID(remoteDatabase, (String) properties.get(RemoteProperty.IN_PROPERTY));
   }
 
   @Override
@@ -106,8 +103,8 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
   public Map<String, Object> toMap(final boolean includeMetadata) {
     final Map<String, Object> result = new HashMap<>(map);
     if (includeMetadata) {
-      result.put("@cat", "e");
-      result.put("@type", getTypeName());
+      result.put(Property.CAT_PROPERTY, "e");
+      result.put(Property.TYPE_PROPERTY, getTypeName());
       if (getIdentity() != null)
         result.put(RID_PROPERTY, getIdentity().toString());
     }
@@ -116,10 +113,10 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
 
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
-    final JSONObject result = new JSONSerializer(database).map2json(map, null);
+    final JSONObject result = new JSONSerializer(database).map2json(map, type, includeMetadata);
     if (includeMetadata) {
-      result.put("@cat", "e");
-      result.put("@type", getTypeName());
+      result.put(Property.CAT_PROPERTY, "e");
+      result.put(Property.TYPE_PROPERTY, getTypeName());
       if (getIdentity() != null)
         result.put(RID_PROPERTY, getIdentity().toString());
     }

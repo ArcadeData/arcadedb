@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
@@ -112,7 +113,7 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   public JSONObject toJSON(final boolean includeMetadata) {
     final JSONObject json = super.toJSON(includeMetadata);
     if (includeMetadata)
-      json.put("@cat", "e").put("@in", in).put("@out", out);
+      json.put(Property.CAT_PROPERTY, "e").put("@in", in).put("@out", out);
     return json;
   }
 

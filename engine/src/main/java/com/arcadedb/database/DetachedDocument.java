@@ -21,11 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 
@@ -93,8 +89,8 @@ public class DetachedDocument extends ImmutableDocument {
   public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
     final Map<String, Object> result = new HashMap<>(map);
     if (includeMetadata) {
-      result.put("@cat", "d");
-      result.put("@type", type.getName());
+      result.put(Property.CAT_PROPERTY, "d");
+      result.put(Property.TYPE_PROPERTY, type.getName());
       if (getIdentity() != null)
         result.put(RID_PROPERTY, getIdentity().toString());
     }
@@ -103,10 +99,10 @@ public class DetachedDocument extends ImmutableDocument {
 
   @Override
   public synchronized JSONObject toJSON(final boolean includeMetadata) {
-    final JSONObject result = new JSONSerializer(database).map2json(map, null);
+    final JSONObject result = new JSONSerializer(database).map2json(map, type, includeMetadata);
     if (includeMetadata) {
-      result.put("@cat", "d");
-      result.put("@type", type.getName());
+      result.put(Property.CAT_PROPERTY, "d");
+      result.put(Property.TYPE_PROPERTY, type.getName());
       if (getIdentity() != null)
         result.put(RID_PROPERTY, getIdentity().toString());
     }

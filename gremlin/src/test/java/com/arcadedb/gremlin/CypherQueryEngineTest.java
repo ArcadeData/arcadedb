@@ -85,7 +85,7 @@ public class CypherQueryEngineTest {
           final Map<String, Object> parent = parentAsResult.toMap();
           parent.computeIfPresent(RID_PROPERTY, (k, v) -> Objects.toString(v));
           parent.put(CAT_PROPERTY, "v");
-          final Map<String, Object> vertexMap = v1.toJSON().toMap();
+          final Map<String, Object> vertexMap = v1.toJSON(true).toMap();
           assertThat(parent).isEqualTo(vertexMap);
 
           // Transform rid from result to string as in vertex

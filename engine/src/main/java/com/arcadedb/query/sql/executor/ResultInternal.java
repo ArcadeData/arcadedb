@@ -24,6 +24,7 @@ import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.schema.Property;
 
 import java.util.*;
 import java.util.stream.*;
@@ -182,7 +183,7 @@ public class ResultInternal implements Result {
       final Document elem = document;
       final ResultInternal result = new ResultInternal(elem.toMap(false));
       if (elem.getTypeName() != null)
-        result.setProperty("@type", elem.getTypeName());
+        result.setProperty(Property.TYPE_PROPERTY, elem.getTypeName());
       return result;
 
     } else if (input instanceof List list) {

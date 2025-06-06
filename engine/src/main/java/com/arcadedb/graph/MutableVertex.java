@@ -25,6 +25,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Transaction;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -222,7 +223,7 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   public Map<String, Object> toMap(final boolean includeMetadata) {
     final Map<String, Object> map = super.toMap(includeMetadata);
     if (includeMetadata)
-      map.put("@cat", "v");
+      map.put(Property.CAT_PROPERTY, "v");
     return map;
   }
 
@@ -230,7 +231,7 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   public JSONObject toJSON(final boolean includeMetadata) {
     final JSONObject json = super.toJSON(includeMetadata);
     if (includeMetadata)
-      json.put("@cat", "v");
+      json.put(Property.CAT_PROPERTY, "v");
     return json;
   }
 
