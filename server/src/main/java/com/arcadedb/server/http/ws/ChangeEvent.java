@@ -45,7 +45,7 @@ public class ChangeEvent {
   public String toJSON() {
     final var jsonObject = new JSONObject();
     jsonObject.put("changeType", this.type.toString().toLowerCase(Locale.ENGLISH));
-    jsonObject.put("record", this.record.toJSON());
+    jsonObject.put("record", this.record.toJSON(true));
     jsonObject.put("database", this.record.getDatabase().getName());
     return jsonObject.toString();
   }

@@ -102,7 +102,7 @@ public class ImmutableDocument extends BaseDocument {
     checkForLazyLoading();
     final Map<String, Object> map = database.getSerializer()
         .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
-    final JSONObject result = new JSONSerializer(database).map2json(map, null);
+    final JSONObject result = new JSONSerializer(database).map2json(map, type, includeMetadata);
     if (includeMetadata) {
       result.put(CAT_PROPERTY, "d");
       result.put(TYPE_PROPERTY, type.getName());

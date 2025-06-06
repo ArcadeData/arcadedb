@@ -22,24 +22,15 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalVertexType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
-import java.time.temporal.ChronoUnit;
-import java.time.temporal.Temporal;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.logging.Level;
+import java.time.temporal.*;
+import java.util.*;
+import java.util.logging.*;
 
 public class JSONSerializer {
   private final Database database;
@@ -48,7 +39,8 @@ public class JSONSerializer {
     this.database = database;
   }
 
-  public JSONObject map2json(final Map<String, Object> map, final DocumentType type, final String... includeProperties) {
+  public JSONObject map2json(final Map<String, Object> map, final DocumentType type, final boolean includeMetadata,
+      final String... includeProperties) {
     final JSONObject json = new JSONObject();
 
     final Set<String> includePropertiesSet;
@@ -57,27 +49,44 @@ public class JSONSerializer {
     else
       includePropertiesSet = null;
 
+    final StringBuilder propertyTypes = includeMetadata ? new StringBuilder() : null;
+
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
-      if (includePropertiesSet != null && !includePropertiesSet.contains(entry.getKey()))
+      final String propertyName = entry.getKey();
+
+      if (includePropertiesSet != null && !includePropertiesSet.contains(propertyName))
         continue;
 
+      Object value = entry.getValue();
+
       final Type propertyType;
-      if (type != null && type.existsProperty(entry.getKey()))
-        propertyType = type.getProperty(entry.getKey()).getType();
+      if (type != null && type.existsProperty(propertyName))
+        propertyType = type.getProperty(propertyName).getType();
+      else if (value != null)
+        propertyType = Type.getTypeByClass(value.getClass());
       else
         propertyType = null;
 
-      final Object value = convertToJSONType(entry.getValue(), propertyType);
+      if (includeMetadata && propertyType != null) {
+        if (propertyTypes.length() > 0)
+          propertyTypes.append(",");
+        propertyTypes.append(propertyName).append(":").append(propertyType.getId());
+      }
+
+      value = convertToJSONType(value, propertyType);
 
       if (value instanceof Number number && !Float.isFinite(number.floatValue())) {
         LogManager.instance()
             .log(this, Level.SEVERE, "Found non finite number in map with key '%s', ignore this entry in the conversion",
-                entry.getKey());
+                propertyName);
         continue;
       }
 
-      json.put(entry.getKey(), value);
+      json.put(propertyName, value);
     }
+
+    if (propertyTypes != null && !propertyTypes.isEmpty())
+      json.put(Property.PROPERTY_TYPES_PROPERTY, propertyTypes);
 
     return json;
   }
@@ -98,7 +107,7 @@ public class JSONSerializer {
 
   private Object convertToJSONType(Object value, final Type type) {
     if (value instanceof Document document) {
-      value = document.toJSON();
+      value = document.toJSON(true);
     } else if (value instanceof Collection c) {
       final JSONArray array = new JSONArray();
       for (final Iterator it = c.iterator(); it.hasNext(); )
@@ -121,7 +130,7 @@ public class JSONSerializer {
 
   private Object convertFromJSONType(Object value) {
     if (value instanceof JSONObject json) {
-      final String embeddedTypeName = json.getString("@type");
+      final String embeddedTypeName = json.getString(Property.TYPE_PROPERTY);
 
       final DocumentType type = database.getSchema().getType(embeddedTypeName);
 

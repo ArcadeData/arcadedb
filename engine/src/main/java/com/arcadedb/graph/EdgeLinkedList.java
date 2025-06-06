@@ -84,7 +84,7 @@ public class EdgeLinkedList {
 
     EdgeSegment current = lastSegment;
     while (current != null) {
-      final JSONObject j = current.toJSON();
+      final JSONObject j = current.toJSON(false);
       if (j.has("array")) {
         final JSONArray a = j.getJSONArray("array");
         for (int i = 0; i < a.length(); ++i)

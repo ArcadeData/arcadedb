@@ -179,6 +179,6 @@ public abstract class BaseDocument extends BaseRecord implements Document, Seria
 
   @Override
   public JSONObject toJSON(final String... includeProperties) {
-    return new JSONSerializer(database).map2json(propertiesAsMap(), null, includeProperties);
+    return new JSONSerializer(database).map2json(propertiesAsMap(), type, false, includeProperties);
   }
 }

@@ -217,11 +217,11 @@ public enum PostgresType {
     } else if (value instanceof Map map) {
       serializedValue = new JSONObject(map).toString();
     } else if (value instanceof Record record) {
-      serializedValue = record.toJSON().toString();
+      serializedValue = record.toJSON(true).toString();
     } else if (value instanceof Result result) {
       serializedValue = result.toJSON().toString();
     } else if (value instanceof EmbeddedDocument embeddedDocument) {
-      serializedValue = embeddedDocument.toJSON().toString();
+      serializedValue = embeddedDocument.toJSON(true).toString();
     } else if (value != null) {
       serializedValue = value.toString();
     }
@@ -275,9 +275,9 @@ public enum PostgresType {
       } else if (element instanceof Map map) {
         sb.append("\"").append(new JSONObject(map).toString().replace("\"", "\\\"")).append("\"");
       } else if (element instanceof Record record) {
-        sb.append("\"").append(record.toJSON().toString().replace("\"", "\\\"")).append("\"");
+        sb.append("\"").append(record.toJSON(true).toString().replace("\"", "\\\"")).append("\"");
       } else if (element instanceof EmbeddedDocument embeddedDocument) {
-        sb.append("\"").append(embeddedDocument.toJSON().toString().replace("\"", "\\\"")).append("\"");
+        sb.append("\"").append(embeddedDocument.toJSON(true).toString().replace("\"", "\\\"")).append("\"");
       } else if (element instanceof String str) {
         sb.append("\"").append(str.replace("\"", "\\\"")).append("\"");
       } else {

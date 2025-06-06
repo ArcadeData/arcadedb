@@ -24,6 +24,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Transaction;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -187,7 +188,7 @@ public class MutableEdge extends MutableDocument implements Edge {
   public Map<String, Object> toMap(final boolean includeMetadata) {
     final Map<String, Object> map = super.toMap(includeMetadata);
     if (includeMetadata) {
-      map.put("@cat", "e");
+      map.put(Property.CAT_PROPERTY, "e");
       map.put("@in", in);
       map.put("@out", out);
     }
@@ -197,7 +198,7 @@ public class MutableEdge extends MutableDocument implements Edge {
   public JSONObject toJSON(final boolean includeMetadata) {
     JSONObject json = super.toJSON(includeMetadata);
     if (includeMetadata)
-      json.put("@cat", "e").put("@in", in).put("@out", out);
+      json.put(Property.CAT_PROPERTY, "e").put("@in", in).put("@out", out);
     return json;
   }
 

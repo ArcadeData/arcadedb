@@ -737,7 +737,7 @@ public class DocumentValidationTest extends TestHelper {
   public void testEmbeddedDocumentConversion() {
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType("Validation");
     MutableDocument v = clazz.newRecord();
-    v.set("embedded", Map.of("value", 300, "@type", "Validation"));
+    v.set("embedded", Map.of("value", 300, Property.TYPE_PROPERTY, "Validation"));
     final EmbeddedDocument embedded = v.getEmbedded("embedded");
     assertThat(embedded).isNotNull();
     assertThat(embedded.getInteger("value")).isEqualTo(300);
