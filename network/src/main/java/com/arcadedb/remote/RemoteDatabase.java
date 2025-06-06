@@ -151,24 +151,24 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   @Override
-  public void transaction(final BasicDatabase.TransactionScope txBlock) {
+  public void transaction(final TransactionScope txBlock) {
     transaction(txBlock, true, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES), null, null);
   }
 
   @Override
-  public boolean transaction(final BasicDatabase.TransactionScope txBlock, final boolean joinCurrentTransaction) {
+  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTransaction) {
     return transaction(txBlock, joinCurrentTransaction, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES), null,
         null);
   }
 
   @Override
-  public boolean transaction(final BasicDatabase.TransactionScope txBlock, final boolean joinCurrentTransaction, int attempts) {
+  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTransaction, int attempts) {
     return transaction(txBlock, joinCurrentTransaction, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES), null,
         null);
   }
 
   @Override
-  public boolean transaction(final BasicDatabase.TransactionScope txBlock, final boolean joinCurrentTransaction, int attempts,
+  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTransaction, int attempts,
       final OkCallback ok, final ErrorCallback error) {
     checkDatabaseIsOpen();
     if (txBlock == null)
@@ -597,5 +597,13 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   protected void checkDatabaseIsOpen() {
     if (!open)
       throw new DatabaseIsClosedException(databaseName);
+  }
+
+  public BinarySerializer getSerializer() {
+    return serializer;
+  }
+
+  public void setSerializer(final BinarySerializer serializer) {
+    this.serializer = serializer;
   }
 }

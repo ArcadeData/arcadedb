@@ -59,9 +59,9 @@ public class RemoteImmutableDocument extends ImmutableDocument {
 
         Class javaImplementation = value != null ? value.getClass() : null;
         if (propType == Type.DATE)
-          javaImplementation = database.getSerializer().getDateImplementation();
+          javaImplementation = remoteDatabase.getSerializer().getDateImplementation();
         else if (propType == Type.DATETIME)
-          javaImplementation = database.getSerializer().getDateTimeImplementation();
+          javaImplementation = remoteDatabase.getSerializer().getDateTimeImplementation();
         else if (propType != null)
           javaImplementation = propType.getDefaultJavaType();
 
