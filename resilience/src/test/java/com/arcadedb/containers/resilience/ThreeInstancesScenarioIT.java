@@ -54,9 +54,9 @@ public class ThreeInstancesScenarioIT extends ContainersTestTemplate {
     logger.info("Creating 3 arcade containers");
     GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any",
         network);
-    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "majority", "replica",
+    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "majority", "any",
         network);
-    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "majority", "replica",
+    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "majority", "any",
         network);
 
     logger.info("Starting the containers in sequence: arcade1 will be the leader");
@@ -91,13 +91,13 @@ public class ThreeInstancesScenarioIT extends ContainersTestTemplate {
     db2.assertThatPhotoCountIs(300);
     db3.assertThatPhotoCountIs(300);
 
-    logger.info("Disconnecting arcade3 form others");
+    logger.info("Disconnecting arcade1 form others");
     arcade1Proxy.toxics().bandwidth("CUT_CONNECTION_DOWNSTREAM", ToxicDirection.DOWNSTREAM, 0);
     arcade1Proxy.toxics().bandwidth("CUT_CONNECTION_UPSTREAM", ToxicDirection.UPSTREAM, 0);
 
 
-    logger.info("Adding data to arcade1");
-    db1.addUserAndPhotos(100, 10);
+    logger.info("Adding data to arcade2");
+    db2.addUserAndPhotos(100, 10);
 
     logger.info("Check that all the data are replicated only on arcade1 and arcade2");
     db1.assertThatUserCountIs(130);
