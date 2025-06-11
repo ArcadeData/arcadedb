@@ -33,18 +33,10 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Scanner;
-import java.util.Set;
-import java.util.logging.Level;
+import java.io.*;
+import java.net.*;
+import java.util.*;
+import java.util.logging.*;
 
 public class GetServerHandler extends AbstractServerHttpHandler {
   public GetServerHandler(final HttpServer httpServer) {
@@ -52,7 +44,7 @@ public class GetServerHandler extends AbstractServerHttpHandler {
   }
 
   @Override
-  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     final JSONObject response = createResult(user, null);
 
     final String mode = getQueryParameter(exchange, "mode", "default");

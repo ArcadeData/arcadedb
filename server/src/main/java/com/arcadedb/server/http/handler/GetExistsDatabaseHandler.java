@@ -33,13 +33,13 @@ public class GetExistsDatabaseHandler extends AbstractServerHttpHandler {
   }
 
   @Override
-  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     final Deque<String> databaseName = exchange.getQueryParameters().get("database");
     if (databaseName.isEmpty())
       return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is null\"}");
 
     final ArcadeDBServer server = httpServer.getServer();
-    Metrics.counter("http.exists-database").increment(); ;
+    Metrics.counter("http.exists-database").increment();
 
     final Set<String> installedDatabases = new HashSet<>(server.getDatabaseNames());
     final Set<String> allowedDatabases = user.getAuthorizedDatabases();
