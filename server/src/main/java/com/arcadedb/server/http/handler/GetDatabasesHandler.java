@@ -45,7 +45,6 @@ public class GetDatabasesHandler extends AbstractServerHttpHandler {
     final JSONObject result = createResult(user, null).put("result", new JSONArray(installedDatabases));
 
     Metrics.counter("http.list-databases").increment();
-    ;
 
     return new ExecutionResponse(200, result.toString());
   }

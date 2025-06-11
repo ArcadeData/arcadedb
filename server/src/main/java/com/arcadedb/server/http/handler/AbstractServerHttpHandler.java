@@ -127,8 +127,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       }
 
       final String payloadAsString = parseRequestPayload(exchange);
-      final JSONObject payload =
-          payloadAsString == null || payloadAsString.isBlank() ? null : new JSONObject(payloadAsString.trim());
+      JSONObject payload = null;
+      if (payloadAsString != null && !payloadAsString.isBlank())
+        try {
+          payload = new JSONObject(payloadAsString.trim());
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.WARNING, "Error parsing request payload: %s", e.getMessage());
+        }
 
       final ExecutionResponse response = execute(exchange, user, payload);
       if (response != null)

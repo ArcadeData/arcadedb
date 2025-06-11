@@ -94,7 +94,6 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
     exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, contentType);
 
     Metrics.counter("http.static-content").increment();
-    ;
 
     LogManager.instance().log(this, Level.FINE, "Loading file %s ", "/static" + uri);
 

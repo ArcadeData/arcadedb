@@ -60,7 +60,8 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
 
   @AfterEach
   void tearDown() throws SQLException {
-    conn.close();
+    if (conn != null)
+      conn.close();
   }
 
   @Test

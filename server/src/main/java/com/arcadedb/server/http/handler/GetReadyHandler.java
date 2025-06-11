@@ -33,7 +33,6 @@ public class GetReadyHandler extends AbstractServerHttpHandler {
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     Metrics.counter("http.ready").increment();
-    ;
 
     if (httpServer.getServer().getStatus() == ArcadeDBServer.STATUS.ONLINE)
       return new ExecutionResponse(204, "");

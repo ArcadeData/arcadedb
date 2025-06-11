@@ -217,7 +217,6 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     httpServer.getServer().getDatabase(databaseName);
     Metrics.counter("http.open-database").increment();
-
   }
 
   private void createUser(final String payload) {
