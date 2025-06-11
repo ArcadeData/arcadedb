@@ -88,7 +88,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     } else
       database = null;
 
-    final int attempts = payload != null && !payload.isNull("attempts") ? payload.getInt("attempts") : 1;
+    final int retries = payload != null && !payload.isNull("retries") ? payload.getInt("retries") : 1;
 
     final AtomicReference<ExecutionResponse> response = new AtomicReference<>();
     try {
@@ -103,7 +103,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
               } catch (Exception e) {
                 throw new TransactionException("Error on executing command", e);
               }
-            }, false, attempts);
+            }, false, retries);
           } else
             response.set(execute(exchange, user, database, payload));
           return null;
@@ -116,7 +116,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
             } catch (Exception e) {
               throw new TransactionException("Error on executing command", e);
             }
-          }, false, attempts);
+          }, false, retries);
         } else
           response.set(execute(exchange, user, database, payload));
       }
