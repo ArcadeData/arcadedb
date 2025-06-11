@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
@@ -38,7 +39,7 @@ public class DeleteDropUserHandler extends AbstractServerHttpHandler {
   }
 
   @Override
-  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     checkRootUser(user);
 
     final Deque<String> userNamePar = exchange.getQueryParameters().get("userName");
@@ -49,7 +50,8 @@ public class DeleteDropUserHandler extends AbstractServerHttpHandler {
     if (userName == null)
       return new ExecutionResponse(400, "{ \"error\" : \"User name parameter is null\"}");
 
-    Metrics.counter("http.drop-user").increment(); ;
+    Metrics.counter("http.drop-user").increment();
+    ;
 
     final boolean result = httpServer.getServer().getSecurity().dropUser(userName);
     if (!result)

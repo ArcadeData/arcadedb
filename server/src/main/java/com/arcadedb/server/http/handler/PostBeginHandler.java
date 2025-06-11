@@ -32,8 +32,8 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.HttpString;
 
-import java.io.IOException;
-import java.util.Map;
+import java.io.*;
+import java.util.*;
 
 public class PostBeginHandler extends DatabaseAbstractHandler {
 
@@ -42,8 +42,8 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database)
-      throws IOException {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database,
+      final JSONObject payload) throws IOException {
     final HeaderValues txId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
     if (txId != null && !txId.isEmpty()) {
       final HttpSession tx = httpServer.getSessionManager().getSessionById(user, txId.getFirst());
@@ -53,10 +53,8 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
 
     DatabaseContext.INSTANCE.init((DatabaseInternal) database);
 
-    final String payload = parseRequestPayload(exchange);
-    if (payload != null && !payload.isEmpty()) {
-      final JSONObject json = new JSONObject(payload);
-      final Map<String, Object> requestMap = json.toMap();
+    if (payload != null) {
+      final Map<String, Object> requestMap = payload.toMap();
       final String isolationLevel = (String) requestMap.get("isolationLevel");
       if (isolationLevel == null)
         return new ExecutionResponse(400, "Missing parameter 'isolationLevel'");
@@ -73,7 +71,7 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
 
     exchange.getResponseHeaders().put(new HttpString(HttpSessionManager.ARCADEDB_SESSION_ID), session.id);
 
-    Metrics.counter("http.begin").increment(); ;
+    Metrics.counter("http.begin").increment();
 
     return new ExecutionResponse(204, "");
   }

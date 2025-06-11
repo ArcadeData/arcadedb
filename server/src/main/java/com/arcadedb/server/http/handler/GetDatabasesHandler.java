@@ -34,7 +34,8 @@ public class GetDatabasesHandler extends AbstractServerHttpHandler {
   }
 
   @Override
-  protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws Exception {
+  protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload)
+      throws Exception {
     final Set<String> installedDatabases = new HashSet<>(httpServer.getServer().getDatabaseNames());
     final Set<String> allowedDatabases = user.getAuthorizedDatabases();
 
@@ -43,7 +44,7 @@ public class GetDatabasesHandler extends AbstractServerHttpHandler {
 
     final JSONObject result = createResult(user, null).put("result", new JSONArray(installedDatabases));
 
-    Metrics.counter("http.list-databases").increment(); ;
+    Metrics.counter("http.list-databases").increment();
 
     return new ExecutionResponse(200, result.toString());
   }

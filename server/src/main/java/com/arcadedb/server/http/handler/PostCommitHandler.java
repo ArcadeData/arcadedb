@@ -19,13 +19,14 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.IOException;
+import java.io.*;
 
 public class PostCommitHandler extends DatabaseAbstractHandler {
 
@@ -34,10 +35,11 @@ public class PostCommitHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database,
+      final JSONObject payload) throws IOException {
     database.commit();
     exchange.getResponseHeaders().remove(HttpSessionManager.ARCADEDB_SESSION_ID);
-    Metrics.counter("http.commit").increment(); ;
+    Metrics.counter("http.commit").increment();
 
     return new ExecutionResponse(204, "");
   }

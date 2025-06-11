@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.ws;
 
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
@@ -37,7 +38,8 @@ public class WebSocketConnectionHandler extends AbstractServerHttpHandler {
   }
 
   @Override
-  protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws Exception {
+  protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
+      final JSONObject payload) throws Exception {
     final var handler = new WebSocketProtocolHandshakeHandler((WebSocketConnectionCallback) (webSocketHttpExchange, channel) -> {
       channel.getReceiveSetter().set(new WebSocketReceiveListener(this.httpServer, webSocketEventBus));
       channel.setAttribute(WebSocketEventBus.CHANNEL_ID, UUID.randomUUID());

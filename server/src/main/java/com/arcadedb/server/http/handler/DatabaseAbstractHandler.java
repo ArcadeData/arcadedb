@@ -25,6 +25,7 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSession;
 import com.arcadedb.server.http.HttpSessionManager;
@@ -45,11 +46,12 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     super(httpServer);
   }
 
-  protected abstract ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user, Database database)
-      throws Exception;
+  protected abstract ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user, Database database,
+      JSONObject payload) throws Exception;
 
   @Override
-  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws Exception {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload)
+      throws Exception {
     final DatabaseInternal database;
     HttpSession activeSession = null;
     boolean atomicTransaction = false;
@@ -80,24 +82,44 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       if (currentUser == null || !currentUser.equals(user.getDatabaseUser(database)))
         current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
 
-      if (requiresTransaction() && activeSession == null) {
+      if (requiresTransaction() && activeSession == null)
         atomicTransaction = true;
-        database.begin();
-      }
 
     } else
       database = null;
 
+    final int attempts = payload != null && !payload.isNull("attempts") ? payload.getInt("attempts") : 1;
+
     final AtomicReference<ExecutionResponse> response = new AtomicReference<>();
     try {
-      if (activeSession != null)
+      boolean finalAtomicTransaction = atomicTransaction;
+      if (activeSession != null) {
         // EXECUTE THE CODE LOCKING THE CURRENT SESSION. THIS AVOIDS USING THE SAME SESSION FROM MULTIPLE THREADS AT THE SAME TIME
         activeSession.execute(user, () -> {
-          response.set(execute(exchange, user, database));
+          if (finalAtomicTransaction) {
+            database.transaction(() -> {
+              try {
+                response.set(execute(exchange, user, database, payload));
+              } catch (Exception e) {
+                throw new TransactionException("Error on executing command", e);
+              }
+            }, false, attempts);
+          } else
+            response.set(execute(exchange, user, database, payload));
           return null;
         });
-      else
-        response.set(execute(exchange, user, database));
+      } else {
+        if (finalAtomicTransaction) {
+          database.transaction(() -> {
+            try {
+              response.set(execute(exchange, user, database, payload));
+            } catch (Exception e) {
+              throw new TransactionException("Error on executing command", e);
+            }
+          }, false, attempts);
+        } else
+          response.set(execute(exchange, user, database, payload));
+      }
 
       if (database != null && atomicTransaction && database.isTransactionActive())
         // STARTED ATOMIC TRANSACTION, COMMIT
