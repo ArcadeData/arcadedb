@@ -1,5 +1,6 @@
 package com.arcadedb.metrics.prometheus;
 
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
@@ -21,8 +22,7 @@ public class GetPrometheusMetricsHandler extends AbstractServerHttpHandler {
   }
 
   @Override
-  public ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user) throws Exception {
-
+  public ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user, final JSONObject payload) {
     String response = registry.scrape();
 
     exchange.getResponseHeaders()

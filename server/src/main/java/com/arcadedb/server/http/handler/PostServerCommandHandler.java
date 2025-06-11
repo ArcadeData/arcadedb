@@ -71,9 +71,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   @Override
-  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws IOException {
-
-    final JSONObject payload = new JSONObject(parseRequestPayload(exchange));
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
+      final JSONObject payload) throws IOException {
 
     final String command = payload.has("command") ? payload.getString("command").trim() : null;
     if (command == null)

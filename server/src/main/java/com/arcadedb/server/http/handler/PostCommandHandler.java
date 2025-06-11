@@ -28,11 +28,9 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.IOException;
-import java.util.HashMap;
-import java.util.Locale;
-import java.util.Map;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.*;
+import java.util.logging.*;
 
 public class PostCommandHandler extends AbstractQueryHandler {
 
@@ -46,13 +44,11 @@ public class PostCommandHandler extends AbstractQueryHandler {
   }
 
   @Override
-  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database)
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database,
+      final JSONObject json)
       throws IOException {
-    final String payload = parseRequestPayload(exchange);
-    if (payload == null || payload.isEmpty())
+    if (json == null)
       return new ExecutionResponse(400, "{ \"error\" : \"Command text is null\"}");
-
-    final JSONObject json = new JSONObject(payload);
 
     final Map<String, Object> requestMap = json.toMap();
 

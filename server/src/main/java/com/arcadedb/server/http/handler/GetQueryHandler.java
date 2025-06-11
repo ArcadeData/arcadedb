@@ -34,7 +34,8 @@ public class GetQueryHandler extends AbstractQueryHandler {
   }
 
   @Override
-  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database)
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database,
+      final JSONObject payload)
       throws UnsupportedEncodingException {
     final String text = getQueryParameter(exchange, "command");
     if (text == null)

@@ -22,6 +22,7 @@ import com.arcadedb.Constants;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.FileUtils;
@@ -45,7 +46,8 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
   }
 
   @Override
-  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws Exception {
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload)
+      throws Exception {
     String uri = exchange.getRequestURI();
 
     if (uri.contains(".."))

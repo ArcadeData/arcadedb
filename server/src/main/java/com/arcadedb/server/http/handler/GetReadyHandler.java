@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -30,8 +31,9 @@ public class GetReadyHandler extends AbstractServerHttpHandler {
   }
 
   @Override
-  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
-    Metrics.counter("http.ready").increment(); ;
+  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
+    Metrics.counter("http.ready").increment();
+    ;
 
     if (httpServer.getServer().getStatus() == ArcadeDBServer.STATUS.ONLINE)
       return new ExecutionResponse(204, "");

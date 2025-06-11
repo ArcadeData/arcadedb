@@ -41,10 +41,9 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
 import io.undertow.util.StatusCodes;
 
-import java.util.Base64;
-import java.util.Deque;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final String     AUTHORIZATION_BASIC = "Basic";
@@ -54,7 +53,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     this.httpServer = httpServer;
   }
 
-  protected abstract ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user) throws Exception;
+  protected abstract ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user, JSONObject payload)
+      throws Exception;
 
   protected String parseRequestPayload(final HttpServerExchange e) {
     if (!e.isInIoThread() && !e.isBlocking())
@@ -126,7 +126,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         }
       }
 
-      final ExecutionResponse response = execute(exchange, user);
+      final String payloadAsString = parseRequestPayload(exchange);
+      final JSONObject payload = payloadAsString == null ? null : new JSONObject(payloadAsString.trim());
+
+      final ExecutionResponse response = execute(exchange, user, payload);
       if (response != null)
         response.send(exchange);
 
