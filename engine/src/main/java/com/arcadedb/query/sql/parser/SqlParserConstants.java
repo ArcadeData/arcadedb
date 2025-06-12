@@ -305,7 +305,7 @@ public interface SqlParserConstants {
   /** RegularExpression Id. */
   int RID_POS_ATTR = 155;
   /** RegularExpression Id. */
-  int FIELDS_ATTR = 156;
+  int PROPS_ATTR = 156;
   /** RegularExpression Id. */
   int INTEGER_LITERAL = 157;
   /** RegularExpression Id. */
@@ -672,7 +672,7 @@ public interface SqlParserConstants {
     "<TYPE_ATTR>",
     "<RID_ID_ATTR>",
     "<RID_POS_ATTR>",
-    "<FIELDS_ATTR>",
+    "<PROPS_ATTR>",
     "<INTEGER_LITERAL>",
     "<DECIMAL_LITERAL>",
     "<HEX_LITERAL>",

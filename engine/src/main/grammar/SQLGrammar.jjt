@@ -381,7 +381,7 @@ TOKEN:
   |
   <THIS: "@" ( ("t"|"T")("h"|"H")("i"|"I")("s"|"S") ) >
   |
-  <RECORD_ATTRIBUTE: <RID_ATTR> | <TYPE_ATTR> | <RID_ID_ATTR> | <RID_POS_ATTR> | <FIELDS_ATTR> | <OUT_ATTR> | <IN_ATTR> >
+  <RECORD_ATTRIBUTE: <RID_ATTR> | <TYPE_ATTR> | <RID_ID_ATTR> | <RID_POS_ATTR> | <PROPS_ATTR> | <OUT_ATTR> | <IN_ATTR> >
   |
   <RID_ATTR: "@" ( ("r"|"R")("i"|"I")("d"|"D") ) >
   |
@@ -397,7 +397,7 @@ TOKEN:
   |
   <#RID_POS_ATTR: "@" ( ("r"|"R")("i"|"I")("d"|"D") "_" ("p"|"P")("o"|"O")("s"|"S")) >
   |
-  <#FIELDS_ATTR: "@" ( ("f"|"F")("i"|"I")("e"|"E")("l"|"L")("d"|"D")("s"|"S")) >
+  <#PROPS_ATTR: "@" ( ("p"|"P")("r"|"R")("o"|"O")("p"|"P")("s"|"S")) >
 }
 
 /* LITERALS */
