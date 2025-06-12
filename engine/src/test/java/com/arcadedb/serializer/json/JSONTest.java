@@ -159,6 +159,20 @@ public class JSONTest extends TestHelper {
     assertThat(map.get("map")).isEqualTo(Map.of("a", 1, "b", 2, "c", 3));
   }
 
+  @Test
+  public void testExpressions() {
+    final Map<String, Object> map = new HashMap<>();
+    map.put("first", 1);
+    map.put("second", new JSONArray().put(3).put(5));
+    JSONObject json = new JSONObject().put("map", map);
+
+    final String serialized = json.toString();
+    JSONObject deserialized = new JSONObject(serialized);
+
+    assertThat(deserialized).isEqualTo(json);
+    assertThat(deserialized.getExpression("map.second[1]")).isEqualTo(5);
+  }
+
   // MICRO BENCHMARK
   public static void main(String[] args) {
     final JSONObject json = new JSONObject()

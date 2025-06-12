@@ -581,4 +581,46 @@ public class JSONObject implements Map<String, Object> {
       }
     }
   }
+
+  public Object getExpression(final String expression) {
+    if (expression == null || expression.isEmpty())
+      return null;
+
+    String[] tokens = expression.split("(?=\\[)|(?<=\\])|\\.");
+    Object current = this;
+
+    for (String token : tokens) {
+      if (token.isEmpty())
+        continue;
+
+      if (token.startsWith("[")) {
+        // Array or map access
+        String key = token.substring(1, token.length() - 1);
+        if (current instanceof JSONArray array) {
+          try {
+            int idx = Integer.parseInt(key);
+            current = idx >= 0 && idx < array.length() ? array.get(idx) : null;
+          } catch (NumberFormatException e) {
+            return null;
+          }
+        } else if (current instanceof JSONObject obj) {
+          current = obj.opt(key);
+        } else {
+          return null;
+        }
+      } else {
+        // Dot notation
+        if (current instanceof JSONObject obj) {
+          if (!obj.has(token))
+            return null;
+          current = obj.opt(token);
+        } else {
+          return null;
+        }
+      }
+      if (current == null)
+        return null;
+    }
+    return current;
+  }
 }
