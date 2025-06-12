@@ -1,5 +1,7 @@
 package com.arcadedb.remote;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
@@ -24,8 +26,10 @@ public class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
     assertThat(
         new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(DATABASE_NAME)).isTrue();
 
+    ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(GlobalConfiguration.TX_RETRIES, 3);
     final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
-        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS, configuration);
 
     database.command("sql", "CREATE VERTEX TYPE Person");
     database.command("sql", "CREATE EDGE TYPE FriendOf UNIDIRECTIONAL");
