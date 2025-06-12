@@ -538,6 +538,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
               """);
 
       String response = responseAsJsonSelect.toString();
+      System.out.println("response = " + response);
       assertThat(JsonPath.<Integer>read(response, "$..records.length()")).isEqualTo(3);
       assertThat(JsonPath.<String>read(response, "$.user")).isEqualTo("root");
       assertThat(JsonPath.<String>read(response, "$.result.vertices[0].p.@type")).isEqualTo("Photos");
