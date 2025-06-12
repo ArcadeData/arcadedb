@@ -74,6 +74,7 @@ public class RemoteHttpComponent extends RWLockContext {
   protected final HttpClient                  httpClient;
   protected final DatabaseStats               stats                     = new DatabaseStats();
   protected final ContextConfiguration        configuration;
+  private final   Integer                     retries;
   private         int                         apiVersion                = 1;
   private         CONNECTION_STRATEGY         connectionStrategy        = CONNECTION_STRATEGY.ROUND_ROBIN;
   private         Pair<String, Integer>       leaderServer;
@@ -115,6 +116,8 @@ public class RemoteHttpComponent extends RWLockContext {
 
     this.configuration = configuration;
     this.timeout = this.configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT);
+
+    this.retries = this.configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES);
 
     httpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(60))
@@ -164,8 +167,14 @@ public class RemoteHttpComponent extends RWLockContext {
     return stats.toMap();
   }
 
-  Object httpCommand(final String method, final String extendedURL, final String operation, final String language,
-      final String payloadCommand, final Map<String, Object> params, final boolean leaderIsPreferable, final boolean autoReconnect,
+  Object httpCommand(final String method,
+      final String extendedURL,
+      final String operation,
+      final String language,
+      final String payloadCommand,
+      final Map<String, Object> params,
+      final boolean leaderIsPreferable,
+      final boolean autoReconnect,
       final Callback callback) {
 
     Exception lastException = null;
@@ -198,6 +207,7 @@ public class RemoteHttpComponent extends RWLockContext {
             jsonRequest.put("language", language);
           jsonRequest.put("command", payloadCommand);
           jsonRequest.put("serializer", "record");
+          jsonRequest.put("retries", retries);
 
           if (params != null)
             jsonRequest.put("params", new JSONObject(params));
