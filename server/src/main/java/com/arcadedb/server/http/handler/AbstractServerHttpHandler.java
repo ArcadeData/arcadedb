@@ -126,14 +126,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         }
       }
 
-      final String payloadAsString = parseRequestPayload(exchange);
       JSONObject payload = null;
-      if (payloadAsString != null && !payloadAsString.isBlank())
-        try {
-          payload = new JSONObject(payloadAsString.trim());
-        } catch (Exception e) {
-          LogManager.instance().log(this, Level.WARNING, "Error parsing request payload: %s", e.getMessage());
-        }
+      if (mustExecuteOnWorkerThread()) {
+        final String payloadAsString = parseRequestPayload(exchange);
+        if (payloadAsString != null && !payloadAsString.isBlank())
+          try {
+            payload = new JSONObject(payloadAsString.trim());
+          } catch (Exception e) {
+            LogManager.instance().log(this, Level.WARNING, "Error parsing request payload: %s", e.getMessage());
+          }
+      }
 
       final ExecutionResponse response = execute(exchange, user, payload);
       if (response != null)
