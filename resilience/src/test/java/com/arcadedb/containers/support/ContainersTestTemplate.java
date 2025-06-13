@@ -85,7 +85,7 @@ public abstract class   ContainersTestTemplate {
   }
 
   @AfterEach
-  void tearDown() {
+  public void tearDown() {
     stopContainers();
 
     logger.info("Stopping the Toxiproxy container");
@@ -121,15 +121,15 @@ public abstract class   ContainersTestTemplate {
     containers.stream()
         .filter(ContainerState::isRunning)
         .peek(container -> logger.info("Stopping container {}", container.getContainerName()))
-        .peek(container -> {
-          try {
-            container.execInContainer("rm -rf", "/home/arcadedb/databases/*");
-            container.execInContainer("rm -rf", "/home/arcadedb/replication/*");
-            container.execInContainer("rm -rf", "/home/arcadedb/logs/*");
-          } catch (IOException | InterruptedException e) {
-            logger.error("Error while stopping container {}", container.getContainerName(), e);
-          }
-        })
+//        .peek(container -> {
+//          try {
+//            container.execInContainer("rm -rf", "/home/arcadedb/databases/*");
+//            container.execInContainer("rm -rf", "/home/arcadedb/replication/*");
+//            container.execInContainer("rm -rf", "/home/arcadedb/logs/*");
+//          } catch (IOException | InterruptedException e) {
+//            logger.error("Error while stopping container {}", container.getContainerName(), e);
+//          }
+//        })
         .forEach(GenericContainer::stop);
     containers.clear();
   }
@@ -191,6 +191,8 @@ public abstract class   ContainersTestTemplate {
         .withCopyToContainer(MountableFile.forHostPath("./target/databases/" + name, 0777), "/home/arcadedb/databases")
         .withCopyToContainer(MountableFile.forHostPath("./target/replication/" + name, 0777), "/home/arcadedb/replication")
         .withCopyToContainer(MountableFile.forHostPath("./target/logs/" + name, 0777), "/home/arcadedb/logs")
+
+
         .withEnv("JAVA_OPTS", String.format("""
             -Darcadedb.server.rootPassword=playwithdata
             -Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin
