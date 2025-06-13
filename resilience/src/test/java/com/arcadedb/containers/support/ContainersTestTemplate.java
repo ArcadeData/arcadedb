@@ -27,7 +27,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
-public abstract class ContainersTestTemplate {
+public abstract class   ContainersTestTemplate {
   public static final String                    IMAGE      = "arcadedata/arcadedb:latest";
   public static final String                    PASSWORD   = "playwithdata";
   private             LoggingMeterRegistry      loggingMeterRegistry;
