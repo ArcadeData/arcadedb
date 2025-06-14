@@ -188,6 +188,10 @@ public enum GlobalConfiguration {
       "Flushes the WAL on disk at commit time. It can be 0 = no flush, 1 = flush without metadata and 2 = full flush (fsync)",
       Integer.class, 0),
 
+  TX_WAL_FILES("arcadedb.txWalFiles", SCOPE.DATABASE,
+      "Number of concurrent files to use for tx log. 0 (default) = available cores", Integer.class,
+      Math.max(Runtime.getRuntime().availableProcessors(), 1)),
+
   FREE_PAGE_RAM("arcadedb.freePageRAM", SCOPE.DATABASE, "Percentage (0-100) of memory to free when Page RAM is full", Integer.class,
       50),
 
@@ -211,7 +215,7 @@ public enum GlobalConfiguration {
 
   ASYNC_OPERATIONS_QUEUE_IMPL("arcadedb.asyncOperationsQueueImpl", SCOPE.DATABASE,
       "Queue implementation to use between 'standard' and 'fast'. 'standard' consumes less CPU than the 'fast' implementation, but it could be slower with high loads",
-      String.class, "standard", Set.of("standard", "fast" )),
+      String.class, "standard", Set.of("standard", "fast")),
 
   ASYNC_OPERATIONS_QUEUE_SIZE("arcadedb.asyncOperationsQueueSize", SCOPE.DATABASE,
       "Size of the total asynchronous operation queues (it is divided by the number of parallel threads in the pool)",
