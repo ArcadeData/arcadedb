@@ -93,3 +93,28 @@ div.dataTables_filter {
   /* hide it for small displays*/
   display: none;
 }
+
+/* FontAwesome icon color fixes */
+.nav-link i[class*="fa-"],
+.nav-link i.fa,
+.nav-link i.fas,
+.nav-link i.far,
+.nav-link i.fab {
+  color: #545454 !important;
+}
+
+.nav-link:hover i[class*="fa-"],
+.nav-link:hover i.fa,
+.nav-link:hover i.fas,
+.nav-link:hover i.far,
+.nav-link:hover i.fab {
+  color: #545454 !important;
+}
+
+.nav-link.active i[class*="fa-"],
+.nav-link.active i.fa,
+.nav-link.active i.fas,
+.nav-link.active i.far,
+.nav-link.active i.fab {
+  color: #545454 !important;
+}
