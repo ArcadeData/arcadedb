@@ -1,7 +1,7 @@
 /* BASICS */
 
 .CodeMirror {
-  /* Set height, width, borders, and global font properties here */
+/* Set height, width, borders, and global font properties here */
   font-family: monospace;
   height: 300px;
   color: black;
@@ -347,7 +347,7 @@ div.CodeMirror span.CodeMirror-nonmatchingbracket {
 }
 .CodeMirror pre.CodeMirror-line,
 .CodeMirror pre.CodeMirror-line-like {
-  /* Reset some styles that the rest of the page might have set */
+/* Reset some styles that the rest of the page might have set */
   -moz-border-radius: 0;
   -webkit-border-radius: 0;
   border-radius: 0;
@@ -470,7 +470,7 @@ div.CodeMirror-dragcursors {
 }
 
 @media print {
-  /* Hide the cursor when printing */
+/* Hide the cursor when printing */
   .CodeMirror div.CodeMirror-cursors {
     visibility: hidden;
   }

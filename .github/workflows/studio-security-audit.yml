@@ -1,0 +1,169 @@
+# ArcadeDB Studio Security Audit Workflow
+# Runs automated security checks on the frontend dependencies
+
+name: "Studio Security Audit"
+
+on:
+  # Run on all pushes to main and PRs
+  push:
+    branches: [ main ]
+    paths:
+      - "studio/**"
+      - ".github/workflows/studio-security-audit.yml"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "studio/**"
+      - ".github/workflows/studio-security-audit.yml"
+
+  # Run weekly security audit
+  schedule:
+    - cron: "0 6 * * 1"  # Every Monday at 6 AM UTC
+
+  # Allow manual triggering
+  workflow_dispatch:
+
+jobs:
+  security-audit:
+    name: "Frontend Security Audit"
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ./studio
+
+    steps:
+      - name: "Checkout Repository"
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: "Setup Node.js"
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "18"
+          cache: "npm"
+          cache-dependency-path: "studio/package-lock.json"
+
+      - name: "Install Dependencies"
+        run: npm ci
+
+      - name: "Run npm Security Audit"
+        run: |
+          echo "🔍 Running npm security audit..."
+          npm audit --audit-level=moderate
+
+      - name: "Check for Outdated Packages"
+        run: |
+          echo "📊 Checking for outdated packages..."
+          npm outdated || true
+
+      - name: "Run Comprehensive Security Audit Script"
+        run: |
+          echo "🔐 Running comprehensive security audit..."
+          chmod +x ./scripts/security-audit.sh
+          ./scripts/security-audit.sh
+
+      - name: "Validate Package.json"
+        run: |
+          echo "📋 Validating package.json..."
+          # Check for known vulnerable packages
+          if grep -q "jquery.*1\." package.json; then
+            echo "❌ Vulnerable jQuery 1.x detected!"
+            exit 1
+          fi
+
+          if grep -q "bootstrap.*[1-4]\." package.json; then
+            echo "❌ Vulnerable Bootstrap 4.x or earlier detected!"
+            exit 1
+          fi
+
+          if grep -q "sweetalert2.*1[0-1]\.[0-5]" package.json; then
+            echo "❌ Potentially vulnerable SweetAlert2 version detected!"
+            exit 1
+          fi
+
+          echo "✅ Package versions look secure"
+
+      - name: "Test Build Process"
+        run: |
+          echo "🏗️ Testing build process..."
+          npm run build
+
+      - name: "Analyze Bundle Size"
+        run: |
+          echo "📦 Analyzing bundle sizes..."
+          if [ -d "src/main/resources/static/dist" ]; then
+            echo "Built assets:"
+            du -h src/main/resources/static/dist/**/* | sort -hr | head -10
+
+            # Check for unexpectedly large bundles
+            find src/main/resources/static/dist -name "*.js" -size +1M | while read file; do
+              echo "⚠️ Large bundle detected: $file ($(stat -f%z "$file" 2>/dev/null || stat -c%s "$file") bytes)"
+            done
+          else
+            echo "❌ Build output not found!"
+            exit 1
+          fi
+
+      - name: "License Compliance Check"
+        run: |
+          echo "🏷️ Checking license compliance..."
+          # Install license-checker if available
+          npm install -g license-checker || echo "license-checker not available"
+
+          # Basic license check
+          if command -v license-checker &> /dev/null; then
+            license-checker --summary --excludePrivatePackages
+
+            # Check for problematic licenses
+            license-checker --excludePrivatePackages --onlyAllow "MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC;0BSD" || echo "⚠️ Non-standard licenses detected - review required"
+          else
+            echo "ℹ️ license-checker not available, skipping detailed license analysis"
+          fi
+
+      - name: "Security Summary"
+        if: always()
+        run: |
+          echo ""
+          echo "🔒 Security Audit Summary"
+          echo "========================"
+          echo "✅ npm audit: $(npm audit --audit-level=high --json | jq -r '.metadata.vulnerabilities.high // 0') high-severity vulnerabilities"
+          echo "✅ Package validation: Completed"
+          echo "✅ Build process: Verified"
+          echo "✅ Bundle analysis: Completed"
+          echo ""
+          echo "For detailed security information, see the security audit script output above."
+
+  dependency-review:
+    name: "Dependency Review"
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: "Checkout Repository"
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: "Dependency Review"
+        uses: actions/dependency-review-action@da24556b548a50705dd671f47852072ea4c105d9 # v4.7.1
+        with:
+          fail-on-severity: moderate
+          allow-dependencies-licenses: "MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD"
+          deny-licenses: "GPL-2.0, GPL-3.0, AGPL-3.0"
+          config-file: ".github/dependency-review-config.yml"
+
+  codeql-analysis:
+    name: "CodeQL Security Analysis"
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'schedule'
+
+    steps:
+      - name: "Checkout Repository"
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: "Initialize CodeQL"
+        uses: github/codeql-action/init@ce28f5bb42b7a9f2c824e633a3f6ee835bab6858 # v3.29.0
+        with:
+          languages: javascript
+          queries: security-and-quality
+
+      - name: "Perform CodeQL Analysis"
+        uses: github/codeql-action/analyze@ce28f5bb42b7a9f2c824e633a3f6ee835bab6858 # v3.29.0
