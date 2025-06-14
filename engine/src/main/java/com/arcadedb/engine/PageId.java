@@ -29,6 +29,7 @@ public class PageId implements Comparable<PageId> {
   private final BasicDatabase database;
   private final int           fileId;
   private final int           pageNumber;
+  private       int           cachedHashCode;
 
   public PageId(final BasicDatabase database, final int fileId, final int pageNumber) {
     if (database == null)
@@ -61,7 +62,9 @@ public class PageId implements Comparable<PageId> {
 
   @Override
   public int hashCode() {
-    return Objects.hash(database, fileId, pageNumber);
+    if (cachedHashCode == 0)
+      cachedHashCode = Objects.hash(database, fileId, pageNumber);
+    return cachedHashCode;
   }
 
   @Override
