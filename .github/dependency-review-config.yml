@@ -1,0 +1,131 @@
+# Dependency Review Configuration for ArcadeDB
+# Controls security and licensing requirements for dependency updates
+
+# Security Configuration
+security:
+  # Fail on vulnerabilities at or above this level
+  fail_on_severity: "moderate"
+
+  # Fail on these specific vulnerability types
+  fail_on_scopes:
+    - "runtime"
+    - "development"
+
+# License Configuration
+licensing:
+  # Allowed licenses for dependencies
+  allow:
+    - "MIT"
+    - "Apache-2.0"
+    - "BSD-2-Clause"
+    - "BSD-3-Clause"
+    - "ISC"
+    - "0BSD"
+    - "Unlicense"
+    - "CC0-1.0"
+
+  # Explicitly denied licenses
+  deny:
+    - "GPL-2.0"
+    - "GPL-3.0"
+    - "AGPL-3.0"
+    - "AGPL-1.0"
+    - "LGPL-2.0"
+    - "LGPL-2.1"
+    - "LGPL-3.0"
+    - "CPAL-1.0"
+    - "EPL-1.0"
+    - "EPL-2.0"
+    - "EUPL-1.1"
+    - "EUPL-1.2"
+
+# Package Configuration
+packages:
+  # Specific package rules
+  rules:
+    # Security-critical packages require extra scrutiny
+    - name: "jquery"
+      min_version: "3.7.0"
+      reason: "Earlier versions have critical XSS vulnerabilities"
+
+    - name: "bootstrap"
+      min_version: "5.0.0"
+      reason: "Bootstrap 4.x has known XSS vulnerabilities and is EOL"
+
+    - name: "datatables.net"
+      min_version: "1.11.3"
+      reason: "Earlier versions have security vulnerabilities"
+
+    # Deny known problematic packages
+    - name: "event-stream"
+      action: "deny"
+      reason: "Package was compromised with malicious code"
+
+    - name: "flatmap-stream"
+      action: "deny"
+      reason: "Package contained malicious code"
+
+    - name: "eslint-scope"
+      max_version: "3.7.1"
+      reason: "Version 3.7.2 was compromised"
+
+# Change Detection
+changes:
+  # Review threshold - flag PRs with many dependency changes
+  max_dependencies_changed: 20
+
+  # Require review for major version updates
+  require_approval_for:
+    - "major_version_update"
+    - "new_dependency"
+    - "license_change"
+
+# Exemptions
+exemptions:
+  # Development-only dependencies have relaxed rules
+  development_dependencies:
+    severity_threshold: "high"
+
+  # Test dependencies
+  test_dependencies:
+    severity_threshold: "high"
+    allow_dev_licenses: true
+
+# Notifications
+notifications:
+  # Comment on PRs with security findings
+  comment_on_pr: true
+
+  # Create issues for security vulnerabilities
+  create_issue: true
+
+  # Slack/Teams webhook for critical issues
+  webhook_url: ""  # Configure if needed
+
+# Advanced Security Settings
+advanced:
+  # Check for known malicious packages
+  check_malicious_packages: true
+
+  # Verify package signatures
+  verify_signatures: true
+
+  # Check for typosquatting
+  check_typosquatting: true
+
+  # Supply chain security
+  supply_chain_checks:
+    - "maintainer_count"
+    - "recent_activity"
+    - "security_policy"
+
+# Reporting
+reporting:
+  # Generate security report
+  generate_report: true
+
+  # Include in PR summary
+  include_in_summary: true
+
+  # Export format
+  export_format: ["json", "sarif"]

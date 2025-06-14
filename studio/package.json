@@ -1,0 +1,78 @@
+{
+  "name": "arcadedb-studio",
+  "version": "25.6.1",
+  "description": "ArcadeDB Studio Frontend - Multi-Model Database Administration Interface",
+  "main": "src/main/resources/static/index.html",
+  "scripts": {
+    "audit": "npm audit",
+    "audit-fix": "npm audit fix",
+    "update": "npm update",
+    "outdated": "npm outdated",
+    "security-check": "npm audit --audit-level=moderate",
+    "security-audit": "./scripts/security-audit.sh",
+    "build": "webpack --mode=production",
+    "dev": "webpack --mode=development --watch",
+    "clean": "rm -rf dist node_modules",
+    "precommit": "npm run security-check && npm run build",
+    "prepare": "npm run security-check",
+    "version": "npm run security-check && npm run build && git add ."
+  },
+  "dependencies": {
+    "@fortawesome/fontawesome-free": "^6.5.1",
+    "apexcharts": "^3.45.2",
+    "bootstrap": "^5.3.3",
+    "clipboard": "^2.0.11",
+    "codemirror": "^5.65.16",
+    "cytoscape": "^3.28.1",
+    "cytoscape-cola": "^2.5.1",
+    "cytoscape-cxtmenu": "^3.5.0",
+    "cytoscape-graphml": "^1.0.6",
+    "cytoscape-node-html-label": "^1.2.2",
+    "webcola": "^3.4.0",
+    "datatables.net": "^1.13.8",
+    "datatables.net-bs5": "^1.13.8",
+    "datatables.net-buttons": "^2.4.2",
+    "datatables.net-buttons-bs5": "^2.4.2",
+    "datatables.net-responsive": "^2.5.0",
+    "datatables.net-responsive-bs5": "^2.5.0",
+    "datatables.net-select": "^1.7.0",
+    "datatables.net-select-bs5": "^1.7.0",
+    "jquery": "^3.7.1",
+    "notyf": "^3.10.0",
+    "sweetalert2": "11.3.10"
+  },
+  "devDependencies": {
+    "copy-webpack-plugin": "^11.0.0",
+    "css-loader": "^6.8.1",
+    "file-loader": "^6.2.0",
+    "html-webpack-plugin": "^5.5.4",
+    "style-loader": "^3.3.3",
+    "url-loader": "^4.1.1",
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.4"
+  },
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ArcadeData/arcadedb.git",
+    "directory": "studio"
+  },
+  "keywords": [
+    "database",
+    "graph",
+    "document",
+    "multi-model",
+    "admin",
+    "studio",
+    "ui"
+  ],
+  "author": "Arcade Data Ltd",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/ArcadeData/arcadedb/issues"
+  },
+  "homepage": "https://arcadedb.com"
+}
