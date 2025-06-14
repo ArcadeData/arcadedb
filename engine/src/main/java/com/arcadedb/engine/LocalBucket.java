@@ -1553,6 +1553,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   private void getFreeSpaceInPage(final PageAnalysis pageAnalysis) throws IOException {
+    if (pageAnalysis.totalRecordsInPage >= maxRecordsInPage) {
+      pageAnalysis.createNewPage = true;
+      return;
+    }
+
     pageAnalysis.availablePositionIndex = -1;
     pageAnalysis.lastRecordPositionInPage = -1;
     pageAnalysis.newRecordPositionInPage = -1;
@@ -1567,15 +1572,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         pageAnalysis.lastRecordPositionInPage = recordPositionInPage;
     }
 
-    if (pageAnalysis.availablePositionIndex == -1) {
-      if (pageAnalysis.totalRecordsInPage < maxRecordsInPage)
-        // USE NEW POSITION
-        pageAnalysis.availablePositionIndex = pageAnalysis.totalRecordsInPage;
-      else {
-        pageAnalysis.createNewPage = true;
-        return;
-      }
-    }
+    if (pageAnalysis.availablePositionIndex == -1)
+      // USE NEW POSITION
+      pageAnalysis.availablePositionIndex = pageAnalysis.totalRecordsInPage;
 
     if (pageAnalysis.lastRecordPositionInPage == -1) {
       // TOTALLY EMPTY PAGE AFTER DELETION, GET THE FIRST POSITION
@@ -1672,6 +1671,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (pageStats >= spaceNeeded) {
         // CHECK IF THE SPACE AVAILABLE IS REAL
         final PageAnalysis pageAnalysis = getAvailableSpaceInPage(pageId, spaceNeeded);
+
+        if (pageAnalysis.totalRecordsInPage >= maxRecordsInPage) {
+          pagesToRemove = pagesToRemove == null ? new ArrayList<>() : pagesToRemove;
+          pagesToRemove.add(pageId);
+          continue;
+        }
 
         if (!pageAnalysis.createNewPage) {
           if (pageAnalysis.spaceAvailableInCurrentPage != pageStats) {
