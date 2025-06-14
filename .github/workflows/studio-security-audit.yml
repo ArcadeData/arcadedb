@@ -27,6 +27,8 @@ jobs:
   security-audit:
     name: "Frontend Security Audit"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     defaults:
       run:
@@ -107,15 +109,13 @@ jobs:
       - name: "License Compliance Check"
         run: |
           echo "🏷️ Checking license compliance..."
-          # Install license-checker if available
-          npm install -g license-checker || echo "license-checker not available"
-
-          # Basic license check
-          if command -v license-checker &> /dev/null; then
-            license-checker --summary --excludePrivatePackages
+          # Use npx for license-checker
+          if npx license-checker --version &> /dev/null; then
+            echo "Running license compliance check with npx..."
+            npx license-checker --summary --excludePrivatePackages
 
             # Check for problematic licenses
-            license-checker --excludePrivatePackages --onlyAllow "MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC;0BSD" || echo "⚠️ Non-standard licenses detected - review required"
+            npx license-checker --excludePrivatePackages --onlyAllow "MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC;0BSD" || echo "⚠️ Non-standard licenses detected - review required"
           else
             echo "ℹ️ license-checker not available, skipping detailed license analysis"
           fi
@@ -137,6 +137,9 @@ jobs:
     name: "Dependency Review"
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
 
     steps:
       - name: "Checkout Repository"
@@ -154,6 +157,9 @@ jobs:
     name: "CodeQL Security Analysis"
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event_name == 'schedule'
+    permissions:
+      contents: read
+      security-events: write
 
     steps:
       - name: "Checkout Repository"
