@@ -89,7 +89,7 @@ public class PageManagerFlushThread extends Thread {
 
       } catch (final InterruptedException e) {
         running = false;
-      } catch (final Exception e) {
+      } catch (final Throwable e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on processing page flush requests", e);
       }
     }

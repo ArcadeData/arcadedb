@@ -64,23 +64,30 @@ public class TransactionManager {
       task.schedule(new TimerTask() {
         @Override
         public void run() {
-          if (!database.isOpen()) {
-            // DB CLOSED, CANCEL THE TASK
-            cancel();
-            return;
-          }
-
-          if (activeWALFilePool != null) {
-            taskExecuting = new CountDownLatch(1);
-            try {
-              if (logContext != null)
-                LogManager.instance().setContext(logContext);
-
-              checkWALFiles();
-              cleanWALFiles(true, false);
-            } finally {
-              taskExecuting.countDown();
+          try {
+            if (!database.isOpen()) {
+              // DB CLOSED, CANCEL THE TASK
+              cancel();
+              return;
             }
+
+            if (activeWALFilePool != null) {
+              taskExecuting = new CountDownLatch(1);
+              try {
+                if (logContext != null)
+                  LogManager.instance().setContext(logContext);
+
+                checkWALFiles();
+                cleanWALFiles(true, false);
+              } finally {
+                taskExecuting.countDown();
+              }
+            }
+          } catch (Throwable e) {
+            LogManager.instance().log(this, Level.SEVERE, "Error on transaction manager task", e);
+          } finally {
+            if (logContext != null)
+              LogManager.instance().setContext(null);
           }
         }
       }, 1000, 1000);

@@ -3,13 +3,16 @@ package performance;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DefaultDataEncryption;
-import com.arcadedb.database.Document;
 import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
+import com.arcadedb.engine.PageManager;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.FileUtils;
 
 import javax.crypto.NoSuchPaddingException;
 import javax.crypto.SecretKey;
@@ -23,6 +26,7 @@ import java.util.stream.*;
 public class PerformanceInsertMTStressTest {
 
   public static void main(String[] args) throws NoSuchAlgorithmException, InvalidKeySpecException, NoSuchPaddingException {
+    GlobalConfiguration.MAX_PAGE_RAM.setValue(150);
     RunConfig runConfig = new RunConfig();
     DatabaseConfig dbConfig = new DatabaseConfig();
 
@@ -84,8 +88,11 @@ public class PerformanceInsertMTStressTest {
     Map<Integer, Integer> retryCounters = new HashMap<>(); // Track retries per batch
 
     long startTime = System.nanoTime();
+    long startTimeInMs = System.currentTimeMillis();
+    long startTimeLastLapInMs = System.currentTimeMillis();
 
     for (int batch = 0; batch < config.getThreadBatches(); batch++) {
+
       for (int thread = 0; thread < config.getThreadCount(); thread++) {
         int finalBatch = batch;
         Thread currentThread = new Thread(() -> {
@@ -97,10 +104,8 @@ public class PerformanceInsertMTStressTest {
             try {
               db.begin();
               for (int i = 0; i < config.getRecordsPerThread(); i++) {
-                db.newDocument("Resource")
-                    .set("identifier", Arrays.asList("a", "b").get(random.nextInt(2)))
-                    .set("value", random.nextLong(0, 14 * 24 * 60 * 60 * 1000L))
-                    .save();
+                db.newDocument("Resource").set("identifier", Arrays.asList("a", "b").get(random.nextInt(2)))
+                    .set("value", random.nextLong(0, 14 * 24 * 60 * 60 * 1000L)).save();
               }
               db.commit();
               success = true;
@@ -123,6 +128,8 @@ public class PerformanceInsertMTStressTest {
               }
             }
           }
+
+          DatabaseContext.INSTANCE.removeContext(db.getDatabasePath());
         });
         threads.add(currentThread);
         currentThread.start();
@@ -137,8 +144,14 @@ public class PerformanceInsertMTStressTest {
         }
       }
       threads.clear();
-      if (batch % 100 == 0)
-        System.out.println(batch + "/" + config.getThreadBatches() + " batches completed");
+      if (batch % 100 == 0 || (batch >= 92200)) {
+        System.out.println(
+            batch + "/" + config.getThreadBatches() + " batches completed in " + (System.currentTimeMillis() - startTimeLastLapInMs)
+                + "ms (total " + ((System.currentTimeMillis() - startTimeInMs) / 1000) + "s) cacheRAM=" +
+                FileUtils.getSizeAsString(PageManager.INSTANCE.getStats().readCacheRAM) + "/" +
+                FileUtils.getSizeAsString(PageManager.INSTANCE.getStats().maxRAM));
+        startTimeLastLapInMs = System.currentTimeMillis();
+      }
     }
 
     long endTime = System.nanoTime();
@@ -163,9 +176,9 @@ public class PerformanceInsertMTStressTest {
     ResultSet resultQuery = db.query("sql",
         "SELECT identifier, SUM(value) as sum FROM " + resourceTypeName + " GROUP BY identifier;");
     while (resultQuery.hasNext()) {
-      com.arcadedb.database.Document next = resultQuery.nextIfAvailable().toElement();
+      Result next = resultQuery.next();
       System.out.println(next.getPropertyNames());
-      System.out.println(next.getString("identifier") + ": " + next.getLong("sum"));
+      System.out.println(next.getProperty("identifier") + ": " + next.getProperty("sum"));
     }
     long endTimeQuery = System.nanoTime();
     System.out.println("Query took " + TimeUnit.NANOSECONDS.toMillis(endTimeQuery - startTimeQuery) + " ms");
@@ -174,10 +187,10 @@ public class PerformanceInsertMTStressTest {
     Map<String, Long> data = new HashMap<>();
     ResultSet resultManual = db.query("sql", "SELECT * FROM " + resourceTypeName + ";");
     while (resultManual.hasNext()) {
-      Document doc = resultManual.next().toElement();
-      String id = doc.getString("identifier");
+      Result doc = resultManual.next();
+      String id = doc.getProperty("identifier");
       Long currentValue = data.getOrDefault(id, 0L);
-      data.put(id, currentValue + doc.getLong("value"));
+      data.put(id, currentValue + (Long) doc.getProperty("value"));
     }
     System.out.println("Manual aggregation result: " + data);
     long endTimeManualAgg = System.nanoTime();

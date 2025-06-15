@@ -41,6 +41,7 @@ import com.arcadedb.schema.LocalSchema;
 
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
@@ -56,7 +57,7 @@ import java.util.logging.*;
  */
 public class TransactionContext implements Transaction {
   private final DatabaseInternal                     database;
-  private final Map<Integer, Integer>                newPageCounters       = new HashMap<>();
+  private final Map<Integer, Integer>                newPageCounters       = new ConcurrentHashMap<>();
   private final Map<Integer, AtomicInteger>          bucketRecordDelta     = new HashMap<>();
   private final Map<RID, Record>                     immutableRecordsCache = new HashMap<>(1024);
   private final Map<RID, Record>                     modifiedRecordsCache  = new HashMap<>(1024);
@@ -65,9 +66,9 @@ public class TransactionContext implements Transaction {
   private       Map<PageId, MutablePage>             modifiedPages;
   private       Map<PageId, MutablePage>             newPages;
   private       boolean                              useWAL;
-  private boolean           asyncFlush            = true;
-  private WALFile.FlushType walFlush;
-  private List<Integer>     lockedFiles;
+  private       boolean                              asyncFlush            = true;
+  private       WALFile.FlushType                    walFlush;
+  private       List<Integer>                        lockedFiles;
   private       long                                 txId                  = -1;
   private       STATUS                               status                = STATUS.INACTIVE;
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
@@ -657,13 +658,11 @@ public class TransactionContext implements Transaction {
 
       database.getPageManager().updatePages(newPages, modifiedPages, asyncFlush);
 
-      if (newPages != null) {
-        for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet()) {
-          final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileById(entry.getKey());
-          component.setPageCount(entry.getValue());
-          database.getFileManager().setVirtualFileSize(entry.getKey(),
-              (long) entry.getValue() * ((PaginatedComponentFile) database.getFileManager().getFile(entry.getKey())).getPageSize());
-        }
+      for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet()) {
+        final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileById(entry.getKey());
+        component.setPageCount(entry.getValue());
+        database.getFileManager().setVirtualFileSize(entry.getKey(),
+            (long) entry.getValue() * ((PaginatedComponentFile) database.getFileManager().getFile(entry.getKey())).getPageSize());
       }
 
       // UPDATE RECORD COUNT
