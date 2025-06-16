@@ -27,6 +27,7 @@ a:visited {
 
 .nav-link {
   background-color: white;
+  color: #545454;
 }
 .nav-link:hover {
   background-color: #b9d8f9 !important;
