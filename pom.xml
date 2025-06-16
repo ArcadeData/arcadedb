@@ -275,7 +275,7 @@
                     <publishingServerId>central</publishingServerId>
                     <autoPublish>true</autoPublish>
                     <excludeArtifacts>
-                        arcadedb-coverage,arcadedb-e2e,arcadedb-studio
+                        arcadedb-coverage,arcadedb-e2e
                     </excludeArtifacts>
                 </configuration>
             </plugin>
