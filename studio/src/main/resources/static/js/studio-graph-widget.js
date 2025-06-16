@@ -200,7 +200,7 @@ function initGraph() {
     displaySelectedEdge();
   });
 
-  globalCy.makeLayout(globalLayout).run();
+  globalCy.layout(globalLayout).run();
 }
 
 function createVertex(vertex) {
@@ -364,18 +364,24 @@ function removeGraphElement(ele) {
 
   globalCy.remove(ele);
 
+  // Handle both single elements and collections
   let elements;
-  if (ele instanceof Array) elements = ele;
-  else {
-    elements = [];
-    elements.push(ele.data().id);
+  if (ele.length !== undefined) {
+    // It's a collection (like globalSelected from Cytoscape)
+    elements = ele;
+  } else {
+    // It's a single element
+    elements = [ele];
   }
 
   try {
-    for (let i in elements) {
-      if (!elements[i].data) continue;
+    for (let i = 0; i < elements.length; i++) {
+      let element = elements[i];
 
-      let rid = elements[i].data().id;
+      // Skip if not a valid Cytoscape element
+      if (!element || typeof element.data !== 'function') continue;
+
+      let rid = element.data().id;
 
       arrayRemoveAll(globalResultset.vertices, (row) => row.r == rid);
       let edgeRemoved = arrayRemoveAll(globalResultset.edges, (row) => row.r == rid || row.i == rid || row.o == rid);

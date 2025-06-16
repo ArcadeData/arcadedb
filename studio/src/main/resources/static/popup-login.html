@@ -3,9 +3,7 @@
     <div class="modal-content">
       <div class="modal-header">
         <h5 class="modal-title" id="loginPopupLabel">Login to the server</h5>
-        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
-          <span aria-hidden="true">&times;</span>
-        </button>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="container-fluid">
         <div class="row" id="loginForm">
@@ -23,7 +21,7 @@
                     <label for="inputUserPassword">Password</label>
                   </div>
 
-                  <button onclick="login()" class="btn btn-lg btn-primary btn-block" type="submit">
+                  <button onclick="login()" class="btn btn-lg btn-primary w-100" type="submit">
                     Sign in
                     <img id="loginSpinner" class="ui-loading" src="images/color-spin-small.svg" style="display: none" />
                   </button>

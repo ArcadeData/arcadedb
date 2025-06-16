@@ -21,6 +21,76 @@ updates:
       day: "sunday"
     open-pull-requests-limit: 10
 
+  # Studio Frontend Dependencies (npm) - HIGH PRIORITY
+  - package-ecosystem: "npm"
+    directory: "/studio"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 15
+    target-branch: "main"
+    commit-message:
+      prefix: "chore(studio-deps)"
+      prefix-development: "chore(studio-deps-dev)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "studio"
+      - "security"
+      - "frontend"
+    # Group related updates together for easier review
+    groups:
+      # Critical security libraries - immediate attention
+      security-critical:
+        patterns:
+          - "jquery"
+          - "bootstrap"
+          - "datatables.net*"
+          - "sweetalert2"
+        update-types:
+          - "patch"
+          - "minor"
+          - "major"
+      # Visualization and UI libraries
+      ui-visualization:
+        patterns:
+          - "cytoscape*"
+          - "apexcharts"
+          - "codemirror"
+          - "notyf"
+          - "clipboard"
+          - "@fortawesome/*"
+        update-types:
+          - "patch"
+          - "minor"
+      # Build and development tools
+      build-tools:
+        patterns:
+          - "webpack*"
+          - "*-loader"
+          - "*-plugin"
+          - "copy-webpack-plugin"
+          - "css-loader"
+          - "style-loader"
+          - "file-loader"
+          - "url-loader"
+          - "html-webpack-plugin"
+        update-types:
+          - "patch"
+          - "minor"
+    # Security-focused update strategy
+    allow:
+      - dependency-type: "all"
+    # Controlled major version updates for stability
+    ignore:
+      - dependency-name: "webpack"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "bootstrap"
+        update-types: ["version-update:semver-major"]
+
+  # E2E JavaScript Testing Dependencies
   - package-ecosystem: "npm"
     directory: "/e2e-js"
     schedule:
