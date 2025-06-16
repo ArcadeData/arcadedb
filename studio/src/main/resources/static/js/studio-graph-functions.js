@@ -4,7 +4,7 @@ function cutSelection() {
     if (selected.length == 0) return;
 
     removeGraphElement(selected);
-    globalCy.makeLayout(globalLayout).run();
+    globalCy.layout(globalLayout).run();
   });
 }
 

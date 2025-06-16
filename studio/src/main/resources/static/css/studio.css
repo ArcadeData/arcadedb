@@ -27,6 +27,7 @@ a:visited {
 
 .nav-link {
   background-color: white;
+  color: #545454;
 }
 .nav-link:hover {
   background-color: #b9d8f9 !important;
@@ -92,4 +93,49 @@ div.dataTables_filter {
 .collapsed {
   /* hide it for small displays*/
   display: none;
+}
+
+/* FontAwesome icon color fixes */
+.nav-link i[class*="fa-"],
+.nav-link i.fa,
+.nav-link i.fas,
+.nav-link i.far,
+.nav-link i.fab {
+  color: #545454 !important;
+}
+
+.nav-link:hover i[class*="fa-"],
+.nav-link:hover i.fa,
+.nav-link:hover i.fas,
+.nav-link:hover i.far,
+.nav-link:hover i.fab {
+  color: #545454 !important;
+}
+
+.nav-link.active i[class*="fa-"],
+.nav-link.active i.fa,
+.nav-link.active i.fas,
+.nav-link.active i.far,
+.nav-link.active i.fab {
+  color: #545454 !important;
+}
+
+/* Fix database dropdown layout */
+#queryPanel {
+  flex-wrap: nowrap !important;
+}
+
+#queryPanel > div {
+  flex-shrink: 0;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+#queryPanel .form-select,
+#queryPanel select {
+  min-width: auto;
+  width: auto;
+  display: inline-block;
 }
