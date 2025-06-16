@@ -119,3 +119,23 @@ div.dataTables_filter {
 .nav-link.active i.fab {
   color: #545454 !important;
 }
+
+/* Fix database dropdown layout */
+#queryPanel {
+  flex-wrap: nowrap !important;
+}
+
+#queryPanel > div {
+  flex-shrink: 0;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+#queryPanel .form-select,
+#queryPanel select {
+  min-width: auto;
+  width: auto;
+  display: inline-block;
+}

@@ -1,7 +1,7 @@
 <div class="tab-pane fade show active" id="tab-query" role="tabpanel">
   <div class="d-flex justify-content-between" id="queryPanel">
     <div>
-      <label for="queryInputDatabase" class="form-label">Current database:</label>
+      <label>Connected as&nbsp;</label><label for="queryInputDatabase" id="user"></label>@
       <select id="queryInputDatabase" class="inputDatabase form-select"></select>
     </div>
     <div>
@@ -94,11 +94,11 @@
                 </button>
 
                 <div class="collapse navbar-collapse" id="navbarSupportedContent">
-                  <div class="form-inline my-2 my-lg-0">
-                    <input id="inputGraphSearch" class="form-control mr-sm-2" type="search" placeholder="Search" aria-label="Search" autocomplete="off" />
+                  <div class="d-flex my-2 my-lg-0">
+                    <input id="inputGraphSearch" class="form-control me-sm-2" type="search" placeholder="Search" aria-label="Search" autocomplete="off" />
                     <button class="btn btn-secondary" onclick="searchInGraph()" href="#"><i class="fa fa-search"></i></button>
                   </div>
-                  <ul class="navbar-nav mr-auto">
+                  <ul class="navbar-nav me-auto">
                     <li class="nav-item"></li>
                   </ul>
                   <ul class="navbar-nav">
