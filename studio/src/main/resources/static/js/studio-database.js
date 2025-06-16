@@ -590,7 +590,7 @@ function displaySchema() {
         let tabName = row.name.replaceAll(":", "-");
 
         let tabHtml =
-          "<li class='nav-item' style='height: 32px; width: 240px'><a data-toggle='tab' href='#tab-" +
+          "<li class='nav-item' style='height: 32px; width: 240px'><a data-bs-toggle='tab' href='#tab-" +
           tabName +
           "' class='nav-link vertical-tab" +
           (i == 0 ? " active show" : "");
