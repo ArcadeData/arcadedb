@@ -327,8 +327,8 @@ public class SelectStatementTest {
   @Test
   public void testRecordAttributes() {
     // issue #4430
-    checkRightSyntax("SELECT @this, @rid, @rid_id, @rid_pos, @type, @fields, @out, @in from V");
-    checkRightSyntax("SELECT @THIS, @RID, @RID_ID, @RID_POS, @TYPE, @FIELDS, @OUT, @IN from V");
+    checkRightSyntax("SELECT @this, @rid, @rid_id, @rid_pos, @type, @props, @out, @in from V");
+    checkRightSyntax("SELECT @THIS, @RID, @RID_ID, @RID_POS, @TYPE, @PROPS, @OUT, @IN from V");
   }
 
   @Test
