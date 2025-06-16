@@ -31,7 +31,7 @@
 
     <properties>
         <testcontainers.version>1.21.1</testcontainers.version>
-        <postgresql.version>42.7.6</postgresql.version>
+        <postgresql.version>42.7.7</postgresql.version>
         <logback-classic.version>1.5.18</logback-classic.version>
         <allowIncompleteProjects>true</allowIncompleteProjects>
         <assertj-db.version>3.0.0</assertj-db.version>
