@@ -75,7 +75,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   protected static final int                       PAGE_RECORD_TABLE_OFFSET         =
       PAGE_RECORD_COUNT_IN_PAGE_OFFSET + Binary.SHORT_SERIALIZED_SIZE;
   private static final   int                       DEF_MAX_RECORDS_IN_PAGE          = 2048;
-  private static final   int                       MINIMUM_RECORD_SIZE              = 5;    // RECORD SIZE CANNOT BE < 5 BYTES IN CASE OF UPDATE AND PLACEHOLDER, 5 BYTES IS THE SPACE REQUIRED TO HOST THE PLACEHOLDER
+  private static final   int                       MINIMUM_RECORD_SIZE              = 13;    // RECORD SIZE CANNOT BE < 13 BYTES IN CASE OF UPDATE AND PLACEHOLDER, 5 BYTES IS THE SPACE REQUIRED TO HOST THE PLACEHOLDER AND 1ST CHUCK FOR MULTI-PAGE CONTENT
   private static final   long                      RECORD_PLACEHOLDER_CONTENT       =
       MINIMUM_RECORD_SIZE * -1L;    // < -5 FOR SURROGATE RECORDS
   private static final   long                      MINIMUM_SPACE_LEFT_IN_PAGE       = 50L;
@@ -634,7 +634,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private RID createRecordInternal(final Record record, final boolean isPlaceHolder, final boolean discardRecordAfter) {
     final Binary buffer = database.getSerializer().serialize(database, record);
 
-    // RECORD SIZE CANNOT BE < 5 BYTES IN CASE OF UPDATE AND PLACEHOLDER, 5 BYTES IS THE SPACE REQUIRED TO HOST THE PLACEHOLDER. FILL THE DIFFERENCE WITH BLANK (0)
+    // RECORD SIZE CANNOT BE < 13 BYTES IN CASE OF UPDATE AND PLACEHOLDER, 5 BYTES IS THE SPACE REQUIRED TO HOST THE PLACEHOLDER. FILL THE DIFFERENCE WITH BLANK (0)
     while (buffer.size() < MINIMUM_RECORD_SIZE)
       buffer.putByte(buffer.size() - 1, (byte) 0);
 
@@ -651,7 +651,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int spaceNeeded = Binary.getNumberSpace(isPlaceHolder ? (-1L * bufferSize) : bufferSize) + bufferSize;
 
       if (txPageCounter > 0) {
-        final PageAnalysis pageAnalysis = findAvailableSpace(-1, spaceNeeded, txPageCounter);
+        final PageAnalysis pageAnalysis = findAvailableSpace(-1, spaceNeeded, txPageCounter, true);
         foundPage = pageAnalysis.page;
         newRecordPositionInPage = pageAnalysis.newRecordPositionInPage;
         availablePositionIndex = pageAnalysis.availablePositionIndex;
@@ -853,10 +853,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             // CANNOT CREATE A PLACEHOLDER OF PLACEHOLDER
             return false;
 
-          final int availableSpaceForChunk = (int) (recordSize[0] + recordSize[1]);
+          int availableSpaceInCurrentPage = (int) (recordSize[0] + recordSize[1]);
+          if (lastRecordPositionInPage == recordPositionInPage)
+            // SINCE IT'S THE LAST RECORD IN THE PAGE, GET ALSO THE REST OF THE SPACE AVAILABLE IN THE PAGE
+            availableSpaceInCurrentPage += spaceAvailableInCurrentPage;
 
           // TODO: LOOK FOR 1/2 OF THE RECORD SIZE
-          if (availableSpaceForChunk < 2 + LONG_SERIALIZED_SIZE + INT_SERIALIZED_SIZE) {
+          if (availableSpaceInCurrentPage < 2 + LONG_SERIALIZED_SIZE + INT_SERIALIZED_SIZE) {
             final int bytesWritten = page.writeNumber(recordPositionInPage, RECORD_PLACEHOLDER_POINTER);
 
             final RID realRID = createRecordInternal(record, true, false);
@@ -867,7 +870,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                     page, Thread.currentThread().threadId());
           } else {
             // SPLIT THE RECORD IN CHUNKS AS LINKED LIST AND STORE THE FIRST PART ON CURRENT PAGE ISSUE https://github.com/ArcadeData/arcadedb/issues/332
-            writeMultiPageRecord(rid, buffer, page, recordPositionInPage, availableSpaceForChunk);
+            writeMultiPageRecord(rid, buffer, page, recordPositionInPage, availableSpaceInCurrentPage);
 
             LogManager.instance().log(this, Level.FINE,
                 "Updated record %s by splitting it in multiple chunks to be saved in multiple pages (%s threadId=%d)", null, rid,
@@ -1306,7 +1309,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       final int spaceNeededForChunk = bufferSize + 2 + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
 
-      final PageAnalysis pageAnalysis = findAvailableSpace(currentPage.pageId.getPageNumber(), spaceNeededForChunk, txPageCounter);
+      final PageAnalysis pageAnalysis = findAvailableSpace(currentPage.pageId.getPageNumber(), spaceNeededForChunk, txPageCounter,
+          true);
       if (!pageAnalysis.createNewPage) {
         nextPage = database.getTransaction().getPageToModify(pageAnalysis.page.pageId, pageSize, false);
         newPosition = pageAnalysis.newRecordPositionInPage;
@@ -1339,7 +1343,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       chunkSize = spaceAvailableInCurrentPage - INT_SERIALIZED_SIZE - LONG_SERIALIZED_SIZE;
       final boolean lastChunk = bufferSize <= chunkSize;
       if (bufferSize < chunkSize)
-        // LAST CHUNK
+        // LAST CHUNK, OVERWRITE THE SIZE WITH THE REMAINING CONTENT SIZE
         chunkSize = bufferSize;
 
       if (chunkSize < 1)
@@ -1424,7 +1428,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         final int totalSpaceNeeded = bufferSize + Binary.LONG_SERIALIZED_SIZE + INT_SERIALIZED_SIZE;
 
-        final PageAnalysis pageAnalysis = findAvailableSpace(currentPage.pageId.getPageNumber(), totalSpaceNeeded, txPageCounter);
+        final PageAnalysis pageAnalysis = findAvailableSpace(currentPage.pageId.getPageNumber(), totalSpaceNeeded, txPageCounter,
+            true);
         if (!pageAnalysis.createNewPage) {
           // FOUND IT
           nextPage = database.getTransaction().getPageToModify(pageAnalysis.page.pageId, pageSize, false);
@@ -1530,7 +1535,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return lastRecordPositionInPage;
   }
 
-  private PageAnalysis getAvailableSpaceInPage(final int pageNumber, final int spaceNeeded) throws IOException {
+  /**
+   * @param multiPageRecord if true, avoid returning record 0 if available. This is a special case because the record 0 (first record in bucket)
+   *                        as next pointer was used since the beginning to indicate the end of a record, before recycling was available.
+   */
+  private PageAnalysis getAvailableSpaceInPage(final int pageNumber, final int spaceNeeded, final boolean multiPageRecord)
+      throws IOException {
     final PageAnalysis result = new PageAnalysis(
         database.getTransaction().getPage(new PageId(database, file.getFileId(), pageNumber), pageSize));
 
@@ -1543,11 +1553,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           // RECORD TOO BIG FOR THIS PAGE, USE A NEW PAGE
           result.createNewPage = true;
       }
-    } else {
+    } else if (pageNumber > 0 || !multiPageRecord) {
       // FIRST RECORD, START RIGHT AFTER THE HEADER
       result.availablePositionIndex = 0;
       result.newRecordPositionInPage = contentHeaderSize;
       result.spaceAvailableInCurrentPage = result.page.getMaxContentSize() - result.newRecordPositionInPage;
+    } else {
+      // NEVER RETURN THE FIRST RECORD IF IT'S A MULTI-PAGE RECORD
+      result.createNewPage = true;
     }
     return result;
   }
@@ -1612,8 +1625,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * 2. keep the best page as the page with space available closer to the buffer size
    * 3. if no page has enough space, use the last page
    * 4. if the last page is full, create a new page
+   *
+   * @param multiPageRecord if true, avoid returning record 0 if available. This is a special case because the record 0 (first record in bucket)
+   *                        as next pointer was used since the beginning to indicate the end of a record, before recycling was available.
    */
-  private PageAnalysis findAvailableSpace(final int currentPageId, final int spaceNeeded, final int txPageCounter)
+  private PageAnalysis findAvailableSpace(final int currentPageId, final int spaceNeeded, final int txPageCounter,
+      final boolean multiPageRecord)
       throws IOException {
     if (reuseSpaceMode.ordinal() > REUSE_SPACE_MODE.LOW.ordinal()) {
       synchronized (freeSpaceInPages) {
@@ -1625,7 +1642,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         if (currentPageId > -1) {
           // PRIORITIZE SPACE IN THE SAME PAGE
-          bestPageAnalysis = getAvailableSpaceInPage(currentPageId, spaceNeeded);
+          bestPageAnalysis = getAvailableSpaceInPage(currentPageId, spaceNeeded, multiPageRecord);
           if (bestPageAnalysis.createNewPage || bestPageAnalysis.totalRecordsInPage > maxRecordsInPage)
             bestPageAnalysis = null;
         }
@@ -1635,10 +1652,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             gatherPageStatistics();
 
           if (!freeSpaceInPages.isEmpty()) {
-            bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, spaceNeeded);
+            bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, spaceNeeded, multiPageRecord);
             if (bestPageAnalysis == null)
               // TRY AGAIN WITH HALF SIZE, THE RECORD WILL BE SPLIT IN MULTIPLE CHUNKS
-              bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, spaceNeeded / 2);
+              bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, spaceNeeded / 2, multiPageRecord);
           }
         }
 
@@ -1654,10 +1671,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     // CHECK IF THERE IS SPACE IN THE LAST PAGE
-    return getAvailableSpaceInPage(txPageCounter - 1, spaceNeeded);
+    return getAvailableSpaceInPage(txPageCounter - 1, spaceNeeded, multiPageRecord);
   }
 
-  private PageAnalysis findAvailableSpaceFromStatistics(final int currentPageId, final int spaceNeeded) throws IOException {
+  /**
+   * @param multiPageRecord if true, avoid returning record 0 if available. This is a special case because the record 0 (first record in bucket)
+   *                        as next pointer was used since the beginning to indicate the end of a record, before recycling was available.
+   */
+  private PageAnalysis findAvailableSpaceFromStatistics(final int currentPageId, final int spaceNeeded,
+      final boolean multiPageRecord)
+      throws IOException {
     PageAnalysis bestPageAnalysis = null;
     List<Integer> pagesToRemove = null;
     for (Map.Entry<Integer, Integer> entry : freeSpaceInPages.entrySet()) {
@@ -1670,7 +1693,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       if (pageStats >= spaceNeeded) {
         // CHECK IF THE SPACE AVAILABLE IS REAL
-        final PageAnalysis pageAnalysis = getAvailableSpaceInPage(pageId, spaceNeeded);
+        final PageAnalysis pageAnalysis = getAvailableSpaceInPage(pageId, spaceNeeded, multiPageRecord);
 
         if (pageAnalysis.totalRecordsInPage >= maxRecordsInPage) {
           pagesToRemove = pagesToRemove == null ? new ArrayList<>() : pagesToRemove;
@@ -1684,16 +1707,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             if (pageAnalysis.spaceAvailableInCurrentPage < MINIMUM_SPACE_LEFT_IN_PAGE) {
               pagesToRemove = pagesToRemove == null ? new ArrayList<>() : pagesToRemove;
               pagesToRemove.add(pageId);
-            }
-            entry.setValue(pageAnalysis.spaceAvailableInCurrentPage);
+            } else
+              entry.setValue(pageAnalysis.spaceAvailableInCurrentPage);
           }
 
-          final int delta = pageAnalysis.spaceAvailableInCurrentPage - spaceNeeded;
-          if (bestPageAnalysis == null || bestPageAnalysis.spaceAvailableInCurrentPage - spaceNeeded > delta) {
-            // SELECT THE PAGE WITH CLOSEST AVAILABLE SPACE
-            bestPageAnalysis = pageAnalysis;
-            break;
-          }
+          if (multiPageRecord && pageAnalysis.page.pageId.getPageNumber() == 0 && pageAnalysis.availablePositionIndex == 0)
+            // AVOID REUSING THE FIRST RECORD IF IT'S A MULTI-PAGE RECORD
+            continue;
+
+          bestPageAnalysis = pageAnalysis;
+          break;
         }
       }
     }
