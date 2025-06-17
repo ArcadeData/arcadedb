@@ -635,8 +635,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final Binary buffer = database.getSerializer().serialize(database, record);
 
     // RECORD SIZE CANNOT BE < 13 BYTES IN CASE OF UPDATE AND PLACEHOLDER, 5 BYTES IS THE SPACE REQUIRED TO HOST THE PLACEHOLDER. FILL THE DIFFERENCE WITH BLANK (0)
-    while (buffer.size() < MINIMUM_RECORD_SIZE)
-      buffer.putByte(buffer.size() - 1, (byte) 0);
+    while (buffer.size() < MINIMUM_RECORD_SIZE) {
+      buffer.append((byte) 0);
+    }
 
     final int bufferSize = buffer.size();
 
@@ -651,7 +652,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int spaceNeeded = Binary.getNumberSpace(isPlaceHolder ? (-1L * bufferSize) : bufferSize) + bufferSize;
 
       if (txPageCounter > 0) {
-        final PageAnalysis pageAnalysis = findAvailableSpace(-1, spaceNeeded, txPageCounter, true);
+        final PageAnalysis pageAnalysis = findAvailableSpace(-1, spaceNeeded, txPageCounter, false);
         foundPage = pageAnalysis.page;
         newRecordPositionInPage = pageAnalysis.newRecordPositionInPage;
         availablePositionIndex = pageAnalysis.availablePositionIndex;

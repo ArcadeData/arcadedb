@@ -159,6 +159,11 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     }
   }
 
+  public void append(final byte b) {
+    checkForAllocation(size, 1);
+    buffer.put(size - 1, b);
+  }
+
   @Override
   public int position() {
     return buffer.position();
@@ -622,7 +627,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     if (newSizeAsLong > Integer.MAX_VALUE)
       throw new IllegalArgumentException("Binary objects cannot be larger than 2GB");
 
-    if (offset + bytesToWrite > content.length - buffer.arrayOffset()) {
+    if (newSizeAsLong > content.length - buffer.arrayOffset()) {
       if (!autoResizable)
         throw new IllegalArgumentException("Cannot resize the buffer (autoResizable=false)");
 
@@ -644,6 +649,9 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
 
     if (offset + bytesToWrite > size)
       size = offset + bytesToWrite;
+
+    if (size > buffer.limit())
+      buffer.limit(size);
   }
 
   public int capacity() {
