@@ -30,6 +30,12 @@ public class SingleServerLoadTestIT extends ContainersTestTemplate {
 
     final int numOfThreads = 5;
     final int numOfUsers = 1000;
+    final int numOfFriendshipIterarion = 10;
+    final int numOfFriendshipPerIteration = 10;
+
+    int expectedUsersCount = numOfUsers * numOfThreads;
+    int expectedFriendshipCount = numOfFriendshipIterarion * numOfFriendshipPerIteration * numOfThreads;
+
     logger.info("Creating {} users using {} threads", numOfUsers, numOfThreads);
     ExecutorService executor = Executors.newFixedThreadPool(numOfThreads);
     for (int i = 0; i < numOfThreads; i++) {
@@ -43,8 +49,8 @@ public class SingleServerLoadTestIT extends ContainersTestTemplate {
 
       executor.submit(() -> {
         DatabaseWrapper db1 = new DatabaseWrapper(arcadeContainer, idSupplier);
-        for (int f = 0; f < 10; f++) {
-          List<Integer> userIds = db.getUserIds(10, f * 10);
+        for (int f = 0; f < numOfFriendshipIterarion; f++) {
+          List<Integer> userIds = db.getUserIds(numOfFriendshipPerIteration, f * 10);
           for (int j = 0; j < userIds.size(); j++) {
             db1.addFriendship(userIds.get(j), userIds.get((j + 1) % userIds.size()));
           }
@@ -56,9 +62,9 @@ public class SingleServerLoadTestIT extends ContainersTestTemplate {
 
     executor.shutdown();
     while (!executor.isTerminated()) {
-      int userCount = db.countUsers();
+      int users = db.countUsers();
       int friendships = db.countFriendships();
-      logger.info("Current user count: {} - {}", userCount, friendships);
+      logger.info("Current user count: {} - {}", users, friendships);
       // Wait for 2 seconds before checking again
       try {
         TimeUnit.SECONDS.sleep(2);
@@ -66,9 +72,9 @@ public class SingleServerLoadTestIT extends ContainersTestTemplate {
         Thread.currentThread().interrupt();
       }
     }
-    db.assertThatUserCountIs(numOfUsers * numOfThreads);
 
-    assertThat(db.countFriendships()).isEqualTo(500);
+    db.assertThatUserCountIs(expectedUsersCount);
+    db.assertThatFriendshipCountIs(expectedFriendshipCount);
 
   }
 }

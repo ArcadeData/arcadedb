@@ -216,6 +216,10 @@ public class DatabaseWrapper {
     return resultSet.next().<Integer>getProperty("count");
   }
 
+  public void assertThatFriendshipCountIs(int expectedCount) {
+    assertThat(countFriendships()).isEqualTo(expectedCount);
+  }
+
   public void assertThatPhotoCountIs(int expectedCount) {
     assertThat(countPhotos()).isEqualTo(expectedCount);
   }
