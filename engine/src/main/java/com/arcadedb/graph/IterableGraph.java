@@ -34,7 +34,7 @@ public interface IterableGraph<T> extends Iterable<T> {
 
   default T getFirstOrNull() {
     if (this instanceof List<?> list)
-      return list.isEmpty() ? null : (T) list.getFirst();
+      return list.isEmpty() ? null : (T) list.get(0);
 
     for (final T item : this)
       return (T) item;
