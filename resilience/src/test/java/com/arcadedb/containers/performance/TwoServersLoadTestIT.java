@@ -2,12 +2,7 @@ package com.arcadedb.containers.performance;
 
 import com.arcadedb.containers.support.ContainersTestTemplate;
 import com.arcadedb.containers.support.DatabaseWrapper;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseComparator;
-import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.engine.ComponentFile;
 import org.awaitility.Awaitility;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
@@ -23,7 +18,6 @@ import java.util.concurrent.TimeUnit;
  * It also checks that the schema is replicated correctly.
  */
 public class TwoServersLoadTestIT extends ContainersTestTemplate {
-
 
   @Test
   @DisplayName("Load test 2 servers in HA mode")
@@ -51,6 +45,9 @@ public class TwoServersLoadTestIT extends ContainersTestTemplate {
     final int numOfThreads = 5;
     final int numOfUsers = 1000;
     int numOfPhotos = 5;
+    int expectedUsersCount = numOfThreads * numOfUsers;
+    int expectedPhotosCount = numOfThreads * numOfUsers * numOfPhotos;
+
     logger.info("Adding {} users with {} photos per user to database 1 using {} threads", numOfUsers, numOfPhotos, numOfThreads);
     ExecutorService executor = Executors.newFixedThreadPool(numOfThreads);
 
@@ -90,18 +87,17 @@ public class TwoServersLoadTestIT extends ContainersTestTemplate {
             Integer users1 = db1.countUsers();
             Integer photos1 = db1.countPhotos();
 
-            logger.info("Users({}):: {} --> {} - Photos({}):: {} --> {} ", numOfThreads * numOfUsers,
+            logger.info("Users({}):: {} --> {} - Photos({}):: {} --> {} ", expectedUsersCount,
                 users1, users2,
-                numOfThreads * numOfUsers * numOfPhotos, photos1, photos2);
+                expectedPhotosCount, photos1, photos2);
             return users1.equals(numOfThreads * numOfUsers) &&
-                photos1.equals(numOfThreads * numOfUsers * numOfPhotos) &&
+                photos1.equals(expectedPhotosCount) &&
                 users2.equals(users1) &&
                 photos2.equals(photos1);
           } catch (Exception e) {
             return false;
           }
         });
-
 
     db1.close();
     db2.close();
