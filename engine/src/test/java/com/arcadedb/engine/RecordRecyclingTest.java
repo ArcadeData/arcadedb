@@ -4,14 +4,17 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.select.SelectIterator;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.io.*;
 import java.util.*;
 
+import static com.arcadedb.schema.LocalSchema.STATISTICS_FILE_NAME;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class RecordRecyclingTest {
@@ -29,14 +32,18 @@ public class RecordRecyclingTest {
       if (databaseFactory.exists())
         databaseFactory.open().drop();
 
-      try (Database db = databaseFactory.create()) {
-        db.getSchema().createVertexType(VERTEX_TYPE, 1);
-        db.getSchema().createEdgeType(EDGE_TYPE, 1);
+      final Database database = databaseFactory.create();
+      database.getSchema().createVertexType(VERTEX_TYPE, 1);
+      database.getSchema().createEdgeType(EDGE_TYPE, 1);
+      database.close();
 
-        RID maxVertexRID = null;
-        RID maxEdgeRID = null;
+      RID maxVertexRID = null;
+      RID maxEdgeRID = null;
 
-        for (int i = 0; i < CYCLES; i++) {
+      for (int i = 0; i < CYCLES; i++) {
+        final Database db = databaseFactory.open();
+
+        try {
           db.transaction(() -> {
             final MutableVertex root = db.newVertex(VERTEX_TYPE)//
                 .set("id", 0)//
@@ -76,16 +83,21 @@ public class RecordRecyclingTest {
             assertThat(db.countBucket(db.getSchema().getBucketById(3).getName())).isEqualTo(0);
             assertThat(db.countBucket(db.getSchema().getBucketById(4).getName())).isEqualTo(0);
           });
+
+          final ResultSet result = db.command("sql", "check database");
+          // System.out.println(result.nextIfAvailable().toJSON());
+        } finally {
+          db.close();
+          new File(databaseFactory.getDatabasePath() + File.separator + STATISTICS_FILE_NAME).delete();
+          assertThat(databaseFactory.getActiveDatabaseInstances()).isEmpty();
         }
-
-        final ResultSet result = db.command("sql", "check database");
-        // System.out.println(result.nextIfAvailable().toJSON());
-      } finally {
-
-        if (databaseFactory.exists())
-          databaseFactory.open().drop();
       }
+
+      if (databaseFactory.exists())
+        databaseFactory.open().drop();
+
     } finally {
+
       GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.reset();
     }
   }
