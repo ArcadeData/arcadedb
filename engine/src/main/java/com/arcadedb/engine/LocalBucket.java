@@ -75,7 +75,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   protected static final int                       PAGE_RECORD_TABLE_OFFSET         =
       PAGE_RECORD_COUNT_IN_PAGE_OFFSET + Binary.SHORT_SERIALIZED_SIZE;
   private static final   int                       DEF_MAX_RECORDS_IN_PAGE          = 2048;
-  private static final   int                       MINIMUM_RECORD_SIZE              = 13;    // RECORD SIZE CANNOT BE < 13 BYTES IN CASE OF UPDATE AND PLACEHOLDER, 5 BYTES IS THE SPACE REQUIRED TO HOST THE PLACEHOLDER AND 1ST CHUCK FOR MULTI-PAGE CONTENT
+  private static final   int                       MINIMUM_RECORD_SIZE              = 5;    // RECORD SIZE CANNOT BE < 13 BYTES IN CASE OF UPDATE AND PLACEHOLDER, 5 BYTES IS THE SPACE REQUIRED TO HOST THE PLACEHOLDER AND 1ST CHUCK FOR MULTI-PAGE CONTENT
   private static final   long                      RECORD_PLACEHOLDER_CONTENT       =
       MINIMUM_RECORD_SIZE * -1L;    // < -5 FOR SURROGATE RECORDS
   private static final   long                      MINIMUM_SPACE_LEFT_IN_PAGE       = 50L;
