@@ -104,14 +104,6 @@
         <tag>HEAD</tag>
     </scm>
 
-    <distributionManagement>
-        <snapshotRepository>
-            <id>github</id>
-            <name>GitHub ArcadeDb Apache Maven Packages Snapshots</name>
-            <url>https://maven.pkg.github.com/ArcadeData/arcadedb</url>
-        </snapshotRepository>
-    </distributionManagement>
-
     <modules>
         <module>engine</module>
         <module>network</module>
