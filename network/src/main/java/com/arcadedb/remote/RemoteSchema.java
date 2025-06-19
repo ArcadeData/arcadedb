@@ -231,7 +231,11 @@ public class RemoteSchema implements Schema {
   @Override
   public DocumentType getType(final String typeName) {
     checkSchemaIsLoaded();
-    return types.get(typeName);
+
+    final RemoteDocumentType t = types.get(typeName);
+    if (t == null)
+      throw new SchemaException("Type with name '" + typeName + "' was not found");
+    return t;
   }
 
   @Override
