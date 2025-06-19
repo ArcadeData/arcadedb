@@ -20,9 +20,11 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionException;
@@ -37,10 +39,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.*;
+import java.util.concurrent.atomic.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -477,6 +477,51 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       database1.setSessionId(sessionId);
 
       database1.commit();
+    });
+  }
+
+  @Test
+  public void testTxVisibility() throws Exception {
+    testEachServer((serverIndex) -> {
+      assertThat(new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
+          DATABASE_NAME)).isTrue();
+
+      final RemoteDatabase t1 = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+      final RemoteDatabase t2 = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+      t1.command("sql", "create vertex type SimpleVertex");
+
+      t1.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+      MutableVertex svt1 = t1.newVertex("SimpleVertex");
+      svt1.set("s", "concurrent t1");
+      svt1.save();
+
+      RID rid = svt1.getIdentity();
+
+      t1.commit();
+      t1.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+      svt1 = t1.lookupByRID(rid).asVertex().modify();
+
+      // recover the same vertex over t2
+      t2.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+      MutableVertex svt2 = t2.lookupByRID(rid).asVertex().modify();
+
+      svt2.set("s", "concurrent t2");
+      svt2.save();
+      t2.commit();
+      svt2 = t2.lookupByRID(rid).asVertex().modify();
+
+      svt1.set("s", "concurrent t1 - 2");
+      svt1.save();
+      try {
+        t1.commit();
+        fail("Expected ConcurrentModificationException due to concurrent update, but commit succeeded");
+      } catch (ConcurrentModificationException e) {
+        // EXPECTED
+      }
     });
   }
 
