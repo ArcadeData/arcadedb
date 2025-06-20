@@ -36,12 +36,14 @@ npm run test:debug
 
 ### CI Environment
 ```bash
-# Run tests (assumes ArcadeDB server is already running)
-npm test
-
 # Install browsers for CI
 npm run install-browsers
+
+# Run tests (assumes ArcadeDB server is already running)
+npm test
 ```
+
+**Note**: In CI, the tests include a global setup that validates server connectivity before running tests. This helps identify server startup issues early.
 
 ## Test Files
 

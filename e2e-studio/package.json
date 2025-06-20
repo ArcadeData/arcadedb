@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "End-to-end tests for ArcadeDB Studio",
   "scripts": {
-    "test": "playwright test",
+    "test": "npm run start:server && playwright test; npm run stop:server",
     "test:local": "npm run start:server && playwright test; npm run stop:server",
     "test:headed": "playwright test --headed",
     "test:debug": "playwright test --debug",
@@ -14,7 +14,8 @@
     "wait:server": "npx wait-on http-get://localhost:2480/api/v1/ready --timeout 120000 --httpTimeout 30000 --interval 2000 --window 1000 --verbose --strictSSL false --validateStatus 204"
   },
   "devDependencies": {
-    "@playwright/test": "^1.40.0"
+    "@playwright/test": "^1.40.0",
+    "wait-on": "^8.0.1"
   },
   "engines": {
     "node": ">=18.0.0",

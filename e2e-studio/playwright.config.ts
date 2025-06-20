@@ -2,10 +2,11 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests',
-  fullyParallel: true,
+  globalSetup: './global-setup.ts',
+  fullyParallel: false, // Disable parallel execution to avoid conflicts
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  workers: 1, // Use single worker to avoid database conflicts
   reporter: process.env.CI
     ? [['html'], ['junit', { outputFile: 'test-results/junit-report.xml' }]]
     : 'html',
@@ -24,6 +25,9 @@ export default defineConfig({
     },
   ],
 
-  // Remove webServer configuration since ArcadeDB is managed externally in CI
-  // The server should already be running when tests start
+  webServer: process.env.CI ? undefined : {
+    command: 'echo "No server management in CI - assuming external server"',
+    port: 2480,
+    reuseExistingServer: true,
+  },
 });
