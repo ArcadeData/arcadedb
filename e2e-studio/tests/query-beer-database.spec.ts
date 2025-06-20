@@ -49,7 +49,7 @@ test.describe('ArcadeDB Studio Beer Database Query', () => {
     // Verify that the graph displays exactly 10 vertices
     await expect(page.getByText('Displayed')).toBeVisible();
     await expect(page.getByText('vertices and')).toBeVisible();
-    
+
     // Check specifically for "Displayed 10 vertices and 0 edges"
     const graphStats = page.locator('text=Displayed').locator('..'); // Get parent element
     await expect(graphStats).toContainText('Displayed 10 vertices and 0 edges');
