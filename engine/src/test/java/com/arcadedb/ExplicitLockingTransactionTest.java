@@ -19,20 +19,24 @@
 package com.arcadedb;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.MutableVertex;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Fail.fail;
 
 public class ExplicitLockingTransactionTest extends TestHelper {
   @Test
   public void testExplicitLock() {
     final Database db = database;
 
-    final int TOT = 100;
+    final int TOT = 1000;
 
     database.getSchema().getOrCreateVertexType("Node");
 
@@ -50,7 +54,7 @@ public class ExplicitLockingTransactionTest extends TestHelper {
       rid[0] = v.getIdentity();
     });
 
-    final int CONCURRENT_THREADS = 4;
+    final int CONCURRENT_THREADS = 16;
 
     // SPAWN ALL THE THREADS AND INCREMENT ONE BY ONE THE ID OF THE VERTEX
     final Thread[] threads = new Thread[CONCURRENT_THREADS];
@@ -65,6 +69,7 @@ public class ExplicitLockingTransactionTest extends TestHelper {
               v.set("id", v.getInteger("id") + 1);
               v.save();
             });
+
             committed.incrementAndGet();
 
           } catch (Exception e) {
@@ -90,5 +95,64 @@ public class ExplicitLockingTransactionTest extends TestHelper {
     assertThat(committed.get()).isEqualTo(CONCURRENT_THREADS * TOT);
     assertThat(caughtExceptions.get()).isEqualTo(0);
     assertThat(committed.get() + caughtExceptions.get()).isEqualTo(TOT * CONCURRENT_THREADS);
+  }
+
+  @Test
+  public void testErrorOnExplicitLock() {
+    final Database db = database;
+
+    database.getSchema().getOrCreateVertexType("Node");
+
+    final RID[] rid = new RID[1];
+
+    database.transaction(() -> {
+      final MutableVertex v = db.newVertex("Node");
+      v.set("id", 0);
+      v.set("name", "Exception(al)");
+      v.set("surname", "Test");
+      v.save();
+      rid[0] = v.getIdentity();
+    });
+
+    try {
+      database.acquireLock().type("Node").lock();
+      fail("This must fail because the tx was not started yet");
+    } catch (DatabaseOperationException e) {
+      // EXPECTED
+    }
+
+    try {
+      database.begin();
+      database.acquireLock().type("Node").lock();
+      database.acquireLock().type("Node").lock(); // THIS MUST FAIL
+    } catch (TransactionException e) {
+      // EXPECTED
+    }
+
+    try {
+      database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+      database.query("sql", "select from Node").close();
+      database.acquireLock().type("Node").lock();
+      fail("This must fail because the tx is not empty");
+    } catch (TransactionException e) {
+      // EXPECTED
+    }
+
+    database.getSchema().getOrCreateVertexType("Node2");
+
+    try {
+      database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+      database.acquireLock().type("Node").lock();
+
+      final MutableVertex v = db.newVertex("Node2");
+      v.set("id", 777);
+      v.save();
+
+      database.commit();
+
+      fail("This must fail because a record of unlocked type was created in the tx");
+    } catch (TransactionException e) {
+      // EXPECTED
+    }
   }
 }

@@ -788,7 +788,10 @@ public class TransactionContext implements Transaction {
     if (explicitLockedFiles != null)
       throw new TransactionException("Explicit lock already acquired");
 
-    if (!indexChanges.isEmpty() || !immutablePages.isEmpty() || !modifiedPages.isEmpty() || !newPages.isEmpty())
+    if (!indexChanges.isEmpty() || !immutablePages.isEmpty() || //
+        (modifiedPages != null && !modifiedPages.isEmpty()) || //
+        (newPages != null && !newPages.isEmpty()) //
+    )
       throw new TransactionException("Explicit lock must be acquired before any modification");
 
     explicitLockedFiles = lockFilesInOrder(filesToLock);
