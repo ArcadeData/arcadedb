@@ -1030,6 +1030,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
+  public TransactionExplicitLock acquireLock() {
+    checkTransactionIsActive(false);
+    return new TransactionExplicitLock(getTransaction());
+  }
+
+  @Override
   public void transaction(final TransactionScope txBlock) {
     transaction(txBlock, true, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES), null, null);
   }

@@ -25,6 +25,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionExplicitLock;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.exception.ArcadeDBException;
@@ -44,12 +45,9 @@ import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.logging.Level;
+import java.net.http.*;
+import java.util.*;
+import java.util.logging.*;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
 
@@ -228,6 +226,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   @Override
   public int getNestedTransactions() {
     return isTransactionActive() ? 1 : 0;
+  }
+
+  @Override
+  public TransactionExplicitLock acquireLock() {
+    throw new UnsupportedOperationException();
   }
 
   @Override

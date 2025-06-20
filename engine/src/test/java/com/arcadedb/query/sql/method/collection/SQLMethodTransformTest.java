@@ -33,6 +33,7 @@ import com.arcadedb.database.RecordCallback;
 import com.arcadedb.database.RecordEvents;
 import com.arcadedb.database.RecordFactory;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.database.TransactionExplicitLock;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
@@ -63,13 +64,9 @@ import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.util.Collection;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.Callable;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -577,6 +574,11 @@ class SQLMethodTransformTest {
       @Override
       public int getNestedTransactions() {
         return 0;
+      }
+
+      @Override
+      public TransactionExplicitLock acquireLock() {
+        return null;
       }
 
       @Override

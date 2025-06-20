@@ -69,6 +69,7 @@ public class TransactionContext implements Transaction {
   private       boolean                              asyncFlush            = true;
   private       WALFile.FlushType                    walFlush;
   private       List<Integer>                        lockedFiles;
+  private       List<Integer>                        explicitLockedFiles   = null;
   private       long                                 txId                  = -1;
   private       STATUS                               status                = STATUS.INACTIVE;
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
@@ -561,10 +562,22 @@ public class TransactionContext implements Transaction {
 
     status = STATUS.COMMIT_1ST_PHASE;
 
-    if (isLeader)
-      // LOCK FILES IN ORDER (TO AVOID DEADLOCK)
-      lockedFiles = lockFilesInOrder();
-    else
+    if (isLeader) {
+      final Set<Integer> modifiedFiles = lockFilesFromChanges();
+
+      if (explicitLockedFiles != null) {
+        // CHECK THE LOCKED FILES ARE ALL LOCKED ALREADY
+        if (!explicitLockedFiles.containsAll(modifiedFiles)) {
+          explicitLockedFiles.removeAll(modifiedFiles);
+          throw new TransactionException(
+              "Cannot commit transaction because not all the modified resources were locked: " + explicitLockedFiles);
+        }
+        lockedFiles = explicitLockedFiles;
+      } else
+        // LOCK FILES IN ORDER (TO AVOID DEADLOCK)
+        lockedFiles = lockFilesInOrder(modifiedFiles);
+
+    } else
       // IN CASE OF REPLICA THIS IS DEMANDED TO THE LEADER EXECUTION
       lockedFiles = new ArrayList<>();
 
@@ -717,6 +730,7 @@ public class TransactionContext implements Transaction {
       database.getTransactionManager().unlockFilesInOrder(lockedFiles);
       lockedFiles = null;
     }
+    explicitLockedFiles = null;
 
     indexChanges.reset();
 
@@ -770,7 +784,13 @@ public class TransactionContext implements Transaction {
     this.status = status;
   }
 
-  private List<Integer> lockFilesInOrder() {
+  protected void explicitLock(final Set<Integer> filesToLock) {
+    if (explicitLockedFiles != null)
+      throw new TransactionException("Explicit lock already acquired");
+    explicitLockedFiles = lockFilesInOrder(filesToLock);
+  }
+
+  private Set<Integer> lockFilesFromChanges() {
     final Set<Integer> modifiedFiles = new HashSet<>();
 
     for (final PageId p : modifiedPages.keySet())
@@ -783,9 +803,13 @@ public class TransactionContext implements Transaction {
 
     modifiedFiles.addAll(newPageCounters.keySet());
 
+    return modifiedFiles;
+  }
+
+  private List<Integer> lockFilesInOrder(final Set<Integer> files) {
     final long timeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
 
-    final List<Integer> locked = database.getTransactionManager().tryLockFiles(modifiedFiles, timeout);
+    final List<Integer> locked = database.getTransactionManager().tryLockFiles(files, timeout);
 
     // CHECK IF ALL THE LOCKED FILES STILL EXIST. FILE MISSING CAN HAPPEN IN CASE OF INDEX COMPACTION OR DROP OF A BUCKET OR AN INDEX
     for (Integer f : locked)

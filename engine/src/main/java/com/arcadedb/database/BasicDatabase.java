@@ -75,6 +75,8 @@ public interface BasicDatabase extends AutoCloseable {
    */
   int getNestedTransactions();
 
+  TransactionExplicitLock acquireLock();
+
   /**
    * Executes a lambda in the transaction scope. If there is an active transaction, then the current transaction is temporarily parked and a new sub-transaction
    * is begun. In case an exception is thrown inside the lambda method, the transaction is rolled back.

@@ -113,7 +113,7 @@ public class AlterTypeStatement extends DDLStatement {
       switch (property.toLowerCase(Locale.ENGLISH)) {
       case "name":
         final String newTypeName = identifierValue.getStringValue();
-        final int bucketSize = type.getInvolvedBuckets().size();
+        final int bucketSize = type.getBuckets(false).size();
         final int pageSize = GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getValueAsInteger();
         // TODO: Update documentation with the details & performance penalties of this operation
         // NOTE copyType() checks for type existence, no need to check it here
