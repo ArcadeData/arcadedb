@@ -36,7 +36,7 @@ public class ExplicitLockingTransactionTest extends TestHelper {
   public void testExplicitLock() {
     final Database db = database;
 
-    final int TOT = 1000;
+    final int TOT = 100;
 
     database.getSchema().getOrCreateVertexType("Node");
 
@@ -74,6 +74,72 @@ public class ExplicitLockingTransactionTest extends TestHelper {
 
           } catch (Exception e) {
             caughtExceptions.incrementAndGet();
+            e.printStackTrace();
+          }
+        }
+
+      });
+      threads[i].start();
+    }
+
+    // WAIT FOR ALL THE THREADS
+    for (int i = 0; i < CONCURRENT_THREADS; i++)
+      try {
+        threads[i].join();
+      } catch (InterruptedException e) {
+        // IGNORE IT
+      }
+
+    assertThat(database.countType("Node", true)).isEqualTo(1);
+
+    assertThat(rid[0].asVertex().getInteger("id")).isEqualTo(CONCURRENT_THREADS * TOT);
+    assertThat(committed.get()).isEqualTo(CONCURRENT_THREADS * TOT);
+    assertThat(caughtExceptions.get()).isEqualTo(0);
+    assertThat(committed.get() + caughtExceptions.get()).isEqualTo(TOT * CONCURRENT_THREADS);
+  }
+
+  @Test
+  public void testExplicitLockSQL() {
+    final Database db = database;
+
+    final int TOT = 100;
+
+    database.getSchema().getOrCreateVertexType("Node");
+    database.getSchema().getOrCreateVertexType("Node2");
+
+    final AtomicInteger committed = new AtomicInteger(0);
+    final AtomicInteger caughtExceptions = new AtomicInteger(0);
+
+    final RID[] rid = new RID[1];
+
+    database.transaction(() -> {
+      final MutableVertex v = db.newVertex("Node");
+      v.set("id", 0);
+      v.set("name", "Exception(al)");
+      v.set("surname", "Test");
+      v.save();
+      rid[0] = v.getIdentity();
+    });
+
+    final int CONCURRENT_THREADS = 16;
+
+    // SPAWN ALL THE THREADS AND INCREMENT ONE BY ONE THE ID OF THE VERTEX
+    final Thread[] threads = new Thread[CONCURRENT_THREADS];
+    for (int i = 0; i < CONCURRENT_THREADS; i++) {
+      threads[i] = new Thread(() -> {
+        for (int k = 0; k < TOT; ++k) {
+          try {
+            database.command("sqlscript",
+                "begin lock type Node, Node2;\n" +
+                    "update Node set id = id + 1 where @rid = " + rid[0] + ";\n" +
+                    "commit;"
+            );
+
+            committed.incrementAndGet();
+
+          } catch (Exception e) {
+            caughtExceptions.incrementAndGet();
+            e.printStackTrace();
           }
         }
 

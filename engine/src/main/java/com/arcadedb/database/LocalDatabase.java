@@ -934,9 +934,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
 
     try {
-      final List<IndexInternal> indexes = record instanceof Document d ?
-          indexer.getInvolvedIndexes(d) :
-          Collections.emptyList();
+      final List<IndexInternal> indexes = record instanceof Document d ? indexer.getInvolvedIndexes(d) : Collections.emptyList();
 
       if (!indexes.isEmpty()) {
         // UPDATE THE INDEXES TOO
@@ -1032,7 +1030,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public TransactionExplicitLock acquireLock() {
     checkTransactionIsActive(false);
-    return new TransactionExplicitLock(getTransaction());
+    return getTransaction().lock();
   }
 
   @Override
@@ -1704,8 +1702,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           async.close();
       } catch (final Throwable e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database '%s'", e,
-                name);
+            .log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database '%s'", e, name);
       }
 
       if (drop)

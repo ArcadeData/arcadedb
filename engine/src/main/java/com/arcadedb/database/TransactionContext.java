@@ -77,6 +77,7 @@ public class TransactionContext implements Transaction {
   // TODO: OPTIMIZE modifiedRecordsCache STRUCTURE, MAYBE JOIN IT WITH UPDATED RECORDS?
   private       Map<RID, Record>                     updatedRecords        = null;
   private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel        = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+  private       TransactionExplicitLock              explicitLock;
 
   public enum STATUS {INACTIVE, BEGUN, COMMIT_1ST_PHASE, COMMIT_2ND_PHASE}
 
@@ -131,6 +132,12 @@ public class TransactionContext implements Transaction {
       database.getSchema().getEmbedded().saveConfiguration();
 
     return phase1 != null ? phase1.result : null;
+  }
+
+  public TransactionExplicitLock lock() {
+    if (explicitLock == null)
+      explicitLock = new TransactionExplicitLock(this);
+    return explicitLock;
   }
 
   public Database.TRANSACTION_ISOLATION_LEVEL getIsolationLevel() {
