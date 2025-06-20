@@ -6,10 +6,15 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
-  reporter: 'html',
+  reporter: process.env.CI 
+    ? [['html'], ['junit', { outputFile: 'test-results/junit-report.xml' }]]
+    : 'html',
   use: {
     baseURL: 'http://localhost:2480',
     trace: 'on-first-retry',
+    headless: true,
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
   },
 
   projects: [
@@ -19,9 +24,6 @@ export default defineConfig({
     },
   ],
 
-  webServer: {
-    command: 'echo "Assuming ArcadeDB server is running on localhost:2480"',
-    port: 2480,
-    reuseExistingServer: !process.env.CI,
-  },
+  // Remove webServer configuration since ArcadeDB is managed externally in CI
+  // The server should already be running when tests start
 });

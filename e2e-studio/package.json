@@ -3,9 +3,10 @@
   "version": "1.0.0",
   "description": "End-to-end tests for ArcadeDB Studio",
   "scripts": {
-    "test": "npm run start:server && playwright test; npm run stop:server",
-    "test:headed": "npm run start:server && playwright test --headed; npm run stop:server",
-    "test:debug": "npm run start:server && playwright test --debug; npm run stop:server",
+    "test": "playwright test",
+    "test:local": "npm run start:server && playwright test; npm run stop:server",
+    "test:headed": "playwright test --headed",
+    "test:debug": "playwright test --debug",
     "start:server": "docker run -d --name arcadedb-test --rm -p 2480:2480 -p 2424:2424 -p 6379:6379 -p 5432:5432 -p 8182:8182 --env JAVA_OPTS=\"-Darcadedb.server.rootPassword=playwithdata -Darcadedb.server.defaultDatabases=Beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} -Darcadedb.server.plugins=Redis:com.arcadedb.redis.RedisProtocolPlugin,MongoDB:com.arcadedb.mongo.MongoDBProtocolPlugin,Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin\" arcadedata/arcadedb:latest && npm run wait:server",
     "test:report": "playwright show-report",
     "install-browsers": "npx playwright install",
@@ -13,11 +14,10 @@
     "wait:server": "npx wait-on http-get://localhost:2480/api/v1/ready --timeout 120000 --httpTimeout 30000 --interval 2000 --window 1000 --verbose --strictSSL false --validateStatus 204"
   },
   "devDependencies": {
-    "@playwright/test": "^1.53.0",
-    "wait-on": "^8.0.1"
+    "@playwright/test": "^1.40.0"
   },
   "engines": {
-    "node": ">=16.0.0",
+    "node": ">=18.0.0",
     "npm": ">=8.0.0"
   }
 }
