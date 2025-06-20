@@ -459,8 +459,7 @@ public class ACIDTransactionTest extends TestHelper {
 
     final int TOT = 100;
 
-    final VertexType type = database.getSchema().getOrCreateVertexType("Node");
-    //type.getOrCreateProperty("id", Type.STRING).getOrCreateIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+    database.getSchema().getOrCreateVertexType("Node");
 
     final AtomicInteger thrownExceptions = new AtomicInteger(0);
     final AtomicInteger caughtExceptions = new AtomicInteger(0);
@@ -494,8 +493,6 @@ public class ACIDTransactionTest extends TestHelper {
 
               if ((id + 1) % 100 == 0) {
                 thrownExceptions.incrementAndGet();
-//                System.out.println("Simulating exception at id=" + id + " (thread=" + Thread.currentThread().getName() + ")");
-                //throw new  DuplicatedKeyException("indexName", "key", rid[0]);
                 throw new RuntimeException("Test exception at " + id);
               }
             });
@@ -503,7 +500,6 @@ public class ACIDTransactionTest extends TestHelper {
 
           } catch (Exception e) {
             caughtExceptions.incrementAndGet();
-//            System.out.println("Caught: " + e.getMessage() + " (id=" + id + ", thread=" + Thread.currentThread().getName() + ")");
           }
         }
 
@@ -525,9 +521,6 @@ public class ACIDTransactionTest extends TestHelper {
     assertThat(thrownExceptions.get()).isGreaterThan(0);
     assertThat(caughtExceptions.get()).isGreaterThan(0);
     assertThat(committed.get() + caughtExceptions.get()).isEqualTo(TOT * CONCURRENT_THREADS);
-
-//    System.out.println(
-//        "Committed: " + committed.get() + ", Thrown: " + thrownExceptions.get() + ", Caught: " + caughtExceptions.get());
   }
 
   @Test
@@ -591,7 +584,7 @@ public class ACIDTransactionTest extends TestHelper {
               database.acquireLock().type("Node").lock();
 
               MutableVertex v = rid[0].asVertex().modify();
-              v.set("id", v.getInteger("id" + 1));
+              v.set("id", v.getInteger("id") + 1);
               v.save();
             });
             committed.incrementAndGet();
@@ -615,8 +608,9 @@ public class ACIDTransactionTest extends TestHelper {
 
     assertThat(database.countType("Node", true)).isEqualTo(1);
 
+    assertThat(rid[0].asVertex().getInteger("id")).isEqualTo(CONCURRENT_THREADS * TOT);
     assertThat(committed.get()).isEqualTo(CONCURRENT_THREADS * TOT);
-    assertThat(caughtExceptions.get()).isEqualTo(0);
+    assertThat(caughtExceptions.get()).isEqualTo( 0);
     assertThat(committed.get() + caughtExceptions.get()).isEqualTo(TOT * CONCURRENT_THREADS);
   }
 
