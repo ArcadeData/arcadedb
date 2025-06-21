@@ -215,6 +215,8 @@ TOKEN:
   |
   <LET: ("l"|"L")("e"|"E")("t"|"T")>
   |
+  <LOCK: ("l"|"L")("o"|"O")("c"|"C")("k"|"K")>
+  |
   <CHECK: ("c"|"C")("h"|"H")("e"|"E")("c"|"C")("k"|"K") >
   |
   <UNSAFE: ("u"|"U")("n"|"N")("s"|"S")("a"|"A")("f"|"F")("e"|"E") >
@@ -1088,6 +1090,8 @@ Statement StatementInternal():
         result = CommitStatement()
         |
         result = RollbackStatement()
+        |
+        result = LockStatement()
         |
         result = ReturnStatement()
         |
@@ -3974,7 +3978,7 @@ LetStatement LetStatement():
 }
 
 BeginStatement BeginStatement():
-{ }
+{}
 {
   <BEGIN>
   [ <ISOLATION> jjtThis.isolation = Identifier() ]
@@ -4015,6 +4019,29 @@ RollbackStatement RollbackStatement():
 {
   <ROLLBACK>
   {return jjtThis;}
+}
+
+LockStatement LockStatement():
+{
+  jjtThis.lockTypeNames = new java.util.ArrayList();
+  jjtThis.lockBucketNames = new java.util.ArrayList();
+  Identifier lastLockIdentifier;
+}
+{
+  <LOCK>
+  (
+    <TYPE>
+    lastLockIdentifier = Identifier() { jjtThis.lockTypeNames.add(lastLockIdentifier); }
+    ( <COMMA> lastLockIdentifier = Identifier() { jjtThis.lockTypeNames.add(lastLockIdentifier); } )*
+    { return jjtThis; }
+  )
+  |
+  (
+    <BUCKET>
+    lastLockIdentifier = Identifier() { jjtThis.lockBucketNames.add(lastLockIdentifier); }
+    ( <COMMA> lastLockIdentifier = Identifier() { jjtThis.lockBucketNames.add(lastLockIdentifier); } )*
+    { return jjtThis; }
+  )
 }
 
 BreakStatement BreakStatement():
@@ -4134,8 +4161,7 @@ WhileBlock WhileBlock():
 }
 
 ImportDatabaseStatement ImportDatabaseStatement():
-{
-}
+{ }
 {
   <IMPORT> <DATABASE>
   [ jjtThis.url = Url() ]

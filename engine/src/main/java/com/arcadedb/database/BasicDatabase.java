@@ -19,7 +19,6 @@
 package com.arcadedb.database;
 
 import com.arcadedb.ContextConfiguration;
-import com.arcadedb.database.Record;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -74,6 +73,8 @@ public interface BasicDatabase extends AutoCloseable {
    * Returns the amount of nested transactions. 1 means no nested transactions.
    */
   int getNestedTransactions();
+
+  TransactionExplicitLock acquireLock();
 
   /**
    * Executes a lambda in the transaction scope. If there is an active transaction, then the current transaction is temporarily parked and a new sub-transaction

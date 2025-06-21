@@ -73,6 +73,5 @@ public class BeginStatement extends SimpleExecStatement {
   protected Object[] getIdentityElements() {
     return new Object[] { isolation };
   }
-
 }
 /* JavaCC - OriginalChecksum=aaa994acbe63cc4169fe33144d412fed (do not edit this line) */

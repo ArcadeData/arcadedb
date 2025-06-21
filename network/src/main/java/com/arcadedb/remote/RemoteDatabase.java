@@ -44,12 +44,9 @@ import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.logging.Level;
+import java.net.http.*;
+import java.util.*;
+import java.util.logging.*;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
 
@@ -67,6 +64,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   private       Database.TRANSACTION_ISOLATION_LEVEL transactionIsolationLevel = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private final RemoteSchema                         schema                    = new RemoteSchema(this);
   private       boolean                              open                      = true;
+  private       RemoteTransactionExplicitLock        explicitLock;
 
   public RemoteDatabase(final String server, final int port, final String databaseName, final String userName,
       final String userPassword) {
@@ -117,10 +115,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       final JSONObject jsonRequest = new JSONObject().put("command", "drop database " + databaseName);
       String payload = getRequestPayload(jsonRequest);
 
-      HttpRequest request = createRequestBuilder("POST", getUrl("server"))
-          .POST(HttpRequest.BodyPublishers.ofString(payload))
-          .header("Content-Type", "application/json")
-          .build();
+      HttpRequest request = createRequestBuilder("POST", getUrl("server")).POST(HttpRequest.BodyPublishers.ofString(payload))
+          .header("Content-Type", "application/json").build();
 
       HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
@@ -231,6 +227,14 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   @Override
+  public RemoteTransactionExplicitLock acquireLock() {
+    if (explicitLock == null)
+      explicitLock = new RemoteTransactionExplicitLock(this);
+
+    return explicitLock;
+  }
+
+  @Override
   public void begin() {
     begin(transactionIsolationLevel);
   }
@@ -245,10 +249,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       final JSONObject jsonRequest = new JSONObject().put("isolationLevel", isolationLevel);
       String payload = getRequestPayload(jsonRequest);
 
-      HttpRequest request = createRequestBuilder("POST", getUrl("begin", databaseName))
-          .POST(HttpRequest.BodyPublishers.ofString(payload))
-          .header("Content-Type", "application/json")
-          .build();
+      HttpRequest request = createRequestBuilder("POST", getUrl("begin", databaseName)).POST(
+          HttpRequest.BodyPublishers.ofString(payload)).header("Content-Type", "application/json").build();
 
       HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
@@ -271,8 +273,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       throw new TransactionException("Transaction not begun");
 
     try {
-      HttpRequest request = createRequestBuilder("POST", getUrl("commit", databaseName))
-          .POST(HttpRequest.BodyPublishers.noBody())
+      HttpRequest request = createRequestBuilder("POST", getUrl("commit", databaseName)).POST(HttpRequest.BodyPublishers.noBody())
           .build();
 
       HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -303,8 +304,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       throw new TransactionException("Transaction not begun");
 
     try {
-      HttpRequest request = createRequestBuilder("POST", getUrl("rollback", databaseName))
-          .POST(HttpRequest.BodyPublishers.noBody())
+      HttpRequest request = createRequestBuilder("POST", getUrl("rollback", databaseName)).POST(HttpRequest.BodyPublishers.noBody())
           .build();
 
       HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());

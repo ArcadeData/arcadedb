@@ -934,9 +934,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
 
     try {
-      final List<IndexInternal> indexes = record instanceof Document d ?
-          indexer.getInvolvedIndexes(d) :
-          Collections.emptyList();
+      final List<IndexInternal> indexes = record instanceof Document d ? indexer.getInvolvedIndexes(d) : Collections.emptyList();
 
       if (!indexes.isEmpty()) {
         // UPDATE THE INDEXES TOO
@@ -1027,6 +1025,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public boolean isTransactionActive() {
     final Transaction tx = getTransactionIfExists();
     return tx != null && tx.isActive();
+  }
+
+  @Override
+  public LocalTransactionExplicitLock acquireLock() {
+    checkTransactionIsActive(false);
+    return getTransaction().lock();
   }
 
   @Override
@@ -1473,7 +1477,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public <RET> RET executeLockingFiles(final Collection<Integer> fileIds, Callable<RET> callable) {
     List<Integer> lockedFiles = null;
     try {
-      lockedFiles = transactionManager.tryLockFiles(fileIds, 5_000);
+      lockedFiles = transactionManager.tryLockFiles(fileIds, 5_000, Thread.currentThread());
 
       return callable.call();
 
@@ -1485,7 +1489,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     } finally {
       if (lockedFiles != null)
-        transactionManager.unlockFilesInOrder(lockedFiles);
+        transactionManager.unlockFilesInOrder(lockedFiles, Thread.currentThread());
     }
   }
 
@@ -1698,8 +1702,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           async.close();
       } catch (final Throwable e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database '%s'", e,
-                name);
+            .log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database '%s'", e, name);
       }
 
       if (drop)

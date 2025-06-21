@@ -46,6 +46,9 @@ public class LockManager<RESOURCE, REQUESTER> {
     if (resource == null)
       throw new IllegalArgumentException("Resource to lock is null");
 
+    if (requester == null)
+      throw new IllegalArgumentException("Requester is null");
+
     final ODistributedLock lock = new ODistributedLock(requester);
 
     ODistributedLock currentLock = lockManager.putIfAbsent(resource, lock);
@@ -85,7 +88,8 @@ public class LockManager<RESOURCE, REQUESTER> {
     final ODistributedLock owner = lockManager.remove(resource);
     if (owner != null) {
       if (!owner.owner.equals(requester))
-        throw new LockException("Cannot unlock resource '" + resource + "' because owner '" + owner.owner + "' <> requester '" + requester + "'");
+        throw new LockException(
+            "Cannot unlock resource '" + resource + "' because owner '" + owner.owner + "' <> requester '" + requester + "'");
 
       // NOTIFY ANY WAITERS
       owner.lock.countDown();

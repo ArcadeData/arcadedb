@@ -67,6 +67,9 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
 
     final HttpSession session = httpServer.getSessionManager().createSession(user, tx);
 
+    // USE THE SESSION ID AS REQUESTER TO ALLOW UNLOCK FILES FROM A DIFFERENT THREAD (SAME SESSION ID)
+    tx.setRequester(session.id);
+
     DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
 
     exchange.getResponseHeaders().put(new HttpString(HttpSessionManager.ARCADEDB_SESSION_ID), session.id);
