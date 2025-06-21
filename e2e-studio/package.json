@@ -1,0 +1,46 @@
+{
+  "name": "arcadedb-studio-e2e",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "npm run start:server && playwright test; npm run stop:server",
+    "test:ui": "npm run start:server && playwright test --ui; npm run stop:server",
+    "test:headed": "npm run start:server && playwright test --headed; npm run stop:server",
+    "test:debug": "npm run start:server && playwright test --debug; npm run stop:server",
+    "test:chromium": "npm run start:server && playwright test --project=chromium; npm run stop:server",
+    "test:firefox": "npm run start:server && playwright test --project=firefox; npm run stop:server",
+    "test:webkit": "npm run start:server && playwright test --project=webkit; npm run stop:server",
+    "test:mobile": "npm run start:server && playwright test --project=mobile-chrome; npm run stop:server",
+    "test:report": "playwright show-report",
+    "install-browsers": "npx playwright install",
+    "test:navigation": "npm run start:server && playwright test --grep=\"Navigation Tests\"; npm run stop:server",
+    "test:auth": "npm run start:server && playwright test --grep=\"Authentication\"; npm run stop:server",
+    "test:api": "npm run start:server && playwright test --grep=\"API Integration\"; npm run stop:server",
+    "test:ui-components": "npm run start:server && playwright test --grep=\"UI Components\"; npm run stop:server",
+    "test:database": "npm run start:server && playwright test --grep=\"Database Interaction\"; npm run stop:server",
+    "test:query": "npm run start:server && playwright test --grep=\"Query.*Data Visualization\"; npm run stop:server",
+    "test:graph": "npm run start:server && playwright test --grep=\"Graph Visualization\"; npm run stop:server",
+    "start:server": "docker run -d --name arcadedb-test --rm -p 2480:2480 -p 2424:2424 -p 6379:6379 -p 5432:5432 -p 8182:8182 --env JAVA_OPTS=\"-Darcadedb.server.rootPassword=playwithdata -Darcadedb.server.defaultDatabases=Beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} -Darcadedb.server.plugins=Redis:com.arcadedb.redis.RedisProtocolPlugin,MongoDB:com.arcadedb.mongo.MongoDBProtocolPlugin,Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin\" arcadedata/arcadedb:latest && npm run wait:server",
+    "stop:server": "docker stop arcadedb-test || true",
+    "wait:server": "npx wait-on http-get://localhost:2480/api/v1/ready --timeout 120000 --httpTimeout 30000 --interval 2000 --window 1000 --verbose --strictSSL false --validateStatus 204",
+    "test:no-docker": "playwright test"
+  },
+  "keywords": ["arcadedb", "studio", "e2e", "testing", "playwright", "frontend"],
+  "author": "ArcadeDB Team",
+  "license": "Apache-2.0",
+  "description": "End-to-End tests for ArcadeDB Studio frontend using Playwright",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ArcadeData/arcadedb.git",
+    "directory": "e2e-studio"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@playwright/test": "^1.53.0",
+    "wait-on": "^8.0.1"
+  },
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  }
+}
