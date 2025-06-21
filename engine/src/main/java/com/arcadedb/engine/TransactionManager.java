@@ -48,7 +48,7 @@ public class TransactionManager {
   private       CountDownLatch               taskExecuting       = new CountDownLatch(0);
   private final AtomicLong                   transactionIds      = new AtomicLong();
   private final AtomicLong                   logFileCounter      = new AtomicLong();
-  private final LockManager<Integer, Thread> fileIdsLockManager  = new LockManager<>();
+  private final LockManager<Integer, Object> fileIdsLockManager  = new LockManager<>();
   private final AtomicLong                   statsPagesWritten   = new AtomicLong();
   private final AtomicLong                   statsBytesWritten   = new AtomicLong();
 
@@ -453,7 +453,7 @@ public class TransactionManager {
    * Returns the locked files only. In case the current thread already locked a resource, no error is thrown but the lock is not returned. In this way only
    * the new acquired locks are released.
    */
-  public List<Integer> tryLockFiles(final Collection<Integer> fileIds, final long timeout) {
+  public List<Integer> tryLockFiles(final Collection<Integer> fileIds, final long timeout, final Object requester) {
     // ORDER THE FILES TO AVOID DEADLOCK
     final List<Integer> orderedFilesIds = new ArrayList<>(fileIds);
     Collections.sort(orderedFilesIds);
@@ -464,13 +464,13 @@ public class TransactionManager {
     for (final Integer fileId : orderedFilesIds) {
       attemptFileId = fileId;
 
-      final LockManager.LOCK_STATUS lock = tryLockFile(fileId, timeout);
+      final LockManager.LOCK_STATUS lock = tryLockFile(fileId, timeout, requester);
 
       if (lock == LockManager.LOCK_STATUS.YES)
         lockedFiles.add(fileId);
       else if (lock == LockManager.LOCK_STATUS.NO) {
         // ERROR: UNLOCK LOCKED FILES
-        unlockFilesInOrder(lockedFiles);
+        unlockFilesInOrder(lockedFiles, requester);
 
         if (attemptFileId != null)
           throw new TimeoutException(
@@ -488,22 +488,22 @@ public class TransactionManager {
     return lockedFiles;
   }
 
-  public void unlockFilesInOrder(final List<Integer> lockedFileIds) {
+  public void unlockFilesInOrder(final List<Integer> lockedFileIds, final Object requester) {
     if (lockedFileIds != null && !lockedFileIds.isEmpty()) {
       for (final Integer fileId : lockedFileIds)
-        unlockFile(fileId);
+        unlockFile(fileId, requester);
 
       LogManager.instance()
           .log(this, Level.FINE, "Unlocked files %s (threadId=%d)", null, lockedFileIds, Thread.currentThread().threadId());
     }
   }
 
-  public LockManager.LOCK_STATUS tryLockFile(final Integer fileId, final long timeout) {
-    return fileIdsLockManager.tryLock(fileId, Thread.currentThread(), timeout);
+  public LockManager.LOCK_STATUS tryLockFile(final Integer fileId, final long timeout, final Object requester) {
+    return fileIdsLockManager.tryLock(fileId, requester, timeout);
   }
 
-  public void unlockFile(final Integer fileId) {
-    fileIdsLockManager.unlock(fileId, Thread.currentThread());
+  public void unlockFile(final Integer fileId, final Object requester) {
+    fileIdsLockManager.unlock(fileId, requester);
   }
 
   private void createWALFilePool() {

@@ -1091,6 +1091,8 @@ Statement StatementInternal():
         |
         result = RollbackStatement()
         |
+        result = LockStatement()
+        |
         result = ReturnStatement()
         |
         result = SleepStatement()
@@ -3976,25 +3978,10 @@ LetStatement LetStatement():
 }
 
 BeginStatement BeginStatement():
-{
-  jjtThis.lockTypeNames = new java.util.ArrayList();
-  jjtThis.lockBucketNames = new java.util.ArrayList();
-  Identifier lastLockIdentifier;
-}
+{}
 {
   <BEGIN>
   [ <ISOLATION> jjtThis.isolation = Identifier() ]
-  [ <LOCK>
-    (
-      <TYPE>
-      lastLockIdentifier = Identifier() { jjtThis.lockTypeNames.add(lastLockIdentifier); }
-      ( <COMMA> lastLockIdentifier = Identifier() { jjtThis.lockTypeNames.add(lastLockIdentifier); } )*
-    ) | (
-      <BUCKET>
-      lastLockIdentifier = Identifier() { jjtThis.lockBucketNames.add(lastLockIdentifier); }
-      ( <COMMA> lastLockIdentifier = Identifier() { jjtThis.lockBucketNames.add(lastLockIdentifier); } )*
-    )
-  ]
   {return jjtThis;}
 }
 
@@ -4032,6 +4019,29 @@ RollbackStatement RollbackStatement():
 {
   <ROLLBACK>
   {return jjtThis;}
+}
+
+LockStatement LockStatement():
+{
+  jjtThis.lockTypeNames = new java.util.ArrayList();
+  jjtThis.lockBucketNames = new java.util.ArrayList();
+  Identifier lastLockIdentifier;
+}
+{
+  <LOCK>
+  (
+    <TYPE>
+    lastLockIdentifier = Identifier() { jjtThis.lockTypeNames.add(lastLockIdentifier); }
+    ( <COMMA> lastLockIdentifier = Identifier() { jjtThis.lockTypeNames.add(lastLockIdentifier); } )*
+    { return jjtThis; }
+  )
+  |
+  (
+    <BUCKET>
+    lastLockIdentifier = Identifier() { jjtThis.lockBucketNames.add(lastLockIdentifier); }
+    ( <COMMA> lastLockIdentifier = Identifier() { jjtThis.lockBucketNames.add(lastLockIdentifier); } )*
+    { return jjtThis; }
+  )
 }
 
 BreakStatement BreakStatement():
@@ -4151,8 +4161,7 @@ WhileBlock WhileBlock():
 }
 
 ImportDatabaseStatement ImportDatabaseStatement():
-{
-}
+{ }
 {
   <IMPORT> <DATABASE>
   [ jjtThis.url = Url() ]

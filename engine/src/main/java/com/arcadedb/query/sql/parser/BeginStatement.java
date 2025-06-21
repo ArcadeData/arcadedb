@@ -22,7 +22,6 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.TransactionExplicitLock;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -31,9 +30,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class BeginStatement extends SimpleExecStatement {
-  protected Identifier       isolation;
-  protected List<Identifier> lockTypeNames;
-  protected List<Identifier> lockBucketNames;
+  protected Identifier isolation;
 
   public BeginStatement(final int id) {
     super(id);
@@ -48,25 +45,6 @@ public class BeginStatement extends SimpleExecStatement {
     else
       // USE THE STANDARD ISOLATION LEVEL
       database.begin();
-
-    TransactionExplicitLock explicitLock = null;
-    if (lockTypeNames != null && !lockTypeNames.isEmpty()) {
-      explicitLock = context.getDatabase().acquireLock();
-
-      for (Identifier typeName : lockTypeNames)
-        explicitLock.type(typeName.getStringValue());
-    }
-
-    if (lockBucketNames != null && !lockBucketNames.isEmpty()) {
-      if (explicitLock == null)
-        explicitLock = context.getDatabase().acquireLock();
-
-      for (Identifier bucketName : lockBucketNames)
-        explicitLock.bucket(bucketName.getStringValue());
-    }
-
-    if (explicitLock != null)
-      explicitLock.lock();
 
     final InternalResultSet result = new InternalResultSet();
     final ResultInternal item = new ResultInternal(database);
@@ -95,6 +73,5 @@ public class BeginStatement extends SimpleExecStatement {
   protected Object[] getIdentityElements() {
     return new Object[] { isolation };
   }
-
 }
 /* JavaCC - OriginalChecksum=aaa994acbe63cc4169fe33144d412fed (do not edit this line) */

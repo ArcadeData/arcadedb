@@ -1028,7 +1028,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
-  public TransactionExplicitLock acquireLock() {
+  public LocalTransactionExplicitLock acquireLock() {
     checkTransactionIsActive(false);
     return getTransaction().lock();
   }
@@ -1477,7 +1477,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public <RET> RET executeLockingFiles(final Collection<Integer> fileIds, Callable<RET> callable) {
     List<Integer> lockedFiles = null;
     try {
-      lockedFiles = transactionManager.tryLockFiles(fileIds, 5_000);
+      lockedFiles = transactionManager.tryLockFiles(fileIds, 5_000, Thread.currentThread());
 
       return callable.call();
 
@@ -1489,7 +1489,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     } finally {
       if (lockedFiles != null)
-        transactionManager.unlockFilesInOrder(lockedFiles);
+        transactionManager.unlockFilesInOrder(lockedFiles, Thread.currentThread());
     }
   }
 

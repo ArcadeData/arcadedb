@@ -2,6 +2,7 @@ package com.arcadedb.remote;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
@@ -10,6 +11,8 @@ import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.atomic.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -60,6 +63,78 @@ public class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
 
     assertThat(me.getString("name")).isEqualTo("me");
     assertThat(you.getString("name")).isEqualTo("you");
+  }
+
+  @Test
+  public void testExplicitLock() {
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+    final int TOT = 100;
+
+    database.getSchema().getOrCreateVertexType("Node");
+
+    final AtomicInteger committed = new AtomicInteger(0);
+    final AtomicInteger caughtExceptions = new AtomicInteger(0);
+
+    final RID[] rid = new RID[1];
+
+    database.transaction(() -> {
+      final MutableVertex v = database.newVertex("Node");
+      v.set("id", 0);
+      v.set("name", "Exception(al)");
+      v.set("surname", "Test");
+      v.save();
+      rid[0] = v.getIdentity();
+    });
+
+    final int CONCURRENT_THREADS = 16;
+
+    // SPAWN ALL THE THREADS AND INCREMENT ONE BY ONE THE ID OF THE VERTEX
+    final Thread[] threads = new Thread[CONCURRENT_THREADS];
+    for (int i = 0; i < CONCURRENT_THREADS; i++) {
+      threads[i] = new Thread(() -> {
+        final RemoteDatabase db = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+            BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+        for (int k = 0; k < TOT; ++k) {
+          try {
+            db.transaction(() -> {
+              db.acquireLock().type("Node").lock();
+
+              final MutableVertex v = db.lookupByRID(rid[0]).asVertex().modify();
+              v.set("id", v.getInteger("id") + 1);
+              v.save();
+            });
+
+            committed.incrementAndGet();
+
+          } catch (Exception e) {
+            caughtExceptions.incrementAndGet();
+            e.printStackTrace();
+          }
+        }
+
+        db.close();
+
+      });
+      threads[i].start();
+    }
+
+    // WAIT FOR ALL THE THREADS
+    for (int i = 0; i < CONCURRENT_THREADS; i++)
+      try {
+        threads[i].join();
+      } catch (InterruptedException e) {
+        // IGNORE IT
+      }
+
+    assertThat(database.countType("Node", true)).isEqualTo(1);
+
+    assertThat(rid[0].asVertex().getInteger("id")).isEqualTo(CONCURRENT_THREADS * TOT);
+    assertThat(committed.get()).isEqualTo(CONCURRENT_THREADS * TOT);
+    assertThat(caughtExceptions.get()).isEqualTo(0);
+    assertThat(committed.get() + caughtExceptions.get()).isEqualTo(TOT * CONCURRENT_THREADS);
   }
 
   @BeforeEach

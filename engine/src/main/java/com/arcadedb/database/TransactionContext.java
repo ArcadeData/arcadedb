@@ -77,7 +77,8 @@ public class TransactionContext implements Transaction {
   // TODO: OPTIMIZE modifiedRecordsCache STRUCTURE, MAYBE JOIN IT WITH UPDATED RECORDS?
   private       Map<RID, Record>                     updatedRecords        = null;
   private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel        = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
-  private       TransactionExplicitLock              explicitLock;
+  private       LocalTransactionExplicitLock         explicitLock;
+  private       Object                               requester;
 
   public enum STATUS {INACTIVE, BEGUN, COMMIT_1ST_PHASE, COMMIT_2ND_PHASE}
 
@@ -134,14 +135,18 @@ public class TransactionContext implements Transaction {
     return phase1 != null ? phase1.result : null;
   }
 
-  public TransactionExplicitLock lock() {
+  public LocalTransactionExplicitLock lock() {
     if (explicitLock == null)
-      explicitLock = new TransactionExplicitLock(this);
+      explicitLock = new LocalTransactionExplicitLock(this);
     return explicitLock;
   }
 
   public Database.TRANSACTION_ISOLATION_LEVEL getIsolationLevel() {
     return isolationLevel;
+  }
+
+  public void setRequester(final Object requester) {
+    this.requester = requester;
   }
 
   public Record getRecordFromCache(final RID rid) {
@@ -436,12 +441,20 @@ public class TransactionContext implements Transaction {
    * Test only API.
    */
   public void kill() {
+    if (explicitLockedFiles != null) {
+      database.getTransactionManager().unlockFilesInOrder(explicitLockedFiles, getRequester());
+      explicitLockedFiles = null;
+    }
     lockedFiles = null;
     modifiedPages = null;
     newPages = null;
     updatedRecords = null;
     newPageCounters.clear();
     immutablePages.clear();
+  }
+
+  private Object getRequester() {
+    return requester != null ? requester : Thread.currentThread();
   }
 
   public Map<Integer, Integer> getBucketRecordDelta() {
@@ -575,11 +588,13 @@ public class TransactionContext implements Transaction {
       if (explicitLockedFiles != null) {
         // CHECK THE LOCKED FILES ARE ALL LOCKED ALREADY
         if (!explicitLockedFiles.containsAll(modifiedFiles)) {
-          explicitLockedFiles.removeAll(modifiedFiles);
+          final HashSet<Integer> left = new HashSet<>(modifiedFiles);
+          left.removeAll(explicitLockedFiles);
           throw new TransactionException(
-              "Cannot commit transaction because not all the modified resources were locked: " + explicitLockedFiles);
+              "Cannot commit transaction because not all the modified resources were locked: " + left);
         }
         lockedFiles = explicitLockedFiles;
+        explicitLockedFiles = null;
       } else
         // LOCK FILES IN ORDER (TO AVOID DEADLOCK)
         lockedFiles = lockFilesInOrder(modifiedFiles);
@@ -653,7 +668,7 @@ public class TransactionContext implements Transaction {
     }
   }
 
-  public void commit2ndPhase(final TransactionContext.TransactionPhase1 changes) {
+  public void commit2ndPhase(final TransactionPhase1 changes) {
     try {
       if (changes == null)
         return;
@@ -734,10 +749,14 @@ public class TransactionContext implements Transaction {
     status = STATUS.INACTIVE;
 
     if (lockedFiles != null) {
-      database.getTransactionManager().unlockFilesInOrder(lockedFiles);
+      database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
       lockedFiles = null;
     }
-    explicitLockedFiles = null;
+
+    if (explicitLockedFiles != null) {
+      database.getTransactionManager().unlockFilesInOrder(explicitLockedFiles, getRequester());
+      explicitLockedFiles = null;
+    }
 
     indexChanges.reset();
 
@@ -823,13 +842,13 @@ public class TransactionContext implements Transaction {
   private List<Integer> lockFilesInOrder(final Set<Integer> files) {
     final long timeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
 
-    final List<Integer> locked = database.getTransactionManager().tryLockFiles(files, timeout);
+    final List<Integer> locked = database.getTransactionManager().tryLockFiles(files, timeout, getRequester());
 
     // CHECK IF ALL THE LOCKED FILES STILL EXIST. FILE MISSING CAN HAPPEN IN CASE OF INDEX COMPACTION OR DROP OF A BUCKET OR AN INDEX
     for (Integer f : locked)
       if (!database.getFileManager().existsFile(f)) {
         // ONE FILE HAS BEEN REMOVED
-        database.getTransactionManager().unlockFilesInOrder(locked);
+        database.getTransactionManager().unlockFilesInOrder(locked, getRequester());
         rollback();
         throw new ConcurrentModificationException("File with id '" + f + "' has been removed");
       }

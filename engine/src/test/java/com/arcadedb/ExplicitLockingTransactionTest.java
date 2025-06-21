@@ -130,7 +130,8 @@ public class ExplicitLockingTransactionTest extends TestHelper {
         for (int k = 0; k < TOT; ++k) {
           try {
             database.command("sqlscript",
-                "begin lock type Node, Node2;\n" +
+                "begin;\n" +
+                    "lock type Node, Node2;\n" +
                     "update Node set id = id + 1 where @rid = " + rid[0] + ";\n" +
                     "commit;"
             );
