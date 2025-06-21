@@ -63,6 +63,8 @@ public class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
 
     assertThat(me.getString("name")).isEqualTo("me");
     assertThat(you.getString("name")).isEqualTo("you");
+
+    database.close();
   }
 
   @Test
@@ -135,6 +137,8 @@ public class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
     assertThat(committed.get()).isEqualTo(CONCURRENT_THREADS * TOT);
     assertThat(caughtExceptions.get()).isEqualTo(0);
     assertThat(committed.get() + caughtExceptions.get()).isEqualTo(TOT * CONCURRENT_THREADS);
+
+    database.close();
   }
 
   @BeforeEach
