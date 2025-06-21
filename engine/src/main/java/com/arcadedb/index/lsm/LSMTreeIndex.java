@@ -521,7 +521,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     final int fileId = mutable.getFileId();
 
-    final LockManager.LOCK_STATUS locked = database.getTransactionManager().tryLockFile(fileId, 0);
+    final LockManager.LOCK_STATUS locked = database.getTransactionManager().tryLockFile(fileId, 0, Thread.currentThread());
     if (locked == LockManager.LOCK_STATUS.NO)
       throw new IllegalStateException("Cannot replace compacted index because cannot lock index file " + fileId);
 
@@ -594,7 +594,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     } finally {
       if (locked == LockManager.LOCK_STATUS.YES)
         // RELEASE THE DELETED FILE ONLY IF THE LOCK WAS ACQUIRED HERE
-        database.getTransactionManager().unlockFile(fileId);
+        database.getTransactionManager().unlockFile(fileId, Thread.currentThread());
     }
   }
 

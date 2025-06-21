@@ -29,11 +29,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.sql.SQLException;
-import java.time.Duration;
-import java.time.LocalDateTime;
-import java.util.stream.IntStream;
+import java.io.*;
+import java.sql.*;
+import java.time.*;
+import java.util.stream.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -185,7 +184,7 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
         """);
 
     LocalDateTime start = LocalDateTime.now();
-      StringBuilder sb = new StringBuilder();
+    StringBuilder sb = new StringBuilder();
 
     IntStream.range(1, 100001).forEach(i -> {
 
