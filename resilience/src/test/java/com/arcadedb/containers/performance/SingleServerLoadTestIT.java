@@ -12,8 +12,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 public class SingleServerLoadTestIT extends ContainersTestTemplate {
 
   @Test
@@ -30,18 +28,20 @@ public class SingleServerLoadTestIT extends ContainersTestTemplate {
 
     final int numOfThreads = 5;
     final int numOfUsers = 1000;
+    final int numOfPhotos = 5;
     final int numOfFriendshipIterarion = 10;
     final int numOfFriendshipPerIteration = 10;
 
     int expectedUsersCount = numOfUsers * numOfThreads;
     int expectedFriendshipCount = numOfFriendshipIterarion * numOfFriendshipPerIteration * numOfThreads;
+    int expectedPhotoCount = expectedUsersCount * numOfPhotos;
 
     logger.info("Creating {} users using {} threads", numOfUsers, numOfThreads);
     ExecutorService executor = Executors.newFixedThreadPool(numOfThreads);
     for (int i = 0; i < numOfThreads; i++) {
       executor.submit(() -> {
         DatabaseWrapper db1 = new DatabaseWrapper(arcadeContainer, idSupplier);
-        db1.addUserAndPhotos(numOfUsers, 0);
+        db1.addUserAndPhotos(numOfUsers, 5);
         db1.close();
       });
 
@@ -75,6 +75,7 @@ public class SingleServerLoadTestIT extends ContainersTestTemplate {
 
     db.assertThatUserCountIs(expectedUsersCount);
     db.assertThatFriendshipCountIs(expectedFriendshipCount);
+    db.assertThatPhotoCountIs(expectedPhotoCount);
 
   }
 }
