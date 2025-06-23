@@ -155,13 +155,23 @@ public class DatabaseWrapper {
   public void addFriendship(int userId1, int userId2) {
     try {
       friendshipTimer.record(() -> {
-        db.transaction(() ->
-            db.command("sql",
-                """
-                    CREATE EDGE IsFriendOf
-                    FROM (SELECT FROM User WHERE id = ?) TO (SELECT FROM User WHERE id = ?)
-                    """, userId1, userId2), true, 10);
-      });
+            db.transaction(() ->
+                {
+                  db.acquireLock()
+                      .type("IsFriendOf")
+                      .type("User")
+                      .lock();
+                  db.command("sql",
+                      """
+                          CREATE EDGE IsFriendOf
+                          FROM (SELECT FROM User WHERE id = ?) TO (SELECT FROM User WHERE id = ?)
+                          """, userId1, userId2);
+
+                }
+                , true, 10);
+
+          }
+      );
 
     } catch (Exception e) {
       Metrics.counter("arcadedb.test.inserted.friendship.error").increment();
