@@ -73,10 +73,10 @@ public class SimpleHaScenarioIT extends ContainersTestTemplate {
         .pollInterval(1, TimeUnit.SECONDS)
         .until(() -> {
           try {
-            Integer users1 = db1.countUsers();
-            Integer photos1 = db1.countPhotos();
-            Integer users2 = db2.countUsers();
-            Integer photos2 = db2.countPhotos();
+            Long users1 = db1.countUsers();
+            Long photos1 = db1.countPhotos();
+            Long users2 = db2.countUsers();
+            Long photos2 = db2.countPhotos();
             logger.info("Users:: {} --> {} - Photos:: {} --> {} ", users1, users2, photos1, photos2);
             return users2.equals(users1) && photos2.equals(photos1);
           } catch (Exception e) {
