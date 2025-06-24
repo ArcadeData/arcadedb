@@ -7,7 +7,6 @@ import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
 
 import java.io.IOException;
-import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -15,8 +14,8 @@ import java.util.concurrent.TimeUnit;
 public class SingleServerLoadTestIT extends ContainersTestTemplate {
 
   @Test
-  @DisplayName("Test single server under heavy load")
-  void singleServerUnderMassiveLoad() throws InterruptedException, IOException {
+  @DisplayName("Single server load test")
+  void singleServerLoadTest() throws InterruptedException, IOException {
 
     GenericContainer<?> arcadeContainer = createArcadeContainer("arcade", "none", "none", "any", false, network);
 
@@ -29,11 +28,11 @@ public class SingleServerLoadTestIT extends ContainersTestTemplate {
     final int numOfThreads = 5;
     final int numOfUsers = 1000;
     final int numOfPhotos = 5;
-    final int numOfFriendshipIterarion = 10;
-    final int numOfFriendshipPerIteration = 10;
+    final int numOfFriendshipIterations = 10;
+    final int numOfFriendshipPerIterations = 10;
 
     int expectedUsersCount = numOfUsers * numOfThreads;
-    int expectedFriendshipCount = numOfFriendshipIterarion * numOfFriendshipPerIteration * numOfThreads;
+    int expectedFriendshipCount = numOfFriendshipIterations * numOfFriendshipPerIterations * numOfThreads;
     int expectedPhotoCount = expectedUsersCount * numOfPhotos;
 
     logger.info("Creating {} users using {} threads", numOfUsers, numOfThreads);
@@ -41,7 +40,7 @@ public class SingleServerLoadTestIT extends ContainersTestTemplate {
     for (int i = 0; i < numOfThreads; i++) {
       executor.submit(() -> {
         DatabaseWrapper db1 = new DatabaseWrapper(arcadeContainer, idSupplier);
-        db1.addUserAndPhotos(numOfUsers, 5);
+        db1.addUserAndPhotos(numOfUsers, numOfPhotos);
         db1.close();
       });
 
@@ -49,21 +48,15 @@ public class SingleServerLoadTestIT extends ContainersTestTemplate {
 
       executor.submit(() -> {
         DatabaseWrapper db1 = new DatabaseWrapper(arcadeContainer, idSupplier);
-        for (int f = 0; f < numOfFriendshipIterarion; f++) {
-          List<Integer> userIds = db.getUserIds(numOfFriendshipPerIteration, f * 10);
-          for (int j = 0; j < userIds.size(); j++) {
-            db1.addFriendship(userIds.get(j), userIds.get((j + 1) % userIds.size()));
-          }
-          logger.info("Added {} friendships", userIds.size() * f);
-        }
+        db1.createFriendships(numOfFriendshipIterations, numOfFriendshipPerIterations);
         db1.close();
       });
     }
 
     executor.shutdown();
     while (!executor.isTerminated()) {
-      int users = db.countUsers();
-      int friendships = db.countFriendships();
+      long users = db.countUsers();
+      long friendships = db.countFriendships();
       logger.info("Current user count: {} - {}", users, friendships);
       // Wait for 2 seconds before checking again
       try {
@@ -78,4 +71,5 @@ public class SingleServerLoadTestIT extends ContainersTestTemplate {
     db.assertThatFriendshipCountIs(expectedFriendshipCount);
 
   }
+
 }

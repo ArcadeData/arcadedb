@@ -78,7 +78,7 @@ public class DatabaseWrapper {
 
             CREATE EDGE TYPE HasUploaded;
 
-            CREATE EDGE TYPE IsFriendOf;
+            CREATE EDGE TYPE FriendOf;
 
             CREATE EDGE TYPE Likes;
             """);
@@ -89,7 +89,7 @@ public class DatabaseWrapper {
     assertThat(schema.existsType("Photo")).isTrue();
     assertThat(schema.existsType("User")).isTrue();
     assertThat(schema.existsType("HasUploaded")).isTrue();
-    assertThat(schema.existsType("IsFriendOf")).isTrue();
+    assertThat(schema.existsType("FriendOf")).isTrue();
     assertThat(schema.existsType("Likes")).isTrue();
   }
 
@@ -106,8 +106,13 @@ public class DatabaseWrapper {
       try {
         usersTimer.record(() -> {
           db.transaction(() ->
-                  db.command("sql", "CREATE VERTEX User SET id = ?", userId)
-              , true, 10);
+              {
+//                db.acquireLock()
+//                    .type("User")
+//                    .lock();
+                db.command("sql", "CREATE VERTEX User SET id = ?", userId);
+              }
+              , false, 10);
         });
 
         addPhotosOfUser(userId, numberOfPhotos);
@@ -135,7 +140,7 @@ public class DatabaseWrapper {
         photosTimer.record(() -> {
           db.transaction(() ->
                   db.command("sqlscript", sqlScript, photoId, photoName, userId)
-              , true, 10);
+              , true, 20);
         });
 
       } catch (Exception e) {
@@ -143,6 +148,16 @@ public class DatabaseWrapper {
         logger.error("Error creating photo {}: {}", photoId, e.getMessage());
       }
     }
+  }
+
+  public void createFriendships(int numOfFriendshipIterations, int numOfFriendshipPerIterations) {
+    for (int f = 0; f < numOfFriendshipIterations; f++) {
+      List<Integer> userIds = getUserIds(numOfFriendshipPerIterations, f * 10);
+      for (int j = 0; j < userIds.size(); j++) {
+        addFriendship(userIds.get(j), userIds.get((j + 1) % userIds.size()));
+      }
+    }
+    logger.info("Created {} friendships", numOfFriendshipIterations * numOfFriendshipPerIterations);
   }
 
   /**
@@ -157,18 +172,18 @@ public class DatabaseWrapper {
       friendshipTimer.record(() -> {
             db.transaction(() ->
                 {
-                  db.acquireLock()
-                      .type("IsFriendOf")
-                      .type("User")
-                      .lock();
+//                  db.acquireLock()
+//                      .type("FriendOf")
+//                      .type("User")
+//                      .lock();
                   db.command("sql",
                       """
-                          CREATE EDGE IsFriendOf
+                          CREATE EDGE FriendOf
                           FROM (SELECT FROM User WHERE id = ?) TO (SELECT FROM User WHERE id = ?)
                           """, userId1, userId2);
 
                 }
-                , true, 10);
+                , true, 30);
 
           }
       );
@@ -193,7 +208,7 @@ public class DatabaseWrapper {
             db.command("sqlscript",
                 """
                     BEGIN;
-                    CREATE EDGE IsFriendOf
+                    CREATE EDGE FriendOf
                     FROM (SELECT FROM User WHERE id = ?) TO (SELECT FROM User WHERE id = ?);
                     COMMIT RETRY 30;
                     """, userId1, userId2), true);
@@ -216,16 +231,6 @@ public class DatabaseWrapper {
         .toList();
   }
 
-  public int countUsers() {
-    ResultSet resultSet = db.query("sql", "SELECT count() as count FROM User");
-    return resultSet.next().<Integer>getProperty("count");
-  }
-
-  public int countFriendships() {
-    ResultSet resultSet = db.query("sql", "SELECT count() as count FROM IsFriendOf");
-    return resultSet.next().<Integer>getProperty("count");
-  }
-
   public void assertThatFriendshipCountIs(int expectedCount) {
     assertThat(countFriendships()).isEqualTo(expectedCount);
   }
@@ -234,9 +239,16 @@ public class DatabaseWrapper {
     assertThat(countPhotos()).isEqualTo(expectedCount);
   }
 
-  public int countPhotos() {
-    ResultSet resultSet = db.query("sql", "SELECT count() as count FROM Photo");
-    return resultSet.next().<Integer>getProperty("count");
+  public long countUsers() {
+    return db.countType("User", false);
+  }
+
+  public long countPhotos() {
+    return db.countType("Photo", false);
+  }
+
+  public long countFriendships() {
+    return db.countType("FriendOf", false);
   }
 
   public ResultSet command(String command, Object... args) {
