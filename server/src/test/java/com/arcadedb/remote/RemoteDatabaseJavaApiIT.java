@@ -34,7 +34,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.arcadedb.graph.Vertex.DIRECTION.IN;
 import static com.arcadedb.graph.Vertex.DIRECTION.OUT;
@@ -133,19 +133,26 @@ class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
     final int TOT = 100;
 
     database.getSchema().getOrCreateVertexType("Node");
+    database.getSchema().getOrCreateEdgeType("Arc");
 
     final AtomicInteger committed = new AtomicInteger(0);
     final AtomicInteger caughtExceptions = new AtomicInteger(0);
 
-    final RID[] rid = new RID[1];
+    final RID[] rid = new RID[2];
 
     database.transaction(() -> {
-      final MutableVertex v = database.newVertex("Node");
+      MutableVertex v = database.newVertex("Node");
       v.set("id", 0);
       v.set("name", "Exception(al)");
       v.set("surname", "Test");
       v.save();
       rid[0] = v.getIdentity();
+      v = database.newVertex("Node");
+      v.set("id", 1);
+      v.set("name", "Exception(al)");
+      v.set("surname", "Test2");
+      v.save();
+      rid[1] = v.getIdentity();
     });
 
     final int CONCURRENT_THREADS = 16;
@@ -160,13 +167,12 @@ class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
         for (int k = 0; k < TOT; ++k) {
           try {
             db.transaction(() -> {
-              db.acquireLock().type("Node").lock();
-
+              db.command("sql", "LOCK TYPE Node, Arc");
               final MutableVertex v = db.lookupByRID(rid[0]).asVertex().modify();
               v.set("id", v.getInteger("id") + 1);
               v.save();
+              db.command("sql", "CREATE EDGE Arc FROM " + rid[0] + " TO " + rid[1]);
             });
-
             committed.incrementAndGet();
 
           } catch (Exception e) {
@@ -189,7 +195,8 @@ class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
         // IGNORE IT
       }
 
-    assertThat(database.countType("Node", true)).isEqualTo(1);
+    assertThat(database.countType("Node", true)).isEqualTo(2);
+    assertThat(database.countType("Arc", true)).isEqualTo(CONCURRENT_THREADS * TOT);
 
     assertThat(rid[0].asVertex().getInteger("id")).isEqualTo(CONCURRENT_THREADS * TOT);
     assertThat(committed.get()).isEqualTo(CONCURRENT_THREADS * TOT);
