@@ -74,8 +74,8 @@ public class SingleServerLoadTestIT extends ContainersTestTemplate {
     }
 
     db.assertThatUserCountIs(expectedUsersCount);
-    db.assertThatFriendshipCountIs(expectedFriendshipCount);
     db.assertThatPhotoCountIs(expectedPhotoCount);
+    db.assertThatFriendshipCountIs(expectedFriendshipCount);
 
   }
 }
