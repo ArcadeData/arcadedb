@@ -73,7 +73,7 @@ public class TxRequest extends TxRequestAbstract {
   }
 
   @Override
-  public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
+  public HACommand execute(final HAServer server, final HAServer.ServerInfo remoteServerName, final long messageNumber) {
     final DatabaseInternal db = server.getServer().getDatabase(databaseName);
     if (!db.isOpen())
       throw new ReplicationException("Database '" + databaseName + "' is closed");
