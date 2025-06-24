@@ -197,6 +197,7 @@ public abstract class   ContainersTestTemplate {
             -Darcadedb.server.rootPassword=playwithdata
             -Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin
             -Darcadedb.server.httpsIoThreads=10
+            -Darcadedb.bucketReuseSpaceMode=low
             -Darcadedb.server.name=%s
             -Darcadedb.backup.enabled=false
             -Darcadedb.typeDefaultBuckets=10
