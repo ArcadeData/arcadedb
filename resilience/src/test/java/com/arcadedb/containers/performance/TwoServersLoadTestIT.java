@@ -63,10 +63,10 @@ public class TwoServersLoadTestIT extends ContainersTestTemplate {
     executor.shutdown();
     while (!executor.isTerminated()) {
       logger.info("Waiting for tasks to complete");
-      Integer users2 = db2.countUsers();
-      Integer photos2 = db2.countPhotos();
-      Integer users1 = db1.countUsers();
-      Integer photos1 = db1.countPhotos();
+      long users2 = db2.countUsers();
+      long photos2 = db2.countPhotos();
+      long users1 = db1.countUsers();
+      long photos1 = db1.countPhotos();
       logger.info("Users:: {} --> {} - Photos:: {} --> {} ", users1, users2, photos1, photos2);
 
       try {
@@ -82,10 +82,10 @@ public class TwoServersLoadTestIT extends ContainersTestTemplate {
         .pollInterval(5, TimeUnit.SECONDS)
         .until(() -> {
           try {
-            Integer users2 = db2.countUsers();
-            Integer photos2 = db2.countPhotos();
-            Integer users1 = db1.countUsers();
-            Integer photos1 = db1.countPhotos();
+            Long users2 = db2.countUsers();
+            Long photos2 = db2.countPhotos();
+            Long users1 = db1.countUsers();
+            Long photos1 = db1.countPhotos();
 
             logger.info("Users({}):: {} --> {} - Photos({}):: {} --> {} ", expectedUsersCount,
                 users1, users2,
