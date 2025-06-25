@@ -1305,7 +1305,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         wrappedDatabaseInstance.begin();
         return true;
       }
-      throw new DatabaseOperationException("Transaction not begun");
+      throw new TransactionException("Transaction not begun");
     }
 
     return false;

@@ -44,6 +44,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
+import java.util.stream.*;
 
 /**
  * Manage the transaction context. When the transaction begins, the modifiedPages map is initialized. This allows to always delegate
@@ -590,8 +591,12 @@ public class TransactionContext implements Transaction {
         if (!explicitLockedFiles.containsAll(modifiedFiles)) {
           final HashSet<Integer> left = new HashSet<>(modifiedFiles);
           left.removeAll(explicitLockedFiles);
+
+          final Set<String> resourceNames = left.stream().map((fileId -> database.getSchema().getFileById(fileId).getName()))
+              .collect(Collectors.toSet());
+
           throw new TransactionException(
-              "Cannot commit transaction because not all the modified resources were locked: " + left);
+              "Cannot commit transaction because not all the modified resources were locked: " + resourceNames);
         }
         lockedFiles = explicitLockedFiles;
         explicitLockedFiles = null;
