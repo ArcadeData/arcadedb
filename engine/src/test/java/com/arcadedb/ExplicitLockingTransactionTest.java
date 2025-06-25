@@ -184,7 +184,7 @@ public class ExplicitLockingTransactionTest extends TestHelper {
     try {
       database.acquireLock().type("Node").lock();
       fail("This must fail because the tx was not started yet");
-    } catch (DatabaseOperationException e) {
+    } catch (TransactionException e) {
       // EXPECTED
     }
 
