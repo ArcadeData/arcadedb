@@ -30,16 +30,12 @@
     </parent>
 
     <properties>
-        <testcontainers.version>1.21.2</testcontainers.version>
-        <postgresql.version>42.7.7</postgresql.version>
-        <logback-classic.version>1.5.18</logback-classic.version>
         <allowIncompleteProjects>true</allowIncompleteProjects>
-        <assertj-db.version>3.0.0</assertj-db.version>
     </properties>
 
-    <artifactId>arcadedb-e2e</artifactId>
+    <artifactId>arcadedb-e2e-perf</artifactId>
+    <name>ArcadeDB performance tests</name>
     <packaging>jar</packaging>
-    <name>ArcadeDB End-to-End Tests</name>
 
     <build>
         <plugins>
@@ -54,21 +50,26 @@
                     </execution>
                 </executions>
             </plugin>
-
         </plugins>
     </build>
 
     <dependencies>
         <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter</artifactId>
-            <version>${junit.jupiter.version}</version>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <version>${logback-classic.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>org.assertj</groupId>
-            <artifactId>assertj-db</artifactId>
-            <version>${assertj-db.version}</version>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-network</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.jupiter.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -79,28 +80,23 @@
         </dependency>
         <dependency>
             <groupId>org.testcontainers</groupId>
+            <artifactId>toxiproxy</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
             <artifactId>junit-jupiter</artifactId>
             <version>${testcontainers.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>com.arcadedb</groupId>
-            <artifactId>arcadedb-network</artifactId>
-            <version>${project.parent.version}</version>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <version>${micrometer.version}</version>
             <scope>test</scope>
         </dependency>
-        <dependency>
-            <groupId>org.postgresql</groupId>
-            <artifactId>postgresql</artifactId>
-            <version>${postgresql.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>ch.qos.logback</groupId>
-            <artifactId>logback-classic</artifactId>
-            <version>${logback-classic.version}</version>
-            <scope>test</scope>
-        </dependency>
+
     </dependencies>
 
 </project>
