@@ -107,9 +107,10 @@ public class DatabaseWrapper {
         usersTimer.record(() -> {
           db.transaction(() ->
               {
-//                db.acquireLock()
-//                    .type("User")
-//                    .lock();
+                //uncomment to see error on server side
+                db.acquireLock()
+                    .type("User")
+                    .lock();
                 db.command("sql", "CREATE VERTEX User SET id = ?", userId);
               }
               , false, 10);
@@ -172,6 +173,7 @@ public class DatabaseWrapper {
       friendshipTimer.record(() -> {
             db.transaction(() ->
                 {
+                  //uncomment to see error on server side
 //                  db.acquireLock()
 //                      .type("FriendOf")
 //                      .type("User")
