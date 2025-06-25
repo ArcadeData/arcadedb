@@ -20,7 +20,7 @@ package com.arcadedb.utility;
 
 import com.arcadedb.log.LogManager;
 
-import java.util.logging.Level;
+import java.util.logging.*;
 
 /**
  * Resolve entity class and descriptors using the paths configured.
@@ -35,41 +35,46 @@ public class VariableParser {
 
   public static Object resolveVariables(final String text, final String beginPattern, final String endPattern,
       final VariableParserListener listener, final Object defaultValue) {
-    if (listener == null)
-      throw new IllegalArgumentException("Missed VariableParserListener listener");
+    try {
+      if (listener == null)
+        throw new IllegalArgumentException("Missed VariableParserListener listener");
 
-    final int beginPos = text.lastIndexOf(beginPattern);
-    if (beginPos == -1)
+      final int beginPos = text.lastIndexOf(beginPattern);
+      if (beginPos == -1)
+        return text;
+
+      final int endPos = text.indexOf(endPattern, beginPos + 1);
+      if (endPos == -1)
+        return text;
+
+      final String pre = text.substring(0, beginPos);
+      String var = text.substring(beginPos + beginPattern.length(), endPos);
+      final String post = text.substring(endPos + endPattern.length());
+
+      // DECODE INTERNAL
+      if (beginPattern.equals("${"))
+        var = var.replace("$\\{", "${");
+      if (endPattern.equals("}"))
+        var = var.replace("\\}", "}");
+
+      Object resolved = listener.resolve(var);
+
+      if (resolved == null) {
+        if (defaultValue == null)
+          LogManager.instance().log(null, Level.FINE, "Error on resolving property: %s", var);
+        else
+          resolved = defaultValue;
+      }
+
+      if (!pre.isEmpty() || !post.isEmpty()) {
+        final String path = pre + (resolved != null ? resolved.toString() : "") + post;
+        return resolveVariables(path, beginPattern, endPattern, listener);
+      }
+
+      return resolved;
+    } catch (Throwable e) {
+      LogManager.instance().log(null, Level.SEVERE, "Error on resolving text: %s", e, text);
       return text;
-
-    final int endPos = text.indexOf(endPattern, beginPos + 1);
-    if (endPos == -1)
-      return text;
-
-    final String pre = text.substring(0, beginPos);
-    String var = text.substring(beginPos + beginPattern.length(), endPos);
-    final String post = text.substring(endPos + endPattern.length());
-
-    // DECODE INTERNAL
-    if (beginPattern.equals("${"))
-      var = var.replace("$\\{", "${");
-    if (endPattern.equals("}"))
-      var = var.replace("\\}", "}");
-
-    Object resolved = listener.resolve(var);
-
-    if (resolved == null) {
-      if (defaultValue == null)
-        LogManager.instance().log(null, Level.FINE, "Error on resolving property: %s", var);
-      else
-        resolved = defaultValue;
     }
-
-    if (!pre.isEmpty() || !post.isEmpty()) {
-      final String path = pre + (resolved != null ? resolved.toString() : "") + post;
-      return resolveVariables(path, beginPattern, endPattern, listener);
-    }
-
-    return resolved;
   }
 }
