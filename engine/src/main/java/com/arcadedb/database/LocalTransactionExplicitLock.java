@@ -44,15 +44,27 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
     filesToLock.add(bucket.getFileId());
     final DocumentType associatedType = transactionContext.getDatabase().getSchema().getInvolvedTypeByBucketId(bucket.getFileId());
     if (associatedType != null)
-      filesToLock.addAll(associatedType.getAllIndexes(true).stream().map(i -> i.getAssociatedBucketId()).toList());
+      filesToLock.addAll(associatedType.getAllIndexes(true).stream()
+          .flatMap(i -> Arrays.stream(i.getIndexesOnBuckets()))
+          .map(b -> b.getFileId())
+          .toList());
+
+    filesToLock.removeIf((f) -> f < 0); // Remove negative file IDs (e.g., for virtual buckets)
     return this;
   }
 
   @Override
   public LocalTransactionExplicitLock type(final String typeName) {
     final DocumentType type = transactionContext.getDatabase().getSchema().getType(typeName);
-    filesToLock.addAll(type.getAllIndexes(true).stream().map(i -> i.getAssociatedBucketId()).toList());
+
+    filesToLock.addAll(type.getAllIndexes(true).stream()
+        .flatMap(i -> Arrays.stream(i.getIndexesOnBuckets()))
+        .map(b -> b.getFileId())
+        .toList());
+
     filesToLock.addAll(type.getInvolvedBuckets().stream().map(b -> b.getFileId()).toList());
+
+    filesToLock.removeIf((f) -> f < 0); // Remove negative file IDs (e.g., for virtual buckets)
     return this;
   }
 

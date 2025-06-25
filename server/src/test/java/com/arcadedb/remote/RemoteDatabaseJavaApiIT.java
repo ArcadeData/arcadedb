@@ -68,6 +68,40 @@ public class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
   }
 
   @Test
+  public void test2() {
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+    assertThat(
+        new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(DATABASE_NAME)).isTrue();
+
+    String schema = """
+            create vertex type Customer if not exists;
+            create property Customer.name if not exists string;
+            create property Customer.surname if not exists string;
+            create index if not exists on Customer (name, surname) unique;
+        """;
+
+    database.begin();
+    database.command("sqlscript", schema);
+    database.commit();
+
+    database.transaction(() -> {
+      database.acquireLock().type("Customer").lock();
+      database.newVertex("Customer")
+          .set("name", "John")
+          .set("surname", "Doe")
+          .save();
+    });
+
+    database.begin();
+    database.acquireLock().type("Customer").lock();
+    database.commit();
+
+    database.close();
+  }
+
+  @Test
   public void testExplicitLock() {
     final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
