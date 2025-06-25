@@ -12,7 +12,11 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -153,6 +157,93 @@ public class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
     assertThat(committed.get() + caughtExceptions.get()).isEqualTo(TOT * CONCURRENT_THREADS);
 
     database.close();
+  }
+
+  @Test
+  void loadTest() throws InterruptedException {
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+    database.getSchema().getOrCreateVertexType("Node");
+    database.getSchema().getOrCreateEdgeType("Arc");
+
+    Supplier<Integer> idSupplier = new Supplier<>() {
+      private final AtomicInteger id = new AtomicInteger(0);
+
+      @Override
+      public Integer get() {
+        return id.getAndIncrement();
+      }
+    };
+
+    ExecutorService executor = Executors.newFixedThreadPool(5);
+
+    for (int i = 0; i < 5; i++) {
+      // CREATE 1000 VERTICES IN PARALLEL
+      executor.submit(() -> {
+            final RemoteDatabase db = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+                BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+            for (int j = 0; j < 1000; j++) {
+              try {
+                db.transaction(() -> {
+//                db.acquireLock()
+//                    .type("Node")
+//                    .lock();
+                  db.command("sql", "CREATE VERTEX Node SET id = ?", idSupplier.get());
+                }, false, 30);
+                if (j % 100 == 0) {
+                  System.out.println("Created " + j + " vertices");
+                }
+              } catch (Exception e) {
+                System.out.println("Error creating vertex: " + e.getMessage());
+              }
+            }
+          }
+      );
+
+      TimeUnit.SECONDS.sleep(1);
+
+      executor.submit(() -> {
+        final RemoteDatabase db = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+            BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+        for (int j = 0; j < 1000; j++) {
+          try {
+            db.transaction(() -> {
+//            db.acquireLock()
+//                .type("Node")
+//                .type("Arc")
+//                .lock();
+              db.command("sql",
+                  "CREATE EDGE Arc FROM (SELECT FROM Node WHERE id = ?) TO (SELECT FROM Node WHERE id = ?)", idSupplier.get() % 10,
+                  idSupplier.get() % 10);
+
+            }, false, 30);
+            if (j % 100 == 0) {
+              System.out.println("Created " + j + " edges");
+            }
+          } catch (Exception e) {
+            System.out.println("Error creating edge: " + e.getMessage());
+          }
+        }
+      });
+
+    }
+
+    executor.shutdown();
+    while (!executor.isTerminated()) {
+      System.out.println("Current Nodes = " + database.countType("Node", true));
+      System.out.println("Current Arcs = " + database.countType("Arc", true));
+      try {
+        Thread.sleep(1000);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    }
+    System.out.println("Current Nodes = " + database.countType("Node", true));
+    System.out.println("Current Arcs = " + database.countType("Arc", true));
+
+    assertThat(database.countType("Node", true)).isEqualTo(5 * 1000);
+    assertThat(database.countType("Arc", true)).isEqualTo(5 * 1000);
   }
 
   @BeforeEach
