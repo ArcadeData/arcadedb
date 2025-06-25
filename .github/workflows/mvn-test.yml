@@ -81,7 +81,7 @@ jobs:
 
       - name: Run Unit Tests with Coverage
         # verify because it runs the tests and generates the coverage report, ITs are skipped
-        run: ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -pl !e2e
+        run: ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -pl !e2e,!e2e-perf
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -124,7 +124,7 @@ jobs:
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Run Integration Tests with Coverage
-        run: ./mvnw verify -DskipTests -Pintegration -Pcoverage  --batch-mode --errors --fail-never --show-version -pl !e2e
+        run: ./mvnw verify -DskipTests -Pintegration -Pcoverage  --batch-mode --errors --fail-never --show-version -pl !e2e,!e2e-perf
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -187,6 +187,50 @@ jobs:
         with:
           name: Java E2E Tests Report
           path: "e2e/target/surefire-reports/TEST*.xml"
+          list-suites: "failed"
+          list-tests: "failed"
+          reporter: java-junit
+
+  java-e2e-perf-tests:
+    runs-on: ubuntu-latest
+    needs: build-and-package
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: "temurin"
+          java-version: 21
+          cache: "maven"
+
+      - name: Restore Maven artifacts
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.m2/repository
+          key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Restore Docker image
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: /tmp/arcadedb-image.tar
+          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Load Docker image
+        run: docker load < /tmp/arcadedb-image.tar
+
+      - name: E2E Perf Tests
+        run: ./mvnw verify -Pintegration -pl e2e-perf
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
+
+      - name: E2E Perf Tests Reporter
+        uses: dorny/test-reporter@890a17cecf52a379fc869ab770a71657660be727 # v2.1.0
+        if: success() || failure()
+        with:
+          name: Java E2E Perf Tests Report
+          path: "e2e-perf/target/failsafe-reports/TEST*.xml"
           list-suites: "failed"
           list-tests: "failed"
           reporter: java-junit
