@@ -2,7 +2,6 @@ package com.arcadedb.test.performance;
 
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
-import io.micrometer.core.instrument.Metrics;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
@@ -46,7 +45,7 @@ public class SingleServerLoadTestIT extends ContainersTestTemplate {
         db1.close();
       });
 
-      TimeUnit.SECONDS.sleep(1);
+      TimeUnit.SECONDS.sleep(2);
       // Each thread will create friendships
       executor.submit(() -> {
         DatabaseWrapper db1 = new DatabaseWrapper(arcadeContainer, idSupplier);
@@ -59,7 +58,8 @@ public class SingleServerLoadTestIT extends ContainersTestTemplate {
     while (!executor.isTerminated()) {
       long users = db.countUsers();
       long friendships = db.countFriendships();
-      logger.info("Current users: {} - friendships: {}", users, friendships);
+      long photos = db.countPhotos();
+      logger.info("Current users: {} - photos: {} - friendships: {}", users, photos, friendships);
       // Wait for 2 seconds before checking again
       try {
         TimeUnit.SECONDS.sleep(2);

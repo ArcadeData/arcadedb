@@ -30,7 +30,8 @@ import java.util.function.Supplier;
 public abstract class ContainersTestTemplate {
   public static final String                    IMAGE      = "arcadedata/arcadedb:latest";
   public static final String                    PASSWORD   = "playwithdata";
-  protected              LoggingMeterRegistry      loggingMeterRegistry;
+  public static final String                    DATABASE   = "playwithpictures";
+  protected           LoggingMeterRegistry      loggingMeterRegistry;
   protected           Logger                    logger     = LoggerFactory.getLogger(getClass());
   protected           Network                   network;
   protected           ToxiproxyContainer        toxiproxy;
@@ -121,15 +122,6 @@ public abstract class ContainersTestTemplate {
     containers.stream()
         .filter(ContainerState::isRunning)
         .peek(container -> logger.info("Stopping container {}", container.getContainerName()))
-//        .peek(container -> {
-//          try {
-//            container.execInContainer("rm -rf", "/home/arcadedb/databases/*");
-//            container.execInContainer("rm -rf", "/home/arcadedb/replication/*");
-//            container.execInContainer("rm -rf", "/home/arcadedb/logs/*");
-//          } catch (IOException | InterruptedException e) {
-//            logger.error("Error while stopping container {}", container.getContainerName(), e);
-//          }
-//        })
         .forEach(GenericContainer::stop);
     containers.clear();
   }

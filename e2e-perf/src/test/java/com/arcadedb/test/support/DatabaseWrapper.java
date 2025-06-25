@@ -14,6 +14,7 @@ import org.testcontainers.containers.GenericContainer;
 import java.util.List;
 import java.util.function.Supplier;
 
+import static com.arcadedb.test.support.ContainersTestTemplate.DATABASE;
 import static com.arcadedb.test.support.ContainersTestTemplate.PASSWORD;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -38,7 +39,7 @@ public class DatabaseWrapper {
   private RemoteDatabase connectToDatabase(GenericContainer<?> arcadeContainer) {
     RemoteDatabase database = new RemoteDatabase(arcadeContainer.getHost(),
         arcadeContainer.getMappedPort(2480),
-        "ha-test",
+        DATABASE,
         "root",
         PASSWORD);
     database.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
@@ -56,14 +57,18 @@ public class DatabaseWrapper {
         PASSWORD);
     server.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
 
-    if (server.exists("ha-test")) {
-      logger.info("Dropping existing database ha-test");
-      server.drop("ha-test");
+    if (server.exists(DATABASE)) {
+      logger.info("Dropping existing database {}", DATABASE);
+      server.drop(DATABASE);
     }
-    if (!server.exists("ha-test"))
-      server.create("ha-test");
+    server.create(DATABASE);
   }
 
+  /**
+   * This method creates the schema for the test.
+   * It creates vertex types User and Photo, edge types HasUploaded, FriendOf, and Likes.
+   * It also creates properties for User and Photo vertex types.
+   */
   public void createSchema() {
     //this is a test-double of HTTPGraphIT.testOneEdgePerTx test
     db.command("sqlscript",
@@ -84,6 +89,10 @@ public class DatabaseWrapper {
             """);
   }
 
+  /**
+   * This method checks if the schema is created correctly.
+   * It checks if the types User, Photo, HasUploaded, FriendOf, and Likes exist.
+   */
   public void checkSchema() {
     RemoteSchema schema = db.getSchema();
     assertThat(schema.existsType("Photo")).isTrue();
@@ -107,7 +116,6 @@ public class DatabaseWrapper {
         usersTimer.record(() -> {
           db.transaction(() ->
               {
-                //uncomment to see error on server side
                 db.acquireLock()
                     .type("User")
                     .lock();
@@ -126,12 +134,20 @@ public class DatabaseWrapper {
     }
   }
 
+  /**
+   * This method adds photos for a specific user.
+   * It creates a photo in a transaction with the user.
+   *
+   * @param userId         the id of the user to add photos for
+   * @param numberOfPhotos the number of photos to add for the user
+   */
   private void addPhotosOfUser(int userId, int numberOfPhotos) {
     for (int photoIndex = 1; photoIndex <= numberOfPhotos; photoIndex++) {
       int photoId = idSupplier.get();
       String photoName = String.format("download-%s.jpg", photoId);
       String sqlScript = """
           BEGIN;
+          LOCK TYPE User, Photo, HasUploaded;
           LET photo = CREATE VERTEX Photo SET id = ?, name = ?;
           LET user = SELECT FROM User WHERE id = ?;
           LET userEdge = CREATE EDGE HasUploaded FROM $user TO $photo;
@@ -139,10 +155,9 @@ public class DatabaseWrapper {
           RETURN $photo;""";
       try {
         photosTimer.record(() -> {
-          db.transaction(() ->
-                  db.command("sqlscript", sqlScript, photoId, photoName, userId)
-              , true, 20);
-        });
+              db.command("sqlscript", sqlScript, photoId, photoName, userId);
+            }
+        );
 
       } catch (Exception e) {
         Metrics.counter("arcadedb.test.inserted.photos.error").increment();
@@ -151,6 +166,14 @@ public class DatabaseWrapper {
     }
   }
 
+  /**
+   * This method creates friendships between users.
+   * It creates a number of friendships in iterations.
+   * Each iteration creates a number of friendships between users.
+   *
+   * @param numOfFriendshipIterations    the number of iterations to create friendships
+   * @param numOfFriendshipPerIterations the number of friendships to create in each iteration
+   */
   public void createFriendships(int numOfFriendshipIterations, int numOfFriendshipPerIterations) {
     for (int f = 0; f < numOfFriendshipIterations; f++) {
       List<Integer> userIds = getUserIds(numOfFriendshipPerIterations, f * 10);
@@ -171,50 +194,21 @@ public class DatabaseWrapper {
   public void addFriendship(int userId1, int userId2) {
     try {
       friendshipTimer.record(() -> {
-            db.transaction(() ->
-                {
-                  //uncomment to see error on server side
-//                  db.acquireLock()
-//                      .type("FriendOf")
-//                      .type("User")
-//                      .lock();
+            db.transaction(() -> {
+                  db.acquireLock()
+                      .type("FriendOf")
+                      .type("User")
+                      .lock();
                   db.command("sql",
                       """
                           CREATE EDGE FriendOf
                           FROM (SELECT FROM User WHERE id = ?) TO (SELECT FROM User WHERE id = ?)
                           """, userId1, userId2);
-
                 }
                 , true, 30);
 
           }
       );
-
-    } catch (Exception e) {
-      Metrics.counter("arcadedb.test.inserted.friendship.error").increment();
-      logger.error("Error creating friendship between {} and {}: {}", userId1, userId2, e.getMessage());
-    }
-  }
-
-  /**
-   * This method creates a friendship between two users.
-   * The friendship is created in a transaction with the users.
-   *
-   * @param userId1 the id of the first user
-   * @param userId2 the id of the second user
-   */
-  public void addFriendshipScript(int userId1, int userId2) {
-    try {
-      friendshipTimer.record(() -> {
-        db.transaction(() ->
-            db.command("sqlscript",
-                """
-                    BEGIN;
-                    CREATE EDGE FriendOf
-                    FROM (SELECT FROM User WHERE id = ?) TO (SELECT FROM User WHERE id = ?);
-                    COMMIT RETRY 30;
-                    """, userId1, userId2), true);
-      });
 
     } catch (Exception e) {
       Metrics.counter("arcadedb.test.inserted.friendship.error").increment();
