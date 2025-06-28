@@ -11,7 +11,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-public class SingleServerLoadTestIT extends ContainersTestTemplate {
+public class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
 
   @Test
   @DisplayName("Single server load test")
@@ -25,10 +25,10 @@ public class SingleServerLoadTestIT extends ContainersTestTemplate {
     db.createDatabase();
     db.createSchema();
 
-    final int numOfThreads = 5;
-    final int numOfUsers = 100000;
-    final int numOfPhotos = 10;
-    final int numOfFriendship = 1000;
+    final int numOfThreads = 1;
+    final int numOfUsers = 1000000;
+    final int numOfPhotos = 0;
+    final int numOfFriendship = 0;
 
     int expectedUsersCount = numOfUsers * numOfThreads;
     int expectedFriendshipCount = numOfFriendship * numOfThreads;
@@ -43,17 +43,10 @@ public class SingleServerLoadTestIT extends ContainersTestTemplate {
         db1.addUserAndPhotos(numOfUsers, numOfPhotos);
         db1.close();
       });
-
-      TimeUnit.SECONDS.sleep(2);
-      // Each thread will create friendships
-      executor.submit(() -> {
-        DatabaseWrapper db1 = new DatabaseWrapper(arcadeContainer, idSupplier);
-        db1.createFriendships(numOfFriendship);
-        db1.close();
-      });
     }
 
     executor.shutdown();
+
     while (!executor.isTerminated()) {
       long users = db.countUsers();
       long friendships = db.countFriendships();

@@ -9,7 +9,6 @@ import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.testcontainers.containers.GenericContainer;
 
 import java.util.Iterator;
 import java.util.List;
@@ -19,30 +18,28 @@ import static com.arcadedb.test.support.ContainersTestTemplate.DATABASE;
 import static com.arcadedb.test.support.ContainersTestTemplate.PASSWORD;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class DatabaseWrapper {
-  private static final Logger              logger = LoggerFactory.getLogger(DatabaseWrapper.class);
-  private final        RemoteDatabase      db;
-  private final        GenericContainer<?> arcadeServer;
-  private final        Supplier<Integer>   idSupplier;
-  private final        Timer               photosTimer;
-  private final        Timer               usersTimer;
-  private final        Timer               friendshipTimer;
+public class LocalhostDatabaseWrapper {
+  private static final Logger            logger = LoggerFactory.getLogger(LocalhostDatabaseWrapper.class);
+  private final        RemoteDatabase    db;
+  private final        Supplier<Integer> idSupplier;
+  private final        Timer             photosTimer;
+  private final        Timer             usersTimer;
+  private final        Timer             friendshipTimer;
 
-  public DatabaseWrapper(GenericContainer<?> arcadeContainer, Supplier<Integer> idSupplier) {
-    this.arcadeServer = arcadeContainer;
-    this.db = connectToDatabase(arcadeContainer);
+  public LocalhostDatabaseWrapper(Supplier<Integer> idSupplier) {
+    this.db = connectToDatabase();
     this.idSupplier = idSupplier;
     usersTimer = Metrics.timer("arcadedb.test.inserted.users");
     photosTimer = Metrics.timer("arcadedb.test.inserted.photos");
     friendshipTimer = Metrics.timer("arcadedb.test.inserted.friendship");
   }
 
-  private RemoteDatabase connectToDatabase(GenericContainer<?> arcadeContainer) {
-    RemoteDatabase database = new RemoteDatabase(arcadeContainer.getHost(),
-        arcadeContainer.getMappedPort(2480),
+  private RemoteDatabase connectToDatabase() {
+    RemoteDatabase database = new RemoteDatabase("localhost",
+        2480,
         DATABASE,
         "root",
-        PASSWORD);
+        "pippopluto");
     database.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
     database.setTimeout(30000);
     return database;
@@ -53,10 +50,10 @@ public class DatabaseWrapper {
   }
 
   public void createDatabase() {
-    RemoteServer server = new RemoteServer(arcadeServer.getHost(),
-        arcadeServer.getMappedPort(2480),
+    RemoteServer server = new RemoteServer("localhost",
+        2480,
         "root",
-        PASSWORD);
+        "pippopluto");
     server.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
 
     if (server.exists(DATABASE)) {
@@ -132,7 +129,7 @@ public class DatabaseWrapper {
         Metrics.counter("arcadedb.test.inserted.users.error").increment();
         logger.error("Error creating user {}: {}", userId, e.getMessage());
         e.printStackTrace();
-        System.exit(1);
+//        System.exit(1);
       }
 
     }
@@ -260,7 +257,7 @@ public class DatabaseWrapper {
     return db.command("sql", command, args);
   }
 
-  private static class UserIdSupplier implements java.util.function.Supplier<Integer> {
+  private static class UserIdSupplier implements Supplier<Integer> {
 
     private final RemoteDatabase db;
 
