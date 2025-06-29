@@ -33,11 +33,12 @@ The command removes all the Kubernetes components associated with the chart and 
 
 ### arcaddb
 
-| Name                         | Description                                           | Value                                    |
-|------------------------------|-------------------------------------------------------|------------------------------------------|
-| `arcadedb.databaseDirectory` | Enable persistence by updating this and volume/Mounts | `/home/arcadedb/databases`               |
-| `arcadedb.defaultDatabases`  | Default databases                                     | `Universe[foo:bar]`                      |
-| `arcadedb.extraCommands`     | Any extra comands to pass to ArcadeDB startup         | `["-Darcadedb.server.mode=development"]` |
+| Name                         | Description                                                        | Value                                    |
+|------------------------------|--------------------------------------------------------------------|------------------------------------------|
+| `arcadedb.databaseDirectory` | Enable persistence by updating this and volume/Mounts              | `/home/arcadedb/databases`               |
+| `arcadedb.defaultDatabases`  | Default databases                                                  | `Universe[foo:bar]`                      |
+| `arcadedb.extraCommands`     | Any extra commands to pass to ArcadeDB startup                     | `["-Darcadedb.server.mode=development"]` |
+| `arcadedb.extraEnvironment`  | Additional environment variables to pass to the ArcadeDB container | `[]` |
 
 ### arcadedb.credentials
 

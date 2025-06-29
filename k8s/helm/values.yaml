@@ -8,9 +8,11 @@ arcadedb:
   databaseDirectory: "/home/arcadedb/databases"
   ## @param arcadedb.defaultDatabases Default databases
   defaultDatabases: "Universe[foo:bar]"
-  ## @param arcadedb.extraCommands Any extra comands to pass to ArcadeDB startup
+  ## @param arcadedb.extraCommands Any extra commands to pass to ArcadeDB startup
   extraCommands:
     - -Darcadedb.server.mode=development # development | production
+  ## @param arcadedb.extraEnvironment Additional environment variables to pass to the ArcadeDB container
+  extraEnvironment: []
   ## @section arcadedb.credentials
   credentials:
   ## @section arcadedb.credentials.rootPassword
