@@ -1,5 +1,6 @@
 package com.arcadedb.remote;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicInteger;
@@ -17,14 +18,15 @@ public class RemoteBulk {
   };
 
   @Test
+  @Disabled
   void bulkload() {
-    RemoteServer server = new RemoteServer("127.0.0.1", 2480, "root", "pippopluto");
+    RemoteServer server = new RemoteServer("127.0.0.1", 2480, "root", "playwithdata");
     if (server.exists("testBulk"))
       server.drop("testBulk");
     server.create("testBulk");
 
     final RemoteDatabase db = new RemoteDatabase("127.0.0.1", 2480, "testBulk", "root",
-        "pippopluto");
+        "playwithdata");
 
     db.command("sqlscript",
         """

@@ -39,7 +39,7 @@ public class LocalhostDatabaseWrapper {
         2480,
         DATABASE,
         "root",
-        "pippopluto");
+        "playwithdata");
     database.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
     database.setTimeout(30000);
     return database;
@@ -53,7 +53,7 @@ public class LocalhostDatabaseWrapper {
     RemoteServer server = new RemoteServer("localhost",
         2480,
         "root",
-        "pippopluto");
+        "playwithdata");
     server.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
 
     if (server.exists(DATABASE)) {
