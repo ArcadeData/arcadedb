@@ -43,6 +43,7 @@ import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.IndexBuilder;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
@@ -70,7 +71,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   private              String                        typeName;
   protected            List<String>                  propertyNames;
   protected            LSMTreeIndexMutable           mutable;
-  protected final      AtomicReference<INDEX_STATUS> status             = new AtomicReference<>(INDEX_STATUS.AVAILABLE);
+  protected final      AtomicReference<INDEX_STATUS> status             = new AtomicReference<>(
+      INDEX_STATUS.AVAILABLE);
   private              boolean                       valid              = true;
 
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
@@ -525,10 +527,12 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     if (locked == LockManager.LOCK_STATUS.NO)
       throw new IllegalStateException("Cannot replace compacted index because cannot lock index file " + fileId);
 
+    final AtomicInteger lockedNewFileId = new AtomicInteger(-1);
+
     try {
       final LSMTreeIndexMutable prevMutable = mutable;
 
-// COPY MUTABLE PAGES TO THE NEW FILE
+      // COPY MUTABLE PAGES TO THE NEW FILE
       final LSMTreeIndexMutable result = lock.executeInWriteLock(() -> {
         final int pageSize = mutable.getPageSize();
 
@@ -540,12 +544,16 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
             LSMTreeIndexMutable.CURRENT_VERSION, compactedIndex);
         database.getSchema().getEmbedded().registerFile(newMutableIndex);
 
+        // LOCK NEW FILE
+        database.getTransactionManager().tryLockFile(newMutableIndex.getFileId(), 0, Thread.currentThread());
+        lockedNewFileId.set(newMutableIndex.getFileId());
+
         final List<MutablePage> modifiedPages = new ArrayList<>(2 + mutable.getTotalPages() - startingFromPage);
 
         final MutablePage subIndexMainPage = compactedIndex.setCompactedTotalPages();
         modifiedPages.add(database.getPageManager().updatePageVersion(subIndexMainPage, false));
 
-// KEEP METADATA AND LEAVE IT EMPTY
+        // KEEP METADATA AND LEAVE IT EMPTY
         final MutablePage rootPage = newMutableIndex.createNewPage();
         modifiedPages.add(database.getPageManager().updatePageVersion(rootPage, true));
 
@@ -577,21 +585,26 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
         mutable = newMutableIndex;
 
+        ((LocalSchema) database.getSchema()).setMigratedFileId(fileId, newMutableIndex.getFileId());
+
         database.getSchema().getEmbedded().saveConfiguration();
         return newMutableIndex;
       });
 
-      if (prevMutable != null) {
+      if (prevMutable != null)
         try {
           prevMutable.drop();
         } catch (final IOException e) {
           LogManager.instance().log(this, Level.WARNING, "Error on deleting old copy of mutable index file %s", e, prevMutable);
         }
-      }
 
       return result;
 
     } finally {
+      final Integer lockedFileId = lockedNewFileId.get();
+      if (lockedFileId != null)
+        database.getTransactionManager().unlockFile(lockedFileId, Thread.currentThread());
+
       if (locked == LockManager.LOCK_STATUS.YES)
         // RELEASE THE DELETED FILE ONLY IF THE LOCK WAS ACQUIRED HERE
         database.getTransactionManager().unlockFile(fileId, Thread.currentThread());

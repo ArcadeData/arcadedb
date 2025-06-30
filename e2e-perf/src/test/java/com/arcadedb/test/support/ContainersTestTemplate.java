@@ -187,7 +187,7 @@ public abstract class ContainersTestTemplate {
         .withEnv("JAVA_OPTS", String.format("""
             -Darcadedb.server.rootPassword=playwithdata
             -Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin
-            -Darcadedb.server.httpsIoThreads=10
+            -Darcadedb.server.httpsIoThreads=30
             -Darcadedb.bucketReuseSpaceMode=low
             -Darcadedb.server.name=%s
             -Darcadedb.backup.enabled=false
@@ -198,6 +198,7 @@ public abstract class ContainersTestTemplate {
             -Darcadedb.ha.serverList=%s
             -Darcadedb.ha.replicationQueueSize=1024
             """, name, ha, quorum, role, serverList))
+        .withEnv("ARCADEDB_OPTS_MEMORY", "-Xms16G -Xmx16G")
         .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
     containers.add(container);
     return container;
