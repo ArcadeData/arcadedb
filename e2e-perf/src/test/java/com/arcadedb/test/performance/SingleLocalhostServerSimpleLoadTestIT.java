@@ -8,6 +8,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
@@ -21,6 +22,19 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
+/**
+ * How to run this test locally
+ * 1 - build the package: mvn clea install -DskipTests
+ * 2 - run the server :
+ * export ARCADEDB_OPTS_MEMORY="-Xms16G -Xmx16G" && \
+ * ./package/target/arcadedb-25.6.1-SNAPSHOT.dir/arcadedb-25.6.1-SNAPSHOT/bin/server.sh \
+ * -Darcadedb.server.rootPassword=playwithdata \
+ * -Darcadedb.serverMetrics=true \
+ * -Darcadedb.typeDefaultBuckets=10 -Darcadedb.bucketReuseSpaceMode=low
+ * 3 - when the server is up and running, remove the Disabled annotation and run the test
+ * <p>
+ * The test uses a fixed size thread pool to execute operations in parallel.
+ */
 public class SingleLocalhostServerSimpleLoadTestIT {
   protected LoggingMeterRegistry loggingMeterRegistry;
   protected Logger               logger = LoggerFactory.getLogger(getClass());
@@ -64,6 +78,7 @@ public class SingleLocalhostServerSimpleLoadTestIT {
   }
 
   @Test
+  @Disabled
   @DisplayName("Single server load test")
   void singleServerLoadTest() throws InterruptedException, IOException {
 
@@ -71,6 +86,7 @@ public class SingleLocalhostServerSimpleLoadTestIT {
     db.createDatabase();
     db.createSchema();
 
+    // Parameters for the test
     final int numOfThreads = 5;
     final int numOfUsers = 1000000;
     final int numOfPhotos = 0;
