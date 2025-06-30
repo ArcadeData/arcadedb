@@ -71,7 +71,7 @@ public class SingleLocalhostServerSimpleLoadTestIT {
     db.createDatabase();
     db.createSchema();
 
-    final int numOfThreads = 5  ;
+    final int numOfThreads = 5;
     final int numOfUsers = 1000000;
     final int numOfPhotos = 0;
     final int numOfFriendship = 0;
@@ -94,12 +94,16 @@ public class SingleLocalhostServerSimpleLoadTestIT {
     executor.shutdown();
 
     while (!executor.isTerminated()) {
-      long users = db.countUsers();
-      long friendships = db.countFriendships();
-      long photos = db.countPhotos();
-      logger.info("Current users: {} - photos: {} - friendships: {}", users, photos, friendships);
-      // Wait for 2 seconds before checking again
       try {
+        long users = db.countUsers();
+        long friendships = db.countFriendships();
+        long photos = db.countPhotos();
+        logger.info("Current users: {} - photos: {} - friendships: {}", users, photos, friendships);
+      } catch (Exception e) {
+        logger.error(e.getMessage(), e);
+      }
+      try {
+        // Wait for 2 seconds before checking again
         TimeUnit.SECONDS.sleep(2);
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
