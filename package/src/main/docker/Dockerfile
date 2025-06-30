@@ -14,8 +14,7 @@
 # limitations under the License.
 #
 
-
-FROM eclipse-temurin:21@sha256:6634936b2e8d90ee16eeb94420d71cd5e36ca677a4cf795a9ee1ee6e94379988
+FROM eclipse-temurin:21-alpine@sha256:2f2f553ce09d25e2d2f0f521ab94cd73f70c9b21327a29149c23a2b63b8e29a0
 
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 
@@ -30,7 +29,9 @@ ENV ARCADEDB_JMX="-Dcom.sun.management.jmxremote=true \
     -Dcom.sun.management.jmxremote.port=9999 \
     -Dcom.sun.management.jmxremote.rmi.port=9998"
 
-RUN useradd -ms /bin/bash arcadedb
+RUN apk -U upgrade && rm -rf /var/cache/apk/*
+
+RUN adduser -D -h /home/arcadedb -s /bin/sh arcadedb
 
 WORKDIR /home/arcadedb
 
@@ -50,6 +51,7 @@ VOLUME [ "/home/arcadedb/replication"]
 VOLUME [ "/home/arcadedb/backups"]
 
 VOLUME [ "/home/arcadedb/log"]
+
 
 
 # ArcadeDB HTTP API & STUDIO
