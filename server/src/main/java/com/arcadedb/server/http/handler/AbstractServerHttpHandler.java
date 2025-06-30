@@ -153,8 +153,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       sendErrorResponse(exchange, 400, "Cannot execute command", e, e.getLeaderAddress());
     } catch (final NeedRetryException e) {
       LogManager.instance()
-          .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-              e.getMessage());
+          .log(this, Level.FINE, "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 503, "Cannot execute command", e, null);
     } catch (final DuplicatedKeyException e) {
       LogManager.instance()
