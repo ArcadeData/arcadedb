@@ -59,6 +59,11 @@ public class HttpSession {
       try {
         LogManager.instance().log(this, Level.FINE, "Executing session %s for user %s", id, user.getName());
         callback.call();
+      } catch (Exception e) {
+        // ROLLBACK SERVER-SIDE TRANSACTION
+        if (transaction != null)
+          transaction.rollback();
+        throw e;
       } finally {
         lock.unlock();
       }

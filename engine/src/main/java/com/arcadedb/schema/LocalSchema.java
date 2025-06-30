@@ -102,6 +102,7 @@ public class LocalSchema implements Schema {
   private             boolean                                multipleUpdate                = false;
   private final       AtomicLong                             versionSerial                 = new AtomicLong();
   private final       Map<String, FunctionLibraryDefinition> functionLibraries             = new ConcurrentHashMap<>();
+  private final       Map<Integer, Integer>                  migratedFileIds               = new ConcurrentHashMap<>();
 
   public LocalSchema(final DatabaseInternal database, final String databasePath, final SecurityManager security) {
     this.database = database;
@@ -1282,6 +1283,15 @@ public class LocalSchema implements Schema {
   @Override
   public FunctionDefinition getFunction(final String libraryName, final String functionName) throws IllegalArgumentException {
     return getFunctionLibrary(libraryName).getFunction(functionName);
+  }
+
+  public void setMigratedFileId(final int oldFileId, final int newFileId) {
+    LogManager.instance().log(this, Level.FINE, "Migrating file id %d to %d", null, oldFileId, newFileId);
+    migratedFileIds.put(oldFileId, newFileId);
+  }
+
+  public Integer getMigratedFileId(final int oldFileId) {
+    return migratedFileIds.get(oldFileId);
   }
 
   public boolean isDirty() {

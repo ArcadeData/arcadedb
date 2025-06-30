@@ -310,13 +310,11 @@ public class RemoteHttpComponent extends RWLockContext {
     final String authorization = userName + ":" + userPassword;
     String authHeader = "Basic " + Base64.getEncoder().encodeToString(authorization.getBytes(DatabaseFactory.getDefaultCharset()));
 
-    HttpRequest.Builder builder = HttpRequest.newBuilder()
+    return HttpRequest.newBuilder()
         .uri(URI.create(url))
         .timeout(Duration.ofMillis(timeout))
         .header("charset", "utf-8")
         .header("Authorization", authHeader);
-
-    return builder;
   }
 
   void requestClusterConfiguration() {
