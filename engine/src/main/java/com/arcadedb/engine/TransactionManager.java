@@ -475,7 +475,7 @@ public class TransactionManager {
         if (attemptFileId != null)
           throw new TimeoutException(
               "Timeout on locking file " + attemptFileId + " (" + database.getFileManager().getFile(attemptFileId).getFileName()
-                  + ") during commit (fileIds=" + orderedFilesIds + ")");
+                  + ") during commit (fileIds=" + orderedFilesIds + ", timeout=" + timeout + "ms");
 
         throw new TimeoutException("Timeout on locking files during commit (fileIds=" + orderedFilesIds + ")");
       }

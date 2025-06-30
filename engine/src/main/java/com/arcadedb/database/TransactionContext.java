@@ -586,21 +586,9 @@ public class TransactionContext implements Transaction {
     if (isLeader) {
       final Set<Integer> modifiedFiles = lockFilesFromChanges();
 
-      if (explicitLockedFiles != null) {
-        // CHECK THE LOCKED FILES ARE ALL LOCKED ALREADY
-        if (!explicitLockedFiles.containsAll(modifiedFiles)) {
-          final HashSet<Integer> left = new HashSet<>(modifiedFiles);
-          left.removeAll(explicitLockedFiles);
-
-          final Set<String> resourceNames = left.stream().map((fileId -> database.getSchema().getFileById(fileId).getName()))
-              .collect(Collectors.toSet());
-
-          throw new TransactionException(
-              "Cannot commit transaction because not all the modified resources were locked: " + resourceNames);
-        }
-        lockedFiles = explicitLockedFiles;
-        explicitLockedFiles = null;
-      } else
+      if (explicitLockedFiles != null)
+        checkExplicitLocks(modifiedFiles);
+      else
         // LOCK FILES IN ORDER (TO AVOID DEADLOCK)
         lockedFiles = lockFilesInOrder(modifiedFiles);
 
@@ -662,10 +650,12 @@ public class TransactionContext implements Transaction {
 
       return new TransactionPhase1(result, pages);
 
-    } catch (final DuplicatedKeyException | ConcurrentModificationException e) {
+    } catch (final DuplicatedKeyException |
+                   ConcurrentModificationException e) {
       rollback();
       throw e;
-    } catch (final Exception e) {
+    } catch (
+        final Exception e) {
       LogManager.instance()
           .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
       rollback();
@@ -852,12 +842,54 @@ public class TransactionContext implements Transaction {
     // CHECK IF ALL THE LOCKED FILES STILL EXIST. FILE MISSING CAN HAPPEN IN CASE OF INDEX COMPACTION OR DROP OF A BUCKET OR AN INDEX
     for (Integer f : locked)
       if (!database.getFileManager().existsFile(f)) {
-        // ONE FILE HAS BEEN REMOVED
-        database.getTransactionManager().unlockFilesInOrder(locked, getRequester());
-        rollback();
-        throw new ConcurrentModificationException("File with id '" + f + "' has been removed");
+        // THE FILE HAS BEEN REMOVED, CHECK IF A NEW COMPACTION WAS EXECUTED
+        final Integer migratedFileIs = ((LocalSchema) database.getSchema()).getMigratedFileId(f);
+        if (migratedFileIs == null) {
+          database.getTransactionManager().unlockFilesInOrder(locked, getRequester());
+          rollback();
+          throw new ConcurrentModificationException("File with id '" + f + "' has been removed");
+        }
       }
 
     return locked;
+  }
+
+  private void checkExplicitLocks(final Set<Integer> modifiedFiles) {
+    // CHECK THE LOCKED FILES ARE ALL LOCKED ALREADY
+    if (!explicitLockedFiles.containsAll(modifiedFiles)) {
+      boolean anyMigration = false;
+      // CHECK FOR ANY MIGRATED FILES (INDEX COMPACTION)
+      final List<Integer> migratedFileIds = new ArrayList<>(explicitLockedFiles.size());
+      for (Integer f : explicitLockedFiles) {
+        final Integer newFileId = ((LocalSchema) database.getSchema()).getMigratedFileId(f);
+        if (newFileId != null) {
+          migratedFileIds.add(newFileId);
+          LogManager.instance().log(this, Level.FINE, "Found upgraded file '%d' to '%d' during transaction lock", f, newFileId);
+          anyMigration = true;
+        } else
+          migratedFileIds.add(f);
+      }
+
+      boolean upgradedLocks = false;
+      if (anyMigration) {
+        if (migratedFileIds.containsAll(modifiedFiles))
+          // FOUND MIGRATED FILE, LOCK THE NEW FILE AND CONTINUE
+          throw new ConcurrentModificationException(
+              "Error on commit transaction: some files have been migrated, please retry the operation");
+      }
+
+      if (!upgradedLocks) {
+        final HashSet<Integer> left = new HashSet<>(modifiedFiles);
+        left.removeAll(explicitLockedFiles);
+
+        final Set<String> resourceNames = left.stream().map((fileId -> database.getSchema().getFileById(fileId).getName()))
+            .collect(Collectors.toSet());
+
+        throw new TransactionException(
+            "Cannot commit transaction because not all the modified resources were locked: " + resourceNames);
+      }
+    }
+    lockedFiles = explicitLockedFiles;
+    explicitLockedFiles = null;
   }
 }
