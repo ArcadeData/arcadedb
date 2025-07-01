@@ -19,12 +19,12 @@
 package com.arcadedb.server.http;
 
 import com.arcadedb.database.TransactionContext;
-import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.util.concurrent.*;
 import java.util.concurrent.locks.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 /**
  * Manage a transaction on the HTTP protocol.
@@ -49,6 +49,15 @@ public class HttpSession {
     return System.currentTimeMillis() - lastUpdate;
   }
 
+  public void cancel() {
+    try {
+      if (transaction != null)
+        transaction.rollback();
+    } catch (Exception e) {
+      // IGNORE IT
+    }
+  }
+
   public HttpSession execute(final ServerSecurityUser user, final Callable callback) throws Exception {
     if (!this.user.equals(user))
       throw new SecurityException("Cannot use the requested transaction because in use by a different user");
@@ -61,8 +70,7 @@ public class HttpSession {
         callback.call();
       } catch (Exception e) {
         // ROLLBACK SERVER-SIDE TRANSACTION
-        if (transaction != null)
-          transaction.rollback();
+        cancel();
         throw e;
       } finally {
         lock.unlock();
