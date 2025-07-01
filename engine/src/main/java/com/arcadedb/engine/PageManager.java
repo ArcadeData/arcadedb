@@ -228,8 +228,11 @@ public class PageManager extends LockContext {
         final Component component = page.pageId.getDatabase().getSchema().getFileById(page.pageId.getFileId());
         if (component instanceof LocalBucket b) {
           final int realPages = (int) (file.getSize() / b.pageSize);
-          if (realPages > b.getTotalPages())
+          try {
             b.setPageCount(realPages);
+          } catch (java.util.ConcurrentModificationException e) {
+            // IGNORE IT
+          }
         }
       }
 
