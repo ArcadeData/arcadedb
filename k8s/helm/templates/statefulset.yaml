@@ -95,7 +95,9 @@ spec:
                   name: arcadedb-credentials-secret
                   key: rootPassword
               {{- end }}
-
+              {{- with .Values.arcadedb.extraEnvironment }}
+                {{- toYaml . | nindent 12 }}
+              {{- end }}
       {{- with .Values.volumes }}
       volumes:
         {{- toYaml . | nindent 8 }}
