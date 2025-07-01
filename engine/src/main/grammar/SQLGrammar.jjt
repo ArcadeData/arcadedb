@@ -110,296 +110,152 @@ SPECIAL_TOKEN :
 TOKEN:
 {
   <ALIGN: ("a"|"A")("l"|"L")("i"|"I")("g"|"G")("n"|"N")>
-  |
-	<BATCH: ("b"|"B")("a"|"A")("t"|"T")("c"|"C")("h"|"H")>
-	|
-  <SELECT: ("s"|"S")("e"|"E")("l"|"L")("e"|"E")("c"|"C")("t"|"T")>
-  |
-  <TRAVERSE: ("t"|"T")("r"|"R")("a"|"A")("v"|"V")("e"|"E")("r"|"R")("s"|"S")("e"|"E")>
-  |
-  <MATCH: ("m"|"M")("a"|"A")("t"|"T")("c"|"C")("h"|"H")>
-  |
-  <INSERT: ("i"|"I")("n"|"N")("s"|"S")("e"|"E")("r"|"R")("t"|"T")>
-  |
-  <CREATE: ("c"|"C")("r"|"R")("e"|"E")("a"|"A")("t"|"T")("e"|"E")>
-  |
-  <CUSTOM: ("c"|"C")("u"|"U")("s"|"S")("t"|"T")("o"|"O")("m"|"M")>
-  |
-  <DELETE: ("d"|"D")("e"|"E")("l"|"L")("e"|"E")("t"|"T")("e"|"E")>
-  |
-  <DOCUMENT: ("d"|"D")("o"|"O")("c"|"C")("u"|"U")("m"|"M")("e"|"E")("n"|"N")("t"|"T")>
-  |
-  <VERTEX: ("v"|"V")("e"|"E")("r"|"R")("t"|"T")("e"|"E")("x"|"X")>
-  |
-  <EDGE: ("e"|"E")("d"|"D")("g"|"G")("e"|"E")>
-  |
-  <UPDATE: ("u"|"U")("p"|"P")("d"|"D")("a"|"A")("t"|"T")("e"|"E")>
-  |
-  <UPSERT: ("u"|"U")("p"|"P")("s"|"S")("e"|"E")("r"|"R")("t"|"T")>
-  |
-  <FROM: ("f"|"F")("r"|"R")("o"|"O")("m"|"M")>
-  |
-  <TO: ("t"|"T")("o"|"O")>
-  |
-  <WHERE: ("w"|"W")("h"|"H")("e"|"E")("r"|"R")("e"|"E")>
-  |
-  <WHILE: ("w"|"W")("h"|"H")("i"|"I")("l"|"L")("e"|"E")>
-  |
-  <INTO: ("i"|"I")("n"|"N")("t"|"T")("o"|"O")>
-  |
-  <VALUE: ("v"|"V")("a"|"A")("l"|"L")("u"|"U")("e"|"E")>
-  |
-  <VALUES: ("v"|"V")("a"|"A")("l"|"L")("u"|"U")("e"|"E")("s"|"S")>
-  |
-  <SET: ("s"|"S")("e"|"E")("t"|"T") >
-  |
-  <ADD: ("a"|"A")("d"|"D")("d"|"D")>
-  |
-  <PUT: ("p"|"P")("u"|"U")("t"|"T") >
-  |
-  <MERGE: ("m"|"M")("e"|"E")("r"|"R")("g"|"G")("e"|"E")>
-  |
-  <CONTENT: ("c"|"C")("o"|"O")("n"|"N")("t"|"T")("e"|"E")("n"|"N")("t"|"T") >
-  |
-  <REMOVE: ("r"|"R")("e"|"E")("m"|"M")("o"|"O")("v"|"V")("e"|"E")>
-  |
-  <INCREMENT: ("i"|"I")("n"|"N")("c"|"C")("r"|"R")("e"|"E")("m"|"M")("e"|"E")("n"|"N")("t"|"T")>
-  |
-  <AND: ("a"|"A")("n"|"N")("d"|"D")>
-  |
-  <OR: ("o"|"O")("r"|"R")>
-  |
-  <NULL: ("N"|"n")("U"|"u")("L"|"l")("L"|"l")>
-  |
-  <DEFINE: ("D"|"d")("E"|"e")("F"|"f")("I"|"i")("N"|"n")("E"|"e")>
-  |
-  <DEFINED: ("D"|"d")("E"|"e")("F"|"f")("I"|"i")("N"|"n")("E"|"e")("D"|"d")>
-  |
-  <ORDER_BY: ("o"|"O")("r"|"R")("d"|"D")("e"|"E")("r"|"R") ([" "])+ ("b"|"B")("y"|"Y") >
-  |
-  <GROUP_BY: ("g"|"G")("r"|"R")("o"|"O")("u"|"U")("p"|"P") ([" "])+ ("b"|"B")("y"|"Y") >
-  |
-  <BY: ("b"|"B")("y"|"Y")>
-  |
-  <BREAK: ("b"|"B")("r"|"R")("e"|"E")("a"|"A")("k"|"K")>
-  |
-  <LIMIT: ("l"|"L")("i"|"I")("m"|"M")("i"|"I")("t"|"T")>
-  |
-  <SKIP2: ("s"|"S")("k"|"K")("i"|"I")("p"|"P")>
-  |
-  <ERROR2: ("e"|"E")("r"|"R")("r"|"R")("o"|"O")("r"|"R")>
-  |
-  <OF: ("o"|"O")("f"|"F")>
-  |
-  <OFFSET: ("o"|"O")("f"|"F")("f"|"F")("s"|"S")("e"|"E")("t"|"T")>
-  |
-  <TIMEOUT: ("t"|"T")("i"|"I")("m"|"M")("e"|"E")("o"|"O")("u"|"U")("t"|"T")>
-  |
-  <ASC: ("a"|"A")("s"|"S")("c"|"C")>
-  |
-  <AS: ("a"|"A")("s"|"S")>
-  |
-  <DESC: ("d"|"D")("e"|"E")("s"|"S")("c"|"C") >
-  |
-  <RETURN: ("r"|"R")("e"|"E")("t"|"T")("u"|"U")("r"|"R")("n"|"N")>
-  |
-  <BEFORE: ("b"|"B")("e"|"E")("f"|"F")("o"|"O")("r"|"R")("e"|"E") >
-  |
-  <AFTER: ("a"|"A")("f"|"F")("t"|"T")("e"|"E")("r"|"R") >
-  |
-  <RECORD: ("r"|"R")("e"|"E")("c"|"C")("o"|"O")("r"|"R")("d"|"D") >
-  |
-  <WAIT: ("w"|"W")("a"|"A")("i"|"I")("t"|"T")>
-  |
-  <RETRY: ("r"|"R")("e"|"E")("t"|"T")("r"|"R")("y"|"Y") >
-  |
-  <LET: ("l"|"L")("e"|"E")("t"|"T")>
-  |
-  <LOCK: ("l"|"L")("o"|"O")("c"|"C")("k"|"K")>
-  |
-  <CHECK: ("c"|"C")("h"|"H")("e"|"E")("c"|"C")("k"|"K") >
-  |
-  <UNSAFE: ("u"|"U")("n"|"N")("s"|"S")("a"|"A")("f"|"F")("e"|"E") >
-  |
-  <STRATEGY: ("s"|"S")("t"|"T")("r"|"R")("a"|"A")("t"|"T")("e"|"E")("g"|"G")("y"|"Y") >
-  |
-  <DEPTH_FIRST: ("d"|"D")("e"|"E")("p"|"P")("t"|"T")("h"|"H")("_")("f"|"F")("i"|"I")("r"|"R")("s"|"S")("t"|"T") >
-  |
-  <BREADTH_FIRST: ("b"|"B")("r"|"R")("e"|"E")("a"|"A")("d"|"D")("t"|"T")("h"|"H")("_")("f"|"F")("i"|"I")("r"|"R")("s"|"S")("t"|"T") >
-  |
-  <NEAR: ("n"|"N")("e"|"E")("a"|"A")("r"|"R")>
-  |
-  <WITH: ("w"|"W")("i"|"I")("t"|"T")("h"|"H")>
-  |
-  <WITHIN: ("w"|"W")("i"|"I")("t"|"T")("h"|"H")("i"|"I")("n"|"N")>
-  |
-  <UNWIND: ("u"|"U")("n"|"N")("w"|"W")("i"|"I")("n"|"N")("d"|"D")>
-  |
-  <MAXDEPTH: ("m"|"M")("a"|"A")("x"|"X")("d"|"D")("e"|"E")("p"|"P")("t"|"T")("h"|"H")>
-  |
-  <MINDEPTH: ("m"|"M")("i"|"I")("n"|"N")("d"|"D")("e"|"E")("p"|"P")("t"|"T")("h"|"H")>
-  |
-  <TYPE: ("t"|"T")("y"|"Y")("p"|"P")("e"|"E")>
-  |
-  <SUPERTYPE: ("s"|"S")("u"|"U")("p"|"P")("e"|"E")("r"|"R")("t"|"T")("y"|"Y")("p"|"P")("e"|"E")>
-  |
-  <TYPES: ("t"|"T")("y"|"Y")("p"|"P")("e"|"E")("s"|"S")>
-  |
-  <EXCEPTION: ("e"|"E")("x"|"X")("c"|"C")("e"|"E")("p"|"P")("t"|"T")("i"|"I")("o"|"O")("n"|"N")>
-  |
-  <PROFILE: ("p"|"P")("r"|"R")("o"|"O")("f"|"F")("i"|"I")("l"|"L")("e"|"E")>
-  |
-  <ON: ("o"|"O")("n"|"N")>
-  |
-  <OFF: ("o"|"O")("f"|"F")("f"|"F")>
-  |
-  <COMPRESS: ("c"|"C")("o"|"O")("m"|"M")("p"|"P")("r"|"R")("e"|"E")("s"|"S")("s"|"S") >
-  |
-  <TRUNCATE: ("t"|"T")("r"|"R")("u"|"U")("n"|"N")("c"|"C")("a"|"A")("t"|"T")("e"|"E")>
-  |
-  <POLYMORPHIC: ("p"|"P")("o"|"O")("l"|"L")("y"|"Y")("m"|"M")("o"|"O")("r"|"R")("p"|"P")("h"|"H")("i"|"I")("c"|"C")>
-  |
-  <FIND: ("f"|"F")("i"|"I")("n"|"N")("d"|"D")>
-  |
-  <EXTENDS: ("e"|"E")("x"|"X")("t"|"T")("e"|"E")("n"|"N")("d"|"D")("s"|"S")>
-  |
-  <BACKUP: ("B"|"b")("A"|"a")("C"|"c")("K"|"k")("U"|"u")("P"|"p")>
-  |
-  <BUCKETS: ("B"|"b")("U"|"u")("C"|"c")("K"|"k")("E"|"e")("T"|"t")("S"|"s")>
-  |
-  <BUCKETSELECTIONSTRATEGY: ("B"|"b")("U"|"u")("C"|"c")("K"|"k")("E"|"e")("T"|"t")("S"|"s")("E"|"e")("L"|"l")("E"|"e")("C"|"c")("T"|"t")("I"|"i")("O"|"o")("N"|"n")("s"|"S")("t"|"T")("r"|"R")("a"|"A")("t"|"T")("e"|"E")("g"|"G")("y"|"Y")>
-  |
-  <ALTER: ("a"|"A")("l"|"L")("t"|"T")("e"|"E")("r"|"R")>
-  |
-  <NAME: ("n"|"N")("a"|"A")("m"|"M")("e"|"E") >
-  |
-  <ADDBUCKET: ("a"|"A")("d"|"D")("d"|"D")("B"|"b")("U"|"u")("C"|"c")("K"|"k")("E"|"e")("T"|"t")>
-  |
-  <REMOVEBUCKET: ("r"|"R")("e"|"E")("m"|"M")("o"|"O")("v"|"V")("e"|"E")("B"|"b")("U"|"u")("C"|"c")("K"|"k")("E"|"e")("T"|"t")>
-  |
-  <DROP: ("d"|"D")("r"|"R")("o"|"O")("p"|"P")>
-  |
-  <PROPERTY: ("p"|"P")("r"|"R")("o"|"O")("p"|"P")("e"|"E")("r"|"R")("t"|"T")("y"|"Y")>
-  |
-  <HIDDEN: ("h"|"H")("i"|"I")("d"|"D")("d"|"D")("e"|"E")("n"|"N")>
-  |
-  <FORCE: ("f"|"F")("o"|"O")("r"|"R")("c"|"C")("e"|"E")>
-  |
-  <SCHEMA: ("s"|"S")("c"|"C")("h"|"H")("e"|"E")("m"|"M")("a"|"A") >
-  |
-  <INDEX: ("I"|"i")("N"|"n")("D"|"d")("E"|"e")("X"|"x") >
-  |
-  <NULL_STRATEGY: ("n"|"N")("u"|"U")("l"|"L")("l"|"L")("_")("s"|"S")("t"|"T")("r"|"R")("a"|"A")("t"|"T")("e"|"E")("g"|"G")("y"|"Y") >
-  |
-  <ENGINE: ("E"|"e")("N"|"n")("G"|"g")("I"|"i")("N"|"n")("E"|"e")>
-  |
-  <METADATA: ("M"|"m")("E"|"e")("T"|"t")("A"|"a")("D"|"d")("A"|"a")("T"|"t")("A"|"a")>
-  |
-  <REBUILD: ("R"|"r")("E"|"e")("B"|"b")("U"|"u")("I"|"i")("L"|"l")("D"|"d")>
-  |
-  <FORMAT: ("F"|"f")("O"|"o")("R"|"r")("M"|"m")("A"|"a")("T"|"t") >
-  |
-  <OVERWRITE: ("O"|"o")("V"|"v")("E"|"e")("R"|"r")("W"|"w")("R"|"r")("I"|"i")("T"|"t")("E"|"e")>
-  |
-  <EXPORT: ("E"|"e")("X"|"x")("P"|"p")("O"|"o")("R"|"r")("T"|"t")>
-  |
-  <IMPORT: ("I"|"i")("M"|"m")("P"|"p")("O"|"o")("R"|"r")("T"|"t")>
-  |
-  <DATABASE: ("D"|"d")("A"|"a")("T"|"t")("A"|"a")("B"|"b")("A"|"a")("S"|"s")("E"|"e")>
-  |
-  <OPTIMIZE: ("O"|"o")("P"|"p")("T"|"t")("I"|"i")("M"|"m")("I"|"i")("Z"|"z")("E"|"e")>
-  |
-  <LINK: ("L"|"l")("I"|"i")("N"|"n")("K"|"k")>
-  |
-  <INVERSE: ("I"|"i")("N"|"n")("V"|"v")("E"|"e")("R"|"r")("S"|"s")("E"|"e")>
-  |
-  <EXPLAIN: ("E"|"e")("X"|"x")("P"|"p")("L"|"l")("A"|"a")("I"|"i")("N"|"n")>
-  |
-  <GRANT: ("G"|"g")("R"|"r")("A"|"a")("N"|"n")("T"|"t")>
-  |
-  <REVOKE: ("R"|"r")("E"|"e")("V"|"v")("O"|"o")("K"|"k")("E"|"e")>
-  |
-  <READ: ("R"|"r")("E"|"e")("A"|"a")("D"|"d")>
-  |
-  <EXECUTE: ("E"|"e")("X"|"x")("E"|"e")("C"|"c")("U"|"u")("T"|"t")("E"|"e")>
-  |
-  <ALL: ("A"|"a")("L"|"l")("L"|"l")>
-  |
-  <NONE: ("N"|"n")("O"|"o")("N"|"n")("E"|"e")>
-  |
-  <FUNCTION: ("F"|"f")("U"|"u")("N"|"n")("C"|"c")("T"|"t")("I"|"i")("O"|"o")("N"|"n")>
-  |
-  <PARAMETERS: ( "P" | "p") ( "A" | "a")  ( "R" | "r") ( "A" | "a") ( "M" | "m")  ( "E" | "e") ( "T" | "t")  ( "E" | "e") ( "R" | "r") ( "S" | "s") >
-  |
-  <LANGUAGE: ( "L" | "l") ( "A" | "a")  ( "N" | "n") ( "G" | "g") ( "U" | "u")  ( "A" | "a") ( "G" | "g")  ( "E" | "e") >
-  |
-  <BEGIN: ("B"|"b")("E"|"e")("G"|"g")("I"|"i")("N"|"n") >
-  |
-  <COMMIT: ("C"|"c")("O"|"o")("M"|"m")("M"|"m")("I"|"i")("T"|"t") >
-  |
-  <ROLLBACK: ("R"|"r")("O"|"o")("L"|"l")("L"|"l")("B"|"b")("A"|"a")("C"|"c")("K"|"k") >
-  |
-  <IF: ("I"|"i")("F"|"f")>
-  |
-  <ELSE: ("E"|"e")("L"|"l")("S"|"s")("E"|"e") >
-  |
-  <CONTINUE: ("C"|"c")("O"|"o")("N"|"n")("T"|"t")("I"|"i")("N"|"n")("U"|"u")("E"|"e") >
-  |
-  <FAIL: ("F"|"f")("A"|"a")("I"|"i")("L"|"l")>
-  |
-  <FIX: ("F"|"f")("I"|"i")("X"|"x")>
-  |
-  <ISOLATION: ("I"|"i")("S"|"s")("O"|"o")("L"|"l")("A"|"a")("T"|"t")("I"|"i")("O"|"o")("N"|"n") >
-  |
-  <SLEEP: ("S"|"s")("L"|"l")("E"|"e")("E"|"e")("P"|"p") >
-  |
-  <CONSOLE: ("C"|"c")("O"|"o")("N"|"n")("S"|"s")("O"|"o")("L"|"l")("E"|"e")>
-  |
-  <START: ("S"|"s")("T"|"t")("A"|"a")("R"|"r")("T"|"t") >
-  |
-  <OPTIONAL: ("O"|"o")("P"|"p")("T"|"t")("I"|"i")("O"|"o")("N"|"n")("A"|"a")("L"|"l") >
-  |
-  <COUNT: ("C"|"c")("O"|"o")("U"|"u")("N"|"n")("T"|"t") >
-  |
-  <DISTINCT: ("D"|"d")("I"|"i")("S"|"s")("T"|"t")("I"|"i")("N"|"n")("C"|"c")("T"|"t") >
-  |
-  <EXISTS: ("E"|"e")("X"|"x")("i"|"I")("s"|"S")("t"|"T")("s"|"S")>
-  |
-  <FOREACH: ("F"|"f")("O"|"o")("R"|"r")("E"|"e")("A"|"a")("C"|"c")("H"|"h")>
-  |
-  <MOVE: ("m"|"M")("o"|"O")("v"|"V")("e"|"E")>
-  |
-  <DEPTH_ALIAS: ("d"|"D")("e"|"E")("p"|"P")("t"|"T")("h"|"H")("a"|"A")("l"|"L")("i"|"I")("a"|"A")("s"|"S") >
-  |
-  <PATH_ALIAS: ("p"|"P")("a"|"A")("t"|"T")("h"|"H")("a"|"A")("l"|"L")("i"|"I")("a"|"A")("s"|"S") >
-  |
-  <IDENTIFIED: ("i"|"I")("d"|"D")("e"|"E")("n"|"N")("t"|"T")("i"|"I")("f"|"F")("i"|"I")("e"|"E")("d"|"D") >
-  |
-  <RID: ("r"|"R")("i"|"I")("d"|"D") >
-  |
-  <SYSTEM: ("s"|"S")("y"|"Y")("s"|"S")("t"|"T")("e"|"E")("m"|"M") >
-  |
-  <UNIDIRECTIONAL: ("u"|"U")("n"|"N")("i"|"I")("d"|"D")("i"|"I")("r"|"R")("e"|"E")("c"|"C")("t"|"T")("i"|"I")("o"|"O")("n"|"N")("a"|"A")("l"|"L") >
-  |
-  <THIS: "@" ( ("t"|"T")("h"|"H")("i"|"I")("s"|"S") ) >
-  |
-  <RECORD_ATTRIBUTE: <RID_ATTR> | <TYPE_ATTR> | <RID_ID_ATTR> | <RID_POS_ATTR> | <PROPS_ATTR> | <OUT_ATTR> | <IN_ATTR> >
-  |
-  <RID_ATTR: "@" ( ("r"|"R")("i"|"I")("d"|"D") ) >
-  |
-  <RID_STRING: "\"@" ( ("r"|"R")("i"|"I")("d"|"D") ) "\"" >
-  |
-  <OUT_ATTR: "@" ( ("o"|"O")("u"|"U")("t"|"T") ) >
-  |
-  <IN_ATTR: "@" ( ("i"|"I")("n"|"N") ) >
-  |
-  <#TYPE_ATTR: "@" ( ("t"|"T")("y"|"Y")("p"|"P")("e"|"E") ) >
-  |
-  <#RID_ID_ATTR: "@" ( ("r"|"R")("i"|"I")("d"|"D") "_" ("i"|"I")("d"|"D")) >
-  |
-  <#RID_POS_ATTR: "@" ( ("r"|"R")("i"|"I")("d"|"D") "_" ("p"|"P")("o"|"O")("s"|"S")) >
-  |
-  <#PROPS_ATTR: "@" ( ("p"|"P")("r"|"R")("o"|"O")("p"|"P")("s"|"S")) >
+  | <BATCH: ("b"|"B")("a"|"A")("t"|"T")("c"|"C")("h"|"H")>
+	| <SELECT: ("s"|"S")("e"|"E")("l"|"L")("e"|"E")("c"|"C")("t"|"T")>
+  | <TRAVERSE: ("t"|"T")("r"|"R")("a"|"A")("v"|"V")("e"|"E")("r"|"R")("s"|"S")("e"|"E")>
+  | <MATCH: ("m"|"M")("a"|"A")("t"|"T")("c"|"C")("h"|"H")>
+  | <INSERT: ("i"|"I")("n"|"N")("s"|"S")("e"|"E")("r"|"R")("t"|"T")>
+  | <CREATE: ("c"|"C")("r"|"R")("e"|"E")("a"|"A")("t"|"T")("e"|"E")>
+  | <CUSTOM: ("c"|"C")("u"|"U")("s"|"S")("t"|"T")("o"|"O")("m"|"M")>
+  | <DELETE: ("d"|"D")("e"|"E")("l"|"L")("e"|"E")("t"|"T")("e"|"E")>
+  | <DOCUMENT: ("d"|"D")("o"|"O")("c"|"C")("u"|"U")("m"|"M")("e"|"E")("n"|"N")("t"|"T")>
+  | <VERTEX: ("v"|"V")("e"|"E")("r"|"R")("t"|"T")("e"|"E")("x"|"X")>
+  | <EDGE: ("e"|"E")("d"|"D")("g"|"G")("e"|"E")>
+  | <UPDATE: ("u"|"U")("p"|"P")("d"|"D")("a"|"A")("t"|"T")("e"|"E")>
+  | <UPSERT: ("u"|"U")("p"|"P")("s"|"S")("e"|"E")("r"|"R")("t"|"T")>
+  | <FROM: ("f"|"F")("r"|"R")("o"|"O")("m"|"M")>
+  | <TO: ("t"|"T")("o"|"O")>
+  | <WHERE: ("w"|"W")("h"|"H")("e"|"E")("r"|"R")("e"|"E")>
+  | <WHILE: ("w"|"W")("h"|"H")("i"|"I")("l"|"L")("e"|"E")>
+  | <INTO: ("i"|"I")("n"|"N")("t"|"T")("o"|"O")>
+  | <VALUE: ("v"|"V")("a"|"A")("l"|"L")("u"|"U")("e"|"E")>
+  | <VALUES: ("v"|"V")("a"|"A")("l"|"L")("u"|"U")("e"|"E")("s"|"S")>
+  | <SET: ("s"|"S")("e"|"E")("t"|"T")>
+  | <ADD: ("a"|"A")("d"|"D")("d"|"D")>
+  | <PUT: ("p"|"P")("u"|"U")("t"|"T")>
+  | <MERGE: ("m"|"M")("e"|"E")("r"|"R")("g"|"G")("e"|"E")>
+  | <CONTENT: ("c"|"C")("o"|"O")("n"|"N")("t"|"T")("e"|"E")("n"|"N")("t"|"T")>
+  | <REMOVE: ("r"|"R")("e"|"E")("m"|"M")("o"|"O")("v"|"V")("e"|"E")>
+  | <INCREMENT: ("i"|"I")("n"|"N")("c"|"C")("r"|"R")("e"|"E")("m"|"M")("e"|"E")("n"|"N")("t"|"T")>
+  | <AND: ("a"|"A")("n"|"N")("d"|"D")>
+  | <OR: ("o"|"O")("r"|"R")>
+  | <NULL: ("N"|"n")("U"|"u")("L"|"l")("L"|"l")>
+  | <DEFINE: ("D"|"d")("E"|"e")("F"|"f")("I"|"i")("N"|"n")("E"|"e")>
+  | <DEFINED: ("D"|"d")("E"|"e")("F"|"f")("I"|"i")("N"|"n")("E"|"e")("D"|"d")>
+  | <ORDER_BY: ("o"|"O")("r"|"R")("d"|"D")("e"|"E")("r"|"R") ([" "])+ ("b"|"B")("y"|"Y")>
+  | <GROUP_BY: ("g"|"G")("r"|"R")("o"|"O")("u"|"U")("p"|"P") ([" "])+ ("b"|"B")("y"|"Y")>
+  | <BY: ("b"|"B")("y"|"Y")>
+  | <BREAK: ("b"|"B")("r"|"R")("e"|"E")("a"|"A")("k"|"K")>
+  | <LIMIT: ("l"|"L")("i"|"I")("m"|"M")("i"|"I")("t"|"T")>
+  | <SKIP2: ("s"|"S")("k"|"K")("i"|"I")("p"|"P")>
+  | <ERROR2: ("e"|"E")("r"|"R")("r"|"R")("o"|"O")("r"|"R")>
+  | <OF: ("o"|"O")("f"|"F")>
+  | <OFFSET: ("o"|"O")("f"|"F")("f"|"F")("s"|"S")("e"|"E")("t"|"T")>
+  | <TIMEOUT: ("t"|"T")("i"|"I")("m"|"M")("e"|"E")("o"|"O")("u"|"U")("t"|"T")>
+  | <ASC: ("a"|"A")("s"|"S")("c"|"C")>
+  | <AS: ("a"|"A")("s"|"S")>
+  | <DESC: ("d"|"D")("e"|"E")("s"|"S")("c"|"C")>
+  | <RETURN: ("r"|"R")("e"|"E")("t"|"T")("u"|"U")("r"|"R")("n"|"N")>
+  | <BEFORE: ("b"|"B")("e"|"E")("f"|"F")("o"|"O")("r"|"R")("e"|"E")>
+  | <AFTER: ("a"|"A")("f"|"F")("t"|"T")("e"|"E")("r"|"R")>
+  | <RECORD: ("r"|"R")("e"|"E")("c"|"C")("o"|"O")("r"|"R")("d"|"D")>
+  | <WAIT: ("w"|"W")("a"|"A")("i"|"I")("t"|"T")>
+  | <RETRY: ("r"|"R")("e"|"E")("t"|"T")("r"|"R")("y"|"Y")>
+  | <LET: ("l"|"L")("e"|"E")("t"|"T")>
+  | <LOCK: ("l"|"L")("o"|"O")("c"|"C")("k"|"K")>
+  | <CHECK: ("c"|"C")("h"|"H")("e"|"E")("c"|"C")("k"|"K")>
+  | <UNSAFE: ("u"|"U")("n"|"N")("s"|"S")("a"|"A")("f"|"F")("e"|"E")>
+  | <STRATEGY: ("s"|"S")("t"|"T")("r"|"R")("a"|"A")("t"|"T")("e"|"E")("g"|"G")("y"|"Y")>
+  | <DEPTH_FIRST: ("d"|"D")("e"|"E")("p"|"P")("t"|"T")("h"|"H")("_")("f"|"F")("i"|"I")("r"|"R")("s"|"S")("t"|"T")>
+  | <BREADTH_FIRST: ("b"|"B")("r"|"R")("e"|"E")("a"|"A")("d"|"D")("t"|"T")("h"|"H")("_")("f"|"F")("i"|"I")("r"|"R")("s"|"S")("t"|"T")>
+  | <NEAR: ("n"|"N")("e"|"E")("a"|"A")("r"|"R")>
+  | <WITH: ("w"|"W")("i"|"I")("t"|"T")("h"|"H")>
+  | <WITHIN: ("w"|"W")("i"|"I")("t"|"T")("h"|"H")("i"|"I")("n"|"N")>
+  | <UNWIND: ("u"|"U")("n"|"N")("w"|"W")("i"|"I")("n"|"N")("d"|"D")>
+  | <MAXDEPTH: ("m"|"M")("a"|"A")("x"|"X")("d"|"D")("e"|"E")("p"|"P")("t"|"T")("h"|"H")>
+  | <MINDEPTH: ("m"|"M")("i"|"I")("n"|"N")("d"|"D")("e"|"E")("p"|"P")("t"|"T")("h"|"H")>
+  | <TYPE: ("t"|"T")("y"|"Y")("p"|"P")("e"|"E")>
+  | <SUPERTYPE: ("s"|"S")("u"|"U")("p"|"P")("e"|"E")("r"|"R")("t"|"T")("y"|"Y")("p"|"P")("e"|"E")>
+  | <TYPES: ("t"|"T")("y"|"Y")("p"|"P")("e"|"E")("s"|"S")>
+  | <EXCEPTION: ("e"|"E")("x"|"X")("c"|"C")("e"|"E")("p"|"P")("t"|"T")("i"|"I")("o"|"O")("n"|"N")>
+  | <PROFILE: ("p"|"P")("r"|"R")("o"|"O")("f"|"F")("i"|"I")("l"|"L")("e"|"E")>
+  | <ON: ("o"|"O")("n"|"N")>
+  | <OFF: ("o"|"O")("f"|"F")("f"|"F")>
+  | <COMPRESS: ("c"|"C")("o"|"O")("m"|"M")("p"|"P")("r"|"R")("e"|"E")("s"|"S")("s"|"S")>
+  | <TRUNCATE: ("t"|"T")("r"|"R")("u"|"U")("n"|"N")("c"|"C")("a"|"A")("t"|"T")("e"|"E")>
+  | <POLYMORPHIC: ("p"|"P")("o"|"O")("l"|"L")("y"|"Y")("m"|"M")("o"|"O")("r"|"R")("p"|"P")("h"|"H")("i"|"I")("c"|"C")>
+  | <FIND: ("f"|"F")("i"|"I")("n"|"N")("d"|"D")>
+  | <EXTENDS: ("e"|"E")("x"|"X")("t"|"T")("e"|"E")("n"|"N")("d"|"D")("s"|"S")>
+  | <BACKUP: ("B"|"b")("A"|"a")("C"|"c")("K"|"k")("U"|"u")("P"|"p")>
+  | <BUCKET: ("B"|"b")("U"|"u")("C"|"c")("K"|"k")("E"|"e")("T"|"t")>
+  | <BUCKETS: ("B"|"b")("U"|"u")("C"|"c")("K"|"k")("E"|"e")("T"|"t")("S"|"s")>
+  | <BUCKETSELECTIONSTRATEGY: ("B"|"b")("U"|"u")("C"|"c")("K"|"k")("E"|"e")("T"|"t")("S"|"s")("E"|"e")("L"|"l")("E"|"e")("C"|"c")("T"|"t")("I"|"i")("O"|"o")("N"|"n")("s"|"S")("t"|"T")("r"|"R")("a"|"A")("t"|"T")("e"|"E")("g"|"G")("y"|"Y")>
+  | <ALTER: ("a"|"A")("l"|"L")("t"|"T")("e"|"E")("r"|"R")>
+  | <NAME: ("n"|"N")("a"|"A")("m"|"M")("e"|"E")>
+  | <ADDBUCKET: ("a"|"A")("d"|"D")("d"|"D")("B"|"b")("U"|"u")("C"|"c")("K"|"k")("E"|"e")("T"|"t")>
+  | <REMOVEBUCKET: ("r"|"R")("e"|"E")("m"|"M")("o"|"O")("v"|"V")("e"|"E")("B"|"b")("U"|"u")("C"|"c")("K"|"k")("E"|"e")("T"|"t")>
+  | <DROP: ("d"|"D")("r"|"R")("o"|"O")("p"|"P")>
+  | <PROPERTY: ("p"|"P")("r"|"R")("o"|"O")("p"|"P")("e"|"E")("r"|"R")("t"|"T")("y"|"Y")>
+  | <HIDDEN: ("h"|"H")("i"|"I")("d"|"D")("d"|"D")("e"|"E")("n"|"N")>
+  | <FORCE: ("f"|"F")("o"|"O")("r"|"R")("c"|"C")("e"|"E")>
+  | <SCHEMA: ("s"|"S")("c"|"C")("h"|"H")("e"|"E")("m"|"M")("a"|"A")>
+  | <INDEX: ("I"|"i")("N"|"n")("D"|"d")("E"|"e")("X"|"x")>
+  | <NULL_STRATEGY: ("n"|"N")("u"|"U")("l"|"L")("l"|"L")("_")("s"|"S")("t"|"T")("r"|"R")("a"|"A")("t"|"T")("e"|"E")("g"|"G")("y"|"Y")>
+  | <ENGINE: ("E"|"e")("N"|"n")("G"|"g")("I"|"i")("N"|"n")("E"|"e")>
+  | <METADATA: ("M"|"m")("E"|"e")("T"|"t")("A"|"a")("D"|"d")("A"|"a")("T"|"t")("A"|"a")>
+  | <REBUILD: ("R"|"r")("E"|"e")("B"|"b")("U"|"u")("I"|"i")("L"|"l")("D"|"d")>
+  | <FORMAT: ("F"|"f")("O"|"o")("R"|"r")("M"|"m")("A"|"a")("T"|"t")>
+  | <OVERWRITE: ("O"|"o")("V"|"v")("E"|"e")("R"|"r")("W"|"w")("R"|"r")("I"|"i")("T"|"t")("E"|"e")>
+  | <EXPORT: ("E"|"e")("X"|"x")("P"|"p")("O"|"o")("R"|"r")("T"|"t")>
+  | <IMPORT: ("I"|"i")("M"|"m")("P"|"p")("O"|"o")("R"|"r")("T"|"t")>
+  | <DATABASE: ("D"|"d")("A"|"a")("T"|"t")("A"|"a")("B"|"b")("A"|"a")("S"|"s")("E"|"e")>
+  | <OPTIMIZE: ("O"|"o")("P"|"p")("T"|"t")("I"|"i")("M"|"m")("I"|"i")("Z"|"z")("E"|"e")>
+  | <LINK: ("L"|"l")("I"|"i")("N"|"n")("K"|"k")>
+  | <INVERSE: ("I"|"i")("N"|"n")("V"|"v")("E"|"e")("R"|"r")("S"|"s")("E"|"e")>
+  | <EXPLAIN: ("E"|"e")("X"|"x")("P"|"p")("L"|"l")("A"|"a")("I"|"i")("N"|"n")>
+  | <GRANT: ("G"|"g")("R"|"r")("A"|"a")("N"|"n")("T"|"t")>
+  | <REVOKE: ("R"|"r")("E"|"e")("V"|"v")("O"|"o")("K"|"k")("E"|"e")>
+  | <READ: ("R"|"r")("E"|"e")("A"|"a")("D"|"d")>
+  | <EXECUTE: ("E"|"e")("X"|"x")("E"|"e")("C"|"c")("U"|"u")("T"|"t")("E"|"e")>
+  | <ALL: ("A"|"a")("L"|"l")("L"|"l")>
+  | <NONE: ("N"|"n")("O"|"o")("N"|"n")("E"|"e")>
+  | <FUNCTION: ("F"|"f")("U"|"u")("N"|"n")("C"|"c")("T"|"t")("I"|"i")("O"|"o")("N"|"n")>
+  | <PARAMETERS: ( "P" | "p") ( "A" | "a")  ( "R" | "r") ( "A" | "a") ( "M" | "m")  ( "E" | "e") ( "T" | "t")  ( "E" | "e") ( "R" | "r") ( "S" | "s")>
+  | <LANGUAGE: ( "L" | "l") ( "A" | "a")  ( "N" | "n") ( "G" | "g") ( "U" | "u")  ( "A" | "a") ( "G" | "g")  ( "E" | "e")>
+  | <BEGIN: ("B"|"b")("E"|"e")("G"|"g")("I"|"i")("N"|"n")>
+  | <COMMIT: ("C"|"c")("O"|"o")("M"|"m")("M"|"m")("I"|"i")("T"|"t")>
+  | <ROLLBACK: ("R"|"r")("O"|"o")("L"|"l")("L"|"l")("B"|"b")("A"|"a")("C"|"c")("K"|"k")>
+  | <IF: ("I"|"i")("F"|"f")>
+  | <ELSE: ("E"|"e")("L"|"l")("S"|"s")("E"|"e")>
+  | <CONTINUE: ("C"|"c")("O"|"o")("N"|"n")("T"|"t")("I"|"i")("N"|"n")("U"|"u")("E"|"e")>
+  | <FAIL: ("F"|"f")("A"|"a")("I"|"i")("L"|"l")>
+  | <FIX: ("F"|"f")("I"|"i")("X"|"x")>
+  | <ISOLATION: ("I"|"i")("S"|"s")("O"|"o")("L"|"l")("A"|"a")("T"|"t")("I"|"i")("O"|"o")("N"|"n")>
+  | <SLEEP: ("S"|"s")("L"|"l")("E"|"e")("E"|"e")("P"|"p")>
+  | <CONSOLE: ("C"|"c")("O"|"o")("N"|"n")("S"|"s")("O"|"o")("L"|"l")("E"|"e")>
+  | <START: ("S"|"s")("T"|"t")("A"|"a")("R"|"r")("T"|"t")>
+  | <OPTIONAL: ("O"|"o")("P"|"p")("T"|"t")("I"|"i")("O"|"o")("N"|"n")("A"|"a")("L"|"l")>
+  | <COUNT: ("C"|"c")("O"|"o")("U"|"u")("N"|"n")("T"|"t")>
+  | <DISTINCT: ("D"|"d")("I"|"i")("S"|"s")("T"|"t")("I"|"i")("N"|"n")("C"|"c")("T"|"t")>
+  | <EXISTS: ("E"|"e")("X"|"x")("i"|"I")("s"|"S")("t"|"T")("s"|"S")>
+  | <FOREACH: ("F"|"f")("O"|"o")("R"|"r")("E"|"e")("A"|"a")("C"|"c")("H"|"h")>
+  | <MOVE: ("m"|"M")("o"|"O")("v"|"V")("e"|"E")>
+  | <DEPTH_ALIAS: ("d"|"D")("e"|"E")("p"|"P")("t"|"T")("h"|"H")("a"|"A")("l"|"L")("i"|"I")("a"|"A")("s"|"S")>
+  | <PATH_ALIAS: ("p"|"P")("a"|"A")("t"|"T")("h"|"H")("a"|"A")("l"|"L")("i"|"I")("a"|"A")("s"|"S")>
+  | <IDENTIFIED: ("i"|"I")("d"|"D")("e"|"E")("n"|"N")("t"|"T")("i"|"I")("f"|"F")("i"|"I")("e"|"E")("d"|"D")>
+  | <RID: ("r"|"R")("i"|"I")("d"|"D")>
+  | <SYSTEM: ("s"|"S")("y"|"Y")("s"|"S")("t"|"T")("e"|"E")("m"|"M")>
+  | <UNIDIRECTIONAL: ("u"|"U")("n"|"N")("i"|"I")("d"|"D")("i"|"I")("r"|"R")("e"|"E")("c"|"C")("t"|"T")("i"|"I")("o"|"O")("n"|"N")("a"|"A")("l"|"L")>
+  | <THIS: "@" ( ("t"|"T")("h"|"H")("i"|"I")("s"|"S") )>
+  | <RECORD_ATTRIBUTE: <RID_ATTR> | <TYPE_ATTR> | <RID_ID_ATTR> | <RID_POS_ATTR> | <PROPS_ATTR> | <OUT_ATTR> | <IN_ATTR> >
+  | <RID_ATTR: "@" ( ("r"|"R")("i"|"I")("d"|"D") )>
+  | <RID_STRING: "\"@" ( ("r"|"R")("i"|"I")("d"|"D") ) "\"" >
+  | <OUT_ATTR: "@" ( ("o"|"O")("u"|"U")("t"|"T") )>
+  | <IN_ATTR: "@" ( ("i"|"I")("n"|"N") )>
+  | <#TYPE_ATTR: "@" ( ("t"|"T")("y"|"Y")("p"|"P")("e"|"E") )>
+  | <#RID_ID_ATTR: "@" ( ("r"|"R")("i"|"I")("d"|"D") "_" ("i"|"I")("d"|"D") )>
+  | <#RID_POS_ATTR: "@" ( ("r"|"R")("i"|"I")("d"|"D") "_" ("p"|"P")("o"|"O")("s"|"S") )>
+  | <#PROPS_ATTR: "@" ( ("p"|"P")("r"|"R")("o"|"O")("p"|"P")("s"|"S") )>
 }
 
 /* LITERALS */
@@ -411,35 +267,26 @@ TOKEN :
     | <HEX_LITERAL> (["l","L"])?
     | <OCTAL_LITERAL> (["l","L"])?
   >
-  |
-    <#DECIMAL_LITERAL: ["1"-"9"] (["0"-"9"])* >
-  |
-    <#HEX_LITERAL: "0" ["x","X"] (["0"-"9","a"-"f","A"-"F"])+ >
-  |
-    <#OCTAL_LITERAL: "0" (["0"-"7"])* >
-  |
-    <FLOATING_POINT_LITERAL:
+  | <#DECIMAL_LITERAL: ["1"-"9"] (["0"-"9"])* >
+  | <#HEX_LITERAL: "0" ["x","X"] (["0"-"9","a"-"f","A"-"F"])+ >
+  | <#OCTAL_LITERAL: "0" (["0"-"7"])* >
+  | <FLOATING_POINT_LITERAL:
       <DECIMAL_FLOATING_POINT_LITERAL>
       | <HEXADECIMAL_FLOATING_POINT_LITERAL>
     >
-  |
-    <#DECIMAL_FLOATING_POINT_LITERAL:
+  | <#DECIMAL_FLOATING_POINT_LITERAL:
       (["0"-"9"])+ "." (["0"-"9"])* (<DECIMAL_EXPONENT>)? (["f","F","d","D"])?
       | "." (["0"-"9"])+ (<DECIMAL_EXPONENT>)? (["f","F","d","D"])?
       | (["0"-"9"])+ <DECIMAL_EXPONENT> (["f","F","d","D"])?
       | (["0"-"9"])+ (<DECIMAL_EXPONENT>)? ["f","F","d","D"]
     >
-  |
-    <#DECIMAL_EXPONENT: ["e","E"] (["+","-"])? (["0"-"9"])+ >
-  |
-    <#HEXADECIMAL_FLOATING_POINT_LITERAL:
+  | <#DECIMAL_EXPONENT: ["e","E"] (["+","-"])? (["0"-"9"])+ >
+  | <#HEXADECIMAL_FLOATING_POINT_LITERAL:
       "0" ["x", "X"] (["0"-"9","a"-"f","A"-"F"])+ (".")? <HEXADECIMAL_EXPONENT> (["f","F","d","D"])?
       | "0" ["x", "X"] (["0"-"9","a"-"f","A"-"F"])* "." (["0"-"9","a"-"f","A"-"F"])+ <HEXADECIMAL_EXPONENT> (["f","F","d","D"])?
     >
-  |
-    <#HEXADECIMAL_EXPONENT: ["p","P"] (["+","-"])? (["0"-"9"])+ >
-  |
-    <CHARACTER_LITERAL:
+  | <#HEXADECIMAL_EXPONENT: ["p","P"] (["+","-"])? (["0"-"9"])+ >
+  | <CHARACTER_LITERAL:
       "'"
       (   (~["'","\\","\n","\r"])
       | ("\\"
@@ -451,8 +298,7 @@ TOKEN :
       )
       "'"
     >
-  |
-  <STRING_LITERAL:
+  | <STRING_LITERAL:
     (
       "\""
       ( (~["\n","\r","\"","\\"])
@@ -473,18 +319,14 @@ TOKEN :
       "'"
     )
   >
-  |
-  <INTEGER_RANGE:
+  | <INTEGER_RANGE:
   (<MINUS>)? <INTEGER_LITERAL> <RANGE> (<MINUS>)?<INTEGER_LITERAL>
   >
-  |
-  <ELLIPSIS_INTEGER_RANGE:
+  | <ELLIPSIS_INTEGER_RANGE:
   (<MINUS>)? <INTEGER_LITERAL> <ELLIPSIS> (<MINUS>)?<INTEGER_LITERAL>
   >
-  |
-  <TRUE: ("T"|"t")("R"|"r")("U"|"u")("E"|"e") >
-  |
-  <FALSE: ("F"|"f")("A"|"a")("L"|"l")("S"|"s")("E"|"e") >
+  | <TRUE: ("T"|"t")("R"|"r")("U"|"u")("E"|"e") >
+  | <FALSE: ("F"|"f")("A"|"a")("L"|"l")("S"|"s")("E"|"e") >
 }
 
 /* SEPARATORS */
@@ -564,28 +406,19 @@ TOKEN :
   | <MATCHES: ("M"|"m")("A"|"a")("T"|"t")("C"|"c")("H"|"h")("E"|"e")("S"|"s") >
   | <KEY: ("K"|"k")("E"|"e")("Y"|"y") >
   | <INSTANCEOF: ("I"|"i")("N"|"n")("S"|"s")("T"|"t")("A"|"a")("N"|"n")("C"|"c")("E"|"e")("O"|"o")("F"|"f") >
-  | <BUCKET: ("B"|"b")("U"|"u")("C"|"c")("K"|"k")("E"|"e")("T"|"t")>
 }
 
 TOKEN :
 {
   <IDENTIFIER: ( ((<DOLLAR>) | <LETTER>) (<PART_LETTER>)* ) >
-|
-  <QUOTED_IDENTIFIER: ("`" (~["`"] | "\\`") (~["`"] | "\\`")*  "`") >
-|
-  <INDEX_COLON: <INDEX> ":" >
-|
-  <INDEXVALUES_IDENTIFIER: ("I"|"i")("N"|"n")("D"|"d")("E"|"e")("X"|"x")("V"|"v")("A"|"a")("L"|"l")("U"|"u")("E"|"e")("S"|"s") ":" ("__@recordmap@___")? <IDENTIFIER> ( ( <DOT> | <MINUS> ) <IDENTIFIER> )* >
-|
-  <INDEXVALUESASC_IDENTIFIER:("I"|"i")("N"|"n")("D"|"d")("E"|"e")("X"|"x")("V"|"v")("A"|"a")("L"|"l")("U"|"u")("E"|"e")("S"|"s")("A"|"a")("S"|"s")("C"|"c") ":" ("__@recordmap@___")? <IDENTIFIER> ( ( <DOT> | <MINUS> ) <IDENTIFIER> )* >
-|
-  <INDEXVALUESDESC_IDENTIFIER: ("I"|"i")("N"|"n")("D"|"d")("E"|"e")("X"|"x")("V"|"v")("A"|"a")("L"|"l")("U"|"u")("E"|"e")("S"|"s")("D"|"d")("E"|"e")("S"|"s")("C"|"c") ":" ("__@recordmap@___")? <IDENTIFIER> ( ( <DOT> | <MINUS> ) <IDENTIFIER> )* >
-|
-  <BUCKET_IDENTIFIER: <BUCKET> <COLON> <IDENTIFIER> >
-|
-  <BUCKET_NUMBER_IDENTIFIER: <BUCKET> <COLON> <INTEGER_LITERAL>  >
-|
-  <HTTP_URL: "http://" (   (~["\"","\\","\n","\r"," ",";"])
+  | <QUOTED_IDENTIFIER: ("`" (~["`"] | "\\`") (~["`"] | "\\`")*  "`") >
+  | <INDEX_COLON: <INDEX> ":" >
+  | <INDEXVALUES_IDENTIFIER: ("I"|"i")("N"|"n")("D"|"d")("E"|"e")("X"|"x")("V"|"v")("A"|"a")("L"|"l")("U"|"u")("E"|"e")("S"|"s") ":" ("__@recordmap@___")? <IDENTIFIER> ( ( <DOT> | <MINUS> ) <IDENTIFIER> )* >
+  | <INDEXVALUESASC_IDENTIFIER:("I"|"i")("N"|"n")("D"|"d")("E"|"e")("X"|"x")("V"|"v")("A"|"a")("L"|"l")("U"|"u")("E"|"e")("S"|"s")("A"|"a")("S"|"s")("C"|"c") ":" ("__@recordmap@___")? <IDENTIFIER> ( ( <DOT> | <MINUS> ) <IDENTIFIER> )* >
+  | <INDEXVALUESDESC_IDENTIFIER: ("I"|"i")("N"|"n")("D"|"d")("E"|"e")("X"|"x")("V"|"v")("A"|"a")("L"|"l")("U"|"u")("E"|"e")("S"|"s")("D"|"d")("E"|"e")("S"|"s")("C"|"c") ":" ("__@recordmap@___")? <IDENTIFIER> ( ( <DOT> | <MINUS> ) <IDENTIFIER> )* >
+  | <BUCKET_IDENTIFIER: <BUCKET> <COLON> <IDENTIFIER> >
+  | <BUCKET_NUMBER_IDENTIFIER: <BUCKET> <COLON> <INTEGER_LITERAL>  >
+  | <HTTP_URL: "http://" (   (~["\"","\\","\n","\r"," ",";"])
                   | ("\\"
                     ( ["n","t","b","r","f","\\","'","\"","/"]
                     | ["0"-"7"] ( ["0"-"7"] )?
@@ -593,8 +426,7 @@ TOKEN :
                     )
                     )
                   )* >
-|
-  <HTTPS_URL: "https://" (   (~["\"","\\","\n","\r"," ",";"])
+  | <HTTPS_URL: "https://" (   (~["\"","\\","\n","\r"," ",";"])
                   | ("\\"
                     ( ["n","t","b","r","f","\\","'","\"","/"]
                     | ["0"-"7"] ( ["0"-"7"] )?
@@ -602,8 +434,7 @@ TOKEN :
                     )
                     )
                   )* >
-|
-  <FILE_URL: "file://" (   (~["\"","\\","\n","\r"," ",";"])
+  | <FILE_URL: "file://" (   (~["\"","\\","\n","\r"," ",";"])
                   | ("\\"
                     ( ["n","t","b","r","f","\\","'","\"","/"]
                     | ["0"-"7"] ( ["0"-"7"] )?
@@ -611,8 +442,7 @@ TOKEN :
                     )
                     )
                   )* >
-|
-  <CLASSPATH_URL: "classpath://" (   (~["\"","\\","\n","\r"," ",";"])
+  | <CLASSPATH_URL: "classpath://" (   (~["\"","\\","\n","\r"," ",";"])
                   | ("\\"
                     ( ["n","t","b","r","f","\\","'","\"","/"]
                     | ["0"-"7"] ( ["0"-"7"] )?
@@ -620,17 +450,14 @@ TOKEN :
                     )
                     )
                   )* >
-|
-  <SCHEMA_IDENTIFIER: "schema:" <IDENTIFIER>  >
-|
-  <#LETTER:
+  | <SCHEMA_IDENTIFIER: "schema:" <IDENTIFIER>  >
+  | <#LETTER:
     [  "A"-"Z",
      "_",
      "a"-"z"
     ]
   >
-|
-  <#PART_LETTER:
+  | <#PART_LETTER:
     [  "0"-"9",
      "A"-"Z",
      "_",
@@ -709,6 +536,9 @@ List<Statement> ParseScript() :
 }
 {
   (
+    LOOKAHEAD(LockStatement())
+    last = StatementSemicolon() {result.add(last);}
+    |
     LOOKAHEAD(StatementSemicolon())
     last = StatementSemicolon() {result.add(last);}
     |
@@ -720,7 +550,6 @@ List<Statement> ParseScript() :
     |
     <SEMICOLON>
   )*
-
   <EOF>
   { return result; }
 }
@@ -746,181 +575,97 @@ Identifier Identifier():
 {
 (
   token = <IDENTIFIER>
-  |
-  token = <ALIGN>
-  |
-  token = <IN>
-  |
-  token = <SET>
-  |
-  token = <PUT>
-  |
-  token = <ADD>
-  |
-  token = <REMOVE>
-  |
-  token = <MERGE>
-  |
-  token = <CONTENT>
-  |
-  token = <KEY>
-  |
-  token = <OF>
-  |
-  token = <OFFSET>
-  |
-  token = <VALUE>
-  |
-  token = <VALUES>
-  |
-  token = <RECORD>
-  |
-  token = <TO>
-  |
-  token = <TYPE>
-  |
-  token = <TYPES>
-  |
-  token = <MINDEPTH>
-  |
-  token = <NEAR>
-  |
-  token = <WITH>
-  |
-  token = <WITHIN>
-  |
-  token = <EXCEPTION>
-  |
-  token = <PROFILE>
-  |
-  token = <CUSTOM>
-  |
-  token = <CHECK>
-  |
-  token = <ON>
-  |
-  token = <OFF>
-  |
-  token = <TRUNCATE>
-  |
-  token = <FIND>
-  |
-  token = <EXTENDS>
-  |
-  token = <BUCKETS>
-  |
-  token = <BUCKETSELECTIONSTRATEGY>
-  |
-  token = <ALTER>
-  |
-  token = <NAME>
-  |
-  token = <SUPERTYPE>
-  |
-  token = <ADDBUCKET>
-  |
-  token = <REMOVEBUCKET>
-  |
-  token = <DROP>
-  |
-  token = <PROPERTY>
-  |
-  token = <HIDDEN>
-  |
-  token = <FORCE>
-  |
-  token = <INDEX>
-  |
-  token = <ENGINE>
-  |
-  token = <METADATA>
-  |
-  token = <REBUILD>
-  |
-  token = <FORMAT>
-  |
-  token = <EXPORT>
-  |
-  token = <IMPORT>
-  |
-  token = <DATABASE>
-  |
-  token = <OPTIMIZE>
-  |
-  token = <LINK>
-  |
-  token = <INVERSE>
-  |
-  token = <EXPLAIN>
-  |
-  token = <GRANT>
-  |
-  token = <REVOKE>
-  |
-  token = <READ>
-  |
-  token = <EXECUTE>
-  |
-  token = <ALL>
-  |
-  token = <NONE>
-  |
-  token = <FUNCTION>
-  |
-  token = <LANGUAGE>
-  |
-  token = <PARAMETERS>
-  |
-  token = <BEGIN>
-  |
-  token = <COMMIT>
-  |
-  token = <ROLLBACK>
-  |
-  token = <IF>
-  |
-  token = <ELSE>
-  |
-  token = <CONTINUE>
-  |
-  token = <FAIL>
-  |
-  token = <ISOLATION>
-  |
-  token = <SLEEP>
-  |
-  token = <CONSOLE>
-  |
-  token = <START>
-  |
-  token = <OPTIONAL>
-  |
-  token = <COUNT>
-  |
-  token = <EXISTS>
-  |
-  token = <MOVE>
-  |
-  token = <DEPTH_ALIAS>
-  |
-  token = <PATH_ALIAS>
-  |
-  token = <IDENTIFIED>
-  |
-  token = <RID>
-  |
-  token = <SYSTEM>
-  |
-  token = <UNIDIRECTIONAL>
-  |
-  quotedToken = <QUOTED_IDENTIFIER>
+  | token = <ALIGN>
+  | token = <IN>
+  | token = <SET>
+  | token = <PUT>
+  | token = <ADD>
+  | token = <REMOVE>
+  | token = <MERGE>
+  | token = <CONTENT>
+  | token = <KEY>
+  | token = <OF>
+  | token = <OFFSET>
+  | token = <VALUE>
+  | token = <VALUES>
+  | token = <RECORD>
+  | token = <TO>
+  | token = <TYPE>
+  | token = <TYPES>
+  | token = <MINDEPTH>
+  | token = <NEAR>
+  | token = <WITH>
+  | token = <WITHIN>
+  | token = <EXCEPTION>
+  | token = <PROFILE>
+  | token = <CUSTOM>
+  | token = <CHECK>
+  | token = <ON>
+  | token = <OFF>
+  | token = <TRUNCATE>
+  | token = <FIND>
+  | token = <EXTENDS>
+  | token = <BUCKETS>
+  | token = <BUCKETSELECTIONSTRATEGY>
+  | token = <ALTER>
+  | token = <NAME>
+  | token = <SUPERTYPE>
+  | token = <ADDBUCKET>
+  | token = <REMOVEBUCKET>
+  | token = <DROP>
+  | token = <PROPERTY>
+  | token = <HIDDEN>
+  | token = <FORCE>
+  | token = <INDEX>
+  | token = <ENGINE>
+  | token = <METADATA>
+  | token = <REBUILD>
+  | token = <FORMAT>
+  | token = <EXPORT>
+  | token = <IMPORT>
+  | token = <DATABASE>
+  | token = <OPTIMIZE>
+  | token = <LINK>
+  | token = <INVERSE>
+  | token = <EXPLAIN>
+  | token = <GRANT>
+  | token = <REVOKE>
+  | token = <READ>
+  | token = <EXECUTE>
+  | token = <ALL>
+  | token = <NONE>
+  | token = <FUNCTION>
+  | token = <LANGUAGE>
+  | token = <PARAMETERS>
+  | token = <BEGIN>
+  | token = <COMMIT>
+  | token = <ROLLBACK>
+  | token = <IF>
+  | token = <ELSE>
+  | token = <CONTINUE>
+  | token = <FAIL>
+  | token = <ISOLATION>
+  | token = <LOCK>
+  | token = <SLEEP>
+  | token = <CONSOLE>
+  | token = <START>
+  | token = <OPTIONAL>
+  | token = <COUNT>
+  | token = <EXISTS>
+  | token = <MOVE>
+  | token = <DEPTH_ALIAS>
+  | token = <PATH_ALIAS>
+  | token = <IDENTIFIED>
+  | token = <RID>
+  | token = <SYSTEM>
+  | token = <UNIDIRECTIONAL>
+  | quotedToken = <QUOTED_IDENTIFIER>
 ) {
   if(token!=null){
     jjtThis.setStringValue( token.image );
-  }else{
+  } else {
     jjtThis.setQuotedStringValue( quotedToken.image );
   }
-
   return jjtThis;
   }
 }
@@ -975,8 +720,7 @@ Statement StatementSemicolon():
   (
     LOOKAHEAD(StatementInternal())
     result = StatementInternal()
-    |
-    result = ExpressionStatement()
+    | result = ExpressionStatement()
   )
   <SEMICOLON>
   {return result;}
@@ -996,129 +740,133 @@ Statement StatementInternal():
 }
 {
   (
-    LOOKAHEAD(2)
-    (
-      (
-        result = QueryStatement()
-        |
-        LOOKAHEAD(2)
-        result = DeleteStatement()
-        |
-        result = InsertStatement()
-        |
-        LOOKAHEAD(4)
-        result = CreateDocumentTypeStatement()
-        |
-        LOOKAHEAD(4)
-        result = CreateVertexTypeStatement()
-        |
-        LOOKAHEAD(4)
-        result = CreateEdgeTypeStatement()
-        |
-        LOOKAHEAD(2)
-        result = CreatePropertyStatement()
-        |
-        LOOKAHEAD(2)
-        result = CreateIndexStatement()
-        |
-        LOOKAHEAD(2)
-        result = CreateBucketStatement()
-        |
-        LOOKAHEAD(CreateVertexStatementNoTarget())
-        result = CreateVertexStatementNoTarget()
-        |
-        LOOKAHEAD(CreateVertexStatement())
-        result = CreateVertexStatement()
-        |
-        LOOKAHEAD(CreateVertexStatementEmpty())
-        result = CreateVertexStatementEmpty()
-        |
-        LOOKAHEAD(CreateVertexStatementEmptyNoTarget())
-        result = CreateVertexStatementEmptyNoTarget()
-        |
-        LOOKAHEAD(CreateEdgeStatement())
-        result = CreateEdgeStatement()
-        |
-        LOOKAHEAD(UpdateStatement())
-        result = UpdateStatement()
-        |
-        result = MoveVertexStatement()
-        |
-        LOOKAHEAD(DefineFunctionStatement())
-        result = DefineFunctionStatement()
-        |
-        LOOKAHEAD(DeleteFunctionStatement())
-        result = DeleteFunctionStatement()
-        |
-        LOOKAHEAD(TruncateTypeStatement())
-        result = TruncateTypeStatement()
-        |
-        LOOKAHEAD(TruncateBucketStatement())
-        result = TruncateBucketStatement()
-        |
-        LOOKAHEAD(TruncateRecordStatement())
-        result = TruncateRecordStatement()
-        |
-        LOOKAHEAD(AlterTypeStatement())
-        result = AlterTypeStatement()
-        |
-        LOOKAHEAD(DropTypeStatement())
-        result = DropTypeStatement()
-        |
-        LOOKAHEAD(AlterPropertyStatement())
-        result = AlterPropertyStatement()
-        |
-        LOOKAHEAD(DropPropertyStatement())
-        result = DropPropertyStatement()
-        |
-        result = RebuildIndexStatement()
-        |
-        LOOKAHEAD(2)
-        result = DropIndexStatement()
-        |
-        LOOKAHEAD(AlterBucketStatement())
-        result = AlterBucketStatement()
-        |
-        LOOKAHEAD(2)
-        result = DropBucketStatement()
-        |
-        LOOKAHEAD(2)
-        result = AlterDatabaseStatement()
-        |
-        result = BeginStatement()
-        |
-        result = CommitStatement()
-        |
-        result = RollbackStatement()
-        |
-        result = LockStatement()
-        |
-        result = ReturnStatement()
-        |
-        result = SleepStatement()
-        |
-        result = ConsoleStatement()
-        |
-        result = IfStatement()
-        |
-        result = ImportDatabaseStatement()
-        |
-        result = ExportDatabaseStatement()
-        |
-        result = BackupDatabaseStatement()
-        |
-        result = CheckDatabaseStatement()
-        |
-        result = AlignDatabaseStatement()
-      )
-    )
-    |
+    LOOKAHEAD(ExplainStatement())
     result = ExplainStatement()
     |
     LOOKAHEAD(ProfileStatement())
     result = ProfileStatement()
     |
+    LOOKAHEAD(LetStatement())
     result = LetStatement()
+    |
+    LOOKAHEAD(QueryStatement())
+    result = QueryStatement()
+    |
+    LOOKAHEAD(DeleteStatement())
+    result = DeleteStatement()
+    |
+    LOOKAHEAD(UpdateStatement())
+    result = UpdateStatement()
+    |
+    LOOKAHEAD(CreateDocumentTypeStatement())
+    result = CreateDocumentTypeStatement()
+    |
+    LOOKAHEAD(CreateVertexTypeStatement())
+    result = CreateVertexTypeStatement()
+    |
+    LOOKAHEAD(CreateEdgeTypeStatement())
+    result = CreateEdgeTypeStatement()
+    |
+    LOOKAHEAD(CreatePropertyStatement())
+    result = CreatePropertyStatement()
+    |
+    LOOKAHEAD(CreateIndexStatement())
+    result = CreateIndexStatement()
+    |
+    LOOKAHEAD(CreateBucketStatement())
+    result = CreateBucketStatement()
+    |
+    LOOKAHEAD(CreateVertexStatementNoTarget())
+    result = CreateVertexStatementNoTarget()
+    |
+    LOOKAHEAD(CreateVertexStatement())
+    result = CreateVertexStatement()
+    |
+    LOOKAHEAD(CreateVertexStatementEmpty())
+    result = CreateVertexStatementEmpty()
+    |
+    LOOKAHEAD(CreateVertexStatementEmptyNoTarget())
+    result = CreateVertexStatementEmptyNoTarget()
+    |
+    LOOKAHEAD(CreateEdgeStatement())
+    result = CreateEdgeStatement()
+    |
+    LOOKAHEAD(DefineFunctionStatement())
+    result = DefineFunctionStatement()
+    |
+    LOOKAHEAD(DeleteFunctionStatement())
+    result = DeleteFunctionStatement()
+    |
+    LOOKAHEAD(TruncateTypeStatement())
+    result = TruncateTypeStatement()
+    |
+    LOOKAHEAD(TruncateBucketStatement())
+    result = TruncateBucketStatement()
+    |
+    LOOKAHEAD(TruncateRecordStatement())
+    result = TruncateRecordStatement()
+    |
+    LOOKAHEAD(AlterTypeStatement())
+    result = AlterTypeStatement()
+    |
+    LOOKAHEAD(DropTypeStatement())
+    result = DropTypeStatement()
+    |
+    LOOKAHEAD(AlterPropertyStatement())
+    result = AlterPropertyStatement()
+    |
+    LOOKAHEAD(DropPropertyStatement())
+    result = DropPropertyStatement()
+    |
+    LOOKAHEAD(DropIndexStatement())
+    result = DropIndexStatement()
+    |
+    LOOKAHEAD(AlterBucketStatement())
+    result = AlterBucketStatement()
+    |
+    LOOKAHEAD(DropBucketStatement())
+    result = DropBucketStatement()
+    |
+    LOOKAHEAD(AlterDatabaseStatement())
+    result = AlterDatabaseStatement()
+    |
+    LOOKAHEAD(ImportDatabaseStatement())
+    result = ImportDatabaseStatement()
+    |
+    LOOKAHEAD(ExportDatabaseStatement())
+    result = ExportDatabaseStatement()
+    |
+    LOOKAHEAD(BackupDatabaseStatement())
+    result = BackupDatabaseStatement()
+    |
+    LOOKAHEAD(CheckDatabaseStatement())
+    result = CheckDatabaseStatement()
+    |
+    LOOKAHEAD(AlignDatabaseStatement())
+    result = AlignDatabaseStatement()
+    |
+    // Simple statements that start with unique tokens
+    result = InsertStatement()
+    |
+    result = MoveVertexStatement()
+    |
+    result = RebuildIndexStatement()
+    |
+    result = BeginStatement()
+    |
+    result = CommitStatement()
+    |
+    result = RollbackStatement()
+    |
+    result = LockStatement()
+    |
+    result = ReturnStatement()
+    |
+    result = SleepStatement()
+    |
+    result = ConsoleStatement()
+    |
+    result = IfStatement()
   )
   {
     return result;
@@ -2247,7 +1995,6 @@ Bucket Bucket():
     cName = <BUCKET_IDENTIFIER> {jjtThis.bucketName = cName.image.split(":")[1];}
     |
     cName = <BUCKET_NUMBER_IDENTIFIER> {jjtThis.bucketNumber = Integer.parseInt(cName.image.split(":")[1]);}
-
   )
   { return jjtThis; }
 }
@@ -4023,25 +3770,20 @@ RollbackStatement RollbackStatement():
 
 LockStatement LockStatement():
 {
-  jjtThis.lockTypeNames = new java.util.ArrayList();
-  jjtThis.lockBucketNames = new java.util.ArrayList();
+  jjtThis.identifiers = new java.util.ArrayList();
   Identifier lastLockIdentifier;
 }
 {
   <LOCK>
   (
-    <TYPE>
-    lastLockIdentifier = Identifier() { jjtThis.lockTypeNames.add(lastLockIdentifier); }
-    ( <COMMA> lastLockIdentifier = Identifier() { jjtThis.lockTypeNames.add(lastLockIdentifier); } )*
-    { return jjtThis; }
+    ( <TYPE> { jjtThis.mode = "TYPE"; } )
+    |
+    ( <BUCKET> { jjtThis.mode = "BUCKET"; } )
   )
-  |
-  (
-    <BUCKET>
-    lastLockIdentifier = Identifier() { jjtThis.lockBucketNames.add(lastLockIdentifier); }
-    ( <COMMA> lastLockIdentifier = Identifier() { jjtThis.lockBucketNames.add(lastLockIdentifier); } )*
-    { return jjtThis; }
-  )
+
+  lastLockIdentifier = Identifier() { jjtThis.identifiers.add(lastLockIdentifier); }
+  ( <COMMA> lastLockIdentifier = Identifier() { jjtThis.identifiers.add(lastLockIdentifier); } )*
+  { return jjtThis; }
 }
 
 BreakStatement BreakStatement():
