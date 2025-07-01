@@ -143,7 +143,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
   @Override
   public void onAfterCommit() {
-    if (minPagesToScheduleACompaction > 0 && currentMutablePages >= minPagesToScheduleACompaction) {
+    if (minPagesToScheduleACompaction > 1 && currentMutablePages >= minPagesToScheduleACompaction) {
       LogManager.instance()
           .log(this, Level.FINE, "Scheduled compaction of index '%s' (currentMutablePages=%d totalPages=%d)", null, componentName,
               currentMutablePages, getTotalPages());

@@ -103,7 +103,7 @@ public class LSMTreeIndexCompactor {
     int lastImmutablePage = totalPages - 1;
     for (int pageIndex = totalPages - 1; pageIndex > -1; --pageIndex) {
       final ImmutablePage page = database.getPageManager()
-          .getImmutablePage(new PageId(database, mutableIndex.getFileId(), pageIndex), mutableIndex.getPageSize(), false, true);
+          .getImmutablePage(new PageId(database, mutableIndex.getFileId(), pageIndex), mutableIndex.getPageSize(), false, false);
       if (!mutableIndex.isMutable(page)) {
         lastImmutablePage = pageIndex;
         break;
