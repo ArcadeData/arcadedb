@@ -45,15 +45,24 @@ public class HttpSessionManager extends RWLockContext {
     timer.schedule(new TimerTask() {
       @Override
       public void run() {
-        final int expired = checkSessionsValidity();
-        if (expired > 0)
-          LogManager.instance().log(this, Level.FINE, "Removed %d expired sessions", null, expired);
+        try {
+          final int expired = checkSessionsValidity();
+          if (expired > 0)
+            LogManager.instance().log(this, Level.FINE, "Removed %d expired sessions", null, expired);
+        } catch (Exception e) {
+          // IGNORE IT
+        }
       }
     }, expirationTimeInMs, expirationTimeInMs);
   }
 
   public void close() {
     timer.cancel();
+
+    // CANCEL ALL THE SESSIONS
+    for (Map.Entry<String, HttpSession> stringHttpSessionEntry : sessions.entrySet())
+      stringHttpSessionEntry.getValue().cancel();
+
     sessions.clear();
   }
 
@@ -68,7 +77,8 @@ public class HttpSessionManager extends RWLockContext {
         s = it.next();
 
         if (s.getValue().elapsedFromLastUpdate() > expirationTimeInMs) {
-          // REMOVE THE SESSION
+          // CANCEL AND REMOVE THE SESSION
+          s.getValue().cancel();
           it.remove();
           expired++;
         }
