@@ -87,8 +87,8 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   }
 
   public MutablePage appendDuringCompaction(final Binary keyValueContent, MutablePage currentPage,
-      final TrackableBinary currentPageBuffer,
-      final int compactedPageNumberOfSeries, final Object[] keys, final RID[] rids) throws IOException, InterruptedException {
+      final TrackableBinary currentPageBuffer, final int compactedPageNumberOfSeries, final Object[] keys, final RID[] rids)
+      throws IOException, InterruptedException {
     if (keys == null)
       throw new IllegalArgumentException("Keys parameter is null");
 

@@ -218,6 +218,21 @@ public class PageManager extends LockContext {
     if (mostRecentPageVersion != page.getVersion()) {
       totalConcurrentModificationExceptions.incrementAndGet();
 
+      if (page.getVersion() == 0 && mostRecentPageVersion > 1) {
+        final ComponentFile file = fileManager.getFile(page.pageId.getFileId());
+
+        LogManager.instance().log(this, Level.SEVERE,
+            "New page %s cannot be written because already present in file '%s' with version %d. Reloading page count (threadId=%d)",
+            page, file.getFileName(), mostRecentPageVersion, Thread.currentThread().threadId());
+
+        final Component component = page.pageId.getDatabase().getSchema().getFileById(page.pageId.getFileId());
+        if (component instanceof LocalBucket b) {
+          final int realPages = (int) (file.getSize() / b.pageSize);
+          if (realPages > b.getTotalPages())
+            b.setPageCount(realPages);
+        }
+      }
+
       throw new ConcurrentModificationException(
           "Concurrent modification on page " + pageId + " in file '" + fileManager.getFile(pageId.getFileId()).getFileName()
               + "' (current v." + page.getVersion() + " <> database v." + mostRecentPageVersion
@@ -253,6 +268,12 @@ public class PageManager extends LockContext {
       totalConcurrentModificationExceptions.incrementAndGet();
 
       final FileManager fileManager = ((DatabaseInternal) pageId.getDatabase()).getFileManager();
+      if (page.getVersion() == 0 && mostRecentPageVersion > 1) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Page %s is new and has version 0, but the file '%s' has been modified. Please retry the operation (threadId=%d)",
+            null, page, fileManager.getFile(pageId.getFileId()).getFileName(), Thread.currentThread().threadId());
+      }
+
       throw new ConcurrentModificationException(
           "Concurrent modification on page " + pageId + " in file '" + fileManager.getFile(pageId.getFileId()).getFileName()
               + "' (current v." + page.getVersion() + " <> database v." + mostRecentPageVersion

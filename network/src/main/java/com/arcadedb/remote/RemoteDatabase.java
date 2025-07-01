@@ -161,7 +161,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   @Override
-  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTransaction, int attempts) {
+  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTransaction, final int attempts) {
     return transaction(txBlock, joinCurrentTransaction, attempts, null, null);
   }
 
