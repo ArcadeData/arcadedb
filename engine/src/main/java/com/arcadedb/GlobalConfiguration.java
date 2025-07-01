@@ -366,8 +366,8 @@ public enum GlobalConfiguration {
       Integer.class, 0, null, (value) -> Runtime.getRuntime().availableProcessors()),
 
   SERVER_HTTP_SESSION_EXPIRE_TIMEOUT("arcadedb.server.httpSessionExpireTimeout", SCOPE.SERVER,
-      "Timeout in seconds for a HTTP session to expire. This timeout is computed from the latest command against the session",
-      Long.class, 30 * 60), // 30 MINUTES DEFAULT
+      "Timeout in seconds for a HTTP session (managing a transaction) to expire. This timeout is computed from the latest command against the session",
+      Long.class, 5), // 5 SECONDS DEFAULT
 
   // SERVER WS
   SERVER_WS_EVENT_BUS_QUEUE_SIZE("arcadedb.server.eventBusQueueSize", SCOPE.SERVER,

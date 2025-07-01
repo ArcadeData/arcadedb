@@ -35,11 +35,11 @@ import java.util.logging.*;
 public class HttpSessionManager extends RWLockContext {
   public static final String                   ARCADEDB_SESSION_ID = "arcadedb-session-id";
   private final       Map<String, HttpSession> sessions            = new HashMap<>();
-  private final       long                     expirationTimeInMs;
+  private final       long                     transactionTimeoutInMs;
   private final       Timer                    timer;
 
-  public HttpSessionManager(final long expirationTimeInMs) {
-    this.expirationTimeInMs = expirationTimeInMs;
+  public HttpSessionManager(final long transactionTimeoutInMs) {
+    this.transactionTimeoutInMs = transactionTimeoutInMs;
 
     timer = new Timer();
     timer.schedule(new TimerTask() {
@@ -53,7 +53,7 @@ public class HttpSessionManager extends RWLockContext {
           // IGNORE IT
         }
       }
-    }, expirationTimeInMs, expirationTimeInMs);
+    }, transactionTimeoutInMs, transactionTimeoutInMs);
   }
 
   public void close() {
@@ -74,11 +74,11 @@ public class HttpSessionManager extends RWLockContext {
       int expired = 0;
       Map.Entry<String, HttpSession> s;
       for (final Iterator<Map.Entry<String, HttpSession>> it = sessions.entrySet().iterator(); it.hasNext(); ) {
-        s = it.next();
+        final HttpSession session = it.next().getValue();
 
-        if (s.getValue().elapsedFromLastUpdate() > expirationTimeInMs) {
+        if (session.elapsedFromLastUpdate() > transactionTimeoutInMs) {
           // CANCEL AND REMOVE THE SESSION
-          s.getValue().cancel();
+          session.cancel();
           it.remove();
           expired++;
         }
