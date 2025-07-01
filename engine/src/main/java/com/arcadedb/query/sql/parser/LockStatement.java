@@ -12,8 +12,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class LockStatement extends SimpleExecStatement {
-  protected List<Identifier> lockTypeNames;
-  protected List<Identifier> lockBucketNames;
+  protected String           mode;
+  protected List<Identifier> identifiers;
 
   public LockStatement(final int id) {
     super(id);
@@ -24,19 +24,21 @@ public class LockStatement extends SimpleExecStatement {
     final DatabaseInternal database = context.getDatabase();
 
     TransactionExplicitLock explicitLock = null;
-    if (lockTypeNames != null && !lockTypeNames.isEmpty()) {
-      explicitLock = context.getDatabase().acquireLock();
-
-      for (Identifier typeName : lockTypeNames)
-        explicitLock.type(typeName.getStringValue());
-    }
-
-    if (lockBucketNames != null && !lockBucketNames.isEmpty()) {
-      if (explicitLock == null)
+    if (mode.equals("TYPE")) {
+      if (identifiers != null && !identifiers.isEmpty()) {
         explicitLock = context.getDatabase().acquireLock();
 
-      for (Identifier bucketName : lockBucketNames)
-        explicitLock.bucket(bucketName.getStringValue());
+        for (Identifier typeName : identifiers)
+          explicitLock.type(typeName.getStringValue());
+      }
+    } else {
+      if (identifiers != null && !identifiers.isEmpty()) {
+        if (explicitLock == null)
+          explicitLock = context.getDatabase().acquireLock();
+
+        for (Identifier bucketName : identifiers)
+          explicitLock.bucket(bucketName.getStringValue());
+      }
     }
 
     if (explicitLock != null)
@@ -52,24 +54,21 @@ public class LockStatement extends SimpleExecStatement {
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("LOCK");
-    if (lockTypeNames != null && !lockTypeNames.isEmpty())
-      builder.append(" TYPE ").append(String.join(", ", lockTypeNames.stream().map(Identifier::getStringValue).toList()));
-    if (lockBucketNames != null && !lockBucketNames.isEmpty())
-      builder.append(" BUCKET ").append(String.join(", ", lockBucketNames.stream().map(Identifier::getStringValue).toList()));
-
+    builder.append(" ").append(mode).append(" ");
+    builder.append(String.join(", ", identifiers.stream().map(Identifier::getStringValue).toList()));
   }
 
   @Override
   public LockStatement copy() {
     final LockStatement result = new LockStatement(-1);
-    result.lockTypeNames = lockTypeNames == null ? null : new ArrayList<>(lockTypeNames);
-    result.lockBucketNames = lockBucketNames == null ? null : new ArrayList<>(lockBucketNames);
+    result.mode = mode;
+    result.identifiers = identifiers == null ? null : new ArrayList<>(identifiers);
     return result;
   }
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { lockTypeNames, lockBucketNames };
+    return new Object[] { mode, identifiers };
   }
 }
 /* JavaCC - OriginalChecksum=1f7d8e694c5a2e60168dc050e867c9cb (do not edit this line) */
