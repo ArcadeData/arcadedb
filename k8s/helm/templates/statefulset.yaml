@@ -53,7 +53,7 @@ spec:
             - -Darcadedb.server.defaultDatabases={{ .Values.arcadedb.defaultDatabases }}
             - -Darcadedb.ha.enabled=true
             - -Darcadedb.ha.replicationIncomingHost=0.0.0.0
-            - -Darcadedb.ha.serverList={{ include "arcadedb.nodenames" . | replace "\n" ""}}
+            - -Darcadedb.ha.serverList={{ include "arcadedb.nodenames" . }}
             - -Darcadedb.ha.k8s=true
             - -Darcadedb.ha.k8sSuffix={{ include "arcadedb.k8sSuffix" . }}
             {{- with .Values.arcadedb.extraCommands }}

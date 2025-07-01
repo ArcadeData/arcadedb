@@ -67,7 +67,7 @@ Create the name of the service account to use
 */}}
 {{- define "arcadedb.k8sSuffix" -}}
 {{- $fullname := (include "arcadedb.fullname" .) -}}
-{{- default ""  (printf ".%s.%s.svc.cluster.local" $fullname .Release.Namespace) -}}
+{{- printf ".%s.%s.svc.cluster.local" $fullname .Release.Namespace -}}
 {{- end }}
 
 {{/*
@@ -82,5 +82,5 @@ Create a list of pod names based the number of replica.
 {{- range $i, $_ := until $replicas }}
 {{- $names = append $names (printf "%s-%d%s:%d" $fullname $i $k8sSuffix $rpcPort) }}
 {{- end }}
-{{ join "," $names }}
+{{- join "," $names -}}
 {{- end }}
