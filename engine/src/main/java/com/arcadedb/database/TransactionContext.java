@@ -743,14 +743,14 @@ public class TransactionContext implements Transaction {
   public void reset() {
     status = STATUS.INACTIVE;
 
-    if (lockedFiles != null) {
-      database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
-      lockedFiles = null;
-    }
-
     if (explicitLockedFiles != null) {
       database.getTransactionManager().unlockFilesInOrder(explicitLockedFiles, getRequester());
       explicitLockedFiles = null;
+    }
+
+    if (lockedFiles != null) {
+      database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
+      lockedFiles = null;
     }
 
     indexChanges.reset();
@@ -861,34 +861,34 @@ public class TransactionContext implements Transaction {
       // CHECK FOR ANY MIGRATED FILES (INDEX COMPACTION)
       final List<Integer> migratedFileIds = new ArrayList<>(explicitLockedFiles.size());
       for (Integer f : explicitLockedFiles) {
+        migratedFileIds.add(f);
+
         final Integer newFileId = ((LocalSchema) database.getSchema()).getMigratedFileId(f);
         if (newFileId != null) {
           migratedFileIds.add(newFileId);
           LogManager.instance().log(this, Level.FINE, "Found upgraded file '%d' to '%d' during transaction lock", f, newFileId);
           anyMigration = true;
-        } else
-          migratedFileIds.add(f);
+        }
       }
 
-      boolean upgradedLocks = false;
-      if (anyMigration) {
-        if (migratedFileIds.containsAll(modifiedFiles))
-          // FOUND MIGRATED FILE, LOCK THE NEW FILE AND CONTINUE
-          throw new ConcurrentModificationException(
-              "Error on commit transaction: some files have been migrated, please retry the operation");
+      if (anyMigration && migratedFileIds.containsAll(modifiedFiles)) {
+        reset();
+        // FOUND MIGRATED FILE(S), FORCE THE CLIENT TO RETRY THE OPERATION
+        throw new ConcurrentModificationException(
+            "Error on commit transaction: some files have been migrated, please retry the operation");
       }
 
-      if (!upgradedLocks) {
-        final HashSet<Integer> left = new HashSet<>(modifiedFiles);
-        left.removeAll(explicitLockedFiles);
+      // ERROR: NOT ALL THE MODIFIED FILES ARE LOCKED
+      final HashSet<Integer> left = new HashSet<>(modifiedFiles);
+      left.removeAll(explicitLockedFiles);
 
-        final Set<String> resourceNames = left.stream().map((fileId -> database.getSchema().getFileById(fileId).getName()))
-            .collect(Collectors.toSet());
+      final Set<String> resourceNames = left.stream().map((fileId -> database.getSchema().getFileById(fileId).getName()))
+          .collect(Collectors.toSet());
 
-        throw new TransactionException(
-            "Cannot commit transaction because not all the modified resources were locked: " + resourceNames);
-      }
+      throw new TransactionException(
+          "Cannot commit transaction because not all the modified resources were locked: " + resourceNames);
     }
+
     lockedFiles = explicitLockedFiles;
     explicitLockedFiles = null;
   }
