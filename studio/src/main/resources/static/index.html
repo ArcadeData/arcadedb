@@ -66,17 +66,34 @@
         });
       });
 
-      // Initialize Notyf (replacement for Bootstrap Notify)
-      const notyf = new Notyf({
-        duration: 4000,
-        position: {
-          x: 'center',
-          y: 'top'
-        }
+      // Initialize Notyf with notification queue
+      let notyf = null;
+      let notificationQueue = [];
+      let isNotyfReady = false;
+
+      document.addEventListener('DOMContentLoaded', function() {
+        // Initialize Notyf (replacement for Bootstrap Notify)
+        notyf = new Notyf({
+          duration: 4000,
+          position: {
+            x: 'center',
+            y: 'top'
+          }
+        });
+
+        // Mark as ready and process queued notifications
+        isNotyfReady = true;
+        processNotificationQueue();
       });
 
-      // Global compatibility function for notifications
-      function globalNotify(title, message, type) {
+      function processNotificationQueue() {
+        while (notificationQueue.length > 0 && isNotyfReady) {
+          const notification = notificationQueue.shift();
+          showNotification(notification.title, notification.message, notification.type);
+        }
+      }
+
+      function showNotification(title, message, type) {
         const fullMessage = title ? `<strong>${title}</strong><br>${message}` : message;
 
         if (type === 'success') {
@@ -86,6 +103,17 @@
         } else {
           notyf.success(fullMessage);
         }
+      }
+
+      // Global compatibility function for notifications
+      function globalNotify(title, message, type) {
+        if (!isNotyfReady) {
+          // Queue notification for later processing
+          notificationQueue.push({ title, message, type });
+          return;
+        }
+
+        showNotification(title, message, type);
       }
     </script>
 
