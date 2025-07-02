@@ -66,8 +66,10 @@
         });
       });
 
-      // Initialize Notyf when DOM is ready
+      // Initialize Notyf with notification queue
       let notyf = null;
+      let notificationQueue = [];
+      let isNotyfReady = false;
 
       document.addEventListener('DOMContentLoaded', function() {
         // Initialize Notyf (replacement for Bootstrap Notify)
@@ -78,17 +80,20 @@
             y: 'top'
           }
         });
+
+        // Mark as ready and process queued notifications
+        isNotyfReady = true;
+        processNotificationQueue();
       });
 
-      // Global compatibility function for notifications
-      function globalNotify(title, message, type) {
-        // Ensure notyf is initialized before using it
-        if (!notyf) {
-          console.warn('Notyf not yet initialized, deferring notification');
-          setTimeout(() => globalNotify(title, message, type), 100);
-          return;
+      function processNotificationQueue() {
+        while (notificationQueue.length > 0 && isNotyfReady) {
+          const notification = notificationQueue.shift();
+          showNotification(notification.title, notification.message, notification.type);
         }
+      }
 
+      function showNotification(title, message, type) {
         const fullMessage = title ? `<strong>${title}</strong><br>${message}` : message;
 
         if (type === 'success') {
@@ -98,6 +103,17 @@
         } else {
           notyf.success(fullMessage);
         }
+      }
+
+      // Global compatibility function for notifications
+      function globalNotify(title, message, type) {
+        if (!isNotyfReady) {
+          // Queue notification for later processing
+          notificationQueue.push({ title, message, type });
+          return;
+        }
+
+        showNotification(title, message, type);
       }
     </script>
 
