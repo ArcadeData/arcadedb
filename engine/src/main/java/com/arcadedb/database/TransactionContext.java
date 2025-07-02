@@ -583,20 +583,20 @@ public class TransactionContext implements Transaction {
 
     status = STATUS.COMMIT_1ST_PHASE;
 
-    if (isLeader) {
-      final Set<Integer> modifiedFiles = lockFilesFromChanges();
-
-      if (explicitLockedFiles != null)
-        checkExplicitLocks(modifiedFiles);
-      else
-        // LOCK FILES IN ORDER (TO AVOID DEADLOCK)
-        lockedFiles = lockFilesInOrder(modifiedFiles);
-
-    } else
-      // IN CASE OF REPLICA THIS IS DEMANDED TO THE LEADER EXECUTION
-      lockedFiles = new ArrayList<>();
-
     try {
+      if (isLeader) {
+        final Set<Integer> modifiedFiles = lockFilesFromChanges();
+
+        if (explicitLockedFiles != null)
+          checkExplicitLocks(modifiedFiles);
+        else
+          // LOCK FILES IN ORDER (TO AVOID DEADLOCK)
+          lockedFiles = lockFilesInOrder(modifiedFiles);
+
+      } else
+        // IN CASE OF REPLICA THIS IS DEMANDED TO THE LEADER EXECUTION
+        lockedFiles = new ArrayList<>();
+
       if (isLeader)
         // COMMIT INDEX CHANGES (IN CASE OF REPLICA THIS IS DEMANDED TO THE LEADER EXECUTION)
         indexChanges.commit();
@@ -650,12 +650,10 @@ public class TransactionContext implements Transaction {
 
       return new TransactionPhase1(result, pages);
 
-    } catch (final DuplicatedKeyException |
-                   ConcurrentModificationException e) {
+    } catch (final DuplicatedKeyException | ConcurrentModificationException e) {
       rollback();
       throw e;
-    } catch (
-        final Exception e) {
+    } catch (final Exception e) {
       LogManager.instance()
           .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
       rollback();
@@ -871,12 +869,10 @@ public class TransactionContext implements Transaction {
         }
       }
 
-      if (anyMigration && migratedFileIds.containsAll(modifiedFiles)) {
-        reset();
+      if (anyMigration && migratedFileIds.containsAll(modifiedFiles))
         // FOUND MIGRATED FILE(S), FORCE THE CLIENT TO RETRY THE OPERATION
         throw new ConcurrentModificationException(
             "Error on commit transaction: some files have been migrated, please retry the operation");
-      }
 
       // ERROR: NOT ALL THE MODIFIED FILES ARE LOCKED
       final HashSet<Integer> left = new HashSet<>(modifiedFiles);
