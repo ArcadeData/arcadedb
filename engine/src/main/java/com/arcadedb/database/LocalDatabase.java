@@ -1072,7 +1072,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         txBlock.execute();
 
-        if (createdNewTx)
+        if (createdNewTx && wrappedDatabaseInstance.isTransactionActive())
           wrappedDatabaseInstance.commit();
 
         if (ok != null)
