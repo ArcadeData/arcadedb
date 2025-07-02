@@ -42,22 +42,6 @@ function globalNotifyError(response) {
   }
 }
 
-function globalNotify(title, message, type) {
-  $.notify(
-    {
-      title: "<strong>" + title + "</strong>",
-      message: message,
-    },
-    {
-      type: type,
-      z_index: 100000,
-      placement: {
-        from: "top",
-        align: "center",
-      },
-    },
-  );
-}
 
 function globalActivateTab(tab) {
   $('.nav a[href="#' + tab + '"]')?.tab("show");
