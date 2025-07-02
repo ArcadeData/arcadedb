@@ -20,6 +20,7 @@ package com.arcadedb.utility;
 
 import com.arcadedb.log.LogManager;
 
+import java.time.format.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
@@ -30,15 +31,17 @@ import java.util.logging.*;
 public class LockManager<RESOURCE, REQUESTER> {
   public enum LOCK_STATUS {NO, YES, ALREADY_ACQUIRED}
 
-  private final ConcurrentHashMap<RESOURCE, ODistributedLock> lockManager = new ConcurrentHashMap<>(256);
+  private final ConcurrentHashMap<RESOURCE, DistributedLock> lockManager = new ConcurrentHashMap<>(256);
 
-  private class ODistributedLock {
+  private class DistributedLock {
     final REQUESTER      owner;
     final CountDownLatch lock;
+    final long           when;
 
-    private ODistributedLock(final REQUESTER owner) {
+    private DistributedLock(final REQUESTER owner) {
       this.owner = owner;
       this.lock = new CountDownLatch(1);
+      this.when = System.currentTimeMillis();
     }
   }
 
@@ -49,9 +52,9 @@ public class LockManager<RESOURCE, REQUESTER> {
     if (requester == null)
       throw new IllegalArgumentException("Requester is null");
 
-    final ODistributedLock lock = new ODistributedLock(requester);
+    final DistributedLock lock = new DistributedLock(requester);
 
-    ODistributedLock currentLock = lockManager.putIfAbsent(resource, lock);
+    DistributedLock currentLock = lockManager.putIfAbsent(resource, lock);
     if (currentLock != null) {
       if (currentLock.owner.equals(requester)) {
         // SAME RESOURCE/SERVER, ALREADY LOCKED
@@ -85,11 +88,13 @@ public class LockManager<RESOURCE, REQUESTER> {
     if (resource == null)
       throw new IllegalArgumentException("Resource to unlock is null");
 
-    final ODistributedLock owner = lockManager.remove(resource);
+    final DistributedLock owner = lockManager.get(resource);
     if (owner != null) {
       if (!owner.owner.equals(requester))
         throw new LockException(
             "Cannot unlock resource '" + resource + "' because owner '" + owner.owner + "' <> requester '" + requester + "'");
+
+      lockManager.remove(resource);
 
       // NOTIFY ANY WAITERS
       owner.lock.countDown();
@@ -97,9 +102,9 @@ public class LockManager<RESOURCE, REQUESTER> {
   }
 
   public void close() {
-    for (final Iterator<Map.Entry<RESOURCE, ODistributedLock>> it = lockManager.entrySet().iterator(); it.hasNext(); ) {
-      final Map.Entry<RESOURCE, ODistributedLock> entry = it.next();
-      final ODistributedLock lock = entry.getValue();
+    for (final Iterator<Map.Entry<RESOURCE, DistributedLock>> it = lockManager.entrySet().iterator(); it.hasNext(); ) {
+      final Map.Entry<RESOURCE, DistributedLock> entry = it.next();
+      final DistributedLock lock = entry.getValue();
 
       it.remove();
 
@@ -110,8 +115,13 @@ public class LockManager<RESOURCE, REQUESTER> {
 
   public String toString() {
     final StringBuilder sb = new StringBuilder();
-    for (final Map.Entry<RESOURCE, ODistributedLock> entry : lockManager.entrySet())
-      sb.append("\n- '").append(entry.getKey()).append("', owner='").append(entry.getValue().owner).append("'");
+    for (final Map.Entry<RESOURCE, DistributedLock> entry : lockManager.entrySet())
+      sb.append("\n- '").append(entry.getKey()).append("', owner='").append(entry.getValue().owner)
+          .append("' on ").append(
+              DateTimeFormatter.ofPattern("HH:mm:ss.SSS").format(DateUtils.millisToLocalDateTime(entry.getValue().when, null)))
+          .append(" (")
+          .append(entry.getValue().lock.getCount())
+          .append(" waiters)");
     return sb.toString();
   }
 }
