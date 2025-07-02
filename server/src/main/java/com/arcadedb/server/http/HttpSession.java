@@ -37,7 +37,7 @@ public class HttpSession {
   public final         TransactionContext transaction;
   public final         ServerSecurityUser user;
   private final        ReentrantLock      lock            = new ReentrantLock();
-  private volatile     long               lastUpdate      = 0L;
+  private volatile     long               lastUpdate      = System.currentTimeMillis();
 
   public HttpSession(final ServerSecurityUser user, final String id, final TransactionContext dbTx) {
     this.user = user;
@@ -49,13 +49,16 @@ public class HttpSession {
     return System.currentTimeMillis() - lastUpdate;
   }
 
-  public void cancel() {
+  public boolean cancel() {
     try {
-      if (transaction != null)
+      if (transaction != null && transaction.isActive()) {
         transaction.rollback();
+        return true;
+      }
     } catch (Exception e) {
       // IGNORE IT
     }
+    return false;
   }
 
   public HttpSession execute(final ServerSecurityUser user, final Callable callback) throws Exception {

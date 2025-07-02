@@ -78,7 +78,10 @@ public class HttpSessionManager extends RWLockContext {
 
         if (session.elapsedFromLastUpdate() > transactionTimeoutInMs) {
           // CANCEL AND REMOVE THE SESSION
-          session.cancel();
+          if (session.cancel())
+            LogManager.instance().log(this, Level.FINE, "Canceling session %s because of timeout (%dms)", session.id,
+                transactionTimeoutInMs);
+
           it.remove();
           expired++;
         }

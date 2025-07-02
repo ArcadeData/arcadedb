@@ -178,7 +178,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       final HttpSession session = httpServer.getSessionManager().getSessionById(user, sessionId.get(0));
       if (session == null) {
         exchange.setStatusCode(StatusCodes.UNAUTHORIZED);
-        throw new TransactionException("Remote transaction not found or expired");
+        throw new TransactionException("Remote transaction '" + sessionId.getFirst() + "' not found or expired");
       }
 
       // FORCE THE RESET OF TL
