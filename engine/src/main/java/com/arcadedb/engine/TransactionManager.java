@@ -572,4 +572,9 @@ public class TransactionManager {
 
     return inactiveWALFilePool.isEmpty();
   }
+
+  @Override
+  public String toString() {
+    return "TransactionManager for database '" + database.getName() + "':" + fileIdsLockManager;
+  }
 }

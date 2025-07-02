@@ -107,4 +107,11 @@ public class LockManager<RESOURCE, REQUESTER> {
       lock.lock.countDown();
     }
   }
+
+  public String toString() {
+    final StringBuilder sb = new StringBuilder();
+    for (final Map.Entry<RESOURCE, ODistributedLock> entry : lockManager.entrySet())
+      sb.append("\n- '").append(entry.getKey()).append("', owner='").append(entry.getValue().owner).append("'");
+    return sb.toString();
+  }
 }
