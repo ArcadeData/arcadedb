@@ -20,18 +20,17 @@ public class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
     GenericContainer<?> arcadeContainer = createArcadeContainer("arcade", "none", "none", "any", false, network);
 
     startContainers();
-
-    DatabaseWrapper db = new DatabaseWrapper(arcadeContainer, idSupplier);
+    String host = arcadeContainer.getHost();
+    int port = arcadeContainer.getMappedPort(2480);
+    DatabaseWrapper db = new DatabaseWrapper(host, port, idSupplier);
     db.createDatabase();
     db.createSchema();
 
     final int numOfThreads = 1;
     final int numOfUsers = 10000;
-    final int numOfPhotos = 0;
-    final int numOfFriendship = 0;
+    final int numOfPhotos = 10;
 
     int expectedUsersCount = numOfUsers * numOfThreads;
-    int expectedFriendshipCount = numOfFriendship * numOfThreads;
     int expectedPhotoCount = expectedUsersCount * numOfPhotos;
 
     logger.info("Creating {} users using {} threads", expectedUsersCount, numOfThreads);
@@ -39,7 +38,7 @@ public class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
     for (int i = 0; i < numOfThreads; i++) {
       // Each thread will create users and photos
       executor.submit(() -> {
-        DatabaseWrapper db1 = new DatabaseWrapper(arcadeContainer, idSupplier);
+        DatabaseWrapper db1 = new DatabaseWrapper(host, port, idSupplier);
         db1.addUserAndPhotos(numOfUsers, numOfPhotos);
         db1.close();
       });
@@ -49,9 +48,8 @@ public class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
 
     while (!executor.isTerminated()) {
       long users = db.countUsers();
-      long friendships = db.countFriendships();
       long photos = db.countPhotos();
-      logger.info("Current users: {} - photos: {} - friendships: {}", users, photos, friendships);
+      logger.info("Current users: {} - photos: {} ", users, photos);
       // Wait for 2 seconds before checking again
       try {
         TimeUnit.SECONDS.sleep(2);
@@ -62,7 +60,6 @@ public class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
 
     db.assertThatUserCountIs(expectedUsersCount);
     db.assertThatPhotoCountIs(expectedPhotoCount);
-    db.assertThatFriendshipCountIs(expectedFriendshipCount);
 
   }
 
