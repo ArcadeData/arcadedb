@@ -198,7 +198,7 @@ public abstract class ContainersTestTemplate {
             -Darcadedb.ha.serverList=%s
             -Darcadedb.ha.replicationQueueSize=1024
             """, name, ha, quorum, role, serverList))
-        .withEnv("ARCADEDB_OPTS_MEMORY", "-Xms16G -Xmx16G")
+        .withEnv("ARCADEDB_OPTS_MEMORY", "-Xms8G -Xmx8G")
         .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
     containers.add(container);
     return container;

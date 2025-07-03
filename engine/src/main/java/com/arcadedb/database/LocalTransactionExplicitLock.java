@@ -21,9 +21,11 @@
 package com.arcadedb.database;
 
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
+import java.util.logging.Level;
 
 /**
  * Explicit lock on a transaction to lock buckets and types in pessimistic way. This avoids the retry mechanism of default implicit locking.
@@ -57,14 +59,25 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
   public LocalTransactionExplicitLock type(final String typeName) {
     final DocumentType type = transactionContext.getDatabase().getSchema().getType(typeName);
 
+    // Lock all indexes for this type
     filesToLock.addAll(type.getAllIndexes(true).stream()
         .flatMap(i -> Arrays.stream(i.getIndexesOnBuckets()))
         .map(b -> b.getFileId())
         .toList());
 
+    // Lock all currently involved buckets for this type
     filesToLock.addAll(type.getInvolvedBuckets().stream().map(b -> b.getFileId()).toList());
 
+    // COMPREHENSIVE BUCKET LOCKING: Also lock all polymorphic buckets (includes subtypes)
+    // This helps handle cases where records might be created in buckets not initially involved
+    filesToLock.addAll(type.getBuckets(true).stream().map(b -> b.getFileId()).toList());
+
     filesToLock.removeIf((f) -> f < 0); // Remove negative file IDs (e.g., for virtual buckets)
+
+    LogManager.instance().log(this, Level.FINE,
+      "Explicit lock for type '%s' will lock %d bucket files (threadId=%d)",
+      typeName, filesToLock.size(), Thread.currentThread().threadId());
+
     return this;
   }
 
