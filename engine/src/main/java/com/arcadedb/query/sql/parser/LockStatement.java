@@ -33,8 +33,7 @@ public class LockStatement extends SimpleExecStatement {
       }
     } else {
       if (identifiers != null && !identifiers.isEmpty()) {
-        if (explicitLock == null)
-          explicitLock = context.getDatabase().acquireLock();
+        explicitLock = context.getDatabase().acquireLock();
 
         for (Identifier bucketName : identifiers)
           explicitLock.bucket(bucketName.getStringValue());
