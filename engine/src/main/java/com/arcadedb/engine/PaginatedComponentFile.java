@@ -30,11 +30,12 @@ import java.util.zip.*;
 
 public class PaginatedComponentFile extends ComponentFile {
 
-  private RandomAccessFile file;
-  private FileChannel      channel;
-  private int              pageSize;
+  private                 RandomAccessFile file;
+  private                 FileChannel      channel;
+  private                 int              pageSize;
+  private static volatile boolean          warningPrinted = false;
 
-  public class InterruptibleInvocationHandler implements InvocationHandler {
+  public static class InterruptibleInvocationHandler implements InvocationHandler {
     @Override
     public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
       LogManager.instance().log(this, Level.SEVERE, "Attempt to close channel");
@@ -119,7 +120,9 @@ public class PaginatedComponentFile extends ComponentFile {
       LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on write. Reopen it and retry...", null, fileName);
       open(filePath, mode);
       buffer.rewind();
-      channel.write(buffer, (page.getPhysicalSize() * (long) pageNumber));
+      final int written = channel.write(buffer, (page.getPhysicalSize() * (long) pageNumber));
+      if (written < pageSize)
+        LogManager.instance().log(this, Level.WARNING, "Written less bytes than expected: %d < %d", null, written, pageSize);
     }
 
     return pageSize;
@@ -219,7 +222,10 @@ public class PaginatedComponentFile extends ComponentFile {
           new Class[] { interruptibleClass },
           new InterruptibleInvocationHandler()));
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Unable to disable channel close on interrupt: %s", e.getMessage());
+      if (!warningPrinted) {
+        warningPrinted = true;
+        LogManager.instance().log(this, Level.WARNING, "Unable to disable channel close on interrupt: %s", e.getMessage());
+      }
     }
   }
 }
