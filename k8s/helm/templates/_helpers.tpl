@@ -61,3 +61,26 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+ Creates kubernetes naming suffix.
+*/}}
+{{- define "arcadedb.k8sSuffix" -}}
+{{- $fullname := (include "arcadedb.fullname" .) -}}
+{{- printf ".%s.%s.svc.cluster.local" $fullname .Release.Namespace -}}
+{{- end }}
+
+{{/*
+Create a list of pod names based the number of replica.
+*/}}
+{{- define "arcadedb.nodenames" -}}
+{{- $replicas := int .Values.replicaCount -}}
+{{- $names := list -}}
+{{- $fullname := (include "arcadedb.fullname" .) -}}
+{{- $k8sSuffix := (include "arcadedb.k8sSuffix" .) -}}
+{{- $rpcPort := int (default "2424" .Values.service.rpc.port) -}}
+{{- range $i, $_ := until $replicas }}
+{{- $names = append $names (printf "%s-%d%s:%d" $fullname $i $k8sSuffix $rpcPort) }}
+{{- end }}
+{{- join "," $names -}}
+{{- end }}
