@@ -53,9 +53,9 @@ spec:
             - -Darcadedb.server.defaultDatabases={{ .Values.arcadedb.defaultDatabases }}
             - -Darcadedb.ha.enabled=true
             - -Darcadedb.ha.replicationIncomingHost=0.0.0.0
-            - -Darcadedb.ha.serverList={{ include "arcadedb.fullname" . }}-0.{{ .Chart.Name }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.rpc.port }}
+            - -Darcadedb.ha.serverList={{ include "arcadedb.nodenames" . }}
             - -Darcadedb.ha.k8s=true
-            - -Darcadedb.ha.k8sSuffix=.{{ .Chart.Name }}.{{ .Release.Namespace }}.svc.cluster.local
+            - -Darcadedb.ha.k8sSuffix={{ include "arcadedb.k8sSuffix" . }}
             {{- with .Values.arcadedb.extraCommands }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
