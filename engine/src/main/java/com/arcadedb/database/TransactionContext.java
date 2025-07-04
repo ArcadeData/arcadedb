@@ -385,14 +385,6 @@ public class TransactionContext implements Transaction {
     return page;
   }
 
-  public long getFileSize(final int fileId) throws IOException {
-    final Integer lastPage = newPageCounters.get(fileId);
-    if (lastPage != null)
-      return (long) (lastPage + 1) * ((PaginatedComponentFile) database.getFileManager().getFile(fileId)).getPageSize();
-
-    return database.getFileManager().getVirtualFileSize(fileId);
-  }
-
   public Integer getPageCounter(final int indexFileId) {
     return newPageCounters.get(indexFileId);
   }
@@ -686,12 +678,8 @@ public class TransactionContext implements Transaction {
 
       database.getPageManager().updatePages(newPages, modifiedPages, asyncFlush);
 
-      for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet()) {
-        final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileById(entry.getKey());
-        component.setPageCount(entry.getValue());
-        database.getFileManager().setVirtualFileSize(entry.getKey(),
-            (long) entry.getValue() * ((PaginatedComponentFile) database.getFileManager().getFile(entry.getKey())).getPageSize());
-      }
+      for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet())
+        ((PaginatedComponent) database.getSchema().getFileById(entry.getKey())).updatePageCount(entry.getValue());
 
       // UPDATE RECORD COUNT
       for (Map.Entry<Integer, AtomicInteger> entry : bucketRecordDelta.entrySet()) {

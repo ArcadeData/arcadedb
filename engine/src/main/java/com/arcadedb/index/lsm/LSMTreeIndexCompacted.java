@@ -196,7 +196,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
         currentPage.writeByte(pos++, binaryKeyTypes[i]);
     }
 
-    setPageCount(txPageCounter + 1);
+    updatePageCount(txPageCounter + 1);
 
     return currentPage;
   }

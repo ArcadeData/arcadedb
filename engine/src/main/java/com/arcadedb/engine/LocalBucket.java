@@ -1234,11 +1234,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
       final int chunkPositionInPage = (int) (nextChunkPointer % maxRecordsInPage);
 
-      if (chunkPageId >= getTotalPages()) {
-        Integer pageCounter = database.getTransaction().getPageCounter(chunkPageId);
-        if (pageCounter == null || chunkPageId >= pageCounter)
-          throw new DatabaseOperationException("Invalid pointer to a chunk for record " + originalRID);
-      }
+      if (chunkPageId >= getTotalPages())
+        throw new DatabaseOperationException("Invalid pointer to a chunk for record " + originalRID);
 
       final BasePage nextPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), chunkPageId), pageSize);
 

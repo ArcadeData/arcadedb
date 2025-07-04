@@ -32,7 +32,6 @@ public class FileManager {
   private final        List<ComponentFile>                       files           = new ArrayList<>();
   private final        ConcurrentHashMap<String, ComponentFile>  fileNameMap     = new ConcurrentHashMap<>();
   private final        ConcurrentHashMap<Integer, ComponentFile> fileIdMap       = new ConcurrentHashMap<>();
-  private final        ConcurrentHashMap<Integer, Long>          fileVirtualSize = new ConcurrentHashMap<>();
   private final        AtomicLong                                maxFilesOpened  = new AtomicLong();
   private              List<FileChange>                          recordedChanges = null;
   private final static PaginatedComponentFile                    RESERVED_SLOT   = new PaginatedComponentFile();
@@ -125,7 +124,6 @@ public class FileManager {
     files.clear();
     fileNameMap.clear();
     fileIdMap.clear();
-    fileVirtualSize.clear();
   }
 
   public void dropFile(final int fileId) throws IOException {
@@ -144,17 +142,6 @@ public class FileManager {
         recordedChanges.add(entry);
       }
     }
-  }
-
-  public long getVirtualFileSize(final Integer fileId) throws IOException {
-    Long fileSize = fileVirtualSize.get(fileId);
-    if (fileSize == null)
-      fileSize = getFile(fileId).getSize();
-    return fileSize;
-  }
-
-  public void setVirtualFileSize(final Integer fileId, final long fileSize) {
-    fileVirtualSize.put(fileId, fileSize);
   }
 
   public FileManagerStats getStats() {
@@ -180,7 +167,8 @@ public class FileManager {
     return f;
   }
 
-  public ComponentFile getOrCreateFile(final String fileName, final String filePath, final ComponentFile.MODE mode) throws IOException {
+  public ComponentFile getOrCreateFile(final String fileName, final String filePath, final ComponentFile.MODE mode)
+      throws IOException {
     ComponentFile file = fileNameMap.get(fileName);
     if (file != null)
       return file;
@@ -226,7 +214,8 @@ public class FileManager {
       files.add(null);
     final ComponentFile prev = files.get(pos);
     if (prev != null && prev != RESERVED_SLOT)
-      throw new IllegalArgumentException("Cannot register file '" + file + "' at position " + pos + " because already occupied by file '" + prev + "'");
+      throw new IllegalArgumentException(
+          "Cannot register file '" + file + "' at position " + pos + " because already occupied by file '" + prev + "'");
 
     files.set(pos, file);
     fileNameMap.put(file.getComponentName(), file);

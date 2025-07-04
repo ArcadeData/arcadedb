@@ -37,7 +37,7 @@ public class PaginatedComponentFile extends ComponentFile {
 
   public static class InterruptibleInvocationHandler implements InvocationHandler {
     @Override
-    public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+    public Object invoke(final Object proxy, final Method method, final Object[] args) throws Throwable {
       LogManager.instance().log(this, Level.SEVERE, "Attempt to close channel");
       return null;
     }
