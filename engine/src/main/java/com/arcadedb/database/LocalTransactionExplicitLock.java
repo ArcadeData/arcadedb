@@ -76,7 +76,7 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
 
     LogManager.instance().log(this, Level.FINE,
       "Explicit lock for type '%s' will lock %d bucket files (threadId=%d)",
-      typeName, filesToLock.size(), Thread.currentThread().threadId());
+      typeName, filesToLock.size(), Thread.currentThread().getId());
 
     return this;
   }

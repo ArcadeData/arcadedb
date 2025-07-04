@@ -223,7 +223,7 @@ public class PageManager extends LockContext {
 
         LogManager.instance().log(this, Level.SEVERE,
             "New page %s cannot be written because already present in file '%s' with version %d. Reloading page count (threadId=%d)",
-            page, file.getFileName(), mostRecentPageVersion, Thread.currentThread().threadId());
+            page, file.getFileName(), mostRecentPageVersion, Thread.currentThread().getId());
 
         final Component component = page.pageId.getDatabase().getSchema().getFileById(page.pageId.getFileId());
         if (component instanceof LocalBucket b) {
@@ -274,7 +274,7 @@ public class PageManager extends LockContext {
       if (page.getVersion() == 0 && mostRecentPageVersion > 1) {
         LogManager.instance().log(this, Level.SEVERE,
             "Page %s is new and has version 0, but the file '%s' has been modified. Please retry the operation (threadId=%d)",
-            null, page, fileManager.getFile(pageId.getFileId()).getFileName(), Thread.currentThread().threadId());
+            null, page, fileManager.getFile(pageId.getFileId()).getFileName(), Thread.currentThread().getId());
       }
 
       throw new ConcurrentModificationException(
