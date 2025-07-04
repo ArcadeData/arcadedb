@@ -364,11 +364,8 @@ public class TransactionManager {
         database.getPageManager().removePageFromCache(modifiedPage.pageId);
 
         final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileById(txPage.fileId);
-        if (component != null) {
-          final int newPageCount = (int) (file.getSize() / file.getPageSize());
-          if (newPageCount > component.pageCount.get())
-            component.setPageCount(newPageCount);
-        }
+        if (component != null)
+          component.updatePageCount(modifiedPage.pageId.getPageNumber() + 1);
 
         if (file.getFileId() == dictionaryId)
           involveDictionary = true;
