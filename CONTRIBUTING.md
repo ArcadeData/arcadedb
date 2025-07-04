@@ -41,6 +41,7 @@ the `main` branch of GitHub. All you need is:
 
 - **Java v21** for the runtime or major
 - [**Apache Maven**](https://maven.apache.org/), to build the distribution
+- [**Docker**](https://www.docker.com/), to build the container images
 
 It's super easy, just follow the following steps:
 
