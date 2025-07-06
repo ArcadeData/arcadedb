@@ -34,7 +34,7 @@
     <name>ArcadeDB PostgresW</name>
 
     <properties>
-        <tomcat-jdbc.version>11.0.8</tomcat-jdbc.version>
+        <tomcat-jdbc.version>11.0.9</tomcat-jdbc.version>
     </properties>
 
     <dependencies>
