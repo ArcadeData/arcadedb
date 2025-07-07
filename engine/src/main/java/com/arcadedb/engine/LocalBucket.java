@@ -676,7 +676,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       final int spaceAvailableInCurrentPage = selectedPage.getMaxContentSize() - newRecordPositionInPage;
 
-      // RESERVE A SPOT IMMEDIATELY TO AVOID REUSAGE FOR MULTI PAGE RECORD
+      // RESERVE A SPOT IMMEDIATELY TO AVOID USAGE FOR MULTI PAGE RECORD
       selectedPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + availablePositionIndex * INT_SERIALIZED_SIZE,
           newRecordPositionInPage);
 
@@ -819,6 +819,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         if (additionalSpaceNeeded < spaceAvailableInCurrentPage) {
           // THERE IS SPACE LEFT IN THE PAGE, SHIFT ON THE RIGHT THE EXISTENT RECORDS
+
           if (lastRecordPositionInPage != recordPositionInPage) {
             // NOT LAST RECORD IN PAGE, SHIFT NEXT RECORDS
             final int from = (int) (recordPositionInPage + recordSize[0] + recordSize[1]);
@@ -1240,7 +1241,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final BasePage nextPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), chunkPageId), pageSize);
 
       final int nextRecordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
-      if (recordPositionInPage == 0)
+      if (nextRecordPositionInPage == 0)
         throw new DatabaseOperationException("Chunk of record " + originalRID + " was deleted");
 
       if (nextPage.equals(page) && recordPositionInPage == nextRecordPositionInPage) {
@@ -1309,6 +1310,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       final PageAnalysis pageAnalysis = findAvailableSpace(currentPage.pageId.getPageNumber(), spaceNeededForChunk, txPageCounter,
           true);
+
       if (!pageAnalysis.createNewPage) {
         nextPage = database.getTransaction().getPageToModify(pageAnalysis.page.pageId, pageSize, false);
         newPosition = pageAnalysis.newRecordPositionInPage;
