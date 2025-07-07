@@ -13,7 +13,7 @@
     "pg": "^8.16.0"
   },
   "devDependencies": {
-    "testcontainers": "^10.28.0",
+    "testcontainers": "^11.2.1",
     "jest": "^30.0.0",
     "jest-junit": "^16.0.0"
   },
