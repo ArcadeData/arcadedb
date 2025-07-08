@@ -39,22 +39,13 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RWLockContext;
 
-import java.io.IOException;
-import java.net.Authenticator;
-import java.net.ConnectException;
-import java.net.PasswordAuthentication;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
-import java.util.ArrayList;
-import java.util.Base64;
-import java.util.List;
-import java.util.Map;
-import java.util.NoSuchElementException;
-import java.util.logging.Level;
-import java.util.stream.Collectors;
+import java.io.*;
+import java.net.*;
+import java.net.http.*;
+import java.time.*;
+import java.util.*;
+import java.util.logging.*;
+import java.util.stream.*;
 
 /**
  * Remote Database implementation. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
@@ -74,7 +65,9 @@ public class RemoteHttpComponent extends RWLockContext {
   protected final HttpClient                  httpClient;
   protected final DatabaseStats               stats                     = new DatabaseStats();
   protected final ContextConfiguration        configuration;
-  private final   Integer                     retries;
+  private         int                         sameServerErrorRetries;
+  private         int                         haServerErrorRetries;
+  private final   Integer                     txRetries;
   private         int                         apiVersion                = 1;
   private         CONNECTION_STRATEGY         connectionStrategy        = CONNECTION_STRATEGY.ROUND_ROBIN;
   private         Pair<String, Integer>       leaderServer;
@@ -117,7 +110,10 @@ public class RemoteHttpComponent extends RWLockContext {
     this.configuration = configuration;
     this.timeout = this.configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT);
 
-    this.retries = this.configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES);
+    setSameServerErrorRetries(this.configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SAME_SERVER_ERROR_RETRIES));
+    haServerErrorRetries = this.configuration.getValueAsInteger(GlobalConfiguration.HA_ERROR_RETRIES);
+
+    this.txRetries = this.configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES);
 
     httpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(60))
@@ -125,9 +121,7 @@ public class RemoteHttpComponent extends RWLockContext {
         .authenticator(new Authenticator() {
           @Override
           protected PasswordAuthentication getPasswordAuthentication() {
-            return new PasswordAuthentication(
-                userName,
-                userPassword.toCharArray());
+            return new PasswordAuthentication(userName, userPassword.toCharArray());
           }
         })
         .build();
@@ -141,6 +135,12 @@ public class RemoteHttpComponent extends RWLockContext {
 
   public void setTimeout(final int timeout) {
     this.timeout = timeout;
+  }
+
+  public void setSameServerErrorRetries(Integer maxRetries) {
+    if (maxRetries == null || maxRetries < 0)
+      maxRetries = 0;
+    this.sameServerErrorRetries = maxRetries;
   }
 
   public String getUserName() {
@@ -179,8 +179,12 @@ public class RemoteHttpComponent extends RWLockContext {
 
     Exception lastException = null;
 
-    final int maxRetry =
-        leaderIsPreferable || connectionStrategy == CONNECTION_STRATEGY.FIXED ? 3 : getReplicaServerList().size() + 1;
+    int maxRetry =
+        leaderIsPreferable || connectionStrategy == CONNECTION_STRATEGY.FIXED ?
+            sameServerErrorRetries :
+            haServerErrorRetries == 0 ? getReplicaServerList().size() + 1 : haServerErrorRetries;
+    if (maxRetry < 1)
+      maxRetry = 1;
 
     Pair<String, Integer> connectToServer =
         leaderIsPreferable && leaderServer != null ? leaderServer : new Pair<>(currentServer, currentPort);
@@ -207,7 +211,7 @@ public class RemoteHttpComponent extends RWLockContext {
             jsonRequest.put("language", language);
           jsonRequest.put("command", payloadCommand);
           jsonRequest.put("serializer", "record");
-          jsonRequest.put("retries", retries);
+          jsonRequest.put("retries", txRetries);
 
           if (params != null)
             jsonRequest.put("params", new JSONObject(params));
@@ -250,7 +254,7 @@ public class RemoteHttpComponent extends RWLockContext {
       } catch (final IOException | ServerIsNotTheLeaderException e) {
         lastException = e;
 
-        if (!autoReconnect)
+        if (!autoReconnect || retry + 1 >= maxRetry)
           break;
 
         if (connectionStrategy == CONNECTION_STRATEGY.FIXED) {
