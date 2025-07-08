@@ -231,10 +231,13 @@ public class RemoteHttpComponent extends RWLockContext {
 
         if (response.statusCode() != 200) {
           lastException = manageException(response, payloadCommand != null ? payloadCommand : operation);
-          if (lastException instanceof RuntimeException && lastException.getMessage().equals("Empty payload received"))
+          if (lastException instanceof RuntimeException && lastException.getMessage().equals("Empty payload received")) {
             LogManager.instance()
                 .log(this, Level.FINE, "Empty payload received, retrying (retry=%d/%d)...", null, retry, maxRetry);
-          continue;
+            continue;
+          }
+
+          throw lastException;
         }
 
         final JSONObject jsonResponse = new JSONObject(response.body());
