@@ -1,0 +1,27 @@
+Variables:
+- Release: 25.6.1
+
+Create a release notes to publish on GitHub about the new release <Release> of ArcadeDB. This is the format:
+--------
+
+# ArcadeDB v.<Release> Release Highlights
+
+[Write a summary of the most relevant news for the user, to encourage the upgrade]
+
+### ✨ New Features
+
+[Write bullet points of the new features with the link to GitHub issue/pr in parenthesis]
+
+### 🐛 Bug Fixes
+
+[Write bullet points of the bugs fixed with the link to GitHub issue/pr in parenthesis]
+
+### 🛠️ Other Notable Changes
+
+[Write everything else in bullet points with the link to the GitHub issue/pr in parenthesis when possible. Group dependencies update in just one item]
+
+**Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/[put previous version from https://github.com/ArcadeData/arcadedb/releases]...<Release>
+
+-------
+
+The issues and pull requests from GitHub are the followings:
