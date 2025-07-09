@@ -305,7 +305,7 @@ jobs:
       - name: E2E Studio Tests
         working-directory: e2e-studio
         run: |
-          npm run test --headless
+          npm run test
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
