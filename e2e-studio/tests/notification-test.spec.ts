@@ -16,8 +16,8 @@ test.describe('ArcadeDB Studio Notification System', () => {
       jsErrors.push(`Page Error: ${error.message}`);
     });
 
-    // Navigate to ArcadeDB Studio
-    await page.goto('http://localhost:2480');
+    // Navigate to ArcadeDB Studio using dynamic baseURL
+    await page.goto('/');
 
     // Wait for login dialog to appear
     await expect(page.getByRole('dialog', { name: 'Login to the server' })).toBeVisible();
@@ -90,8 +90,8 @@ test.describe('ArcadeDB Studio Notification System', () => {
   });
 
   test('should handle notification queue properly during initialization', async ({ page }) => {
-    // Navigate to ArcadeDB Studio
-    await page.goto('http://localhost:2480');
+    // Navigate to ArcadeDB Studio using dynamic baseURL
+    await page.goto('/');
 
     // Test that early notifications are queued
     await page.evaluate(() => {
