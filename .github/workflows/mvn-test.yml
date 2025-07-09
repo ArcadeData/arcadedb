@@ -315,7 +315,7 @@ jobs:
         if: success() || failure()
         with:
           name: Studio E2E Tests Report
-          path: "e2e-studio/test-results/junit-report.xml"
+          path: "e2e-studio/reports/playwright-junit.xml"
           list-suites: "failed"
           list-tests: "failed"
           reporter: java-junit
