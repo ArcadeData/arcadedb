@@ -2,8 +2,8 @@ import { test, expect } from '@playwright/test';
 
 test.describe('ArcadeDB Studio Database Creation', () => {
   test('should create a new database called e2e-studio', async ({ page }) => {
-    // Navigate to ArcadeDB Studio
-    await page.goto('http://localhost:2480');
+    // Navigate to ArcadeDB Studio using dynamic baseURL
+    await page.goto('/');
 
     // Wait for login dialog to appear
     await expect(page.getByRole('dialog', { name: 'Login to the server' })).toBeVisible();
