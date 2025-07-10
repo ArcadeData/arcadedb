@@ -229,7 +229,7 @@ public class PageManager extends LockContext {
             if (realPages > b.pageCount.get()) {
               LogManager.instance().log(this, Level.SEVERE,
                   "New page %s cannot be written because already present in file '%s' with version %d. Updating page count (threadId=%d)",
-                  page, file.getFileName(), mostRecentPageVersion, Thread.currentThread().threadId());
+                  page, file.getFileName(), mostRecentPageVersion, Thread.currentThread().getId());
 
               b.updatePageCount(realPages);
             }

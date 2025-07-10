@@ -134,7 +134,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
                     if (randomUUID != (Long) record.getProperty("uuid")) {
                       LogManager.instance()
                           .log(this, Level.SEVERE, "Looking for %d but found %d (threadId=%s)", randomUUID,
-                              record.getProperty("uuid"), Thread.currentThread().threadId());
+                              record.getProperty("uuid"), Thread.currentThread().getId());
                     }
                     assertThat((Long) record.getProperty("uuid")).isEqualTo(randomUUID);
                   }
