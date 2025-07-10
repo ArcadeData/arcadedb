@@ -47,7 +47,7 @@ jobs:
         run: echo "version=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)" >> $GITHUB_OUTPUT
 
       - name: Build and package with Maven Docker profile
-        run: ./mvnw clean install -Pdocker -DskipTests --batch-mode --errors --fail-never --show-version
+        run: ./mvnw clean install -Pdocker -DskipTests --batch-mode --errors  --show-version
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
