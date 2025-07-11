@@ -34,7 +34,9 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.ServerDatabase;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -538,6 +540,41 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         fail();
       } catch (DatabaseIsClosedException e) {
         //EXPECTED
+      }
+    });
+  }
+
+  @Test
+  public void testDatabaseUniqueIndex() throws Exception {
+    testEachServer((serverIndex) -> {
+      try (RemoteDatabase txw = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);) {
+        ServerDatabase tx = getServer(0).getDatabase(DATABASE_NAME);
+
+        tx.getSchema().createVertexType("SimpleVertexEx").createProperty("svuuid", String.class)
+            .createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+
+        tx.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+
+        MutableVertex svt1 = tx.newVertex("SimpleVertexEx");
+        String uuid1 = UUID.randomUUID().toString();
+        svt1.set("svex", uuid1);
+        svt1.set("svuuid", uuid1);
+        svt1.save();
+        tx.commit();
+
+        tx.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+        MutableVertex svt2 = tx.newVertex("SimpleVertexEx");
+        String uuid2 = UUID.randomUUID().toString();
+        svt2.set("svex", uuid2);
+        svt2.set("svuuid", uuid2);
+        svt2.save();
+        tx.commit();
+
+        tx.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+        svt2.set("svuuid", uuid1);
+        svt2.save();
+        tx.commit();
       }
     });
   }
