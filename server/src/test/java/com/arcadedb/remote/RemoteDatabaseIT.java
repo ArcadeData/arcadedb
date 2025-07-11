@@ -36,7 +36,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.server.ServerDatabase;
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -547,10 +547,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
   @Test
   public void testDatabaseUniqueIndex() throws Exception {
     testEachServer((serverIndex) -> {
-      try (RemoteDatabase txw = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+      try (RemoteDatabase tx = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);) {
-        ServerDatabase tx = getServer(0).getDatabase(DATABASE_NAME);
-
         tx.getSchema().createVertexType("SimpleVertexEx").createProperty("svuuid", String.class)
             .createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
 
@@ -575,6 +573,61 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         svt2.set("svuuid", uuid1);
         svt2.save();
         tx.commit();
+      }
+    });
+  }
+
+  @Test
+  public void testDatabaseMVCC() throws Exception {
+    testEachServer((serverIndex) -> {
+      try (RemoteDatabase t1 = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+        t1.getSchema().createVertexType("SimpleVertex");
+
+        try (RemoteDatabase t2 = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+            BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+
+          t1.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+          t2.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+
+          t1.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+          MutableVertex mvSVt1 = t1.newVertex("SimpleVertex");
+          mvSVt1.set("s", "init concurrent test");
+          mvSVt1.save();
+
+          RID rid = mvSVt1.getIdentity();
+          System.out.println("RID: " + rid);
+          t1.commit();
+//        t1.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+          Vertex vSVt1 = t1.lookupByRID(rid).asVertex();
+
+          t2.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+          Vertex vSVt2 = t2.lookupByRID(rid).asVertex();
+
+          t1.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+          mvSVt1 = vSVt1.modify();
+          System.out.println("mvSVt1: " + vSVt1);
+          mvSVt1.set("s", "concurrent t1");
+          mvSVt1.save();
+          t1.commit();
+
+          vSVt1 = t1.lookupByRID(rid).asVertex();
+          System.out.println("vt1: " + vSVt1.propertiesAsMap());
+
+          System.out.println("s from t1: " + vSVt1.getString("s"));
+          System.out.println("s from t2: " + vSVt2.getString("s"));
+
+          MutableVertex mvSVt2 = vSVt2.modify();
+          mvSVt2.set("s", "concurrent t2");
+          mvSVt2.save();
+
+          try {
+            t2.commit();
+            Assertions.fail();
+          } catch (ConcurrentModificationException e) {
+            // EXPECTED
+          }
+        }
       }
     });
   }
