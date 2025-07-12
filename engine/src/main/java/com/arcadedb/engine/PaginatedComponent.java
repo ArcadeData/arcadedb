@@ -91,7 +91,7 @@ public abstract class PaginatedComponent extends Component {
   }
 
   public int getTotalPages() {
-    final TransactionContext tx = database.getTransaction();
+    final TransactionContext tx = database.getTransactionIfExists();
     if (tx != null) {
       final Integer txPageCounter = tx.getPageCounter(fileId);
       if (txPageCounter != null)
