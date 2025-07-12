@@ -334,10 +334,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public long count() {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
-    final TransactionContext transaction = database.getTransaction();
+    final TransactionContext transaction = database.getTransactionIfExists();
 
     final long cached = cachedRecordCount.get();
-    if (cached > -1)
+    if (cached > -1 && transaction != null)
       return cached + transaction.getBucketRecordDelta(fileId);
 
     long total = 0;
@@ -346,7 +346,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     try {
       for (int pageId = 0; pageId < txPageCount; ++pageId) {
-        final BasePage page = transaction.getPage(new PageId(database, file.getFileId(), pageId), pageSize);
+        final PageId pageIdToLoad = new PageId(database, file.getFileId(), pageId);
+        final BasePage page = transaction != null ?
+            transaction.getPage(pageIdToLoad, pageSize) :
+            database.getPageManager().getImmutablePage(pageIdToLoad, pageSize, false, false);
+
         final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
         if (recordCountInPage > 0) {
