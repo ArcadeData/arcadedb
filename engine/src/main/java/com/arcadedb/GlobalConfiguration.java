@@ -202,7 +202,7 @@ public enum GlobalConfiguration {
       "Default page size in bytes for buckets. Default is 64KB", Integer.class, 65_536),
 
   BUCKET_REUSE_SPACE_MODE("arcadedb.bucketReuseSpaceMode", SCOPE.DATABASE,
-      "Mode used to reuse space in pages. Use low to have faster updates consuming more space on disk. Default is 'high'",
+      "How to reuse space in pages. 'high' = more space saved, but slower opening and update/delete time. 'medium' to still reuse space without the initial scan at opening time. 'low' for faster performance, but less space reused. Default is 'high'",
       String.class, "high", Set.of("low", "medium", "high")),
 
   BUCKET_WIPEOUT_ONDELETE("arcadedb.bucketWipeOutOnDelete", SCOPE.DATABASE,
