@@ -136,7 +136,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     super(database, name, filePath, id, mode, pageSize, version);
     contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
     this.reuseSpaceMode = REUSE_SPACE_MODE.valueOf(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getValueAsString().toUpperCase());
-    if (this.reuseSpaceMode.ordinal() > REUSE_SPACE_MODE.LOW.ordinal())
+    if (this.reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.HIGH.ordinal())
       gatherPageStatistics();
   }
 
@@ -1003,7 +1003,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0);
 
         if (recordSize[0] > -1) {
-          if (reuseSpaceMode.ordinal() > REUSE_SPACE_MODE.MEDIUM.ordinal()) {
+          if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.HIGH.ordinal()) {
             // UPDATE THE STATISTICS
             final PageAnalysis pageAnalysis = new PageAnalysis(page);
             pageAnalysis.totalRecordsInPage = recordCountInPage;
@@ -1636,7 +1636,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private PageAnalysis findAvailableSpace(final int currentPageId, final int spaceNeeded, final int txPageCounter,
       final boolean multiPageRecord)
       throws IOException {
-    if (reuseSpaceMode.ordinal() > REUSE_SPACE_MODE.LOW.ordinal()) {
+    if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.MEDIUM.ordinal()) {
       synchronized (freeSpaceInPages) {
         if (freeSpaceInPages.isEmpty())
           gatherPageStatistics();
