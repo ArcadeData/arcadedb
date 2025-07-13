@@ -72,6 +72,19 @@ public class TypeBuilder<T> {
         throw new SchemaException("Type '" + typeName + "' is not a " + expectedType + " type");
       }
 
+      if (t.buckets.size() < buckets) {
+        // CREATE MISSING BUCKETS
+        for (int i = t.buckets.size(); i < buckets; ++i) {
+          final String bucketName = FileUtils.encode(typeName, schema.getEncoding()) + "_" + i;
+          if (schema.existsBucket(bucketName)) {
+            LogManager.instance().log(this, Level.WARNING, "Reusing found bucket '%s' for type '%s'", null, bucketName, typeName);
+            t.addBucket(schema.getBucketByName(bucketName));
+          } else
+            // CREATE A NEW ONE
+            t.addBucket(schema.createBucket(bucketName, pageSize));
+        }
+      }
+
       boolean modified = false;
       if (superTypes != null)
         for (LocalDocumentType sup : superTypes) {
