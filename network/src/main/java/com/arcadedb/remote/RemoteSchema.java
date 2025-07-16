@@ -97,9 +97,9 @@ public class RemoteSchema implements Schema {
   }
 
   @Override
-  public LocalBucket createBucket(final String bucketName) {
+  public Bucket createBucket(final String bucketName) {
     final ResultSet result = remoteDatabase.command("sql", "create bucket `" + bucketName + "`");
-    return null;
+    return new RemoteBucket(result.next().getProperty("bucketName"));
   }
 
   @Override
@@ -579,7 +579,9 @@ public class RemoteSchema implements Schema {
   @Deprecated
   @Override
   public DocumentType getTypeByBucketName(final String bucketName) {
-    throw new UnsupportedOperationException();
+    ResultSet resultSet = remoteDatabase.command("sql", "select from schema:types where buckets contains `" + bucketName + "`");
+
+    return remoteDatabase.getSchema().getType(resultSet.nextIfAvailable().getProperty("name"));
   }
 
   @Deprecated
