@@ -157,7 +157,7 @@ public class RemoteVertex {
       bucketName = null;
 
     StringBuilder query = new StringBuilder(
-        "create edge `" + edgeType + "`");
+        "create edge" + (edgeType != null ? " `" + edgeType + "`" : ""));
 
     if (bucketName != null) {
       query.append(" bucket `");

@@ -581,8 +581,8 @@ public class RemoteSchema implements Schema {
   public DocumentType getTypeByBucketName(final String bucketName) {
     ResultSet resultSet = remoteDatabase.command("sql", "select from schema:types where buckets contains `" + bucketName + "`");
 
-    return remoteDatabase.getSchema().getType(resultSet.nextIfAvailable().getProperty("name"));
-  }
+    final Result result = resultSet.nextIfAvailable();
+    return result != null ? remoteDatabase.getSchema().getType(result.getProperty("name")) : null;  }
 
   @Deprecated
   @Override

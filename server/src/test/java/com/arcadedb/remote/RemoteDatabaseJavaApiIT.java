@@ -187,9 +187,8 @@ public class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     Bucket edgeBucket = db.getSchema().createBucket("EdgeBucket");
+    db.getSchema().createEdgeType("FriendOf").addBucket(edgeBucket);
     db.getSchema().createVertexType("Person");
-    EdgeType friendOf1 = db.getSchema().createEdgeType("FriendOf");
-    DocumentType documentType = friendOf1.addBucket(edgeBucket);
 
     MutableVertex me = db.newVertex("Person").set("name", "me").save();
     MutableVertex you = db.newVertex("Person").set("name", "you").save();

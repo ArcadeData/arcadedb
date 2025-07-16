@@ -435,7 +435,7 @@ public class RemoteDocumentType implements DocumentType {
 
   @Override
   public DocumentType addBucket(Bucket bucket) {
-    ResultSet resultSet = remoteDatabase.command("sql", "alter type `" + name + "` bucket +`" + bucket.getName() + "`");
+    remoteDatabase.command("sql", "alter type `" + name + "` bucket +`" + bucket.getName() + "`");
     return remoteDatabase.getSchema().reload().getType(name);
   }
 
