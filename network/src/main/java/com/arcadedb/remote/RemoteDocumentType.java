@@ -28,14 +28,22 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Document type used by {@link RemoteDatabase} class. The metadata are cached from the server until the schema is changed or
@@ -86,19 +94,6 @@ public class RemoteDocumentType implements DocumentType {
 
     if (record.hasProperty("custom"))
       custom = record.getProperty("custom");
-//
-//  final List<ResultInternal> indexes = type.getAllIndexes(false).stream().sorted(Comparator.comparing(Index::getName))
-//      .map(typeIndex -> {
-//        final ResultInternal propRes = new ResultInternal();
-//        propRes.setProperty("name", typeIndex.getName());
-//        propRes.setProperty("typeName", typeIndex.getTypeName());
-//        propRes.setProperty("type", typeIndex.getType());
-//        propRes.setProperty("unique", typeIndex.isUnique());
-//        propRes.setProperty("properties", typeIndex.getPropertyNames());
-//        propRes.setProperty("automatic", typeIndex.isAutomatic());
-//        return propRes;
-//      }).collect(Collectors.toList());
-//      r.setProperty("indexes",indexes);
   }
 
   @Override
@@ -440,7 +435,8 @@ public class RemoteDocumentType implements DocumentType {
 
   @Override
   public DocumentType addBucket(Bucket bucket) {
-    throw new UnsupportedOperationException();
+    remoteDatabase.command("sql", "alter type `" + name + "` bucket +`" + bucket.getName() + "`");
+    return remoteDatabase.getSchema().reload().getType(name);
   }
 
   @Override

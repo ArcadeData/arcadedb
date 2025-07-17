@@ -134,6 +134,7 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
     return Vertex.RECORD_TYPE;
   }
 
+  @Override
   public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final Object... properties) {
     return database.getGraphEngine().newEdge(this, edgeType, toVertex, properties);
   }
@@ -147,11 +148,13 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
     return database.getGraphEngine().newEdge(this, edgeType, toVertex, properties);
   }
 
+  @Override
   public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex) {
     return database.getGraphEngine().newLightEdge(this, edgeType, toVertex);
   }
 
   @Deprecated
+  @Override
   public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional) {
     if (!bidirectional && ((EdgeType) database.getSchema().getType(edgeType)).isBidirectional())
       throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
