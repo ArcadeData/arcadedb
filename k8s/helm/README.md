@@ -140,9 +140,9 @@ The command removes all the Kubernetes components associated with the chart and 
 | `autoscaling.minReplicas`                    |                                                                       | `1`     |
 | `autoscaling.maxReplicas`                    |                                                                       | `100`   |
 | `autoscaling.targetCPUUtilizationPercentage` |                                                                       | `80`    |
-| `volumes`                                    | Additional volumes on the output Deployment definition.               | `[]`    |
-| `volumeMounts`                               | Additional volumeMounts on the output Deployment definition.          | `[]`    |
-| `volumeClaimTemplates`                       | Defines the volumeClaimTemplates on the output Deployment definition. | `[]`    |
+| `volumes`                                    | Additional volumes on the output StatefulSet definition.              | `[]`    |
+| `volumeMounts`                               | Additional volumeMounts on the output StatefulSet definition.         | `[]`    |
+| `volumeClaimTemplates`                       | Defines volumeClaimTemplates for the StatefulSet.                       | `[]`    |
 | `nodeSelector`                               |                                                                       | `{}`    |
 | `tolerations`                                |                                                                       | `[]`    |
 
