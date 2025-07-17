@@ -3,10 +3,14 @@ package com.arcadedb.remote;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -14,6 +18,8 @@ import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.*;
 
+import static com.arcadedb.graph.Vertex.DIRECTION.IN;
+import static com.arcadedb.graph.Vertex.DIRECTION.OUT;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
@@ -45,14 +51,14 @@ public class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
     assertThat(friendOf.getOut()).isEqualTo(me);
     assertThat(friendOf.getIn()).isEqualTo(you);
 
-    assertThat(me.getVertices(Vertex.DIRECTION.OUT).iterator().hasNext()).isTrue();
-    assertThat(me.getVertices(Vertex.DIRECTION.OUT).iterator().next()).isEqualTo(you);
-    assertThat(me.getVertices(Vertex.DIRECTION.IN).iterator().hasNext()).isFalse();
+    assertThat(me.getVertices(OUT).iterator().hasNext()).isTrue();
+    assertThat(me.getVertices(OUT).iterator().next()).isEqualTo(you);
+    assertThat(me.getVertices(IN).iterator().hasNext()).isFalse();
 
-    assertThat(you.getVertices(Vertex.DIRECTION.IN).iterator().hasNext()).isTrue();
-    assertThat(you.getVertices(Vertex.DIRECTION.OUT).iterator().hasNext()).isFalse();
+    assertThat(you.getVertices(IN).iterator().hasNext()).isTrue();
+    assertThat(you.getVertices(OUT).iterator().hasNext()).isFalse();
 
-    Iterable<Edge> friends = me.getEdges(Vertex.DIRECTION.IN, "FriendOf");
+    Iterable<Edge> friends = me.getEdges(IN, "FriendOf");
     assertThat(friends).containsExactly(friendOf);
 
     assertThat(me.getString("name")).isEqualTo("me");
@@ -173,6 +179,24 @@ public class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
     assertThat(committed.get() + caughtExceptions.get()).isEqualTo(TOT * CONCURRENT_THREADS);
 
     database.close();
+  }
+
+  @Test
+  void saveRemoteEdgeOnGivenBucket() {
+    final RemoteDatabase db = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+    Bucket edgeBucket = db.getSchema().createBucket("EdgeBucket");
+    db.getSchema().createEdgeType("FriendOf").addBucket(edgeBucket);
+    db.getSchema().createVertexType("Person");
+
+    MutableVertex me = db.newVertex("Person").set("name", "me").save();
+    MutableVertex you = db.newVertex("Person").set("name", "you").save();
+    MutableEdge friendOf = me.newEdge("bucket:EdgeBucket", you);
+
+    assertThat(friendOf.getOut()).isEqualTo(me.getIdentity());
+    assertThat(friendOf.getIn()).isEqualTo(you.getIdentity());
+
   }
 
   @BeforeEach

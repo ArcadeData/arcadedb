@@ -32,6 +32,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.Vertex.DIRECTION;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
@@ -44,6 +45,7 @@ import org.junit.jupiter.api.Test;
 import java.util.*;
 import java.util.concurrent.atomic.*;
 
+import static com.arcadedb.graph.Vertex.DIRECTION.*;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
@@ -254,32 +256,32 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
 
       kimbal.toJSON();
 
-      final Iterator<Vertex> connected = kimbal.getVertices(Vertex.DIRECTION.IN).iterator();
+      final Iterator<Vertex> connected = kimbal.getVertices(IN).iterator();
       assertThat(connected.hasNext()).isTrue();
       final Vertex albert = connected.next();
       assertThat(albert.getString("lastName")).isEqualTo("Red");
 
-      assertThat(kimbal.countEdges(Vertex.DIRECTION.IN, null)).isEqualTo(1L);
-      assertThat(kimbal.countEdges(Vertex.DIRECTION.IN, EDGE1_TYPE_NAME)).isEqualTo(1L);
-      assertThat(kimbal.countEdges(Vertex.DIRECTION.IN, EDGE2_TYPE_NAME)).isEqualTo(0L);
-      assertThat(kimbal.countEdges(Vertex.DIRECTION.OUT, null)).isEqualTo(0);
-      assertThat(kimbal.countEdges(Vertex.DIRECTION.OUT, EDGE1_TYPE_NAME)).isEqualTo(0);
-      assertThat(kimbal.countEdges(Vertex.DIRECTION.OUT, EDGE2_TYPE_NAME)).isEqualTo(0L);
+      assertThat(kimbal.countEdges(IN, null)).isEqualTo(1L);
+      assertThat(kimbal.countEdges(IN, EDGE1_TYPE_NAME)).isEqualTo(1L);
+      assertThat(kimbal.countEdges(IN, EDGE2_TYPE_NAME)).isEqualTo(0L);
+      assertThat(kimbal.countEdges(OUT, null)).isEqualTo(0);
+      assertThat(kimbal.countEdges(OUT, EDGE1_TYPE_NAME)).isEqualTo(0);
+      assertThat(kimbal.countEdges(OUT, EDGE2_TYPE_NAME)).isEqualTo(0L);
 
-      assertThat(albert.countEdges(Vertex.DIRECTION.OUT, null)).isEqualTo(1L);
-      assertThat(albert.countEdges(Vertex.DIRECTION.OUT, EDGE1_TYPE_NAME)).isEqualTo(1L);
-      assertThat(albert.countEdges(Vertex.DIRECTION.OUT, EDGE2_TYPE_NAME)).isEqualTo(0L);
-      assertThat(albert.countEdges(Vertex.DIRECTION.IN, null)).isEqualTo(0);
-      assertThat(albert.countEdges(Vertex.DIRECTION.IN, EDGE1_TYPE_NAME)).isEqualTo(0);
-      assertThat(albert.countEdges(Vertex.DIRECTION.IN, EDGE2_TYPE_NAME)).isEqualTo(0);
+      assertThat(albert.countEdges(OUT, null)).isEqualTo(1L);
+      assertThat(albert.countEdges(OUT, EDGE1_TYPE_NAME)).isEqualTo(1L);
+      assertThat(albert.countEdges(OUT, EDGE2_TYPE_NAME)).isEqualTo(0L);
+      assertThat(albert.countEdges(IN, null)).isEqualTo(0);
+      assertThat(albert.countEdges(IN, EDGE1_TYPE_NAME)).isEqualTo(0);
+      assertThat(albert.countEdges(IN, EDGE2_TYPE_NAME)).isEqualTo(0);
 
       assertThat(kimbal.isConnectedTo(albert.getIdentity())).isTrue();
-      assertThat(kimbal.isConnectedTo(albert.getIdentity(), Vertex.DIRECTION.IN)).isTrue();
-      assertThat(kimbal.isConnectedTo(albert.getIdentity(), Vertex.DIRECTION.OUT)).isFalse();
+      assertThat(kimbal.isConnectedTo(albert.getIdentity(), IN)).isTrue();
+      assertThat(kimbal.isConnectedTo(albert.getIdentity(), OUT)).isFalse();
 
       assertThat(albert.isConnectedTo(kimbal.getIdentity())).isTrue();
-      assertThat(albert.isConnectedTo(kimbal.getIdentity(), Vertex.DIRECTION.OUT)).isTrue();
-      assertThat(albert.isConnectedTo(kimbal.getIdentity(), Vertex.DIRECTION.IN)).isFalse();
+      assertThat(albert.isConnectedTo(kimbal.getIdentity(), OUT)).isTrue();
+      assertThat(albert.isConnectedTo(kimbal.getIdentity(), IN)).isFalse();
 
       final MutableEdge newEdge = albert.newEdge(EDGE2_TYPE_NAME, kimbal, "since", "today");
       assertThat(albert.getIdentity()).isEqualTo(newEdge.getOut());
@@ -298,7 +300,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       assertThat(kimbal).isEqualTo(newEdge2.getInVertex());
       newEdge2.delete();
 
-      final Edge edge = albert.getEdges(Vertex.DIRECTION.OUT, EDGE2_TYPE_NAME).iterator().next();
+      final Edge edge = albert.getEdges(OUT, EDGE2_TYPE_NAME).iterator().next();
       assertThat(albert.getIdentity()).isEqualTo(edge.getOut());
       assertThat(albert).isEqualTo(edge.getOutVertex());
       assertThat(kimbal.getIdentity()).isEqualTo(edge.getIn());
@@ -307,7 +309,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
 
       // DELETE THE EDGE
       edge.delete();
-      assertThat(albert.getEdges(Vertex.DIRECTION.OUT, EDGE2_TYPE_NAME).iterator().hasNext()).isFalse();
+      assertThat(albert.getEdges(OUT, EDGE2_TYPE_NAME).iterator().hasNext()).isFalse();
 
       // DELETE ONE VERTEX
       albert.delete();
@@ -434,8 +436,6 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
-      //
-      //
       database.command("sqlscript", """
           CREATE VERTEX TYPE AVtx;
           CREATE VERTEX TYPE BVtx EXTENDS AVtx;
@@ -631,6 +631,9 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       }
     });
   }
+
+
+
 
   @BeforeEach
   public void beginTest() {
