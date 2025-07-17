@@ -31,7 +31,7 @@ The command removes all the Kubernetes components associated with the chart and 
 
 ## Parameters
 
-### arcaddb
+### arcadedb
 
 | Name                         | Description                                                        | Value                                    |
 |------------------------------|--------------------------------------------------------------------|------------------------------------------|
@@ -134,16 +134,17 @@ The command removes all the Kubernetes components associated with the chart and 
 
 ### This section is for setting up autoscaling more information can be found here: https://kubernetes.io/docs/concepts/workloads/autoscaling/
 
-| Name                                         | Description                                                  | Value   |
-|----------------------------------------------|--------------------------------------------------------------|---------|
-| `autoscaling.enabled`                        |                                                              | `false` |
-| `autoscaling.minReplicas`                    |                                                              | `1`     |
-| `autoscaling.maxReplicas`                    |                                                              | `100`   |
-| `autoscaling.targetCPUUtilizationPercentage` |                                                              | `80`    |
-| `volumes`                                    | Additional volumes on the output Deployment definition.      | `[]`    |
-| `volumeMounts`                               | Additional volumeMounts on the output Deployment definition. | `[]`    |
-| `nodeSelector`                               |                                                              | `{}`    |
-| `tolerations`                                |                                                              | `[]`    |
+| Name                                         | Description                                                           | Value   |
+|----------------------------------------------|-----------------------------------------------------------------------|---------|
+| `autoscaling.enabled`                        |                                                                       | `false` |
+| `autoscaling.minReplicas`                    |                                                                       | `1`     |
+| `autoscaling.maxReplicas`                    |                                                                       | `100`   |
+| `autoscaling.targetCPUUtilizationPercentage` |                                                                       | `80`    |
+| `volumes`                                    | Additional volumes on the output StatefulSet definition.              | `[]`    |
+| `volumeMounts`                               | Additional volumeMounts on the output StatefulSet definition.         | `[]`    |
+| `volumeClaimTemplates`                       | Defines volumeClaimTemplates for the StatefulSet.                       | `[]`    |
+| `nodeSelector`                               |                                                                       | `{}`    |
+| `tolerations`                                |                                                                       | `[]`    |
 
 ### affinity
 
