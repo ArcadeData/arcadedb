@@ -39,7 +39,7 @@
         <gson.version>2.13.1</gson.version>
         <lz4-java.version>1.8.0</lz4-java.version>
         <lucene.version>10.2.2</lucene.version>
-        <graalvm.version>24.2.1</graalvm.version>
+        <graalvm.version>24.2.2</graalvm.version>
         <hnswlib.version>1.1.0</hnswlib.version>
         <spatial4j.version>0.8</spatial4j.version>
         <jts-core.version>1.20.0</jts-core.version>
