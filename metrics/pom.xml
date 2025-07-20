@@ -34,7 +34,7 @@
     <name>ArcadeDB Metrics</name>
 
     <properties>
-        <micrometer.version>1.15.1</micrometer.version>
+        <micrometer.version>1.15.2</micrometer.version>
     </properties>
 
     <dependencies>
