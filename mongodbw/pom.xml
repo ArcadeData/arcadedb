@@ -35,7 +35,7 @@
     <properties>
         <mongo-java-server.version>1.47.0</mongo-java-server.version>
         <mongo-java-driver.version>3.12.14</mongo-java-driver.version>
-        <netty.version>4.2.2.Final</netty.version>
+        <netty.version>4.2.3.Final</netty.version>
     </properties>
 
     <dependencies>
