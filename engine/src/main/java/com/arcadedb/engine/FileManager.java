@@ -81,7 +81,7 @@ throw new IllegalArgumentException(String.format("Cannot create the directory '%
     } else {
       if (!dbDirectory.canRead()) {
         LogManager.instance().log(this, Level.SEVERE, "The directory '%s' doesn't have the proper permissions", null, dbDirectory);
-        throw new IllegalArgumentException("The directory '" + dbDirectory + "' doesn't have the proper permissions");
+throw new IllegalArgumentException(String.format("The directory '%s' doesn't have the proper permissions", dbDirectory));
       }
 
       for (final File f : dbDirectory.listFiles()) {
