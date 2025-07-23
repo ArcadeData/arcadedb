@@ -73,8 +73,17 @@ public class FileManager {
 
     final File dbDirectory = new File(path);
     if (!dbDirectory.exists()) {
-      dbDirectory.mkdirs();
+      boolean created = dbDirectory.mkdirs();
+      if (!created) {
+        LogManager.instance().log(this, Level.SEVERE, "Cannot create the directory '%s'", null, dbDirectory);
+        throw new IllegalArgumentException("Cannot create the directory '" + dbDirectory + "'");
+      }
     } else {
+      if (!dbDirectory.canRead()) {
+        LogManager.instance().log(this, Level.SEVERE, "The directory '%s' doesn't have the proper permissions", null, dbDirectory);
+        throw new IllegalArgumentException("The directory '" + dbDirectory + "' doesn't have the proper permissions");
+      }
+
       for (final File f : dbDirectory.listFiles()) {
         final String filePath = f.getAbsolutePath();
         final String fileExt = filePath.substring(filePath.lastIndexOf(".") + 1);
