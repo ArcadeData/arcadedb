@@ -76,7 +76,7 @@ public class FileManager {
       boolean created = dbDirectory.mkdirs();
       if (!created) {
         LogManager.instance().log(this, Level.SEVERE, "Cannot create the directory '%s'", null, dbDirectory);
-        throw new IllegalArgumentException("Cannot create the directory '" + dbDirectory + "'");
+throw new IllegalArgumentException(String.format("Cannot create the directory '%s'", dbDirectory));
       }
     } else {
       if (!dbDirectory.canRead()) {
