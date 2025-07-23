@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * @author carlos-rodrigues@8x8.com
  */
-public class  FileManagerTest {
+public class FileManagerTest {
 
 
     @Test
