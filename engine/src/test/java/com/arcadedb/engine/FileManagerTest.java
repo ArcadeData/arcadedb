@@ -44,7 +44,7 @@ public class  FileManagerTest {
     }
 
     @Test
-    void construtor_failure_parentWithNoPermissionsDirectory() throws IOException {
+    void construtor_failure_parentDirectoryWithNoPermissions() throws IOException {
         // arrange
         Path dir = Files.createTempDirectory("parentNoPermsDir");
         Set<PosixFilePermission> noPerms = EnumSet.noneOf(PosixFilePermission.class);
