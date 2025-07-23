@@ -82,7 +82,7 @@ public class FileManagerTest {
     @Test
     void construtor_success_noDirectory() throws IOException {
         // arrange
-        Path dir = Path.of("/tmp","nonExistentDir");
+Path dir = Path.of(System.getProperty("java.io.tmpdir"),"nonExistentDir");
 
         // act
         FileManager fileManager = new FileManager(dir.toFile().getAbsolutePath(), ComponentFile.MODE.READ_WRITE, Set.of(Dictionary.DICT_EXT,
