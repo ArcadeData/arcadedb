@@ -39,12 +39,25 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
-import java.util.stream.*;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
+
+import static com.arcadedb.database.Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+import static com.arcadedb.database.TransactionContext.STATUS.BEGUN;
+import static com.arcadedb.database.TransactionContext.STATUS.INACTIVE;
 
 /**
  * Manage the transaction context. When the transaction begins, the modifiedPages map is initialized. This allows to always delegate
@@ -57,29 +70,29 @@ import java.util.stream.*;
  * txId:long|pages:int|&lt;segmentSize:int|fileId:int|pageNumber:long|pageModifiedFrom:int|pageModifiedTo:int|&lt;prevContent&gt;&lt;newContent&gt;segmentSize:int&gt;MagicNumber:long
  */
 public class TransactionContext implements Transaction {
-  private final DatabaseInternal                     database;
-  private final Map<Integer, Integer>                newPageCounters       = new ConcurrentHashMap<>();
-  private final Map<Integer, AtomicInteger>          bucketRecordDelta     = new HashMap<>();
-  private final Map<RID, Record>                     immutableRecordsCache = new HashMap<>(1024);
-  private final Map<RID, Record>                     modifiedRecordsCache  = new HashMap<>(1024);
-  private final TransactionIndexContext              indexChanges;
-  private final Map<PageId, ImmutablePage>           immutablePages        = new HashMap<>(64);
-  private       Map<PageId, MutablePage>             modifiedPages;
-  private       Map<PageId, MutablePage>             newPages;
-  private       boolean                              useWAL;
-  private       boolean                              asyncFlush            = true;
-  private       WALFile.FlushType                    walFlush;
-  private       List<Integer>                        lockedFiles;
-  private       List<Integer>                        explicitLockedFiles   = null;
-  private       long                                 txId                  = -1;
-  private       STATUS                               status                = STATUS.INACTIVE;
+  private final DatabaseInternal                   database;
+  private final Map<Integer, Integer>              newPageCounters       = new ConcurrentHashMap<>();
+  private final Map<Integer, AtomicInteger>        bucketRecordDelta     = new HashMap<>();
+  private final Map<RID, Record>                   immutableRecordsCache = new HashMap<>(1024);
+  private final Map<RID, Record>                   modifiedRecordsCache  = new HashMap<>(1024);
+  private final TransactionIndexContext            indexChanges;
+  private final Map<PageId, ImmutablePage>         immutablePages        = new HashMap<>(64);
+  private       Map<PageId, MutablePage>           modifiedPages;
+  private       Map<PageId, MutablePage>           newPages;
+  private       boolean                            useWAL;
+  private       boolean                            asyncFlush            = true;
+  private       WALFile.FlushType                  walFlush;
+  private       List<Integer>                      lockedFiles;
+  private       List<Integer>                      explicitLockedFiles   = null;
+  private long             txId           = -1;
+  private STATUS           status         = INACTIVE;
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
   // WITH GRAPHS WHERE EDGES ARE CREATED AND CHUNKS ARE UPDATED MULTIPLE TIMES IN THE SAME TX
   // TODO: OPTIMIZE modifiedRecordsCache STRUCTURE, MAYBE JOIN IT WITH UPDATED RECORDS?
-  private       Map<RID, Record>                     updatedRecords        = null;
-  private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel        = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
-  private       LocalTransactionExplicitLock         explicitLock;
-  private       Object                               requester;
+  private Map<RID, Record>                     updatedRecords = null;
+  private Database.TRANSACTION_ISOLATION_LEVEL isolationLevel = READ_COMMITTED;
+  private LocalTransactionExplicitLock         explicitLock;
+  private       Object                             requester;
 
   public enum STATUS {INACTIVE, BEGUN, COMMIT_1ST_PHASE, COMMIT_2ND_PHASE}
 
@@ -104,10 +117,10 @@ public class TransactionContext implements Transaction {
   public void begin(final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel) {
     this.isolationLevel = isolationLevel;
 
-    if (status != STATUS.INACTIVE)
+    if (status != INACTIVE)
       throw new TransactionException("Transaction already begun");
 
-    status = STATUS.BEGUN;
+    status = BEGUN;
 
     modifiedPages = new HashMap<>();
 
@@ -118,10 +131,10 @@ public class TransactionContext implements Transaction {
 
   @Override
   public Binary commit() {
-    if (status == STATUS.INACTIVE)
+    if (status == INACTIVE)
       throw new TransactionException("Transaction not begun");
 
-    if (status != STATUS.BEGUN)
+    if (status != BEGUN)
       throw new TransactionException("Transaction already in commit phase");
 
     final TransactionPhase1 phase1 = commit1stPhase(true);
@@ -216,8 +229,16 @@ public class TransactionContext implements Transaction {
 
   @Override
   public void rollback() {
+    final int modifiedPageCount = modifiedPages != null ? modifiedPages.size() : 0;
+    final int newPageCount = newPages != null ? newPages.size() : 0;
+    final int updatedRecordCount = updatedRecords != null ? updatedRecords.size() : 0;
+    final int modifiedRecordCacheCount = modifiedRecordsCache.size();
+    final boolean hasIndexChanges = !indexChanges.isEmpty();
+
     LogManager.instance()
-        .log(this, Level.FINE, "Rollback transaction newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
+        .log(this, Level.INFO,
+            "Rolling back transaction with %d modified pages, %d new pages, %d updated records, %d cached records, indexChanges=%s (status=%s, threadId=%d)",
+            modifiedPageCount, newPageCount, updatedRecordCount, modifiedRecordCacheCount, hasIndexChanges, status,
             Thread.currentThread().threadId());
 
     if (database.isOpen() && database.getSchema().getDictionary() != null) {
@@ -226,10 +247,16 @@ public class TransactionContext implements Transaction {
 
         for (final PageId pageId : modifiedPages.keySet()) {
           if (dictionaryId == pageId.getFileId()) {
+            LogManager.instance()
+                .log(this, Level.FINE, "Dictionary modified during transaction, reloading schema dictionary (threadId=%d)",
+                    Thread.currentThread().threadId());
             // RELOAD THE DICTIONARY
             try {
               database.getSchema().getDictionary().reload();
             } catch (final IOException e) {
+              LogManager.instance()
+                  .log(this, Level.WARNING, "Failed to reload schema dictionary during rollback (threadId=%d)",
+                      e, Thread.currentThread().threadId());
               throw new SchemaException("Error on reloading schema dictionary");
             }
             break;
@@ -242,13 +269,24 @@ public class TransactionContext implements Transaction {
     updatedRecords = null;
 
     // RELOAD PREVIOUS VERSION OF MODIFIED RECORDS
-    if (database.isOpen())
+    if (database.isOpen()) {
+      int reloadedRecords = 0;
+      int failedReloads = 0;
       for (final Record r : modifiedRecordsCache.values())
         try {
           r.reload();
+          reloadedRecords++;
         } catch (final Exception e) {
+          failedReloads++;
           // IGNORE EXCEPTION (RECORD DELETED OR TYPE REMOVED)
         }
+
+      if (modifiedRecordCacheCount > 0) {
+        LogManager.instance()
+            .log(this, Level.FINE, "Reloaded %d records from cache during rollback, %d failed reloads (threadId=%d)",
+                reloadedRecords, failedReloads, Thread.currentThread().threadId());
+      }
+    }
 
     reset();
   }
@@ -391,7 +429,7 @@ public class TransactionContext implements Transaction {
 
   @Override
   public boolean isActive() {
-    return status != STATUS.INACTIVE;
+    return status != INACTIVE;
   }
 
   public Map<String, Object> getStats() {
@@ -539,9 +577,15 @@ public class TransactionContext implements Transaction {
         database.getSchema().getDictionary().reload();
 
     } catch (final ConcurrentModificationException e) {
+      LogManager.instance()
+          .log(this, Level.WARNING, "Rolling back replica transaction due to concurrent modification during commit (threadId=%d)",
+              Thread.currentThread().threadId());
       rollback();
       throw e;
     } catch (final Exception e) {
+      LogManager.instance()
+          .log(this, Level.WARNING, "Rolling back replica transaction due to unexpected exception during commit (threadId=%d)",
+              e, Thread.currentThread().threadId());
       rollback();
       throw new TransactionException("Transaction error on commit", e);
     }
@@ -551,10 +595,10 @@ public class TransactionContext implements Transaction {
    * Locks the files in order, then checks all the pre-conditions.
    */
   public TransactionPhase1 commit1stPhase(final boolean isLeader) {
-    if (status == STATUS.INACTIVE)
+    if (status == INACTIVE)
       throw new TransactionException("Transaction not started");
 
-    if (status != STATUS.BEGUN)
+    if (status != BEGUN)
       throw new TransactionException("Transaction in phase " + status);
 
     if (updatedRecords != null) {
@@ -643,11 +687,16 @@ public class TransactionContext implements Transaction {
       return new TransactionPhase1(result, pages);
 
     } catch (final DuplicatedKeyException | ConcurrentModificationException e) {
+      LogManager.instance()
+          .log(this, Level.WARNING, "Rolling back transaction due to %s during commit 1st phase (txId=%d, threadId=%d)",
+              e.getClass().getSimpleName(), txId, Thread.currentThread().threadId());
       rollback();
       throw e;
     } catch (final Exception e) {
       LogManager.instance()
-          .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
+          .log(this, Level.WARNING,
+              "Rolling back transaction due to unexpected exception during commit 1st phase (txId=%d, threadId=%d)",
+              e, txId, Thread.currentThread().threadId());
       rollback();
       throw new TransactionException("Transaction error on commit", e);
     }
@@ -727,7 +776,18 @@ public class TransactionContext implements Transaction {
   }
 
   public void reset() {
-    status = STATUS.INACTIVE;
+    final STATUS previousStatus = status;
+    final boolean hadExplicitLocks = explicitLockedFiles != null;
+    final boolean hadLocks = lockedFiles != null;
+    final int explicitLockCount = explicitLockedFiles != null ? explicitLockedFiles.size() : 0;
+    final int lockCount = lockedFiles != null ? lockedFiles.size() : 0;
+
+    LogManager.instance()
+        .log(this, Level.FINE,
+            "Resetting transaction context (previousStatus=%s, explicitLocks=%d, locks=%d, txId=%d, threadId=%d)",
+            previousStatus, explicitLockCount, lockCount, txId, Thread.currentThread().threadId());
+
+    status = INACTIVE;
 
     if (explicitLockedFiles != null) {
       database.getTransactionManager().unlockFilesInOrder(explicitLockedFiles, getRequester());
@@ -831,6 +891,10 @@ public class TransactionContext implements Transaction {
         // THE FILE HAS BEEN REMOVED, CHECK IF A NEW COMPACTION WAS EXECUTED
         final Integer migratedFileIs = ((LocalSchema) database.getSchema()).getMigratedFileId(f);
         if (migratedFileIs == null) {
+          LogManager.instance()
+              .log(this, Level.WARNING,
+                  "Rolling back transaction due to file removal during lock acquisition (fileId=%d, threadId=%d)",
+                  f, Thread.currentThread().threadId());
           database.getTransactionManager().unlockFilesInOrder(locked, getRequester());
           rollback();
           throw new ConcurrentModificationException("File with id '" + f + "' has been removed");

@@ -34,10 +34,17 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Test;
 
-import java.math.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

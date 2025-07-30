@@ -2,7 +2,6 @@ package com.arcadedb;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
@@ -108,7 +107,13 @@ public class TransactionIsolationTest extends TestHelper {
           assertThat(database.countType("Node", true)).isEqualTo(3);
 
           // MODIFY A RECORD
-          database.query("sql", "select from Node where id = 0").nextIfAvailable().getRecord().get().asVertex().modify().set("modified", true).save();
+          database.query("sql", "select from Node where id = 0")
+              .nextIfAvailable()
+              .getRecord().get()
+              .asVertex()
+              .modify()
+              .set("modified", true)
+              .save();
 
         } catch (InterruptedException e) {
           fail("InterruptedException occurred");
@@ -145,7 +150,9 @@ public class TransactionIsolationTest extends TestHelper {
           assertThat(database.countType("Node", true)).isEqualTo(3);
 
           // CHECK THE NEW RECORD WAS MODIFIED
-          assertThat((Boolean) database.query("sql", "select from Node where id = 0").nextIfAvailable().getProperty("modified")).isTrue();
+          assertThat(
+              (Boolean) database.query("sql", "select from Node where id = 0")
+                  .nextIfAvailable().getProperty("modified")).isTrue();
 
         } catch (InterruptedException e) {
           fail("InterruptedException occurred");
@@ -192,7 +199,13 @@ public class TransactionIsolationTest extends TestHelper {
             assertThat(database.countType("Node", true)).isEqualTo(3);
 
             // MODIFY A RECORD
-            database.query("sql", "select from Node where id = 0").nextIfAvailable().getRecord().get().asVertex().modify().set("modified", true).save();
+            database.query("sql", "select from Node where id = 0")
+                .nextIfAvailable()
+                .getRecord().get()
+                .asVertex()
+                .modify()
+                .set("modified", true)
+                .save();
 
           } catch (InterruptedException e) {
             fail("InterruptedException occurred");
@@ -226,19 +239,19 @@ public class TransactionIsolationTest extends TestHelper {
           try {
             assertThat(database.countType("Node", true)).isEqualTo(2);
 
-              assertThat(
-                      database.query("sql", "select from Node where id = 0")
-                              .nextIfAvailable()
-                              .<Boolean>getProperty("modified")
-              ).isNull();
+            assertThat(
+                database.query("sql", "select from Node where id = 0")
+                    .nextIfAvailable()
+                    .<Boolean>getProperty("modified")
+            ).isNull();
 
             sem3.await();
 
             // CHECK THE NEW RECORD WAS MODIFIED
             assertThat(
-                    database.query("sql", "select from Node where id = 0")
-                            .nextIfAvailable()
-                            .<Boolean>getProperty("modified")
+                database.query("sql", "select from Node where id = 0")
+                    .nextIfAvailable()
+                    .<Boolean>getProperty("modified")
             ).isNull();
 
           } catch (InterruptedException e) {

@@ -27,7 +27,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.util.*;
+import java.util.Iterator;
+import java.util.Map;
 
 @ExcludeFromJacocoGeneratedReport
 public interface BasicDatabase extends AutoCloseable {

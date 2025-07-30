@@ -22,13 +22,20 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.graph.ImmutableVertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.Property;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 

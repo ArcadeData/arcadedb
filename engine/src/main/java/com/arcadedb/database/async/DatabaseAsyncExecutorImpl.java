@@ -39,24 +39,35 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.conversantmedia.util.concurrent.PushPullBlockingQueue;
 
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private final DatabaseInternal     database;
   private final Random               random                        = new Random();
   private final ContextConfiguration configuration;
+  private final AtomicLong           transactionCounter            = new AtomicLong();
+  private final AtomicLong           commandRoundRobinIndex        = new AtomicLong();
+  private final AtomicLong           counterScheduledTasks         = new AtomicLong();
   private       AsyncThread[]        executorThreads;
   private       int                  parallelLevel                 = 1;
   private       int                  commitEvery;
   private       int                  backPressurePercentage        = 0;
-  private boolean           transactionUseWAL             = true;
-  private WALFile.FlushType transactionSync               = WALFile.FlushType.NO;
-  private long              checkForStalledQueuesMaxDelay = 5_000;
-  private final AtomicLong           transactionCounter            = new AtomicLong();
-  private final AtomicLong           commandRoundRobinIndex        = new AtomicLong();
+  private       boolean              transactionUseWAL             = true;
+  private       WALFile.FlushType    transactionSync               = WALFile.FlushType.NO;
+  private       long                 checkForStalledQueuesMaxDelay = 5_000;
+  private       OkCallback           onOkCallback;
+  private       ErrorCallback        onErrorCallback;
 
   public interface AsyncTaskFactory {
     DatabaseAsyncAbstractCallbackTask create();
@@ -75,10 +86,6 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     }
   };
 
-  private OkCallback    onOkCallback;
-  private ErrorCallback onErrorCallback;
-  private AtomicLong    counterScheduledTasks = new AtomicLong();
-
   public class AsyncThread extends Thread {
     public final    BlockingQueue<DatabaseAsyncTask> queue;
     public final    DatabaseInternal                 database;
@@ -91,24 +98,24 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       super("AsyncExecutor-" + database.getName() + "-" + id);
       this.database = database;
 
-      int queueSize =
-          database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE) / parallelLevel;
+      ContextConfiguration configuration = database.getConfiguration();
+      int queueSize = configuration.getValueAsInteger(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE) / parallelLevel;
       if (queueSize < 1)
         queueSize = 1;
 
-      final String cfgQueueImpl = database.getConfiguration().getValueAsString(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_IMPL);
-      if ("fast".equalsIgnoreCase(cfgQueueImpl))
-        this.queue = new PushPullBlockingQueue<>(queueSize);
-      else if ("standard".equalsIgnoreCase(cfgQueueImpl))
-        this.queue = new ArrayBlockingQueue<>(queueSize);
-      else {
+      final String cfgQueueImpl = configuration.getValueAsString(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_IMPL).toLowerCase();
+      switch (cfgQueueImpl) {
+      case "fast" -> this.queue = new PushPullBlockingQueue<>(queueSize);
+      case "standard" -> this.queue = new ArrayBlockingQueue<>(queueSize);
+      default -> {
         // WARNING AND THEN USE THE DEFAULT
         LogManager.instance()
             .log(this, Level.WARNING, "Error on async operation queue implementation setting: %s is not supported", cfgQueueImpl);
         this.queue = new ArrayBlockingQueue<>(queueSize);
       }
+      }
 
-      backPressurePercentage = database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_BACK_PRESSURE);
+      backPressurePercentage = configuration.getValueAsInteger(GlobalConfiguration.ASYNC_BACK_PRESSURE);
     }
 
     public boolean isShutdown() {
@@ -801,11 +808,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   @Override
   public boolean isProcessing() {
     if (executorThreads != null)
-      for (int i = 0; i < executorThreads.length; ++i) {
-        if (executorThreads[i].isExecutingTask())
+      for (AsyncThread executorThread : executorThreads) {
+        if (executorThread.isExecutingTask())
           return true;
 
-        if (executorThreads[i].queue.size() > 0)
+        if (!executorThread.queue.isEmpty())
           return true;
       }
     return false;

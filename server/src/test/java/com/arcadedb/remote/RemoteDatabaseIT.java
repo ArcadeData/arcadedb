@@ -32,7 +32,6 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.graph.Vertex.DIRECTION;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
@@ -42,10 +41,14 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-import static com.arcadedb.graph.Vertex.DIRECTION.*;
+import static com.arcadedb.graph.Vertex.DIRECTION.IN;
+import static com.arcadedb.graph.Vertex.DIRECTION.OUT;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
@@ -631,9 +634,6 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       }
     });
   }
-
-
-
 
   @BeforeEach
   public void beginTest() {

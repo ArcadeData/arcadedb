@@ -135,9 +135,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private              FileChannel                               lockFileIOChannel;
   private              FileLock                                  lockFileLock;
   private final        RecordEventsRegistry                      events                               = new RecordEventsRegistry();
-  private final        ConcurrentHashMap<String, QueryEngine>    reusableQueryEngines                 = new ConcurrentHashMap<>();
-  private              TRANSACTION_ISOLATION_LEVEL               transactionIsolationLevel            = TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
-  private              long                                      openedOn;
+  private final ConcurrentHashMap<String, QueryEngine> reusableQueryEngines      = new ConcurrentHashMap<>();
+  private       TRANSACTION_ISOLATION_LEVEL            transactionIsolationLevel = TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+  private       long                                   openedOn;
   private              long                                      lastUpdatedOn;
   private              long                                      lastUsedOn;
   private              int                                       cachedHashCode                       = 0;
@@ -407,15 +407,26 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public void rollback() {
     stats.txRollbacks.incrementAndGet();
 
+    LogManager.instance()
+        .log(this, Level.INFO, "Explicit rollback requested (threadId=%d)", Thread.currentThread().threadId());
+
     executeInReadLock(() -> {
       try {
         checkTransactionIsActive(false);
 
         final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
-        current.popIfNotLastTransaction().rollback();
+        final TransactionContext tx = current.popIfNotLastTransaction();
+        if (tx != null) {
+          LogManager.instance()
+              .log(this, Level.FINE, "Rolling back transaction context with %d total pages (threadId=%d)",
+                   tx.getModifiedPages(), Thread.currentThread().threadId());
+          tx.rollback();
+        }
 
       } catch (final TransactionException e) {
         // ALREADY ROLLED BACK
+        LogManager.instance()
+            .log(this, Level.FINE, "Transaction already rolled back (threadId=%d)", Thread.currentThread().threadId());
       }
       return null;
     });
@@ -1084,8 +1095,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       } catch (final NeedRetryException | DuplicatedKeyException e) {
         // RETRY
         lastException = e;
-        if (wrappedDatabaseInstance.isTransactionActive())
+        if (wrappedDatabaseInstance.isTransactionActive()) {
+          LogManager.instance()
+              .log(this, Level.INFO, "Rolling back transaction due to retryable exception: %s (attempt %d/%d, threadId=%d)",
+                   e.getClass().getSimpleName(), retry + 1, attempts, Thread.currentThread().threadId());
           wrappedDatabaseInstance.rollback();
+        }
 
         if (error != null)
           error.call(e);
@@ -1093,8 +1108,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         delayBetweenRetries(retryDelay);
 
       } catch (final Throwable e) {
-        if (wrappedDatabaseInstance.isTransactionActive())
+        if (wrappedDatabaseInstance.isTransactionActive()) {
+          LogManager.instance()
+              .log(this, Level.WARNING, "Rolling back transaction due to unexpected exception: %s - %s (threadId=%d)",
+                   e.getClass().getSimpleName(), e.getMessage(), Thread.currentThread().threadId());
           wrappedDatabaseInstance.rollback();
+        }
 
         if (error != null)
           error.call(e);

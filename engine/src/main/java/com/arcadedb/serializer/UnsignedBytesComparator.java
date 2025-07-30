@@ -21,9 +21,8 @@ package com.arcadedb.serializer;
 import com.arcadedb.exception.ArcadeDBException;
 import sun.misc.Unsafe;
 
-import java.lang.reflect.*;
-import java.nio.*;
-import java.security.*;
+import java.lang.reflect.Field;
+import java.nio.ByteOrder;
 
 /**
  * This class was inspired by Guava's UnsignedBytes, under Apache 2 license.
@@ -173,6 +172,7 @@ public final class UnsignedBytesComparator {
   /**
    * Returns a sun.misc.Unsafe. Suitable for use in a 3rd party package. Replace with a simple
    * call to Unsafe.getUnsafe when integrating into a jdk.
+   * Updated for Java 21+ compatibility by removing deprecated AccessController usage.
    *
    * @return a sun.misc.Unsafe
    */
@@ -183,19 +183,18 @@ public final class UnsignedBytesComparator {
       // that's okay; try reflection instead
     }
     try {
-      return AccessController.doPrivileged((PrivilegedExceptionAction<Unsafe>) () -> {
-        final Class<Unsafe> k = Unsafe.class;
-        for (final Field f : k.getDeclaredFields()) {
-          f.setAccessible(true);
-          final Object x = f.get(null);
-          if (k.isInstance(x)) {
-            return k.cast(x);
-          }
+      // Direct reflection approach without deprecated AccessController
+      final Class<Unsafe> k = Unsafe.class;
+      for (final Field f : k.getDeclaredFields()) {
+        f.setAccessible(true);
+        final Object x = f.get(null);
+        if (k.isInstance(x)) {
+          return k.cast(x);
         }
-        throw new NoSuchFieldError("the Unsafe");
-      });
-    } catch (final PrivilegedActionException e) {
-      throw new ArcadeDBException("Could not initialize intrinsics", e.getCause());
+      }
+      throw new NoSuchFieldError("the Unsafe");
+    } catch (final Exception e) {
+      throw new ArcadeDBException("Could not initialize intrinsics", e);
     }
   }
 
