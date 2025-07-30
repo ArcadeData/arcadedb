@@ -70,29 +70,29 @@ import static com.arcadedb.database.TransactionContext.STATUS.INACTIVE;
  * txId:long|pages:int|&lt;segmentSize:int|fileId:int|pageNumber:long|pageModifiedFrom:int|pageModifiedTo:int|&lt;prevContent&gt;&lt;newContent&gt;segmentSize:int&gt;MagicNumber:long
  */
 public class TransactionContext implements Transaction {
-  private final DatabaseInternal                   database;
-  private final Map<Integer, Integer>              newPageCounters       = new ConcurrentHashMap<>();
-  private final Map<Integer, AtomicInteger>        bucketRecordDelta     = new HashMap<>();
-  private final Map<RID, Record>                   immutableRecordsCache = new HashMap<>(1024);
-  private final Map<RID, Record>                   modifiedRecordsCache  = new HashMap<>(1024);
-  private final TransactionIndexContext            indexChanges;
-  private final Map<PageId, ImmutablePage>         immutablePages        = new HashMap<>(64);
-  private       Map<PageId, MutablePage>           modifiedPages;
-  private       Map<PageId, MutablePage>           newPages;
-  private       boolean                            useWAL;
-  private       boolean                            asyncFlush            = true;
-  private       WALFile.FlushType                  walFlush;
-  private       List<Integer>                      lockedFiles;
-  private       List<Integer>                      explicitLockedFiles   = null;
-  private long             txId           = -1;
-  private STATUS           status         = INACTIVE;
+  private final DatabaseInternal                     database;
+  private final Map<Integer, Integer>                newPageCounters       = new ConcurrentHashMap<>();
+  private final Map<Integer, AtomicInteger>          bucketRecordDelta     = new HashMap<>();
+  private final Map<RID, Record>                     immutableRecordsCache = new HashMap<>(1024);
+  private final Map<RID, Record>                     modifiedRecordsCache  = new HashMap<>(1024);
+  private final TransactionIndexContext              indexChanges;
+  private final Map<PageId, ImmutablePage>           immutablePages        = new HashMap<>(64);
+  private       Map<PageId, MutablePage>             modifiedPages;
+  private       Map<PageId, MutablePage>             newPages;
+  private       boolean                              useWAL;
+  private       boolean                              asyncFlush            = true;
+  private       WALFile.FlushType                    walFlush;
+  private       List<Integer>                        lockedFiles;
+  private       List<Integer>                        explicitLockedFiles   = null;
+  private       long                                 txId                  = -1;
+  private       STATUS                               status                = INACTIVE;
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
   // WITH GRAPHS WHERE EDGES ARE CREATED AND CHUNKS ARE UPDATED MULTIPLE TIMES IN THE SAME TX
   // TODO: OPTIMIZE modifiedRecordsCache STRUCTURE, MAYBE JOIN IT WITH UPDATED RECORDS?
-  private Map<RID, Record>                     updatedRecords = null;
-  private Database.TRANSACTION_ISOLATION_LEVEL isolationLevel = READ_COMMITTED;
-  private LocalTransactionExplicitLock         explicitLock;
-  private       Object                             requester;
+  private       Map<RID, Record>                     updatedRecords        = null;
+  private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel        = READ_COMMITTED;
+  private       LocalTransactionExplicitLock         explicitLock;
+  private       Object                               requester;
 
   public enum STATUS {INACTIVE, BEGUN, COMMIT_1ST_PHASE, COMMIT_2ND_PHASE}
 
@@ -777,8 +777,6 @@ public class TransactionContext implements Transaction {
 
   public void reset() {
     final STATUS previousStatus = status;
-    final boolean hadExplicitLocks = explicitLockedFiles != null;
-    final boolean hadLocks = lockedFiles != null;
     final int explicitLockCount = explicitLockedFiles != null ? explicitLockedFiles.size() : 0;
     final int lockCount = lockedFiles != null ? lockedFiles.size() : 0;
 

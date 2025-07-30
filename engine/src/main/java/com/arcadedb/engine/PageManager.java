@@ -490,23 +490,20 @@ public class PageManager extends LockContext {
     // Sort in-place using a more efficient comparison strategy
     // Prioritize: older access time first, then larger pages for same access time
     candidates.sort((o1, o2) -> {
-      final long timeDiff = o1.getLastAccessed() - o2.getLastAccessed();
-      if (timeDiff != 0) {
-        return timeDiff < 0 ? -1 : 1; // Avoid long to int conversion
-      }
+      int cmp = Long.compare(o1.getLastAccessed(), o2.getLastAccessed());
+      if (cmp != 0)
+        return cmp;
 
       // For same access time, prefer removing larger pages (better memory recovery)
-      final long sizeDiff = o2.getPhysicalSize() - o1.getPhysicalSize();
-      if (sizeDiff != 0) {
-        return sizeDiff < 0 ? -1 : 1;
-      }
+      cmp = Long.compare(o2.getPhysicalSize(), o1.getPhysicalSize());
+      if (cmp != 0)
+        return cmp;
 
       return o1.getPageId().compareTo(o2.getPageId());
     });
 
     // REMOVE OLDEST PAGES FROM RAM - process in batches for better performance
     long freedRAM = 0;
-    final int batchSize = Math.min(candidates.size(), 100); // Process max 100 at a time
 
     for (int i = 0; i < candidates.size() && freedRAM < ramToFree; i++) {
       final CachedPage candidate = candidates.get(i);
