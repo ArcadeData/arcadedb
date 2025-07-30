@@ -2,7 +2,6 @@ package com.arcadedb;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
@@ -166,7 +165,7 @@ public class TransactionIsolationTest extends TestHelper {
 
   @Test
   public void testRepeatableRead() throws InterruptedException {
-    database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    database.setTransactionIsolationLevel(Database.TransactionIsolationLevel.REPEATABLE_READ);
     try {
 
       final CountDownLatch sem1 = new CountDownLatch(1);
@@ -257,7 +256,7 @@ public class TransactionIsolationTest extends TestHelper {
       thread1.join(3000);
       thread2.join(3000);
     } finally {
-      database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
+      database.setTransactionIsolationLevel(Database.TransactionIsolationLevel.READ_COMMITTED);
     }
   }
 }

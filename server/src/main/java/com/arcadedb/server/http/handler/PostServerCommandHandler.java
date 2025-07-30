@@ -179,7 +179,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.create-database").increment();
 
-    final ServerDatabase db = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
+    final ServerDatabase db = server.createDatabase(databaseName, ComponentFile.Mode.READ_WRITE);
 
     if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
       final ReplicatedDatabase replicatedDatabase = (ReplicatedDatabase) db.getWrappedDatabaseInstance();

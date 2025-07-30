@@ -28,8 +28,8 @@ import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public class FileManager {
-  private final        ComponentFile.MODE                        mode;
-  private final        List<ComponentFile>                       files           = new ArrayList<>();
+  private final ComponentFile.Mode  mode;
+  private final List<ComponentFile> files           = new ArrayList<>();
   private final        ConcurrentHashMap<String, ComponentFile>  fileNameMap     = new ConcurrentHashMap<>();
   private final        ConcurrentHashMap<Integer, ComponentFile> fileIdMap       = new ConcurrentHashMap<>();
   private final        AtomicLong                                maxFilesOpened  = new AtomicLong();
@@ -68,7 +68,7 @@ public class FileManager {
     public long totalOpenFiles;
   }
 
-  public FileManager(final String path, final ComponentFile.MODE mode, final Set<String> supportedFileExt) {
+  public FileManager(final String path, final ComponentFile.Mode mode, final Set<String> supportedFileExt) {
     this.mode = mode;
 
     final File dbDirectory = new File(path);
@@ -176,7 +176,7 @@ throw new IllegalArgumentException(String.format("The directory '%s' doesn't hav
     return f;
   }
 
-  public ComponentFile getOrCreateFile(final String fileName, final String filePath, final ComponentFile.MODE mode)
+  public ComponentFile getOrCreateFile(final String fileName, final String filePath, final ComponentFile.Mode mode)
       throws IOException {
     ComponentFile file = fileNameMap.get(fileName);
     if (file != null)

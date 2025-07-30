@@ -60,8 +60,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
    * Called at creation time.
    */
   protected LSMTreeIndexMutable(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name,
-      final boolean unique, final String filePath, final ComponentFile.MODE mode, final Type[] keyTypes, final int pageSize,
-      final NULL_STRATEGY nullStrategy) throws IOException {
+      final boolean unique, final String filePath, final ComponentFile.Mode mode, final Type[] keyTypes, final int pageSize,
+      final NullStrategy nullStrategy) throws IOException {
     super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, mode, keyTypes, pageSize,
         CURRENT_VERSION, nullStrategy);
     database.checkTransactionIsActive(database.isAutoTransaction());
@@ -87,7 +87,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
    * Called at load time (1st page only).
    */
   protected LSMTreeIndexMutable(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name,
-      final boolean unique, final String filePath, final int id, final ComponentFile.MODE mode, final int pageSize,
+      final boolean unique, final String filePath, final int id, final ComponentFile.Mode mode, final int pageSize,
       final int version) throws IOException {
     super(mainIndex, database, name, unique, filePath, id, mode, pageSize, version);
     onAfterLoad();
@@ -217,7 +217,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     checkForNulls(keys);
 
     final Object[] convertedKeys = convertKeys(keys, binaryKeyTypes);
-    if (convertedKeys == null && nullStrategy == NULL_STRATEGY.SKIP)
+    if (convertedKeys == null && nullStrategy == NullStrategy.SKIP)
       return new TempIndexCursor(Collections.emptyList());
 
     final Set<IndexCursorEntry> set = new HashSet<>();
@@ -424,7 +424,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     if (keys == null)
       throw new IllegalArgumentException("Keys parameter is null");
 
-    if (database.getMode() == ComponentFile.MODE.READ_ONLY)
+    if (database.getMode() == ComponentFile.Mode.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update the index '" + componentName + "'");
 
     if (keys.length != binaryKeyTypes.length)
@@ -433,7 +433,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     checkForNulls(keys);
 
     final Object[] convertedKeys = convertKeys(keys, binaryKeyTypes);
-    if (convertedKeys == null && nullStrategy == NULL_STRATEGY.SKIP)
+    if (convertedKeys == null && nullStrategy == NullStrategy.SKIP)
       // SKIP THIS RECORD
       return;
 
@@ -517,7 +517,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     if (keys == null)
       throw new IllegalArgumentException("Keys parameter is null");
 
-    if (database.getMode() == ComponentFile.MODE.READ_ONLY)
+    if (database.getMode() == ComponentFile.Mode.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update the index '" + componentName + "'");
 
     if (keys.length != binaryKeyTypes.length)

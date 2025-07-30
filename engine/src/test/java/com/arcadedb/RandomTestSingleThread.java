@@ -172,14 +172,14 @@ public class RandomTestSingleThread extends TestHelper {
       accountType.createProperty("surname", String.class);
       accountType.createProperty("registered", Date.class);
 
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Account", "id");
+      database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, true, "Account", "id");
 
       final VertexType txType = database.getSchema().buildVertexType().withName("Transaction").withTotalBuckets(PARALLEL).create();
       txType.createProperty("uuid", String.class);
       txType.createProperty("date", Date.class);
       txType.createProperty("amount", BigDecimal.class);
 
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Transaction", "uuid");
+      database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, true, "Transaction", "uuid");
 
       final EdgeType edgeType = database.getSchema().buildEdgeType().withName("PurchasedBy").withTotalBuckets(PARALLEL).create();
       edgeType.createProperty("date", Date.class);

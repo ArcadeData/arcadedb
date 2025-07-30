@@ -53,10 +53,10 @@ public class DropIndexTest extends TestHelper {
     type.createProperty("name", String.class);
 
     final Index typeIndex = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+        .createTypeIndex(Schema.IndexType.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
     final Index typeIndex2 = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE,
-            LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
+        .createTypeIndex(Schema.IndexType.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE,
+            LSMTreeIndexAbstract.NullStrategy.SKIP, null);
 
     database.transaction(() -> {
       for (int i = 0; i < TOT; ++i) {
@@ -99,7 +99,7 @@ public class DropIndexTest extends TestHelper {
         }
 
       final Index typeIndex3 = database.getSchema()
-          .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+          .createTypeIndex(Schema.IndexType.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
 
       Assertions.assertThat(database.countType(TYPE_NAME, true)).isEqualTo(TOT + 1);
       Assertions.assertThat(database.countType(TYPE_NAME2, false)).isEqualTo(TOT);
@@ -142,10 +142,10 @@ public class DropIndexTest extends TestHelper {
     type.createProperty("name", String.class);
 
     final Index typeIndex = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+        .createTypeIndex(Schema.IndexType.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
     final Index typeIndex2 = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE,
-            LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
+        .createTypeIndex(Schema.IndexType.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE,
+            LSMTreeIndexAbstract.NullStrategy.SKIP, null);
 
     type.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
     type2.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
@@ -231,7 +231,7 @@ public class DropIndexTest extends TestHelper {
 
       database.getSchema().dropIndex(typeIndex.getName());
       final Index typeIndex3 = database.getSchema()
-          .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+          .createTypeIndex(Schema.IndexType.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
 
       for (int i = 0; i < TOT; ++i) {
         final MutableDocument v2 = database.newDocument(TYPE_NAME2);

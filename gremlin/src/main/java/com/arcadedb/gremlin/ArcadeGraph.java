@@ -479,11 +479,11 @@ public class ArcadeGraph implements Graph, Closeable {
     return StringFactory.graphString(this, database.getName());
   }
 
-  public static com.arcadedb.graph.Vertex.DIRECTION mapDirection(final Direction direction) {
+  public static com.arcadedb.graph.Vertex.Direction mapDirection(final Direction direction) {
     return switch (direction) {
-      case OUT -> com.arcadedb.graph.Vertex.DIRECTION.OUT;
-      case IN -> com.arcadedb.graph.Vertex.DIRECTION.IN;
-      case BOTH -> com.arcadedb.graph.Vertex.DIRECTION.BOTH;
+      case OUT -> com.arcadedb.graph.Vertex.Direction.OUT;
+      case IN -> com.arcadedb.graph.Vertex.Direction.IN;
+      case BOTH -> com.arcadedb.graph.Vertex.Direction.BOTH;
     };
   }
 

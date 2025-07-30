@@ -52,9 +52,9 @@ public class RandomTestMultiThreadsTest extends TestHelper {
   private final AtomicLong                           mvccErrors              = new AtomicLong();
   private final Random                               rnd                     = new Random();
   private final AtomicLong                           uuid                    = new AtomicLong();
-  private final List<Pair<Integer, Exception>>       otherErrors             = Collections.synchronizedList(new ArrayList<>());
-  private final Database.TRANSACTION_ISOLATION_LEVEL txType                  = Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
-  private final boolean                              explicitLocks           = true;
+  private final List<Pair<Integer, Exception>>     otherErrors   = Collections.synchronizedList(new ArrayList<>());
+  private final Database.TransactionIsolationLevel txType        = Database.TransactionIsolationLevel.REPEATABLE_READ;
+  private final boolean                            explicitLocks = true;
   private final boolean                              debug                   = false;
 
   @Test
@@ -392,7 +392,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
       accountType.createProperty("surname", String.class);
       accountType.createProperty("registered", Date.class);
 
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Account", new String[] { "id" }, 500000);
+      database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, true, "Account", new String[] { "id" }, 500000);
 
       final VertexType txType = database.getSchema().buildVertexType().withName("Transaction").withTotalBuckets(BUCKETS).create();
       txType.createProperty("uuid", Long.class);
@@ -401,7 +401,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
       txType.createProperty("updated", Integer.class);
       txType.createProperty("longFieldUpdated", String.class);
 
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Transaction", new String[] { "uuid" }, 500000);
+      database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, true, "Transaction", new String[] { "uuid" }, 500000);
 
       final EdgeType edgeType = database.getSchema().buildEdgeType().withName("PurchasedBy").withTotalBuckets(BUCKETS).create();
       edgeType.createProperty("date", Date.class);

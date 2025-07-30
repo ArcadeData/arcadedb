@@ -119,10 +119,10 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
           if (ifNotExists) {
             if (context.getDatabase().getGraphEngine()
-                .isVertexConnectedTo((VertexInternal) currentFrom, currentTo, Vertex.DIRECTION.OUT, targetClass.getStringValue())) {
+                .isVertexConnectedTo((VertexInternal) currentFrom, currentTo, Vertex.Direction.OUT, targetClass.getStringValue())) {
 
               for (Edge existingEdge : context.getDatabase().getGraphEngine()
-                  .getEdges((VertexInternal) currentFrom, Vertex.DIRECTION.OUT, targetClass.getStringValue())) {
+                  .getEdges((VertexInternal) currentFrom, Vertex.Direction.OUT, targetClass.getStringValue())) {
 
                 if (existingEdge.getIn().equals(currentTo)) {
                   currentTo = null;

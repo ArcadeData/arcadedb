@@ -59,7 +59,7 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
       if (isolationLevel == null)
         return new ExecutionResponse(400, "Missing parameter 'isolationLevel'");
 
-      database.begin(Database.TRANSACTION_ISOLATION_LEVEL.valueOf(isolationLevel));
+      database.begin(Database.TransactionIsolationLevel.valueOf(isolationLevel));
     } else
       database.begin();
 

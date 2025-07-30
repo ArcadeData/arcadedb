@@ -70,23 +70,23 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   private              int                           associatedBucketId = -1;
   private              String                        typeName;
   protected            List<String>                  propertyNames;
-  protected            LSMTreeIndexMutable           mutable;
-  protected final      AtomicReference<INDEX_STATUS> status             = new AtomicReference<>(
-      INDEX_STATUS.AVAILABLE);
-  private              boolean                       valid              = true;
+  protected            LSMTreeIndexMutable          mutable;
+  protected final      AtomicReference<IndexStatus> status = new AtomicReference<>(
+      IndexStatus.AVAILABLE);
+  private              boolean                      valid  = true;
 
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override
     public IndexInternal create(final IndexBuilder builder) {
       return new LSMTreeIndex(builder.getDatabase(), builder.getIndexName(), builder.isUnique(), builder.getFilePath(),
-          ComponentFile.MODE.READ_WRITE, builder.getKeyTypes(), builder.getPageSize(), builder.getNullStrategy());
+          ComponentFile.Mode.READ_WRITE, builder.getKeyTypes(), builder.getPageSize(), builder.getNullStrategy());
     }
   }
 
   public static class PaginatedComponentFactoryHandlerUnique implements ComponentFactory.PaginatedComponentFactoryHandler {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id,
-        final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
+        final ComponentFile.Mode mode, final int pageSize, final int version) throws IOException {
       if (filePath.endsWith(LSMTreeIndexCompacted.UNIQUE_INDEX_EXT))
         return new LSMTreeIndexCompacted(null, database, name, true, filePath, id, mode, pageSize, version);
 
@@ -97,7 +97,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public static class PaginatedComponentFactoryHandlerNotUnique implements ComponentFactory.PaginatedComponentFactoryHandler {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id,
-        final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
+        final ComponentFile.Mode mode, final int pageSize, final int version) throws IOException {
       if (filePath.endsWith(LSMTreeIndexCompacted.UNIQUE_INDEX_EXT))
         return new LSMTreeIndexCompacted(null, database, name, false, filePath, id, mode, pageSize, version);
 
@@ -109,8 +109,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    * Called at creation time.
    */
   public LSMTreeIndex(final DatabaseInternal database, final String name, final boolean unique, final String filePath,
-      final ComponentFile.MODE mode, final Type[] keyTypes, final int pageSize,
-      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
+      final ComponentFile.Mode mode, final Type[] keyTypes, final int pageSize,
+      final LSMTreeIndexAbstract.NullStrategy nullStrategy) {
     try {
       this.name = name;
       this.mutable = new LSMTreeIndexMutable(this, database, name, unique, filePath, mode, keyTypes, pageSize, nullStrategy);
@@ -123,7 +123,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    * Called at load time (1st page only).
    */
   public LSMTreeIndex(final DatabaseInternal database, final String name, final boolean unique, final String filePath, final int id,
-      final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
+      final ComponentFile.Mode mode, final int pageSize, final int version) throws IOException {
     this.name = FileUtils.encode(name, database.getSchema().getEncoding());
     this.mutable = new LSMTreeIndexMutable(this, database, name, unique, filePath, id, mode, pageSize, version);
   }
@@ -132,7 +132,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
     if (getDatabase().getPageManager().isPageFlushingSuspended(getDatabase()))
       return false;
-    return status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.COMPACTION_SCHEDULED);
+    return status.compareAndSet(IndexStatus.AVAILABLE, IndexStatus.COMPACTION_SCHEDULED);
   }
 
   public void setMetadata(final String typeName, final String[] propertyNames, final int associatedBucketId) {
@@ -201,8 +201,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public Schema.INDEX_TYPE getType() {
-    return Schema.INDEX_TYPE.LSM_TREE;
+  public Schema.IndexType getType() {
+    return Schema.IndexType.LSM_TREE;
   }
 
   @Override
@@ -220,14 +220,14 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
     final DatabaseInternal database = getDatabase();
 
-    if (database.getMode() == ComponentFile.MODE.READ_ONLY)
+    if (database.getMode() == ComponentFile.Mode.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update the index '" + getName() + "'");
 
     if (database.getPageManager().isPageFlushingSuspended(database))
       // POSTPONE COMPACTING (DATABASE BACKUP IN PROGRESS?)
       return false;
 
-    if (!status.compareAndSet(INDEX_STATUS.COMPACTION_SCHEDULED, INDEX_STATUS.COMPACTION_IN_PROGRESS))
+    if (!status.compareAndSet(IndexStatus.COMPACTION_SCHEDULED, IndexStatus.COMPACTION_IN_PROGRESS))
       // COMPACTION NOT SCHEDULED
       return false;
 
@@ -237,7 +237,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       // IGNORE IT, WILL RETRY LATER
       return false;
     } finally {
-      status.set(INDEX_STATUS.AVAILABLE);
+      status.set(IndexStatus.AVAILABLE);
     }
   }
 
@@ -255,7 +255,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public boolean isCompacting() {
-    return status.get() == INDEX_STATUS.COMPACTION_IN_PROGRESS;
+    return status.get() == IndexStatus.COMPACTION_IN_PROGRESS;
   }
 
   @Override
@@ -264,8 +264,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public boolean setStatus(final INDEX_STATUS[] expectedStatuses, final INDEX_STATUS newStatus) {
-    for (INDEX_STATUS expectedStatus : expectedStatuses)
+  public boolean setStatus(final IndexStatus[] expectedStatuses, final IndexStatus newStatus) {
+    for (IndexStatus expectedStatus : expectedStatuses)
       if (this.status.compareAndSet(expectedStatus, newStatus))
         return true;
     return false;
@@ -274,7 +274,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   @Override
   public void close() {
     checkIsValid();
-    if (status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE)) {
+    if (status.compareAndSet(IndexStatus.AVAILABLE, IndexStatus.UNAVAILABLE)) {
       lock.executeInWriteLock(() -> {
         if (mutable != null)
           mutable.close();
@@ -285,8 +285,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   public void drop() {
-    if (status.get() != INDEX_STATUS.UNAVAILABLE)
-      if (!status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE))
+    if (status.get() != IndexStatus.UNAVAILABLE)
+      if (!status.compareAndSet(IndexStatus.AVAILABLE, IndexStatus.UNAVAILABLE))
         throw new NeedRetryException("Error on dropping index '" + name + "' because not available");
 
     if (mutable == null)
@@ -371,7 +371,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
     final Object[] convertedKeys = convertKeys(keys);
 
-    if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
+    if (getDatabase().getTransaction().getStatus() == TransactionContext.Status.BEGUN) {
       Set<IndexCursorEntry> txChanges = null;
 
       final Map<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> indexChanges = getDatabase().getTransaction()
@@ -419,7 +419,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
     final Object[] convertedKeys = convertKeys(keys);
 
-    if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
+    if (getDatabase().getTransaction().getStatus() == TransactionContext.Status.BEGUN) {
       // KEY ADDED AT COMMIT TIME (IN A LOCK)
       final TransactionContext tx = getDatabase().getTransaction();
       for (final RID rid : rids)
@@ -436,7 +436,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
     final Object[] convertedKeys = convertKeys(keys);
 
-    if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN)
+    if (getDatabase().getTransaction().getStatus() == TransactionContext.Status.BEGUN)
       // KEY REMOVED AT COMMIT TIME (IN A LOCK)
       getDatabase().getTransaction()
           .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE, convertedKeys, null);
@@ -452,7 +452,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
     final Object[] convertedKeys = convertKeys(keys);
 
-    if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN)
+    if (getDatabase().getTransaction().getStatus() == TransactionContext.Status.BEGUN)
       // KEY REMOVED AT COMMIT TIME (IN A LOCK)
       getDatabase().getTransaction()
           .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE, convertedKeys, rid.getIdentity());
@@ -469,12 +469,12 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public LSMTreeIndexAbstract.NULL_STRATEGY getNullStrategy() {
+  public LSMTreeIndexAbstract.NullStrategy getNullStrategy() {
     return mutable.nullStrategy;
   }
 
   @Override
-  public void setNullStrategy(final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
+  public void setNullStrategy(final LSMTreeIndexAbstract.NullStrategy nullStrategy) {
     checkIsValid();
     mutable.nullStrategy = nullStrategy;
   }
@@ -523,8 +523,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     final int fileId = mutable.getFileId();
 
-    final LockManager.LOCK_STATUS locked = database.getTransactionManager().tryLockFile(fileId, 0, Thread.currentThread());
-    if (locked == LockManager.LOCK_STATUS.NO)
+    final LockManager.LockStatus locked = database.getTransactionManager().tryLockFile(fileId, 0, Thread.currentThread());
+    if (locked == LockManager.LockStatus.NO)
       throw new IllegalStateException("Cannot replace compacted index because cannot lock index file " + fileId);
 
     final AtomicInteger lockedNewFileId = new AtomicInteger(-1);
@@ -605,7 +605,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       if (lockedFileId != null)
         database.getTransactionManager().unlockFile(lockedFileId, Thread.currentThread());
 
-      if (locked == LockManager.LOCK_STATUS.YES)
+      if (locked == LockManager.LockStatus.YES)
         // RELEASE THE DELETED FILE ONLY IF THE LOCK WAS ACQUIRED HERE
         database.getTransactionManager().unlockFile(fileId, Thread.currentThread());
     }
@@ -620,7 +620,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     final DatabaseInternal db = getDatabase();
 
-    if (status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE)) {
+    if (status.compareAndSet(IndexStatus.AVAILABLE, IndexStatus.UNAVAILABLE)) {
 
       db.scanBucket(db.getSchema().getBucketById(associatedBucketId).getName(), record -> {
         db.getIndexer().addToIndex(LSMTreeIndex.this, record.getIdentity(), (Document) record);
@@ -638,7 +638,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         return true;
       });
 
-      status.set(INDEX_STATUS.AVAILABLE);
+      status.set(IndexStatus.AVAILABLE);
 
     } else
       throw new NeedRetryException("Error on building index '" + name + "' because not available");

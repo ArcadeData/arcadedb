@@ -442,9 +442,9 @@ public class Console {
 
       checkDatabaseIsLocked(localUrl);
 
-      ComponentFile.MODE mode = ComponentFile.MODE.READ_WRITE;
+      ComponentFile.Mode mode = ComponentFile.Mode.READ_WRITE;
       if (urlParts.length > 1)
-        mode = ComponentFile.MODE.valueOf(urlParts[1].toUpperCase(Locale.ENGLISH));
+        mode = ComponentFile.Mode.valueOf(urlParts[1].toUpperCase(Locale.ENGLISH));
 
       databaseFactory = new DatabaseFactory(localUrl);
       databaseProxy = databaseFactory.setAutoTransaction(true).open(mode);
@@ -1029,7 +1029,7 @@ public class Console {
   private static boolean setGlobalConfiguration(final String key, final String value, final boolean printError) {
     final GlobalConfiguration cfg = GlobalConfiguration.findByKey(key);
     if (cfg != null) {
-      if (cfg.getScope() == GlobalConfiguration.SCOPE.SERVER) {
+      if (cfg.getScope() == GlobalConfiguration.Scope.SERVER) {
         if (printError)
           System.err.println("Global configuration '" + key + "' is not available for console. The setting will be ignored");
       } else {

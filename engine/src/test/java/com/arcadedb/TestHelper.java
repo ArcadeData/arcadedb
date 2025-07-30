@@ -130,7 +130,7 @@ public abstract class TestHelper {
       assertThat(DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath())).isNull();
     }
 
-    database = factory.open(ComponentFile.MODE.READ_ONLY);
+    database = factory.open(ComponentFile.Mode.READ_ONLY);
     assertThat(DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath())).isEqualTo(database);
   }
 
@@ -165,7 +165,7 @@ public abstract class TestHelper {
       if (isCheckingDatabaseIntegrity())
         checkDatabaseIntegrity();
 
-      if (database.getMode() == ComponentFile.MODE.READ_ONLY)
+      if (database.getMode() == ComponentFile.Mode.READ_ONLY)
         reopenDatabase();
 
       ((DatabaseInternal) database).getEmbedded().drop();

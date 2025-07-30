@@ -65,9 +65,9 @@ public class CompositeIndexTest {
           dtOrders.createProperty("vstop", Type.DATETIME_MICROS);
           dtOrders.createProperty("status", Type.STRING);
           dtOrders.createProperty("node", Type.STRING);
-          dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
-          dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status", "id");
-          dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "processor", "vstart", "vstop");
+          dtOrders.createTypeIndex(Schema.IndexType.LSM_TREE, true, "id");
+          dtOrders.createTypeIndex(Schema.IndexType.LSM_TREE, true, "status", "id");
+          dtOrders.createTypeIndex(Schema.IndexType.LSM_TREE, true, "processor", "vstart", "vstop");
           dtOrders.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
         });
       }

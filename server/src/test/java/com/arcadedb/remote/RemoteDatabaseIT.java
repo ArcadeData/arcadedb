@@ -32,7 +32,6 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.graph.Vertex.DIRECTION;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
@@ -45,7 +44,7 @@ import org.junit.jupiter.api.Test;
 import java.util.*;
 import java.util.concurrent.atomic.*;
 
-import static com.arcadedb.graph.Vertex.DIRECTION.*;
+import static com.arcadedb.graph.Vertex.Direction.*;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
@@ -496,7 +495,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
 
       t1.command("sql", "create vertex type SimpleVertex");
 
-      t1.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+      t1.begin(Database.TransactionIsolationLevel.REPEATABLE_READ);
       MutableVertex svt1 = t1.newVertex("SimpleVertex");
       svt1.set("s", "concurrent t1");
       svt1.save();
@@ -504,11 +503,11 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       RID rid = svt1.getIdentity();
 
       t1.commit();
-      t1.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+      t1.begin(Database.TransactionIsolationLevel.REPEATABLE_READ);
       svt1 = t1.lookupByRID(rid).asVertex().modify();
 
       // recover the same vertex over t2
-      t2.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+      t2.begin(Database.TransactionIsolationLevel.REPEATABLE_READ);
       MutableVertex svt2 = t2.lookupByRID(rid).asVertex().modify();
 
       svt2.set("s", "concurrent t2");
@@ -550,9 +549,9 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       try (RemoteDatabase tx = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);) {
         tx.getSchema().createVertexType("SimpleVertexEx").createProperty("svuuid", String.class)
-            .createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+            .createIndex(Schema.IndexType.LSM_TREE, true);
 
-        tx.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+        tx.begin(Database.TransactionIsolationLevel.REPEATABLE_READ);
 
         MutableVertex svt1 = tx.newVertex("SimpleVertexEx");
         String uuid1 = UUID.randomUUID().toString();
@@ -561,7 +560,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         svt1.save();
         tx.commit();
 
-        tx.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+        tx.begin(Database.TransactionIsolationLevel.REPEATABLE_READ);
         MutableVertex svt2 = tx.newVertex("SimpleVertexEx");
         String uuid2 = UUID.randomUUID().toString();
         svt2.set("svex", uuid2);
@@ -569,7 +568,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         svt2.save();
         tx.commit();
 
-        tx.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+        tx.begin(Database.TransactionIsolationLevel.REPEATABLE_READ);
         svt2.set("svuuid", uuid1);
         svt2.save();
         tx.commit();
@@ -587,10 +586,10 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         try (RemoteDatabase t2 = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
             BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
-          t1.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
-          t2.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+          t1.setTransactionIsolationLevel(Database.TransactionIsolationLevel.REPEATABLE_READ);
+          t2.setTransactionIsolationLevel(Database.TransactionIsolationLevel.REPEATABLE_READ);
 
-          t1.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+          t1.begin(Database.TransactionIsolationLevel.REPEATABLE_READ);
           MutableVertex mvSVt1 = t1.newVertex("SimpleVertex");
           mvSVt1.set("s", "init concurrent test");
           mvSVt1.save();
@@ -601,10 +600,10 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
 //        t1.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
           Vertex vSVt1 = t1.lookupByRID(rid).asVertex();
 
-          t2.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+          t2.begin(Database.TransactionIsolationLevel.REPEATABLE_READ);
           Vertex vSVt2 = t2.lookupByRID(rid).asVertex();
 
-          t1.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+          t1.begin(Database.TransactionIsolationLevel.REPEATABLE_READ);
           mvSVt1 = vSVt1.modify();
           System.out.println("mvSVt1: " + vSVt1);
           mvSVt1.set("s", "concurrent t1");

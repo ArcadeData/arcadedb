@@ -161,13 +161,13 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         try {
           final Vertex vertex = entry.asVertex(true);
 
-          final Iterable<Edge> vEdgesOut = vertex.getEdges(Vertex.DIRECTION.OUT);
+          final Iterable<Edge> vEdgesOut = vertex.getEdges(Vertex.Direction.OUT);
           for (final Edge e : vEdgesOut) {
             if (includedVertices.contains(e.getIn()) && !includedEdges.contains(e.getIdentity()))
               edges.put(serializerImpl.serializeGraphElement(e));
           }
 
-          final Iterable<Edge> vEdgesIn = vertex.getEdges(Vertex.DIRECTION.IN);
+          final Iterable<Edge> vEdgesIn = vertex.getEdges(Vertex.Direction.IN);
           for (final Edge e : vEdgesIn) {
             if (includedVertices.contains(e.getOut()) && !includedEdges.contains(e.getIdentity()))
               edges.put(serializerImpl.serializeGraphElement(e));

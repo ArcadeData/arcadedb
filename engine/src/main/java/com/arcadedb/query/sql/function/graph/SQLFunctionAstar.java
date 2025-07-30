@@ -240,10 +240,10 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       context.paramVertexAxisNames = stringArray(mapParams.get(SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES));
       if (mapParams.get(SQLFunctionAstar.PARAM_DIRECTION) != null) {
         if (mapParams.get(SQLFunctionAstar.PARAM_DIRECTION) instanceof String) {
-          context.paramDirection = Vertex.DIRECTION.valueOf(
+          context.paramDirection = Vertex.Direction.valueOf(
               stringOrDefault(mapParams.get(SQLFunctionAstar.PARAM_DIRECTION), "OUT").toUpperCase(Locale.ENGLISH));
         } else {
-          context.paramDirection = (Vertex.DIRECTION) mapParams.get(SQLFunctionAstar.PARAM_DIRECTION);
+          context.paramDirection = (Vertex.Direction) mapParams.get(SQLFunctionAstar.PARAM_DIRECTION);
         }
       }
 

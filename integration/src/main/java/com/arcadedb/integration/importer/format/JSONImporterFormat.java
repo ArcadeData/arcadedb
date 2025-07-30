@@ -334,7 +334,7 @@ public class JSONImporterFormat implements FormatImporter {
         prop = type.createProperty(id, propType);
       }
 
-      prop.getOrCreateIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+      prop.getOrCreateIndex(Schema.IndexType.LSM_TREE, true);
 
       IndexCursor existent = database.lookupByKey(typeName, id, idValue);
       if (existent.hasNext()) {
@@ -551,7 +551,7 @@ public class JSONImporterFormat implements FormatImporter {
         final String cardinality = mappingObject.optString("@cardinality");
         if ("no-duplicates".equalsIgnoreCase(cardinality)) {
           boolean duplicates = false;
-          for (Iterator<Vertex> connectedVertices = ((Vertex) record).getVertices(Vertex.DIRECTION.OUT, subTypeName)
+          for (Iterator<Vertex> connectedVertices = ((Vertex) record).getVertices(Vertex.Direction.OUT, subTypeName)
               .iterator(); connectedVertices.hasNext(); ) {
             final RID connectedVertex = connectedVertices.next().getIdentity();
             if (destVertex.getIdentity().equals(connectedVertex)) {

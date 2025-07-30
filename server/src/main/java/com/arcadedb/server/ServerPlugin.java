@@ -22,10 +22,10 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.server.http.HttpServer;
 import io.undertow.server.handlers.PathHandler;
 
-import static com.arcadedb.server.ServerPlugin.INSTALLATION_PRIORITY.BEFORE_HTTP_ON;
+import static com.arcadedb.server.ServerPlugin.InstallationPriority.BEFORE_HTTP_ON;
 
 public interface ServerPlugin {
-  enum INSTALLATION_PRIORITY {BEFORE_HTTP_ON, AFTER_HTTP_ON, AFTER_DATABASES_OPEN}
+  enum InstallationPriority {BEFORE_HTTP_ON, AFTER_HTTP_ON, AFTER_DATABASES_OPEN}
 
   default void configure(ArcadeDBServer arcadeDBServer, ContextConfiguration configuration) {
     // DEFAULT IMPLEMENTATION
@@ -41,7 +41,7 @@ public interface ServerPlugin {
     // DEFAULT IMPLEMENTATION
   }
 
-  default INSTALLATION_PRIORITY getInstallationPriority() {
+  default InstallationPriority getInstallationPriority() {
     return BEFORE_HTTP_ON;
   }
 }

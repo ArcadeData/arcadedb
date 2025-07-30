@@ -94,12 +94,12 @@ public class TraversalTest {
     Vertex v = db.lookupByRID(firstRid, false).asVertex();
     tot += v.getInteger("val");
 
-    Iterator<Vertex> vertices = v.getVertices(Vertex.DIRECTION.OUT).iterator();
+    Iterator<Vertex> vertices = v.getVertices(Vertex.Direction.OUT).iterator();
 
     while (vertices.hasNext()) {
       v = vertices.next();
       tot += v.getInteger("val");
-      vertices = v.getVertices(Vertex.DIRECTION.OUT).iterator();
+      vertices = v.getVertices(Vertex.Direction.OUT).iterator();
     }
 
     db.commit();

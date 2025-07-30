@@ -78,7 +78,7 @@ public class PerformanceInsertMTStressTest {
     resourceType.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
     resourceType.createProperty("identifier", Type.STRING);
     resourceType.createProperty("value", Type.LONG);
-    resourceType.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, resourceTypeName, "value");
+    resourceType.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, false, resourceTypeName, "value");
     db.commit();
   }
 

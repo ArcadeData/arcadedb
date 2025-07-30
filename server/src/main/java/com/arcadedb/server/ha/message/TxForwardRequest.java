@@ -51,7 +51,7 @@ public class TxForwardRequest extends TxRequestAbstract {
   public TxForwardRequest() {
   }
 
-  public TxForwardRequest(final DatabaseInternal database, Database.TRANSACTION_ISOLATION_LEVEL transactionIsolationLevel,
+  public TxForwardRequest(final DatabaseInternal database, Database.TransactionIsolationLevel transactionIsolationLevel,
       final Map<Integer, Integer> bucketRecordDelta, final Binary bufferChanges,
       final Map<String, TreeMap<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>>> keysTx) {
     super(database.getName(), bucketRecordDelta, bufferChanges);
@@ -90,7 +90,7 @@ public class TxForwardRequest extends TxRequestAbstract {
           db);
 
       // FORWARDED FROM A REPLICA
-      db.begin(Database.TRANSACTION_ISOLATION_LEVEL.values()[isolationLevelIndex]);
+      db.begin(Database.TransactionIsolationLevel.values()[isolationLevelIndex]);
       final TransactionContext tx = db.getTransaction();
 
       tx.commitFromReplica(walTx, keysTx, bucketRecordDelta);

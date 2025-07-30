@@ -103,7 +103,7 @@ public class RemoteSchema implements Schema {
   }
 
   @Override
-  public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
+  public TypeIndex createTypeIndex(final IndexType indexType, final boolean unique, final String typeName,
       final String... propertyNames) {
     final String propList = Arrays.stream(propertyNames).collect(Collectors.joining(","));
     remoteDatabase.command("sql", "create index on `" + typeName +//
@@ -114,7 +114,7 @@ public class RemoteSchema implements Schema {
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
+  public TypeIndex getOrCreateTypeIndex(final IndexType indexType, final boolean unique, final String typeName,
       final String... propertyNames) {
     final String propList = Arrays.stream(propertyNames).collect(Collectors.joining(","));
     remoteDatabase.command("sql", "create index if not exists on `" + typeName +//
@@ -508,53 +508,53 @@ public class RemoteSchema implements Schema {
 
   @Deprecated
   @Override
-  public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
+  public TypeIndex createTypeIndex(final IndexType indexType, final boolean unique, final String typeName,
       final String[] propertyNames, final int pageSize) {
     throw new UnsupportedOperationException();
   }
 
   @Deprecated
   @Override
-  public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
+  public TypeIndex createTypeIndex(final IndexType indexType, final boolean unique, final String typeName,
       final String[] propertyNames, final int pageSize, Index.BuildIndexCallback callback) {
     throw new UnsupportedOperationException();
   }
 
   @Deprecated
   @Override
-  public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
-      final String[] propertyNames, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
+  public TypeIndex createTypeIndex(final IndexType indexType, final boolean unique, final String typeName,
+      final String[] propertyNames, final int pageSize, final LSMTreeIndexAbstract.NullStrategy nullStrategy,
       final Index.BuildIndexCallback callback) {
     throw new UnsupportedOperationException();
   }
 
   @Deprecated
   @Override
-  public TypeIndex getOrCreateTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
+  public TypeIndex getOrCreateTypeIndex(final IndexType indexType, final boolean unique, final String typeName,
       final String[] propertyNames, final int pageSize, final Index.BuildIndexCallback callback) {
     throw new UnsupportedOperationException();
   }
 
   @Deprecated
   @Override
-  public TypeIndex getOrCreateTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
-      final String[] propertyNames, final int pageSize, LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
+  public TypeIndex getOrCreateTypeIndex(final IndexType indexType, final boolean unique, final String typeName,
+      final String[] propertyNames, final int pageSize, LSMTreeIndexAbstract.NullStrategy nullStrategy,
       Index.BuildIndexCallback callback) {
     throw new UnsupportedOperationException();
   }
 
   @Deprecated
   @Override
-  public Index createBucketIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName, final String bucketName,
-      final String[] propertyNames, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
+  public Index createBucketIndex(final IndexType indexType, final boolean unique, final String typeName, final String bucketName,
+      final String[] propertyNames, final int pageSize, final LSMTreeIndexAbstract.NullStrategy nullStrategy,
       final Index.BuildIndexCallback callback) {
     throw new UnsupportedOperationException();
   }
 
   @Deprecated
   @Override
-  public Index createManualIndex(final INDEX_TYPE indexType, final boolean unique, final String indexName, final Type[] keyTypes,
-      final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
+  public Index createManualIndex(final IndexType indexType, final boolean unique, final String indexName, final Type[] keyTypes,
+      final int pageSize, final LSMTreeIndexAbstract.NullStrategy nullStrategy) {
     throw new UnsupportedOperationException();
   }
 
@@ -592,7 +592,7 @@ public class RemoteSchema implements Schema {
 
   @Deprecated
   @Override
-  public TypeIndex getOrCreateTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
+  public TypeIndex getOrCreateTypeIndex(final IndexType indexType, final boolean unique, final String typeName,
       final String[] propertyNames, int pageSize) {
     throw new UnsupportedOperationException();
   }

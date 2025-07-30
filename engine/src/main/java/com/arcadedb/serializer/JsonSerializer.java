@@ -260,17 +260,17 @@ public class JsonSerializer {
       object.put(CAT_PROPERTY, "v");
       if (includeVertexEdges) {
         if (useVertexEdgeSize) {
-          object.put(OUT_PROPERTY, vertex.countEdges(Vertex.DIRECTION.OUT, null));
-          object.put(IN_PROPERTY, vertex.countEdges(Vertex.DIRECTION.IN, null));
+          object.put(OUT_PROPERTY, vertex.countEdges(Vertex.Direction.OUT, null));
+          object.put(IN_PROPERTY, vertex.countEdges(Vertex.Direction.IN, null));
 
         } else {
           final JSONArray outEdges = new JSONArray();
-          for (final Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
+          for (final Edge e : vertex.getEdges(Vertex.Direction.OUT))
             outEdges.put(e.getIdentity().toString());
           object.put(OUT_PROPERTY, outEdges);
 
           final JSONArray inEdges = new JSONArray();
-          for (final Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
+          for (final Edge e : vertex.getEdges(Vertex.Direction.IN))
             inEdges.put(e.getIdentity().toString());
           object.put(IN_PROPERTY, inEdges);
         }

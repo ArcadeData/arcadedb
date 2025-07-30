@@ -1157,7 +1157,7 @@ public class LSMTreeIndexTest extends TestHelper {
       final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
       type.createProperty("id", Integer.class);
       final TypeIndex typeIndex = database.getSchema()
-          .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+          .createTypeIndex(Schema.IndexType.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
 
       for (int i = 0; i < TOT; ++i) {
         final MutableDocument v = database.newDocument(TYPE_NAME);

@@ -23,7 +23,6 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.*;
@@ -320,7 +319,7 @@ public class DatabaseEventsTest extends TestHelper {
 
     database.getEvents().registerListener(listener);
     try {
-      database.getSchema().createVertexType("IndexedVertex").createProperty("counter", Type.INTEGER).createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+      database.getSchema().createVertexType("IndexedVertex").createProperty("counter", Type.INTEGER).createIndex(Schema.IndexType.LSM_TREE, true);
 
       database.transaction(() -> {
         final MutableVertex v1 = database.newVertex("IndexedVertex").set("id", "test");

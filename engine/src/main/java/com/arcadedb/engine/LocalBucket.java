@@ -38,10 +38,16 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 import static com.arcadedb.database.Binary.LONG_SERIALIZED_SIZE;
@@ -87,11 +93,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private final          int                       maxRecordsInPage                 = DEF_MAX_RECORDS_IN_PAGE;
   private final          AtomicLong                cachedRecordCount                = new AtomicLong(-1);
   private final          TreeMap<Integer, Integer> freeSpaceInPages                 = new TreeMap<>();
-  private final          REUSE_SPACE_MODE          reuseSpaceMode;
+  private final          ReuseSpaceMode            reuseSpaceMode;
   private                long                      timeOfLastStats                  = 0L;
   private                long                      changesFromLastStats             = 0L;
 
-  private enum REUSE_SPACE_MODE {
+  private enum ReuseSpaceMode {
     LOW, MEDIUM, HIGH
   }
 
@@ -112,7 +118,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public static class PaginatedComponentFactoryHandler implements ComponentFactory.PaginatedComponentFactoryHandler {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id,
-        final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
+        final ComponentFile.Mode mode, final int pageSize, final int version) throws IOException {
       return new LocalBucket(database, name, filePath, id, mode, pageSize, version);
     }
   }
@@ -120,23 +126,25 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   /**
    * Called at creation time.
    */
-  public LocalBucket(final DatabaseInternal database, final String name, final String filePath, final ComponentFile.MODE mode,
+  public LocalBucket(final DatabaseInternal database, final String name, final String filePath, final ComponentFile.Mode mode,
       final int pageSize, final int version) throws IOException {
     super(database, name, filePath, BUCKET_EXT, mode, pageSize, version);
     this.contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
     this.cachedRecordCount.set(0);
-    this.reuseSpaceMode = REUSE_SPACE_MODE.valueOf(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getValueAsString().toUpperCase());
+    this.reuseSpaceMode = ReuseSpaceMode.valueOf(
+        GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getValueAsString().toUpperCase());
   }
 
   /**
    * Called at load time.
    */
   public LocalBucket(final DatabaseInternal database, final String name, final String filePath, final int id,
-      final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
+      final ComponentFile.Mode mode, final int pageSize, final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
     contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
-    this.reuseSpaceMode = REUSE_SPACE_MODE.valueOf(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getValueAsString().toUpperCase());
-    if (this.reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.HIGH.ordinal())
+    this.reuseSpaceMode = ReuseSpaceMode.valueOf(
+        GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getValueAsString().toUpperCase());
+    if (this.reuseSpaceMode.ordinal() >= ReuseSpaceMode.HIGH.ordinal())
       gatherPageStatistics();
   }
 
@@ -152,19 +160,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   @Override
   public RID createRecord(final Record record, final boolean discardRecordAfter) {
-    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.Access.CREATE_RECORD);
     return createRecordInternal(record, false, discardRecordAfter);
   }
 
   @Override
   public void updateRecord(final Record record, final boolean discardRecordAfter) {
-    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.UPDATE_RECORD);
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.Access.UPDATE_RECORD);
     updateRecordInternal(record, record.getIdentity(), false, discardRecordAfter);
   }
 
   @Override
   public Binary getRecord(final RID rid) {
-    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.Access.READ_RECORD);
 
     final Binary rec = getRecordInternal(rid, false);
     if (rec == null)
@@ -175,7 +183,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   @Override
   public boolean existsRecord(final RID rid) {
-    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.Access.READ_RECORD);
 
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
@@ -209,13 +217,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   @Override
   public void deleteRecord(final RID rid) {
-    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.DELETE_RECORD);
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.Access.DELETE_RECORD);
     deleteRecordInternal(rid, false, false);
   }
 
   @Override
   public void scan(final RawRecordCallback callback, final ErrorRecordCallback errorRecordCallback) {
-    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.Access.READ_RECORD);
 
     final int txPageCount = getTotalPages();
 
@@ -302,13 +310,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   @Override
   public Iterator<Record> iterator() {
-    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.Access.READ_RECORD);
     return new BucketIterator(this, true);
   }
 
   @Override
   public Iterator<Record> inverseIterator() {
-    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.Access.READ_RECORD);
     return new BucketIterator(this, false);
   }
 
@@ -332,7 +340,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   @Override
   public long count() {
-    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.Access.READ_RECORD);
 
     final TransactionContext transaction = database.getTransactionIfExists();
 
@@ -1003,7 +1011,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0);
 
         if (recordSize[0] > -1) {
-          if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.HIGH.ordinal()) {
+          if (reuseSpaceMode.ordinal() >= ReuseSpaceMode.HIGH.ordinal()) {
             // UPDATE THE STATISTICS
             final PageAnalysis pageAnalysis = new PageAnalysis(page);
             pageAnalysis.totalRecordsInPage = recordCountInPage;
@@ -1636,7 +1644,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private PageAnalysis findAvailableSpace(final int currentPageId, final int spaceNeeded, final int txPageCounter,
       final boolean multiPageRecord)
       throws IOException {
-    if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.MEDIUM.ordinal()) {
+    if (reuseSpaceMode.ordinal() >= ReuseSpaceMode.MEDIUM.ordinal()) {
       synchronized (freeSpaceInPages) {
         if (freeSpaceInPages.isEmpty())
           gatherPageStatistics();
@@ -1779,7 +1787,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private void updatePageStatistics(final int pageId, final int availableSpace, final int delta) {
     ++changesFromLastStats;
 
-    if (reuseSpaceMode.ordinal() < REUSE_SPACE_MODE.HIGH.ordinal())
+    if (reuseSpaceMode.ordinal() < ReuseSpaceMode.HIGH.ordinal())
       return;
 
     synchronized (freeSpaceInPages) {

@@ -39,7 +39,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   private volatile     boolean[][] fileAccessMap     = null;
   private              long        resultSetLimit    = -1;
   private              long        readTimeout       = -1;
-  private final        boolean[]   databaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
+  private final        boolean[]   databaseAccessMap = new boolean[DatabaseAccess.values().length];
 
   public ServerSecurityDatabaseUser(final String databaseName, final String userName, final String[] groups) {
     this.databaseName = databaseName;
@@ -76,12 +76,12 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   }
 
   @Override
-  public boolean requestAccessOnDatabase(final DATABASE_ACCESS access) {
+  public boolean requestAccessOnDatabase(final DatabaseAccess access) {
     return databaseAccessMap[access.ordinal()];
   }
 
   @Override
-  public boolean requestAccessOnFile(final int fileId, final ACCESS access) {
+  public boolean requestAccessOnFile(final int fileId, final Access access) {
     if (fileId >= fileAccessMap.length) {
       LogManager.instance().log(this, Level.SEVERE,
           "Error on requesting access to fileId %d because not found in security configuration (registeredFiles=%d)", fileId,
@@ -101,7 +101,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
 
   public void updateDatabaseConfiguration(final JSONObject configuredGroups) {
     // RESET THE ARRAY
-    for (int i = 0; i < DATABASE_ACCESS.values().length; i++)
+    for (int i = 0; i < DatabaseAccess.values().length; i++)
       databaseAccessMap[i] = false;
 
     if (configuredGroups == null)
@@ -156,7 +156,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     if (access != null) {
       // UPDATE THE ARRAY WITH LATEST CONFIGURATION
       for (int i = 0; i < access.length(); i++)
-        databaseAccessMap[DATABASE_ACCESS.getByName(access.getString(i)).ordinal()] = true;
+        databaseAccessMap[DatabaseAccess.getByName(access.getString(i)).ordinal()] = true;
     }
   }
 

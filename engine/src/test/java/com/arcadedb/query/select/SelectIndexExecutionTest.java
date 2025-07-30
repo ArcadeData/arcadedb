@@ -43,9 +43,9 @@ public class SelectIndexExecutionTest extends TestHelper {
   protected void beginTest() {
     final VertexType v = database.getSchema().createVertexType("Vertex");
     v.createProperty("id", Type.INTEGER)//
-        .createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+        .createIndex(Schema.IndexType.LSM_TREE, true);
     v.createProperty("name", Type.STRING)//
-        .createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
+        .createIndex(Schema.IndexType.LSM_TREE, false);
 
     database.transaction(() -> {
       for (int i = 0; i < 100; i++)

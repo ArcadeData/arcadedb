@@ -37,19 +37,19 @@ public abstract class PaginatedComponent extends Component {
   protected final AtomicInteger          pageCount = new AtomicInteger();
 
   protected PaginatedComponent(final DatabaseInternal database, final String name, final String filePath, final String ext,
-      final ComponentFile.MODE mode,
+      final ComponentFile.Mode mode,
       final int pageSize, final int version) throws IOException {
     this(database, name, filePath, ext, database.getFileManager().newFileId(), mode, pageSize, version);
   }
 
   private PaginatedComponent(final DatabaseInternal database, final String name, final String filePath, final String ext,
       final int id,
-      final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
+      final ComponentFile.Mode mode, final int pageSize, final int version) throws IOException {
     this(database, name, filePath + "." + id + "." + pageSize + ".v" + version + "." + ext, id, mode, pageSize, version);
   }
 
   protected PaginatedComponent(final DatabaseInternal database, final String name, final String filePath, final int id,
-      final ComponentFile.MODE mode,
+      final ComponentFile.Mode mode,
       final int pageSize, final int version) throws IOException {
     super(database, name, id, version, filePath);
     if (pageSize <= 0)

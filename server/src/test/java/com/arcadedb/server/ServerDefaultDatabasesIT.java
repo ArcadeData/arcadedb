@@ -27,7 +27,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.*;
 
-import static com.arcadedb.engine.ComponentFile.MODE.READ_WRITE;
+import static com.arcadedb.engine.ComponentFile.Mode.READ_WRITE;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 

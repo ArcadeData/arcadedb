@@ -46,7 +46,7 @@ public class DatabaseWrapper {
         DATABASE,
         "root",
         PASSWORD);
-    database.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
+    database.setConnectionStrategy(RemoteHttpComponent.ConnectionStrategy.FIXED);
     database.setTimeout(30000);
     return database;
   }
@@ -60,7 +60,7 @@ public class DatabaseWrapper {
         port,
         "root",
         PASSWORD);
-    server.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
+    server.setConnectionStrategy(RemoteHttpComponent.ConnectionStrategy.FIXED);
 
     if (server.exists(DATABASE)) {
       logger.info("Dropping existing database {}", DATABASE);

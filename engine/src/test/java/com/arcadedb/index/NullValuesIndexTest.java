@@ -27,7 +27,6 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -46,10 +45,10 @@ public class NullValuesIndexTest extends TestHelper {
     type.createProperty("id", Integer.class);
     type.createProperty("name", String.class);
     final Index indexes = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+        .createTypeIndex(Schema.IndexType.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
     final Index indexes2 = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE,
-            LSMTreeIndexAbstract.NULL_STRATEGY.ERROR, null);
+        .createTypeIndex(Schema.IndexType.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE,
+            LSMTreeIndexAbstract.NullStrategy.ERROR, null);
 
     try {
       database.transaction(() -> {
@@ -87,10 +86,10 @@ public class NullValuesIndexTest extends TestHelper {
     type.createProperty("id", Integer.class);
     type.createProperty("name", String.class);
     final Index indexes = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+        .createTypeIndex(Schema.IndexType.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
     final Index indexes2 = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE,
-            LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
+        .createTypeIndex(Schema.IndexType.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE,
+            LSMTreeIndexAbstract.NullStrategy.SKIP, null);
 
     database.transaction(() -> {
       for (int i = 0; i < TOT; ++i) {
@@ -147,10 +146,10 @@ public class NullValuesIndexTest extends TestHelper {
     final VertexType type = database.getSchema().buildVertexType().withName(TYPE_NAME).withTotalBuckets(3).create();
     type.createProperty("id", Integer.class);
     type.createProperty("absent", String.class);
-    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+    database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
     database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "absent" }, PAGE_SIZE,
-            LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
+        .createTypeIndex(Schema.IndexType.LSM_TREE, true, TYPE_NAME, new String[] { "absent" }, PAGE_SIZE,
+            LSMTreeIndexAbstract.NullStrategy.SKIP, null);
 
     database.transaction(() -> {
       for (int i = 0; i < TOT; ++i) {

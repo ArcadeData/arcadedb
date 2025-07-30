@@ -19,19 +19,19 @@
 package com.arcadedb.server;
 
 public interface ReplicationCallback {
-    enum TYPE {
-        SERVER_STARTING,
-        SERVER_UP,
-        SERVER_SHUTTING_DOWN,
-        SERVER_DOWN,
-        LEADER_ELECTED,
-        REPLICA_MSG_RECEIVED,
-        REPLICA_ONLINE,
-        REPLICA_OFFLINE,
-        REPLICA_HOT_RESYNC,
-        REPLICA_FULL_RESYNC,
-        NETWORK_CONNECTION
-    }
+  enum Type {
+    SERVER_STARTING,
+    SERVER_UP,
+    SERVER_SHUTTING_DOWN,
+    SERVER_DOWN,
+    LEADER_ELECTED,
+    REPLICA_MSG_RECEIVED,
+    REPLICA_ONLINE,
+    REPLICA_OFFLINE,
+    REPLICA_HOT_RESYNC,
+    REPLICA_FULL_RESYNC,
+    NETWORK_CONNECTION
+  }
 
-    void onEvent(TYPE type, Object object, ArcadeDBServer server) throws Exception;
+  void onEvent(Type type, Object object, ArcadeDBServer server) throws Exception;
 }

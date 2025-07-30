@@ -97,9 +97,9 @@ public class HAServer implements ServerPlugin {
   private final       Set<String>                                    serverAddressList                 = new HashSet<>();
   private             String                                         replicasHTTPAddresses;
   protected           Pair<Long, String>                             lastElectionVote;
-  private volatile    ELECTION_STATUS                                electionStatus                    = ELECTION_STATUS.DONE;
+  private volatile    ElectionStatus                                 electionStatus                    = ElectionStatus.DONE;
   private             boolean                                        started;
-  private final       SERVER_ROLE                                    serverRole;
+  private final       ServerRole                                     serverRole;
   private             Thread                                         electionThread;
 
   public enum QUORUM {
@@ -117,11 +117,11 @@ public class HAServer implements ServerPlugin {
     }
   }
 
-  public enum ELECTION_STATUS {
+  public enum ElectionStatus {
     DONE, VOTING_FOR_ME, VOTING_FOR_OTHERS, LEADER_WAITING_FOR_QUORUM
   }
 
-  public enum SERVER_ROLE {
+  public enum ServerRole {
     ANY, REPLICA
   }
 
@@ -155,7 +155,7 @@ public class HAServer implements ServerPlugin {
     this.bucketName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
     this.startedOn = System.currentTimeMillis();
     this.replicationPath = server.getRootPath() + "/replication";
-    this.serverRole = SERVER_ROLE.valueOf(
+    this.serverRole = ServerRole.valueOf(
         configuration.getValueAsString(GlobalConfiguration.HA_SERVER_ROLE).toUpperCase(Locale.ENGLISH));
   }
 
@@ -218,7 +218,7 @@ public class HAServer implements ServerPlugin {
           .log(this, Level.INFO, "Unable to find any Leader, start election (cluster=%s configuredServers=%d majorityOfVotes=%d)",
               bucketName, configuredServers, majorityOfVotes);
 
-      if (serverRole != SERVER_ROLE.REPLICA)
+      if (serverRole != ServerRole.REPLICA)
         startElection(false);
     }
   }
@@ -303,7 +303,7 @@ public class HAServer implements ServerPlugin {
   private void sendNewLeadershipToOtherNodes() {
     lastDistributedOperationNumber.set(replicationLogFile.getLastMessageNumber());
 
-    setElectionStatus(ELECTION_STATUS.LEADER_WAITING_FOR_QUORUM);
+    setElectionStatus(ElectionStatus.LEADER_WAITING_FOR_QUORUM);
 
     LogManager.instance()
         .log(this, Level.INFO, "Contacting all the servers for the new leadership (turn=%d)...", lastElectionVote.getFirst());
@@ -355,19 +355,19 @@ public class HAServer implements ServerPlugin {
       return;
     }
 
-    c.setStatus(online ? Leader2ReplicaNetworkExecutor.STATUS.ONLINE : Leader2ReplicaNetworkExecutor.STATUS.OFFLINE);
+    c.setStatus(online ? Leader2ReplicaNetworkExecutor.Status.ONLINE : Leader2ReplicaNetworkExecutor.Status.OFFLINE);
 
     try {
-      server.lifecycleEvent(online ? ReplicationCallback.TYPE.REPLICA_ONLINE : ReplicationCallback.TYPE.REPLICA_OFFLINE,
+      server.lifecycleEvent(online ? ReplicationCallback.Type.REPLICA_ONLINE : ReplicationCallback.Type.REPLICA_OFFLINE,
           remoteServerName);
     } catch (final Exception e) {
       // IGNORE IT
     }
 
-    if (electionStatus == ELECTION_STATUS.LEADER_WAITING_FOR_QUORUM) {
+    if (electionStatus == ElectionStatus.LEADER_WAITING_FOR_QUORUM) {
       if (getOnlineServers() >= configuredServers / 2 + 1)
         // ELECTION COMPLETED
-        setElectionStatus(ELECTION_STATUS.DONE);
+        setElectionStatus(ElectionStatus.DONE);
     }
   }
 
@@ -453,11 +453,11 @@ public class HAServer implements ServerPlugin {
     printClusterConfiguration();
   }
 
-  public ELECTION_STATUS getElectionStatus() {
+  public ElectionStatus getElectionStatus() {
     return electionStatus;
   }
 
-  protected void setElectionStatus(final ELECTION_STATUS status) {
+  protected void setElectionStatus(final ElectionStatus status) {
     LogManager.instance().log(this, Level.INFO, "Change election status from %s to %s", this.electionStatus, status);
     this.electionStatus = status;
   }
@@ -739,7 +739,7 @@ public class HAServer implements ServerPlugin {
   public int getOnlineReplicas() {
     int total = 0;
     for (final Leader2ReplicaNetworkExecutor c : replicaConnections.values()) {
-      if (c.getStatus() == Leader2ReplicaNetworkExecutor.STATUS.ONLINE)
+      if (c.getStatus() == Leader2ReplicaNetworkExecutor.Status.ONLINE)
         total++;
     }
     return total;
@@ -788,7 +788,7 @@ public class HAServer implements ServerPlugin {
       line = new ResultInternal();
       list.add(new RecordTableFormatter.TableRecordRow(line));
 
-      final Leader2ReplicaNetworkExecutor.STATUS status = c.getStatus();
+      final Leader2ReplicaNetworkExecutor.Status status = c.getStatus();
 
       line.setProperty("SERVER", c.getRemoteServerName());
       line.setProperty("HOST:PORT", c.getRemoteServerAddress());
@@ -859,7 +859,7 @@ public class HAServer implements ServerPlugin {
       final JSONArray replicas = new JSONArray();
 
       for (final Leader2ReplicaNetworkExecutor c : replicaConnections.values()) {
-        final Leader2ReplicaNetworkExecutor.STATUS status = c.getStatus();
+        final Leader2ReplicaNetworkExecutor.Status status = c.getStatus();
 
         final JSONObject replica = new JSONObject().setDateFormat(dateTimeFormat);
         replicas.put(replica);
@@ -1010,7 +1010,7 @@ public class HAServer implements ServerPlugin {
   protected ChannelBinaryClient createNetworkConnection(final String host, final int port, final short commandId)
       throws IOException {
     try {
-      server.lifecycleEvent(ReplicationCallback.TYPE.NETWORK_CONNECTION, host + ":" + port);
+      server.lifecycleEvent(ReplicationCallback.Type.NETWORK_CONNECTION, host + ":" + port);
     } catch (final Exception e) {
       throw new ConnectionException(host + ":" + port, e);
     }
@@ -1032,7 +1032,7 @@ public class HAServer implements ServerPlugin {
   }
 
   private boolean waitAndRetryDuringElection(final int quorum) {
-    if (electionStatus == ELECTION_STATUS.DONE)
+    if (electionStatus == ElectionStatus.DONE)
       // BLOCK HERE THE REQUEST, THE QUORUM CANNOT BE REACHED AT PRIORI
       throw new QuorumNotReachedException(
           "Quorum " + quorum + " not reached because only " + getOnlineServers() + " server(s) are online");
@@ -1040,7 +1040,7 @@ public class HAServer implements ServerPlugin {
     LogManager.instance()
         .log(this, Level.INFO, "Waiting during election (quorum=%d onlineReplicas=%d)", quorum, getOnlineReplicas());
 
-    for (int retry = 0; retry < 10 && electionStatus != ELECTION_STATUS.DONE; ++retry) {
+    for (int retry = 0; retry < 10 && electionStatus != ElectionStatus.DONE; ++retry) {
       try {
         Thread.sleep(500);
       } catch (final InterruptedException e) {
@@ -1053,7 +1053,7 @@ public class HAServer implements ServerPlugin {
         .log(this, Level.INFO, "Waiting is over (electionStatus=%s quorum=%d onlineReplicas=%d)", electionStatus, quorum,
             getOnlineReplicas());
 
-    return electionStatus == ELECTION_STATUS.DONE;
+    return electionStatus == ElectionStatus.DONE;
   }
 
   private void checkCurrentNodeIsTheLeader() {
@@ -1076,11 +1076,11 @@ public class HAServer implements ServerPlugin {
 
   private void startElection() {
     try {
-      if (electionStatus == ELECTION_STATUS.VOTING_FOR_ME)
+      if (electionStatus == ElectionStatus.VOTING_FOR_ME)
         // ELECTION ALREADY RUNNING
         return;
 
-      setElectionStatus(ELECTION_STATUS.VOTING_FOR_ME);
+      setElectionStatus(ElectionStatus.VOTING_FOR_ME);
 
       final long lastReplicationMessage = replicationLogFile.getLastMessageNumber();
 

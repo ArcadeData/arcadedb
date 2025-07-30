@@ -49,7 +49,7 @@ public class BucketIterator implements Iterator<Record> {
 
   BucketIterator(final LocalBucket bucket, final boolean forwardDirection) {
     final DatabaseInternal db = bucket.getDatabase();
-    db.checkPermissionsOnFile(bucket.fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    db.checkPermissionsOnFile(bucket.fileId, SecurityDatabaseUser.Access.READ_RECORD);
 
     this.database = db;
     this.bucket = bucket;

@@ -107,9 +107,9 @@ public class PerformanceVertexIndexTest {
         v.createProperty("operationalStatus", String.class);
         v.createProperty("supplierName", String.class);
 
-        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "id" }, 2 * 1024 * 1024, null);
-        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "number" }, 2 * 1024 * 1024, null);
-        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "relativeName" }, 2 * 1024 * 1024, null);
+        database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, false, "Device", new String[] { "id" }, 2 * 1024 * 1024, null);
+        database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, false, "Device", new String[] { "number" }, 2 * 1024 * 1024, null);
+        database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, false, "Device", new String[] { "relativeName" }, 2 * 1024 * 1024, null);
 //        database.getSchema().createClassIndexes(SchemaImpl.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "HolderSpec_Name" }, 2 * 1024 * 1024, null);
 //        database.getSchema().createClassIndexes(SchemaImpl.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "Name" }, 2 * 1024 * 1024, null);
 
@@ -189,7 +189,7 @@ public class PerformanceVertexIndexTest {
   }
 
   private void checkLookups(final int step) {
-    final Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open(ComponentFile.MODE.READ_ONLY);
+    final Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open(ComponentFile.Mode.READ_ONLY);
     long begin = System.currentTimeMillis();
 
     try {

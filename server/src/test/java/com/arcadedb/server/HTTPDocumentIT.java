@@ -25,7 +25,6 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
 
-import org.assertj.core.api.Assertions;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
@@ -375,7 +374,7 @@ public class  HTTPDocumentIT extends BaseGraphServerTest {
       assertThat(schema.existsType("Person")).isFalse();
       final DocumentType v = schema.buildDocumentType().withName("Person").withTotalBuckets(3).create();
       v.createProperty("id", Long.class);
-      schema.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id");
+      schema.createTypeIndex(Schema.IndexType.LSM_TREE, true, "Person", "id");
 
       for (int i = 0; i < 100; i++)
         database.newDocument("Person").set("id", i).set("name", "John" + i).save();

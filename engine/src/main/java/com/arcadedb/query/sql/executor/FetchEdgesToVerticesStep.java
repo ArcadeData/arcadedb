@@ -124,7 +124,7 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
             from = identifiable.getRecord();
           }
           if (from instanceof Vertex vertex) {
-            currentToEdgesIter = vertex.getEdges(Vertex.DIRECTION.IN).iterator();
+            currentToEdgesIter = vertex.getEdges(Vertex.Direction.IN).iterator();
           } else {
             throw new CommandExecutionException("Invalid vertex: " + from);
           }

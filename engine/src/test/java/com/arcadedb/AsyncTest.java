@@ -359,7 +359,7 @@ public class AsyncTest extends TestHelper {
     type.createProperty("id", Integer.class);
     type.createProperty("name", String.class);
     type.createProperty("surname", String.class);
-    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, 20000);
+    database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, 20000);
 
     database.commit();
 

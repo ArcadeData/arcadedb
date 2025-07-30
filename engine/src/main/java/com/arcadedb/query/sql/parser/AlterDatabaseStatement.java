@@ -55,7 +55,7 @@ public class AlterDatabaseStatement extends DDLStatement {
 
   private Result executeSimpleAlter(final Identifier settingName, final Expression settingValue, final CommandContext context) {
     final DatabaseInternal db = context.getDatabase();
-    db.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
+    db.checkPermissionsOnDatabase(SecurityDatabaseUser.DatabaseAccess.UPDATE_DATABASE_SETTINGS);
 
     final String settingNameAsString = settingName.getStringValue();
     final GlobalConfiguration cfg = GlobalConfiguration.findByKey(settingNameAsString);

@@ -46,7 +46,7 @@ public class PaginatedComponentFile extends ComponentFile {
   public PaginatedComponentFile() {
   }
 
-  protected PaginatedComponentFile(final String filePath, final MODE mode) throws FileNotFoundException {
+  protected PaginatedComponentFile(final String filePath, final Mode mode) throws FileNotFoundException {
     super(filePath, mode);
   }
 
@@ -170,7 +170,7 @@ public class PaginatedComponentFile extends ComponentFile {
   }
 
   @Override
-  protected void open(final String filePath, final MODE mode) throws FileNotFoundException {
+  protected void open(final String filePath, final Mode mode) throws FileNotFoundException {
     this.filePath = filePath;
 
     final int lastDotPos = filePath.lastIndexOf(".");
@@ -206,7 +206,7 @@ public class PaginatedComponentFile extends ComponentFile {
       fileName = filePath;
 
     this.osFile = new File(filePath);
-    this.file = new RandomAccessFile(osFile, mode == MODE.READ_WRITE ? "rw" : "r");
+    this.file = new RandomAccessFile(osFile, mode == Mode.READ_WRITE ? "rw" : "r");
     this.channel = this.file.getChannel();
     doNotCloseOnInterrupt(this.channel);
     this.open = true;

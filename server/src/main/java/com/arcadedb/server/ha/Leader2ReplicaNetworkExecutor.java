@@ -34,9 +34,11 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 import com.conversantmedia.util.concurrent.PushPullBlockingQueue;
 
-import java.io.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
 /**
  * This executor has an intermediate level of buffering managed with a queue. This avoids the Leader to be blocked in case the
@@ -45,7 +47,7 @@ import java.util.logging.*;
  */
 public class Leader2ReplicaNetworkExecutor extends Thread {
 
-  public enum STATUS {
+  public enum Status {
     JOINING, OFFLINE, ONLINE
   }
 
@@ -60,7 +62,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   private          long                                               joinedOn;
   private          long                                               leftOn                = 0;
   private          ChannelBinaryServer                                channel;
-  private          STATUS                                             status                = STATUS.JOINING;
+  private          Status                                             status                = Status.JOINING;
   private final    Object                                             lock                  = new Object(); // NOT FINAL BECAUSE IT CAN BE MERGED FROM ANOTHER CONNECTION
   private final    Object                                             channelOutputLock     = new Object();
   private final    Object                                             channelInputLock      = new Object();
@@ -116,9 +118,9 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
               "Current server '" + ha.getServerName() + "' is not the Leader");
         }
 
-        final HAServer.ELECTION_STATUS electionStatus = ha.getElectionStatus();
-        if (electionStatus != HAServer.ELECTION_STATUS.DONE
-            && electionStatus != HAServer.ELECTION_STATUS.LEADER_WAITING_FOR_QUORUM) {
+        final HAServer.ElectionStatus electionStatus = ha.getElectionStatus();
+        if (electionStatus != HAServer.ElectionStatus.DONE
+            && electionStatus != HAServer.ElectionStatus.LEADER_WAITING_FOR_QUORUM) {
           this.channel.writeBoolean(false);
           this.channel.writeByte(ReplicationProtocol.ERROR_CONNECT_ELECTION_PENDING);
           this.channel.writeString("Election for the Leader is pending");
@@ -367,7 +369,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   }
 
   public boolean enqueueMessage(final long msgNumber, final Binary message) {
-    if (status == STATUS.OFFLINE)
+    if (status == Status.OFFLINE)
       return false;
 
     return (boolean) executeInLock(new Callable<>() {
@@ -380,7 +382,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
                   status, senderQueue.size());
 
         if (!senderQueue.offer(message)) {
-          if (status == STATUS.OFFLINE)
+          if (status == Status.OFFLINE)
             return false;
 
           // BACK-PRESSURE
@@ -395,7 +397,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
             throw new ReplicationException("Error on replicating to server '" + remoteServerName + "'");
           }
 
-          if (status == STATUS.OFFLINE)
+          if (status == Status.OFFLINE)
             return false;
 
           if (!senderQueue.offer(message)) {
@@ -419,7 +421,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
     });
   }
 
-  public void setStatus(final STATUS status) {
+  public void setStatus(final Status status) {
     if (this.status == status)
       // NO STATUS CHANGE
       return;
@@ -430,12 +432,12 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
         Leader2ReplicaNetworkExecutor.this.status = status;
         LogManager.instance().log(this, Level.INFO, "Replica server '%s' is %s", remoteServerName, status);
 
-        Leader2ReplicaNetworkExecutor.this.leftOn = status == STATUS.OFFLINE ? 0 : System.currentTimeMillis();
+        Leader2ReplicaNetworkExecutor.this.leftOn = status == Status.OFFLINE ? 0 : System.currentTimeMillis();
 
-        if (status == STATUS.ONLINE) {
+        if (status == Status.ONLINE) {
           Leader2ReplicaNetworkExecutor.this.joinedOn = System.currentTimeMillis();
           Leader2ReplicaNetworkExecutor.this.leftOn = 0;
-        } else if (status == STATUS.OFFLINE) {
+        } else if (status == Status.OFFLINE) {
           Leader2ReplicaNetworkExecutor.this.leftOn = System.currentTimeMillis();
           close();
         }
@@ -479,7 +481,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
       latencyMax = delta;
   }
 
-  public STATUS getStatus() {
+  public Status getStatus() {
     return status;
   }
 

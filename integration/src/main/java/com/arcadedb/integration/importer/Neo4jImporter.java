@@ -200,7 +200,7 @@ public class Neo4jImporter {
     final VertexType rootNodeType = database.getSchema().buildVertexType().withName("Node")
         .withTotalBuckets(bucketsPerType).withIgnoreIfExists(true).create();
     rootNodeType.getOrCreateProperty("id", Type.STRING);
-    rootNodeType.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, new String[] { "id" }, indexPageSize);
+    rootNodeType.getOrCreateTypeIndex(Schema.IndexType.LSM_TREE, true, new String[] { "id" }, indexPageSize);
 
     readFile(json -> {
       switch (json.getString("type")) {

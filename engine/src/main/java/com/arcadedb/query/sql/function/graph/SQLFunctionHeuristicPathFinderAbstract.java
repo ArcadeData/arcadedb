@@ -49,9 +49,9 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   protected String[]            paramVertexAxisNames        = new String[] {};
   protected Vertex              paramSourceVertex;
   protected Vertex              paramDestinationVertex;
-  protected SQLHeuristicFormula paramHeuristicFormula       = SQLHeuristicFormula.MANHATTAN;
-  protected Vertex.DIRECTION    paramDirection              = Vertex.DIRECTION.OUT;
-  protected long                paramMaxDepth               = Long.MAX_VALUE;
+  protected SQLHeuristicFormula paramHeuristicFormula = SQLHeuristicFormula.MANHATTAN;
+  protected Vertex.Direction    paramDirection        = Vertex.Direction.OUT;
+  protected long                paramMaxDepth         = Long.MAX_VALUE;
   protected double              paramDFactor                = 1.0;
   protected String              paramCustomHeuristicFormula = "";
 

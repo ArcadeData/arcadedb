@@ -69,8 +69,8 @@ public class SelectOrderTest {
           dtOrders.createProperty("pstop", Type.STRING);
           dtOrders.createProperty("status", Type.STRING);
           dtOrders.createProperty("node", Type.STRING);
-          dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "status");
-          dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "processor", "vstart", "vstop");
+          dtOrders.createTypeIndex(Schema.IndexType.LSM_TREE, false, "status");
+          dtOrders.createTypeIndex(Schema.IndexType.LSM_TREE, true, "processor", "vstart", "vstop");
         });
       }
 
@@ -188,8 +188,8 @@ public class SelectOrderTest {
           dtProduct.createProperty("type", Type.STRING);
           dtProduct.createProperty("start", Type.DATETIME_MICROS);
           dtProduct.createProperty("stop", Type.DATETIME_MICROS);
-          dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
-          dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "type", "start", "stop");
+          dtProduct.createTypeIndex(Schema.IndexType.LSM_TREE, true, "name");
+          dtProduct.createTypeIndex(Schema.IndexType.LSM_TREE, true, "type", "start", "stop");
         });
       }
 

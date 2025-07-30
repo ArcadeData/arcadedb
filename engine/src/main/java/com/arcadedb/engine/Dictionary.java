@@ -49,7 +49,7 @@ public class Dictionary extends PaginatedComponent {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath,
         final int fileId,
-        final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
+        final ComponentFile.Mode mode, final int pageSize, final int version) throws IOException {
       return new Dictionary(database, name, filePath, fileId, mode, pageSize, version);
     }
   }
@@ -57,7 +57,7 @@ public class Dictionary extends PaginatedComponent {
   /**
    * Called at creation time.
    */
-  public Dictionary(final DatabaseInternal database, final String name, final String filePath, final ComponentFile.MODE mode,
+  public Dictionary(final DatabaseInternal database, final String name, final String filePath, final ComponentFile.Mode mode,
       final int pageSize)
       throws IOException {
     super(database, name, filePath, DICT_EXT, mode, pageSize, CURRENT_VERSION);
@@ -72,7 +72,7 @@ public class Dictionary extends PaginatedComponent {
    * Called at load time.
    */
   public Dictionary(final DatabaseInternal database, final String name, final String filePath, final int id,
-      final ComponentFile.MODE mode, final int pageSize,
+      final ComponentFile.Mode mode, final int pageSize,
       final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
     reload();

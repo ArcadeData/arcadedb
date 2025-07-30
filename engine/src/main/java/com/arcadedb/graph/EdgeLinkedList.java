@@ -35,10 +35,10 @@ import java.util.*;
  */
 public class EdgeLinkedList {
   private final Vertex           vertex;
-  private final Vertex.DIRECTION direction;
+  private final Vertex.Direction direction;
   private       EdgeSegment      lastSegment;
 
-  public EdgeLinkedList(final Vertex vertex, final Vertex.DIRECTION direction, final EdgeSegment lastSegment) {
+  public EdgeLinkedList(final Vertex vertex, final Vertex.Direction direction, final EdgeSegment lastSegment) {
     this.vertex = vertex;
     this.direction = direction;
     this.lastSegment = lastSegment;
@@ -154,7 +154,7 @@ public class EdgeLinkedList {
 
       final MutableVertex modifiableV = vertex.modify();
 
-      if (direction == Vertex.DIRECTION.OUT)
+      if (direction == Vertex.Direction.OUT)
         modifiableV.setOutEdgesHeadChunk(newChunk.getIdentity());
       else
         modifiableV.setInEdgesHeadChunk(newChunk.getIdentity());
@@ -192,7 +192,7 @@ public class EdgeLinkedList {
         final MutableVertex modifiableV = currentVertex.modify();
         currentVertex = modifiableV;
 
-        if (direction == Vertex.DIRECTION.OUT)
+        if (direction == Vertex.Direction.OUT)
           modifiableV.setOutEdgesHeadChunk(newChunk.getIdentity());
         else
           modifiableV.setInEdgesHeadChunk(newChunk.getIdentity());
@@ -219,7 +219,7 @@ public class EdgeLinkedList {
         deleted = current.removeEdge(rid);
       else
         // DELETE BY VERTEX RID
-        deleted = current.removeVertex(direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut());
+        deleted = current.removeVertex(direction == Vertex.Direction.OUT ? edge.getIn() : edge.getOut());
 
       if (deleted > 0) {
         updateSegment(current, prevBrowsed);

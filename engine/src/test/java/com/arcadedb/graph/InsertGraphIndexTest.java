@@ -179,7 +179,7 @@ public class InsertGraphIndexTest extends TestHelper {
   private void createSchema() {
     final VertexType vertex = database.getSchema().buildVertexType().withName(VERTEX_TYPE_NAME).withTotalBuckets(PARALLEL).create();
     vertex.createProperty("id", Integer.class);
-    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX_TYPE_NAME, "id");
+    database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, true, VERTEX_TYPE_NAME, "id");
 
     assertThat(vertex.getBucketSelectionStrategy().getName()).isEqualTo("round-robin");
 
@@ -187,7 +187,7 @@ public class InsertGraphIndexTest extends TestHelper {
 
     final VertexType vertexNotInUse = database.getSchema().createVertexType("NotInUse");
     vertexNotInUse.createProperty("id", Integer.class);
-    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "NotInUse", "id");
+    database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, true, "NotInUse", "id");
 
     assertThat(vertexNotInUse.getBucketSelectionStrategy().getName()).isEqualTo("round-robin");
 
@@ -207,10 +207,10 @@ public class InsertGraphIndexTest extends TestHelper {
       int i = 0;
       for (; i < VERTICES; ++i) {
         int edges = 0;
-        final long outEdges = cachedVertices[i].countEdges(Vertex.DIRECTION.OUT, EDGE_TYPE_NAME);
+        final long outEdges = cachedVertices[i].countEdges(Vertex.Direction.OUT, EDGE_TYPE_NAME);
         assertThat(outEdges).isEqualTo(expectedEdges);
 
-        final long inEdges = cachedVertices[i].countEdges(Vertex.DIRECTION.IN, EDGE_TYPE_NAME);
+        final long inEdges = cachedVertices[i].countEdges(Vertex.Direction.IN, EDGE_TYPE_NAME);
         assertThat(inEdges).isEqualTo(expectedEdges);
 
         if (++edges > EDGES_PER_VERTEX)

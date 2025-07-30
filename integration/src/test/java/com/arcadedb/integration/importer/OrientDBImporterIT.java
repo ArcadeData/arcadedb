@@ -67,13 +67,13 @@ public class OrientDBImporterIT {
         assertThat(personType).isNotNull();
         assertThat(personType.getProperty("id").getType()).isEqualTo(Type.INTEGER);
         assertThat(database.countType("Person", true)).isEqualTo(500);
-        assertThat(database.getSchema().getIndexByName("Person[id]").getType()).isEqualTo(Schema.INDEX_TYPE.LSM_TREE);
+        assertThat(database.getSchema().getIndexByName("Person[id]").getType()).isEqualTo(Schema.IndexType.LSM_TREE);
 
         final DocumentType friendType = database.getSchema().getType("Friend");
         assertThat(friendType).isNotNull();
         assertThat(friendType.getProperty("id").getType()).isEqualTo(Type.INTEGER);
         assertThat(database.countType("Friend", true)).isEqualTo(10_000);
-        assertThat(database.getSchema().getIndexByName("Friend[id]").getType()).isEqualTo(Schema.INDEX_TYPE.LSM_TREE);
+        assertThat(database.getSchema().getIndexByName("Friend[id]").getType()).isEqualTo(Schema.IndexType.LSM_TREE);
 
         final File securityFile = new File("./server-users.jsonl");
         assertThat(securityFile.exists()).isTrue();

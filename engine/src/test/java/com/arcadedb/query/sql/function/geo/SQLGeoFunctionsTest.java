@@ -163,7 +163,7 @@ public class SQLGeoFunctionsTest {
 
       db.transaction(() -> {
         final DocumentType type = db.getSchema().createDocumentType("Restaurant");
-        type.createProperty("coords", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
+        type.createProperty("coords", Type.STRING).createIndex(Schema.IndexType.LSM_TREE, false);
 
         long begin = System.currentTimeMillis();
 
@@ -212,8 +212,8 @@ public class SQLGeoFunctionsTest {
 
       db.transaction(() -> {
         final DocumentType type = db.getSchema().createDocumentType("Restaurant");
-        type.createProperty("bboxTL", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
-        type.createProperty("bboxBR", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
+        type.createProperty("bboxTL", Type.STRING).createIndex(Schema.IndexType.LSM_TREE, false);
+        type.createProperty("bboxBR", Type.STRING).createIndex(Schema.IndexType.LSM_TREE, false);
 
         long begin = System.currentTimeMillis();
 

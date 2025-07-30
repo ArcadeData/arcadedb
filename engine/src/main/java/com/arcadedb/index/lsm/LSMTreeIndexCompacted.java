@@ -62,7 +62,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
    */
   protected LSMTreeIndexCompacted(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name,
       final boolean unique, final String filePath,
-      final int id, final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
+      final int id, final ComponentFile.Mode mode, final int pageSize, final int version) throws IOException {
     super(mainIndex, database, name, unique, filePath, id, mode, pageSize, version);
   }
 
@@ -70,7 +70,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     checkForNulls(keys);
 
     final Object[] convertedKeys = convertKeys(keys, binaryKeyTypes);
-    if (convertedKeys == null && nullStrategy == NULL_STRATEGY.SKIP)
+    if (convertedKeys == null && nullStrategy == NullStrategy.SKIP)
       return Collections.emptySet();
 
     try {

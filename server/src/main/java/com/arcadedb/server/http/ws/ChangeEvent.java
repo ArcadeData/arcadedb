@@ -21,15 +21,15 @@ package com.arcadedb.server.http.ws;
 import com.arcadedb.database.Record;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
+import java.util.Locale;
 
 public class ChangeEvent {
-  private final TYPE   type;
+  private final Type   type;
   private final Record record;
 
-  public enum TYPE {CREATE, UPDATE, DELETE}
+  public enum Type {CREATE, UPDATE, DELETE}
 
-  public ChangeEvent(final TYPE type, final Record record) {
+  public ChangeEvent(final Type type, final Record record) {
     this.type = type;
     this.record = record;
   }
@@ -38,7 +38,7 @@ public class ChangeEvent {
     return record;
   }
 
-  public TYPE getType() {
+  public Type getType() {
     return type;
   }
 

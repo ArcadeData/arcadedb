@@ -29,7 +29,7 @@ import java.util.logging.*;
  * Lock manager implementation.
  */
 public class LockManager<RESOURCE, REQUESTER> {
-  public enum LOCK_STATUS {NO, YES, ALREADY_ACQUIRED}
+  public enum LockStatus {NO, YES, ALREADY_ACQUIRED}
 
   private final ConcurrentHashMap<RESOURCE, DistributedLock> lockManager = new ConcurrentHashMap<>(256);
 
@@ -45,7 +45,7 @@ public class LockManager<RESOURCE, REQUESTER> {
     }
   }
 
-  public LOCK_STATUS tryLock(final RESOURCE resource, final REQUESTER requester, final long timeout) {
+  public LockStatus tryLock(final RESOURCE resource, final REQUESTER requester, final long timeout) {
     if (resource == null)
       throw new IllegalArgumentException("Resource to lock is null");
 
@@ -59,7 +59,7 @@ public class LockManager<RESOURCE, REQUESTER> {
       if (currentLock.owner.equals(requester)) {
         // SAME RESOURCE/SERVER, ALREADY LOCKED
         LogManager.instance().log(this, Level.FINE, "Resource '%s' already locked by requester '%s'", resource, currentLock.owner);
-        return LOCK_STATUS.ALREADY_ACQUIRED;
+        return LockStatus.ALREADY_ACQUIRED;
       } else {
         // TRY TO RE-LOCK IT UNTIL TIMEOUT IS EXPIRED
         final long startTime = System.currentTimeMillis();
@@ -81,7 +81,7 @@ public class LockManager<RESOURCE, REQUESTER> {
       }
     }
 
-    return currentLock == null ? LOCK_STATUS.YES : LOCK_STATUS.NO;
+    return currentLock == null ? LockStatus.YES : LockStatus.NO;
   }
 
   public void unlock(final RESOURCE resource, final REQUESTER requester) {

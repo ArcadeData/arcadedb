@@ -71,11 +71,11 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.logging.Level;
 
-import static com.arcadedb.engine.ComponentFile.MODE.READ_ONLY;
-import static com.arcadedb.engine.ComponentFile.MODE.READ_WRITE;
+import static com.arcadedb.engine.ComponentFile.Mode.READ_ONLY;
+import static com.arcadedb.engine.ComponentFile.Mode.READ_WRITE;
 
 public class ArcadeDBServer {
-  public enum STATUS {OFFLINE, STARTING, ONLINE, SHUTTING_DOWN}
+  public enum Status {OFFLINE, STARTING, ONLINE, SHUTTING_DOWN}
 
   public static final String                                CONFIG_SERVER_CONFIGURATION_FILENAME = "config/server-configuration.json";
   private final       ContextConfiguration                  configuration;
@@ -90,7 +90,7 @@ public class ArcadeDBServer {
   private             HttpServer                            httpServer;
   private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
-  private volatile    STATUS                                status                               = STATUS.OFFLINE;
+  private volatile    Status                                status                               = Status.OFFLINE;
 //  private             ServerMonitor                         serverMonitor;
 
   static {
@@ -130,15 +130,15 @@ public class ArcadeDBServer {
 
     welcomeBanner();
 
-    if (status != STATUS.OFFLINE)
+    if (status != Status.OFFLINE)
       return;
 
-    status = STATUS.STARTING;
+    status = Status.STARTING;
 
     eventLog.start();
 
     try {
-      lifecycleEvent(ReplicationCallback.TYPE.SERVER_STARTING, null);
+      lifecycleEvent(ReplicationCallback.Type.SERVER_STARTING, null);
     } catch (final Exception e) {
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
@@ -175,7 +175,7 @@ public class ArcadeDBServer {
     // START HTTP SERVER IMMEDIATELY. THE HTTP ADDRESS WILL BE USED BY HA
     httpServer = new HttpServer(this);
 
-    registerPlugins(ServerPlugin.INSTALLATION_PRIORITY.BEFORE_HTTP_ON);
+    registerPlugins(ServerPlugin.InstallationPriority.BEFORE_HTTP_ON);
 
     httpServer.startService();
 
@@ -184,16 +184,16 @@ public class ArcadeDBServer {
       haServer.startService();
     }
 
-    registerPlugins(ServerPlugin.INSTALLATION_PRIORITY.AFTER_HTTP_ON);
+    registerPlugins(ServerPlugin.InstallationPriority.AFTER_HTTP_ON);
 
     loadDefaultDatabases();
 
     // RELOAD DATABASE IF A PLUGIN REGISTERED A NEW DATABASE (LIKE THE GREMLIN SERVER)
     loadDatabases();
 
-    registerPlugins(ServerPlugin.INSTALLATION_PRIORITY.AFTER_DATABASES_OPEN);
+    registerPlugins(ServerPlugin.InstallationPriority.AFTER_DATABASES_OPEN);
 
-    status = STATUS.ONLINE;
+    status = Status.ONLINE;
 
     LogManager.instance().log(this, Level.INFO, "Available query languages: %s", new QueryEngineManager().getAvailableLanguages());
 
@@ -203,7 +203,7 @@ public class ArcadeDBServer {
         Runtime.getRuntime().availableProcessors(), FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));
     LogManager.instance().log(this, Level.INFO, msg);
 
-    getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.INFO, "Server", null, msg);
+    getEventLog().reportEvent(ServerEventLog.EventType.INFO, "Server", null, msg);
 
     if (!"production".equals(mode)) {
       final InputStream file = getClass().getClassLoader().getResourceAsStream("static/index.html");
@@ -213,7 +213,7 @@ public class ArcadeDBServer {
     }
 
     try {
-      lifecycleEvent(ReplicationCallback.TYPE.SERVER_UP, null);
+      lifecycleEvent(ReplicationCallback.Type.SERVER_UP, null);
     } catch (final Exception e) {
       stop();
       throw new ServerException("Error on starting the server '" + serverName + "'");
@@ -224,8 +224,10 @@ public class ArcadeDBServer {
 
   private void createDirectories() {
 
-    LogManager.instance().log(this, Level.INFO, "Server root path: %s", configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH));
-    LogManager.instance().log(this, Level.INFO, "Databases directory: %s", configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
+    LogManager.instance()
+        .log(this, Level.INFO, "Server root path: %s", configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH));
+    LogManager.instance().log(this, Level.INFO, "Databases directory: %s",
+        configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
     final File databaseDir = new File(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
     if (!databaseDir.exists()) {
       if (!databaseDir.mkdirs()) {
@@ -234,7 +236,8 @@ public class ArcadeDBServer {
       }
     }
 
-    LogManager.instance().log(this, Level.INFO, "Backups directory: %s", configuration.getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY));
+    LogManager.instance().log(this, Level.INFO, "Backups directory: %s",
+        configuration.getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY));
     final File backupsDir = new File(configuration.getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY));
     if (!backupsDir.exists()) {
       if (!backupsDir.mkdirs()) {
@@ -274,7 +277,7 @@ public class ArcadeDBServer {
     return result;
   }
 
-  private void registerPlugins(final ServerPlugin.INSTALLATION_PRIORITY installationPriority) {
+  private void registerPlugins(final ServerPlugin.InstallationPriority installationPriority) {
     final String registeredPlugins = configuration.getValueAsString(GlobalConfiguration.SERVER_PLUGINS);
     if (registeredPlugins != null && !registeredPlugins.isEmpty()) {
       final String[] pluginEntries = registeredPlugins.split(",");
@@ -307,18 +310,18 @@ public class ArcadeDBServer {
   }
 
   public synchronized void stop() {
-    if (status == STATUS.OFFLINE || status == STATUS.SHUTTING_DOWN)
+    if (status == Status.OFFLINE || status == Status.SHUTTING_DOWN)
       return;
 
     LogManager.instance().log(this, Level.INFO, "Shutting down ArcadeDB Server...");
 
     try {
-      lifecycleEvent(ReplicationCallback.TYPE.SERVER_SHUTTING_DOWN, null);
+      lifecycleEvent(ReplicationCallback.Type.SERVER_SHUTTING_DOWN, null);
     } catch (final Exception e) {
       throw new ServerException("Error on stopping the server '" + serverName + "'");
     }
 
-    status = STATUS.SHUTTING_DOWN;
+    status = Status.SHUTTING_DOWN;
 
     for (final Map.Entry<String, ServerPlugin> pEntry : plugins.entrySet()) {
       LogManager.instance().log(this, Level.INFO, "- Stop %s plugin", pEntry.getKey());
@@ -346,15 +349,15 @@ public class ArcadeDBServer {
     LogManager.instance().log(this, Level.INFO, "ArcadeDB Server is down");
 
     try {
-      lifecycleEvent(ReplicationCallback.TYPE.SERVER_DOWN, null);
+      lifecycleEvent(ReplicationCallback.Type.SERVER_DOWN, null);
     } catch (final Exception e) {
       throw new ServerException("Error on stopping the server '" + serverName + "'");
     }
 
     LogManager.instance().setContext(null);
-    status = STATUS.OFFLINE;
+    status = Status.OFFLINE;
 
-    getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.INFO, "Server", null, "Server shutdown correctly");
+    getEventLog().reportEvent(ServerEventLog.EventType.INFO, "Server", null, "Server shutdown correctly");
 
     ServerLogManager.resetFinally();
   }
@@ -376,10 +379,10 @@ public class ArcadeDBServer {
   }
 
   public boolean isStarted() {
-    return status == STATUS.ONLINE;
+    return status == Status.ONLINE;
   }
 
-  public STATUS getStatus() {
+  public Status getStatus() {
     return status;
   }
 
@@ -387,7 +390,7 @@ public class ArcadeDBServer {
     return databases.containsKey(databaseName);
   }
 
-  public ServerDatabase createDatabase(final String databaseName, final ComponentFile.MODE mode) {
+  public ServerDatabase createDatabase(final String databaseName, final ComponentFile.Mode mode) {
     ServerDatabase serverDatabase;
     synchronized (databases) {
       serverDatabase = databases.get(databaseName);
@@ -447,7 +450,7 @@ public class ArcadeDBServer {
     testEventListeners.add(callback);
   }
 
-  public void lifecycleEvent(final ReplicationCallback.TYPE type, final Object object) throws Exception {
+  public void lifecycleEvent(final ReplicationCallback.Type type, final Object object) throws Exception {
     if (replicationLifecycleEventsEnabled)
       for (final ReplicationCallback c : testEventListeners)
         c.onEvent(type, object, this);
@@ -485,8 +488,8 @@ public class ArcadeDBServer {
 
         factory.setSecurity(getSecurity());
 
-        ComponentFile.MODE defaultDbMode = configuration.getValueAsEnum(GlobalConfiguration.SERVER_DEFAULT_DATABASE_MODE,
-            ComponentFile.MODE.class);
+        ComponentFile.Mode defaultDbMode = configuration.getValueAsEnum(GlobalConfiguration.SERVER_DEFAULT_DATABASE_MODE,
+            ComponentFile.Mode.class);
         if (defaultDbMode == null)
           defaultDbMode = READ_WRITE;
 
@@ -543,8 +546,8 @@ public class ArcadeDBServer {
   private void loadDefaultDatabases() {
     final String defaultDatabases = configuration.getValueAsString(GlobalConfiguration.SERVER_DEFAULT_DATABASES);
     if (defaultDatabases != null && !defaultDatabases.isEmpty()) {
-      ComponentFile.MODE defaultDbMode = configuration.getValueAsEnum(GlobalConfiguration.SERVER_DEFAULT_DATABASE_MODE,
-          ComponentFile.MODE.class);
+      ComponentFile.Mode defaultDbMode = configuration.getValueAsEnum(GlobalConfiguration.SERVER_DEFAULT_DATABASE_MODE,
+          ComponentFile.Mode.class);
       if (defaultDbMode == null)
         defaultDbMode = READ_WRITE;
 

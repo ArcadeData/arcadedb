@@ -139,7 +139,7 @@ public interface BasicDatabase extends AutoCloseable {
    *
    * @param isolationLevel Isolation level between the following: READ_COMMITTED, REPEATABLE_READ, SERIALIZABLE
    */
-  public void begin(Database.TRANSACTION_ISOLATION_LEVEL isolationLevel);
+  public void begin(Database.TransactionIsolationLevel isolationLevel);
 
   /**
    * Commits the current transaction. If it was a sub-transaction, then the previous in the stack becomes active again.

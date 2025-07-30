@@ -239,13 +239,13 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
   private void createSchema() {
     final VertexType vertex = database.getSchema().buildVertexType().withName(VERTEX_TYPE_NAME).withTotalBuckets(PARALLEL).create();
     vertex.createProperty("id", Integer.class);
-    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX_TYPE_NAME, "id");
+    database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, true, VERTEX_TYPE_NAME, "id");
     vertex.setBucketSelectionStrategy(new PartitionedBucketSelectionStrategy(List.of("id")));
 
     final EdgeType edge = database.getSchema().buildEdgeType().withName(EDGE_TYPE_NAME).withTotalBuckets(PARALLEL).create();
     if (EDGE_IDS) {
       edge.createProperty("id", Integer.class);
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, EDGE_TYPE_NAME, "id");
+      database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, true, EDGE_TYPE_NAME, "id");
       edge.setBucketSelectionStrategy(new PartitionedBucketSelectionStrategy(List.of("id")));
     }
   }
@@ -297,13 +297,13 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
       int outEdges = 0;
       int inEdges = 0;
       for (; i < VERTICES; ++i) {
-        for (final Edge e : cachedVertices[i].getEdges(Vertex.DIRECTION.OUT, EDGE_TYPE_NAME)) {
+        for (final Edge e : cachedVertices[i].getEdges(Vertex.Direction.OUT, EDGE_TYPE_NAME)) {
           if (EDGE_IDS)
             assertThat(e.get("id")).isNotNull();
           ++outEdges;
         }
 
-        for (final Edge e : cachedVertices[i].getEdges(Vertex.DIRECTION.IN, EDGE_TYPE_NAME)) {
+        for (final Edge e : cachedVertices[i].getEdges(Vertex.Direction.IN, EDGE_TYPE_NAME)) {
           if (EDGE_IDS)
             assertThat(e.get("id")).isNotNull();
           ++inEdges;

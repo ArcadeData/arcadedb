@@ -28,7 +28,7 @@ public class ComponentFactory {
   private final DatabaseInternal                              database;
 
   public interface PaginatedComponentFactoryHandler {
-    Component createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id, final ComponentFile.MODE mode,
+    Component createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id, final ComponentFile.Mode mode,
         final int pageSize, final int version) throws IOException;
   }
 
@@ -40,7 +40,7 @@ public class ComponentFactory {
     map.put(fileExt, handler);
   }
 
-  public Component createComponent(final ComponentFile file, final ComponentFile.MODE mode) throws IOException {
+  public Component createComponent(final ComponentFile file, final ComponentFile.Mode mode) throws IOException {
     final String fileName = file.getComponentName();
     final int fileId = file.getFileId();
     final String fileExt = file.getFileExtension();

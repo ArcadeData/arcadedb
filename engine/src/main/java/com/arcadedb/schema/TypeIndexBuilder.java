@@ -51,7 +51,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
   @Override
   public TypeIndex create() {
-    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DatabaseAccess.UPDATE_SCHEMA);
 
     if (database.isAsyncProcessing())
       throw new NeedRetryException("Cannot create a new index while asynchronous tasks are running");

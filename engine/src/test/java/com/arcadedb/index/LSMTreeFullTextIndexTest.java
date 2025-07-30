@@ -28,7 +28,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -48,7 +47,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
     final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(1).create();
     type.createProperty("text", String.class);
     final Index typeIndex = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, TYPE_NAME, new String[] { "text" }, PAGE_SIZE);
+        .createTypeIndex(Schema.IndexType.FULL_TEXT, false, TYPE_NAME, new String[] { "text" }, PAGE_SIZE);
 
     assertThat(database.getSchema().existsType(TYPE_NAME)).isTrue();
 
@@ -111,7 +110,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
 
     reopenDatabase();
 
-    assertThat(database.getSchema().getIndexes()[0].getType()).isEqualTo(Schema.INDEX_TYPE.FULL_TEXT);
+    assertThat(database.getSchema().getIndexes()[0].getType()).isEqualTo(Schema.IndexType.FULL_TEXT);
 
     database.getSchema().dropIndex(typeIndex.getName());
   }
@@ -125,7 +124,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
     type.createProperty("type", String.class);
     try {
       database.getSchema()
-          .createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, TYPE_NAME, new String[] { "text", "type" }, PAGE_SIZE);
+          .createTypeIndex(Schema.IndexType.FULL_TEXT, false, TYPE_NAME, new String[] { "text", "type" }, PAGE_SIZE);
       fail("");
     } catch (IndexException e) {
       // EXPECTED
@@ -140,7 +139,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
       final DocumentType type = database.getSchema().createDocumentType("Docs");
       type.createProperty("text", String.class);
       final Index typeIndex = database.getSchema()
-          .createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, "Docs", new String[] { "text" });
+          .createTypeIndex(Schema.IndexType.FULL_TEXT, false, "Docs", new String[] { "text" });
 
       assertThat(database.getSchema().existsType("Docs")).isTrue();
 

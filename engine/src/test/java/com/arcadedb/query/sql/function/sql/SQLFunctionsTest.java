@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.function.sql;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
@@ -44,17 +43,14 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.UnsupportedEncodingException;
 import java.security.NoSuchAlgorithmException;
-import java.text.SimpleDateFormat;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static com.arcadedb.TestHelper.checkActiveDatabases;
@@ -182,7 +178,7 @@ public class SQLFunctionsTest {
     indexed.createProperty("key", Type.STRING);
 
     database.transaction(() -> {
-      indexed.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "key");
+      indexed.createTypeIndex(Schema.IndexType.LSM_TREE, false, "key");
 
       database.newDocument("Indexed").set("key", "one").save();
       database.newDocument("Indexed").set("key", "two").save();

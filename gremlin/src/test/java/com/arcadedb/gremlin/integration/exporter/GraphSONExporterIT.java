@@ -70,7 +70,7 @@ public class GraphSONExporterIT {
 
       assertThat(importedDatabaseDirectory.exists()).isTrue();
 
-      try (final Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(ComponentFile.MODE.READ_ONLY)) {
+      try (final Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(ComponentFile.Mode.READ_ONLY)) {
         assertThat(graph.getDatabase().getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet())).isEqualTo(originalDatabase.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()));
 
         for (final DocumentType type : originalDatabase.getSchema().getTypes()) {

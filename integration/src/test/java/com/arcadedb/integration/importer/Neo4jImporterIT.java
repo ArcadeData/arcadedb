@@ -87,7 +87,7 @@ public class Neo4jImporterIT {
           assertThat(friendType).isNotNull();
           assertThat(database.countType("KNOWS", true)).isEqualTo(1);
 
-          final Iterator<Edge> relationships = v.getEdges(Vertex.DIRECTION.OUT, "KNOWS").iterator();
+          final Iterator<Edge> relationships = v.getEdges(Vertex.Direction.OUT, "KNOWS").iterator();
           assertThat(relationships.hasNext()).isTrue();
           final Edge e = relationships.next();
 
@@ -203,7 +203,7 @@ public class Neo4jImporterIT {
           assertThat(friendType).isNotNull();
           assertThat(database.countType("KNOWS", true)).isEqualTo(TOTAL / 2);
 
-          final Iterator<Edge> relationships = v.getEdges(Vertex.DIRECTION.OUT, "KNOWS").iterator();
+          final Iterator<Edge> relationships = v.getEdges(Vertex.Direction.OUT, "KNOWS").iterator();
           assertThat(relationships.hasNext()).isTrue();
           final Edge e = relationships.next();
 

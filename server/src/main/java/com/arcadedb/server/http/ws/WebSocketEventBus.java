@@ -47,7 +47,7 @@ public class WebSocketEventBus {
     databaseWatchers.clear();
   }
 
-  public void subscribe(final String databaseName, final String type, final Set<ChangeEvent.TYPE> changeTypes, final WebSocketChannel channel) {
+  public void subscribe(final String databaseName, final String type, final Set<ChangeEvent.Type> changeTypes, final WebSocketChannel channel) {
     final var channelId = (UUID) channel.getAttribute(CHANNEL_ID);
     final var databaseSubscribers = this.subscribers.computeIfAbsent(databaseName, k -> new ConcurrentHashMap<>());
 

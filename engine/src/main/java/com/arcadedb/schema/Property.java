@@ -38,9 +38,9 @@ public interface Property {
   Set<String> METADATA_PROPERTIES = Set.of(RID_PROPERTY, TYPE_PROPERTY, IN_PROPERTY, OUT_PROPERTY, CAT_PROPERTY,
       PROPERTY_TYPES_PROPERTY);
 
-  Index createIndex(Schema.INDEX_TYPE type, boolean unique);
+  Index createIndex(Schema.IndexType type, boolean unique);
 
-  Index getOrCreateIndex(Schema.INDEX_TYPE type, boolean unique);
+  Index getOrCreateIndex(Schema.IndexType type, boolean unique);
 
   String getName();
 

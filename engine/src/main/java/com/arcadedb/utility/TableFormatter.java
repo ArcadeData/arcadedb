@@ -44,31 +44,29 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 
 public class TableFormatter {
-  public static final  int    DEFAULT_MAX_WIDTH = 150;
-  private static final String TYPE_COLUMN       = "@TYPE";
-  private static final String RID_COLUMN        = "@RID";
+  public static final    int                              DEFAULT_MAX_WIDTH    = 150;
+  private static final   String                           TYPE_COLUMN          = "@TYPE";
+  private static final   String                           RID_COLUMN           = "@RID";
+  protected final static String                           MORE                 = "...";
+  protected final static SimpleDateFormat                 DEF_DATEFORMAT       = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
+  protected final        Map<String, Alignment>           columnAlignment      = new LinkedHashMap<String, Alignment>();
+  protected final        Map<String, Map<String, String>> columnMetadata       = new LinkedHashMap<String, Map<String, String>>();
+  protected final        Set<String>                      columnHidden         = new HashSet<String>();
+  protected final        TableOutput                      out;
+  protected final        int                              minColumnSize        = 4;
+  protected              Set<String>                      prefixedColumns      = new LinkedHashSet<>();
+  protected              int                              maxMultiValueEntries = 10;
+  protected              Pair<String, Boolean>            columnSorting        = null;
+  protected              int                              maxWidthSize         = DEFAULT_MAX_WIDTH;
+  protected              String                           nullValue            = "";
+  protected              boolean                          leftBorder           = true;
+  protected              boolean                          rightBorder          = true;
+  protected              TableRow                         footer;
+  protected              boolean                          lastResultShrunk     = false;
 
-  public enum ALIGNMENT {
+  public enum Alignment {
     LEFT, CENTER, RIGHT
   }
-
-  protected final static String           MORE           = "...";
-  protected final static SimpleDateFormat DEF_DATEFORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
-
-  protected       Pair<String, Boolean>            columnSorting        = null;
-  protected final Map<String, ALIGNMENT>           columnAlignment      = new LinkedHashMap<String, ALIGNMENT>();
-  protected final Map<String, Map<String, String>> columnMetadata       = new LinkedHashMap<String, Map<String, String>>();
-  protected final Set<String>                      columnHidden         = new HashSet<String>();
-  protected       Set<String>                      prefixedColumns      = new LinkedHashSet<>();
-  protected final TableOutput                      out;
-  protected       int                              maxMultiValueEntries = 10;
-  protected final int                              minColumnSize        = 4;
-  protected       int                              maxWidthSize         = DEFAULT_MAX_WIDTH;
-  protected       String                           nullValue            = "";
-  protected       boolean                          leftBorder           = true;
-  protected       boolean                          rightBorder          = true;
-  protected       TableRow                         footer;
-  protected       boolean                          lastResultShrunk     = false;
 
   @ExcludeFromJacocoGeneratedReport
   public interface TableOutput {
@@ -182,7 +180,7 @@ public class TableFormatter {
     }
   }
 
-  public void setColumnAlignment(final String column, final ALIGNMENT alignment) {
+  public void setColumnAlignment(final String column, final Alignment alignment) {
     columnAlignment.put(column, alignment);
   }
 
@@ -269,7 +267,7 @@ public class TableFormatter {
     if (strippedValue == null)
       strippedValue = nullValue;
 
-    final ALIGNMENT alignment = columnAlignment.get(columnName);
+    final Alignment alignment = columnAlignment.get(columnName);
     if (alignment != null) {
       switch (alignment) {
       case LEFT: {

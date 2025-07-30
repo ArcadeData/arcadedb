@@ -3595,9 +3595,9 @@ CreateIndexStatement CreateIndexStatement():
 
     [ <NULL_STRATEGY>
       (
-        <SKIP2> { jjtThis.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP; }
+        <SKIP2> { jjtThis.nullStrategy = LSMTreeIndexAbstract.NullStrategy.SKIP; }
         |
-        <ERROR2> { jjtThis.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.ERROR; }
+        <ERROR2> { jjtThis.nullStrategy = LSMTreeIndexAbstract.NullStrategy.ERROR; }
       )
     ]
   )

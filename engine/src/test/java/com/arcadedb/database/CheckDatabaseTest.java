@@ -19,7 +19,6 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.Record;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
@@ -319,7 +318,7 @@ public class CheckDatabaseTest extends TestHelper {
   }
 
   private int countEdges(final RID rootVertex) {
-    final Iterable<Edge> iter = rootVertex.asVertex().getEdges(Vertex.DIRECTION.OUT);
+    final Iterable<Edge> iter = rootVertex.asVertex().getEdges(Vertex.Direction.OUT);
     int totalEdges = 0;
     try {
       for (final Edge e : iter) {
@@ -340,7 +339,7 @@ public class CheckDatabaseTest extends TestHelper {
 
   private int countEdgesSegmentList(final RID rootVertex) {
     final EdgeLinkedList outEdges = ((DatabaseInternal) database).getGraphEngine()
-        .getEdgeHeadChunk((VertexInternal) rootVertex.asVertex(), Vertex.DIRECTION.OUT);
+        .getEdgeHeadChunk((VertexInternal) rootVertex.asVertex(), Vertex.Direction.OUT);
 
     return (int) outEdges.count(null);
   }

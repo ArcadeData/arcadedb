@@ -84,9 +84,6 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
 
     final Database db = getServerDatabase(0, getDatabaseName());
 
-//    db.begin();
-//    db.setWALFlush(WALFile.FLUSH_TYPE.YES_NO_METADATA);
-
     LogManager.instance().log(this, Level.INFO, "TEST: Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
 
     final int totalToInsert = getTxs() * getVerticesPerTx();
@@ -180,9 +177,9 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
     v.createProperty("operationalStatus", String.class);
     v.createProperty("supplierName", String.class);
 
-    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "id" }, 2 * 1024 * 1024);
-    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "number" }, 2 * 1024 * 1024);
-    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "relativeName" }, 2 * 1024 * 1024);
+    database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, false, "Device", new String[] { "id" }, 2 * 1024 * 1024);
+    database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, false, "Device", new String[] { "number" }, 2 * 1024 * 1024);
+    database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, false, "Device", new String[] { "relativeName" }, 2 * 1024 * 1024);
   }
 
 }

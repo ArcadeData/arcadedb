@@ -92,7 +92,7 @@ public class RecordEncryptionTest extends TestHelper
 
     assertThat(creates.get()).isEqualTo(1);
 
-    database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    database.setTransactionIsolationLevel(Database.TransactionIsolationLevel.REPEATABLE_READ);
     database.transaction(() -> {
       final Vertex v1 = database.iterateType("BackAccount", true).next().asVertex();
       assertThat(v1.getString("secret")).isEqualTo("Nobody must know John and Zuck are brothers");

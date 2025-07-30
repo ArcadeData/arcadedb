@@ -165,8 +165,8 @@ public class ConsoleAsyncInsertTest {
           dtProducts.createProperty("start", Type.DATETIME_MICROS);
           dtProducts.createProperty("stop", Type.DATETIME_MICROS);
           dtProducts.createProperty("v", Type.STRING);
-          dtProducts.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
-          dtProducts.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "type", "start", "stop");
+          dtProducts.createTypeIndex(Schema.IndexType.LSM_TREE, true, "name");
+          dtProducts.createTypeIndex(Schema.IndexType.LSM_TREE, false, "type", "start", "stop");
 
           dtProducts.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
 
@@ -241,8 +241,8 @@ public class ConsoleAsyncInsertTest {
           dtProducts.createProperty("start", Type.DATETIME_MICROS);
           dtProducts.createProperty("stop", Type.DATETIME_MICROS);
           dtProducts.createProperty("v", Type.STRING);
-          dtProducts.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
-          dtProducts.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "type", "start", "stop");
+          dtProducts.createTypeIndex(Schema.IndexType.LSM_TREE, true, "name");
+          dtProducts.createTypeIndex(Schema.IndexType.LSM_TREE, false, "type", "start", "stop");
 
           //dtProducts.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
           dtProducts.setBucketSelectionStrategy(new PartitionedBucketSelectionStrategy(List.of("name")));
@@ -320,8 +320,8 @@ public class ConsoleAsyncInsertTest {
         dtOrders.createProperty("vstop", Type.DATETIME_MICROS);
         dtOrders.createProperty("status", Type.STRING);
         dtOrders.createProperty("node", Type.STRING);
-        dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
-        dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status", "id");
+        dtOrders.createTypeIndex(Schema.IndexType.LSM_TREE, true, "id");
+        dtOrders.createTypeIndex(Schema.IndexType.LSM_TREE, true, "status", "id");
         dtOrders.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
         DocumentType dtProducts = db.getSchema().buildDocumentType().withName("Product").withTotalBuckets(PARALLEL_LEVEL).create();
         dtProducts.createProperty("name", Type.STRING);
@@ -329,8 +329,8 @@ public class ConsoleAsyncInsertTest {
         dtProducts.createProperty("start", Type.DATETIME_MICROS);
         dtProducts.createProperty("stop", Type.DATETIME_MICROS);
         dtProducts.createProperty("v", Type.STRING);
-        dtProducts.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
-        dtProducts.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "type", "start", "stop");
+        dtProducts.createTypeIndex(Schema.IndexType.LSM_TREE, true, "name");
+        dtProducts.createTypeIndex(Schema.IndexType.LSM_TREE, false, "type", "start", "stop");
         dtProducts.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
       }
     }
@@ -489,7 +489,7 @@ public class ConsoleAsyncInsertTest {
     final AtomicInteger totalRows = new AtomicInteger();
     final int[] firstOrderId = new int[1];
     TypeIndex insertOrdersIndex = database.getSchema().getType("Order")
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "processor", "vstart", "vstop");
+        .createTypeIndex(Schema.IndexType.LSM_TREE, true, "processor", "vstart", "vstop");
     for (CandidateOrder order : orders) {
       indexCursor = database.lookupByKey("Order", new String[] { "processor", "vstart", "vstop" },
           new Object[] { order.getProcessor(), order.getStart(), order.getStop() });

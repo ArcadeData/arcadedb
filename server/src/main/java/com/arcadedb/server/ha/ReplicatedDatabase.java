@@ -198,12 +198,12 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public void checkPermissionsOnDatabase(final SecurityDatabaseUser.DATABASE_ACCESS access) {
+  public void checkPermissionsOnDatabase(final SecurityDatabaseUser.DatabaseAccess access) {
     proxied.checkPermissionsOnDatabase(access);
   }
 
   @Override
-  public void checkPermissionsOnFile(final int fileId, final SecurityDatabaseUser.ACCESS access) {
+  public void checkPermissionsOnFile(final int fileId, final SecurityDatabaseUser.Access access) {
     proxied.checkPermissionsOnFile(fileId, access);
   }
 
@@ -243,17 +243,17 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public void registerCallback(final CALLBACK_EVENT event, final Callable<Void> callback) {
+  public void registerCallback(final CallbackEvent event, final Callable<Void> callback) {
     proxied.registerCallback(event, callback);
   }
 
   @Override
-  public void unregisterCallback(final CALLBACK_EVENT event, final Callable<Void> callback) {
+  public void unregisterCallback(final CallbackEvent event, final Callable<Void> callback) {
     proxied.unregisterCallback(event, callback);
   }
 
   @Override
-  public void executeCallbacks(final CALLBACK_EVENT event) throws IOException {
+  public void executeCallbacks(final CallbackEvent event) throws IOException {
     proxied.executeCallbacks(event);
   }
 
@@ -333,7 +333,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public ComponentFile.MODE getMode() {
+  public ComponentFile.Mode getMode() {
     return proxied.getMode();
   }
 
@@ -418,7 +418,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public void begin(final TRANSACTION_ISOLATION_LEVEL isolationLevel) {
+  public void begin(final TransactionIsolationLevel isolationLevel) {
     proxied.begin(isolationLevel);
   }
 
@@ -688,12 +688,12 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public Database setTransactionIsolationLevel(final TRANSACTION_ISOLATION_LEVEL level) {
+  public Database setTransactionIsolationLevel(final TransactionIsolationLevel level) {
     return proxied.setTransactionIsolationLevel(level);
   }
 
   @Override
-  public TRANSACTION_ISOLATION_LEVEL getTransactionIsolationLevel() {
+  public TransactionIsolationLevel getTransactionIsolationLevel() {
     return proxied.getTransactionIsolationLevel();
   }
 

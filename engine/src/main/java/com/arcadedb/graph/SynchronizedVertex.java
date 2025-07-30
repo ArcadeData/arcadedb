@@ -85,7 +85,7 @@ public class SynchronizedVertex implements Vertex {
   }
 
   @Override
-  public synchronized long countEdges(final DIRECTION direction, final String edgeType) {
+  public synchronized long countEdges(final Direction direction, final String edgeType) {
     return delegate.countEdges(direction, edgeType);
   }
 
@@ -95,7 +95,7 @@ public class SynchronizedVertex implements Vertex {
   }
 
   @Override
-  public synchronized IterableGraph<Edge> getEdges(final DIRECTION direction, final String... edgeTypes) {
+  public synchronized IterableGraph<Edge> getEdges(final Direction direction, final String... edgeTypes) {
     return delegate.getEdges(direction, edgeTypes);
   }
 
@@ -105,7 +105,7 @@ public class SynchronizedVertex implements Vertex {
   }
 
   @Override
-  public synchronized IterableGraph<Vertex> getVertices(final DIRECTION direction, final String... edgeTypes) {
+  public synchronized IterableGraph<Vertex> getVertices(final Direction direction, final String... edgeTypes) {
     return delegate.getVertices(direction, edgeTypes);
   }
 
@@ -115,12 +115,12 @@ public class SynchronizedVertex implements Vertex {
   }
 
   @Override
-  public synchronized boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction) {
+  public synchronized boolean isConnectedTo(final Identifiable toVertex, final Direction direction) {
     return delegate.isConnectedTo(toVertex, direction);
   }
 
   @Override
-  public synchronized boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction, final String edgeType) {
+  public synchronized boolean isConnectedTo(final Identifiable toVertex, final Direction direction, final String edgeType) {
     return delegate.isConnectedTo(toVertex, direction, edgeType);
   }
 

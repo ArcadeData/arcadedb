@@ -57,7 +57,7 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
     return SQLQueryEngine.foreachRecord(iArgument -> move(context.getDatabase(), iArgument, labels), self, context);
   }
 
-  protected Object v2v(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection,
+  protected Object v2v(final Database graph, final Identifiable iRecord, final Vertex.Direction iDirection,
       final String[] iLabels) {
     if (iRecord != null) {
       final Document rec = (Document) iRecord.getRecord();
@@ -67,7 +67,7 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
     return null;
   }
 
-  protected Object v2e(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection,
+  protected Object v2e(final Database graph, final Identifiable iRecord, final Vertex.Direction iDirection,
       final String[] iLabels) {
     final Document rec = (Document) iRecord.getRecord();
     if (rec instanceof Vertex vertex)
@@ -76,11 +76,11 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
 
   }
 
-  protected Object e2v(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection,
+  protected Object e2v(final Database graph, final Identifiable iRecord, final Vertex.Direction iDirection,
       final String[] iLabels) {
     final Document rec = (Document) iRecord.getRecord();
     if (rec instanceof Edge edge) {
-      if (iDirection == Vertex.DIRECTION.BOTH) {
+      if (iDirection == Vertex.Direction.BOTH) {
         var results = new ArrayList<Vertex>();
         results.add(edge.getOutVertex());
         results.add(edge.getInVertex());

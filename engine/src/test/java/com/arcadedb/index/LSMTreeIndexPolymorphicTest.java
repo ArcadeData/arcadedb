@@ -27,13 +27,11 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.Map;
 
-import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
@@ -44,7 +42,7 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
 
   @Test
   public void testPolymorphic() {
-    populate(Schema.INDEX_TYPE.LSM_TREE);
+    populate(Schema.IndexType.LSM_TREE);
 
     try {
       final MutableDocument docChildDuplicated = database.newDocument("TestChild");
@@ -65,7 +63,7 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
 
   @Test
   public void testPolymorphicFullText() {
-    populate(Schema.INDEX_TYPE.FULL_TEXT);
+    populate(Schema.IndexType.FULL_TEXT);
     checkQueries();
   }
 
@@ -75,7 +73,7 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
     final DocumentType typeRoot2 = database.getSchema().getOrCreateDocumentType("TestRoot2");
     typeRoot2.getOrCreateProperty("name", String.class);
     typeRoot2.getOrCreateProperty("parent", Type.LINK);
-    typeRoot2.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name", "parent");
+    typeRoot2.getOrCreateTypeIndex(Schema.IndexType.LSM_TREE, true, "name", "parent");
     database.command("sql", "delete from TestRoot2");
     database.begin();
     final DocumentType testChild2 = database.getSchema().getOrCreateDocumentType("TestChild2");
@@ -101,7 +99,7 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
     final DocumentType typeRoot2 = database.getSchema().getOrCreateDocumentType("TestRoot2");
     typeRoot2.getOrCreateProperty("name", String.class);
     typeRoot2.getOrCreateProperty("parent", Type.LINK);
-    typeRoot2.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name", "parent");
+    typeRoot2.getOrCreateTypeIndex(Schema.IndexType.LSM_TREE, true, "name", "parent");
     database.command("sql", "delete from TestRoot2");
     final DocumentType typeChild2 = database.getSchema().getOrCreateDocumentType("TestChild2");
     typeChild2.setSuperTypes(Arrays.asList(typeRoot2));
@@ -121,10 +119,10 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
     }
   }
 
-  private void populate(final Schema.INDEX_TYPE indexType) {
+  private void populate(final Schema.IndexType indexType) {
     typeRoot = database.getSchema().getOrCreateDocumentType("TestRoot");
     typeRoot.getOrCreateProperty("name", String.class);
-    typeRoot.getOrCreateTypeIndex(indexType, indexType == Schema.INDEX_TYPE.LSM_TREE, "name");
+    typeRoot.getOrCreateTypeIndex(indexType, indexType == Schema.IndexType.LSM_TREE, "name");
     database.command("sql", "delete from TestRoot");
 
     typeChild = database.getSchema().getOrCreateDocumentType("TestChild");

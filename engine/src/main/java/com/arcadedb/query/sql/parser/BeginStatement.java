@@ -41,7 +41,7 @@ public class BeginStatement extends SimpleExecStatement {
     final DatabaseInternal database = context.getDatabase();
 
     if (isolation != null)
-      database.begin(Database.TRANSACTION_ISOLATION_LEVEL.valueOf(isolation.getStringValue().toUpperCase(Locale.ENGLISH)));
+      database.begin(Database.TransactionIsolationLevel.valueOf(isolation.getStringValue().toUpperCase(Locale.ENGLISH)));
     else
       // USE THE STANDARD ISOLATION LEVEL
       database.begin();

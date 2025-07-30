@@ -144,9 +144,9 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
 
         v.createProperty("Name", String.class);
 
-        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "id" }, INDEX_PAGE_SIZE);
-        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "number" }, INDEX_PAGE_SIZE);
-        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "relativeName" }, INDEX_PAGE_SIZE);
+        database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, false, "Device", new String[] { "id" }, INDEX_PAGE_SIZE);
+        database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, false, "Device", new String[] { "number" }, INDEX_PAGE_SIZE);
+        database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, false, "Device", new String[] { "relativeName" }, INDEX_PAGE_SIZE);
       }
     });
 

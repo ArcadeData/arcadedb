@@ -37,8 +37,8 @@ public class DatabaseFactory implements AutoCloseable {
   private final static Charset                                                    DEFAULT_CHARSET      = StandardCharsets.UTF_8;
   private static final Map<Path, Database>                                        ACTIVE_INSTANCES     = new ConcurrentHashMap<>();
   private final        ContextConfiguration                                       contextConfiguration = new ContextConfiguration();
-  private final        String                                                     databasePath;
-  private final        Map<DatabaseInternal.CALLBACK_EVENT, List<Callable<Void>>> callbacks            = new HashMap<>();
+  private final        String                                                    databasePath;
+  private final        Map<DatabaseInternal.CallbackEvent, List<Callable<Void>>> callbacks = new HashMap<>();
 
   public DatabaseFactory(final String path) {
     if (path == null || path.trim().isEmpty())
@@ -67,10 +67,10 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   public Database open() {
-    return open(ComponentFile.MODE.READ_WRITE);
+    return open(ComponentFile.Mode.READ_WRITE);
   }
 
-  public synchronized Database open(final ComponentFile.MODE mode) {
+  public synchronized Database open(final ComponentFile.Mode mode) {
     checkForActiveInstance(databasePath);
 
     if (ACTIVE_INSTANCES.isEmpty())
@@ -91,7 +91,7 @@ public class DatabaseFactory implements AutoCloseable {
     if (ACTIVE_INSTANCES.isEmpty())
       PageManager.INSTANCE.configure();
 
-    final LocalDatabase database = new LocalDatabase(databasePath, ComponentFile.MODE.READ_WRITE, contextConfiguration, security,
+    final LocalDatabase database = new LocalDatabase(databasePath, ComponentFile.Mode.READ_WRITE, contextConfiguration, security,
         callbacks);
     database.setAutoTransaction(autoTransaction);
     database.create();
@@ -126,7 +126,7 @@ public class DatabaseFactory implements AutoCloseable {
   /**
    * Test only API
    */
-  public void registerCallback(final DatabaseInternal.CALLBACK_EVENT event, final Callable<Void> callback) {
+  public void registerCallback(final DatabaseInternal.CallbackEvent event, final Callable<Void> callback) {
     final List<Callable<Void>> callbacks = this.callbacks.computeIfAbsent(event, k -> new ArrayList<>());
     callbacks.add(callback);
   }

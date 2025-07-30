@@ -28,9 +28,9 @@ import java.util.stream.*;
 public class EventWatcherSubscription {
   private final String                             database;
   private final WebSocketChannel                   channel;
-  private final Map<String, Set<ChangeEvent.TYPE>> typeSubscriptions = new ConcurrentHashMap<>();
+  private final Map<String, Set<ChangeEvent.Type>> typeSubscriptions = new ConcurrentHashMap<>();
 
-  private final static Set<ChangeEvent.TYPE> allTypes = Arrays.stream(ChangeEvent.TYPE.values()).collect(Collectors.toSet());
+  private final static Set<ChangeEvent.Type> allTypes = Arrays.stream(ChangeEvent.Type.values()).collect(Collectors.toSet());
 
   public EventWatcherSubscription(final String database, final WebSocketChannel channel) {
     this.database = database;
@@ -48,7 +48,7 @@ public class EventWatcherSubscription {
     typeSubscriptions.clear();
   }
 
-  public void add(final String type, final Set<ChangeEvent.TYPE> changeTypes) {
+  public void add(final String type, final Set<ChangeEvent.Type> changeTypes) {
     final var key = type == null ? "*" : type; // ConcurrentHashMap can't have null keys, so use * for "all types."
     typeSubscriptions.computeIfAbsent(key, k -> new HashSet<>()).addAll(changeTypes == null ? allTypes : changeTypes);
   }

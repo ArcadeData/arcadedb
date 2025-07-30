@@ -24,9 +24,12 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
 
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /**
  * Native Query engine is a simple query engine that covers most of the classic use cases, such as the retrieval of records
@@ -36,10 +39,8 @@ import java.util.stream.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class Select {
-  final DatabaseInternal database;
-
-  enum STATE {DEFAULT, WHERE, COMPILED}
-
+  private SelectTreeNode   lastTreeElement;
+  final   DatabaseInternal database;
   Map<String, Object>              parameters;
   SelectTreeNode                   rootTreeElement;
   DocumentType                     fromType;
@@ -54,9 +55,9 @@ public class Select {
   boolean                          exceptionOnTimeout;
   ArrayList<Pair<String, Boolean>> orderBy;
   boolean                          parallel    = false;
+  State                            state       = State.DEFAULT;
 
-  STATE state = STATE.DEFAULT;
-  private SelectTreeNode lastTreeElement;
+  enum State {DEFAULT, WHERE, COMPILED}
 
   public Select(final DatabaseInternal database) {
     this.database = database;
@@ -100,7 +101,7 @@ public class Select {
     checkNotCompiled();
     if (property != null)
       throw new IllegalArgumentException("Property has already been set");
-    if (state != STATE.WHERE)
+    if (state != State.WHERE)
       throw new IllegalArgumentException("No context was provided for the parameter");
     this.property = new SelectPropertyValue(name);
     return this;
@@ -128,7 +129,7 @@ public class Select {
     checkNotCompiled();
     if (rootTreeElement != null)
       throw new IllegalArgumentException("Where has already been set");
-    state = STATE.WHERE;
+    state = State.WHERE;
     return new SelectWhereLeftBlock(this);
   }
 
@@ -234,10 +235,10 @@ public class Select {
   public SelectCompiled compile() {
     if (fromType == null && fromBuckets == null)
       throw new IllegalArgumentException("from (type or buckets) has not been set");
-    if (state == STATE.WHERE) {
+    if (state == State.WHERE) {
       setLogic(SelectOperator.run);
     }
-    state = STATE.COMPILED;
+    state = State.COMPILED;
     return new SelectCompiled(this);
   }
 
@@ -298,7 +299,7 @@ public class Select {
   }
 
   void checkNotCompiled() {
-    if (state == STATE.COMPILED)
+    if (state == State.COMPILED)
       throw new IllegalArgumentException("Cannot modify the structure of a select what has been already compiled");
   }
 

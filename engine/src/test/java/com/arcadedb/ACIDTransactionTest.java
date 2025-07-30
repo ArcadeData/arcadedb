@@ -113,7 +113,7 @@ public class ACIDTransactionTest extends TestHelper {
 
       // creating the index should throw exception because there's an aync creation ongoing: sometimes it doesn't happen, the async is finished
       try {
-        database.getSchema().getType("V").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
+        database.getSchema().getType("V").createTypeIndex(Schema.IndexType.LSM_TREE, true, "id");
       } catch (NeedRetryException e) {
         //no action
       }
@@ -175,7 +175,7 @@ public class ACIDTransactionTest extends TestHelper {
       v.set("surname", "Test");
       v.save();
 
-      ((DatabaseInternal) db).registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, callback);
+      ((DatabaseInternal) db).registerCallback(DatabaseInternal.CallbackEvent.TX_AFTER_WAL_WRITE, callback);
 
       db.commit();
 
@@ -192,7 +192,7 @@ public class ACIDTransactionTest extends TestHelper {
 
     database.transaction(() -> assertThat(database.countType("V", true)).isEqualTo(1));
 
-    ((DatabaseInternal) db).unregisterCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, callback);
+    ((DatabaseInternal) db).unregisterCallback(DatabaseInternal.CallbackEvent.TX_AFTER_WAL_WRITE, callback);
   }
 
   @Test
@@ -212,7 +212,7 @@ public class ACIDTransactionTest extends TestHelper {
     final AtomicInteger commits = new AtomicInteger(0);
 
     try {
-      ((DatabaseInternal) db).registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, new Callable<>() {
+      ((DatabaseInternal) db).registerCallback(DatabaseInternal.CallbackEvent.TX_AFTER_WAL_WRITE, new Callable<>() {
         @Override
         public Void call() throws IOException {
           if (commits.incrementAndGet() > TOT - 1) {
@@ -286,7 +286,7 @@ public class ACIDTransactionTest extends TestHelper {
 
     try {
 
-      ((DatabaseInternal) db).registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, callback);
+      ((DatabaseInternal) db).registerCallback(DatabaseInternal.CallbackEvent.TX_AFTER_WAL_WRITE, callback);
 
       for (; total.get() < TOT; total.incrementAndGet()) {
         final MutableDocument v = db.newDocument("V");
@@ -306,7 +306,7 @@ public class ACIDTransactionTest extends TestHelper {
     }
     ((DatabaseInternal) db).kill();
 
-    ((DatabaseInternal) db).unregisterCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, callback);
+    ((DatabaseInternal) db).unregisterCallback(DatabaseInternal.CallbackEvent.TX_AFTER_WAL_WRITE, callback);
 
     verifyWALFilesAreStillPresent();
 
@@ -322,7 +322,7 @@ public class ACIDTransactionTest extends TestHelper {
       type.createProperty("symbol", Type.STRING);
       type.createProperty("date", Type.DATETIME);
       type.createProperty("history", Type.LIST);
-      type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "symbol", "date");
+      type.createTypeIndex(Schema.IndexType.LSM_TREE, true, "symbol", "date");
 
       final DocumentType type2 = database.getSchema().buildDocumentType().withName("Aggregate").withTotalBuckets(1).create();
       type2.createProperty("volume", Type.LONG);
@@ -420,7 +420,7 @@ public class ACIDTransactionTest extends TestHelper {
     db.async().onError(exception -> errors.incrementAndGet());
 
     final VertexType type = database.getSchema().getOrCreateVertexType("Node");
-    type.getOrCreateProperty("id", Type.STRING).getOrCreateIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+    type.getOrCreateProperty("id", Type.STRING).getOrCreateIndex(Schema.IndexType.LSM_TREE, true);
     type.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
 
     database.getSchema().getOrCreateEdgeType("Arc");
@@ -554,7 +554,7 @@ public class ACIDTransactionTest extends TestHelper {
     final AtomicBoolean dbNotClosedCaught = new AtomicBoolean(false);
 
     database.close();
-    factory.registerCallback(DatabaseInternal.CALLBACK_EVENT.DB_NOT_CLOSED, () -> {
+    factory.registerCallback(DatabaseInternal.CallbackEvent.DB_NOT_CLOSED, () -> {
       dbNotClosedCaught.set(true);
       return null;
     });

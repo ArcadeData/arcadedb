@@ -31,9 +31,9 @@ import java.util.logging.*;
 
 public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
   private final Vertex           vertex;
-  private final Vertex.DIRECTION direction;
+  private final Vertex.Direction direction;
 
-  public EdgeIteratorFilter(final DatabaseInternal database, final Vertex vertex, final Vertex.DIRECTION direction, final EdgeSegment current,
+  public EdgeIteratorFilter(final DatabaseInternal database, final Vertex vertex, final Vertex.Direction direction, final EdgeSegment current,
       final String[] edgeTypes) {
     super(database, current, edgeTypes);
     this.direction = direction;
@@ -57,7 +57,7 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
         // LIGHTWEIGHT EDGE
         final DocumentType edgeType = currentContainer.getDatabase().getSchema().getTypeByBucketId(nextEdge.getBucketId());
 
-        if (direction == Vertex.DIRECTION.OUT)
+        if (direction == Vertex.Direction.OUT)
           return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdge, vertex.getIdentity(), nextVertex);
         else
           return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdge, nextVertex, vertex.getIdentity());
@@ -87,7 +87,7 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
   @Override
   protected void handleCorruption(final Exception e, final RID edge, final RID vertex) {
     if ((e instanceof RecordNotFoundException || e instanceof SchemaException) &&//
-        database.getMode() == ComponentFile.MODE.READ_WRITE) {
+        database.getMode() == ComponentFile.Mode.READ_WRITE) {
 
       LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s %s. Fixing it...", e, edge, vertex != null ? "vertex " + vertex : "");
 

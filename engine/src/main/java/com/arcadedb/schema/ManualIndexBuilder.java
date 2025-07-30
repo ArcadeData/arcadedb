@@ -42,7 +42,7 @@ public class ManualIndexBuilder extends IndexBuilder<Index> {
   }
 
   public Index create() {
-    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DatabaseAccess.UPDATE_SCHEMA);
 
     if (database.isAsyncProcessing())
       throw new NeedRetryException("Cannot create a new index while asynchronous tasks are running");

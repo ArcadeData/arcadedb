@@ -257,7 +257,7 @@ public class TransactionTypeTest extends TestHelper {
       if (!database.getSchema().existsType(TYPE_NAME)) {
         final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
         type.createProperty("id", Integer.class);
-        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, "id");
+        database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, true, TYPE_NAME, "id");
       }
 
       for (int i = 0; i < TOT; ++i) {

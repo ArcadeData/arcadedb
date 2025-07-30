@@ -1,11 +1,8 @@
 package com.arcadedb.integration.importer;
 
-import com.arcadedb.database.DatabaseComparator;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NullStrategy;
 import com.arcadedb.integration.TestHelper;
-import com.arcadedb.integration.exporter.Exporter;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
@@ -80,8 +77,8 @@ public class JsonLImporterIT {
             assertThat(type.getProperty("id").getType()).isEqualTo(Type.INTEGER);
             assertThat(type.getIndexesByProperties("id").getFirst())
                 .satisfies(index -> {
-                  assertThat(index.getType()).isEqualTo(Schema.INDEX_TYPE.LSM_TREE);
-                  assertThat(index.getNullStrategy()).isEqualTo(NULL_STRATEGY.SKIP);
+                  assertThat(index.getType()).isEqualTo(Schema.IndexType.LSM_TREE);
+                  assertThat(index.getNullStrategy()).isEqualTo(NullStrategy.SKIP);
                   assertThat(index.isUnique()).isTrue();
                 });
           });
@@ -90,8 +87,8 @@ public class JsonLImporterIT {
             assertThat(type.getProperty("id").getType()).isEqualTo(Type.INTEGER);
             assertThat(type.getIndexesByProperties("id").getFirst())
                 .satisfies(index -> {
-                  assertThat(index.getType()).isEqualTo(Schema.INDEX_TYPE.LSM_TREE);
-                  assertThat(index.getNullStrategy()).isEqualTo(NULL_STRATEGY.SKIP);
+                  assertThat(index.getType()).isEqualTo(Schema.IndexType.LSM_TREE);
+                  assertThat(index.getNullStrategy()).isEqualTo(NullStrategy.SKIP);
                   assertThat(index.isUnique()).isTrue();
                 });
           });

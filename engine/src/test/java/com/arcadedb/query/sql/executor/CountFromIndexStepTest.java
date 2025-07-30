@@ -26,7 +26,6 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -58,7 +57,7 @@ public class CountFromIndexStepTest {
       clazz.createProperty(PROPERTY_NAME, Type.STRING);
       String className = clazz.getName();
       indexName = className + "[" + PROPERTY_NAME + "]";
-      clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, PROPERTY_NAME);
+      clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, PROPERTY_NAME);
 
       for (int i = 0; i < 20; i++) {
         final MutableDocument document = db.newDocument(className);

@@ -42,7 +42,7 @@ public abstract class SQLFunctionPathFinder extends SQLFunctionMathAbstract {
 
   protected       Vertex           paramSourceVertex;
   protected       Vertex           paramDestinationVertex;
-  protected final Vertex.DIRECTION paramDirection = Vertex.DIRECTION.OUT;
+  protected final Vertex.Direction paramDirection = Vertex.Direction.OUT;
   protected       CommandContext   context;
 
   protected static final float MIN = 0f;

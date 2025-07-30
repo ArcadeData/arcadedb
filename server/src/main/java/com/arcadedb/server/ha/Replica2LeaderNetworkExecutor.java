@@ -145,7 +145,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
           }
         }
 
-        server.getServer().lifecycleEvent(ReplicationCallback.TYPE.REPLICA_MSG_RECEIVED, request);
+        server.getServer().lifecycleEvent(ReplicationCallback.Type.REPLICA_MSG_RECEIVED, request);
 
         if (response != null)
           sendCommandToLeader(buffer, response, reqId);
@@ -412,7 +412,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       if (response instanceof ReplicaConnectFullResyncResponse fullSync) {
         LogManager.instance().log(this, Level.INFO, "Asking for a full resync...");
 
-        server.getServer().lifecycleEvent(ReplicationCallback.TYPE.REPLICA_FULL_RESYNC, null);
+        server.getServer().lifecycleEvent(ReplicationCallback.Type.REPLICA_FULL_RESYNC, null);
 
         final Set<String> databases = fullSync.getDatabases();
 
@@ -421,7 +421,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
       } else {
         LogManager.instance().log(this, Level.INFO, "Receiving hot resync (from=%d)...", lastLogNumber);
-        server.getServer().lifecycleEvent(ReplicationCallback.TYPE.REPLICA_HOT_RESYNC, null);
+        server.getServer().lifecycleEvent(ReplicationCallback.Type.REPLICA_HOT_RESYNC, null);
       }
 
       sendCommandToLeader(buffer, new ReplicaReadyRequest(), -1);
@@ -471,7 +471,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     // RELOAD THE SCHEMA
     database.getSchema().getEmbedded().close();
     DatabaseContext.INSTANCE.init(database);
-    database.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, true);
+    database.getSchema().getEmbedded().load(ComponentFile.Mode.READ_WRITE, true);
 
     LogManager.instance()
         .log(this, Level.INFO, "Database '%s' installed from the cluster (%s - %d files lastLogNumber=%d)", null, db,

@@ -35,12 +35,20 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.BinaryTypes;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.File;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.logging.Level;
 
 import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
+import static com.arcadedb.index.lsm.LSMTreeIndexAbstract.NullStrategy.SKIP;
 
 /**
  * Abstract class for LSM-based indexes. The first page contains 2 bytes to store key and value types. The pages are populated from the head of the page
@@ -57,7 +65,7 @@ import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
  * The page content size and available space API are not valid in the index pages, because the whole page is used from start to end.
  */
 public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
-  public enum NULL_STRATEGY {ERROR, SKIP}
+  public enum NullStrategy {ERROR, SKIP}
 
   public static final    int    DEF_PAGE_SIZE = 262_144;
   public final           RID    REMOVED_ENTRY_RID;
@@ -75,7 +83,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   protected final boolean          unique;
   protected       Type[]           keyTypes;
   protected       byte[]           binaryKeyTypes;
-  protected       NULL_STRATEGY    nullStrategy = NULL_STRATEGY.SKIP;
+  protected       NullStrategy     nullStrategy = SKIP;
 
   protected static class LookupResult {
     public final boolean found;
@@ -95,8 +103,8 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * Called at creation time.
    */
   protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name,
-      final boolean unique, final String filePath, final String ext, final ComponentFile.MODE mode, final Type[] keyTypes,
-      final int pageSize, final int version, final NULL_STRATEGY nullStrategy) throws IOException {
+      final boolean unique, final String filePath, final String ext, final ComponentFile.Mode mode, final Type[] keyTypes,
+      final int pageSize, final int version, final NullStrategy nullStrategy) throws IOException {
     super(database, name, filePath, ext, mode, pageSize, version);
 
     if (nullStrategy == null)
@@ -125,7 +133,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name,
       final boolean unique, final String filePath, final String ext, final Type[] keyTypes, final byte[] binaryKeyTypes,
       final int pageSize, final int version) throws IOException {
-    super(database, name, filePath, TEMP_EXT + ext, ComponentFile.MODE.READ_WRITE, pageSize, version);
+    super(database, name, filePath, TEMP_EXT + ext, ComponentFile.Mode.READ_WRITE, pageSize, version);
     this.mainIndex = mainIndex;
     this.serializer = database.getSerializer();
     this.comparator = serializer.getComparator();
@@ -139,7 +147,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * Called at load time (1st page only).
    */
   protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name,
-      final boolean unique, final String filePath, final int id, final ComponentFile.MODE mode, final int pageSize,
+      final boolean unique, final String filePath, final int id, final ComponentFile.Mode mode, final int pageSize,
       final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
     this.mainIndex = mainIndex;
@@ -167,7 +175,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return file.getFileId();
   }
 
-  public NULL_STRATEGY getNullStrategy() {
+  public NullStrategy getNullStrategy() {
     return nullStrategy;
   }
 
@@ -515,7 +523,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   }
 
   protected void checkForNulls(final Object[] keys) {
-    if (nullStrategy != NULL_STRATEGY.ERROR)
+    if (nullStrategy != NullStrategy.ERROR)
       return;
 
     if (keys != null)

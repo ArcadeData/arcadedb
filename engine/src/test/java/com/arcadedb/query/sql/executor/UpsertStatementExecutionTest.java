@@ -30,7 +30,6 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
@@ -54,7 +53,7 @@ public class UpsertStatementExecutionTest extends TestHelper {
   public void beginTest() {
     final DocumentType clazz = database.getSchema().createDocumentType("UpsertStatementExecutionTest");
     clazz.createProperty("name", Type.STRING);
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, true, "name");
     className = clazz.getName();
 
     for (int i = 0; i < 10; i++) {
@@ -249,7 +248,7 @@ public class UpsertStatementExecutionTest extends TestHelper {
   public void testUpsertVertices2() {
     final VertexType clazz = database.getSchema().createVertexType("UpsertableVertex");
     clazz.createProperty("name", Type.STRING);
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, true, "name");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newVertex("UpsertableVertex");
@@ -310,7 +309,7 @@ public class UpsertStatementExecutionTest extends TestHelper {
       DocumentType dtProduct = database.getSchema().createDocumentType("Product");
       dtProduct.createProperty("start", Type.DATETIME_MICROS);
       dtProduct.createProperty("stop", Type.DATETIME_MICROS);
-      dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "start", "stop");
+      dtProduct.createTypeIndex(Schema.IndexType.LSM_TREE, true, "start", "stop");
     });
 
     GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);
@@ -344,7 +343,7 @@ public class UpsertStatementExecutionTest extends TestHelper {
       DocumentType dtProduct = database.getSchema().createDocumentType("Product");
       dtProduct.createProperty("start", Type.DATETIME_MICROS);
       dtProduct.createProperty("stop", Type.DATETIME_MICROS);
-      dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "start", "stop");
+      dtProduct.createTypeIndex(Schema.IndexType.LSM_TREE, true, "start", "stop");
     });
 
     GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);

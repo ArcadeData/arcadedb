@@ -58,8 +58,8 @@ public class ReplicationServerFixedClientConnectionIT extends ReplicationServerI
   }
 
   @Override
-  protected HAServer.SERVER_ROLE getServerRole(int serverIndex) {
-    return HAServer.SERVER_ROLE.ANY;
+  protected HAServer.ServerRole getServerRole(int serverIndex) {
+    return HAServer.ServerRole.ANY;
   }
 
   @Test
@@ -72,7 +72,7 @@ public class ReplicationServerFixedClientConnectionIT extends ReplicationServerI
     final RemoteDatabase db = new RemoteDatabase("http://" + server1AddressParts[0], Integer.parseInt(server1AddressParts[1]),
         getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
-    db.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
+    db.setConnectionStrategy(RemoteHttpComponent.ConnectionStrategy.FIXED);
 
     LogManager.instance()
         .log(this, Level.FINE, "Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
@@ -131,7 +131,7 @@ public class ReplicationServerFixedClientConnectionIT extends ReplicationServerI
   protected void onBeforeStarting(final ArcadeDBServer server) {
     if (server.getServerName().equals("ArcadeDB_1"))
       server.registerTestEventListener((type, object, server1) -> {
-        if (type == ReplicationCallback.TYPE.REPLICA_MSG_RECEIVED) {
+        if (type == ReplicationCallback.Type.REPLICA_MSG_RECEIVED) {
           if (messages.incrementAndGet() > 1000 && getServer(0).isStarted()) {
             testLog("TEST: Stopping the Leader...");
 

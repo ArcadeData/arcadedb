@@ -39,7 +39,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
   private final HttpServer        httpServer;
   private final WebSocketEventBus webSocketEventBus;
 
-  public enum ACTION {UNKNOWN, SUBSCRIBE, UNSUBSCRIBE}
+  public enum Action {UNKNOWN, SUBSCRIBE, UNSUBSCRIBE}
 
   public WebSocketReceiveListener(final HttpServer httpServer, final WebSocketEventBus webSocketEventBus) {
     this.httpServer = httpServer;
@@ -51,9 +51,9 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
     try {
       final var message = new JSONObject(textMessage.getData());
       final var rawAction = message.optString("action", "");
-      var action = ACTION.UNKNOWN;
+      var action = Action.UNKNOWN;
       try {
-        action = ACTION.valueOf(rawAction.toUpperCase(Locale.ENGLISH));
+        action = Action.valueOf(rawAction.toUpperCase(Locale.ENGLISH));
       } catch (final IllegalArgumentException ignored) {
       }
 
@@ -62,7 +62,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
         final var jsonChangeTypes = !message.isNull("changeTypes") ? message.getJSONArray("changeTypes") : null;
         final var changeTypes = jsonChangeTypes == null ?
             null :
-            jsonChangeTypes.toList().stream().map(t -> ChangeEvent.TYPE.valueOf(t.toString().toUpperCase(Locale.ENGLISH))).collect(Collectors.toSet());
+            jsonChangeTypes.toList().stream().map(t -> ChangeEvent.Type.valueOf(t.toString().toUpperCase(Locale.ENGLISH))).collect(Collectors.toSet());
         this.webSocketEventBus.subscribe(message.getString("database"), message.optString("type", null), changeTypes, channel);
         this.sendAck(channel, action);
         break;
@@ -94,7 +94,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
     this.webSocketEventBus.unsubscribeAll(channelId);
   }
 
-  private void sendAck(final WebSocketChannel channel, final ACTION action) {
+  private void sendAck(final WebSocketChannel channel, final Action action) {
     final var json = new JSONObject("{\"result\": \"ok\"}");
     json.put("action", action.toString().toLowerCase(Locale.ENGLISH));
     WebSockets.sendText(json.toString(), channel, null);

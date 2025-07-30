@@ -94,7 +94,7 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
     assertThat(friendOf.getOut()).isEqualTo(me);
     assertThat(friendOf.getIn()).isEqualTo(you);
 
-    me.getEdges(Vertex.DIRECTION.OUT, "FriendOf").forEach(e -> {
+    me.getEdges(Vertex.Direction.OUT, "FriendOf").forEach(e -> {
       assertThat(e).isEqualTo(friendOf);
     });
 

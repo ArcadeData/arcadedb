@@ -68,7 +68,7 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
 
   public VectorIndexBuilder(final Database database, final HnswVectorIndexRAM origin) {
     super((DatabaseInternal) database, HnswVectorIndex.class);
-    this.indexType = Schema.INDEX_TYPE.HNSW;
+    this.indexType = Schema.IndexType.HNSW;
     this.origin = origin;
     this.dimensions = origin.getDimensions();
     this.distanceFunction = origin.getDistanceFunction();
@@ -80,7 +80,7 @@ public class VectorIndexBuilder extends IndexBuilder<HnswVectorIndex> {
   }
 
   public HnswVectorIndex create() {
-    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DatabaseAccess.UPDATE_SCHEMA);
 
     if (database.isAsyncProcessing())
       throw new NeedRetryException("Cannot create a new index while asynchronous tasks are running");

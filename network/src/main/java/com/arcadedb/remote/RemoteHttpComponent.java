@@ -39,13 +39,24 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RWLockContext;
 
-import java.io.*;
-import java.net.*;
-import java.net.http.*;
-import java.time.*;
-import java.util.*;
-import java.util.logging.*;
-import java.util.stream.*;
+import java.io.IOException;
+import java.net.Authenticator;
+import java.net.ConnectException;
+import java.net.PasswordAuthentication;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
+import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
+
+import static com.arcadedb.remote.RemoteHttpComponent.ConnectionStrategy.ROUND_ROBIN;
 
 /**
  * Remote Database implementation. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
@@ -69,14 +80,14 @@ public class RemoteHttpComponent extends RWLockContext {
   private         int                         haServerErrorRetries;
   private final   Integer                     txRetries;
   private         int                         apiVersion                = 1;
-  private         CONNECTION_STRATEGY         connectionStrategy        = CONNECTION_STRATEGY.ROUND_ROBIN;
+  private         ConnectionStrategy          connectionStrategy        = ROUND_ROBIN;
   private         Pair<String, Integer>       leaderServer;
   private         int                         currentReplicaServerIndex = -1;
   private         int                         timeout;
   protected       String                      currentServer;
   protected       int                         currentPort;
 
-  public enum CONNECTION_STRATEGY {
+  public enum ConnectionStrategy {
     STICKY, ROUND_ROBIN, FIXED
   }
 
@@ -151,11 +162,11 @@ public class RemoteHttpComponent extends RWLockContext {
     return userPassword;
   }
 
-  public CONNECTION_STRATEGY getConnectionStrategy() {
+  public ConnectionStrategy getConnectionStrategy() {
     return connectionStrategy;
   }
 
-  public void setConnectionStrategy(final CONNECTION_STRATEGY connectionStrategy) {
+  public void setConnectionStrategy(final ConnectionStrategy connectionStrategy) {
     this.connectionStrategy = connectionStrategy;
   }
 
@@ -180,7 +191,7 @@ public class RemoteHttpComponent extends RWLockContext {
     Exception lastException = null;
 
     int maxRetry =
-        leaderIsPreferable || connectionStrategy == CONNECTION_STRATEGY.FIXED ?
+        leaderIsPreferable || connectionStrategy == ConnectionStrategy.FIXED ?
             sameServerErrorRetries :
             haServerErrorRetries == 0 ? getReplicaServerList().size() + 1 : haServerErrorRetries;
     if (maxRetry < 1)
@@ -257,7 +268,7 @@ public class RemoteHttpComponent extends RWLockContext {
         if (!autoReconnect || retry + 1 >= maxRetry)
           break;
 
-        if (connectionStrategy == CONNECTION_STRATEGY.FIXED) {
+        if (connectionStrategy == ConnectionStrategy.FIXED) {
           LogManager.instance()
               .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, retrying...",
                   connectToServer.getFirst(), connectToServer.getSecond());

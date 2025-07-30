@@ -53,7 +53,7 @@ public class TypeBuilder<T> {
   }
 
   public T create() {
-    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DatabaseAccess.UPDATE_SCHEMA);
 
     if (typeName == null || typeName.isEmpty())
       throw new IllegalArgumentException("Missing type");

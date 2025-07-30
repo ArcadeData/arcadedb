@@ -212,9 +212,9 @@ public class LeaderNetworkListener extends Thread {
 
     if (ha.connectToLeader(remoteServerAddress, null)) {
       // ELECTION FINISHED, THE SERVER IS A REPLICA
-      ha.setElectionStatus(HAServer.ELECTION_STATUS.DONE);
+      ha.setElectionStatus(HAServer.ElectionStatus.DONE);
       try {
-        ha.getServer().lifecycleEvent(ReplicationCallback.TYPE.LEADER_ELECTED, remoteServerName);
+        ha.getServer().lifecycleEvent(ReplicationCallback.Type.LEADER_ELECTED, remoteServerName);
       } catch (final Exception e) {
         throw new ArcadeDBException("Error on propagating election status", e);
       }
@@ -249,7 +249,7 @@ public class LeaderNetworkListener extends Thread {
               remoteServerName, lastReplicationMessage, localServerLastMessageNumber, voteTurn);
       channel.writeByte((byte) 0);
       ha.lastElectionVote = new Pair<>(voteTurn, remoteServerName);
-      ha.setElectionStatus(HAServer.ELECTION_STATUS.VOTING_FOR_OTHERS);
+      ha.setElectionStatus(HAServer.ElectionStatus.VOTING_FOR_OTHERS);
     } else {
       LogManager.instance().log(this, Level.INFO,
           "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, but cannot give my vote (votedFor='%s' on turn %d)",

@@ -23,9 +23,9 @@ package com.arcadedb.server.event;
 import com.arcadedb.serializer.json.JSONArray;
 
 public interface ServerEventLog {
-  enum EVENT_TYPE {CRITICAL, WARNING, INFO, HINT}
+  enum EventType {CRITICAL, WARNING, INFO, HINT}
 
-  void reportEvent(EVENT_TYPE eventType, String component, String databaseName, String message);
+  void reportEvent(EventType eventType, String component, String databaseName, String message);
 
   JSONArray getCurrentEvents();
 

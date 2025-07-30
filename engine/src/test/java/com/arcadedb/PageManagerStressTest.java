@@ -58,7 +58,7 @@ public class PageManagerStressTest {
         v.createProperty("locali", Integer.class);
         v.createProperty("notes1", String.class);
 
-        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "id" }, 5000000);
+        database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, false, TYPE_NAME, new String[] { "id" }, 5000000);
 
         database.commit();
       }

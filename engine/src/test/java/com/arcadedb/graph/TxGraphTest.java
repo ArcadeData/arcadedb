@@ -52,7 +52,7 @@ public class TxGraphTest extends TestHelper {
 
       commodore[0].asVertex(false).newEdge("SELLS", vic20).set("date", System.currentTimeMillis()).save();
 
-      assertThat(commodore[0].asVertex().countEdges(Vertex.DIRECTION.OUT, "SELLS")).isEqualTo(2);
+      assertThat(commodore[0].asVertex().countEdges(Vertex.Direction.OUT, "SELLS")).isEqualTo(2);
 
       ResultSet result = database.query("sql", "select expand( in().include('name') ) from Good");
       assertThat(result.hasNext()).isTrue();

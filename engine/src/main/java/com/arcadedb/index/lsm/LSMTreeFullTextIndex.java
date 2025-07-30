@@ -21,7 +21,6 @@ package com.arcadedb.index.lsm;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.Index;
@@ -40,9 +39,12 @@ import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Full Text index implementation based on LSM-Tree index.
@@ -82,7 +84,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
             "Full text index can only be defined on a '" + builder.getKeyTypes()[0] + "' property, only string");
 
       return new LSMTreeFullTextIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(),
-          ComponentFile.MODE.READ_WRITE, builder.getPageSize(), builder.getNullStrategy());
+          ComponentFile.Mode.READ_WRITE, builder.getPageSize(), builder.getNullStrategy());
     }
   }
 
@@ -98,7 +100,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * Creation time.
    */
   public LSMTreeFullTextIndex(final DatabaseInternal database, final String name, final String filePath,
-      final ComponentFile.MODE mode, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
+      final ComponentFile.Mode mode, final int pageSize, final LSMTreeIndexAbstract.NullStrategy nullStrategy) {
     analyzer = new StandardAnalyzer();
     underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode, new Type[] { Type.STRING }, pageSize, nullStrategy);
   }
@@ -107,7 +109,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * Loading time.
    */
   public LSMTreeFullTextIndex(final DatabaseInternal database, final String name, final String filePath, final int fileId,
-      final ComponentFile.MODE mode, final int pageSize, final int version) {
+      final ComponentFile.Mode mode, final int pageSize, final int version) {
     try {
       underlyingIndex = new LSMTreeIndex(database, name, false, filePath, fileId, mode, pageSize, version);
     } catch (final IOException e) {
@@ -226,7 +228,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   @Override
-  public boolean setStatus(final INDEX_STATUS[] expectedStatuses, final INDEX_STATUS newStatus) {
+  public boolean setStatus(final IndexStatus[] expectedStatuses, final IndexStatus newStatus) {
     return underlyingIndex.setStatus(expectedStatuses, newStatus);
   }
 
@@ -261,13 +263,13 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   @Override
-  public LSMTreeIndexAbstract.NULL_STRATEGY getNullStrategy() {
-    return LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
+  public LSMTreeIndexAbstract.NullStrategy getNullStrategy() {
+    return LSMTreeIndexAbstract.NullStrategy.ERROR;
   }
 
   @Override
-  public void setNullStrategy(final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
-    if (nullStrategy != LSMTreeIndexAbstract.NULL_STRATEGY.ERROR)
+  public void setNullStrategy(final LSMTreeIndexAbstract.NullStrategy nullStrategy) {
+    if (nullStrategy != LSMTreeIndexAbstract.NullStrategy.ERROR)
       throw new IllegalArgumentException("Unsupported null strategy '" + nullStrategy + "'");
   }
 
@@ -337,8 +339,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   @Override
-  public Schema.INDEX_TYPE getType() {
-    return Schema.INDEX_TYPE.FULL_TEXT;
+  public Schema.IndexType getType() {
+    return Schema.IndexType.FULL_TEXT;
   }
 
   public Analyzer getAnalyzer() {

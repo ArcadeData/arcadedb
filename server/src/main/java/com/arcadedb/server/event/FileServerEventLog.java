@@ -110,7 +110,7 @@ public class FileServerEventLog implements ServerEventLog {
   }
 
   @Override
-  public void reportEvent(final EVENT_TYPE eventType, final String component, final String databaseName, final String message) {
+  public void reportEvent(final EventType eventType, final String component, final String databaseName, final String message) {
     if (newFileName == null)
       return;
 

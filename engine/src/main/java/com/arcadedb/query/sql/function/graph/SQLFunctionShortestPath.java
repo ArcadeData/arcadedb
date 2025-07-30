@@ -58,8 +58,8 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
   private static class ShortestPathContext {
     Vertex           sourceVertex;
     Vertex           destinationVertex;
-    Vertex.DIRECTION directionLeft  = Vertex.DIRECTION.BOTH;
-    Vertex.DIRECTION directionRight = Vertex.DIRECTION.BOTH;
+    Vertex.Direction directionLeft  = Vertex.Direction.BOTH;
+    Vertex.Direction directionRight = Vertex.Direction.BOTH;
 
     String   edgeType;
     String[] edgeTypeParam;
@@ -138,12 +138,12 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     }
 
     if (params.length > 2 && params[2] != null) {
-      shortestPathContext.directionLeft = Vertex.DIRECTION.valueOf(params[2].toString().toUpperCase(Locale.ENGLISH));
+      shortestPathContext.directionLeft = Vertex.Direction.valueOf(params[2].toString().toUpperCase(Locale.ENGLISH));
     }
-    if (shortestPathContext.directionLeft == Vertex.DIRECTION.OUT) {
-      shortestPathContext.directionRight = Vertex.DIRECTION.IN;
-    } else if (shortestPathContext.directionLeft == Vertex.DIRECTION.IN) {
-      shortestPathContext.directionRight = Vertex.DIRECTION.OUT;
+    if (shortestPathContext.directionLeft == Vertex.Direction.OUT) {
+      shortestPathContext.directionRight = Vertex.Direction.IN;
+    } else if (shortestPathContext.directionLeft == Vertex.Direction.IN) {
+      shortestPathContext.directionRight = Vertex.Direction.OUT;
     }
 
     shortestPathContext.edgeType = null;
@@ -288,13 +288,13 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
    *
    * @author Thomas Young (YJJThomasYoung@hotmail.com)
    */
-  private Pair<Iterable<Vertex>, Iterable<Edge>> getVerticesAndEdges(final Vertex srcVertex, final Vertex.DIRECTION direction,
+  private Pair<Iterable<Vertex>, Iterable<Edge>> getVerticesAndEdges(final Vertex srcVertex, final Vertex.Direction direction,
       final String... types) {
-    if (direction == Vertex.DIRECTION.BOTH) {
+    if (direction == Vertex.Direction.BOTH) {
       final MultiIterator<Vertex> vertexIterator = new MultiIterator<>();
       final MultiIterator<Edge> edgeIterator = new MultiIterator<>();
-      final Pair<Iterable<Vertex>, Iterable<Edge>> pair1 = getVerticesAndEdges(srcVertex, Vertex.DIRECTION.OUT, types);
-      final Pair<Iterable<Vertex>, Iterable<Edge>> pair2 = getVerticesAndEdges(srcVertex, Vertex.DIRECTION.IN, types);
+      final Pair<Iterable<Vertex>, Iterable<Edge>> pair1 = getVerticesAndEdges(srcVertex, Vertex.Direction.OUT, types);
+      final Pair<Iterable<Vertex>, Iterable<Edge>> pair2 = getVerticesAndEdges(srcVertex, Vertex.Direction.IN, types);
       vertexIterator.addIterator(pair1.getFirst());
       vertexIterator.addIterator(pair2.getFirst());
       edgeIterator.addIterator(pair1.getSecond());
@@ -317,7 +317,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
    *
    * @author Thomas Young (YJJThomasYoung@hotmail.com)
    */
-  private Pair<Iterable<Vertex>, Iterable<Edge>> getVerticesAndEdges(final Vertex srcVertex, final Vertex.DIRECTION direction) {
+  private Pair<Iterable<Vertex>, Iterable<Edge>> getVerticesAndEdges(final Vertex srcVertex, final Vertex.Direction direction) {
     return getVerticesAndEdges(srcVertex, direction, (String[]) null);
   }
 

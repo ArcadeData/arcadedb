@@ -36,6 +36,10 @@ import java.util.TimeZone;
 @ExcludeFromJacocoGeneratedReport
 public interface Schema {
 
+  enum IndexType {
+    LSM_TREE, FULL_TEXT, HNSW
+  }
+
   Component getFileById(int id);
 
   boolean existsBucket(String bucketName);
@@ -67,64 +71,64 @@ public interface Schema {
 
   VectorIndexBuilder buildVectorIndex();
 
-  TypeIndex createTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String typeName, String... propertyNames);
+  TypeIndex createTypeIndex(IndexType indexType, boolean unique, String typeName, String... propertyNames);
 
   /**
    * @Deprecated. Use `buildTypeIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).create()` instead.
    */
   @Deprecated
-  TypeIndex createTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize);
+  TypeIndex createTypeIndex(IndexType indexType, boolean unique, String typeName, String[] propertyNames, int pageSize);
 
   /**
    * @Deprecated. Use `buildTypeIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).withCallback(callback).create()` instead.
    */
   @Deprecated
-  TypeIndex createTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
+  TypeIndex createTypeIndex(IndexType indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
       Index.BuildIndexCallback callback);
 
   /**
    * @Deprecated. Use `buildTypeIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).withCallback(callback).withNullStrategy(nullStrategy).create()` instead.
    */
   @Deprecated
-  TypeIndex createTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
-      LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback);
+  TypeIndex createTypeIndex(IndexType indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
+      LSMTreeIndexAbstract.NullStrategy nullStrategy, Index.BuildIndexCallback callback);
 
-  TypeIndex getOrCreateTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String typeName, String... propertyNames);
+  TypeIndex getOrCreateTypeIndex(IndexType indexType, boolean unique, String typeName, String... propertyNames);
 
   /**
    * @Deprecated. Use `buildTypeIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).withIgnoreIfExists(true).create()` instead.
    */
   @Deprecated
-  TypeIndex getOrCreateTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames,
+  TypeIndex getOrCreateTypeIndex(IndexType indexType, boolean unique, String typeName, String[] propertyNames,
       int pageSize);
 
   /**
    * @Deprecated. Use `buildTypeIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).withCallback(callback).withIgnoreIfExists(true).create()` instead.
    */
   @Deprecated
-  TypeIndex getOrCreateTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
+  TypeIndex getOrCreateTypeIndex(IndexType indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
       Index.BuildIndexCallback callback);
 
   /**
    * @Deprecated. Use `buildTypeIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).withCallback(callback).withNullStrategy(nullStrategy).withIgnoreIfExists(true).create()` instead.
    */
   @Deprecated
-  TypeIndex getOrCreateTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
-      LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback);
+  TypeIndex getOrCreateTypeIndex(IndexType indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
+      LSMTreeIndexAbstract.NullStrategy nullStrategy, Index.BuildIndexCallback callback);
 
   /**
    * @Deprecated. Use `buildBucketIndex(typeName, propertyNames).withUnique(unique).withPageSize(pageSize).withCallback(callback).withNullStrategy(nullStrategy).create()` instead.
    */
   @Deprecated
-  Index createBucketIndex(Schema.INDEX_TYPE indexType, boolean unique, String typeName, String bucketName, String[] propertyNames,
-      int pageSize, LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback);
+  Index createBucketIndex(IndexType indexType, boolean unique, String typeName, String bucketName, String[] propertyNames,
+      int pageSize, LSMTreeIndexAbstract.NullStrategy nullStrategy, Index.BuildIndexCallback callback);
 
   /**
    * @Deprecated. Use `buildManualIndex(indexName, keyTypes).withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy).create()` instead.
    */
   @Deprecated
-  Index createManualIndex(Schema.INDEX_TYPE indexType, boolean unique, String indexName, Type[] keyTypes, int pageSize,
-      LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy);
+  Index createManualIndex(IndexType indexType, boolean unique, String indexName, Type[] keyTypes, int pageSize,
+      LSMTreeIndexAbstract.NullStrategy nullStrategy);
 
   Dictionary getDictionary();
 
@@ -371,7 +375,4 @@ public interface Schema {
    */
   FunctionDefinition getFunction(String libraryName, String functionName) throws IllegalArgumentException;
 
-  enum INDEX_TYPE {
-    LSM_TREE, FULL_TEXT, HNSW
-  }
 }

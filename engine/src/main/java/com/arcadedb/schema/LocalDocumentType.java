@@ -423,52 +423,52 @@ public class LocalDocumentType implements DocumentType {
   }
 
   @Override
-  public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
+  public TypeIndex createTypeIndex(final Schema.IndexType indexType, final boolean unique, final String... propertyNames) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).create();
   }
 
   @Override
-  public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+  public TypeIndex createTypeIndex(final Schema.IndexType indexType, final boolean unique, final String[] propertyNames,
       final int pageSize) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize).create();
   }
 
   @Override
-  public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+  public TypeIndex createTypeIndex(final Schema.IndexType indexType, final boolean unique, final String[] propertyNames,
       final int pageSize, final Index.BuildIndexCallback callback) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withCallback(callback).create();
   }
 
   @Override
-  public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
-      final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
+  public TypeIndex createTypeIndex(final Schema.IndexType indexType, final boolean unique, final String[] propertyNames,
+      final int pageSize, final LSMTreeIndexAbstract.NullStrategy nullStrategy, final Index.BuildIndexCallback callback) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withNullStrategy(nullStrategy).withCallback(callback).create();
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
+  public TypeIndex getOrCreateTypeIndex(final Schema.IndexType indexType, final boolean unique, final String... propertyNames) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withIgnoreIfExists(true).create();
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+  public TypeIndex getOrCreateTypeIndex(final Schema.IndexType indexType, final boolean unique, final String[] propertyNames,
       final int pageSize) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withIgnoreIfExists(true).create();
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+  public TypeIndex getOrCreateTypeIndex(final Schema.IndexType indexType, final boolean unique, final String[] propertyNames,
       final int pageSize, final Index.BuildIndexCallback callback) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withCallback(callback).withIgnoreIfExists(true).create();
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
-      final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
+  public TypeIndex getOrCreateTypeIndex(final Schema.IndexType indexType, final boolean unique, final String[] propertyNames,
+      final int pageSize, final LSMTreeIndexAbstract.NullStrategy nullStrategy, final Index.BuildIndexCallback callback) {
     return schema.buildTypeIndex(name, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withNullStrategy(nullStrategy).withCallback(callback).withIgnoreIfExists(true).create();
   }

@@ -184,7 +184,7 @@ public class GetServerHandler extends AbstractServerHttpHandler {
 
     final List<Map<String, Object>> settings = new ArrayList<>();
     for (GlobalConfiguration cfg : GlobalConfiguration.values()) {
-      if (cfg.getScope() != GlobalConfiguration.SCOPE.DATABASE) {
+      if (cfg.getScope() != GlobalConfiguration.Scope.DATABASE) {
         final Map<String, Object> map = new LinkedHashMap<>();
         map.put("key", cfg.getKey());
         map.put("value", convertValue(cfg.getKey(), cfg.getValue()));

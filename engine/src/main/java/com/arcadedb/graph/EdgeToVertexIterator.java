@@ -25,10 +25,10 @@ import com.arcadedb.utility.ResettableIterator;
  */
 public class EdgeToVertexIterator implements ResettableIterator<Vertex> {
   private final EdgeIterator     edgeIterator;
-  private final Vertex.DIRECTION direction;
+  private final Vertex.Direction direction;
 
-  public EdgeToVertexIterator(final EdgeIterator iterator, final Vertex.DIRECTION direction) {
-    if (direction == Vertex.DIRECTION.BOTH)
+  public EdgeToVertexIterator(final EdgeIterator iterator, final Vertex.Direction direction) {
+    if (direction == Vertex.Direction.BOTH)
       throw new IllegalArgumentException("edge to vertex iterator does not support BOTH as direction");
 
     this.edgeIterator = iterator;

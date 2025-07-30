@@ -127,12 +127,12 @@ public class GraphQLResultSet implements ResultSet {
           if ("relationship".equals(directive.getName())) {
             if (directive.getArguments() != null) {
               String type = null;
-              Vertex.DIRECTION direction = Vertex.DIRECTION.BOTH;
+              Vertex.Direction direction = Vertex.Direction.BOTH;
               for (final Argument argument : directive.getArguments().getList()) {
                 if ("type".equals(argument.getName())) {
                   type = argument.getValueWithVariable().getValue().getValue().toString();
                 } else if ("direction".equals(argument.getName())) {
-                  direction = Vertex.DIRECTION.valueOf(argument.getValueWithVariable().getValue().getValue().toString());
+                  direction = Vertex.Direction.valueOf(argument.getValueWithVariable().getValue().getValue().toString());
                 }
               }
 

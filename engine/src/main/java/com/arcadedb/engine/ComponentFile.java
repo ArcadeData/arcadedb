@@ -21,18 +21,20 @@ package com.arcadedb.engine;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.*;
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.logging.*;
-import java.util.zip.*;
+import java.util.logging.Level;
+import java.util.zip.CRC32;
 
 public class ComponentFile {
-  public enum MODE {
+  public enum Mode {
     READ_ONLY, READ_WRITE
   }
 
-  protected final MODE    mode;
+  protected final Mode    mode;
   protected       String  filePath;
   protected       String  fileName;
   protected       File    osFile;
@@ -43,10 +45,10 @@ public class ComponentFile {
   protected       boolean open;
 
   public ComponentFile() {
-    this.mode = MODE.READ_ONLY;
+    this.mode = Mode.READ_ONLY;
   }
 
-  protected ComponentFile(final String filePath, final MODE mode) throws FileNotFoundException {
+  protected ComponentFile(final String filePath, final Mode mode) throws FileNotFoundException {
     this.mode = mode;
     open(filePath, mode);
   }
@@ -58,7 +60,7 @@ public class ComponentFile {
     return osFile.length();
   }
 
-  protected void open(final String filePath, final MODE mode) throws FileNotFoundException {
+  protected void open(final String filePath, final Mode mode) throws FileNotFoundException {
     this.filePath = filePath;
 
     final int lastDotPos = filePath.lastIndexOf(".");

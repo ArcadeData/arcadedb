@@ -29,12 +29,12 @@ import java.util.logging.*;
 
 public class EdgeIterator extends ResettableIteratorBase<Edge> {
   private final RID              vertex;
-  private final Vertex.DIRECTION direction;
+  private final Vertex.Direction direction;
   private       int              lastElementPosition = currentPosition.get();
   private       RID              nextEdgeRID;
   private       RID              nextVertexRID;
 
-  public EdgeIterator(final EdgeSegment current, final RID vertex, final Vertex.DIRECTION direction) {
+  public EdgeIterator(final EdgeSegment current, final RID vertex, final Vertex.Direction direction) {
     super(null, current);
     this.vertex = vertex;
     this.direction = direction;
@@ -74,7 +74,7 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
         // CREATE LIGHTWEIGHT EDGE
         final DocumentType edgeType = currentContainer.getDatabase().getSchema().getTypeByBucketId(nextEdgeRID.getBucketId());
 
-        if (direction == Vertex.DIRECTION.OUT)
+        if (direction == Vertex.Direction.OUT)
           return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, vertex, nextVertexRID);
         else
           return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, nextVertexRID, vertex);
@@ -101,7 +101,7 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
         // CREATE LIGHTWEIGHT EDGE
         final DocumentType edgeType = currentContainer.getDatabase().getSchema().getTypeByBucketId(nextEdgeRID.getBucketId());
 
-        if (direction == Vertex.DIRECTION.OUT)
+        if (direction == Vertex.Direction.OUT)
           new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, vertex, nextVertexRID).delete();
         else
           new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, nextVertexRID, vertex).delete();

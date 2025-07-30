@@ -98,7 +98,7 @@ public class BatchInsertUpdateTest {
         type.createProperty("processor", Type.STRING);
         type.createProperty("vstart", Type.STRING);
         type.createProperty("vstop", Type.STRING);
-        type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "processor", "vstart", "vstop");
+        type.createTypeIndex(Schema.IndexType.LSM_TREE, true, "processor", "vstart", "vstop");
       }
 
       ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);

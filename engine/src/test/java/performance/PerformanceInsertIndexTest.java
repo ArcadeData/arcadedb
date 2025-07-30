@@ -69,7 +69,7 @@ public class PerformanceInsertIndexTest extends TestHelper {
       type.createProperty("age", Byte.class);
       type.createProperty("active", Byte.class);
 
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "id" }, 5000000);
+      database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, false, TYPE_NAME, new String[] { "id" }, 5000000);
 
       database.commit();
 

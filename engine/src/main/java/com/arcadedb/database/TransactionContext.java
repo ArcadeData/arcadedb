@@ -71,17 +71,17 @@ public class TransactionContext implements Transaction {
   private       WALFile.FlushType                    walFlush;
   private       List<Integer>                        lockedFiles;
   private       List<Integer>                        explicitLockedFiles   = null;
-  private       long                                 txId                  = -1;
-  private       STATUS                               status                = STATUS.INACTIVE;
+  private long             txId           = -1;
+  private Status           status         = Status.INACTIVE;
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
   // WITH GRAPHS WHERE EDGES ARE CREATED AND CHUNKS ARE UPDATED MULTIPLE TIMES IN THE SAME TX
   // TODO: OPTIMIZE modifiedRecordsCache STRUCTURE, MAYBE JOIN IT WITH UPDATED RECORDS?
-  private       Map<RID, Record>                     updatedRecords        = null;
-  private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel        = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
-  private       LocalTransactionExplicitLock         explicitLock;
+  private Map<RID, Record> updatedRecords = null;
+  private Database.TransactionIsolationLevel isolationLevel = Database.TransactionIsolationLevel.READ_COMMITTED;
+  private LocalTransactionExplicitLock       explicitLock;
   private       Object                               requester;
 
-  public enum STATUS {INACTIVE, BEGUN, COMMIT_1ST_PHASE, COMMIT_2ND_PHASE}
+  public enum Status {INACTIVE, BEGUN, COMMIT_1ST_PHASE, COMMIT_2ND_PHASE}
 
   public static class TransactionPhase1 {
     public final Binary            result;
@@ -101,13 +101,13 @@ public class TransactionContext implements Transaction {
   }
 
   @Override
-  public void begin(final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel) {
+  public void begin(final Database.TransactionIsolationLevel isolationLevel) {
     this.isolationLevel = isolationLevel;
 
-    if (status != STATUS.INACTIVE)
+    if (status != Status.INACTIVE)
       throw new TransactionException("Transaction already begun");
 
-    status = STATUS.BEGUN;
+    status = Status.BEGUN;
 
     modifiedPages = new HashMap<>();
 
@@ -118,10 +118,10 @@ public class TransactionContext implements Transaction {
 
   @Override
   public Binary commit() {
-    if (status == STATUS.INACTIVE)
+    if (status == Status.INACTIVE)
       throw new TransactionException("Transaction not begun");
 
-    if (status != STATUS.BEGUN)
+    if (status != Status.BEGUN)
       throw new TransactionException("Transaction already in commit phase");
 
     final TransactionPhase1 phase1 = commit1stPhase(true);
@@ -142,7 +142,7 @@ public class TransactionContext implements Transaction {
     return explicitLock;
   }
 
-  public Database.TRANSACTION_ISOLATION_LEVEL getIsolationLevel() {
+  public Database.TransactionIsolationLevel getIsolationLevel() {
     return isolationLevel;
   }
 
@@ -391,7 +391,7 @@ public class TransactionContext implements Transaction {
 
   @Override
   public boolean isActive() {
-    return status != STATUS.INACTIVE;
+    return status != Status.INACTIVE;
   }
 
   public Map<String, Object> getStats() {
@@ -551,10 +551,10 @@ public class TransactionContext implements Transaction {
    * Locks the files in order, then checks all the pre-conditions.
    */
   public TransactionPhase1 commit1stPhase(final boolean isLeader) {
-    if (status == STATUS.INACTIVE)
+    if (status == Status.INACTIVE)
       throw new TransactionException("Transaction not started");
 
-    if (status != STATUS.BEGUN)
+    if (status != Status.BEGUN)
       throw new TransactionException("Transaction in phase " + status);
 
     if (updatedRecords != null) {
@@ -573,7 +573,7 @@ public class TransactionContext implements Transaction {
       // EMPTY TRANSACTION = NO CHANGES
       return null;
 
-    status = STATUS.COMMIT_1ST_PHASE;
+    status = Status.COMMIT_1ST_PHASE;
 
     try {
       if (isLeader) {
@@ -658,13 +658,13 @@ public class TransactionContext implements Transaction {
       if (changes == null)
         return;
 
-      if (database.getMode() == ComponentFile.MODE.READ_ONLY)
+      if (database.getMode() == ComponentFile.Mode.READ_ONLY)
         throw new TransactionException("Cannot commit changes because the database is open in read-only mode");
 
-      if (status != STATUS.COMMIT_1ST_PHASE)
+      if (status != Status.COMMIT_1ST_PHASE)
         throw new TransactionException("Cannot execute 2nd phase commit without having started the 1st phase");
 
-      status = STATUS.COMMIT_2ND_PHASE;
+      status = Status.COMMIT_2ND_PHASE;
 
       if (changes.result != null)
         // WRITE TO THE WAL FIRST
@@ -727,7 +727,7 @@ public class TransactionContext implements Transaction {
   }
 
   public void reset() {
-    status = STATUS.INACTIVE;
+    status = Status.INACTIVE;
 
     if (explicitLockedFiles != null) {
       database.getTransactionManager().unlockFilesInOrder(explicitLockedFiles, getRequester());
@@ -783,11 +783,11 @@ public class TransactionContext implements Transaction {
     return indexChanges;
   }
 
-  public STATUS getStatus() {
+  public Status getStatus() {
     return status;
   }
 
-  public void setStatus(final STATUS status) {
+  public void setStatus(final Status status) {
     this.status = status;
   }
 

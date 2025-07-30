@@ -68,7 +68,7 @@ public interface Index {
 
   long countEntries();
 
-  Schema.INDEX_TYPE getType();
+  Schema.IndexType getType();
 
   String getTypeName();
 
@@ -76,9 +76,9 @@ public interface Index {
 
   String getName();
 
-  LSMTreeIndexAbstract.NULL_STRATEGY getNullStrategy();
+  LSMTreeIndexAbstract.NullStrategy getNullStrategy();
 
-  void setNullStrategy(LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy);
+  void setNullStrategy(LSMTreeIndexAbstract.NullStrategy nullStrategy);
 
   boolean isUnique();
 

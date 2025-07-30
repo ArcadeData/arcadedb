@@ -19,11 +19,9 @@
 package com.arcadedb;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.DatabaseChecker;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -32,8 +30,6 @@ import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
-
-import org.assertj.core.api.Assertions;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -146,7 +142,7 @@ public class CRUDTest extends TestHelper {
 
     try {
       db.getSchema().getType("V").createProperty("id", Type.STRING);
-      db.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "V", "id");
+      db.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, true, "V", "id");
 
       // ALL IN THE SAME TX
       db.transaction(() -> {

@@ -3,7 +3,7 @@ package com.arcadedb.server;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseContext;
-import com.arcadedb.engine.ComponentFile.MODE;
+import com.arcadedb.engine.ComponentFile.Mode;
 import com.arcadedb.schema.DocumentType;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
@@ -136,7 +136,7 @@ public class TestLinkedPropertiesSchemaReloadIT {
     }
     try {
       if (!server.existsDatabase(url)) {
-        sdb = server.createDatabase(url, MODE.READ_WRITE);
+        sdb = server.createDatabase(url, Mode.READ_WRITE);
       } else {
         sdb = server.getDatabase(url);
       }

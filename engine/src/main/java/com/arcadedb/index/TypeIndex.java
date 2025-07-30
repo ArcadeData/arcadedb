@@ -190,7 +190,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public Schema.INDEX_TYPE getType() {
+  public Schema.IndexType getType() {
     checkIsValid();
     if (indexesOnBuckets.isEmpty())
       return null;
@@ -226,12 +226,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
     final List<IndexInternal> acquired = new ArrayList<>(indexesOnBuckets.size());
     for (final IndexInternal index : new ArrayList<>(indexesOnBuckets))
-      if (index.setStatus(new INDEX_STATUS[] { INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE }, INDEX_STATUS.UNAVAILABLE))
+      if (index.setStatus(new IndexStatus[] { IndexStatus.AVAILABLE, IndexStatus.UNAVAILABLE }, IndexStatus.UNAVAILABLE))
         acquired.add(index);
       else {
         // NOT AVAILABLE, RESET ACQUIRED STATUSES
         for (IndexInternal i : acquired)
-          i.setStatus(new INDEX_STATUS[] { INDEX_STATUS.UNAVAILABLE }, INDEX_STATUS.AVAILABLE);
+          i.setStatus(new IndexStatus[] { IndexStatus.UNAVAILABLE }, IndexStatus.AVAILABLE);
         throw new NeedRetryException(
             "Cannot drop index '" + getName() + "' because one or more underlying files are not available");
       }
@@ -259,13 +259,13 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public LSMTreeIndexAbstract.NULL_STRATEGY getNullStrategy() {
+  public LSMTreeIndexAbstract.NullStrategy getNullStrategy() {
     checkIsValid();
     return getFirstUnderlyingIndex().getNullStrategy();
   }
 
   @Override
-  public void setNullStrategy(final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
+  public void setNullStrategy(final LSMTreeIndexAbstract.NullStrategy nullStrategy) {
     checkIsValid();
     getFirstUnderlyingIndex().setNullStrategy(nullStrategy);
   }
@@ -371,7 +371,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public boolean setStatus(INDEX_STATUS[] expectedStatuses, INDEX_STATUS newStatus) {
+  public boolean setStatus(IndexStatus[] expectedStatuses, IndexStatus newStatus) {
     return false;
   }
 

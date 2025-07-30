@@ -49,7 +49,7 @@ public class SelectExecutionTest extends TestHelper {
     database.getSchema().createDocumentType("Document");
     database.getSchema().createVertexType("Vertex")//
         .createProperty("id", Type.INTEGER)//
-        .createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+        .createIndex(Schema.IndexType.LSM_TREE, true);
     database.getSchema().createEdgeType("Edge");
 
     database.transaction(() -> {

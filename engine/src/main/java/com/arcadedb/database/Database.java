@@ -38,13 +38,13 @@ import java.util.concurrent.*;
 
 @ExcludeFromJacocoGeneratedReport
 public interface Database extends BasicDatabase {
-  enum TRANSACTION_ISOLATION_LEVEL {
+  enum TransactionIsolationLevel {
     READ_COMMITTED, REPEATABLE_READ
   }
 
   ContextConfiguration getConfiguration();
 
-  ComponentFile.MODE getMode();
+  ComponentFile.Mode getMode();
 
   DatabaseAsyncExecutor async();
 
@@ -262,7 +262,7 @@ public interface Database extends BasicDatabase {
    *
    * @return Current Database instance to execute setter methods in chain.
    */
-  Database setTransactionIsolationLevel(TRANSACTION_ISOLATION_LEVEL level);
+  Database setTransactionIsolationLevel(TransactionIsolationLevel level);
 
   /**
    * returns the transaction isolation level between the available ones:
@@ -275,7 +275,7 @@ public interface Database extends BasicDatabase {
    * @return Current isolation level.
    */
 
-  TRANSACTION_ISOLATION_LEVEL getTransactionIsolationLevel();
+  TransactionIsolationLevel getTransactionIsolationLevel();
 
   /**
    * Returns the current default edge list initial size to hold and store edges.

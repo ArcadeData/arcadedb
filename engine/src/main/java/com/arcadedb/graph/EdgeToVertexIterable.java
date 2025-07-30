@@ -25,9 +25,9 @@ import java.util.*;
  */
 public class EdgeToVertexIterable implements Iterable<Vertex> {
   private final Iterable<Edge>   edges;
-  private final Vertex.DIRECTION direction;
+  private final Vertex.Direction direction;
 
-  public EdgeToVertexIterable(final Iterable<Edge> edges, final Vertex.DIRECTION direction) {
+  public EdgeToVertexIterable(final Iterable<Edge> edges, final Vertex.Direction direction) {
     this.edges = edges;
     this.direction = direction;
   }

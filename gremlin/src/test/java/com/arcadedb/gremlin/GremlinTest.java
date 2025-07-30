@@ -40,7 +40,6 @@ import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.io.PrintStream;
 import java.math.BigInteger;
 import java.util.List;
 import java.util.UUID;
@@ -338,7 +337,7 @@ public class GremlinTest {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       graph.getDatabase().getSchema().getOrCreateVertexType("Person").getOrCreateProperty("id", Type.STRING)
-          .getOrCreateIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+          .getOrCreateIndex(Schema.IndexType.LSM_TREE, true);
 
       final String uuid = UUID.randomUUID().toString();
       final Vertex v = graph.addVertex("Person");

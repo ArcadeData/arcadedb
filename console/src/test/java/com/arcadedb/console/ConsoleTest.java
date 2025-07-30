@@ -288,7 +288,7 @@ public class ConsoleTest {
         assertThat(friendType).isNotNull();
         assertThat(database.countType("KNOWS", true)).isEqualTo(1);
 
-        final Iterator<Edge> relationships = v.getEdges(Vertex.DIRECTION.OUT, "KNOWS").iterator();
+        final Iterator<Edge> relationships = v.getEdges(Vertex.Direction.OUT, "KNOWS").iterator();
         assertThat(relationships.hasNext()).isTrue();
         final Edge e = relationships.next();
 
@@ -332,7 +332,7 @@ public class ConsoleTest {
         for (Iterator<Record> it = database.iterateType("Page", true); it.hasNext(); ) {
           final Vertex rec = it.next().asVertex();
           ++vertices;
-          edges += rec.countEdges(Vertex.DIRECTION.OUT, "Links");
+          edges += rec.countEdges(Vertex.Direction.OUT, "Links");
         }
       }
     }

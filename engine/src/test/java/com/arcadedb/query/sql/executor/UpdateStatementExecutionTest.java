@@ -26,14 +26,11 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
-import com.arcadedb.engine.Bucket;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
@@ -728,7 +725,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
       DocumentType dtProduct = database.getSchema().createDocumentType("Product");
       dtProduct.createProperty("start", Type.DATETIME_MICROS);
       dtProduct.createProperty("stop", Type.DATETIME_MICROS);
-      dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "start", "stop");
+      dtProduct.createTypeIndex(Schema.IndexType.LSM_TREE, true, "start", "stop");
     });
 
     GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
@@ -788,7 +785,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
       dtOrders.createProperty("id", Type.STRING);
       dtOrders.createProperty("processor", Type.STRING);
       dtOrders.createProperty("status", Type.STRING);
-      typeIndex[0] = dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status", "id");
+      typeIndex[0] = dtOrders.createTypeIndex(Schema.IndexType.LSM_TREE, true, "status", "id");
     });
 
     String processor = "SIR1LRM-7.1";
@@ -845,8 +842,8 @@ public class UpdateStatementExecutionTest extends TestHelper {
       dtOrders.createProperty("id", Type.INTEGER);
       dtOrders.createProperty("processor", Type.STRING);
       dtOrders.createProperty("status", Type.STRING);
-      dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
-      dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status", "id");
+      dtOrders.createTypeIndex(Schema.IndexType.LSM_TREE, true, "id");
+      dtOrders.createTypeIndex(Schema.IndexType.LSM_TREE, true, "status", "id");
       dtOrders.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
     });
 

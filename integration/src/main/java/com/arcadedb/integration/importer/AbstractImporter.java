@@ -156,7 +156,7 @@ public abstract class AbstractImporter {
       final DocumentType type = database.getSchema().buildDocumentType().withName(name).withTotalBuckets(settings.parallel).create();
       if (settings.typeIdProperty != null) {
         type.createProperty(settings.typeIdProperty, Type.getTypeByName(settings.typeIdType));
-        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, settings.typeIdPropertyIsUnique, name, settings.typeIdProperty);
+        database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, settings.typeIdPropertyIsUnique, name, settings.typeIdProperty);
         LogManager.instance().log(this, Level.INFO, "- Creating indexed property '%s' of type '%s'", settings.typeIdProperty, settings.typeIdType);
       }
       return type;
@@ -172,7 +172,7 @@ public abstract class AbstractImporter {
       final VertexType type = database.getSchema().buildVertexType().withName(name).withTotalBuckets(settings.parallel).create();
       if (settings.typeIdProperty != null) {
         type.createProperty(settings.typeIdProperty, Type.getTypeByName(settings.typeIdType));
-        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, settings.typeIdPropertyIsUnique, name, settings.typeIdProperty);
+        database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, settings.typeIdPropertyIsUnique, name, settings.typeIdProperty);
         LogManager.instance().log(this, Level.INFO, "- Creating indexed property '%s' of type '%s'", settings.typeIdProperty, settings.typeIdType);
       }
       return type;

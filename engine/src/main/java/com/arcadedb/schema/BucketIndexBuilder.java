@@ -54,7 +54,7 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
 
   @Override
   public Index create() {
-    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DatabaseAccess.UPDATE_SCHEMA);
 
     final int totalThreads = database.async().getThreadCount();
     final CountDownLatch semaphoreToStart = new CountDownLatch(totalThreads);

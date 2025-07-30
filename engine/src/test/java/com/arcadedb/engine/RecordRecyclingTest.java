@@ -4,7 +4,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
-import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.select.SelectIterator;
@@ -209,7 +208,7 @@ public class RecordRecyclingTest {
     db.transaction(() -> {
       for (int i = 0; i < deleteRecords; i++) {
         Vertex root = db.select().fromType(VERTEX_TYPE).limit(1).vertices().next();
-        Vertex connected = root.getVertices(Vertex.DIRECTION.OUT, EDGE_TYPE).iterator().next();
+        Vertex connected = root.getVertices(Vertex.Direction.OUT, EDGE_TYPE).iterator().next();
         connected.delete();
       }
     });

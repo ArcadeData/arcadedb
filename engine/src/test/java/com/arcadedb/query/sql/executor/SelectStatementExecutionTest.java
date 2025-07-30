@@ -987,7 +987,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   public void testQueryMetadataIndexManager() {
     final DocumentType type = database.getSchema().createDocumentType("testQuerySchema");
     database.begin();
-    type.createProperty("name", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
+    type.createProperty("name", Type.STRING).createIndex(Schema.IndexType.LSM_TREE, false);
     database.commit();
     final ResultSet result = database.query("sql", "select from schema:indexes");
 
@@ -1117,7 +1117,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     final String className = "testFetchFromClassWithIndex";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
-    clazz.createProperty("name", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
+    clazz.createProperty("name", Type.STRING).createIndex(Schema.IndexType.LSM_TREE, false);
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);
@@ -1151,7 +1151,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     final String indexName;
-    final Index idx = clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
+    final Index idx = clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name");
     indexName = idx.getName();
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);
@@ -1184,8 +1184,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "surname");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "surname");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);
@@ -1224,8 +1224,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "surname");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "surname");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);
@@ -1249,8 +1249,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "surname");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "surname");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);
@@ -1282,8 +1282,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "surname");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "surname");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);
@@ -1315,7 +1315,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);
@@ -1346,7 +1346,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);
@@ -1370,7 +1370,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);
@@ -1398,7 +1398,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);
@@ -1422,7 +1422,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);
@@ -1450,7 +1450,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);
@@ -1478,7 +1478,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);
@@ -1505,7 +1505,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);
@@ -1532,7 +1532,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);
@@ -1559,7 +1559,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);
@@ -1588,7 +1588,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+    clazz.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name", "surname");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);
@@ -2170,8 +2170,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     childClass2.addSuperType(parentClass);
 
     parentClass.createProperty("name", Type.STRING);
-    childClass1.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
-    childClass2.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
+    childClass1.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name");
+    childClass2.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(child1);
@@ -2215,7 +2215,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     childClass2.addSuperType(parentClass);
 
     parentClass.createProperty("name", Type.STRING);
-    childClass1.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
+    childClass1.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(child1);
@@ -2259,8 +2259,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     childClass2.addSuperType(parent);
 
     parentClass.createProperty("name", Type.STRING);
-    childClass1.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
-    childClass2.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
+    childClass1.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name");
+    childClass2.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name");
 
     final MutableDocument parentdoc = database.newDocument(parent);
     parentdoc.set("name", "foo");
@@ -2317,9 +2317,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     final DocumentType childClass2_2 = database.getSchema().createDocumentType(child2_2);
     childClass2_2.addSuperType(child2);
 
-    childClass1.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
-    childClass2_1.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
-    childClass2_2.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
+    childClass1.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name");
+    childClass2_1.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name");
+    childClass2_2.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(child1);
@@ -2378,8 +2378,8 @@ public class SelectStatementExecutionTest extends TestHelper {
     childClass12.addSuperType(childClass2);
 
     parentClass.createProperty("name", Type.STRING);
-    childClass1.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
-    childClass2.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
+    childClass1.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name");
+    childClass2.createTypeIndex(Schema.IndexType.LSM_TREE, false, "name");
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(child1);
@@ -3635,7 +3635,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
 //        Property prop = clazz.createProperty("tags", Type.LIST, Type.STRING);
     final Property prop = clazz.createProperty("tags", Type.LIST);
-    prop.createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
+    prop.createIndex(Schema.IndexType.LSM_TREE, false);
 
     database.command("sql", "insert into " + className + "  set tags = ['foo', 'bar']");
     database.command("sql", "insert into " + className + "  set tags = ['bbb', 'FFF']");
@@ -3728,7 +3728,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
     final Property prop = clazz.createProperty("tag", Type.STRING);
-    prop.createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
+    prop.createIndex(Schema.IndexType.LSM_TREE, false);
 
     database.command("sql", "insert into " + className + "  set tag = 'foo'");
     database.command("sql", "insert into " + className + "  set tag = 'bar'");
@@ -4140,7 +4140,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
     database.begin();
     final Property prop = clazz.createProperty("name", Type.STRING);
-    prop.createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
+    prop.createIndex(Schema.IndexType.LSM_TREE, false);
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);
@@ -4164,7 +4164,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
     database.begin();
     final Property prop = clazz.createProperty("name", Type.STRING);
-    prop.createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
+    prop.createIndex(Schema.IndexType.LSM_TREE, false);
 
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);

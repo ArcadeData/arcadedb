@@ -257,7 +257,7 @@ public class TransactionIndexContext {
 
   public void addIndexKeyLock(final IndexInternal index, IndexKey.IndexKeyOperation operation, final Object[] keysValues,
       final RID rid) {
-    if (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.SKIP && LSMTreeIndexAbstract.isKeyNull(keysValues))
+    if (index.getNullStrategy() == LSMTreeIndexAbstract.NullStrategy.SKIP && LSMTreeIndexAbstract.isKeyNull(keysValues))
       // NULL VALUES AND SKIP NUL VALUES
       return;
 

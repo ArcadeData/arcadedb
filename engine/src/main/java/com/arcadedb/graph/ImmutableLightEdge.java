@@ -71,9 +71,9 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   }
 
   @Override
-  public Vertex getVertex(final Vertex.DIRECTION iDirection) {
+  public Vertex getVertex(final Vertex.Direction iDirection) {
     checkForLazyLoading();
-    if (iDirection == Vertex.DIRECTION.OUT)
+    if (iDirection == Vertex.Direction.OUT)
       return (Vertex) out.getRecord();
     else
       return (Vertex) in.getRecord();

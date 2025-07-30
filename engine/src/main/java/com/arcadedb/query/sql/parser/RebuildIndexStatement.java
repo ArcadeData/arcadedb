@@ -142,12 +142,12 @@ public class RebuildIndexStatement extends DDLStatement {
         if (((IndexInternal) idx).isCompacting())
           throw new NeedRetryException("Cannot rebuild the index '" + idx.getName() + "' while is compacting");
 
-        final Schema.INDEX_TYPE type = idx.getType();
+        final Schema.IndexType type = idx.getType();
         final String typeName = idx.getTypeName();
         final boolean unique = idx.isUnique();
         final List<String> propertyNames = idx.getPropertyNames();
         final int pageSize = ((IndexInternal) idx).getPageSize();
-        final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = idx.getNullStrategy();
+        final LSMTreeIndexAbstract.NullStrategy nullStrategy = idx.getNullStrategy();
 
         ((DatabaseInternal) database).executeLockingFiles(((IndexInternal) idx).getFileIds(), () -> {
           database.getSchema().dropIndex(idx.getName());

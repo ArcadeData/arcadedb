@@ -44,7 +44,7 @@ public interface Edge extends Document {
 
   Vertex getInVertex();
 
-  Vertex getVertex(Vertex.DIRECTION iDirection);
+  Vertex getVertex(Vertex.Direction iDirection);
 
   @Override
   default Edge asEdge() {

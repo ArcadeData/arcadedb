@@ -291,7 +291,7 @@ public class ScriptExecutionTest extends TestHelper {
       database.newDocument(typeName).set("id", 1).save();
     });
 
-    database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    database.setTransactionIsolationLevel(Database.TransactionIsolationLevel.REPEATABLE_READ);
 
     script = """
         LET $retries = 0;

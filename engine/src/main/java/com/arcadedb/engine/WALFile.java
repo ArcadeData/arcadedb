@@ -304,7 +304,7 @@ public class WALFile extends LockContext {
     else if (sync == FlushType.YES_FULL)
       channel.force(true);
 
-    database.executeCallbacks(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE);
+    database.executeCallbacks(DatabaseInternal.CallbackEvent.TX_AFTER_WAL_WRITE);
   }
 
   public void notifyPageFlushed() {

@@ -66,7 +66,7 @@ public class AsyncInsertTest {
     database.transaction(() -> {
       DocumentType dtProducts = database.getSchema().buildDocumentType().withName("Product").withTotalBuckets(8).create();
       dtProducts.createProperty("name", Type.STRING);
-      dtProducts.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
+      dtProducts.createTypeIndex(Schema.IndexType.LSM_TREE, true, "name");
       dtProducts.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
     });
 
@@ -123,7 +123,7 @@ public class AsyncInsertTest {
     database.transaction(() -> {
       DocumentType dtProducts = database.getSchema().buildDocumentType().withName("Product").withTotalBuckets(4).create();
       dtProducts.createProperty("name", Type.STRING);
-      dtProducts.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
+      dtProducts.createTypeIndex(Schema.IndexType.LSM_TREE, true, "name");
       dtProducts.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
     });
 

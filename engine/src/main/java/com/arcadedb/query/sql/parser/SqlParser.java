@@ -14770,12 +14770,12 @@ jjtn000.keyTypes.add(lastIdentifier);
         switch ((jj_ntk==-1)?jj_ntk_f():jj_ntk) {
         case SKIP2:{
           jj_consume_token(SKIP2);
-jjtn000.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP;
+jjtn000.nullStrategy = LSMTreeIndexAbstract.NullStrategy.SKIP;
           break;
           }
         case ERROR2:{
           jj_consume_token(ERROR2);
-jjtn000.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
+jjtn000.nullStrategy = LSMTreeIndexAbstract.NullStrategy.ERROR;
           break;
           }
         default:

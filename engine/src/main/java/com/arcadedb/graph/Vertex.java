@@ -33,7 +33,7 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 public interface Vertex extends Document {
   byte RECORD_TYPE = 1;
 
-  enum DIRECTION {
+  enum Direction {
     OUT, IN, BOTH
   }
 
@@ -55,11 +55,11 @@ public interface Vertex extends Document {
   @Deprecated
   ImmutableLightEdge newLightEdge(String edgeType, Identifiable toVertex, boolean bidirectional);
 
-  long countEdges(DIRECTION direction, String edgeType);
+  long countEdges(Direction direction, String edgeType);
 
   IterableGraph<Edge> getEdges();
 
-  IterableGraph<Edge> getEdges(DIRECTION direction, String... edgeTypes);
+  IterableGraph<Edge> getEdges(Direction direction, String... edgeTypes);
 
   /**
    * Returns all the connected vertices, both directions, any edge type.
@@ -75,13 +75,13 @@ public interface Vertex extends Document {
    *
    * @return An iterator of PIndexCursorEntry entries
    */
-  IterableGraph<Vertex> getVertices(DIRECTION direction, String... edgeTypes);
+  IterableGraph<Vertex> getVertices(Direction direction, String... edgeTypes);
 
   boolean isConnectedTo(Identifiable toVertex);
 
-  boolean isConnectedTo(Identifiable toVertex, DIRECTION direction);
+  boolean isConnectedTo(Identifiable toVertex, Direction direction);
 
-  boolean isConnectedTo(Identifiable toVertex, DIRECTION direction, String edgeType);
+  boolean isConnectedTo(Identifiable toVertex, Direction direction, String edgeType);
 
   RID moveToType(String targetType);
 

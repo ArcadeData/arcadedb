@@ -60,9 +60,9 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   private final String                               databaseName;
   private       BinarySerializer                     serializer;
-  private       String                               sessionId;
-  private       Database.TRANSACTION_ISOLATION_LEVEL transactionIsolationLevel = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
-  private final RemoteSchema                         schema                    = new RemoteSchema(this);
+  private       String                             sessionId;
+  private       Database.TransactionIsolationLevel transactionIsolationLevel = Database.TransactionIsolationLevel.READ_COMMITTED;
+  private final RemoteSchema                       schema                    = new RemoteSchema(this);
   private       boolean                              open                      = true;
   private       RemoteTransactionExplicitLock        explicitLock;
 
@@ -239,7 +239,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   @Override
-  public void begin(final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel) {
+  public void begin(final Database.TransactionIsolationLevel isolationLevel) {
     checkDatabaseIsOpen();
     if (getSessionId() != null)
       throw new TransactionException("Transaction already begun");
@@ -482,11 +482,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         (connection, response) -> createResultSet(response));
   }
 
-  public Database.TRANSACTION_ISOLATION_LEVEL getTransactionIsolationLevel() {
+  public Database.TransactionIsolationLevel getTransactionIsolationLevel() {
     return transactionIsolationLevel;
   }
 
-  public void setTransactionIsolationLevel(final Database.TRANSACTION_ISOLATION_LEVEL transactionIsolationLevel) {
+  public void setTransactionIsolationLevel(final Database.TransactionIsolationLevel transactionIsolationLevel) {
     this.transactionIsolationLevel = transactionIsolationLevel;
   }
 

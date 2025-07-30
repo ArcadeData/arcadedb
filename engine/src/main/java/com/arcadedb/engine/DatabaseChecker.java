@@ -90,12 +90,12 @@ public class DatabaseChecker {
     if (fix)
       for (final Index idx : affectedIndexes) {
         final String bucketName = database.getSchema().getBucketById(idx.getAssociatedBucketId()).getName();
-        final Schema.INDEX_TYPE indexType = idx.getType();
+        final Schema.IndexType indexType = idx.getType();
         final boolean unique = idx.isUnique();
         final List<String> propNames = idx.getPropertyNames();
         final String typeName = idx.getTypeName();
         final int pageSize = ((IndexInternal) idx).getPageSize();
-        final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = idx.getNullStrategy();
+        final LSMTreeIndexAbstract.NullStrategy nullStrategy = idx.getNullStrategy();
 
         database.getSchema().dropIndex(idx.getName());
 

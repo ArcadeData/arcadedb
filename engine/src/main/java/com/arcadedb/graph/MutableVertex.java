@@ -163,7 +163,7 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
-  public long countEdges(final DIRECTION direction, final String edgeType) {
+  public long countEdges(final Direction direction, final String edgeType) {
     return database.getGraphEngine().countEdges(this, direction, edgeType);
   }
 
@@ -173,7 +173,7 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
-  public IterableGraph<Edge> getEdges(final DIRECTION direction, final String... edgeTypes) {
+  public IterableGraph<Edge> getEdges(final Direction direction, final String... edgeTypes) {
     return database.getGraphEngine().getEdges(this, direction, edgeTypes);
   }
 
@@ -183,7 +183,7 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
-  public IterableGraph<Vertex> getVertices(final DIRECTION direction, final String... edgeTypes) {
+  public IterableGraph<Vertex> getVertices(final Direction direction, final String... edgeTypes) {
     return database.getGraphEngine().getVertices(this, direction, edgeTypes);
   }
 
@@ -193,12 +193,12 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
-  public boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction) {
+  public boolean isConnectedTo(final Identifiable toVertex, final Direction direction) {
     return database.getGraphEngine().isVertexConnectedTo(this, toVertex, direction);
   }
 
   @Override
-  public boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction, final String edgeTypes) {
+  public boolean isConnectedTo(final Identifiable toVertex, final Direction direction, final String edgeTypes) {
     return database.getGraphEngine().isVertexConnectedTo(this, toVertex, direction, edgeTypes);
   }
 

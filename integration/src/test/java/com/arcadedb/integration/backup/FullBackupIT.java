@@ -65,9 +65,9 @@ public class FullBackupIT {
 
     new Restore(("-f " + FILE + " -d " + restoredDirectory + " -o").split(" ")).restoreDatabase();
 
-    try (final Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(ComponentFile.MODE.READ_ONLY)) {
+    try (final Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(ComponentFile.Mode.READ_ONLY)) {
       try (final Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(
-          ComponentFile.MODE.READ_ONLY)) {
+          ComponentFile.Mode.READ_ONLY)) {
         new DatabaseComparator().compare(originalDatabase, restoredDatabase);
       }
     }
@@ -85,9 +85,9 @@ public class FullBackupIT {
 
     new Restore(("-f " + FILE + " -d " + restoredDirectory + " -o -encryptionKey AnotherTestWithHard2GuessPassword").split(" ")).restoreDatabase();
 
-    try (final Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(ComponentFile.MODE.READ_ONLY)) {
+    try (final Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(ComponentFile.Mode.READ_ONLY)) {
       try (final Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(
-          ComponentFile.MODE.READ_ONLY)) {
+          ComponentFile.Mode.READ_ONLY)) {
         new DatabaseComparator().compare(originalDatabase, restoredDatabase);
       }
     }
@@ -106,7 +106,7 @@ public class FullBackupIT {
       new Restore(FILE, restoredDirectory.getAbsolutePath()).restoreDatabase();
 
       try (final Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(
-          ComponentFile.MODE.READ_ONLY)) {
+          ComponentFile.Mode.READ_ONLY)) {
         new DatabaseComparator().compare(importedDatabase, restoredDatabase);
       }
     }
@@ -141,7 +141,7 @@ public class FullBackupIT {
       importedDatabase.transaction(() -> {
         type.createProperty("thread", Type.INTEGER);
         type.createProperty("id", Type.INTEGER);
-        type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "thread", "id");
+        type.createTypeIndex(Schema.IndexType.LSM_TREE, false, "thread", "id");
         type.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy() {
           @Override
           public int getBucketIdByRecord(final Document record, final boolean async) {
@@ -199,7 +199,7 @@ public class FullBackupIT {
 
         new Restore(FILE + "_" + i, databasePath).setVerboseLevel(1).restoreDatabase();
         logger.logLine(1, "Checking restored database %s", databasePath);
-        try (final Database restoredDatabase = new DatabaseFactory(databasePath).open(ComponentFile.MODE.READ_ONLY)) {
+        try (final Database restoredDatabase = new DatabaseFactory(databasePath).open(ComponentFile.Mode.READ_ONLY)) {
           // VERIFY ONLY WHOLE TRANSACTION ARE WRITTEN
           assertThat(restoredDatabase.countType("BackupTest", true) % 500).isEqualTo(0);
         }

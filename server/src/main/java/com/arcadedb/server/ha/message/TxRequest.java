@@ -84,7 +84,7 @@ public class TxRequest extends TxRequestAbstract {
         changeStructure.updateFiles(db);
 
         // RELOAD THE SCHEMA BUT NOT INITIALIZE THE COMPONENTS (SOME NEW PAGES COULD BE IN THE TX ITSELF)
-        db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, false);
+        db.getSchema().getEmbedded().load(ComponentFile.Mode.READ_WRITE, false);
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on changing database structure request from the leader node", e);
         throw new ReplicationException("Error on changing database structure request from the leader node", e);

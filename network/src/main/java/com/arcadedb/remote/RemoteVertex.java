@@ -50,7 +50,7 @@ public class RemoteVertex {
     this.remoteDatabase = remoteDatabase;
   }
 
-  public long countEdges(final Vertex.DIRECTION direction, final String edgeType) {
+  public long countEdges(final Vertex.Direction direction, final String edgeType) {
     StringBuilder query = new StringBuilder("select " + direction.toString().toLowerCase(Locale.ENGLISH) + "(");
     if (edgeType != null)
       query.append("'").append(edgeType).append("'");
@@ -61,10 +61,10 @@ public class RemoteVertex {
   }
 
   public IterableGraph<Edge> getEdges() {
-    return getEdges(Vertex.DIRECTION.BOTH);
+    return getEdges(Vertex.Direction.BOTH);
   }
 
-  public IterableGraph<Edge> getEdges(final Vertex.DIRECTION direction, final String... edgeTypes) {
+  public IterableGraph<Edge> getEdges(final Vertex.Direction direction, final String... edgeTypes) {
     final ResultSet resultSet = fetch("E", direction, edgeTypes);
     return () -> new Iterator<>() {
       @Override
@@ -80,10 +80,10 @@ public class RemoteVertex {
   }
 
   public IterableGraph<Vertex> getVertices() {
-    return getVertices(Vertex.DIRECTION.BOTH);
+    return getVertices(Vertex.Direction.BOTH);
   }
 
-  public IterableGraph<Vertex> getVertices(final Vertex.DIRECTION direction, final String... edgeTypes) {
+  public IterableGraph<Vertex> getVertices(final Vertex.Direction direction, final String... edgeTypes) {
     final ResultSet resultSet = fetch("", direction, edgeTypes);
     return () -> new Iterator<>() {
       @Override
@@ -105,7 +105,7 @@ public class RemoteVertex {
     return resultSet.hasNext();
   }
 
-  public boolean isConnectedTo(final Identifiable toVertex, final Vertex.DIRECTION direction) {
+  public boolean isConnectedTo(final Identifiable toVertex, final Vertex.Direction direction) {
     final String query =
         "select from ( select " + direction.toString().toLowerCase(Locale.ENGLISH) + "() as vertices from " + vertex.getIdentity()
             + " ) where vertices contains " + toVertex;
@@ -113,7 +113,7 @@ public class RemoteVertex {
     return resultSet.hasNext();
   }
 
-  public boolean isConnectedTo(final Identifiable toVertex, final Vertex.DIRECTION direction, final String edgeType) {
+  public boolean isConnectedTo(final Identifiable toVertex, final Vertex.Direction direction, final String edgeType) {
     final String query =
         "select from ( select " + direction.toString().toLowerCase(Locale.ENGLISH) + "('" + edgeType + "') as vertices from "
             + vertex.getIdentity() + " ) where vertices contains " + toVertex;
@@ -224,7 +224,7 @@ public class RemoteVertex {
     remoteDatabase.command("sql", "delete from " + vertex.getIdentity());
   }
 
-  private ResultSet fetch(final String suffix, final Vertex.DIRECTION direction, final String[] types) {
+  private ResultSet fetch(final String suffix, final Vertex.Direction direction, final String[] types) {
     StringBuilder query = new StringBuilder("select expand( " + direction.toString().toLowerCase(Locale.ENGLISH) + suffix + "(");
     for (int i = 0; i < types.length; ++i) {
       if (i > 0)

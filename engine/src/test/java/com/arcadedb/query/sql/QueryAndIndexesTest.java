@@ -42,7 +42,7 @@ public class QueryAndIndexesTest extends TestHelper {
         final VertexType t = database.getSchema().createVertexType("V");
         t.createProperty("name", String.class);
         t.createProperty("surname", String.class);
-        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "V", "name", "surname");
+        database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, true, "V", "name", "surname");
       }
 
       for (int i = 0; i < TOT; ++i) {

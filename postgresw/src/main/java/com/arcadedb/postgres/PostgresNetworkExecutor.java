@@ -79,7 +79,7 @@ import static com.arcadedb.schema.Property.TYPE_PROPERTY;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class PostgresNetworkExecutor extends Thread {
-  public enum ERROR_SEVERITY {FATAL, ERROR}
+  public enum ErrorSeverity {FATAL, ERROR}
 
   public static final String PG_SERVER_VERSION = "12.0";
 
@@ -344,10 +344,10 @@ public class PostgresNetworkExecutor extends Thread {
       }
     } catch (final CommandParsingException e) {
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + e.getCause().getMessage(), "42601");
+      writeError(ErrorSeverity.ERROR, "Syntax error on executing query: " + e.getCause().getMessage(), "42601");
     } catch (final Exception e) {
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), "XX000");
+      writeError(ErrorSeverity.ERROR, "Error on executing query: " + e.getMessage(), "XX000");
     }
   }
 
@@ -402,10 +402,10 @@ public class PostgresNetworkExecutor extends Thread {
 
     } catch (final CommandParsingException e) {
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + e.getCause().getMessage(), "42601");
+      writeError(ErrorSeverity.ERROR, "Syntax error on executing query: " + e.getCause().getMessage(), "42601");
     } catch (final Exception e) {
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), "XX000");
+      writeError(ErrorSeverity.ERROR, "Error on executing query: " + e.getMessage(), "XX000");
     } finally {
       writeReadyForQueryMessage();
     }
@@ -559,7 +559,7 @@ public class PostgresNetworkExecutor extends Thread {
             if (row.isElement()) {
               final Document record = row.getElement().get();
               if (record instanceof Vertex vertex)
-                yield vertex.countEdges(Vertex.DIRECTION.OUT, null);
+                yield vertex.countEdges(Vertex.Direction.OUT, null);
               else if (record instanceof Edge edge)
                 yield edge.getOut();
             }
@@ -569,7 +569,7 @@ public class PostgresNetworkExecutor extends Thread {
             if (row.isElement()) {
               final Document record = row.getElement().get();
               if (record instanceof Vertex vertex)
-                yield vertex.countEdges(Vertex.DIRECTION.IN, null);
+                yield vertex.countEdges(Vertex.Direction.IN, null);
               else if (record instanceof Edge edge)
                 yield edge.getIn();
             }
@@ -668,7 +668,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     } catch (final Exception e) {
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Error on parsing bind message: " + e.getMessage(), "XX000");
+      writeError(ErrorSeverity.ERROR, "Error on parsing bind message: " + e.getMessage(), "XX000");
     }
   }
 
@@ -723,7 +723,7 @@ public class PostgresNetworkExecutor extends Thread {
         createResultSet(portal, "CURRENT_SCHEMA", database.getName());
 
       } else if (upperCaseText.equals("SHOW TRANSACTION ISOLATION LEVEL")) {
-        final Database.TRANSACTION_ISOLATION_LEVEL dbIsolationLevel = database.getTransactionIsolationLevel();
+        final Database.TransactionIsolationLevel dbIsolationLevel = database.getTransactionIsolationLevel();
         final String level = dbIsolationLevel.name().replace('_', ' ');
         createResultSet(portal, "LEVEL", level);
 
@@ -879,10 +879,10 @@ public class PostgresNetworkExecutor extends Thread {
 
     } catch (final CommandParsingException e) {
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Syntax error on parsing query: " + e.getCause().getMessage(), "42601");
+      writeError(ErrorSeverity.ERROR, "Syntax error on parsing query: " + e.getCause().getMessage(), "42601");
     } catch (final Exception e) {
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Error on parsing query: " + e.getMessage(), "XX000");
+      writeError(ErrorSeverity.ERROR, "Error on parsing query: " + e.getMessage(), "XX000");
     }
   }
 
@@ -929,7 +929,7 @@ public class PostgresNetworkExecutor extends Thread {
 
   private boolean openDatabase() {
     if (databaseName == null) {
-      writeError(ERROR_SEVERITY.FATAL, "Database not selected", "HV00Q");
+      writeError(ErrorSeverity.FATAL, "Database not selected", "HV00Q");
       return false;
     }
 
@@ -943,10 +943,10 @@ public class PostgresNetworkExecutor extends Thread {
       database.setAutoTransaction(true);
 
     } catch (final ServerSecurityException e) {
-      writeError(ERROR_SEVERITY.FATAL, "Credentials not valid", "28P01");
+      writeError(ErrorSeverity.FATAL, "Credentials not valid", "28P01");
       return false;
     } catch (final DatabaseOperationException e) {
-      writeError(ERROR_SEVERITY.FATAL, "Database does not exist", "HV00Q");
+      writeError(ErrorSeverity.FATAL, "Database does not exist", "HV00Q");
       return false;
     }
 
@@ -1024,7 +1024,7 @@ public class PostgresNetworkExecutor extends Thread {
     return true;
   }
 
-  private void writeError(final ERROR_SEVERITY severity, final String errorMessage, final String errorCode) {
+  private void writeError(final ErrorSeverity severity, final String errorMessage, final String errorCode) {
     try {
       final String sev = severity.toString();
 

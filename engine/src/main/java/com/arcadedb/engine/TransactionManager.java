@@ -57,7 +57,7 @@ public class TransactionManager {
 
     this.logContext = LogManager.instance().getContext();
 
-    if (database.getMode() == ComponentFile.MODE.READ_WRITE) {
+    if (database.getMode() == ComponentFile.Mode.READ_WRITE) {
       createWALFilePool();
 
       task = new Timer("ArcadeDB TransactionManager " + database.getName());
@@ -461,11 +461,11 @@ public class TransactionManager {
     for (final Integer fileId : orderedFilesIds) {
       attemptFileId = fileId;
 
-      final LockManager.LOCK_STATUS lock = tryLockFile(fileId, timeout, requester);
+      final LockManager.LockStatus lock = tryLockFile(fileId, timeout, requester);
 
-      if (lock == LockManager.LOCK_STATUS.YES)
+      if (lock == LockManager.LockStatus.YES)
         lockedFiles.add(fileId);
-      else if (lock == LockManager.LOCK_STATUS.NO) {
+      else if (lock == LockManager.LockStatus.NO) {
         // ERROR: UNLOCK LOCKED FILES
         unlockFilesInOrder(lockedFiles, requester);
 
@@ -495,7 +495,7 @@ public class TransactionManager {
     }
   }
 
-  public LockManager.LOCK_STATUS tryLockFile(final Integer fileId, final long timeout, final Object requester) {
+  public LockManager.LockStatus tryLockFile(final Integer fileId, final long timeout, final Object requester) {
     return fileIdsLockManager.tryLock(fileId, requester, timeout);
   }
 

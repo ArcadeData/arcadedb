@@ -148,7 +148,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
-  public long countEdges(final DIRECTION direction, final String edgeType) {
+  public long countEdges(final Direction direction, final String edgeType) {
     return database.getGraphEngine().countEdges(getMostUpdatedVertex(this), direction, edgeType);
   }
 
@@ -158,7 +158,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
-  public IterableGraph<Edge> getEdges(final DIRECTION direction, final String... edgeTypes) {
+  public IterableGraph<Edge> getEdges(final Direction direction, final String... edgeTypes) {
     return database.getGraphEngine().getEdges(getMostUpdatedVertex(this), direction, edgeTypes);
   }
 
@@ -168,7 +168,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
-  public IterableGraph<Vertex> getVertices(final DIRECTION direction, final String... edgeTypes) {
+  public IterableGraph<Vertex> getVertices(final Direction direction, final String... edgeTypes) {
     return database.getGraphEngine().getVertices(getMostUpdatedVertex(this), direction, edgeTypes);
   }
 
@@ -178,12 +178,12 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
-  public boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction) {
+  public boolean isConnectedTo(final Identifiable toVertex, final Direction direction) {
     return database.getGraphEngine().isVertexConnectedTo(getMostUpdatedVertex(this), toVertex, direction);
   }
 
   @Override
-  public boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction, final String edgeType) {
+  public boolean isConnectedTo(final Identifiable toVertex, final Direction direction, final String edgeType) {
     return database.getGraphEngine().isVertexConnectedTo(getMostUpdatedVertex(this), toVertex, direction, edgeType);
   }
 

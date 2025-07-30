@@ -76,7 +76,7 @@ import java.util.*;
 import java.util.stream.*;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
-import static com.arcadedb.schema.Schema.INDEX_TYPE.FULL_TEXT;
+import static com.arcadedb.schema.Schema.IndexType.FULL_TEXT;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)

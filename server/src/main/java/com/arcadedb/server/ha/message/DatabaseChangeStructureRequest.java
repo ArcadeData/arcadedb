@@ -109,7 +109,7 @@ public class DatabaseChangeStructureRequest extends HAAbstractCommand {
       updateFiles(db);
 
       // RELOAD SCHEMA
-      db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, true);
+      db.getSchema().getEmbedded().load(ComponentFile.Mode.READ_WRITE, true);
       return new DatabaseChangeStructureResponse();
 
     } catch (final Exception e) {

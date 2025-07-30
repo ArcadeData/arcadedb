@@ -27,16 +27,24 @@ import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.SystemVariableResolver;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.PrintStream;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.logging.Level;
 
 /**
  * Keeps all configuration settings. At startup assigns the configuration values by reading system properties.
  */
 public enum GlobalConfiguration {
   // ENVIRONMENT
-  DUMP_CONFIG_AT_STARTUP("arcadedb.dumpConfigAtStartup", SCOPE.JVM, "Dumps the configuration at startup", Boolean.class, false,
+  DUMP_CONFIG_AT_STARTUP("arcadedb.dumpConfigAtStartup", Scope.JVM, "Dumps the configuration at startup", Boolean.class, false,
       value -> {
         //dumpConfiguration(System.out);
 
@@ -56,7 +64,7 @@ public enum GlobalConfiguration {
         return value;
       }),
 
-  DUMP_METRICS_EVERY("arcadedb.dumpMetricsEvery", SCOPE.JVM,
+  DUMP_METRICS_EVERY("arcadedb.dumpMetricsEvery", Scope.JVM,
       "Dumps the metrics at startup, shutdown and every configurable amount of time (in seconds)", Long.class, 0, new Callable<>() {
     @Override
     public Object call(final Object value) {
@@ -75,7 +83,7 @@ public enum GlobalConfiguration {
     }
   }),
 
-  PROFILE("arcadedb.profile", SCOPE.JVM, "Specify the preferred profile among: default, high-performance, low-ram, low-cpu",
+  PROFILE("arcadedb.profile", Scope.JVM, "Specify the preferred profile among: default, high-performance, low-ram, low-cpu",
       String.class, "default", new Callable<>() {
     @Override
     public Object call(final Object value) {
@@ -119,10 +127,10 @@ public enum GlobalConfiguration {
     }
   }, null, Set.of("default", "high-performance", "low-ram", "low-cpu")),
 
-  TEST("arcadedb.test", SCOPE.JVM,
+  TEST("arcadedb.test", Scope.JVM,
       "Tells if it is running in test mode. This enables the calling of callbacks for testing purpose", Boolean.class, false),
 
-  MAX_PAGE_RAM("arcadedb.maxPageRAM", SCOPE.DATABASE, "Maximum amount of pages (in MB) to keep in RAM", Long.class, 4 * 1024, // 4GB
+  MAX_PAGE_RAM("arcadedb.maxPageRAM", Scope.DATABASE, "Maximum amount of pages (in MB) to keep in RAM", Long.class, 4 * 1024, // 4GB
       new Callable<>() {
         @Override
         public Object call(final Object value) {
@@ -147,10 +155,10 @@ public enum GlobalConfiguration {
         }
       }, value -> Runtime.getRuntime().maxMemory() / 4 / 1024 / 1024),
 
-  INITIAL_PAGE_CACHE_SIZE("arcadedb.initialPageCacheSize", SCOPE.DATABASE, "Initial number of entries for page cache",
+  INITIAL_PAGE_CACHE_SIZE("arcadedb.initialPageCacheSize", Scope.DATABASE, "Initial number of entries for page cache",
       Integer.class, 65535),
 
-  DATE_IMPLEMENTATION("arcadedb.dateImplementation", SCOPE.DATABASE,
+  DATE_IMPLEMENTATION("arcadedb.dateImplementation", Scope.DATABASE,
       "Default date implementation to use on deserialization. By default java.time.LocalDate is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDate",
       Class.class, java.time.LocalDate.class, value -> {
     if (value instanceof String string) {
@@ -163,10 +171,10 @@ public enum GlobalConfiguration {
     return value;
   }),
 
-  DATE_FORMAT("arcadedb.dateFormat", SCOPE.DATABASE, "Default date format using Java SimpleDateFormat syntax", String.class,
+  DATE_FORMAT("arcadedb.dateFormat", Scope.DATABASE, "Default date format using Java SimpleDateFormat syntax", String.class,
       "yyyy-MM-dd"),
 
-  DATE_TIME_IMPLEMENTATION("arcadedb.dateTimeImplementation", SCOPE.DATABASE,
+  DATE_TIME_IMPLEMENTATION("arcadedb.dateTimeImplementation", Scope.DATABASE,
       "Default datetime implementation to use on deserialization. By default java.time.LocalDateTime is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDateTime, java.time.ZonedDateTime",
       Class.class, java.time.LocalDateTime.class, value -> {
     if (value instanceof String string) {
@@ -179,339 +187,339 @@ public enum GlobalConfiguration {
     return value;
   }),
 
-  DATE_TIME_FORMAT("arcadedb.dateTimeFormat", SCOPE.DATABASE, "Default date time format using Java SimpleDateFormat syntax",
+  DATE_TIME_FORMAT("arcadedb.dateTimeFormat", Scope.DATABASE, "Default date time format using Java SimpleDateFormat syntax",
       String.class, "yyyy-MM-dd HH:mm:ss"),
 
-  TX_WAL("arcadedb.txWAL", SCOPE.DATABASE, "Uses the WAL", Boolean.class, true),
+  TX_WAL("arcadedb.txWAL", Scope.DATABASE, "Uses the WAL", Boolean.class, true),
 
-  TX_WAL_FLUSH("arcadedb.txWalFlush", SCOPE.DATABASE,
+  TX_WAL_FLUSH("arcadedb.txWalFlush", Scope.DATABASE,
       "Flushes the WAL on disk at commit time. It can be 0 = no flush, 1 = flush without metadata and 2 = full flush (fsync)",
       Integer.class, 0),
 
-  TX_WAL_FILES("arcadedb.txWalFiles", SCOPE.DATABASE,
+  TX_WAL_FILES("arcadedb.txWalFiles", Scope.DATABASE,
       "Number of concurrent files to use for tx log. 0 (default) = available cores", Integer.class,
       Math.max(Runtime.getRuntime().availableProcessors(), 1)),
 
-  FREE_PAGE_RAM("arcadedb.freePageRAM", SCOPE.DATABASE, "Percentage (0-100) of memory to free when Page RAM is full", Integer.class,
+  FREE_PAGE_RAM("arcadedb.freePageRAM", Scope.DATABASE, "Percentage (0-100) of memory to free when Page RAM is full", Integer.class,
       50),
 
-  TYPE_DEFAULT_BUCKETS("arcadedb.typeDefaultBuckets", SCOPE.DATABASE, "Default number of buckets to create per type", Integer.class,
+  TYPE_DEFAULT_BUCKETS("arcadedb.typeDefaultBuckets", Scope.DATABASE, "Default number of buckets to create per type", Integer.class,
       1),
 
-  BUCKET_DEFAULT_PAGE_SIZE("arcadedb.bucketDefaultPageSize", SCOPE.DATABASE,
+  BUCKET_DEFAULT_PAGE_SIZE("arcadedb.bucketDefaultPageSize", Scope.DATABASE,
       "Default page size in bytes for buckets. Default is 64KB", Integer.class, 65_536),
 
-  BUCKET_REUSE_SPACE_MODE("arcadedb.bucketReuseSpaceMode", SCOPE.DATABASE,
+  BUCKET_REUSE_SPACE_MODE("arcadedb.bucketReuseSpaceMode", Scope.DATABASE,
       "How to reuse space in pages. 'high' = more space saved, but slower opening and update/delete time. 'medium' to still reuse space without the initial scan at opening time. 'low' for faster performance, but less space reused. Default is 'high'",
       String.class, "high", Set.of("low", "medium", "high")),
 
-  BUCKET_WIPEOUT_ONDELETE("arcadedb.bucketWipeOutOnDelete", SCOPE.DATABASE,
+  BUCKET_WIPEOUT_ONDELETE("arcadedb.bucketWipeOutOnDelete", Scope.DATABASE,
       "Wipe out record content on delete. If enabled, assures deleted records cannot be analyzed by parsing the raw files and backups will be more compressed, but it also makes deletes a little bit slower",
       Boolean.class, true),
 
-  ASYNC_WORKER_THREADS("arcadedb.asyncWorkerThreads", SCOPE.DATABASE,
+  ASYNC_WORKER_THREADS("arcadedb.asyncWorkerThreads", Scope.DATABASE,
       "Number of asynchronous worker threads. 0 (default) = available cores minus 1", Integer.class,
       Runtime.getRuntime().availableProcessors() > 1 ? Runtime.getRuntime().availableProcessors() - 1 : 1),
 
-  ASYNC_OPERATIONS_QUEUE_IMPL("arcadedb.asyncOperationsQueueImpl", SCOPE.DATABASE,
+  ASYNC_OPERATIONS_QUEUE_IMPL("arcadedb.asyncOperationsQueueImpl", Scope.DATABASE,
       "Queue implementation to use between 'standard' and 'fast'. 'standard' consumes less CPU than the 'fast' implementation, but it could be slower with high loads",
       String.class, "standard", Set.of("standard", "fast")),
 
-  ASYNC_OPERATIONS_QUEUE_SIZE("arcadedb.asyncOperationsQueueSize", SCOPE.DATABASE,
+  ASYNC_OPERATIONS_QUEUE_SIZE("arcadedb.asyncOperationsQueueSize", Scope.DATABASE,
       "Size of the total asynchronous operation queues (it is divided by the number of parallel threads in the pool)",
       Integer.class, 1024),
 
-  ASYNC_TX_BATCH_SIZE("arcadedb.asyncTxBatchSize", SCOPE.DATABASE,
+  ASYNC_TX_BATCH_SIZE("arcadedb.asyncTxBatchSize", Scope.DATABASE,
       "Maximum number of operations to commit in batch by async thread", Integer.class, 1024 * 10),
 
-  ASYNC_BACK_PRESSURE("arcadedb.asyncBackPressure", SCOPE.DATABASE,
+  ASYNC_BACK_PRESSURE("arcadedb.asyncBackPressure", Scope.DATABASE,
       "When the asynchronous queue is full at a certain percentage, back pressure is applied", Integer.class, 0),
 
-  PAGE_FLUSH_QUEUE("arcadedb.pageFlushQueue", SCOPE.DATABASE, "Size of the asynchronous page flush queue", Integer.class, 512),
+  PAGE_FLUSH_QUEUE("arcadedb.pageFlushQueue", Scope.DATABASE, "Size of the asynchronous page flush queue", Integer.class, 512),
 
-  EXPLICIT_LOCK_TIMEOUT("arcadedb.explicitLockTimeout", SCOPE.DATABASE, "Timeout in ms to lock resources on explicit lock",
+  EXPLICIT_LOCK_TIMEOUT("arcadedb.explicitLockTimeout", Scope.DATABASE, "Timeout in ms to lock resources on explicit lock",
       Long.class, 5000),
 
-  COMMIT_LOCK_TIMEOUT("arcadedb.commitLockTimeout", SCOPE.DATABASE, "Timeout in ms to lock resources during commit", Long.class,
+  COMMIT_LOCK_TIMEOUT("arcadedb.commitLockTimeout", Scope.DATABASE, "Timeout in ms to lock resources during commit", Long.class,
       5000),
 
-  TX_RETRIES("arcadedb.txRetries", SCOPE.DATABASE, "Number of retries in case of MVCC exception", Integer.class, 3),
+  TX_RETRIES("arcadedb.txRetries", Scope.DATABASE, "Number of retries in case of MVCC exception", Integer.class, 3),
 
-  TX_RETRY_DELAY("arcadedb.txRetryDelay", SCOPE.DATABASE,
+  TX_RETRY_DELAY("arcadedb.txRetryDelay", Scope.DATABASE,
       "Maximum amount of milliseconds to compute a random number to wait for the next retry. This setting is helpful in case of high concurrency on the same pages (multi-thread insertion over the same bucket)",
       Integer.class, 100),
 
-  BACKUP_ENABLED("arcadedb.backup.enabled", SCOPE.DATABASE,
+  BACKUP_ENABLED("arcadedb.backup.enabled", Scope.DATABASE,
       "Allow a database to be backup. Disabling backup gives a huge boost in performance because no lock will be used for every operations",
       Boolean.class, true),
 
   // SQL
-  SQL_STATEMENT_CACHE("arcadedb.sqlStatementCache", SCOPE.DATABASE, "Maximum number of parsed statements to keep in cache",
+  SQL_STATEMENT_CACHE("arcadedb.sqlStatementCache", Scope.DATABASE, "Maximum number of parsed statements to keep in cache",
       Integer.class, 300),
 
   // COMMAND
-  COMMAND_TIMEOUT("arcadedb.command.timeout", SCOPE.DATABASE, "Default timeout for commands (in ms)", Long.class, 0),
+  COMMAND_TIMEOUT("arcadedb.command.timeout", Scope.DATABASE, "Default timeout for commands (in ms)", Long.class, 0),
 
-  COMMAND_WARNINGS_EVERY("arcadedb.command.warningsEvery", SCOPE.JVM,
+  COMMAND_WARNINGS_EVERY("arcadedb.command.warningsEvery", Scope.JVM,
       "Reduce warnings in commands to print in console only every X occurrences. Use 0 to disable warnings with commands",
       Integer.class, 100),
 
-  GREMLIN_ENGINE("arcadedb.gremlin.engine", SCOPE.DATABASE,
+  GREMLIN_ENGINE("arcadedb.gremlin.engine", Scope.DATABASE,
       "Gremlin engine to use. By default the `auto` setting uses the legacy `groovy` engine in case parameters are set, otherwise, the new native `java` is preferred. If you have compatibility issues with gremlin statements that use lambdas or in general, switch to the `groovy` one",
       String.class, "auto", Set.of("auto", "groovy", "java")),
 
   /**
    * Not in use anymore after removing Gremlin Executor
    */
-  @Deprecated GREMLIN_COMMAND_TIMEOUT("arcadedb.gremlin.timeout", SCOPE.DATABASE, "Default timeout for gremlin commands (in ms)",
+  @Deprecated GREMLIN_COMMAND_TIMEOUT("arcadedb.gremlin.timeout", Scope.DATABASE, "Default timeout for gremlin commands (in ms)",
       Long.class, 30_000),
 
   // USER CODE
-  POLYGLOT_COMMAND_TIMEOUT("arcadedb.polyglotCommand.timeout", SCOPE.DATABASE, "Default timeout for polyglot commands (in ms)",
+  POLYGLOT_COMMAND_TIMEOUT("arcadedb.polyglotCommand.timeout", Scope.DATABASE, "Default timeout for polyglot commands (in ms)",
       Long.class, 10_000),
 
-  QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP("arcadedb.queryMaxHeapElementsAllowedPerOp", SCOPE.DATABASE, """
+  QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP("arcadedb.queryMaxHeapElementsAllowedPerOp", Scope.DATABASE, """
       Maximum number of elements (records) allowed in a single query for memory-intensive operations (eg. ORDER BY in heap). \
       If exceeded, the query fails with an OCommandExecutionException. Negative number means no limit.\
       This setting is intended as a safety measure against excessive resource consumption from a single query (eg. prevent OutOfMemory)""",
       Long.class, 500_000),
 
   // CYPHER
-  CYPHER_STATEMENT_CACHE("arcadedb.cypher.statementCache", SCOPE.DATABASE,
+  CYPHER_STATEMENT_CACHE("arcadedb.cypher.statementCache", Scope.DATABASE,
       "Max number of entries in the cypher statement cache. Use 0 to disable. Caching statements speeds up execution of the same cypher queries",
       Integer.class, 1000),
 
   // INDEXES
-  INDEX_COMPACTION_RAM_MB("arcadedb.indexCompactionRAM", SCOPE.DATABASE, "Maximum amount of RAM to use for index compaction, in MB",
+  INDEX_COMPACTION_RAM_MB("arcadedb.indexCompactionRAM", Scope.DATABASE, "Maximum amount of RAM to use for index compaction, in MB",
       Long.class, 300),
 
-  INDEX_COMPACTION_MIN_PAGES_SCHEDULE("arcadedb.indexCompactionMinPagesSchedule", SCOPE.DATABASE,
+  INDEX_COMPACTION_MIN_PAGES_SCHEDULE("arcadedb.indexCompactionMinPagesSchedule", Scope.DATABASE,
       "Minimum number of mutable pages for an index to be schedule for automatic compaction. 0 = disabled", Integer.class, 10),
 
   // NETWORK
-  NETWORK_SAME_SERVER_ERROR_RETRIES("arcadedb.network.sameServerErrorRetry", SCOPE.SERVER,
+  NETWORK_SAME_SERVER_ERROR_RETRIES("arcadedb.network.sameServerErrorRetry", Scope.SERVER,
       "Number of automatic retries in case of IO errors with a specific server. If replica servers are configured, look also at HA_ERROR_RETRY setting. 0 (default) = no retry",
       Integer.class, 0),
 
-  NETWORK_SOCKET_TIMEOUT("arcadedb.network.socketTimeout", SCOPE.SERVER, "TCP/IP Socket timeout (in ms)", Integer.class, 30000),
+  NETWORK_SOCKET_TIMEOUT("arcadedb.network.socketTimeout", Scope.SERVER, "TCP/IP Socket timeout (in ms)", Integer.class, 30000),
 
-  NETWORK_USE_SSL("arcadedb.ssl.enabled", SCOPE.SERVER, "Use SSL for client connections", Boolean.class, false),
+  NETWORK_USE_SSL("arcadedb.ssl.enabled", Scope.SERVER, "Use SSL for client connections", Boolean.class, false),
 
-  NETWORK_SSL_KEYSTORE("arcadedb.ssl.keyStore", SCOPE.SERVER, "Path where the SSL certificates are stored", String.class, null),
+  NETWORK_SSL_KEYSTORE("arcadedb.ssl.keyStore", Scope.SERVER, "Path where the SSL certificates are stored", String.class, null),
 
-  NETWORK_SSL_KEYSTORE_PASSWORD("arcadedb.ssl.keyStorePassword", SCOPE.SERVER, "Password to open the SSL key store", String.class,
+  NETWORK_SSL_KEYSTORE_PASSWORD("arcadedb.ssl.keyStorePassword", Scope.SERVER, "Password to open the SSL key store", String.class,
       null),
 
-  NETWORK_SSL_TRUSTSTORE("arcadedb.ssl.trustStore", SCOPE.SERVER, "Path to the SSL trust store", String.class, null),
+  NETWORK_SSL_TRUSTSTORE("arcadedb.ssl.trustStore", Scope.SERVER, "Path to the SSL trust store", String.class, null),
 
-  NETWORK_SSL_TRUSTSTORE_PASSWORD("arcadedb.ssl.trustStorePassword", SCOPE.SERVER, "Password to open the SSL trust store",
+  NETWORK_SSL_TRUSTSTORE_PASSWORD("arcadedb.ssl.trustStorePassword", Scope.SERVER, "Password to open the SSL trust store",
       String.class, null),
 
   // SERVER
-  SERVER_NAME("arcadedb.server.name", SCOPE.SERVER, "Server name", String.class, Constants.PRODUCT + "_0"),
+  SERVER_NAME("arcadedb.server.name", Scope.SERVER, "Server name", String.class, Constants.PRODUCT + "_0"),
 
-  SERVER_ROOT_PASSWORD("arcadedb.server.rootPassword", SCOPE.SERVER,
+  SERVER_ROOT_PASSWORD("arcadedb.server.rootPassword", Scope.SERVER,
       "Password for root user to use at first startup of the server. Set this to avoid asking the password to the user",
       String.class, null),
 
-  SERVER_ROOT_PASSWORD_PATH("arcadedb.server.rootPasswordPath", SCOPE.SERVER,
+  SERVER_ROOT_PASSWORD_PATH("arcadedb.server.rootPasswordPath", Scope.SERVER,
       "Path to file with password for root user to use at first startup of the server. Set this to avoid asking the password to the user",
       String.class, null),
 
-  SERVER_MODE("arcadedb.server.mode", SCOPE.SERVER, "Server mode between 'development', 'test' and 'production'", String.class,
+  SERVER_MODE("arcadedb.server.mode", Scope.SERVER, "Server mode between 'development', 'test' and 'production'", String.class,
       "development", Set.of((Object[]) new String[] { "development", "test", "production" })),
 
   // Metrics
-  SERVER_METRICS("arcadedb.serverMetrics", SCOPE.SERVER, "True to enable metrics", Boolean.class, true),
+  SERVER_METRICS("arcadedb.serverMetrics", Scope.SERVER, "True to enable metrics", Boolean.class, true),
 
-  SERVER_METRICS_LOGGING("arcadedb.serverMetrics.logging", SCOPE.SERVER, "True to enable metrics logging", Boolean.class, false),
+  SERVER_METRICS_LOGGING("arcadedb.serverMetrics.logging", Scope.SERVER, "True to enable metrics logging", Boolean.class, false),
 
   //paths
-  SERVER_ROOT_PATH("arcadedb.server.rootPath", SCOPE.SERVER,
+  SERVER_ROOT_PATH("arcadedb.server.rootPath", Scope.SERVER,
       "Root path in the file system where the server is looking for files. By default is the current directory", String.class,
       null),
 
-  SERVER_DATABASE_DIRECTORY("arcadedb.server.databaseDirectory", SCOPE.JVM, "Directory containing the database", String.class,
+  SERVER_DATABASE_DIRECTORY("arcadedb.server.databaseDirectory", Scope.JVM, "Directory containing the database", String.class,
       "${arcadedb.server.rootPath}/databases"),
 
-  SERVER_BACKUP_DIRECTORY("arcadedb.server.backupDirectory", SCOPE.JVM, "Directory containing the backups", String.class,
+  SERVER_BACKUP_DIRECTORY("arcadedb.server.backupDirectory", Scope.JVM, "Directory containing the backups", String.class,
       "${arcadedb.server.rootPath}/backups"),
 
-  SERVER_DATABASE_LOADATSTARTUP("arcadedb.server.databaseLoadAtStartup", SCOPE.SERVER,
+  SERVER_DATABASE_LOADATSTARTUP("arcadedb.server.databaseLoadAtStartup", Scope.SERVER,
       "Open all the available databases at server startup", Boolean.class, true),
 
-  SERVER_DEFAULT_DATABASES("arcadedb.server.defaultDatabases", SCOPE.SERVER, """
+  SERVER_DEFAULT_DATABASES("arcadedb.server.defaultDatabases", Scope.SERVER, """
       The default databases created when the server starts. The format is `(<database-name>[(<user-name>:<user-passwd>[:<user-group>])[,]*])[{import|restore:<URL>}][;]*'. Pay attention on using `;`\
        to separate databases and `,` to separate credentials. The supported actions are `import` and `restore`. Example: `Universe[albert:einstein:admin];Amiga[Jay:Miner,Jack:Tramiel]{import:/tmp/movies.tgz}`""",
       String.class, ""),
 
-  SERVER_DEFAULT_DATABASE_MODE("arcadedb.server.defaultDatabaseMode", SCOPE.SERVER, """
+  SERVER_DEFAULT_DATABASE_MODE("arcadedb.server.defaultDatabaseMode", Scope.SERVER, """
       The default mode to load pre-existing databases. The value must match a com.arcadedb.engine.PaginatedFile.MODE enum value: {READ_ONLY, READ_WRITE}\
       Databases which are newly created will always be opened READ_WRITE.""", String.class, "READ_WRITE",
       Set.of((Object[]) new String[] { "read_only", "read_write" })),
 
-  SERVER_PLUGINS("arcadedb.server.plugins", SCOPE.SERVER,
+  SERVER_PLUGINS("arcadedb.server.plugins", Scope.SERVER,
       "List of server plugins to install. The format to load a plugin is: `<pluginName>:<pluginFullClass>`", String.class, ""),
 
   // SERVER HTTP
-  SERVER_HTTP_INCOMING_HOST("arcadedb.server.httpIncomingHost", SCOPE.SERVER, "TCP/IP host name used for incoming HTTP connections",
+  SERVER_HTTP_INCOMING_HOST("arcadedb.server.httpIncomingHost", Scope.SERVER, "TCP/IP host name used for incoming HTTP connections",
       String.class, "0.0.0.0"),
 
-  SERVER_HTTP_INCOMING_PORT("arcadedb.server.httpIncomingPort", SCOPE.SERVER,
+  SERVER_HTTP_INCOMING_PORT("arcadedb.server.httpIncomingPort", Scope.SERVER,
       "TCP/IP port number used for incoming HTTP connections. Specify a single port or a range `<from-<to>`. Default is 2480-2489 to accept a range of ports in case they are occupied.",
       String.class, "2480-2489"),
 
-  SERVER_HTTPS_INCOMING_PORT("arcadedb.server.httpsIncomingPort", SCOPE.SERVER,
+  SERVER_HTTPS_INCOMING_PORT("arcadedb.server.httpsIncomingPort", Scope.SERVER,
       "TCP/IP port number used for incoming HTTPS connections. Specify a single port or a range `<from-<to>`. Default is 2490-2499 to accept a range of ports in case they are occupied.",
       String.class, "2490-2499"),
 
-  SERVER_HTTP_IO_THREADS("arcadedb.server.httpsIoThreads", SCOPE.SERVER,
+  SERVER_HTTP_IO_THREADS("arcadedb.server.httpsIoThreads", Scope.SERVER,
       "Number of threads to use in the HTTP servers. The default number for most of the use cases is 2 threads per cpus (or 1 per virtual core)",
       Integer.class, 0, null, (value) -> Runtime.getRuntime().availableProcessors()),
 
-  SERVER_HTTP_SESSION_EXPIRE_TIMEOUT("arcadedb.server.httpSessionExpireTimeout", SCOPE.SERVER,
+  SERVER_HTTP_SESSION_EXPIRE_TIMEOUT("arcadedb.server.httpSessionExpireTimeout", Scope.SERVER,
       "Timeout in seconds for a HTTP session (managing a transaction) to expire. This timeout is computed from the latest command against the session",
       Long.class, 5), // 5 SECONDS DEFAULT
 
   // SERVER WS
-  SERVER_WS_EVENT_BUS_QUEUE_SIZE("arcadedb.server.eventBusQueueSize", SCOPE.SERVER,
+  SERVER_WS_EVENT_BUS_QUEUE_SIZE("arcadedb.server.eventBusQueueSize", Scope.SERVER,
       "Size of the queue used as a buffer for unserviced database change events.", Integer.class, 1000),
 
   // SERVER SECURITY
-  SERVER_SECURITY_ALGORITHM("arcadedb.server.securityAlgorithm", SCOPE.SERVER,
+  SERVER_SECURITY_ALGORITHM("arcadedb.server.securityAlgorithm", Scope.SERVER,
       "Default encryption algorithm used for passwords hashing", String.class, "PBKDF2WithHmacSHA256"),
 
-  SERVER_SECURITY_RELOAD_EVERY("arcadedb.server.reloadEvery", SCOPE.SERVER,
+  SERVER_SECURITY_RELOAD_EVERY("arcadedb.server.reloadEvery", Scope.SERVER,
       "Time in milliseconds of checking if the server security files have been modified to be reloaded", Integer.class, 5_000),
 
-  SERVER_SECURITY_SALT_CACHE_SIZE("arcadedb.server.securitySaltCacheSize", SCOPE.SERVER,
+  SERVER_SECURITY_SALT_CACHE_SIZE("arcadedb.server.securitySaltCacheSize", Scope.SERVER,
       "Cache size of hashed salt passwords. The cache works as LRU. Use 0 to disable the cache", Integer.class, 64),
 
-  SERVER_SECURITY_SALT_ITERATIONS("arcadedb.server.saltIterations", SCOPE.SERVER,
+  SERVER_SECURITY_SALT_ITERATIONS("arcadedb.server.saltIterations", Scope.SERVER,
       "Number of iterations to generate the salt or user password. Changing this setting does not affect stored passwords",
       Integer.class, 65536),
 
   // HA
-  HA_ENABLED("arcadedb.ha.enabled", SCOPE.SERVER, "True if HA is enabled for the current server", Boolean.class, false),
+  HA_ENABLED("arcadedb.ha.enabled", Scope.SERVER, "True if HA is enabled for the current server", Boolean.class, false),
 
-  HA_ERROR_RETRIES("arcadedb.ha.errorRetries", SCOPE.SERVER,
+  HA_ERROR_RETRIES("arcadedb.ha.errorRetries", Scope.SERVER,
       "Number of automatic retries in case of IO errors with a specific server. If replica servers are configured, the operation will be retried a specific amount of times on the next server in the list. 0 (default) is to retry against all the configured servers",
       Integer.class, 0),
 
-  HA_SERVER_ROLE("arcadedb.ha.serverRole", SCOPE.SERVER,
+  HA_SERVER_ROLE("arcadedb.ha.serverRole", Scope.SERVER,
       "Server role between ANY (default) OR REPLICA to configure replica only servers", String.class, "any",
       Set.of((Object[]) new String[] { "any", "replica" })),
 
-  HA_CLUSTER_NAME("arcadedb.ha.clusterName", SCOPE.SERVER,
+  HA_CLUSTER_NAME("arcadedb.ha.clusterName", Scope.SERVER,
       "Cluster name. By default is 'arcadedb'. Useful in case of multiple clusters in the same network", String.class,
       Constants.PRODUCT.toLowerCase(Locale.ENGLISH)),
 
-  HA_SERVER_LIST("arcadedb.ha.serverList", SCOPE.SERVER,
+  HA_SERVER_LIST("arcadedb.ha.serverList", Scope.SERVER,
       "Servers in the cluster as a list of <hostname/ip-address:port> items separated by comma. Example: localhost:2424,192.168.0.1:2424",
       String.class, ""),
 
-  HA_QUORUM("arcadedb.ha.quorum", SCOPE.SERVER,
+  HA_QUORUM("arcadedb.ha.quorum", Scope.SERVER,
       "Default quorum between 'none', one, two, three, 'majority' and 'all' servers. Default is majority", String.class, "majority",
       Set.of(new String[] { "none", "one", "two", "three", "majority", "all" })),
 
-  HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", SCOPE.SERVER, "Timeout waiting for the quorum", Long.class, 10000),
+  HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", Scope.SERVER, "Timeout waiting for the quorum", Long.class, 10000),
 
-  HA_REPLICATION_QUEUE_SIZE("arcadedb.ha.replicationQueueSize", SCOPE.SERVER, "Queue size for replicating messages between servers",
+  HA_REPLICATION_QUEUE_SIZE("arcadedb.ha.replicationQueueSize", Scope.SERVER, "Queue size for replicating messages between servers",
       Integer.class, 512),
 
   // TODO: USE THIS FOR CREATING NEW FILES
-  HA_REPLICATION_FILE_MAXSIZE("arcadedb.ha.replicationFileMaxSize", SCOPE.SERVER,
+  HA_REPLICATION_FILE_MAXSIZE("arcadedb.ha.replicationFileMaxSize", Scope.SERVER,
       "Maximum file size for replicating messages between servers. Default is 1GB", Long.class, 1024 * 1024 * 1024),
 
-  HA_REPLICATION_CHUNK_MAXSIZE("arcadedb.ha.replicationChunkMaxSize", SCOPE.SERVER,
+  HA_REPLICATION_CHUNK_MAXSIZE("arcadedb.ha.replicationChunkMaxSize", Scope.SERVER,
       "Maximum channel chunk size for replicating messages between servers. Default is 16777216", Integer.class, 16384 * 1024),
 
-  HA_REPLICATION_INCOMING_HOST("arcadedb.ha.replicationIncomingHost", SCOPE.SERVER,
+  HA_REPLICATION_INCOMING_HOST("arcadedb.ha.replicationIncomingHost", Scope.SERVER,
       "TCP/IP host name used for incoming replication connections. By default is 0.0.0.0 (listens to all the configured network interfaces)",
       String.class, "0.0.0.0"),
 
-  HA_REPLICATION_INCOMING_PORTS("arcadedb.ha.replicationIncomingPorts", SCOPE.SERVER,
+  HA_REPLICATION_INCOMING_PORTS("arcadedb.ha.replicationIncomingPorts", Scope.SERVER,
       "TCP/IP port number used for incoming replication connections", String.class, "2424-2433"),
 
   // KUBERNETES
-  HA_K8S("arcadedb.ha.k8s", SCOPE.SERVER, "The server is running inside Kubernetes", Boolean.class, false),
+  HA_K8S("arcadedb.ha.k8s", Scope.SERVER, "The server is running inside Kubernetes", Boolean.class, false),
 
-  HA_K8S_DNS_SUFFIX("arcadedb.ha.k8sSuffix", SCOPE.SERVER,
+  HA_K8S_DNS_SUFFIX("arcadedb.ha.k8sSuffix", Scope.SERVER,
       "When running inside Kubernetes use this suffix to reach the other servers. Example: arcadedb.default.svc.cluster.local",
       String.class, ""),
 
   // POSTGRES
-  POSTGRES_PORT("arcadedb.postgres.port", SCOPE.SERVER,
+  POSTGRES_PORT("arcadedb.postgres.port", Scope.SERVER,
       "TCP/IP port number used for incoming connections for Postgres plugin. Default is 5432", Integer.class, 5432),
 
-  POSTGRES_HOST("arcadedb.postgres.host", SCOPE.SERVER,
+  POSTGRES_HOST("arcadedb.postgres.host", Scope.SERVER,
       "TCP/IP host name used for incoming connections for Postgres plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),
 
-  POSTGRES_DEBUG("arcadedb.postgres.debug", SCOPE.SERVER,
+  POSTGRES_DEBUG("arcadedb.postgres.debug", Scope.SERVER,
       "Enables the printing of Postgres protocol to the console. Default is false", Boolean.class, false),
 
   // REDIS
-  REDIS_PORT("arcadedb.redis.port", SCOPE.SERVER,
+  REDIS_PORT("arcadedb.redis.port", Scope.SERVER,
       "TCP/IP port number used for incoming connections for Redis plugin. Default is 6379", Integer.class, 6379),
 
-  REDIS_HOST("arcadedb.redis.host", SCOPE.SERVER,
+  REDIS_HOST("arcadedb.redis.host", Scope.SERVER,
       "TCP/IP host name used for incoming connections for Redis plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),
 
   // MONGO
-  MONGO_PORT("arcadedb.mongo.port", SCOPE.SERVER,
+  MONGO_PORT("arcadedb.mongo.port", Scope.SERVER,
       "TCP/IP port number used for incoming connections for Mongo plugin. Default is 27017", Integer.class, 27017),
 
-  MONGO_HOST("arcadedb.mongo.host", SCOPE.SERVER,
+  MONGO_HOST("arcadedb.mongo.host", Scope.SERVER,
       "TCP/IP host name used for incoming connections for Mongo plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),
   ;
 
   /**
    * Place holder for the "undefined" value of setting.
    */
-  private final Object nullValue = new Object();
 
+  public final static  String                   PREFIX    = "arcadedb.";
+  private static final Timer                    TIMER;
+  private final        Object                   nullValue = new Object();
   private final        String                   key;
   private final        Object                   defValue;
   private final        Class<?>                 type;
-  private final        SCOPE                    scope;
+  private final        Scope                    scope;
   private final        Callable<Object, Object> callback;
   private final        Callable<Object, Object> callbackIfNoSet;
-  private volatile     Object                   value  = nullValue;
   private final        String                   description;
   private final        Boolean                  canChangeAtRuntime;
   private final        boolean                  hidden;
   private final        Set<Object>              allowed;
-  public final static  String                   PREFIX = "arcadedb.";
-  private static final Timer                    TIMER;
+  private volatile     Object                   value     = nullValue;
 
-  public enum SCOPE {JVM, SERVER, DATABASE}
+  public enum Scope {JVM, SERVER, DATABASE}
 
   static {
     TIMER = new Timer(true);
     readConfiguration();
   }
 
-  GlobalConfiguration(final String iKey, final SCOPE scope, final String iDescription, final Class<?> iType,
+  GlobalConfiguration(final String iKey, final Scope scope, final String iDescription, final Class<?> iType,
       final Object iDefValue) {
     this(iKey, scope, iDescription, iType, iDefValue, null, null, null);
   }
 
-  GlobalConfiguration(final String iKey, final SCOPE scope, final String iDescription, final Class<?> iType, final Object iDefValue,
+  GlobalConfiguration(final String iKey, final Scope scope, final String iDescription, final Class<?> iType, final Object iDefValue,
       final Set<Object> allowed) {
     this(iKey, scope, iDescription, iType, iDefValue, null, null, allowed);
   }
 
-  GlobalConfiguration(final String iKey, final SCOPE scope, final String iDescription, final Class<?> iType, final Object iDefValue,
+  GlobalConfiguration(final String iKey, final Scope scope, final String iDescription, final Class<?> iType, final Object iDefValue,
       final Callable<Object, Object> callback) {
     this(iKey, scope, iDescription, iType, iDefValue, callback, null, null);
   }
 
-  GlobalConfiguration(final String iKey, final SCOPE scope, final String iDescription, final Class<?> iType, final Object iDefValue,
+  GlobalConfiguration(final String iKey, final Scope scope, final String iDescription, final Class<?> iType, final Object iDefValue,
       final Callable<Object, Object> callback, final Callable<Object, Object> callbackIfNoSet) {
     this(iKey, scope, iDescription, iType, iDefValue, callback, callbackIfNoSet, null);
   }
 
-  GlobalConfiguration(final String iKey, final SCOPE scope, final String iDescription, final Class<?> iType, final Object iDefValue,
+  GlobalConfiguration(final String iKey, final Scope scope, final String iDescription, final Class<?> iType, final Object iDefValue,
       final Callable<Object, Object> callback, final Callable<Object, Object> callbackIfNoSet, final Set<Object> allowed) {
     this.key = iKey;
     this.scope = scope;
@@ -798,7 +806,7 @@ public enum GlobalConfiguration {
     return description;
   }
 
-  public SCOPE getScope() {
+  public Scope getScope() {
     return scope;
   }
 }

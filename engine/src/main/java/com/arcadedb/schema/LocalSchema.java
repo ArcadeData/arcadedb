@@ -122,9 +122,9 @@ public class LocalSchema implements Schema {
         new LSMTreeIndex.PaginatedComponentFactoryHandlerNotUnique());
     componentFactory.registerComponent(HnswVectorIndex.FILE_EXT, new HnswVectorIndex.PaginatedComponentFactoryHandlerUnique());
 
-    indexFactory.register(INDEX_TYPE.LSM_TREE.name(), new LSMTreeIndex.IndexFactoryHandler());
-    indexFactory.register(INDEX_TYPE.FULL_TEXT.name(), new LSMTreeFullTextIndex.IndexFactoryHandler());
-    indexFactory.register(INDEX_TYPE.HNSW.name(), new HnswVectorIndex.IndexFactoryHandler());
+    indexFactory.register(IndexType.LSM_TREE.name(), new LSMTreeIndex.IndexFactoryHandler());
+    indexFactory.register(IndexType.FULL_TEXT.name(), new LSMTreeFullTextIndex.IndexFactoryHandler());
+    indexFactory.register(IndexType.HNSW.name(), new HnswVectorIndex.IndexFactoryHandler());
     configurationFile = new File(databasePath + File.separator + SCHEMA_FILE_NAME);
   }
 
@@ -133,7 +133,7 @@ public class LocalSchema implements Schema {
     return this;
   }
 
-  public void create(final ComponentFile.MODE mode) {
+  public void create(final ComponentFile.Mode mode) {
     loadInRamCompleted = true;
     database.begin();
     try {
@@ -149,7 +149,7 @@ public class LocalSchema implements Schema {
     }
   }
 
-  public void load(final ComponentFile.MODE mode, final boolean initialize) throws IOException {
+  public void load(final ComponentFile.Mode mode, final boolean initialize) throws IOException {
     files.clear();
     types.clear();
     bucketMap.clear();
@@ -312,7 +312,7 @@ public class LocalSchema implements Schema {
   }
 
   public LocalBucket createBucket(final String bucketName, final int pageSize) {
-    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DatabaseAccess.UPDATE_SCHEMA);
 
     if (bucketMap.containsKey(bucketName))
       throw new SchemaException("Cannot create bucket '" + bucketName + "' because already exists");
@@ -320,7 +320,7 @@ public class LocalSchema implements Schema {
     return recordFileChanges(() -> {
       try {
         final LocalBucket bucket = new LocalBucket(database, bucketName, databasePath + File.separator + bucketName,
-            ComponentFile.MODE.READ_WRITE, pageSize, LocalBucket.CURRENT_VERSION);
+            ComponentFile.Mode.READ_WRITE, pageSize, LocalBucket.CURRENT_VERSION);
         registerFile((Component) bucket);
         bucketMap.put(bucketName, bucket);
 
@@ -344,7 +344,7 @@ public class LocalSchema implements Schema {
   @Override
   public DocumentType copyType(final String typeName, final String newTypeName, final Class<? extends DocumentType> newTypeClass,
       final int buckets, final int pageSize, final int transactionBatchSize) {
-    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DatabaseAccess.UPDATE_SCHEMA);
 
     if (existsType(newTypeName))
       throw new IllegalArgumentException("Type '" + newTypeName + "' already exists");
@@ -440,7 +440,7 @@ public class LocalSchema implements Schema {
 
   @Override
   public void dropIndex(final String indexName) {
-    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DatabaseAccess.UPDATE_SCHEMA);
 
     recordFileChanges(() -> {
       boolean setMultipleUpdate = !multipleUpdate;
@@ -520,21 +520,21 @@ public class LocalSchema implements Schema {
   }
 
   @Override
-  public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
+  public TypeIndex createTypeIndex(final IndexType indexType, final boolean unique, final String typeName,
       final String... propertyNames) {
     return buildTypeIndex(typeName, propertyNames).withType(indexType).withUnique(unique).create();
   }
 
   @Override
   @Deprecated
-  public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
+  public TypeIndex createTypeIndex(final IndexType indexType, final boolean unique, final String typeName,
       final String[] propertyNames, final int pageSize) {
     return buildTypeIndex(typeName, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize).create();
   }
 
   @Override
   @Deprecated
-  public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
+  public TypeIndex createTypeIndex(final IndexType indexType, final boolean unique, final String typeName,
       final String[] propertyNames, final int pageSize, final Index.BuildIndexCallback callback) {
     return buildTypeIndex(typeName, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withCallback(callback).create();
@@ -542,22 +542,22 @@ public class LocalSchema implements Schema {
 
   @Override
   @Deprecated
-  public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
-      final String[] propertyNames, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
+  public TypeIndex createTypeIndex(final IndexType indexType, final boolean unique, final String typeName,
+      final String[] propertyNames, final int pageSize, final LSMTreeIndexAbstract.NullStrategy nullStrategy,
       final Index.BuildIndexCallback callback) {
     return buildTypeIndex(typeName, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withCallback(callback).withNullStrategy(nullStrategy).create();
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
+  public TypeIndex getOrCreateTypeIndex(final IndexType indexType, final boolean unique, final String typeName,
       final String... propertyNames) {
     return buildTypeIndex(typeName, propertyNames).withType(indexType).withUnique(unique).withIgnoreIfExists(true).create();
   }
 
   @Override
   @Deprecated
-  public TypeIndex getOrCreateTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
+  public TypeIndex getOrCreateTypeIndex(final IndexType indexType, final boolean unique, final String typeName,
       final String[] propertyNames, final int pageSize) {
     return buildTypeIndex(typeName, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withIgnoreIfExists(true).create();
@@ -565,7 +565,7 @@ public class LocalSchema implements Schema {
 
   @Override
   @Deprecated
-  public TypeIndex getOrCreateTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
+  public TypeIndex getOrCreateTypeIndex(final IndexType indexType, final boolean unique, final String typeName,
       final String[] propertyNames, final int pageSize, final Index.BuildIndexCallback callback) {
     return buildTypeIndex(typeName, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withCallback(callback).withIgnoreIfExists(true).create();
@@ -573,8 +573,8 @@ public class LocalSchema implements Schema {
 
   @Override
   @Deprecated
-  public TypeIndex getOrCreateTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
-      final String[] propertyNames, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
+  public TypeIndex getOrCreateTypeIndex(final IndexType indexType, final boolean unique, final String typeName,
+      final String[] propertyNames, final int pageSize, final LSMTreeIndexAbstract.NullStrategy nullStrategy,
       final Index.BuildIndexCallback callback) {
     return buildTypeIndex(typeName, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withNullStrategy(nullStrategy).withCallback(callback).withIgnoreIfExists(true).create();
@@ -582,8 +582,8 @@ public class LocalSchema implements Schema {
 
   @Override
   @Deprecated
-  public Index createBucketIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName, final String bucketName,
-      final String[] propertyNames, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
+  public Index createBucketIndex(final IndexType indexType, final boolean unique, final String typeName, final String bucketName,
+      final String[] propertyNames, final int pageSize, final LSMTreeIndexAbstract.NullStrategy nullStrategy,
       final Index.BuildIndexCallback callback) {
     return buildBucketIndex(typeName, bucketName, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withNullStrategy(nullStrategy).withCallback(callback).create();
@@ -591,8 +591,8 @@ public class LocalSchema implements Schema {
 
   @Override
   @Deprecated
-  public Index createManualIndex(final INDEX_TYPE indexType, final boolean unique, final String indexName, final Type[] keyTypes,
-      final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
+  public Index createManualIndex(final IndexType indexType, final boolean unique, final String indexName, final Type[] keyTypes,
+      final int pageSize, final LSMTreeIndexAbstract.NullStrategy nullStrategy) {
     return buildManualIndex(indexName, keyTypes).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy).create();
   }
 
@@ -709,7 +709,7 @@ public class LocalSchema implements Schema {
   }
 
   public void dropType(final String typeName) {
-    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DatabaseAccess.UPDATE_SCHEMA);
 
     recordFileChanges(() -> {
       multipleUpdate = true;
@@ -755,7 +755,7 @@ public class LocalSchema implements Schema {
 
   @Override
   public void dropBucket(final String bucketName) {
-    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DatabaseAccess.UPDATE_SCHEMA);
 
     final Bucket bucket = getBucketByName(bucketName);
 
@@ -1061,9 +1061,9 @@ public class LocalSchema implements Schema {
 
             IndexInternal index = indexMap.get(indexName);
             if (index != null) {
-              final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = indexJSON.has("nullStrategy") ?
-                  LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(indexJSON.getString("nullStrategy")) :
-                  LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
+              final LSMTreeIndexAbstract.NullStrategy nullStrategy = indexJSON.has("nullStrategy") ?
+                  LSMTreeIndexAbstract.NullStrategy.valueOf(indexJSON.getString("nullStrategy")) :
+                  LSMTreeIndexAbstract.NullStrategy.ERROR;
 
               index.setNullStrategy(nullStrategy);
 
@@ -1071,7 +1071,7 @@ public class LocalSchema implements Schema {
                 final String configuredIndexType = indexJSON.getString("type");
 
                 if (!index.getType().toString().equals(configuredIndexType)) {
-                  if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.FULL_TEXT.toString())) {
+                  if (configuredIndexType.equalsIgnoreCase(IndexType.FULL_TEXT.toString())) {
                     index = new LSMTreeFullTextIndex((LSMTreeIndex) index);
                     indexMap.put(indexName, index);
                   } else {
@@ -1131,9 +1131,9 @@ public class LocalSchema implements Schema {
                     for (int i = 0; i < properties.length; ++i)
                       properties[i] = schemaIndexProperties.getString(i);
 
-                    final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = entry.getValue().has("nullStrategy") ?
-                        LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(entry.getValue().getString("nullStrategy")) :
-                        LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
+                    final LSMTreeIndexAbstract.NullStrategy nullStrategy = entry.getValue().has("nullStrategy") ?
+                        LSMTreeIndexAbstract.NullStrategy.valueOf(entry.getValue().getString("nullStrategy")) :
+                        LSMTreeIndexAbstract.NullStrategy.ERROR;
 
                     index.setNullStrategy(nullStrategy);
                     type.addIndexInternal(index, bucket.getFileId(), properties, null);
@@ -1359,9 +1359,9 @@ public class LocalSchema implements Schema {
   }
 
   protected Index createBucketIndex(final LocalDocumentType type, final Type[] keyTypes, final Bucket bucket, final String typeName,
-      final INDEX_TYPE indexType, final boolean unique, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
+      final IndexType indexType, final boolean unique, final int pageSize, final LSMTreeIndexAbstract.NullStrategy nullStrategy,
       final Index.BuildIndexCallback callback, final String[] propertyNames, final TypeIndex propIndex, final int batchSize) {
-    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DatabaseAccess.UPDATE_SCHEMA);
 
     if (bucket == null)
       throw new IllegalArgumentException("bucket is null");

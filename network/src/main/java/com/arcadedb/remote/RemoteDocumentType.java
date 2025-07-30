@@ -28,7 +28,6 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
@@ -211,14 +210,14 @@ public class RemoteDocumentType implements DocumentType {
   }
 
   @Override
-  public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
+  public TypeIndex createTypeIndex(final Schema.IndexType indexType, final boolean unique, final String... propertyNames) {
     remoteDatabase.getSchema().createTypeIndex(indexType, unique, name, propertyNames);
     remoteDatabase.getSchema().invalidateSchema();
     return null;
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
+  public TypeIndex getOrCreateTypeIndex(final Schema.IndexType indexType, final boolean unique, final String... propertyNames) {
     remoteDatabase.getSchema().getOrCreateTypeIndex(indexType, unique, name, propertyNames);
     remoteDatabase.getSchema().invalidateSchema();
     return null;
@@ -346,38 +345,38 @@ public class RemoteDocumentType implements DocumentType {
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+  public TypeIndex getOrCreateTypeIndex(final Schema.IndexType indexType, final boolean unique, final String[] propertyNames,
       final int pageSize) {
     throw new UnsupportedOperationException();
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+  public TypeIndex getOrCreateTypeIndex(final Schema.IndexType indexType, final boolean unique, final String[] propertyNames,
       final int pageSize, Index.BuildIndexCallback callback) {
     throw new UnsupportedOperationException();
   }
 
   @Override
-  public TypeIndex getOrCreateTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String[] propertyNames, int pageSize,
-      LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback) {
+  public TypeIndex getOrCreateTypeIndex(Schema.IndexType indexType, boolean unique, String[] propertyNames, int pageSize,
+      LSMTreeIndexAbstract.NullStrategy nullStrategy, Index.BuildIndexCallback callback) {
     throw new UnsupportedOperationException();
   }
 
   @Override
-  public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+  public TypeIndex createTypeIndex(final Schema.IndexType indexType, final boolean unique, final String[] propertyNames,
       final int pageSize) {
     throw new UnsupportedOperationException();
   }
 
   @Override
-  public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
+  public TypeIndex createTypeIndex(final Schema.IndexType indexType, final boolean unique, final String[] propertyNames,
       final int pageSize, final Index.BuildIndexCallback callback) {
     throw new UnsupportedOperationException();
   }
 
   @Override
-  public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
-      final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
+  public TypeIndex createTypeIndex(final Schema.IndexType indexType, final boolean unique, final String[] propertyNames,
+      final int pageSize, final LSMTreeIndexAbstract.NullStrategy nullStrategy, final Index.BuildIndexCallback callback) {
     throw new UnsupportedOperationException();
   }
 

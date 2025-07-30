@@ -38,7 +38,7 @@ public class FileManagerTest {
 
         // act and assert
         assertThrows(IllegalArgumentException.class, () -> {
-            new FileManager(dir.toFile().getAbsolutePath(), ComponentFile.MODE.READ_WRITE, FILE_EXT);
+            new FileManager(dir.toFile().getAbsolutePath(), ComponentFile.Mode.READ_WRITE, FILE_EXT);
         });
 
         // reset permissions to allow cleanup
@@ -54,7 +54,7 @@ public class FileManagerTest {
 
         // act and assert
         assertThrows(IllegalArgumentException.class, () -> {
-            new FileManager(dir.toFile().getAbsolutePath() + "/child", ComponentFile.MODE.READ_WRITE, FILE_EXT);
+            new FileManager(dir.toFile().getAbsolutePath() + "/child", ComponentFile.Mode.READ_WRITE, FILE_EXT);
         });
 
         // cleanup
@@ -66,7 +66,7 @@ public class FileManagerTest {
     void construtor_success_emptyDirectory(@TempDir Path dir) throws IOException {
         // arrange
         // act
-        FileManager fileManager = new FileManager(dir.toFile().getAbsolutePath(), ComponentFile.MODE.READ_WRITE, FILE_EXT);
+        FileManager fileManager = new FileManager(dir.toFile().getAbsolutePath(), ComponentFile.Mode.READ_WRITE, FILE_EXT);
 
         // assert
         assertTrue(fileManager.getFiles().isEmpty());
@@ -78,7 +78,7 @@ public class FileManagerTest {
         Path dir = Path.of(System.getProperty("java.io.tmpdir"), "nonExistentDir");
 
         // act
-        FileManager fileManager = new FileManager(dir.toFile().getAbsolutePath(), ComponentFile.MODE.READ_WRITE, FILE_EXT);
+        FileManager fileManager = new FileManager(dir.toFile().getAbsolutePath(), ComponentFile.Mode.READ_WRITE, FILE_EXT);
 
         // assert
         assertTrue(fileManager.getFiles().isEmpty());

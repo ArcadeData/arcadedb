@@ -27,7 +27,7 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
  */
 @ExcludeFromJacocoGeneratedReport
 public interface SecurityDatabaseUser {
-  enum ACCESS {
+  enum Access {
     CREATE_RECORD("createRecord", "create records"),//
     READ_RECORD("readRecord", "read records"),//
     UPDATE_RECORD("updateRecord", "update records"),//
@@ -36,13 +36,13 @@ public interface SecurityDatabaseUser {
     public final String name;
     public final String fullName;
 
-    ACCESS(final String name, final String fullName) {
+    Access(final String name, final String fullName) {
       this.name = name;
       this.fullName = fullName;
     }
   }
 
-  enum DATABASE_ACCESS {
+  enum DatabaseAccess {
     UPDATE_SECURITY("updateSecurity", "update security"),//
     UPDATE_SCHEMA("updateSchema", "update schema"),//
     UPDATE_DATABASE_SETTINGS("updateDatabaseSettings", "update database settings");
@@ -50,22 +50,22 @@ public interface SecurityDatabaseUser {
     public final String name;
     public final String fullName;
 
-    DATABASE_ACCESS(final String name, final String fullName) {
+    DatabaseAccess(final String name, final String fullName) {
       this.name = name;
       this.fullName = fullName;
     }
 
-    public static DATABASE_ACCESS getByName(final String name) {
-      for (final DATABASE_ACCESS v : DATABASE_ACCESS.values())
+    public static DatabaseAccess getByName(final String name) {
+      for (final DatabaseAccess v : DatabaseAccess.values())
         if (v.name.equals(name))
           return v;
       return null;
     }
   }
 
-  boolean requestAccessOnDatabase(DATABASE_ACCESS access);
+  boolean requestAccessOnDatabase(DatabaseAccess access);
 
-  boolean requestAccessOnFile(int fileId, ACCESS access);
+  boolean requestAccessOnFile(int fileId, Access access);
 
   String getName();
 

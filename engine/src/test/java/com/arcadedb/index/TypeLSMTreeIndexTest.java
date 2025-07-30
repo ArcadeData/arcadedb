@@ -41,7 +41,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -792,7 +791,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
     while (true) {
       database.async().waitCompletion();
       try {
-        final TypeIndex idx = type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "other.special:property");
+        final TypeIndex idx = type.createTypeIndex(Schema.IndexType.LSM_TREE, true, "other.special:property");
         database.command("sql", "rebuild index `" + idx.getName() + "`");
         break;
       } catch (NeedRetryException e) {
@@ -842,7 +841,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
       type.createProperty("id", Integer.class);
       final Index typeIndex = database.getSchema()
-          .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+          .createTypeIndex(Schema.IndexType.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
 
       for (int i = 0; i < TOT; ++i) {
         final MutableDocument v = database.newDocument(TYPE_NAME);

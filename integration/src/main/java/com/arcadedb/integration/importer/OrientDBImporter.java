@@ -1036,12 +1036,12 @@ public class OrientDBImporter {
       // PATCH TO ALWAYS USE SKIP BECAUSE IN ORIENTDB AN INDEX WITHOUT THE IGNORE SETTINGS CAN STILL HAVE NULL PROPERTIES INDEXES.
       nullValuesIgnored = true;
 
-      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = nullValuesIgnored ?
-          LSMTreeIndexAbstract.NULL_STRATEGY.SKIP :
-          LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
+      final LSMTreeIndexAbstract.NullStrategy nullStrategy = nullValuesIgnored ?
+          LSMTreeIndexAbstract.NullStrategy.SKIP :
+          LSMTreeIndexAbstract.NullStrategy.ERROR;
 
       database.getSchema()
-          .getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, unique, className, properties, LSMTreeIndexAbstract.DEF_PAGE_SIZE,
+          .getOrCreateTypeIndex(Schema.IndexType.LSM_TREE, unique, className, properties, LSMTreeIndexAbstract.DEF_PAGE_SIZE,
               nullStrategy, null);
 
       logger.logLine(2, "- Created index %s on %s%s", unique ? "UNIQUE" : "NOTUNIQUE", className, Arrays.toString(properties));
@@ -1272,7 +1272,7 @@ public class OrientDBImporter {
     boolean valid = true;
     final Collection<TypeIndex> indexes = type.getAllIndexes(true);
     for (final Index index : indexes) {
-      if (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.ERROR) {
+      if (index.getNullStrategy() == LSMTreeIndexAbstract.NullStrategy.ERROR) {
         final String indexedPropName = index.getPropertyNames().getFirst();
         final Object value = properties.get(indexedPropName);
         if (value == null) {

@@ -80,7 +80,8 @@ public class ServerMonitor {
     final float freeSpacePerc = freeSpace * 100F / totalSpace;
     if (freeSpacePerc < 20) {
       // REPORT THE SPIKE
-      server.getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "JVM", null, "Available space on disk is only " + ((int) freeSpacePerc) + "%");
+      server.getEventLog().reportEvent(
+          ServerEventLog.EventType.WARNING, "JVM", null, "Available space on disk is only " + ((int) freeSpacePerc) + "%");
       lastDiskSpaceWarningReported = System.currentTimeMillis();
     }
   }
@@ -98,7 +99,7 @@ public class ServerMonitor {
     if (heapAvailablePerc < 20) {
       // REPORT THE SPIKE
       server.getEventLog()
-          .reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "JVM", null, "Server overloaded: available heap RAM is only " + ((int) heapAvailablePerc) + "%");
+          .reportEvent(ServerEventLog.EventType.WARNING, "JVM", null, "Server overloaded: available heap RAM is only " + ((int) heapAvailablePerc) + "%");
       lastHeapWarningReported = System.currentTimeMillis();
     }
   }
@@ -116,7 +117,7 @@ public class ServerMonitor {
 
       if (deltaPerc > 20) {
         // REPORT THE SPIKE
-        server.getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "JVM", null,
+        server.getEventLog().reportEvent(ServerEventLog.EventType.WARNING, "JVM", null,
             "Server overloaded: JVM Safepoint spiked up " + ((int) deltaPerc) + "% from the last sampling");
       }
     }

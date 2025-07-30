@@ -29,7 +29,7 @@ import org.junit.jupiter.api.Test;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.graph.Vertex.DIRECTION;
+import com.arcadedb.graph.Vertex.Direction;
 
 /**
  * @author Pawel Maslej
@@ -85,11 +85,11 @@ class DataEncryptionTest extends TestHelper {
     if (isEquals) {
       assertThat(p1.get("name")).isEqualTo("John");
       assertThat(p2.get("name")).isEqualTo("Doe");
-      assertThat(p1.getEdges(DIRECTION.OUT, "Knows").iterator().next().get("since")).isEqualTo(2024);
+      assertThat(p1.getEdges(Direction.OUT, "Knows").iterator().next().get("since")).isEqualTo(2024);
     } else {
       assertThat(((String) p1.get("name")).contains("John")).isFalse();
       assertThat(((String) p2.get("name")).contains("Doe")).isFalse();
-      assertThat(p1.getEdges(DIRECTION.OUT, "Knows").iterator().next().get("since").toString().contains("2024")).isFalse();
+      assertThat(p1.getEdges(Direction.OUT, "Knows").iterator().next().get("since").toString().contains("2024")).isFalse();
     }
   }
 }

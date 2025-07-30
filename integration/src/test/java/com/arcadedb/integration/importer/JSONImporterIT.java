@@ -128,20 +128,20 @@ public class JSONImporterIT {
 
         if ("Marcus".equalsIgnoreCase(name)) {
           assertThat(vertex.getString("id")).isEqualTo("1234");
-          assertThat(vertex.countEdges(Vertex.DIRECTION.OUT, "HAS_MANAGER")).isEqualTo(0);
-          assertThat(vertex.countEdges(Vertex.DIRECTION.IN, "HAS_MANAGER")).isEqualTo(2);
+          assertThat(vertex.countEdges(Vertex.Direction.OUT, "HAS_MANAGER")).isEqualTo(0);
+          assertThat(vertex.countEdges(Vertex.Direction.IN, "HAS_MANAGER")).isEqualTo(2);
         } else if ("Win".equals(name)) {
           assertThat(vertex.getString("id")).isEqualTo("1230");
-          assertThat(vertex.countEdges(Vertex.DIRECTION.OUT, "HAS_MANAGER")).isEqualTo(1);
-          assertThat(vertex.countEdges(Vertex.DIRECTION.IN, "HAS_MANAGER")).isEqualTo(0);
+          assertThat(vertex.countEdges(Vertex.Direction.OUT, "HAS_MANAGER")).isEqualTo(1);
+          assertThat(vertex.countEdges(Vertex.Direction.IN, "HAS_MANAGER")).isEqualTo(0);
         } else if ("Dave".equals(name)) {
           assertThat(vertex.getString("id")).isEqualTo("1232");
-          assertThat(vertex.countEdges(Vertex.DIRECTION.OUT, "HAS_MANAGER")).isEqualTo(1);
-          assertThat(vertex.countEdges(Vertex.DIRECTION.IN, "HAS_MANAGER")).isEqualTo(1);
+          assertThat(vertex.countEdges(Vertex.Direction.OUT, "HAS_MANAGER")).isEqualTo(1);
+          assertThat(vertex.countEdges(Vertex.Direction.IN, "HAS_MANAGER")).isEqualTo(1);
         } else if ("Albert".equals(name)) {
           assertThat(vertex.getString("id")).isEqualTo("1239");
-          assertThat(vertex.countEdges(Vertex.DIRECTION.OUT, "HAS_MANAGER")).isEqualTo(1);
-          assertThat(vertex.countEdges(Vertex.DIRECTION.IN, "HAS_MANAGER")).isEqualTo(0);
+          assertThat(vertex.countEdges(Vertex.Direction.OUT, "HAS_MANAGER")).isEqualTo(1);
+          assertThat(vertex.countEdges(Vertex.Direction.IN, "HAS_MANAGER")).isEqualTo(0);
         } else
           fail("");
       }

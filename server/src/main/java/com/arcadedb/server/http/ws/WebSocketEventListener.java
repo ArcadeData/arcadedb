@@ -36,16 +36,16 @@ public class WebSocketEventListener implements AfterRecordCreateListener, AfterR
 
   @Override
   public void onAfterCreate(final Record record) {
-    this.watcherThread.push(new ChangeEvent(ChangeEvent.TYPE.CREATE, record));
+    this.watcherThread.push(new ChangeEvent(ChangeEvent.Type.CREATE, record));
   }
 
   @Override
   public void onAfterUpdate(final Record record) {
-    this.watcherThread.push(new ChangeEvent(ChangeEvent.TYPE.UPDATE, record));
+    this.watcherThread.push(new ChangeEvent(ChangeEvent.Type.UPDATE, record));
   }
 
   @Override
   public void onAfterDelete(final Record record) {
-    this.watcherThread.push(new ChangeEvent(ChangeEvent.TYPE.DELETE, record));
+    this.watcherThread.push(new ChangeEvent(ChangeEvent.Type.DELETE, record));
   }
 }

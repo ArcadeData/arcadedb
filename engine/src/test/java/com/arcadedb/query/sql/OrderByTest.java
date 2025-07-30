@@ -30,7 +30,6 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -70,8 +69,8 @@ public class OrderByTest {
         dtProduct.createProperty("type", Type.STRING);
         dtProduct.createProperty("start", Type.DATETIME_MICROS);
         dtProduct.createProperty("stop", Type.DATETIME_MICROS);
-        dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
-        dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "type", "start", "stop");
+        dtProduct.createTypeIndex(Schema.IndexType.LSM_TREE, true, "name");
+        dtProduct.createTypeIndex(Schema.IndexType.LSM_TREE, true, "type", "start", "stop");
       });
     }
 

@@ -192,11 +192,11 @@ class SQLMethodTransformTest {
       }
 
       @Override
-      public void checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS access) {
+      public void checkPermissionsOnDatabase(SecurityDatabaseUser.DatabaseAccess access) {
       }
 
       @Override
-      public void checkPermissionsOnFile(int fileId, SecurityDatabaseUser.ACCESS access) {
+      public void checkPermissionsOnFile(int fileId, SecurityDatabaseUser.Access access) {
       }
 
       @Override
@@ -220,17 +220,17 @@ class SQLMethodTransformTest {
       }
 
       @Override
-      public void registerCallback(CALLBACK_EVENT event, Callable<Void> callback) {
+      public void registerCallback(CallbackEvent event, Callable<Void> callback) {
 
       }
 
       @Override
-      public void unregisterCallback(CALLBACK_EVENT event, Callable<Void> callback) {
+      public void unregisterCallback(CallbackEvent event, Callable<Void> callback) {
 
       }
 
       @Override
-      public void executeCallbacks(CALLBACK_EVENT event) throws IOException {
+      public void executeCallbacks(CallbackEvent event) throws IOException {
 
       }
 
@@ -345,7 +345,7 @@ class SQLMethodTransformTest {
       }
 
       @Override
-      public ComponentFile.MODE getMode() {
+      public ComponentFile.Mode getMode() {
         return null;
       }
 
@@ -502,12 +502,12 @@ class SQLMethodTransformTest {
       }
 
       @Override
-      public Database setTransactionIsolationLevel(TRANSACTION_ISOLATION_LEVEL level) {
+      public Database setTransactionIsolationLevel(TransactionIsolationLevel level) {
         return null;
       }
 
       @Override
-      public TRANSACTION_ISOLATION_LEVEL getTransactionIsolationLevel() {
+      public TransactionIsolationLevel getTransactionIsolationLevel() {
         return null;
       }
 
@@ -608,7 +608,7 @@ class SQLMethodTransformTest {
       }
 
       @Override
-      public void begin(TRANSACTION_ISOLATION_LEVEL isolationLevel) {
+      public void begin(TransactionIsolationLevel isolationLevel) {
 
       }
 

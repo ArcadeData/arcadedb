@@ -57,27 +57,27 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
   }
 
   @Override
-  public long countEdges(final DIRECTION direction, final String edgeType) {
+  public long countEdges(final Direction direction, final String edgeType) {
     return internal.countEdges(direction, edgeType);
   }
 
   @Override
   public IterableGraph<Edge> getEdges() {
-    return internal.getEdges(DIRECTION.BOTH);
+    return internal.getEdges(Direction.BOTH);
   }
 
   @Override
-  public IterableGraph<Edge> getEdges(final DIRECTION direction, final String... edgeTypes) {
+  public IterableGraph<Edge> getEdges(final Direction direction, final String... edgeTypes) {
     return internal.getEdges(direction, edgeTypes);
   }
 
   @Override
   public IterableGraph<Vertex> getVertices() {
-    return internal.getVertices(DIRECTION.BOTH);
+    return internal.getVertices(Direction.BOTH);
   }
 
   @Override
-  public IterableGraph<Vertex> getVertices(final DIRECTION direction, final String... edgeTypes) {
+  public IterableGraph<Vertex> getVertices(final Direction direction, final String... edgeTypes) {
     return internal.getVertices(direction, edgeTypes);
   }
 
@@ -87,12 +87,12 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
   }
 
   @Override
-  public boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction) {
+  public boolean isConnectedTo(final Identifiable toVertex, final Direction direction) {
     return internal.isConnectedTo(toVertex, direction);
   }
 
   @Override
-  public boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction, final String edgeType) {
+  public boolean isConnectedTo(final Identifiable toVertex, final Direction direction, final String edgeType) {
     return internal.isConnectedTo(toVertex, direction, edgeType);
   }
 

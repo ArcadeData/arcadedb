@@ -9,7 +9,7 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.CompressedRID2RIDIndex;
-import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NullStrategy;
 import com.arcadedb.integration.importer.AnalyzedEntity.EntityType;
 import com.arcadedb.integration.importer.AnalyzedSchema;
 import com.arcadedb.integration.importer.ConsoleLogger;
@@ -156,10 +156,10 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           indexes.keySet()
               .forEach(index -> {
                 var idx = indexes.getJSONObject(index);
-                var idxType = Schema.INDEX_TYPE.valueOf(idx.getString("type"));
+                var idxType = Schema.IndexType.valueOf(idx.getString("type"));
                 var idxFields = idx.getJSONArray("properties").toList().stream().map(Object::toString).toArray(String[]::new);
                 var typeIndex = docType.getOrCreateTypeIndex(idxType, idx.getBoolean("unique"), idxFields);
-                typeIndex.setNullStrategy(NULL_STRATEGY.valueOf(idx.getString("nullStrategy")));
+                typeIndex.setNullStrategy(NullStrategy.valueOf(idx.getString("nullStrategy")));
               });
 
         });

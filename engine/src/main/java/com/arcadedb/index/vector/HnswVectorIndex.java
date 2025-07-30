@@ -119,7 +119,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   public static class PaginatedComponentFactoryHandlerUnique implements ComponentFactory.PaginatedComponentFactoryHandler {
     @Override
     public Component createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id,
-        final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
+        final ComponentFile.Mode mode, final int pageSize, final int version) throws IOException {
       return new HnswVectorIndex(database, name, filePath, id, version);
     }
   }
@@ -151,7 +151,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
 
     this.underlyingIndex = builder.getDatabase().getSchema()
         .buildTypeIndex(builder.getVertexType(), new String[] { idPropertyName }).withUnique(true).withIgnoreIfExists(true)
-        .withType(Schema.INDEX_TYPE.LSM_TREE).create();
+        .withType(Schema.IndexType.LSM_TREE).create();
 
     this.underlyingIndex.setAssociatedIndex(this);
 
@@ -207,7 +207,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   public void onAfterSchemaLoad() {
     try {
       this.underlyingIndex = database.getSchema().buildTypeIndex(vertexType, new String[] { idPropertyName })
-          .withIgnoreIfExists(true).withUnique(true).withType(Schema.INDEX_TYPE.LSM_TREE).create();
+          .withIgnoreIfExists(true).withUnique(true).withType(Schema.IndexType.LSM_TREE).create();
 
       this.underlyingIndex.setAssociatedIndex(this);
 
@@ -328,7 +328,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
         ((MutableVertex) vertex).save();
       }
 
-      final long totalEdges = vertex.countEdges(Vertex.DIRECTION.OUT, getEdgeType(0));
+      final long totalEdges = vertex.countEdges(Vertex.Direction.OUT, getEdgeType(0));
       if (totalEdges > 0)
         // ALREADY INSERTED
         return true;
@@ -429,11 +429,11 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   }
 
   private Iterator<Vertex> getConnectionsFromVertex(final Vertex vertex, final int level) {
-    return vertex.getVertices(Vertex.DIRECTION.OUT, edgeType + level).iterator();
+    return vertex.getVertices(Vertex.Direction.OUT, edgeType + level).iterator();
   }
 
   private int countConnectionsFromVertex(final Vertex vertex, final int level) {
-    return (int) vertex.countEdges(Vertex.DIRECTION.OUT, edgeType + level);
+    return (int) vertex.countEdges(Vertex.Direction.OUT, edgeType + level);
   }
 
   private int getMaxLevelFromVertex(final Vertex vertex) {
@@ -845,7 +845,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
                 final Vertex vertex = next.asVertex();
                 for (int level = 0; level <= getMaxLevelFromVertex(vertex); level++) {
                   try {
-                    for (Edge e : vertex.getEdges(Vertex.DIRECTION.BOTH, getEdgeType(level)))
+                    for (Edge e : vertex.getEdges(Vertex.Direction.BOTH, getEdgeType(level)))
                       e.delete();
                   } catch (RecordNotFoundException | SchemaException e) {
                     // IGNORE IT
@@ -873,12 +873,12 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   }
 
   @Override
-  public LSMTreeIndexAbstract.NULL_STRATEGY getNullStrategy() {
+  public LSMTreeIndexAbstract.NullStrategy getNullStrategy() {
     return underlyingIndex.getNullStrategy();
   }
 
   @Override
-  public void setNullStrategy(final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
+  public void setNullStrategy(final LSMTreeIndexAbstract.NullStrategy nullStrategy) {
     underlyingIndex.setNullStrategy(nullStrategy);
   }
 
@@ -1044,7 +1044,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   }
 
   @Override
-  public boolean setStatus(INDEX_STATUS[] expectedStatuses, INDEX_STATUS newStatus) {
+  public boolean setStatus(IndexStatus[] expectedStatuses, IndexStatus newStatus) {
     return false;
   }
 
@@ -1198,8 +1198,8 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   }
 
   @Override
-  public Schema.INDEX_TYPE getType() {
-    return Schema.INDEX_TYPE.HNSW;
+  public Schema.IndexType getType() {
+    return Schema.IndexType.HNSW;
   }
 
   @Override

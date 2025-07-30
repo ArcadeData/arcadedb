@@ -25,7 +25,7 @@ import java.util.stream.*;
 
 public class DumpCfgApp {
   public static void main(final String[] args) {
-    for (GlobalConfiguration.SCOPE scope : GlobalConfiguration.SCOPE.values())
+    for (GlobalConfiguration.Scope scope : GlobalConfiguration.Scope.values())
       tableByScope(scope);
 
 //    System.out.printf("\n|Name|Java API ENUM name|Description|Type|Default Value");
@@ -35,7 +35,7 @@ public class DumpCfgApp {
 //    }
   }
 
-  private static void tableByScope(final GlobalConfiguration.SCOPE scope) {
+  private static void tableByScope(final GlobalConfiguration.Scope scope) {
     System.out.printf("\n===== " + scope + "\n");
 
     System.out.printf("\n[%%header,cols=\"20%%,55%%,10%%,15%%\",stripes=even]");

@@ -85,14 +85,14 @@ public class LSMTreeIndexCompositeTest extends TestHelper {
       file.createProperty("absoluteId", Integer.class);
       file.createProperty("directoryId", Integer.class);
       file.createProperty("fileId", Integer.class);
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "File", "absoluteId");
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "File", "directoryId", "fileId");
+      database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, true, "File", "absoluteId");
+      database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, true, "File", "directoryId", "fileId");
 
       file.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
 
       assertThat(database.getSchema().existsType("HasChildren")).isFalse();
       database.getSchema().createEdgeType("HasChildren");
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "HasChildren", "@out", "@in");
+      database.getSchema().createTypeIndex(Schema.IndexType.LSM_TREE, true, "HasChildren", "@out", "@in");
 
       int fileId = 0;
       for (int i = 0; i < TOT; ++i) {

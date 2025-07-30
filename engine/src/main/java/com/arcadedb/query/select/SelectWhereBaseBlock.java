@@ -37,7 +37,7 @@ public abstract class SelectWhereBaseBlock {
     select.checkNotCompiled();
     if (select.property != null)
       throw new IllegalArgumentException("Property has already been set");
-    if (select.state != Select.STATE.WHERE)
+    if (select.state != Select.State.WHERE)
       throw new IllegalArgumentException("No context was provided for the parameter");
     select.property = new SelectPropertyValue(name);
   }

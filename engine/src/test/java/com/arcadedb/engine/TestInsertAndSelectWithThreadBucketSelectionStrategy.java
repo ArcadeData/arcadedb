@@ -45,8 +45,8 @@ public class TestInsertAndSelectWithThreadBucketSelectionStrategy {
           dtProducts.createProperty("start", Type.DATETIME_MICROS);
           dtProducts.createProperty("stop", Type.DATETIME_MICROS);
           dtProducts.createProperty("v", Type.STRING);
-          dtProducts.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
-          dtProducts.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "type", "start", "stop");
+          dtProducts.createTypeIndex(Schema.IndexType.LSM_TREE, true, "name");
+          dtProducts.createTypeIndex(Schema.IndexType.LSM_TREE, false, "type", "start", "stop");
           dtProducts.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
         });
       }

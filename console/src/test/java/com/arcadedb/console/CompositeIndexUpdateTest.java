@@ -43,7 +43,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.io.PrintStream;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -131,8 +130,8 @@ public class CompositeIndexUpdateTest {
         dtOrders.createProperty("vstop", Type.DATETIME_MICROS);
         dtOrders.createProperty("status", Type.STRING);
         dtOrders.createProperty("node", Type.STRING);
-        dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
-        dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status", "id");
+        dtOrders.createTypeIndex(Schema.IndexType.LSM_TREE, true, "id");
+        dtOrders.createTypeIndex(Schema.IndexType.LSM_TREE, true, "status", "id");
         dtOrders.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
       }
     }
@@ -222,7 +221,7 @@ public class CompositeIndexUpdateTest {
     final AtomicInteger totalRows = new AtomicInteger();
     final int[] firstOrderId = new int[1];
     TypeIndex insertOrdersIndex = database.getSchema().getType("Order")
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "processor", "vstart", "vstop");
+        .createTypeIndex(Schema.IndexType.LSM_TREE, true, "processor", "vstart", "vstop");
     for (CandidateOrder order : orders) {
       indexCursor = database.lookupByKey("Order", new String[] { "processor", "vstart", "vstop" },
           new Object[] { order.getProcessor(), order.getStart(), order.getStop() });

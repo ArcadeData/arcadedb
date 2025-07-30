@@ -136,7 +136,7 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public void begin(final TRANSACTION_ISOLATION_LEVEL isolationLevel) {
+  public void begin(final TransactionIsolationLevel isolationLevel) {
     wrapped.begin(isolationLevel);
   }
 
@@ -196,11 +196,11 @@ public class ServerDatabase implements DatabaseInternal {
     return wrapped.iterateBucket(bucketName);
   }
 
-  public void checkPermissionsOnDatabase(final SecurityDatabaseUser.DATABASE_ACCESS access) {
+  public void checkPermissionsOnDatabase(final SecurityDatabaseUser.DatabaseAccess access) {
     wrapped.checkPermissionsOnDatabase(access);
   }
 
-  public void checkPermissionsOnFile(final int fileId, final SecurityDatabaseUser.ACCESS access) {
+  public void checkPermissionsOnFile(final int fileId, final SecurityDatabaseUser.Access access) {
     wrapped.checkPermissionsOnFile(fileId, access);
   }
 
@@ -232,11 +232,11 @@ public class ServerDatabase implements DatabaseInternal {
     return wrapped.lookupByKey(type, keyNames, keyValues);
   }
 
-  public void registerCallback(final DatabaseInternal.CALLBACK_EVENT event, final Callable<Void> callback) {
+  public void registerCallback(final CallbackEvent event, final Callable<Void> callback) {
     wrapped.registerCallback(event, callback);
   }
 
-  public void unregisterCallback(final DatabaseInternal.CALLBACK_EVENT event, final Callable<Void> callback) {
+  public void unregisterCallback(final CallbackEvent event, final Callable<Void> callback) {
     wrapped.unregisterCallback(event, callback);
   }
 
@@ -260,12 +260,12 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public Database setTransactionIsolationLevel(final TRANSACTION_ISOLATION_LEVEL level) {
+  public Database setTransactionIsolationLevel(final TransactionIsolationLevel level) {
     return wrapped.setTransactionIsolationLevel(level);
   }
 
   @Override
-  public TRANSACTION_ISOLATION_LEVEL getTransactionIsolationLevel() {
+  public TransactionIsolationLevel getTransactionIsolationLevel() {
     return wrapped.getTransactionIsolationLevel();
   }
 
@@ -438,7 +438,7 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public ComponentFile.MODE getMode() {
+  public ComponentFile.Mode getMode() {
     return wrapped.getMode();
   }
 
@@ -550,7 +550,7 @@ public class ServerDatabase implements DatabaseInternal {
     return wrapped.hashCode();
   }
 
-  public void executeCallbacks(final DatabaseInternal.CALLBACK_EVENT event) throws IOException {
+  public void executeCallbacks(final CallbackEvent event) throws IOException {
     wrapped.executeCallbacks(event);
   }
 

@@ -53,7 +53,7 @@ public class LinkEdgeFromImportTask implements DatabaseAsyncTask {
 
     final EdgeSegment inChunk = database.getGraphEngine().createInEdgeChunk(toVertexRecord);
 
-    final EdgeLinkedList inLinkedList = new EdgeLinkedList(toVertexRecord, Vertex.DIRECTION.IN, inChunk);
+    final EdgeLinkedList inLinkedList = new EdgeLinkedList(toVertexRecord, Vertex.Direction.IN, inChunk);
     inLinkedList.addAll(connections);
 
     if (callback != null)

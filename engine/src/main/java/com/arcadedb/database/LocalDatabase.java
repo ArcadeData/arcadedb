@@ -103,9 +103,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       LocalBucket.BUCKET_EXT, LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT, LSMTreeIndexMutable.UNIQUE_INDEX_EXT,
       LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT, LSMTreeIndexCompacted.UNIQUE_INDEX_EXT, HnswVectorIndex.FILE_EXT);
   public final         AtomicLong                                indexCompactions                     = new AtomicLong();
-  protected final      String                                    name;
-  protected final      ComponentFile.MODE                        mode;
-  protected final      ContextConfiguration                      configuration;
+  protected final String               name;
+  protected final ComponentFile.Mode   mode;
+  protected final ContextConfiguration configuration;
   protected final      String                                    databasePath;
   protected final      BinarySerializer                          serializer;
   protected final      RecordFactory                             recordFactory                        = new RecordFactory();
@@ -121,9 +121,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected final      Lock                                      asyncLock                            = new ReentrantLock();
   protected            boolean                                   autoTransaction                      = false;
   protected volatile   boolean                                   open                                 = false;
-  private              boolean                                   readYourWrites                       = true;
-  private final        Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks;
-  private final        StatementCache                            statementCache;
+  private              boolean                                  readYourWrites                       = true;
+  private final        Map<CallbackEvent, List<Callable<Void>>> callbacks;
+  private final        StatementCache                           statementCache;
   private final        ExecutionPlanCache                        executionPlanCache;
   private final        File                                      configurationFile;
   private              DatabaseInternal                          wrappedDatabaseInstance              = this;
@@ -135,22 +135,22 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private              FileChannel                               lockFileIOChannel;
   private              FileLock                                  lockFileLock;
   private final        RecordEventsRegistry                      events                               = new RecordEventsRegistry();
-  private final        ConcurrentHashMap<String, QueryEngine>    reusableQueryEngines                 = new ConcurrentHashMap<>();
-  private              TRANSACTION_ISOLATION_LEVEL               transactionIsolationLevel            = TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
-  private              long                                      openedOn;
+  private final ConcurrentHashMap<String, QueryEngine> reusableQueryEngines      = new ConcurrentHashMap<>();
+  private       TransactionIsolationLevel              transactionIsolationLevel = TransactionIsolationLevel.READ_COMMITTED;
+  private       long                                   openedOn;
   private              long                                      lastUpdatedOn;
   private              long                                      lastUsedOn;
   private              int                                       cachedHashCode                       = 0;
 
-  protected LocalDatabase(final String path, final ComponentFile.MODE mode, final ContextConfiguration configuration,
-      final SecurityManager security, final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
+  protected LocalDatabase(final String path, final ComponentFile.Mode mode, final ContextConfiguration configuration,
+      final SecurityManager security, final Map<CallbackEvent, List<Callable<Void>>> callbacks) {
     try {
       this.mode = mode;
       this.configuration = configuration;
       this.security = security;
       this.callbacks = callbacks;
       this.serializer = new BinarySerializer(configuration);
-      this.walFactory = mode == ComponentFile.MODE.READ_WRITE ? new WALFileFactoryEmbedded() : null;
+      this.walFactory = mode == ComponentFile.Mode.READ_WRITE ? new WALFileFactoryEmbedded() : null;
       this.statementCache = new StatementCache(this, configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
       this.executionPlanCache = new ExecutionPlanCache(this,
           configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
@@ -362,7 +362,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
-  public void begin(final TRANSACTION_ISOLATION_LEVEL isolationLevel) {
+  public void begin(final TransactionIsolationLevel isolationLevel) {
     executeInReadLock(() -> {
       checkDatabaseIsOpen();
 
@@ -568,7 +568,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     });
   }
 
-  public void checkPermissionsOnDatabase(final SecurityDatabaseUser.DATABASE_ACCESS access) {
+  public void checkPermissionsOnDatabase(final SecurityDatabaseUser.DatabaseAccess access) {
     if (security == null)
       return;
 
@@ -586,7 +586,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
-  public void checkPermissionsOnFile(final int fileId, final SecurityDatabaseUser.ACCESS access) {
+  public void checkPermissionsOnFile(final int fileId, final SecurityDatabaseUser.Access access) {
     if (security == null)
       return;
 
@@ -677,7 +677,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final DocumentType type = schema.getTypeByBucketId(rid.getBucketId());
 
       final boolean loadRecordContent;
-      if (!loadContent && tx.getIsolationLevel() == TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ)
+      if (!loadContent && tx.getIsolationLevel() == TransactionIsolationLevel.REPEATABLE_READ)
         // FORCE LOAD OF CONTENT TO GUARANTEE THE LOADING OF MULTI-PAGE RECORD INTO THE TX CONTEXT
         loadRecordContent = true;
       else
@@ -719,13 +719,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
-  public void registerCallback(final CALLBACK_EVENT event, final Callable<Void> callback) {
+  public void registerCallback(final CallbackEvent event, final Callable<Void> callback) {
     final List<Callable<Void>> callbacks = this.callbacks.computeIfAbsent(event, k -> new ArrayList<>());
     callbacks.add(callback);
   }
 
   @Override
-  public void unregisterCallback(final CALLBACK_EVENT event, final Callable<Void> callback) {
+  public void unregisterCallback(final CallbackEvent event, final Callable<Void> callback) {
     final List<Callable<Void>> callbacks = this.callbacks.get(event);
     if (callbacks != null) {
       callbacks.remove(callback);
@@ -756,12 +756,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
-  public TRANSACTION_ISOLATION_LEVEL getTransactionIsolationLevel() {
+  public TransactionIsolationLevel getTransactionIsolationLevel() {
     return transactionIsolationLevel;
   }
 
   @Override
-  public Database setTransactionIsolationLevel(final TRANSACTION_ISOLATION_LEVEL level) {
+  public Database setTransactionIsolationLevel(final TransactionIsolationLevel level) {
     transactionIsolationLevel = level;
     return this;
   }
@@ -815,7 +815,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (record.getIdentity() != null)
       throw new IllegalArgumentException("Cannot create record " + record.getIdentity() + " because it is already persistent");
 
-    if (mode == ComponentFile.MODE.READ_ONLY)
+    if (mode == ComponentFile.Mode.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot create a new record");
 
     setDefaultValues(record);
@@ -873,7 +873,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot update the record because it is not persistent");
 
-    if (mode == ComponentFile.MODE.READ_ONLY)
+    if (mode == ComponentFile.Mode.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update a record");
 
     if (record instanceof MutableDocument document)
@@ -975,7 +975,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
 
-    if (mode == ComponentFile.MODE.READ_ONLY)
+    if (mode == ComponentFile.Mode.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot delete record " + record.getIdentity());
 
     // INVOKE EVENT CALLBACKS
@@ -1292,7 +1292,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
-  public ComponentFile.MODE getMode() {
+  public ComponentFile.Mode getMode() {
     return mode;
   }
 
@@ -1514,7 +1514,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
-  public void executeCallbacks(final CALLBACK_EVENT event) throws IOException {
+  public void executeCallbacks(final CallbackEvent event) throws IOException {
     final List<Callable<Void>> callbacks = this.callbacks.get(event);
     if (callbacks != null && !callbacks.isEmpty()) {
       for (final Callable<Void> cb : callbacks) {
@@ -1788,18 +1788,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // RECOVERY
       LogManager.instance().log(this, Level.WARNING, "Database '%s' was not closed properly last time", null, name);
 
-      if (mode == ComponentFile.MODE.READ_ONLY)
+      if (mode == ComponentFile.Mode.READ_ONLY)
         throw new DatabaseMetadataException("Database needs recovery but has been open in read only mode");
 
       // RESET THE COUNT OF RECORD IN CASE THE DATABASE WAS NOT CLOSED PROPERLY
       for (Bucket b : schema.getBuckets())
         ((LocalBucket) b).setCachedRecordCount(-1);
 
-      executeCallbacks(CALLBACK_EVENT.DB_NOT_CLOSED);
+      executeCallbacks(CallbackEvent.DB_NOT_CLOSED);
 
       transactionManager.checkIntegrity();
     } else {
-      if (mode == ComponentFile.MODE.READ_WRITE) {
+      if (mode == ComponentFile.Mode.READ_WRITE) {
         lockFile.createNewFile();
         lockDatabase();
       } else
@@ -1828,7 +1828,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         serializer.setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
         serializer.setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
 
-        if (mode == ComponentFile.MODE.READ_WRITE)
+        if (mode == ComponentFile.Mode.READ_WRITE)
           checkForRecovery();
 
         if (security != null)
@@ -1870,7 +1870,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long now = System.currentTimeMillis();
 
     if (updateIntent) {
-      if (mode == ComponentFile.MODE.READ_ONLY)
+      if (mode == ComponentFile.Mode.READ_ONLY)
         throw new DatabaseIsReadOnlyException(databaseReadOnlyErrorMessage);
 
       lastUpdatedOn = now;

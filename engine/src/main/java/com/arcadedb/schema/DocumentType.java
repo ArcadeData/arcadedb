@@ -122,25 +122,25 @@ public interface DocumentType {
 
   Property dropProperty(String propertyName);
 
-  TypeIndex createTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String... propertyNames);
+  TypeIndex createTypeIndex(Schema.IndexType indexType, boolean unique, String... propertyNames);
 
-  TypeIndex createTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String[] propertyNames, int pageSize);
+  TypeIndex createTypeIndex(Schema.IndexType indexType, boolean unique, String[] propertyNames, int pageSize);
 
-  TypeIndex createTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String[] propertyNames, int pageSize,
+  TypeIndex createTypeIndex(Schema.IndexType indexType, boolean unique, String[] propertyNames, int pageSize,
       Index.BuildIndexCallback callback);
 
-  TypeIndex createTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String[] propertyNames, int pageSize,
-      LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback);
+  TypeIndex createTypeIndex(Schema.IndexType indexType, boolean unique, String[] propertyNames, int pageSize,
+      LSMTreeIndexAbstract.NullStrategy nullStrategy, Index.BuildIndexCallback callback);
 
-  TypeIndex getOrCreateTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String... propertyNames);
+  TypeIndex getOrCreateTypeIndex(Schema.IndexType indexType, boolean unique, String... propertyNames);
 
-  TypeIndex getOrCreateTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String[] propertyNames, int pageSize);
+  TypeIndex getOrCreateTypeIndex(Schema.IndexType indexType, boolean unique, String[] propertyNames, int pageSize);
 
-  TypeIndex getOrCreateTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String[] propertyNames, int pageSize,
+  TypeIndex getOrCreateTypeIndex(Schema.IndexType indexType, boolean unique, String[] propertyNames, int pageSize,
       Index.BuildIndexCallback callback);
 
-  TypeIndex getOrCreateTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String[] propertyNames, int pageSize,
-      LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback);
+  TypeIndex getOrCreateTypeIndex(Schema.IndexType indexType, boolean unique, String[] propertyNames, int pageSize,
+      LSMTreeIndexAbstract.NullStrategy nullStrategy, Index.BuildIndexCallback callback);
 
   List<Bucket> getInvolvedBuckets();
 

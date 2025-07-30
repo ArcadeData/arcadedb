@@ -23,15 +23,16 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.io.*;
-import java.util.*;
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Internal Index interface.
  */
 @ExcludeFromJacocoGeneratedReport
 public interface IndexInternal extends Index {
-  public enum INDEX_STATUS {UNAVAILABLE, AVAILABLE, COMPACTION_SCHEDULED, COMPACTION_IN_PROGRESS}
+  enum IndexStatus {UNAVAILABLE, AVAILABLE, COMPACTION_SCHEDULED, COMPACTION_IN_PROGRESS}
 
   long build(int buildIndexBatchSize, BuildIndexCallback callback);
 
@@ -39,7 +40,7 @@ public interface IndexInternal extends Index {
 
   void setMetadata(String name, String[] propertyNames, int associatedBucketId);
 
-  boolean setStatus(INDEX_STATUS[] expectedStatuses, INDEX_STATUS newStatus);
+  boolean setStatus(IndexStatus[] expectedStatuses, IndexStatus newStatus);
 
   void close();
 

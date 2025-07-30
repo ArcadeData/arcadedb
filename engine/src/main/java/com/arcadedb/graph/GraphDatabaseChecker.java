@@ -159,7 +159,7 @@ public class GraphDatabaseChecker {
       for (Edge e : outEdgesToReconnect) {
         final MutableVertex vertex = e.getOutVertex().modify();
         final EdgeSegment outChunk = graphEngine.createOutEdgeChunk(vertex);
-        final EdgeLinkedList outLinkedList = new EdgeLinkedList(vertex, Vertex.DIRECTION.OUT, outChunk);
+        final EdgeLinkedList outLinkedList = new EdgeLinkedList(vertex, Vertex.Direction.OUT, outChunk);
         outLinkedList.add(e.getIdentity(), e.getIn());
       }
       warnings.add("reconnected " + outEdgesToReconnect.size() + " outgoing edges");
@@ -170,7 +170,7 @@ public class GraphDatabaseChecker {
       for (Edge e : inEdgesToReconnect) {
         final MutableVertex vertex = e.getInVertex().modify();
         final EdgeSegment inChunk = graphEngine.createInEdgeChunk(vertex);
-        final EdgeLinkedList inLinkedList = new EdgeLinkedList(vertex, Vertex.DIRECTION.IN, inChunk);
+        final EdgeLinkedList inLinkedList = new EdgeLinkedList(vertex, Vertex.Direction.IN, inChunk);
         inLinkedList.add(e.getIdentity(), e.getOut());
       }
       warnings.add("reconnected " + inEdgesToReconnect.size() + " incoming edges");
@@ -183,7 +183,7 @@ public class GraphDatabaseChecker {
     if (((VertexInternal) vertex).getInEdgesHeadChunk() != null) {
       EdgeLinkedList inEdges = null;
       try {
-        inEdges = graphEngine.getEdgeHeadChunk((VertexInternal) vertex, Vertex.DIRECTION.IN);
+        inEdges = graphEngine.getEdgeHeadChunk((VertexInternal) vertex, Vertex.Direction.IN);
       } catch (Exception e) {
         // IGNORE IT
       }
@@ -312,7 +312,7 @@ public class GraphDatabaseChecker {
                 }
 
                 if (((EdgeType) edge.getType()).isBidirectional()) {
-                  if (inVertex != null && !inVertex.isConnectedTo(vertexIdentity, Vertex.DIRECTION.OUT, edge.getTypeName())) {
+                  if (inVertex != null && !inVertex.isConnectedTo(vertexIdentity, Vertex.Direction.OUT, edge.getTypeName())) {
                     warnings.add(
                         "edge " + edgeRID + " was not connected from the incoming vertex " + edge.getOut() + " to the vertex " +
                             vertexIdentity);
@@ -364,7 +364,7 @@ public class GraphDatabaseChecker {
     if (((VertexInternal) vertex).getOutEdgesHeadChunk() != null) {
       EdgeLinkedList outEdges = null;
       try {
-        outEdges = graphEngine.getEdgeHeadChunk((VertexInternal) vertex, Vertex.DIRECTION.OUT);
+        outEdges = graphEngine.getEdgeHeadChunk((VertexInternal) vertex, Vertex.Direction.OUT);
       } catch (Exception e) {
         // IGNORE IT
       }
@@ -494,7 +494,7 @@ public class GraphDatabaseChecker {
 
                 if (((EdgeType) edge.getType()).isBidirectional()) {
                   // CHECK THE EDGE IS CONNECTED FROM THE OTHER SIDE
-                  if (outVertex != null && !outVertex.isConnectedTo(vertexIdentity, Vertex.DIRECTION.IN, edge.getTypeName())) {
+                  if (outVertex != null && !outVertex.isConnectedTo(vertexIdentity, Vertex.Direction.IN, edge.getTypeName())) {
                     warnings.add(
                         "edge " + edgeRID + " was not connected from the outgoing vertex " + edge.getIn()
                             + " back to the vertex "
@@ -595,7 +595,7 @@ public class GraphDatabaseChecker {
             try {
               final Vertex vertex = edge.getInVertex().asVertex(true);
 
-              final EdgeLinkedList inEdges = graphEngine.getEdgeHeadChunk((VertexInternal) vertex, Vertex.DIRECTION.IN);
+              final EdgeLinkedList inEdges = graphEngine.getEdgeHeadChunk((VertexInternal) vertex, Vertex.Direction.IN);
               if (inEdges == null || !inEdges.containsEdge(edgeRID))
                 // UNI DIRECTIONAL EDGE
                 missingReferenceBack.incrementAndGet();
@@ -616,7 +616,7 @@ public class GraphDatabaseChecker {
             try {
               final Vertex vertex = edge.getOutVertex().asVertex(true);
 
-              final EdgeLinkedList outEdges = graphEngine.getEdgeHeadChunk((VertexInternal) vertex, Vertex.DIRECTION.OUT);
+              final EdgeLinkedList outEdges = graphEngine.getEdgeHeadChunk((VertexInternal) vertex, Vertex.Direction.OUT);
               if (outEdges == null || !outEdges.containsEdge(edgeRID))
                 // UNI DIRECTIONAL EDGE
                 missingReferenceBack.incrementAndGet();

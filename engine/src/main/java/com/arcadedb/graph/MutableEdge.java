@@ -108,8 +108,8 @@ public class MutableEdge extends MutableDocument implements Edge {
   }
 
   @Override
-  public Vertex getVertex(final Vertex.DIRECTION iDirection) {
-    if (iDirection == Vertex.DIRECTION.OUT)
+  public Vertex getVertex(final Vertex.Direction iDirection) {
+    if (iDirection == Vertex.Direction.OUT)
       return out.asVertex();
     else
       return in.asVertex();

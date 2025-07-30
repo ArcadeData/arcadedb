@@ -18,7 +18,6 @@
  */
 package com.arcadedb.database;
 
-import com.arcadedb.database.Record;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.TransactionManager;
@@ -40,7 +39,7 @@ import java.util.concurrent.*;
  */
 @ExcludeFromJacocoGeneratedReport
 public interface DatabaseInternal extends Database {
-  enum CALLBACK_EVENT {
+  enum CallbackEvent {
     TX_AFTER_WAL_WRITE, DB_NOT_CLOSED
   }
 
@@ -73,9 +72,9 @@ public interface DatabaseInternal extends Database {
 
   void setWrapper(final String name, final Object instance);
 
-  void checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS access);
+  void checkPermissionsOnDatabase(SecurityDatabaseUser.DatabaseAccess access);
 
-  void checkPermissionsOnFile(int fileId, SecurityDatabaseUser.ACCESS access);
+  void checkPermissionsOnFile(int fileId, SecurityDatabaseUser.Access access);
 
   boolean checkTransactionIsActive(boolean createTx);
 
@@ -85,11 +84,11 @@ public interface DatabaseInternal extends Database {
 
   long getReadTimeout();
 
-  void registerCallback(CALLBACK_EVENT event, Callable<Void> callback);
+  void registerCallback(CallbackEvent event, Callable<Void> callback);
 
-  void unregisterCallback(CALLBACK_EVENT event, Callable<Void> callback);
+  void unregisterCallback(CallbackEvent event, Callable<Void> callback);
 
-  void executeCallbacks(CALLBACK_EVENT event) throws IOException;
+  void executeCallbacks(CallbackEvent event) throws IOException;
 
   GraphEngine getGraphEngine();
 

@@ -23,7 +23,7 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 @ExcludeFromJacocoGeneratedReport
 public interface Transaction {
-  void begin(Database.TRANSACTION_ISOLATION_LEVEL isolationLevel);
+  void begin(Database.TransactionIsolationLevel isolationLevel);
 
   Binary commit();
 

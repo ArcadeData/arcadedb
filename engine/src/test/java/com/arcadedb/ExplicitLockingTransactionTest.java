@@ -328,7 +328,7 @@ public class ExplicitLockingTransactionTest extends TestHelper {
     }
 
     try {
-      database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+      database.begin(Database.TransactionIsolationLevel.REPEATABLE_READ);
       database.query("sql", "select from Node").close();
       database.acquireLock().type("Node").lock();
       fail("This must fail because the tx is not empty");
@@ -339,7 +339,7 @@ public class ExplicitLockingTransactionTest extends TestHelper {
     database.getSchema().getOrCreateVertexType("Node2");
 
     try {
-      database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+      database.begin(Database.TransactionIsolationLevel.REPEATABLE_READ);
       database.acquireLock().type("Node").lock();
 
       final MutableVertex v = db.newVertex("Node2");

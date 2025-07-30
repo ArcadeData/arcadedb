@@ -42,9 +42,9 @@ public class CreateIndexStatement extends DDLStatement {
   protected Identifier                         type;
   protected boolean                            ifNotExists  = false;
   protected Identifier                         engine;
-  protected Json                               metadata;
-  protected LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP;
-  protected List<Identifier>                   keyTypes     = new ArrayList<Identifier>();
+  protected Json                              metadata;
+  protected LSMTreeIndexAbstract.NullStrategy nullStrategy = LSMTreeIndexAbstract.NullStrategy.SKIP;
+  protected List<Identifier>                  keyTypes     = new ArrayList<Identifier>();
 
   public CreateIndexStatement(final int id) {
     super(id);
@@ -81,19 +81,19 @@ public class CreateIndexStatement extends DDLStatement {
 
     final String[] fields = calculateProperties(context);
 
-    final Schema.INDEX_TYPE indexType;
+    final Schema.IndexType indexType;
     boolean unique = false;
 
     final String typeAsString = type.getStringValue();
     if (typeAsString.equalsIgnoreCase("FULL_TEXT"))
-      indexType = Schema.INDEX_TYPE.FULL_TEXT;
+      indexType = Schema.IndexType.FULL_TEXT;
     else if (typeAsString.equalsIgnoreCase("UNIQUE")) {
-      indexType = Schema.INDEX_TYPE.LSM_TREE;
+      indexType = Schema.IndexType.LSM_TREE;
       unique = true;
     } else if (typeAsString.equalsIgnoreCase("NOTUNIQUE")) {
-      indexType = Schema.INDEX_TYPE.LSM_TREE;
+      indexType = Schema.IndexType.LSM_TREE;
     } else if (typeAsString.equalsIgnoreCase("HNSW")) {
-      indexType = Schema.INDEX_TYPE.HNSW;
+      indexType = Schema.IndexType.HNSW;
       unique = true;
     } else
       throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");

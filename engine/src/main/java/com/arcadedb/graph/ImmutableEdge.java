@@ -122,9 +122,9 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   }
 
   @Override
-  public synchronized Vertex getVertex(final Vertex.DIRECTION iDirection) {
+  public synchronized Vertex getVertex(final Vertex.Direction iDirection) {
     checkForLazyLoading();
-    if (iDirection == Vertex.DIRECTION.OUT)
+    if (iDirection == Vertex.Direction.OUT)
       return out.asVertex();
     else
       return in.asVertex();

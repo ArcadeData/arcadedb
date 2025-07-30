@@ -33,11 +33,11 @@ public abstract class IndexBuilder<T extends Index> {
   public static final int                    BUILD_BATCH_SIZE = 5_000;
   final               DatabaseInternal       database;
   final               Class<? extends Index> indexImplementation;
-  Schema.INDEX_TYPE                  indexType;
-  boolean                            unique;
-  int                                pageSize       = LSMTreeIndexAbstract.DEF_PAGE_SIZE;
-  LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy   = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP;
-  Index.BuildIndexCallback           callback;
+  Schema.IndexType indexType;
+  boolean          unique;
+  int                               pageSize     = LSMTreeIndexAbstract.DEF_PAGE_SIZE;
+  LSMTreeIndexAbstract.NullStrategy nullStrategy = LSMTreeIndexAbstract.NullStrategy.SKIP;
+  Index.BuildIndexCallback          callback;
   boolean                            ignoreIfExists = false;
   String                             indexName      = null;
   String                             filePath       = null;
@@ -52,7 +52,7 @@ public abstract class IndexBuilder<T extends Index> {
 
   public abstract T create();
 
-  public IndexBuilder<T> withType(final Schema.INDEX_TYPE indexType) {
+  public IndexBuilder<T> withType(final Schema.IndexType indexType) {
     this.indexType = indexType;
     return this;
   }
@@ -72,7 +72,7 @@ public abstract class IndexBuilder<T extends Index> {
     return this;
   }
 
-  public IndexBuilder<T> withNullStrategy(final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
+  public IndexBuilder<T> withNullStrategy(final LSMTreeIndexAbstract.NullStrategy nullStrategy) {
     this.nullStrategy = nullStrategy;
     return this;
   }
@@ -86,7 +86,7 @@ public abstract class IndexBuilder<T extends Index> {
     return database;
   }
 
-  public LSMTreeIndexAbstract.NULL_STRATEGY getNullStrategy() {
+  public LSMTreeIndexAbstract.NullStrategy getNullStrategy() {
     return nullStrategy;
   }
 
@@ -94,7 +94,7 @@ public abstract class IndexBuilder<T extends Index> {
     return pageSize;
   }
 
-  public Schema.INDEX_TYPE getIndexType() {
+  public Schema.IndexType getIndexType() {
     return indexType;
   }
 

@@ -86,10 +86,10 @@ public class RemoteQueriesIT {
     Vertex toVtx = database.command("sql", "CREATE VERTEX ToVtx").next().getVertex().get();
     Edge conEdg = fromVtx.newEdge("ConEdge", toVtx);
 
-    assertThat(fromVtx.countEdges(Vertex.DIRECTION.OUT, "ConEdge")).isEqualTo(1);
-    assertThat(fromVtx.countEdges(Vertex.DIRECTION.IN, "ConEdge")).isEqualTo(0);
-    assertThat(fromVtx.getEdges(Vertex.DIRECTION.OUT, "ConEdge").iterator().hasNext()).isTrue();
-    assertThat(fromVtx.getEdges(Vertex.DIRECTION.IN, "ConEdge").iterator().hasNext()).isFalse();
+    assertThat(fromVtx.countEdges(Vertex.Direction.OUT, "ConEdge")).isEqualTo(1);
+    assertThat(fromVtx.countEdges(Vertex.Direction.IN, "ConEdge")).isEqualTo(0);
+    assertThat(fromVtx.getEdges(Vertex.Direction.OUT, "ConEdge").iterator().hasNext()).isTrue();
+    assertThat(fromVtx.getEdges(Vertex.Direction.IN, "ConEdge").iterator().hasNext()).isFalse();
   }
 
   @Test
@@ -111,7 +111,7 @@ public class RemoteQueriesIT {
         dtOrders.createProperty("id", Type.STRING);
         dtOrders.createProperty("processor", Type.STRING);
         dtOrders.createProperty("status", Type.STRING);
-        typeIndex[0] = dtOrders.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "status", "id");
+        typeIndex[0] = dtOrders.createTypeIndex(Schema.IndexType.LSM_TREE, true, "status", "id");
       });
     }
 
@@ -178,8 +178,8 @@ public class RemoteQueriesIT {
           dtProduct.createProperty("type", Type.STRING);
           dtProduct.createProperty("start", Type.DATETIME_MICROS);
           dtProduct.createProperty("stop", Type.DATETIME_MICROS);
-          dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
-          dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "type", "start", "stop");
+          dtProduct.createTypeIndex(Schema.IndexType.LSM_TREE, true, "name");
+          dtProduct.createTypeIndex(Schema.IndexType.LSM_TREE, true, "type", "start", "stop");
         });
       }
     }

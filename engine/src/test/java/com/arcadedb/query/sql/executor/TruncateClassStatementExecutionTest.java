@@ -158,7 +158,7 @@ public class TruncateClassStatementExecutionTest extends TestHelper {
       return database.getSchema().getIndexByName("test_class_by_data");
 
     testClass.createProperty("data", Type.LIST);
-    return testClass.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "data");
+    return testClass.createTypeIndex(Schema.IndexType.LSM_TREE, true, "data");
   }
 
   private DocumentType getOrcreateDocumentType(final Schema schema) {

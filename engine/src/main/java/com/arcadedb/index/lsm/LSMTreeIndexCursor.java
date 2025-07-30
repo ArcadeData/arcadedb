@@ -429,7 +429,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
   private void getClosestEntryInTx(final Object[] keys, final boolean inclusive) {
     txCursor = null;
-    if (index.getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
+    if (index.getDatabase().getTransaction().getStatus() == TransactionContext.Status.BEGUN) {
       Set<IndexCursorEntry> txChanges = null;
 
       final TreeMap<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> indexChanges = index.getDatabase()
