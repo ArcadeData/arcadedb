@@ -27,8 +27,14 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.Property;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 
@@ -108,6 +114,8 @@ public class Projection extends SimpleNode {
         continue;
 
       if (item.isAll()) {
+        result.setElement(record.toElement());
+
         for (final String alias : record.getPropertyNames()) {
           if (excludes.contains(alias)) {
             continue;
@@ -134,8 +142,6 @@ public class Projection extends SimpleNode {
             result.setProperty(Property.TYPE_PROPERTY, doc.getType().getName());
           }
 
-          Document detached = doc.detach(true);
-          result.setElement(detached);
         });
       } else {
         result.setProperty(item.getProjectionAliasAsString(), item.execute(record, context));

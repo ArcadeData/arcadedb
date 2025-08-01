@@ -23,10 +23,20 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.JavaBinarySerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.io.*;
-import java.math.*;
-import java.time.*;
-import java.util.*;
+import java.io.Externalizable;
+import java.io.IOException;
+import java.io.ObjectInput;
+import java.io.ObjectOutput;
+import java.io.Serializable;
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.List;
+import java.util.Map;
 
 public abstract class BaseDocument extends BaseRecord implements Document, Serializable, Externalizable {
   protected final DocumentType type;
@@ -50,11 +60,6 @@ public abstract class BaseDocument extends BaseRecord implements Document, Seria
   @Override
   public DetachedDocument detach() {
     return new DetachedDocument(this);
-  }
-
-  @Override
-  public DetachedDocument detach(boolean filterHiddenProperties) {
-    return new DetachedDocument(this, filterHiddenProperties);
   }
 
   @Override

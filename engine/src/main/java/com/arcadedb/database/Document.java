@@ -18,14 +18,20 @@
  */
 package com.arcadedb.database;
 
-import com.arcadedb.database.Record;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.math.*;
-import java.time.*;
-import java.util.*;
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Document interface. Vertex and Edge both extend the Document interface.
@@ -39,8 +45,6 @@ public interface Document extends Record {
   MutableDocument modify();
 
   DetachedDocument detach();
-
-  DetachedDocument detach(boolean filterHiddenProperties);
 
   boolean has(String propertyName);
 

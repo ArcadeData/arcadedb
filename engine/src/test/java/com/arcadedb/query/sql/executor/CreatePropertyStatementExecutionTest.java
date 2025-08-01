@@ -216,7 +216,9 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
 
   @Test
   void testCreateHiddenProperty() {
-    database.command("sql", "create document type testHiddenProperty").close();
+    // due to https://github.com/ArcadeData/arcadedb/issues/2378 hidden properties are supported in thhe schema, but not in the
+    // database
+    database.command("sql", "create vertex type testHiddenProperty").close();
     database.command("sql", "CREATE property testHiddenProperty.name STRING (hidden)").close();
 
     DocumentType clazz = database.getSchema().getType("testHiddenProperty");
@@ -227,20 +229,19 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
     assertThat(nameProperty.isHidden()).isTrue();
 
     database.transaction(() -> {
-
       database.command("sql", "INSERT INTO testHiddenProperty SET name = 'hidden' , no_secret = 'seeme' ").close();
     });
 
-    // check that the property is hidden when select *
     ResultSet result = database.query("sql", "SELECT * FROM testHiddenProperty");
     assertThat(result.hasNext()).isTrue();
     Result doc = result.next();
-    assertThat(doc.getPropertyNames()).doesNotContain("name").contains("no_secret");
-    // check that the property is visibilw when selected directly
-    result = database.query("sql", "SELECT name FROM testHiddenProperty");
+    assertThat(doc.getPropertyNames()).contains("name").contains("no_secret");
+    assertThat(doc.isVertex()).isTrue();
+    result = database.query("sql", "SELECT  FROM testHiddenProperty");
     assertThat(result.hasNext()).isTrue();
     doc = result.next();
-    assertThat(doc.getPropertyNames()).contains("name");
+    assertThat(doc.getPropertyNames()).contains("name").contains("no_secret");
+    assertThat(doc.isVertex()).isTrue();
 
   }
 }
