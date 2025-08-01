@@ -28,9 +28,16 @@ import com.arcadedb.database.Record;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.math.*;
-import java.time.*;
-import java.util.*;
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Vertex wrapper to share a vertex among threads. This is useful when you want to cache the vertex in RAM to
@@ -197,11 +204,6 @@ public class SynchronizedVertex implements Vertex {
   @Override
   public synchronized DetachedDocument detach() {
     return delegate.detach();
-  }
-
-  @Override
-  public synchronized DetachedDocument detach(boolean filterHiddenProperties) {
-    return delegate.detach(filterHiddenProperties);
   }
 
   @Override
