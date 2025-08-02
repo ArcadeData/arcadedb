@@ -142,9 +142,15 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
       return array;
     } else if (result.isNull())
       return null;
-    else if (result.hasMembers())
-      return new HashMap<>(result.as(Map.class));
-    else
+    else if (result.hasMembers()) {
+      final Map<String, Object> map = new HashMap<>();
+      final Set<String> keys = result.getMemberKeys();
+      for (final String key : keys) {
+        final Object elem = getValue(result.getMember(key));
+        map.put(key, elem);
+      }
+      return map;
+    } else
       // UNKNOWN OR NOT SUPPORTED
       return null;
   }
