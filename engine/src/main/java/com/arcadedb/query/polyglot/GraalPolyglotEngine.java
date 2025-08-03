@@ -10,6 +10,7 @@ import org.graalvm.polyglot.PolyglotAccess;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
+import org.graalvm.polyglot.io.IOAccess;
 
 import java.io.*;
 import java.util.*;
@@ -52,7 +53,7 @@ public class GraalPolyglotEngine implements AutoCloseable {
     final Context.Builder builder = Context.newBuilder().engine(engine).//
         //resourceLimits(limits).//
             allowHostAccess(HostAccess.ALL).//
-            allowIO(true).//
+            allowIO(IOAccess.ALL).//
             allowNativeAccess(false).//
             allowCreateProcess(false).//
             allowEnvironmentAccess(EnvironmentAccess.NONE).//

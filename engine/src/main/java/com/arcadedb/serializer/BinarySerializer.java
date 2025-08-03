@@ -494,7 +494,7 @@ public class BinarySerializer {
           LogManager.instance().log(this, Level.SEVERE, "Error on serializing map value for key '%s' = '%s'",
               entry.getKey(), entry.getValue());
           throw new SerializationException(
-              "Error on serializing map value for key '" + entry.getKey() + "' = '" + entry.getValue() + "'");
+              "Error on serializing map value for key '" + entry.getKey() + "' = '" + entry.getValue() + "'", e);
         }
       }
       break;

@@ -16,6 +16,8 @@ package com.arcadedb.function.polyglot;/*
 
 import com.arcadedb.function.FunctionExecutionException;
 import org.graalvm.polyglot.Value;
+import org.graalvm.polyglot.proxy.ProxyArray;
+import org.graalvm.polyglot.proxy.ProxyObject;
 
 import java.io.*;
 import java.util.*;
@@ -94,7 +96,7 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
 
         final Value result = polyglotEngine.eval(declaration);
 
-        return getValue(result);
+        return jsValueToJava(result);
 
       } catch (final IOException e) {
         throw new FunctionExecutionException("Error on definition of function '" + functionName + "'");
@@ -102,20 +104,107 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
     });
   }
 
-  public static Object getValue(final Value result) {
+  public static List<?> jsArrayToJava(final ProxyArray array) {
+    if (array == null)
+      return null;
+
+    final List<Object> list = new ArrayList<>();
+    for (int i = 0; i < array.getSize(); ++i)
+      list.add(jsAnyToJava(array.get(i)));
+    return list;
+  }
+
+  public static Object jsObjectToJava(final ProxyObject result) {
+    if (result == null)
+      return null;
+
+    final Map<String, Object> map = new HashMap<>();
+
+    final Object keys = result.getMemberKeys();
+
+    final Iterable<String> iterableKeys;
+    if (keys instanceof ProxyArray proxyArray) {
+      List<String> list = new ArrayList<>();
+      for (int i = 0; i < proxyArray.getSize(); ++i) {
+        final Object key = proxyArray.get(i);
+        if (key instanceof String s)
+          list.add(s);
+      }
+      iterableKeys = list;
+    } else
+      iterableKeys = (Iterable<String>) keys;
+
+    for (final String key : iterableKeys) {
+      final Object value = result.getMember(key);
+      if (value instanceof Map mapValue && !(value instanceof HashMap))
+        map.put(key, new HashMap<>(mapValue));
+      else
+        map.put(key, jsAnyToJava(value));
+    }
+
+    return map;
+  }
+
+  public static Object jsAnyToJava(final Object value) {
+    switch (value) {
+    case null -> {
+      return null;
+    }
+    case ProxyObject proxyObject -> {
+      return jsObjectToJava(proxyObject);
+    }
+    case ProxyArray proxyArray -> {
+      return jsArrayToJava(proxyArray);
+    }
+    case Value result -> {
+      return jsValueToJava(result);
+    }
+    case List list -> {
+      for (int i = 0; i < list.size(); ++i) {
+        Object elem = list.get(i);
+        if (elem instanceof Map map && !(elem instanceof HashMap))
+          list.set(i, new HashMap<>(map));
+        else
+          list.set(i, jsAnyToJava(elem));
+      }
+      return list;
+    }
+    case Map<?, ?> map -> {
+      final Map<String, Object> newMap = new HashMap<>();
+      for (Map.Entry<?, ?> entry : map.entrySet()) {
+        final Object key = entry.getKey();
+        final Object valueEntry = entry.getValue();
+        if (key instanceof String keyStr) {
+          if (valueEntry instanceof Map<?, ?> valueMap && !(valueEntry instanceof HashMap))
+            newMap.put(keyStr, new HashMap<>(valueMap));
+          else
+            newMap.put(keyStr, jsAnyToJava(valueEntry));
+        }
+      }
+      return newMap;
+    }
+    default -> {
+      return value;
+    }
+    }
+  }
+
+  public static Object jsValueToJava(final Value result) {
     if (result == null)
       return null;
     else if (result.isHostObject()) {
       Object v = result.asHostObject();
       if (v instanceof Value value)
-        v = getValue(value);
-      else if (v instanceof List) {
-        for (int i = 0; i < ((List<?>) v).size(); ++i) {
-          Object elem = ((List) v).get(i);
-          if (elem instanceof Value value)
-            ((List) v).set(i, getValue(value));
-          else if (elem instanceof Map map && !(elem instanceof HashMap))
-            ((List) v).set(i, new HashMap(map));
+        v = jsValueToJava(value);
+      else if (v instanceof List list) {
+        for (int i = 0; i < list.size(); ++i) {
+          Object elem = list.get(i);
+          if (elem instanceof Map map && !(elem instanceof HashMap))
+            list.set(i, new HashMap(map));
+          else if (elem instanceof Value value)
+            list.set(i, jsValueToJava(value));
+          else if (elem instanceof ProxyObject proxyObject)
+            list.set(i, jsObjectToJava(proxyObject));
         }
       }
       return v;
@@ -136,7 +225,7 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
       final long size = result.getArraySize();
       final List<Object> array = new ArrayList<>();
       for (int i = 0; i < size; i++) {
-        final Object elem = getValue(result.getArrayElement(i));
+        final Object elem = jsValueToJava(result.getArrayElement(i));
         array.add(elem);
       }
       return array;
@@ -146,7 +235,7 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
       final Map<String, Object> map = new HashMap<>();
       final Set<String> keys = result.getMemberKeys();
       for (final String key : keys) {
-        final Object elem = getValue(result.getMember(key));
+        final Object elem = jsValueToJava(result.getMember(key));
         map.put(key, elem);
       }
       return map;
