@@ -193,21 +193,7 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
     if (result == null)
       return null;
     else if (result.isHostObject()) {
-      Object v = result.asHostObject();
-      if (v instanceof Value value)
-        v = jsValueToJava(value);
-      else if (v instanceof List list) {
-        for (int i = 0; i < list.size(); ++i) {
-          Object elem = list.get(i);
-          if (elem instanceof Map map && !(elem instanceof HashMap))
-            list.set(i, new HashMap(map));
-          else if (elem instanceof Value value)
-            list.set(i, jsValueToJava(value));
-          else if (elem instanceof ProxyObject proxyObject)
-            list.set(i, jsObjectToJava(proxyObject));
-        }
-      }
-      return v;
+      return jsAnyToJava(result.asHostObject());
     } else if (result.isString())
       return result.asString();
     else if (result.isBoolean())
