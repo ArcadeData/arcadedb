@@ -87,7 +87,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
           final Collection<ComponentFile> files = database.getFileManager().getFiles();
 
-          for (final ComponentFile file : files)
+          for (final ComponentFile file : new ArrayList<>(files))
             if (file != null)
               databaseOrigSize += compressFile(zipFile, file.getOSFile());
 
