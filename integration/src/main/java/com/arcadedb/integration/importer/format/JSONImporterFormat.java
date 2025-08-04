@@ -338,7 +338,7 @@ public class JSONImporterFormat implements FormatImporter {
 
       IndexCursor existent = database.lookupByKey(typeName, id, idValue);
       if (existent.hasNext()) {
-        final String strategy = mapping.optString("@strategy");
+        final String strategy = mapping.getString("@strategy", "");
         if ("merge".equalsIgnoreCase(strategy)) {
           record = existent.next().asDocument().modify();
         } else
@@ -548,7 +548,7 @@ public class JSONImporterFormat implements FormatImporter {
 
         database.getSchema().getOrCreateEdgeType(subTypeName);
 
-        final String cardinality = mappingObject.optString("@cardinality");
+        final String cardinality = mappingObject.getString("@cardinality", "");
         if ("no-duplicates".equalsIgnoreCase(cardinality)) {
           boolean duplicates = false;
           for (Iterator<Vertex> connectedVertices = ((Vertex) record).getVertices(Vertex.DIRECTION.OUT, subTypeName)
