@@ -21,6 +21,7 @@ import org.graalvm.polyglot.proxy.ProxyObject;
 
 import java.io.*;
 import java.util.*;
+import java.util.function.*;
 
 /**
  * Javascript implementation of a function. To define the function, pass the function name, code and optional parameters in the constructor.
@@ -158,6 +159,10 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
     }
     case Value result -> {
       return jsValueToJava(result);
+    }
+    case Function fx -> {
+      // NOT SUPPORTED
+      return null;
     }
     case List list -> {
       for (int i = 0; i < list.size(); ++i) {

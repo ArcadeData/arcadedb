@@ -27,11 +27,13 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 
 import java.io.*;
 import java.util.*;
+import java.util.logging.*;
 
 /**
  * Java binary serializer. Used to serialize/deserialize Java objects. Null properties are excluded from serialization.
@@ -66,6 +68,15 @@ public class JavaBinarySerializer {
 
         final Property property = documentType.getPropertyIfExists(propName);
         final byte type = BinaryTypes.getTypeFromValue(propValue, property);
+        if (type == -1) {
+          // INVALID: SKIP IT
+          LogManager.instance()
+              .log(BinaryTypes.class, Level.WARNING,
+                  "Cannot serialize property '%s' of type %s, value %s. The property will be ignored",
+                  propName, propValue.getClass(), propValue);
+          continue;
+        }
+
         buffer.putByte(type);
         serializer.serializeValue(db, buffer, type, propValue);
         buffer.flip();
