@@ -191,70 +191,126 @@ public class JSONObject implements Map<String, Object> {
     }
   }
 
+  /**
+   * Returns the string value of the property with the given name.
+   *
+   * @throws JSONException if the property is not found or is null.
+   */
   public String getString(final String name) {
     return getElement(name).getAsString();
   }
 
+  /**
+   * Returns the string value of the property with the given name, or the default value if the property is not found or is null.
+   */
   public String getString(final String name, final String defaultValue) {
     if (isNull(name))
       return defaultValue;
     return getElement(name).getAsString();
   }
 
+  /**
+   * Returns the integer value of the property with the given name.
+   *
+   * @throws JSONException if the property is not found or is null.
+   */
   public int getInt(final String name) {
     return getElement(name).getAsNumber().intValue();
   }
 
+  /**
+   * Returns the integer value of the property with the given name, or the default value if the property is not found or is null.
+   */
   public int getInt(final String name, final int defaultValue) {
     if (isNull(name))
       return defaultValue;
     return getElement(name).getAsNumber().intValue();
   }
 
+  /**
+   * Returns the long value of the property with the given name.
+   *
+   * @throws JSONException if the property is not found or is null.
+   */
   public long getLong(final String name) {
     return getElement(name).getAsNumber().longValue();
   }
 
+  /**
+   * Returns the long value of the property with the given name, or the default value if the property is not found or is null.
+   */
   public long getLong(final String name, final long defaultValue) {
     if (isNull(name))
       return defaultValue;
     return getElement(name).getAsNumber().longValue();
   }
 
+  /**
+   * Returns the float value of the property with the given name.
+   *
+   * @throws JSONException if the property is not found or is null.
+   */
   public float getFloat(final String name) {
     return getElement(name).getAsNumber().floatValue();
   }
 
+  /**
+   * Returns the float value of the property with the given name, or the default value if the property is not found or is null.
+   */
   public float getFloat(final String name, final float defaultValue) {
     if (isNull(name))
       return defaultValue;
     return getElement(name).getAsNumber().floatValue();
   }
 
+  /**
+   * Returns the double value of the property with the given name.
+   *
+   * @throws JSONException if the property is not found or is null.
+   */
   public double getDouble(final String name) {
     return getElement(name).getAsNumber().doubleValue();
   }
 
+  /**
+   * Returns the double value of the property with the given name, or the default value if the property is not found or is null.
+   */
   public double getDouble(final String name, final double defaultValue) {
     if (isNull(name))
       return defaultValue;
     return getElement(name).getAsNumber().doubleValue();
   }
 
+  /**
+   * Returns the boolean value of the property with the given name.
+   *
+   * @throws JSONException if the property is not found or is null.
+   */
   public boolean getBoolean(final String name) {
     return getElement(name).getAsBoolean();
   }
 
+  /**
+   * Returns the boolean value of the property with the given name, or the default value if the property is not found or is null.
+   */
   public boolean getBoolean(final String name, final boolean defaultValue) {
     if (isNull(name))
       return defaultValue;
     return getElement(name).getAsBoolean();
   }
 
+  /**
+   * Returns the BigDecimal value of the property with the given name.
+   *
+   * @throws JSONException if the property is not found or is null.
+   */
   public BigDecimal getBigDecimal(final String name) {
     return getElement(name).getAsBigDecimal();
   }
 
+  /**
+   * Returns the BigDecimal value of the property with the given name, or the default value if the property is not found or is null.
+   */
   public BigDecimal getBigDecimal(final String name, final BigDecimal defaultValue) {
     if (isNull(name))
       return defaultValue;
@@ -273,13 +329,10 @@ public class JSONObject implements Map<String, Object> {
     return elementToObject(getElement(name));
   }
 
-  public String optString(final String name) {
-    return optString(name, "");
-  }
-
-  public String optString(final String name, final String defaultValue) {
-    final Object value = this.opt(name);
-    return value == null || NULL.equals(value) ? defaultValue : value.toString();
+  public Object get(final String name, final Object defaultValue) {
+    if (isNull(name))
+      return defaultValue;
+    return elementToObject(getElement(name));
   }
 
   public Object opt(final String name) {
