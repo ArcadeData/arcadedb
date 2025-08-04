@@ -1090,7 +1090,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         if (error != null)
           error.call(e);
 
-        delayBetweenRetries(retryDelay);
+        if (retry < attempts - 1)
+          delayBetweenRetries(retryDelay);
 
       } catch (final Throwable e) {
         if (wrappedDatabaseInstance.isTransactionActive())
