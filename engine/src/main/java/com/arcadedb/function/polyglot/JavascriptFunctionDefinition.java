@@ -15,6 +15,7 @@ package com.arcadedb.function.polyglot;/*
  */
 
 import com.arcadedb.function.FunctionExecutionException;
+import com.arcadedb.log.LogManager;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyArray;
 import org.graalvm.polyglot.proxy.ProxyObject;
@@ -22,6 +23,7 @@ import org.graalvm.polyglot.proxy.ProxyObject;
 import java.io.*;
 import java.util.*;
 import java.util.function.*;
+import java.util.logging.*;
 
 /**
  * Javascript implementation of a function. To define the function, pass the function name, code and optional parameters in the constructor.
@@ -136,11 +138,14 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
       iterableKeys = (Iterable<String>) keys;
 
     for (final String key : iterableKeys) {
-      final Object value = result.getMember(key);
+      Object value = result.getMember(key);
       if (value instanceof Map mapValue && !(value instanceof HashMap))
-        map.put(key, new HashMap<>(mapValue));
+        value = new HashMap<>(mapValue);
       else
-        map.put(key, jsAnyToJava(value));
+        value = jsAnyToJava(value);
+
+      if (value != null)
+        map.put(key, value);
     }
 
     return map;
@@ -160,8 +165,10 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
     case Value result -> {
       return jsValueToJava(result);
     }
-    case Function fx -> {
+    case Function<?, ?> fx -> {
       // NOT SUPPORTED
+      LogManager.instance().log(JavascriptFunctionDefinition.class, Level.WARNING,
+          "Conversion of a js function '%s' is not supported, it will be ignored", value);
       return null;
     }
     case List list -> {
@@ -178,12 +185,14 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
       final Map<String, Object> newMap = new HashMap<>();
       for (Map.Entry<?, ?> entry : map.entrySet()) {
         final Object key = entry.getKey();
-        final Object valueEntry = entry.getValue();
+        Object valueEntry = entry.getValue();
         if (key instanceof String keyStr) {
           if (valueEntry instanceof Map<?, ?> valueMap && !(valueEntry instanceof HashMap))
-            newMap.put(keyStr, new HashMap<>(valueMap));
+            valueEntry = new HashMap<>(valueMap);
           else
-            newMap.put(keyStr, jsAnyToJava(valueEntry));
+            valueEntry = jsAnyToJava(valueEntry);
+          if (valueEntry != null)
+            newMap.put(keyStr, valueEntry);
         }
       }
       return newMap;
