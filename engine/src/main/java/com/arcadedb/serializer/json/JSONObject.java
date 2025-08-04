@@ -195,7 +195,19 @@ public class JSONObject implements Map<String, Object> {
     return getElement(name).getAsString();
   }
 
+  public String getString(final String name, final String defaultValue) {
+    if (isNull(name))
+      return defaultValue;
+    return getElement(name).getAsString();
+  }
+
   public int getInt(final String name) {
+    return getElement(name).getAsNumber().intValue();
+  }
+
+  public int getInt(final String name, final int defaultValue) {
+    if (isNull(name))
+      return defaultValue;
     return getElement(name).getAsNumber().intValue();
   }
 
@@ -203,7 +215,19 @@ public class JSONObject implements Map<String, Object> {
     return getElement(name).getAsNumber().longValue();
   }
 
+  public long getLong(final String name, final long defaultValue) {
+    if (isNull(name))
+      return defaultValue;
+    return getElement(name).getAsNumber().longValue();
+  }
+
   public float getFloat(final String name) {
+    return getElement(name).getAsNumber().floatValue();
+  }
+
+  public float getFloat(final String name, final float defaultValue) {
+    if (isNull(name))
+      return defaultValue;
     return getElement(name).getAsNumber().floatValue();
   }
 
@@ -211,11 +235,29 @@ public class JSONObject implements Map<String, Object> {
     return getElement(name).getAsNumber().doubleValue();
   }
 
+  public double getDouble(final String name, final double defaultValue) {
+    if (isNull(name))
+      return defaultValue;
+    return getElement(name).getAsNumber().doubleValue();
+  }
+
   public boolean getBoolean(final String name) {
     return getElement(name).getAsBoolean();
   }
 
+  public boolean getBoolean(final String name, final boolean defaultValue) {
+    if (isNull(name))
+      return defaultValue;
+    return getElement(name).getAsBoolean();
+  }
+
   public BigDecimal getBigDecimal(final String name) {
+    return getElement(name).getAsBigDecimal();
+  }
+
+  public BigDecimal getBigDecimal(final String name, final BigDecimal defaultValue) {
+    if (isNull(name))
+      return defaultValue;
     return getElement(name).getAsBigDecimal();
   }
 
