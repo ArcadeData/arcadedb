@@ -207,54 +207,96 @@ public class JSONObject implements Map<String, Object> {
         return getElement(name).getAsString();
     }
 
-    public int getInt(final String name) {
-        return getElement(name).getAsNumber().intValue();
-    }
+  public String getString(final String name, final String defaultValue) {
+    if (isNull(name))
+      return defaultValue;
+    return getElement(name).getAsString();
+  }
 
-    public long getLong(final String name) {
-        return getElement(name).getAsNumber().longValue();
-    }
+  public int getInt(final String name) {
+    return getElement(name).getAsNumber().intValue();
+  }
 
-    public float getFloat(final String name) {
-        return getElement(name).getAsNumber().floatValue();
-    }
+  public int getInt(final String name, final int defaultValue) {
+    if (isNull(name))
+      return defaultValue;
+    return getElement(name).getAsNumber().intValue();
+  }
 
-    public double getDouble(final String name) {
-        return getElement(name).getAsNumber().doubleValue();
-    }
+  public long getLong(final String name) {
+    return getElement(name).getAsNumber().longValue();
+  }
 
-    public boolean getBoolean(final String name) {
-        return getElement(name).getAsBoolean();
-    }
+  public long getLong(final String name, final long defaultValue) {
+    if (isNull(name))
+      return defaultValue;
+    return getElement(name).getAsNumber().longValue();
+  }
 
-    public BigDecimal getBigDecimal(final String name) {
-        return getElement(name).getAsBigDecimal();
-    }
+  public float getFloat(final String name) {
+    return getElement(name).getAsNumber().floatValue();
+  }
 
-    public JSONObject getJSONObject(final String name) {
-        return new JSONObject(getElement(name).getAsJsonObject());
-    }
+  public float getFloat(final String name, final float defaultValue) {
+    if (isNull(name))
+      return defaultValue;
+    return getElement(name).getAsNumber().floatValue();
+  }
 
-    public JSONArray getJSONArray(final String name) {
-        return new JSONArray(getElement(name).getAsJsonArray());
-    }
+  public double getDouble(final String name) {
+    return getElement(name).getAsNumber().doubleValue();
+  }
 
-    public Object get(final String name) {
-        return elementToObject(getElement(name));
-    }
+  public double getDouble(final String name, final double defaultValue) {
+    if (isNull(name))
+      return defaultValue;
+    return getElement(name).getAsNumber().doubleValue();
+  }
 
-    public String optString(final String name) {
-        return optString(name, "");
-    }
+  public boolean getBoolean(final String name) {
+    return getElement(name).getAsBoolean();
+  }
 
-    public String optString(final String name, final String defaultValue) {
-        final Object value = this.opt(name);
-        return value == null || NULL.equals(value) ? defaultValue : value.toString();
-    }
+  public boolean getBoolean(final String name, final boolean defaultValue) {
+    if (isNull(name))
+      return defaultValue;
+    return getElement(name).getAsBoolean();
+  }
 
-    public Object opt(final String name) {
-        return name == null ? null : elementToObject(object.get(name));
-    }
+  public BigDecimal getBigDecimal(final String name) {
+    return getElement(name).getAsBigDecimal();
+  }
+
+  public BigDecimal getBigDecimal(final String name, final BigDecimal defaultValue) {
+    if (isNull(name))
+      return defaultValue;
+    return getElement(name).getAsBigDecimal();
+  }
+
+  public JSONObject getJSONObject(final String name) {
+    return new JSONObject(getElement(name).getAsJsonObject());
+  }
+
+  public JSONArray getJSONArray(final String name) {
+    return new JSONArray(getElement(name).getAsJsonArray());
+  }
+
+  public Object get(final String name) {
+    return elementToObject(getElement(name));
+  }
+
+  public String optString(final String name) {
+    return optString(name, "");
+  }
+
+  public String optString(final String name, final String defaultValue) {
+    final Object value = this.opt(name);
+    return value == null || NULL.equals(value) ? defaultValue : value.toString();
+  }
+
+  public Object opt(final String name) {
+    return name == null ? null : elementToObject(object.get(name));
+  }
 
     public boolean has(final String name) {
         return object.has(name);
