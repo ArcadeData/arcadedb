@@ -25,6 +25,7 @@ import java.io.*;
 import java.util.*;
 import java.util.function.*;
 import java.util.logging.*;
+import java.util.stream.*;
 
 /**
  * Javascript implementation of a function. To define the function, pass the function name, code and optional parameters in the constructor.
@@ -170,10 +171,6 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
       // NOT SUPPORTED
       LogManager.instance().log(JavascriptFunctionDefinition.class, Level.WARNING,
           "Conversion of a js function '%s' is not supported, it will be ignored", value);
-
-      // TODO: REMOVE STACK TRACE
-      LogManager.instance().log(JavascriptFunctionDefinition.class, Level.WARNING, CodeUtils.getStackTrace());
-
       return null;
     }
     case List list -> {
@@ -184,11 +181,8 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
         else if (elem instanceof Function<?, ?>) {
           // NOT SUPPORTED
           LogManager.instance()
-              .log(JavascriptFunctionDefinition.class, Level.WARNING, "Skip function member %d in list '%s' (class=%s)",
-                  i, list, list.getClass().getName());
-
-          // TODO: REMOVE STACK TRACE
-          LogManager.instance().log(JavascriptFunctionDefinition.class, Level.WARNING, CodeUtils.getStackTrace());
+              .log(JavascriptFunctionDefinition.class, Level.WARNING, "Skip function member %d in list '%s' (class=%s)", i, list,
+                  list.getClass().getName());
         } else
           list.set(i, jsAnyToJava(elem));
       }
@@ -207,9 +201,6 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
             LogManager.instance()
                 .log(JavascriptFunctionDefinition.class, Level.WARNING, "Skip function member '%s' in map '%s' (class=%s)", keyStr,
                     map, map.getClass().getName());
-
-            // TODO: REMOVE STACK TRACE
-            LogManager.instance().log(JavascriptFunctionDefinition.class, Level.WARNING, CodeUtils.getStackTrace());
           } else
             valueEntry = jsAnyToJava(valueEntry);
 
@@ -264,5 +255,45 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
     } else
       // UNKNOWN OR NOT SUPPORTED
       return null;
+  }
+
+  /**
+   * Recursively converts a Java Map into a ProxyObject suitable for JS.
+   * It handles nested Maps and Lists.
+   *
+   * @param map The Java Map to convert.
+   *
+   * @return A ProxyObject representing the deep structure.
+   */
+  public static ProxyObject toDeepProxyObject(final Map<String, Object> map) {
+    // Use a new map to avoid modifying the original
+    final Map<String, Object> processedMap = new LinkedHashMap<>();
+
+    for (Map.Entry<String, Object> entry : map.entrySet()) {
+      final Object value = entry.getValue();
+      if (value instanceof Map subMap) {
+        // If the value is a map, recurse
+        processedMap.put(entry.getKey(), toDeepProxyObject(subMap));
+      } else if (value instanceof List list)
+        // If the value is a list, process its elements
+        processedMap.put(entry.getKey(), toDeepProxyList(list));
+      else
+        // Otherwise, just put the primitive/simple value
+        processedMap.put(entry.getKey(), value);
+    }
+    return ProxyObject.fromMap(processedMap);
+  }
+
+  /**
+   * Helper method to recursively convert elements within a List.
+   */
+  public static ProxyArray toDeepProxyList(final List<?> list) {
+    return ProxyArray.fromList(list.stream().map(item -> {
+      if (item instanceof Map subMap)
+        return toDeepProxyObject(subMap);
+      else if (item instanceof List)
+        return toDeepProxyList((List<?>) item);
+      return item;
+    }).collect(Collectors.toList()));
   }
 }
