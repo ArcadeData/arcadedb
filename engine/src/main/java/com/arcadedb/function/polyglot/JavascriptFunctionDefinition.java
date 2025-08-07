@@ -16,7 +16,6 @@ package com.arcadedb.function.polyglot;/*
 
 import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.utility.CodeUtils;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyArray;
 import org.graalvm.polyglot.proxy.ProxyObject;
@@ -140,12 +139,7 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
       iterableKeys = (Iterable<String>) keys;
 
     for (final String key : iterableKeys) {
-      Object value = result.getMember(key);
-      if (value instanceof Map mapValue && !(value instanceof HashMap))
-        value = new HashMap<>(mapValue);
-      else
-        value = jsAnyToJava(value);
-
+      final Object value = jsAnyToJava(result.getMember(key));
       if (value != null)
         map.put(key, value);
     }
@@ -176,9 +170,7 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
     case List list -> {
       for (int i = 0; i < list.size(); ++i) {
         Object elem = list.get(i);
-        if (elem instanceof Map map && !(elem instanceof HashMap))
-          list.set(i, new HashMap<>(map));
-        else if (elem instanceof Function<?, ?>) {
+        if (elem instanceof Function<?, ?>) {
           // NOT SUPPORTED
           LogManager.instance()
               .log(JavascriptFunctionDefinition.class, Level.WARNING, "Skip function member %d in list '%s' (class=%s)", i, list,
@@ -194,9 +186,7 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
         final Object key = entry.getKey();
         Object valueEntry = entry.getValue();
         if (key instanceof String keyStr) {
-          if (valueEntry instanceof Map<?, ?> valueMap && !(valueEntry instanceof HashMap))
-            valueEntry = new HashMap<>(valueMap);
-          else if (valueEntry instanceof Function<?, ?>) {
+          if (valueEntry instanceof Function<?, ?>) {
             // NOT SUPPORTED
             LogManager.instance()
                 .log(JavascriptFunctionDefinition.class, Level.WARNING, "Skip function member '%s' in map '%s' (class=%s)", keyStr,
