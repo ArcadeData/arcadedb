@@ -184,7 +184,8 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
         else if (elem instanceof Function<?, ?>) {
           // NOT SUPPORTED
           LogManager.instance()
-              .log(JavascriptFunctionDefinition.class, Level.WARNING, "Skip function member %d in list '%s'", i, list);
+              .log(JavascriptFunctionDefinition.class, Level.WARNING, "Skip function member %d in list '%s' (class=%s)",
+                  i, list, list.getClass().getName());
 
           // TODO: REMOVE STACK TRACE
           LogManager.instance().log(JavascriptFunctionDefinition.class, Level.WARNING, CodeUtils.getStackTrace());
@@ -204,7 +205,8 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
           else if (valueEntry instanceof Function<?, ?>) {
             // NOT SUPPORTED
             LogManager.instance()
-                .log(JavascriptFunctionDefinition.class, Level.WARNING, "Skip function member '%s' in map '%s'", keyStr, map);
+                .log(JavascriptFunctionDefinition.class, Level.WARNING, "Skip function member '%s' in map '%s' (class=%s)", keyStr,
+                    map, map.getClass().getName());
 
             // TODO: REMOVE STACK TRACE
             LogManager.instance().log(JavascriptFunctionDefinition.class, Level.WARNING, CodeUtils.getStackTrace());
