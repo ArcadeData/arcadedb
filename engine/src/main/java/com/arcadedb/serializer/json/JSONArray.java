@@ -75,7 +75,7 @@ public class JSONArray implements Iterable<Object> {
   public List<Object> toList() {
     final List<JsonElement> list = array.asList();
     final List<Object> result = new ArrayList<>(list.size());
-    for (JsonElement e : array.asList()) {
+    for (JsonElement e : list) {
       Object value = JSONObject.elementToObject(e);
 
       if (value instanceof JSONObject object)
