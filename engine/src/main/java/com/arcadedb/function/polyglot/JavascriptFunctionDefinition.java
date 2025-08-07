@@ -168,6 +168,9 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
       return null;
     }
     case List list -> {
+      if (!(list instanceof ArrayList))
+        list = new ArrayList(list);
+
       for (int i = 0; i < list.size(); ++i) {
         Object elem = list.get(i);
         if (elem instanceof Function<?, ?>) {
@@ -175,12 +178,16 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
           LogManager.instance()
               .log(JavascriptFunctionDefinition.class, Level.WARNING, "Skip function member %d in list '%s' (class=%s)", i, list,
                   list.getClass().getName());
+          list.set(i, null);
         } else
           list.set(i, jsAnyToJava(elem));
       }
       return list;
     }
     case Map<?, ?> map -> {
+      if (!(map instanceof HashMap) && !(map instanceof LinkedHashMap))
+        map = new LinkedHashMap(map);
+
       final Map<String, Object> newMap = new HashMap<>();
       for (Map.Entry<?, ?> entry : map.entrySet()) {
         final Object key = entry.getKey();
