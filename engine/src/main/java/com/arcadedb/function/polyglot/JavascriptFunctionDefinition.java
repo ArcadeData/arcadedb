@@ -16,6 +16,7 @@ package com.arcadedb.function.polyglot;/*
 
 import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.CodeUtils;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyArray;
 import org.graalvm.polyglot.proxy.ProxyObject;
@@ -169,6 +170,10 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
       // NOT SUPPORTED
       LogManager.instance().log(JavascriptFunctionDefinition.class, Level.WARNING,
           "Conversion of a js function '%s' is not supported, it will be ignored", value);
+
+      // TODO: REMOVE STACK TRACE
+      LogManager.instance().log(JavascriptFunctionDefinition.class, Level.WARNING, CodeUtils.getStackTrace());
+
       return null;
     }
     case List list -> {
@@ -176,7 +181,14 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
         Object elem = list.get(i);
         if (elem instanceof Map map && !(elem instanceof HashMap))
           list.set(i, new HashMap<>(map));
-        else
+        else if (elem instanceof Function<?, ?>) {
+          // NOT SUPPORTED
+          LogManager.instance()
+              .log(JavascriptFunctionDefinition.class, Level.WARNING, "Skip function member %d in list '%s'", i, list);
+
+          // TODO: REMOVE STACK TRACE
+          LogManager.instance().log(JavascriptFunctionDefinition.class, Level.WARNING, CodeUtils.getStackTrace());
+        } else
           list.set(i, jsAnyToJava(elem));
       }
       return list;
@@ -189,8 +201,16 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
         if (key instanceof String keyStr) {
           if (valueEntry instanceof Map<?, ?> valueMap && !(valueEntry instanceof HashMap))
             valueEntry = new HashMap<>(valueMap);
-          else
+          else if (valueEntry instanceof Function<?, ?>) {
+            // NOT SUPPORTED
+            LogManager.instance()
+                .log(JavascriptFunctionDefinition.class, Level.WARNING, "Skip function member '%s' in map '%s'", keyStr, map);
+
+            // TODO: REMOVE STACK TRACE
+            LogManager.instance().log(JavascriptFunctionDefinition.class, Level.WARNING, CodeUtils.getStackTrace());
+          } else
             valueEntry = jsAnyToJava(valueEntry);
+
           if (valueEntry != null)
             newMap.put(keyStr, valueEntry);
         }

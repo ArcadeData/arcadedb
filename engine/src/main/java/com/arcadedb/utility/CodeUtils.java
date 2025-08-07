@@ -20,6 +20,7 @@ package com.arcadedb.utility;
 
 import com.arcadedb.log.LogManager;
 
+import java.io.*;
 import java.util.*;
 import java.util.logging.*;
 
@@ -28,9 +29,7 @@ import java.util.logging.*;
  */
 public class CodeUtils {
 
-  public static void executeIgnoringExceptions(
-      final CallableNoReturn callback,
-      final String errorMessage,
+  public static void executeIgnoringExceptions(final CallableNoReturn callback, final String errorMessage,
       final boolean logException) {
     try {
       callback.call();
@@ -122,5 +121,13 @@ public class CodeUtils {
         // IGNORE IT
       }
     return false;
+  }
+
+  public static String getStackTrace() {
+    final ByteArrayOutputStream os = new ByteArrayOutputStream();
+    final PrintWriter output = new PrintWriter(new BufferedOutputStream(os));
+    new Exception().printStackTrace(output);
+    output.flush();
+    return os.toString();
   }
 }
