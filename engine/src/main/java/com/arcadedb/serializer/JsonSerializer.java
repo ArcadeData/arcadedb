@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DetachedDocument;
 import com.arcadedb.database.Document;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.IterableGraph;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -55,8 +56,7 @@ public class JsonSerializer {
 
   public JSONObject serializeDocument(final Document document) {
     final Database database = document.getDatabase();
-    final JSONObject object = new JSONObject()
-        .setDateFormat(database.getSchema().getDateTimeFormat())
+    final JSONObject object = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat())
         .setDateTimeFormat(database.getSchema().getDateTimeFormat());
 
     if (document.getIdentity() != null)
@@ -73,7 +73,7 @@ public class JsonSerializer {
       } else if (value instanceof Document document1) {
         value = serializeDocument(document1);
       } else if (value instanceof Collection<?> collection) {
-        serializeCollection(database, collection);
+        serializeCollection(database, collection, null);
       } else if (value instanceof Map map) {
         value = serializeMap(database, (Map<Object, Object>) map);
       }
@@ -124,20 +124,7 @@ public class JsonSerializer {
         propertyTypes.append(propertyName).append(":").append(propertyType.getId());
       }
 
-      if (value == null)
-        value = JSONObject.NULL;
-      else if (value instanceof Document document)
-        value = serializeDocument(document);
-      else if (value instanceof Result res)
-        value = serializeResult(database, res);
-      else if (value instanceof Collection<?> coll)
-        value = serializeCollection(database, coll);
-      else if (value instanceof Map)
-        value = serializeMap(database, (Map<Object, Object>) value);
-      else if (value.getClass().isArray())
-        value = serializeCollection(database, List.of((Object[]) value));
-
-      value = convertNonNumbers(value);
+      value = serializeObject(database, value);
 
       object.put(propertyName, value);
     }
@@ -145,33 +132,32 @@ public class JsonSerializer {
     return object;
   }
 
-  private Object serializeCollection(final Database database, final Collection<?> value) {
+  private Object serializeCollection(final Database database, final Collection<?> value, Class<? extends Document> entryType) {
     Object result = value;
-    if (!value.isEmpty()) {
-      if (useCollectionSizeForEdges && value.iterator().next() instanceof Edge)
+    if (useCollectionSize) {
         result = value.size();
-      else if (useCollectionSize) {
+    } else {
+      if (useCollectionSizeForEdges && //
+          ((entryType != null && entryType.isAssignableFrom(Edge.class)) || //
+              value.iterator().next() instanceof Edge))
         result = value.size();
-      } else {
+      else {
         final JSONArray list = new JSONArray();
-        for (Object o : value) {
-          if (o instanceof Document document)
-            o = serializeDocument(document);
-          else if (o instanceof Result result1)
-            o = serializeResult(database, result1);
-          else if (o instanceof ResultSet set)
-            o = serializeResultSet(database, set);
-          else if (o instanceof Collection<?> collection)
-            o = serializeCollection(database, collection);
-          else if (o instanceof Map)
-            o = serializeMap(database, (Map<Object, Object>) o);
+        for (Object o : value)
+          list.put(serializeObject(database, o));
 
-          list.put(o);
-        }
         result = list;
       }
     }
     return result;
+  }
+
+  private Object serializeIterator(final Database database, final Iterator<?> value, final Class<? extends Document> entryType) {
+    final List<Object> list = new ArrayList<>();
+    while (value.hasNext())
+      list.add(value.next());
+
+    return serializeCollection(database, list, entryType);
   }
 
   private Object serializeResultSet(final Database database, final ResultSet resultSet) {
@@ -188,21 +174,10 @@ public class JsonSerializer {
     if (useCollectionSize) {
       result = value.size();
     } else {
-      final JSONObject map = new JSONObject()
-          .setDateFormat(database.getSchema().getDateFormat())
+      final JSONObject map = new JSONObject().setDateFormat(database.getSchema().getDateFormat())
           .setDateTimeFormat(database.getSchema().getDateTimeFormat());
       for (final Map.Entry<Object, Object> entry : value.entrySet()) {
-        Object o = entry.getValue();
-        if (o instanceof Document document)
-          o = serializeDocument(document);
-        else if (o instanceof ResultSet set)
-          o = serializeResultSet(database, set);
-        else if (o instanceof Result result1)
-          o = serializeResult(database, result1);
-        else if (o instanceof Collection<?> collection)
-          o = serializeCollection(database, collection);
-        else if (o instanceof Map)
-          o = serializeMap(database, (Map<Object, Object>) o);
+        final Object o = serializeObject(database, entry.getValue());
         map.put(entry.getKey().toString(), o);
       }
       result = map;
@@ -295,6 +270,33 @@ public class JsonSerializer {
       else if (value.equals(Double.NEGATIVE_INFINITY) || value.equals(Float.NEGATIVE_INFINITY))
         // JSON DOES NOT SUPPORT INFINITY
         value = "NegInfinity";
+    return value;
+  }
+
+  private Object serializeObject(final Database database, Object value) {
+    if (value == null)
+      value = JSONObject.NULL;
+    else if (value instanceof Document document)
+      value = serializeDocument(document);
+    else if (value instanceof Result res)
+      value = serializeResult(database, res);
+    else if (value instanceof ResultSet res)
+      value = serializeResultSet(database, res);
+    else if (value instanceof Collection<?> coll)
+      value = serializeCollection(database, coll, null);
+    else if (value instanceof IterableGraph<?> iter)
+      value = serializeIterator(database, iter.iterator(), iter.getEntryType());
+    else if (value instanceof Iterable<?> iter)
+      value = serializeIterator(database, iter.iterator(), null);
+    else if (value instanceof Iterator<?> iter)
+      value = serializeIterator(database, iter, null);
+    else if (value instanceof Map)
+      value = serializeMap(database, (Map<Object, Object>) value);
+    else if (value.getClass().isArray())
+      value = serializeCollection(database, List.of((Object[]) value), null);
+
+    value = convertNonNumbers(value);
+
     return value;
   }
 }

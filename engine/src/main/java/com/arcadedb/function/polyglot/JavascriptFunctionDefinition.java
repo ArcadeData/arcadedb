@@ -148,26 +148,19 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
   }
 
   public static Object jsAnyToJava(final Object value) {
-    switch (value) {
-    case null -> {
+    if (value == null) {
       return null;
-    }
-    case ProxyObject proxyObject -> {
+    } else if (value instanceof ProxyObject proxyObject) {
       return jsObjectToJava(proxyObject);
-    }
-    case ProxyArray proxyArray -> {
+    } else if (value instanceof ProxyArray proxyArray) {
       return jsArrayToJava(proxyArray);
-    }
-    case Value result -> {
+    } else if (value instanceof Value result) {
       return jsValueToJava(result);
-    }
-    case Function<?, ?> fx -> {
-      // NOT SUPPORTED
+    } else if (value instanceof Function<?, ?>) {// NOT SUPPORTED
       LogManager.instance().log(JavascriptFunctionDefinition.class, Level.WARNING,
           "Conversion of a js function '%s' is not supported, it will be ignored", value);
       return null;
-    }
-    case List list -> {
+    } else if (value instanceof List list) {
       final List newList = new ArrayList<>();
 
       for (int i = 0; i < list.size(); ++i) {
@@ -181,8 +174,7 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
           newList.add(jsAnyToJava(elem));
       }
       return newList;
-    }
-    case Map<?, ?> map -> {
+    } else if (value instanceof Map<?, ?> map) {
       final Map<String, Object> newMap = new HashMap<>();
       for (Map.Entry<?, ?> entry : map.entrySet()) {
         final Object key = entry.getKey();
@@ -202,10 +194,7 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
       }
       return newMap;
     }
-    default -> {
-      return value;
-    }
-    }
+    return value;
   }
 
   public static Object jsValueToJava(final Value result) {

@@ -25,7 +25,7 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>25.6.1-SNAPSHOT</version>
+        <version>25.7.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -37,9 +37,10 @@
         <gremlin.version>3.7.4</gremlin.version>
         <translation.version>1.0.4</translation.version>
         <snakeyaml.version>2.4</snakeyaml.version>
-        <netty.version>4.2.3.Final</netty.version>
+        <netty.version>4.2.4.Final</netty.version>
         <commons-configuration2.version>2.12.0</commons-configuration2.version>
-        <groovy.version>4.0.27</groovy.version>
+        <groovy.version>4.0.28</groovy.version>
+        <commons-beanutils.version>1.11.0</commons-beanutils.version>
     </properties>
 
     <dependencies>
@@ -68,6 +69,11 @@
             <version>${commons-configuration2.version}</version>
         </dependency>
         <dependency>
+            <groupId>commons-beanutils</groupId>
+            <artifactId>commons-beanutils</artifactId>
+            <version>${commons-beanutils.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.apache.groovy</groupId>
             <artifactId>groovy</artifactId>
             <version>${groovy.version}</version>
@@ -76,6 +82,12 @@
             <groupId>org.apache.tinkerpop</groupId>
             <artifactId>gremlin-core</artifactId>
             <version>${gremlin.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>commons-beanutils</groupId>
+                    <artifactId>commons-beanutils</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.apache.tinkerpop</groupId>

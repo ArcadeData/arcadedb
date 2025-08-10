@@ -29,7 +29,7 @@ import java.util.function.Supplier;
  * 1 - build the package: mvn clea install -DskipTests
  * 2 - run the server :
  * export ARCADEDB_OPTS_MEMORY="-Xms16G -Xmx16G" && \
- * ./package/target/arcadedb-25.6.1-SNAPSHOT.dir/arcadedb-25.6.1-SNAPSHOT/bin/server.sh \
+ * ./package/target/arcadedb-25.7.1-SNAPSHOT.dir/arcadedb-25.7.1-SNAPSHOT/bin/server.sh \
  * -Darcadedb.server.rootPassword=playwithdata \
  * -Darcadedb.serverMetrics=true \
  * -Darcadedb.typeDefaultBuckets=10 -Darcadedb.bucketReuseSpaceMode=low

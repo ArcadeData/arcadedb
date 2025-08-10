@@ -112,12 +112,21 @@ public class JSONTest extends TestHelper {
         .put("nan", Double.NaN)
         .put("arrayNan", new JSONArray().put(0).put(Double.NaN).put(5));
 
-    json.validate();
-
-    assertThat(json.getInt("nan")).isEqualTo(0);
+    assertThat(json.isNull("nan")).isTrue();
     assertThat(json.getJSONArray("arrayNan").get(0)).isEqualTo(0);
     assertThat(json.getJSONArray("arrayNan").get(1)).isEqualTo(0);
     assertThat(json.getJSONArray("arrayNan").get(2)).isEqualTo(5);
+
+    final JSONObject json2 = new JSONObject(Map.of(
+        "a", 10,
+        "nan", Double.NaN,
+        "arrayNan", List.of(0, Double.NaN, 5))
+    );
+
+    assertThat(json2.isNull("nan")).isTrue();
+    assertThat(json2.getJSONArray("arrayNan").get(0)).isEqualTo(0);
+    assertThat(json2.getJSONArray("arrayNan").get(1)).isEqualTo(0);
+    assertThat(json2.getJSONArray("arrayNan").get(2)).isEqualTo(5);
   }
 
   @Test
@@ -173,33 +182,58 @@ public class JSONTest extends TestHelper {
     assertThat(deserialized.getExpression("map.second[1]")).isEqualTo(5);
   }
 
-  // MICRO BENCHMARK
-  public static void main(String[] args) {
-    final JSONObject json = new JSONObject()
-        .put("float", 3.14F)
-        .put("double", 3.14D)
-        .put("int", 3)
-        .put("long", 33426776323232L);
-
-    var beginTime = System.currentTimeMillis();
-    for (int i = 0; i < 100_000_000; i++) {
-      final float value = (float) json.get("float");
-      Assertions.assertThat(value).isEqualTo(3.14F);
+  @Test
+  public void testNestedExpression() {
+    final String schema = """
+          {
+          "presentation": {
+          },
+          "login": {
+            "default": {
+              "url": "https://url1.com"
+            },
+            "mobile": {
+              "url": "https://url2.com"
+            },
+            "mobile-native": {
+              "url": "https://url3.com"
     }
-    System.out.println("JSON float: " + (System.currentTimeMillis() - beginTime) + "ms");
+          }
+        }
+        """;
 
-    beginTime = System.currentTimeMillis();
-    for (int i = 0; i < 100_000_000; i++) {
-      final double value = (double) json.get("double");
-      Assertions.assertThat(value).isEqualTo(3.14D);
+    JSONObject deserialized = new JSONObject(schema);
+    assertThat(deserialized.getExpression("login.default.url")).isEqualTo("https://url1.com");
     }
-    System.out.println("JSON double: " + (System.currentTimeMillis() - beginTime) + "ms");
 
-    beginTime = System.currentTimeMillis();
-    for (int i = 0; i < 100_000_000; i++) {
-      final long value = (long) json.get("long");
-      Assertions.assertThat(value).isEqualTo(33426776323232L);
-    }
-    System.out.println("JSON long: " + (System.currentTimeMillis() - beginTime) + "ms");
-  }
+//
+//  // MICRO BENCHMARK
+//  public static void main(String[] args) {
+//    final JSONObject json = new JSONObject()
+//        .put("float", 3.14F)
+//        .put("double", 3.14D)
+//        .put("int", 3)
+//        .put("long", 33426776323232L);
+//
+//    var beginTime = System.currentTimeMillis();
+//    for (int i = 0; i < 100_000_000; i++) {
+//      final float value = (float) json.get("float");
+//      Assertions.assertThat(value).isEqualTo(3.14F);
+//    }
+//    System.out.println("JSON float: " + (System.currentTimeMillis() - beginTime) + "ms");
+//
+//    beginTime = System.currentTimeMillis();
+//    for (int i = 0; i < 100_000_000; i++) {
+//      final double value = (double) json.get("double");
+//      Assertions.assertThat(value).isEqualTo(3.14D);
+//    }
+//    System.out.println("JSON double: " + (System.currentTimeMillis() - beginTime) + "ms");
+//
+//    beginTime = System.currentTimeMillis();
+//    for (int i = 0; i < 100_000_000; i++) {
+//      final long value = (long) json.get("long");
+//      Assertions.assertThat(value).isEqualTo(33426776323232L);
+//    }
+//    System.out.println("JSON long: " + (System.currentTimeMillis() - beginTime) + "ms");
+//  }
 }
