@@ -25,15 +25,12 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -564,6 +561,36 @@ public class QueryTest extends TestHelper {
       final Object coll = set.nextIfAvailable().getProperty("coll");
       assertThat((Boolean) coll).isTrue();
     }
+  }
+
+  @Test
+  public void testGraphElementSize() {
+    database.transaction(() -> {
+      database.command("sqlscript",
+          """
+              CREATE VERTEX TYPE News;
+              CREATE VERTEX TYPE Author;
+              CREATE VERTEX TYPE User;
+              CREATE EDGE TYPE Published;
+              CREATE EDGE TYPE HasRead;
+              INSERT INTO News CONTENT { "id": "1", "title": "News 1", "content": "Content 1" };
+              INSERT INTO News CONTENT { "id": "2", "title": "News 2", "content": "Content 2" };
+              INSERT INTO Author CONTENT { "id": "1", "name": "Author 1" };
+              INSERT INTO User CONTENT { "id": "1", "name": "User 1" };
+              CREATE EDGE Published FROM (SELECT FROM Author WHERE id = 1) TO (SELECT FROM News WHERE id = 1);
+              CREATE EDGE Published FROM (SELECT FROM Author WHERE id = 1) TO (SELECT FROM News WHERE id = 2);
+              """);
+    });
+
+    ResultSet resultSet = database.query("sql", "SELECT out(\"Published\").in(\"HasRead\") as output FROM Author");
+    Assertions.assertThat(resultSet.hasNext()).isTrue();
+    Result result = resultSet.next();
+    Assertions.assertThat((List) result.getProperty("output")).hasSize(0);
+
+    resultSet = database.query("sql", "SELECT out(\"Published\").in(\"HasRead\").size() as output FROM Author");
+    Assertions.assertThat(resultSet.hasNext()).isTrue();
+    result = resultSet.next();
+    Assertions.assertThat((Integer) result.getProperty("output")).isEqualTo(0);
   }
 
 }
