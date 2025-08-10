@@ -18,7 +18,6 @@
  */
 package com.arcadedb.utility;
 
-import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.IterableGraph;
 
@@ -147,7 +146,7 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
           if (iter instanceof ResettableIterator<?> iterator)
             size += iterator.countEntries();
           else
-            CollectionUtils.countEntries(iter);
+            size++;
         } else
           size++;
     }
@@ -259,35 +258,5 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
   @Override
   public String toString() {
     return "[" + countEntries() + "]";
-  }
-
-  @Override
-  public Class<? extends Document> getEntryType() {
-    Class<?> collectingType = null;
-    for (Object o : sources) {
-      Class<?> type = null;
-      if (o != null) {
-        if (o instanceof IterableGraph)
-          type = ((IterableGraph<?>) o).getEntryType();
-        else if (o instanceof Collection<?> collection && !collection.isEmpty()) {
-          final Object first = collection.iterator().next();
-          if (first != null)
-            type = first.getClass();
-        } else
-          type = o.getClass();
-      }
-
-      if (type != null) {
-        if (collectingType == null)
-          collectingType = type;
-        else if (!collectingType.isAssignableFrom(type))
-          return null;
-      }
-    }
-
-    if (collectingType != null && collectingType.isAssignableFrom(Document.class))
-      return (Class<? extends Document>) collectingType;
-
-    return null;
   }
 }
