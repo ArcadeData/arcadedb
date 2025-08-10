@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.utility.MultiIterator;
 
 import java.util.*;
@@ -28,9 +29,7 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.it)
  */
 public interface IterableGraph<T> extends Iterable<T> {
-  static <T> IterableGraph<T> emptyList() {
-    return () -> Collections.emptyIterator();
-  }
+  Class<? extends Document> getEntryType();
 
   default T getFirstOrNull() {
     if (this instanceof List<?> list)

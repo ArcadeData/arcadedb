@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -43,9 +44,34 @@ import java.util.logging.*;
  * @author Luca Garulli (l.garulli@arcadedata.it)
  */
 public class GraphEngine {
-  public static final String           OUT_EDGES_SUFFIX = "_out_edges";
-  public static final String           IN_EDGES_SUFFIX  = "_in_edges";
-  private final       DatabaseInternal database;
+  public static final String OUT_EDGES_SUFFIX = "_out_edges";
+  public static final String IN_EDGES_SUFFIX  = "_in_edges";
+
+  public static final IterableGraph<Vertex> EMPTY_VERTEX_LIST = new IterableGraph<>() {
+    @Override
+    public Iterator<Vertex> iterator() {
+      return Collections.emptyIterator();
+    }
+
+    @Override
+    public Class<? extends Document> getEntryType() {
+      return Vertex.class;
+    }
+  };
+
+  public static final IterableGraph<Edge> EMPTY_EDGE_LIST = new IterableGraph<>() {
+    @Override
+    public Iterator<Edge> iterator() {
+      return Collections.emptyIterator();
+    }
+
+    @Override
+    public Class<? extends Document> getEntryType() {
+      return Edge.class;
+    }
+  };
+
+  private final DatabaseInternal database;
 
   public GraphEngine(final DatabaseInternal database) {
     this.database = database;
@@ -86,7 +112,8 @@ public class GraphEngine {
     }
   }
 
-  public ImmutableLightEdge newLightEdge(final VertexInternal fromVertex, final String edgeTypeName, final Identifiable toVertex) {
+  public ImmutableLightEdge newLightEdge(final VertexInternal fromVertex, final String edgeTypeName,
+      final Identifiable toVertex) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
 
@@ -257,7 +284,8 @@ public class GraphEngine {
         outChunk = (EdgeSegment) database.lookupByRID(outEdgesHeadChunk, true);
       } catch (final RecordNotFoundException e) {
         LogManager.instance()
-            .log(this, Level.SEVERE, "Record %s (outEdgesHeadChunk) not found on vertex %s. Creating a new one", outEdgesHeadChunk,
+            .log(this, Level.SEVERE, "Record %s (outEdgesHeadChunk) not found on vertex %s. Creating a new one",
+                outEdgesHeadChunk,
                 fromVertex.getIdentity());
         outEdgesHeadChunk = null;
       }
@@ -473,20 +501,42 @@ public class GraphEngine {
 
     case OUT:
       final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
-      if (outEdges != null)
-        return () -> outEdges.edgeIterator(edgeTypes);
+      if (outEdges != null) {
+        return new IterableGraph<>() {
+          @Override
+          public Iterator<Edge> iterator() {
+            return outEdges.edgeIterator(edgeTypes);
+          }
+
+          @Override
+          public Class<? extends Document> getEntryType() {
+            return Edge.class;
+          }
+        };
+      }
       break;
 
     case IN:
       final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
       if (inEdges != null)
-        return () -> inEdges.edgeIterator(edgeTypes);
+        return new IterableGraph<>() {
+          @Override
+          public Iterator<Edge> iterator() {
+            return inEdges.edgeIterator(edgeTypes);
+          }
+
+          @Override
+          public Class<? extends Document> getEntryType() {
+            return Edge.class;
+          }
+        };
       break;
 
     default:
       throw new IllegalArgumentException("Invalid direction " + direction);
     }
-    return IterableGraph.emptyList();
+
+    return EMPTY_EDGE_LIST;
   }
 
   /**
@@ -516,7 +566,8 @@ public class GraphEngine {
    *
    * @return An iterator of PVertex instances
    */
-  public IterableGraph<Vertex> getVertices(final VertexInternal vertex, final Vertex.DIRECTION direction, final String... edgeTypes) {
+  public IterableGraph<Vertex> getVertices(final VertexInternal vertex, final Vertex.DIRECTION direction,
+      final String... edgeTypes) {
     if (direction == null)
       throw new IllegalArgumentException("Direction is null");
 
@@ -536,20 +587,41 @@ public class GraphEngine {
 
     case OUT:
       final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
-      if (outEdges != null)
-        return () -> outEdges.vertexIterator(edgeTypes);
+      if (outEdges != null) {
+        return new IterableGraph<>() {
+          @Override
+          public Iterator<Vertex> iterator() {
+            return outEdges.vertexIterator(edgeTypes);
+          }
+
+          @Override
+          public Class<? extends Document> getEntryType() {
+            return Vertex.class;
+          }
+        };
+      }
       break;
 
     case IN:
       final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
       if (inEdges != null)
-        return () -> inEdges.vertexIterator(edgeTypes);
+        return new IterableGraph<>() {
+          @Override
+          public Iterator<Vertex> iterator() {
+            return inEdges.vertexIterator(edgeTypes);
+          }
+
+          @Override
+          public Class<? extends Document> getEntryType() {
+            return Vertex.class;
+          }
+        };
       break;
 
     default:
       throw new IllegalArgumentException("Invalid direction " + direction);
     }
-    return IterableGraph.emptyList();
+    return EMPTY_VERTEX_LIST;
   }
 
   public boolean isVertexConnectedTo(final VertexInternal vertex, final Identifiable toVertex) {
