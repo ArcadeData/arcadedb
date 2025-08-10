@@ -6,7 +6,6 @@ import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.logging.LoggingMeterRegistry;
 import io.micrometer.core.instrument.logging.LoggingRegistryConfig;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.slf4j.Logger;
@@ -19,13 +18,12 @@ import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.lifecycle.Startables;
 import org.testcontainers.utility.MountableFile;
 
-import java.io.IOException;
-import java.nio.file.Path;
-import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Supplier;
+import java.io.*;
+import java.nio.file.*;
+import java.time.*;
+import java.util.*;
+import java.util.concurrent.atomic.*;
+import java.util.function.*;
 
 public abstract class ContainersTestTemplate {
   public static final String                    IMAGE      = "arcadedata/arcadedb:latest";
@@ -58,12 +56,12 @@ public abstract class ContainersTestTemplate {
     // METRICS
     LoggingRegistryConfig config = new LoggingRegistryConfig() {
       @Override
-      public String get(@NotNull String key) {
+      public String get(String key) {
         return null;
       }
 
       @Override
-      public @NotNull Duration step() {
+      public Duration step() {
         return Duration.ofSeconds(10);
       }
     };
