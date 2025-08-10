@@ -14,7 +14,7 @@
 # limitations under the License.
 #
 
-FROM eclipse-temurin:21-alpine@sha256:8e26f8064f2b89bc8543faf43ded3f223f47dd0a7afca042fdc892f1f6a4a8c3
+FROM eclipse-temurin:21-alpine@sha256:df8ce8302ed2ed1690ef490c633981b07e752b373b5fdf796960fb2eb0d640ea
 
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 
