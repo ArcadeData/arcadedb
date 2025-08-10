@@ -141,7 +141,13 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
           size += Array.getLength(o);
         else if (o instanceof ResettableIterator<?> iterator)
           size += iterator.countEntries();
-        else
+        else if (o instanceof Iterable<?> it) {
+          final Iterator<?> iter = it.iterator();
+          if (iter instanceof ResettableIterator<?> iterator)
+            size += iterator.countEntries();
+          else
+            size++;
+        } else
           size++;
     }
     return size;
