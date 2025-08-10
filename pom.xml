@@ -25,7 +25,7 @@
     <groupId>com.arcadedb</groupId>
     <artifactId>arcadedb-parent</artifactId>
     <packaging>pom</packaging>
-    <version>25.6.1-SNAPSHOT</version>
+    <version>25.7.1-SNAPSHOT</version>
 
     <name>ArcadeDB</name>
     <url>https://arcadedata.com/</url>
@@ -74,8 +74,8 @@
         <micrometer.version>1.15.2</micrometer.version>
         <postgres.version>42.7.7</postgres.version>
 
-        <assertj-core.version>3.27.3</assertj-core.version>
-        <junit.jupiter.version>5.13.3</junit.jupiter.version>
+        <assertj-core.version>3.27.4</assertj-core.version>
+        <junit.jupiter.version>5.13.4</junit.jupiter.version>
         <awaitility.version>4.3.0</awaitility.version>
         <mockito-core.version>5.16.0</mockito-core.version>
         <json-path.version>2.9.0</json-path.version>
