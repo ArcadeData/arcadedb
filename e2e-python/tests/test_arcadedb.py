@@ -214,6 +214,21 @@ def test_psycopg2_with_named_parameterized_query():
     finally:
         conn.close()
 
+def test_psycopg2_with_named_parameterized_cypher_query():
+    """Check if the driver correctly handles parameterized named queries"""
+    params = get_connection_params(arcadedb)
+    conn = psycopg.connect(**params)
+    conn.autocommit = True
+
+    try:
+        with conn.cursor() as cursor:
+            query_params = {'name': 'Stout'}
+            cursor.execute('{cypher} MATCH (b:Beer) WHERE b.name =%(name)s RETURN b', query_params)
+            beer = cursor.fetchall()[0]
+            assert 'Stout' in beer
+    finally:
+        conn.close()
+
 
 def test_psycopg2_with_positional_parameterized_query():
     """Check if the driver correctly handles parameterized positional queries"""
