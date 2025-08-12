@@ -66,11 +66,11 @@ jobs:
         run: |
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
-          git commit -am "Set next development version to ${{ github.event.inputs.releaseversion }}"
+          git commit -am "Set release version to ${{ github.event.inputs.releaseversion }}"
+          git tag ${{ github.event.inputs.releaseversion }}
           git push origin ${{ github.event.inputs.releaseversion }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-#          git tag ${{ github.event.inputs.releaseversion }}
 
       - name: Set next development version
         if: success()
