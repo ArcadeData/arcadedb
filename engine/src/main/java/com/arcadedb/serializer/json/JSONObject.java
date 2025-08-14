@@ -94,8 +94,8 @@ public class JSONObject implements Map<String, Object> {
   }
 
   public JSONObject put(final String name, Number value) {
-    if (Double.isNaN(value.doubleValue()) || Double.isInfinite(value.doubleValue()))
-      value = 0;
+    if (value != null && (Double.isNaN(value.doubleValue()) || Double.isInfinite(value.doubleValue())))
+      value = null;
     object.addProperty(name, value);
     return this;
   }
@@ -118,12 +118,12 @@ public class JSONObject implements Map<String, Object> {
     case null -> object.add(name, NULL);
     case JsonNull jsonNull -> object.add(name, NULL);
     case JsonElement jsonElement -> object.add(name, jsonElement);
-    case String string -> object.addProperty(name, string);
-    case Number number -> object.addProperty(name, number);
-    case Boolean bool -> object.addProperty(name, bool);
-    case Character character -> object.addProperty(name, character);
+    case String string -> put(name, string);
+    case Number number -> put(name, number); // HANDLE CONVERSION OF NaN/INF
+    case Boolean bool -> put(name, bool);
+    case Character character -> put(name, character);
     case JSONObject nObject -> object.add(name, nObject.getInternal());
-    case JSONArray array -> object.add(name, array.getInternal());
+    case JSONArray array -> put(name, array.getInternal());
     case Document doc -> object.add(name, doc.toJSON(false).getInternal());
     case String[] string1s -> object.add(name, new JSONArray(string1s).getInternal());
     case Iterable<?> iterable -> {
@@ -131,8 +131,12 @@ public class JSONObject implements Map<String, Object> {
       for (int i = 0; i < 10; i++) {
         final JSONArray array = new JSONArray();
         try {
-          for (Object o : iterable)
-            array.put(o);
+          for (Object o : iterable) {
+            if (o instanceof Number num)
+              array.put(num); // THIS SOLVES A BUG WITH JDK THAT DOESN'T USE THE RIGHT METHOD WITH NaN
+            else
+              array.put(o);
+          }
           object.add(name, array.getInternal());
           break;
         } catch (ConcurrentModificationException e) {
@@ -571,18 +575,18 @@ public class JSONObject implements Map<String, Object> {
     for (String key : keySet()) {
       Object value = get(key);
       if (value instanceof Number number) {
-        if (Double.isNaN(number.doubleValue()))
+        if (Double.isNaN(number.doubleValue()) || Double.isInfinite(number.doubleValue()))
           // FIX NAN NUMBERS
-          put(key, 0);
+          put(key, (Number) null);
       } else if (value instanceof JSONObject nObject) {
         nObject.validate();
       } else if (value instanceof JSONArray array) {
         for (int i = 0; i < array.length(); i++) {
           final Object arrayValue = array.get(i);
           if (arrayValue instanceof Number number) {
-            if (Double.isNaN(number.doubleValue()))
+            if (Double.isNaN(number.doubleValue()) || Double.isInfinite(number.doubleValue()))
               // FIX NAN NUMBERS
-              array.put(i, 0);
+              array.put(i, null);
           } else if (arrayValue instanceof JSONObject nObject) {
             nObject.validate();
           }
