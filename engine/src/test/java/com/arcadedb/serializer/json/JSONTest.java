@@ -107,10 +107,21 @@ public class JSONTest extends TestHelper {
         .put("nan", Double.NaN)
         .put("arrayNan", new JSONArray().put(0).put(Double.NaN).put(5));
 
-    assertThat(json.getInt("nan")).isEqualTo(0);
+    assertThat(json.isNull("nan")).isTrue();
     assertThat(json.getJSONArray("arrayNan").get(0)).isEqualTo(0);
     assertThat(json.getJSONArray("arrayNan").get(1)).isEqualTo(0);
     assertThat(json.getJSONArray("arrayNan").get(2)).isEqualTo(5);
+
+    final JSONObject json2 = new JSONObject(Map.of(
+        "a", 10,
+        "nan", Double.NaN,
+        "arrayNan", List.of(0, Double.NaN, 5))
+    );
+
+    assertThat(json2.isNull("nan")).isTrue();
+    assertThat(json2.getJSONArray("arrayNan").get(0)).isEqualTo(0);
+    assertThat(json2.getJSONArray("arrayNan").get(1)).isEqualTo(0);
+    assertThat(json2.getJSONArray("arrayNan").get(2)).isEqualTo(5);
   }
 
   @Test
