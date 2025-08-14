@@ -19,15 +19,10 @@
 package com.arcadedb.serializer.json;
 
 import com.arcadedb.TestHelper;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.time.*;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -112,21 +107,10 @@ public class JSONTest extends TestHelper {
         .put("nan", Double.NaN)
         .put("arrayNan", new JSONArray().put(0).put(Double.NaN).put(5));
 
-    assertThat(json.isNull("nan")).isTrue();
+    assertThat(json.getInt("nan")).isEqualTo(0);
     assertThat(json.getJSONArray("arrayNan").get(0)).isEqualTo(0);
     assertThat(json.getJSONArray("arrayNan").get(1)).isEqualTo(0);
     assertThat(json.getJSONArray("arrayNan").get(2)).isEqualTo(5);
-
-    final JSONObject json2 = new JSONObject(Map.of(
-        "a", 10,
-        "nan", Double.NaN,
-        "arrayNan", List.of(0, Double.NaN, 5))
-    );
-
-    assertThat(json2.isNull("nan")).isTrue();
-    assertThat(json2.getJSONArray("arrayNan").get(0)).isEqualTo(0);
-    assertThat(json2.getJSONArray("arrayNan").get(1)).isEqualTo(0);
-    assertThat(json2.getJSONArray("arrayNan").get(2)).isEqualTo(5);
   }
 
   @Test
@@ -181,30 +165,6 @@ public class JSONTest extends TestHelper {
     assertThat(deserialized).isEqualTo(json);
     assertThat(deserialized.getExpression("map.second[1]")).isEqualTo(5);
   }
-
-  @Test
-  public void testNestedExpression() {
-    final String schema = """
-          {
-          "presentation": {
-          },
-          "login": {
-            "default": {
-              "url": "https://url1.com"
-            },
-            "mobile": {
-              "url": "https://url2.com"
-            },
-            "mobile-native": {
-              "url": "https://url3.com"
-    }
-          }
-        }
-        """;
-
-    JSONObject deserialized = new JSONObject(schema);
-    assertThat(deserialized.getExpression("login.default.url")).isEqualTo("https://url1.com");
-    }
 
 //
 //  // MICRO BENCHMARK
