@@ -39,7 +39,7 @@
     "datatables.net-select-bs5": "^1.7.0",
     "jquery": "^3.7.1",
     "notyf": "^3.10.0",
-    "sweetalert2": "^11.14.5"
+    "sweetalert2": "^11.22.4"
   },
   "devDependencies": {
     "copy-webpack-plugin": "^11.0.0",
