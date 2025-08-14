@@ -19,15 +19,10 @@
 package com.arcadedb.serializer.json;
 
 import com.arcadedb.TestHelper;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.time.*;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -112,8 +107,6 @@ public class JSONTest extends TestHelper {
         .put("nan", Double.NaN)
         .put("arrayNan", new JSONArray().put(0).put(Double.NaN).put(5));
 
-    json.validate();
-
     assertThat(json.getInt("nan")).isEqualTo(0);
     assertThat(json.getJSONArray("arrayNan").get(0)).isEqualTo(0);
     assertThat(json.getJSONArray("arrayNan").get(1)).isEqualTo(0);
@@ -173,33 +166,34 @@ public class JSONTest extends TestHelper {
     assertThat(deserialized.getExpression("map.second[1]")).isEqualTo(5);
   }
 
-  // MICRO BENCHMARK
-  public static void main(String[] args) {
-    final JSONObject json = new JSONObject()
-        .put("float", 3.14F)
-        .put("double", 3.14D)
-        .put("int", 3)
-        .put("long", 33426776323232L);
-
-    var beginTime = System.currentTimeMillis();
-    for (int i = 0; i < 100_000_000; i++) {
-      final float value = (float) json.get("float");
-      Assertions.assertThat(value).isEqualTo(3.14F);
-    }
-    System.out.println("JSON float: " + (System.currentTimeMillis() - beginTime) + "ms");
-
-    beginTime = System.currentTimeMillis();
-    for (int i = 0; i < 100_000_000; i++) {
-      final double value = (double) json.get("double");
-      Assertions.assertThat(value).isEqualTo(3.14D);
-    }
-    System.out.println("JSON double: " + (System.currentTimeMillis() - beginTime) + "ms");
-
-    beginTime = System.currentTimeMillis();
-    for (int i = 0; i < 100_000_000; i++) {
-      final long value = (long) json.get("long");
-      Assertions.assertThat(value).isEqualTo(33426776323232L);
-    }
-    System.out.println("JSON long: " + (System.currentTimeMillis() - beginTime) + "ms");
-  }
+//
+//  // MICRO BENCHMARK
+//  public static void main(String[] args) {
+//    final JSONObject json = new JSONObject()
+//        .put("float", 3.14F)
+//        .put("double", 3.14D)
+//        .put("int", 3)
+//        .put("long", 33426776323232L);
+//
+//    var beginTime = System.currentTimeMillis();
+//    for (int i = 0; i < 100_000_000; i++) {
+//      final float value = (float) json.get("float");
+//      Assertions.assertThat(value).isEqualTo(3.14F);
+//    }
+//    System.out.println("JSON float: " + (System.currentTimeMillis() - beginTime) + "ms");
+//
+//    beginTime = System.currentTimeMillis();
+//    for (int i = 0; i < 100_000_000; i++) {
+//      final double value = (double) json.get("double");
+//      Assertions.assertThat(value).isEqualTo(3.14D);
+//    }
+//    System.out.println("JSON double: " + (System.currentTimeMillis() - beginTime) + "ms");
+//
+//    beginTime = System.currentTimeMillis();
+//    for (int i = 0; i < 100_000_000; i++) {
+//      final long value = (long) json.get("long");
+//      Assertions.assertThat(value).isEqualTo(33426776323232L);
+//    }
+//    System.out.println("JSON long: " + (System.currentTimeMillis() - beginTime) + "ms");
+//  }
 }

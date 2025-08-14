@@ -93,7 +93,9 @@ public class JSONObject implements Map<String, Object> {
     return this;
   }
 
-  public JSONObject put(final String name, final Number value) {
+  public JSONObject put(final String name, Number value) {
+    if (Double.isNaN(value.doubleValue()) || Double.isInfinite(value.doubleValue()))
+      value = 0;
     object.addProperty(name, value);
     return this;
   }
