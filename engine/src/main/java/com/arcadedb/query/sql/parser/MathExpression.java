@@ -207,18 +207,14 @@ public class MathExpression extends SimpleNode {
 
           final Number r = apply(leftAsLong, rightAsLong);
           return Duration.of(r.longValue(), highestPrecision);
-        } else if (left instanceof Collection) {
-          final Collection<Object> coll = (Collection<Object>) left;
+        } else if (left instanceof Collection coll) {
           coll.add(right);
           return left;
-        } else if (left instanceof Map) {
-          final Map<String, Object> mapLeft = (Map<String, Object>) left;
+        } else if (left instanceof Map mapLeft) {
 
-          if (right instanceof Map) {
-            final Map<String, Object> mapRight = (Map<String, Object>) right;
+          if (right instanceof Map mapRight) {
             mapLeft.putAll(mapRight);
-          } else if (right instanceof Collection) {
-            final Collection<Object> arrayRight = (Collection<Object>) right;
+          } else if (right instanceof Collection arrayRight) {
             if (arrayRight.size() % 2 != 0)
               throw new IllegalArgumentException("Cannot add items to the maps because the collection contains odd entries");
 
