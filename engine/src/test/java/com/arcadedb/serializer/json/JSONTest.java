@@ -177,6 +177,30 @@ public class JSONTest extends TestHelper {
     assertThat(deserialized.getExpression("map.second[1]")).isEqualTo(5);
   }
 
+  @Test
+  public void testNestedExpression() {
+    final String schema = """
+          {
+          "presentation": {
+          },
+          "login": {
+            "default": {
+              "url": "https://url1.com"
+            },
+            "mobile": {
+              "url": "https://url2.com"
+            },
+            "mobile-native": {
+              "url": "https://url3.com"
+            }
+          }
+        }
+        """;
+
+    JSONObject deserialized = new JSONObject(schema);
+    assertThat(deserialized.getExpression("login.default.url")).isEqualTo("https://url1.com");
+  }
+
 //
 //  // MICRO BENCHMARK
 //  public static void main(String[] args) {
