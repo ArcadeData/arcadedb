@@ -227,10 +227,10 @@ public class TextEmbeddingsImporter {
 
   private List<TextFloatsEmbedding> loadFromFile() throws IOException {
     try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
-      final Stream<String> parser = reader.lines();
+      Stream<String> parser = reader.lines();
 
       if (settings.parsingLimitEntries > 0)
-        parser.limit(settings.parsingLimitEntries);
+        parser = parser.limit(settings.parsingLimitEntries);
 
       final AtomicInteger vectorSize = new AtomicInteger(301);
 
