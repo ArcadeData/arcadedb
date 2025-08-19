@@ -57,7 +57,7 @@
         <maven-failsafe-plugin.version>3.5.3</maven-failsafe-plugin.version>
         <maven-assembly-plugin.version>3.7.1</maven-assembly-plugin.version>
         <maven-resources-plugin.version>3.3.1</maven-resources-plugin.version>
-        <maven-javadoc-plugin.version>3.11.2</maven-javadoc-plugin.version>
+        <maven-javadoc-plugin.version>3.11.3</maven-javadoc-plugin.version>
         <maven-source-plugin.version>3.3.1</maven-source-plugin.version>
         <maven-gpg-plugin.version>3.2.8</maven-gpg-plugin.version>
         <maven-versions-plugin.version>2.18.0</maven-versions-plugin.version>
@@ -71,7 +71,7 @@
 
         <testcontainers.version>1.21.3</testcontainers.version>
         <logback-classic.version>1.5.18</logback-classic.version>
-        <micrometer.version>1.15.2</micrometer.version>
+        <micrometer.version>1.15.3</micrometer.version>
         <postgres.version>42.7.7</postgres.version>
 
         <assertj-core.version>3.27.4</assertj-core.version>
