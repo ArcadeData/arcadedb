@@ -64,7 +64,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionAbstract {
 
     final int limit = params[2] instanceof Number n ? n.intValue() : Integer.parseInt(params[2].toString());
 
-    final List<Pair<Vertex, ? extends Number>> neighbors = vIndex.findNeighborsFromVector(key, limit, null);
+    final List<Pair<Vertex, ? extends Number>> neighbors = vIndex.findNeighborsFromId(key, limit, null);
 
     final ArrayList<Object> result = new ArrayList<>(neighbors.size());
     for (Pair<Vertex, ? extends Number> n : neighbors)
