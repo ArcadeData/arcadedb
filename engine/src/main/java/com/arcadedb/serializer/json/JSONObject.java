@@ -167,7 +167,7 @@ public class JSONObject implements Map<String, Object> {
       if (dateFormatAsString == null)
         // SAVE AS TIMESTAMP
         object.addProperty(name,
-            DateUtils.dateTimeToTimestamp(value, ChronoUnit.NANOS)); // ALWAYS USE NANOS TO AVOID PRECISION LOSS
+            DateUtils.dateTimeToTimestamp(value, ChronoUnit.MILLIS));
       else
         // SAVE AS STRING
         object.addProperty(name, dateTimeFormat.format(temporalAccessor));
