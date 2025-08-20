@@ -25,6 +25,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.DateUtils;
 
+import java.time.*;
+import java.time.temporal.*;
 import java.util.Date;
 
 /**
@@ -52,6 +54,8 @@ public class SQLMethodAsDate extends AbstractSQLMethod {
       return null;
 
     if (value instanceof Date)
+      return value;
+    else if (value instanceof Temporal)
       return value;
     else if (value instanceof Number number)
       return new Date(number.longValue());
