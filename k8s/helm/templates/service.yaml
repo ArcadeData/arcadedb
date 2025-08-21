@@ -39,5 +39,6 @@ spec:
       targetPort: rpc
       protocol: TCP
       name: rpc
+    {{- include "arcadedb.plugin.service" . | nindent 4 }}
   selector:
     {{- include "arcadedb.selectorLabels" . | nindent 4 }}
