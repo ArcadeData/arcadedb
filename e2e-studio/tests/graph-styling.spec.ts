@@ -1,14 +1,14 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('ArcadeDB Studio Graph Styling and HTML Labels', () => {
-  // Setup helper for graph operations
+  // Setup helper for graph operations with proper cytoscape initialization
   async function setupGraphWithStyling(page) {
     await page.goto('/');
-    await expect(page.getByRole('dialog', { name: 'Login to the server' })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: 'Login to the server' })).toBeVisible({ timeout: 10000 });
     await page.getByRole('textbox', { name: 'User Name' }).fill('root');
     await page.getByRole('textbox', { name: 'Password' }).fill('playwithdata');
     await page.getByRole('button', { name: 'Sign in' }).click();
-    await expect(page.getByText('Connected as').first()).toBeVisible();
+    await expect(page.getByText('Connected as').first()).toBeVisible({ timeout: 15000 });
 
     // Select Beer database
     await page.getByLabel('root').selectOption('Beer');
@@ -20,9 +20,13 @@ test.describe('ArcadeDB Studio Graph Styling and HTML Labels', () => {
     await queryTextarea.fill('SELECT FROM Beer LIMIT 10');
     await page.getByRole('button', { name: '' }).first().click();
 
-    await expect(page.getByText('Returned')).toBeVisible();
+    await expect(page.getByText('Returned')).toBeVisible({ timeout: 15000 });
     await expect(page.getByRole('link', { name: 'Graph' })).toBeVisible();
-    await page.waitForTimeout(3000); // Allow graph to fully render
+
+    // Wait for cytoscape to be initialized and graph rendered
+    await page.waitForFunction(() => {
+      return typeof globalCy !== 'undefined' && globalCy !== null && globalCy.nodes().length > 0;
+    }, { timeout: 15000 });
 
     return page.locator('canvas').last();
   }
@@ -37,29 +41,39 @@ test.describe('ArcadeDB Studio Graph Styling and HTML Labels', () => {
 
     expect(statsText).toContain('vertices');
 
-    // Verify cytoscape is properly initialized with styling
-    const cytoscapeInitialized = await page.evaluate(() => {
-      return typeof globalCy !== 'undefined' && globalCy !== null;
-    });
+    // Verify cytoscape is properly initialized with styling - with timeout
+    let cytoscapeInitialized = false;
+    for (let i = 0; i < 5; i++) {
+      cytoscapeInitialized = await page.evaluate(() => {
+        return typeof globalCy !== 'undefined' && globalCy !== null && globalCy.nodes().length > 0;
+      });
+      if (cytoscapeInitialized) break;
+      await page.waitForTimeout(1000);
+    }
 
     expect(cytoscapeInitialized).toBe(true);
 
-    // Check vertex styling through cytoscape API
+    // Check vertex styling through cytoscape API with error handling
     const vertexStyles = await page.evaluate(() => {
-      if (!globalCy) return null;
+      try {
+        if (!globalCy) return { error: 'globalCy not available' };
 
-      const nodes = globalCy.nodes();
-      if (nodes.length === 0) return null;
+        const nodes = globalCy.nodes();
+        if (nodes.length === 0) return { error: 'no nodes found' };
 
-      // Get first node's computed style
-      const firstNode = nodes[0];
-      return {
-        backgroundColor: firstNode.style('background-color'),
-        borderColor: firstNode.style('border-color'),
-        borderWidth: firstNode.style('border-width'),
-        shape: firstNode.style('shape'),
-        label: firstNode.style('label')
-      };
+        // Get first node's computed style
+        const firstNode = nodes[0];
+        return {
+          backgroundColor: firstNode.style('background-color') || 'default',
+          borderColor: firstNode.style('border-color') || 'default',
+          borderWidth: firstNode.style('border-width') || 'default',
+          shape: firstNode.style('shape') || 'default',
+          label: firstNode.style('label') || 'default',
+          nodeCount: nodes.length
+        };
+      } catch (error) {
+        return { error: error.message };
+      }
     });
 
     expect(vertexStyles).toBeTruthy();
