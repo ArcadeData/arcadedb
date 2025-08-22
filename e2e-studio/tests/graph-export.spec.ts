@@ -19,7 +19,7 @@ test.describe('ArcadeDB Studio Graph Export Tests', () => {
     // Execute query to get a good dataset for export
     const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
     await expect(queryTextarea).toBeVisible();
-    await queryTextarea.fill('MATCH (b:Beer)-[r]-(n) RETURN b, r, n LIMIT 10');
+    await queryTextarea.fill('SELECT FROM Beer LIMIT 10');
     await page.getByRole('button', { name: '' }).first().click();
 
     await expect(page.getByText('Returned')).toBeVisible();

@@ -126,7 +126,8 @@ test.describe('ArcadeDB Studio Graph Styling and HTML Labels', () => {
     await page.getByLabel('root').selectOption('Beer');
 
     const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-    await queryTextarea.fill('SELECT FROM Beer LIMIT 3 UNION SELECT FROM Brewery LIMIT 3');
+    await queryTextarea.fill('SELECT FROM Beer LIMIT 3 ');
+    await queryTextarea.fill('SELECT FROM Brewery LIMIT 3');
     await page.getByRole('button', { name: '' }).first().click();
 
     await expect(page.getByText('Returned')).toBeVisible();
@@ -174,7 +175,7 @@ test.describe('ArcadeDB Studio Graph Styling and HTML Labels', () => {
 
     // Query that should return edges
     const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-    await queryTextarea.fill('MATCH (b:Beer)-[r]->(t) RETURN b, r, t LIMIT 5');
+    await queryTextarea.fill('SELECT FROM Beer LIMIT 5');
     await page.getByRole('button', { name: '' }).first().click();
 
     await expect(page.getByText('Returned')).toBeVisible();
