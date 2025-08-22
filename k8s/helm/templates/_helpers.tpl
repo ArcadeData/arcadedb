@@ -147,7 +147,7 @@ Create a comma separated list of plugins to be enabled in arcadedb
 {{- end -}}
 {{ range $param := $params }}
 - {{ $param }}
-{{ end }}
+{{- end -}}
 {{- end -}}
 
 {{/*
