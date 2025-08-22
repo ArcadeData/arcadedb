@@ -95,11 +95,11 @@ Preparing a list of plugin ports to build plugin configurations.
       {{- if eq $plugin "gremlin" }}
         {{- $port = default 8082 $config.port }}
       {{- else if eq $plugin "postgres" }}
-        {{- $port = default 5432 $config.port}}
+        {{- $port = default 5432 $config.port }}
       {{- else if eq $plugin "mongo" }}
         {{- $port = default 27017 $config.port }}
       {{- else if eq $plugin "redis" }}
-        {{- $port = default 6379 }}
+        {{- $port = default 6379 $config.port }}
       {{- else if eq $plugin "prometheus" }}
         {{/*
         Prometheus does not use a port in the plugin configuration. It is accessible from /prometheus endpoint.
@@ -122,27 +122,32 @@ Create a comma separated list of plugins to be enabled in arcadedb
 */}}
 {{- define "arcadedb.plugin.parameters" -}}
 {{- $plugins := list -}}
-  {{- range $plugin, $config := (include "_arcadedb.plugin.ports" . | fromYaml) }}
-    {{- if eq $plugin "gremlin" }}
-      {{- $plugins = append $plugins "GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin" }}
-    {{- else if eq $plugin "postgres" }}
-      {{- $plugins = append $plugins "Postgres:com.arcadedb.postgres.PostgresProtocolPlugin" }}
-- {{- printf " -Darcadedb.postgres.port=%d" (int $config.port) -}}
-    {{- else if eq $plugin "mongo" }}
-      {{- $plugins = append $plugins "MongoDB:com.arcadedb.mongo.MongoDBProtocolPlugin" }}
-- {{- printf " -Darcadedb.mongo.port=%d" (int $config.port) -}}
-    {{- else if eq $plugin "redis" }}
-      {{- $plugins = append $plugins "Redis:com.arcadedb.redis.RedisProtocolPlugin" }}
-- {{- printf " -Darcadedb.redis.port=%d" (int $config.port) -}}
-    {{- else if eq $plugin "prometheus" }}
-      {{- $plugins = append $plugins "Prometheus:com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin" }}
-    {{- else }}
-      {{- $plugins = append $plugins (printf "%s:%s" $plugin $config.class) }}
-    {{- end }}
-{{- end }}
-{{- if gt (len $plugins) 0 }}
-- {{- printf " -Darcadedb.server.plugins=%s" (join "," $plugins) -}}
+{{- $params := list -}}
+  {{- range $plugin, $config := (include "_arcadedb.plugin.ports" . | fromYaml) -}}
+    {{- if eq $plugin "gremlin" -}}
+      {{- $plugins = append $plugins "GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin" -}}
+      {{- $params = append $params (printf "-Darcadedb.gremlin.port=%d" (int $config.port)) -}}
+    {{- else if eq $plugin "postgres" -}}
+      {{- $plugins = append $plugins "Postgres:com.arcadedb.postgres.PostgresProtocolPlugin" -}}
+      {{- $params = append $params (printf "-Darcadedb.postgres.port=%d" (int $config.port)) -}}
+    {{- else if eq $plugin "mongo" -}}
+      {{- $plugins = append $plugins "MongoDB:com.arcadedb.mongo.MongoDBProtocolPlugin" -}}
+      {{- $params = append $params (printf "-Darcadedb.mongo.port=%d" (int $config.port)) -}}
+    {{- else if eq $plugin "redis" -}}
+      {{- $plugins = append $plugins "Redis:com.arcadedb.redis.RedisProtocolPlugin" -}}
+      {{- $params = append $params (printf "-Darcadedb.redis.port=%d" (int $config.port)) -}}
+    {{- else if eq $plugin "prometheus" -}}
+      {{- $plugins = append $plugins "Prometheus:com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin" -}}
+    {{- else -}}
+      {{- $plugins = append $plugins (printf "%s:%s" $plugin $config.class) -}}
+    {{- end -}}
+  {{- end -}}
+{{- if gt (len $plugins) 0 -}}
+- -Darcadedb.server.plugins={{ join "," $plugins }}
 {{- end -}}
+{{ range $param := $params }}
+- {{ $param }}
+{{ end }}
 {{- end -}}
 
 {{/*
