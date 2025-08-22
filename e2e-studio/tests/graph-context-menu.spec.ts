@@ -69,79 +69,75 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
   });
 
  test('should expand vertex using context menu "both" direction', async ({ page }) => {
-     const graphCanvas = await setupGraphWithData(page);
+    const graphCanvas = await setupGraphWithData(page);
 
-     // Get initial graph stats
-     const initialStats = page.locator('text=Displayed').locator('..');
-     const initialStatsText = await initialStats.textContent();
-     console.log('Initial graph state:', initialStatsText);
+    // Get initial graph stats
+    const initialStats = page.locator('text=Displayed').locator('..');
+    const initialStatsText = await initialStats.textContent();
+    console.log('Initial graph state:', initialStatsText);
 
-     // First, select a vertex by clicking on the canvas
-     const canvasBox = await graphCanvas.boundingBox();
-     const centerX = canvasBox.x + canvasBox.width / 2;
-     const centerY = canvasBox.y + canvasBox.height / 2;
+    // First, select a vertex by clicking on the canvas
+    const canvasBox = await graphCanvas.boundingBox();
+    const centerX = canvasBox.x + canvasBox.width / 2;
+    const centerY = canvasBox.y + canvasBox.height / 2;
 
-     await page.mouse.click(centerX, centerY);
-     await page.waitForTimeout(1000);
+    await page.mouse.click(centerX, centerY);
+    await page.waitForTimeout(1000);
 
-     // Use the actual ArcadeDB Studio expansion workflow
-     // Look for the vertex expansion via the graph properties or toolbar
-     try {
-       // Method 1: Try using the expand functionality through the UI
-       const expandButton = page.locator('button:has-text("Expand"), .fa-expand, .fa-plus');
-       if (await expandButton.isVisible({ timeout: 2000 })) {
-         await expandButton.first().click();
-         await page.waitForTimeout(2000);
-       } else {
-         // Method 2: Use programmatic expansion via cytoscape API
-         await page.evaluate(() => {
-           if (typeof globalCy !== 'undefined' && globalCy !== null) {
-             const nodes = globalCy.nodes();
-             if (nodes.length > 0) {
-               // Select first node and try to expand its neighbors
-               const firstNode = nodes.first();
-               firstNode.select();
+    // Use the actual ArcadeDB Studio expansion workflow
+    try {
+      // Method 1: Try using the expand functionality through the UI
+      const expandButton = page.locator('button:has-text("Expand"), .fa-expand, .fa-plus');
+      if (await expandButton.isVisible({ timeout: 2000 })) {
+        await expandButton.first().click();
+        await page.waitForTimeout(2000);
+      } else {
+        // Method 2: Use programmatic expansion via cytoscape API
+        await page.evaluate(() => {
+          if (typeof globalCy !== 'undefined' && globalCy !== null) {
+            const nodes = globalCy.nodes();
+            if (nodes.length > 0) {
+              const firstNode = nodes.first();
+              firstNode.select();
 
-               // Simulate neighbor loading if the function exists
-               if (typeof loadNodeNeighbors === 'function') {
-                 loadNodeNeighbors(firstNode.id(), 'both');
-               }
-             }
-           }
-         });
-         await page.waitForTimeout(3000);
-       }
-     } catch (error) {
-       console.log('Expansion attempt failed:', error.message);
+              if (typeof loadNodeNeighbors === 'function') {
+                loadNodeNeighbors(firstNode.id(), 'both');
+              }
+            }
+          }
+        });
+        await page.waitForTimeout(3000);
+      }
+    } catch (error) {
+      console.log('Expansion attempt failed:', error.message);
 
-       // Method 3: Use a different query that includes relationships
-       const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-       await queryTextarea.fill('SELECT FROM Beer WHERE out().size() > 0 LIMIT 3');
-       await page.getByRole('button', { name: '' }).first().click();
-       await expect(page.getByText('Returned')).toBeVisible({ timeout: 15000 });
-       await page.waitForTimeout(2000);
-     }
+      // Method 3: Use a different query that includes relationships
+      const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
+      await queryTextarea.fill('SELECT FROM Beer WHERE out().size() > 0 LIMIT 3');
+      await page.getByRole('button', { name: '' }).first().click();
+      await expect(page.getByText('Returned')).toBeVisible({ timeout: 15000 });
+      await page.waitForTimeout(2000);
+    }
 
-     // Verify expansion occurred - be more flexible with the assertion
-     const finalStats = page.locator('text=Displayed').locator('..');
-     const finalStatsText = await finalStats.textContent();
-     console.log('Final graph state:', finalStatsText);
+    // Verify expansion occurred - be more flexible with the assertion
+    const finalStats = page.locator('text=Displayed').locator('..');
+    const finalStatsText = await finalStats.textContent();
+    console.log('Final graph state:', finalStatsText);
 
-     // Check if either vertex count increased OR edges appeared OR query returned connected
-    data
-     const hasMoreElements = !finalStatsText.includes('5 vertices and 0 edges') ||
-                            finalStatsText.includes('edges') ||
-                            finalStatsText.includes('Returned') &&
-   !finalStatsText.includes('0 records');
+    // Check if either vertex count increased OR edges appeared OR query returned connected data
+    const hasMoreElements = !finalStatsText.includes('5 vertices and 0 edges') ||
+                           finalStatsText.includes('edges') ||
+                           finalStatsText.includes('Returned') &&
+                           !finalStatsText.includes('0 records');
 
-     // If expansion still didn't work, that's ok - some datasets don't have connections
-     if (!hasMoreElements) {
-       console.log('No expansion occurred - this may be expected if Beer vertices have noconnections');
-       expect(true).toBe(true); // Test passes if no errors occurred
-     } else {
-       expect(hasMoreElements).toBe(true);
-     }
-   });
+    // If expansion still didn't work, that's ok - some datasets don't have connections
+    if (!hasMoreElements) {
+      console.log('No expansion occurred - this may be expected if Beer vertices have noconnections');
+      expect(true).toBe(true); // Test passes if no errors occurred
+    } else {
+      expect(hasMoreElements).toBe(true);
+    }
+  });
 
   test('should handle vertex context menu on mobile touch devices', async ({ page }) => {
      // Simulate mobile viewport with touch enabled
