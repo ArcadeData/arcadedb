@@ -46,20 +46,20 @@ import java.rmi.*;
 import java.util.*;
 
 public class PostServerCommandHandler extends AbstractServerHttpHandler {
-  final String LIST_DATABASES       = "list databases";
-  final String SHUTDOWN             = "shutdown";
-  final String CREATE_DATABASE      = "create database";
-  final String DROP_DATABASE        = "drop database";
-  final String CLOSE_DATABASE       = "close database";
-  final String OPEN_DATABASE        = "open database";
-  final String CREATE_USER          = "create user";
-  final String DROP_USER            = "drop user";
-  final String CONNECT_CLUSTER      = "connect cluster";
-  final String DISCONNECT_CLUSTER   = "disconnect cluster";
-  final String SET_DATABASE_SETTING = "set database setting";
-  final String SET_SERVER_SETTING   = "set server setting";
-  final String GET_SERVER_EVENTS    = "get server events";
-  final String ALIGN_DATABASE       = "align database";
+  static final String LIST_DATABASES       = "list databases";
+  static final String SHUTDOWN             = "shutdown";
+  static final String CREATE_DATABASE      = "create database";
+  static final String DROP_DATABASE        = "drop database";
+  static final String CLOSE_DATABASE       = "close database";
+  static final String OPEN_DATABASE        = "open database";
+  static final String CREATE_USER          = "create user";
+  static final String DROP_USER            = "drop user";
+  static final String CONNECT_CLUSTER      = "connect cluster";
+  static final String DISCONNECT_CLUSTER   = "disconnect cluster";
+  static final String SET_DATABASE_SETTING = "set database setting";
+  static final String SET_SERVER_SETTING   = "set server setting";
+  static final String GET_SERVER_EVENTS    = "get server events";
+  static final String ALIGN_DATABASE       = "align database";
 
   public PostServerCommandHandler(final HttpServer httpServer) {
     super(httpServer);
