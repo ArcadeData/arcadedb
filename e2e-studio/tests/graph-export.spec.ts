@@ -1,36 +1,14 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../fixtures/test-fixtures';
 import * as fs from 'fs';
 import * as path from 'path';
+import { ArcadeStudioTestHelper, TEST_CONFIG } from '../utils';
 
 test.describe('ArcadeDB Studio Graph Export Tests', () => {
-  // Setup helper for graph with exportable content
-  async function setupGraphForExport(page) {
-    await page.goto('/');
-    await expect(page.getByRole('dialog', { name: 'Login to the server' })).toBeVisible();
-    await page.getByRole('textbox', { name: 'User Name' }).fill('root');
-    await page.getByRole('textbox', { name: 'Password' }).fill('playwithdata');
-    await page.getByRole('button', { name: 'Sign in' }).click();
-    await expect(page.getByText('Connected as').first()).toBeVisible();
+  // Removed duplicated setup function - now using exportGraphReady fixture
 
-    // Select Beer database
-    await page.getByLabel('root').selectOption('Beer');
-    await expect(page.getByLabel('root')).toHaveValue('Beer');
-
-    // Execute query to get a good dataset for export
-    const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-    await expect(queryTextarea).toBeVisible();
-    await queryTextarea.fill('SELECT FROM Beer LIMIT 10');
-    await page.getByRole('button', { name: '' }).first().click();
-
-    await expect(page.getByText('Returned')).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Graph' })).toBeVisible();
-    await page.waitForTimeout(3000); // Allow graph to fully render
-
-    return page.locator('canvas').last();
-  }
-
-  test('should export graph as JSON format', async ({ page }) => {
-    await setupGraphForExport(page);
+  test('should export graph as JSON format', async ({ exportGraphReady }) => {
+    const { helper, canvas } = exportGraphReady;
+    const page = helper.page;
 
     // Look for export functionality - could be in a dropdown, button, or menu
     // Try different possible export button locations
@@ -55,13 +33,13 @@ test.describe('ArcadeDB Studio Graph Export Tests', () => {
     if (exportButton) {
       console.log('Found export button, testing JSON export');
       await exportButton.click();
-      await page.waitForTimeout(1000);
+      await page.waitForLoadState('networkidle');
 
       // Look for JSON export option
       const jsonOption = page.locator('text=JSON, button:has-text("JSON"), [value="json"]').first();
       if (await jsonOption.isVisible({ timeout: 2000 })) {
         await jsonOption.click();
-        await page.waitForTimeout(2000);
+        await page.waitForLoadState('networkidle');
 
         // Verify export functionality exists
         const exportCapability = await page.evaluate(() => {
@@ -106,8 +84,9 @@ test.describe('ArcadeDB Studio Graph Export Tests', () => {
     }
   });
 
-  test('should export graph as GraphML format', async ({ page }) => {
-    await setupGraphForExport(page);
+  test('should export graph as GraphML format', async ({ exportGraphReady }) => {
+    const { helper, canvas } = exportGraphReady;
+    const page = helper.page;
 
     // Test GraphML export capability with error handling
     const graphMLSupported = await page.evaluate(() => {
@@ -152,12 +131,25 @@ test.describe('ArcadeDB Studio Graph Export Tests', () => {
       }
     } else {
       console.log('GraphML export not available, skipping detailed test');
-      expect(true).toBe(true); // Test passes as feature may not be implemented
+      // Verify basic graph functionality is still intact
+      const basicGraphState = await page.evaluate(() => {
+        return {
+          hasGraph: typeof globalCy !== 'undefined' && globalCy !== null,
+          nodeCount: globalCy ? globalCy.nodes().length : 0,
+          isResponsive: true
+        };
+      });
+
+      expect(basicGraphState.hasGraph).toBe(true,
+        'Graph should still be functional even without GraphML export');
+      expect(basicGraphState.nodeCount).toBeGreaterThan(0,
+        'Graph should contain nodes for potential export functionality');
     }
   });
 
-  test('should export graph as PNG image', async ({ page }) => {
-    await setupGraphForExport(page);
+  test('should export graph as PNG image', async ({ exportGraphReady }) => {
+    const { helper, canvas } = exportGraphReady;
+    const page = helper.page;
 
     // Test image export functionality
     const imageExportSupported = await page.evaluate(() => {
@@ -204,7 +196,7 @@ test.describe('ArcadeDB Studio Graph Export Tests', () => {
     if (await imageExportButton.isVisible({ timeout: 2000 })) {
       console.log('Found image export button in UI');
       await imageExportButton.first().click();
-      await page.waitForTimeout(2000);
+      await page.waitForLoadState('networkidle');
 
       // Verify no errors occurred
       const noErrors = await page.evaluate(() => {
@@ -214,8 +206,9 @@ test.describe('ArcadeDB Studio Graph Export Tests', () => {
     }
   });
 
-  test('should export graph with settings and layout information', async ({ page }) => {
-    await setupGraphForExport(page);
+  test('should export graph with settings and layout information', async ({ exportGraphReady }) => {
+    const { helper, canvas } = exportGraphReady;
+    const page = helper.page;
 
     // Test export of graph settings and layout
     const settingsExport = await page.evaluate(() => {
@@ -242,24 +235,9 @@ test.describe('ArcadeDB Studio Graph Export Tests', () => {
     }
   });
 
-  test('should handle large graph export performance', async ({ page }) => {
-    // Setup larger dataset for performance testing
-    await page.goto('/');
-    await expect(page.getByRole('dialog', { name: 'Login to the server' })).toBeVisible();
-    await page.getByRole('textbox', { name: 'User Name' }).fill('root');
-    await page.getByRole('textbox', { name: 'Password' }).fill('playwithdata');
-    await page.getByRole('button', { name: 'Sign in' }).click();
-    await expect(page.getByText('Connected as').first()).toBeVisible();
-
-    await page.getByLabel('root').selectOption('Beer');
-
-    // Query for more data
-    const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-    await queryTextarea.fill('SELECT FROM Beer LIMIT 50');
-    await page.getByRole('button', { name: '' }).first().click();
-
-    await expect(page.getByText('Returned')).toBeVisible();
-    await page.waitForTimeout(5000); // Allow larger graph to render
+  test('should handle large graph export performance', async ({ largeGraphReady }) => {
+    const { helper, canvas, nodeCount } = largeGraphReady;
+    const page = helper.page;
 
     // Test export performance
     const startTime = Date.now();
@@ -307,8 +285,9 @@ test.describe('ArcadeDB Studio Graph Export Tests', () => {
     }
   });
 
-  test('should validate export data integrity', async ({ page }) => {
-    await setupGraphForExport(page);
+  test('should validate export data integrity', async ({ exportGraphReady }) => {
+    const { helper, canvas } = exportGraphReady;
+    const page = helper.page;
 
     // Export graph data and validate integrity
     const originalData = await page.evaluate(() => {
@@ -358,8 +337,9 @@ test.describe('ArcadeDB Studio Graph Export Tests', () => {
     }
   });
 
-  test('should export selected elements only', async ({ page }) => {
-    const graphCanvas = await setupGraphForExport(page);
+  test('should export selected elements only', async ({ exportGraphReady }) => {
+    const { helper, canvas: graphCanvas } = exportGraphReady;
+    const page = helper.page;
 
     // Select some elements first
     const canvasBox = await graphCanvas.boundingBox();
@@ -368,7 +348,9 @@ test.describe('ArcadeDB Studio Graph Export Tests', () => {
 
     // Click to select an element
     await page.mouse.click(centerX, centerY);
-    await page.waitForTimeout(1000);
+    await page.waitForFunction(() => {
+      return typeof globalCy !== 'undefined' && globalCy !== null;
+    }, { timeout: 3000 }).catch(() => {});
 
     // Get selection and export
     const selectionExport = await page.evaluate(() => {

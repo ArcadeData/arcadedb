@@ -1,43 +1,15 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../fixtures/test-fixtures';
+import { ArcadeStudioTestHelper, TEST_CONFIG } from '../utils';
 
 test.describe('Cytoscape 3.33.1 Validation Tests', () => {
-  test.beforeEach(async ({ page }) => {
-    // Navigate to Studio login page
-    await page.goto('/');
+  // Removed duplicated beforeEach setup - now using authenticatedHelper fixture
 
-    // Wait for login dialog and fill correct credentials
-    await expect(page.getByRole('dialog', { name: 'Login to the server' })).toBeVisible({ timeout: 10000 });
-    await page.getByRole('textbox', { name: 'User Name' }).fill('root');
-    await page.getByRole('textbox', { name: 'Password' }).fill('playwithdata');
-    await page.getByRole('button', { name: 'Sign in' }).click();
+  test('should load cytoscape 3.33.1 successfully', async ({ graphReady }) => {
+    const { helper, canvas } = graphReady;
+    const page = helper.page;
 
-    // Wait for Studio to load
-    await expect(page.getByText('Connected as').first()).toBeVisible({ timeout: 15000 });
-
-    // Select Beer database
-    await page.getByLabel('root').selectOption('Beer');
-    await expect(page.getByLabel('root')).toHaveValue('Beer');
-  });
-
-  test('should load cytoscape 3.33.1 successfully', async ({ page }) => {
-    // Execute a simple query to trigger graph view
-    const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-    await expect(queryTextarea).toBeVisible();
-    await queryTextarea.fill('SELECT FROM Beer LIMIT 5');
-    await page.getByRole('button', { name: '' }).first().click();
-
-    // Wait for results and check graph tab
-    await expect(page.getByText('Returned')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByRole('link', { name: 'Graph' })).toBeVisible();
-
-    // Wait for cytoscape to initialize
-    await page.waitForFunction(() => {
-      return typeof globalCy !== 'undefined' && globalCy !== null;
-    }, { timeout: 10000 });
-
-    // Check that cytoscape canvas is present
-    const cytoscapeCanvas = page.locator('canvas').last();
-    await expect(cytoscapeCanvas).toBeVisible();
+    // Check that cytoscape canvas is present (already setup by fixture)
+    await expect(canvas).toBeVisible();
 
     // Verify cytoscape version through global object
     const cytoscapeInfo = await page.evaluate(() => {
@@ -55,21 +27,9 @@ test.describe('Cytoscape 3.33.1 Validation Tests', () => {
     }
   });
 
-  test('should render basic graph nodes', async ({ page }) => {
-    // Use existing Beer data instead of creating new data
-    const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-    await expect(queryTextarea).toBeVisible();
-    await queryTextarea.fill('SELECT FROM Beer LIMIT 3');
-    await page.getByRole('button', { name: '' }).first().click();
-
-    // Wait for results
-    await expect(page.getByText('Returned')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByRole('link', { name: 'Graph' })).toBeVisible();
-
-    // Wait for graph to render
-    await page.waitForFunction(() => {
-      return typeof globalCy !== 'undefined' && globalCy !== null && globalCy.nodes().length > 0;
-    }, { timeout: 10000 });
+  test('should render basic graph nodes', async ({ graphReady }) => {
+    const { helper, canvas } = graphReady;
+    const page = helper.page;
 
     // Check that nodes are rendered via cytoscape API
     const nodeInfo = await page.evaluate(() => {
@@ -87,20 +47,9 @@ test.describe('Cytoscape 3.33.1 Validation Tests', () => {
     }
   });
 
-  test('should handle node interactions correctly', async ({ page }) => {
-    // Execute query first to get graph data
-    const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-    await queryTextarea.fill('SELECT FROM Beer LIMIT 2');
-    await page.getByRole('button', { name: '' }).first().click();
-    await expect(page.getByText('Returned')).toBeVisible({ timeout: 15000 });
-
-    // Wait for graph to render
-    await page.waitForFunction(() => {
-      return typeof globalCy !== 'undefined' && globalCy !== null && globalCy.nodes().length > 0;
-    }, { timeout: 10000 });
-
-    // Test node selection via canvas interaction
-    const canvas = page.locator('canvas').last();
+  test('should handle node interactions correctly', async ({ graphReady }) => {
+    const { helper, canvas } = graphReady;
+    const page = helper.page;
     await expect(canvas).toBeVisible();
 
     const canvasBox = await canvas.boundingBox();
@@ -109,7 +58,9 @@ test.describe('Cytoscape 3.33.1 Validation Tests', () => {
 
     // Click on canvas center (where node likely is)
     await page.mouse.click(centerX, centerY);
-    await page.waitForTimeout(500);
+    await page.waitForFunction(() => {
+      return typeof globalCy !== 'undefined' && globalCy !== null;
+    }, { timeout: 2000 }).catch(() => {});
 
     // Check selection state via cytoscape API
     const selectionInfo = await page.evaluate(() => {
@@ -128,17 +79,9 @@ test.describe('Cytoscape 3.33.1 Validation Tests', () => {
     }
   });
 
-  test('should support graph layout changes', async ({ page }) => {
-    // Setup graph first
-    const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-    await queryTextarea.fill('SELECT FROM Beer LIMIT 5');
-    await page.getByRole('button', { name: '' }).first().click();
-    await expect(page.getByText('Returned')).toBeVisible({ timeout: 15000 });
-
-    // Wait for graph to render
-    await page.waitForFunction(() => {
-      return typeof globalCy !== 'undefined' && globalCy !== null && globalCy.nodes().length > 0;
-    }, { timeout: 10000 });
+  test('should support graph layout changes', async ({ graphReady }) => {
+    const { helper, canvas } = graphReady;
+    const page = helper.page;
 
     // Test layout functionality via API rather than UI controls
     const layoutTest = await page.evaluate(() => {
@@ -171,17 +114,9 @@ test.describe('Cytoscape 3.33.1 Validation Tests', () => {
     }
   });
 
-  test('should support zoom and pan operations', async ({ page }) => {
-    // Setup graph first
-    const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-    await queryTextarea.fill('SELECT FROM Beer LIMIT 3');
-    await page.getByRole('button', { name: '' }).first().click();
-    await expect(page.getByText('Returned')).toBeVisible({ timeout: 15000 });
-
-    // Wait for graph to render
-    await page.waitForFunction(() => {
-      return typeof globalCy !== 'undefined' && globalCy !== null && globalCy.nodes().length > 0;
-    }, { timeout: 10000 });
+  test('should support zoom and pan operations', async ({ graphReady }) => {
+    const { helper, canvas } = graphReady;
+    const page = helper.page;
 
     // Test zoom operations via API
     const zoomTest = await page.evaluate(() => {
@@ -221,17 +156,9 @@ test.describe('Cytoscape 3.33.1 Validation Tests', () => {
     }
   });
 
-  test('should support basic export functionality', async ({ page }) => {
-    // Setup graph first
-    const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-    await queryTextarea.fill('SELECT FROM Beer LIMIT 3');
-    await page.getByRole('button', { name: '' }).first().click();
-    await expect(page.getByText('Returned')).toBeVisible({ timeout: 15000 });
-
-    // Wait for graph to render
-    await page.waitForFunction(() => {
-      return typeof globalCy !== 'undefined' && globalCy !== null && globalCy.nodes().length > 0;
-    }, { timeout: 10000 });
+  test('should support basic export functionality', async ({ graphReady }) => {
+    const { helper, canvas } = graphReady;
+    const page = helper.page;
 
     // Test export functionality via canvas API
     const exportTest = await page.evaluate(() => {
@@ -259,21 +186,14 @@ test.describe('Cytoscape 3.33.1 Validation Tests', () => {
     }
   });
 
-  test('should handle moderate sized graphs efficiently', async ({ page }) => {
+  test('should handle moderate sized graphs efficiently', async ({ authenticatedHelper }) => {
+    const helper = authenticatedHelper;
+    const page = helper.page;
+
     // Use existing Beer data for performance test
-    const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-    await queryTextarea.fill('SELECT FROM Beer LIMIT 25'); // Moderate size for CI
-
     const startTime = Date.now();
-    await page.getByRole('button', { name: '' }).first().click();
-
-    // Wait for results
-    await expect(page.getByText('Returned')).toBeVisible({ timeout: 30000 });
-
-    // Wait for graph to render
-    await page.waitForFunction(() => {
-      return typeof globalCy !== 'undefined' && globalCy !== null && globalCy.nodes().length > 0;
-    }, { timeout: 20000 });
+    await helper.executeQuery('SELECT FROM Beer LIMIT 25'); // Moderate size for CI
+    await helper.waitForGraphReady();
 
     const totalTime = Date.now() - startTime;
 
@@ -296,17 +216,9 @@ test.describe('Cytoscape 3.33.1 Validation Tests', () => {
     }
   });
 
-  test('should maintain graph state during tab navigation', async ({ page }) => {
-    // Load some data first
-    const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-    await queryTextarea.fill('SELECT FROM Beer LIMIT 5');
-    await page.getByRole('button', { name: '' }).first().click();
-    await expect(page.getByText('Returned')).toBeVisible({ timeout: 15000 });
-
-    // Wait for graph to render
-    await page.waitForFunction(() => {
-      return typeof globalCy !== 'undefined' && globalCy !== null && globalCy.nodes().length > 0;
-    }, { timeout: 10000 });
+  test('should maintain graph state during tab navigation', async ({ graphReady }) => {
+    const { helper, canvas } = graphReady;
+    const page = helper.page;
 
     // Get initial graph state
     const initialState = await page.evaluate(() => {
@@ -327,32 +239,54 @@ test.describe('Cytoscape 3.33.1 Validation Tests', () => {
       // Navigate to Table tab if available
       if (await tableTab.isVisible({ timeout: 2000 })) {
         await tableTab.click();
-        await page.waitForTimeout(500);
+        await page.waitForLoadState('networkidle');
 
         // Navigate back to Graph tab
         if (await graphTab.isVisible({ timeout: 2000 })) {
           await graphTab.click();
-          await page.waitForTimeout(1000);
+          await page.waitForLoadState('networkidle');
         }
       } else if (await jsonTab.isVisible({ timeout: 2000 })) {
         // Alternative: navigate to JSON tab and back
         await jsonTab.click();
-        await page.waitForTimeout(500);
+        await page.waitForLoadState('networkidle');
 
         if (await graphTab.isVisible({ timeout: 2000 })) {
           await graphTab.click();
-          await page.waitForTimeout(1000);
+          await page.waitForLoadState('networkidle');
         }
       } else {
-        // Fallback: just refresh the current view or skip navigation test
-        console.log('No alternative tabs found - skipping navigation test');
-        expect(true).toBe(true);
+        // Fallback: verify current graph state when no tabs available
+        console.log('No alternative tabs found - validating current graph state instead');
+        const currentGraphState = await page.evaluate(() => {
+          return {
+            hasGraph: typeof globalCy !== 'undefined' && globalCy !== null,
+            nodeCount: globalCy ? globalCy.nodes().length : 0,
+            isStable: true
+          };
+        });
+
+        expect(currentGraphState.hasGraph).toBe(true,
+          'Graph should be present and accessible when tabs are not available');
+        expect(currentGraphState.nodeCount).toBeGreaterThan(0,
+          'Graph should contain nodes even without tab navigation');
         return;
       }
     } catch (error) {
       console.log('Tab navigation failed:', error.message);
-      // Skip the navigation part but still verify graph state
-      expect(true).toBe(true);
+      // Skip navigation but verify graph stability after failed attempt
+      const graphStateAfterError = await page.evaluate(() => {
+        return {
+          graphAccessible: typeof globalCy !== 'undefined' && globalCy !== null,
+          nodeCount: globalCy ? globalCy.nodes().length : 0,
+          errorRecovered: true
+        };
+      });
+
+      expect(graphStateAfterError.graphAccessible).toBe(true,
+        'Graph should remain accessible even after navigation errors');
+      expect(graphStateAfterError.nodeCount).toBeGreaterThan(0,
+        'Graph nodes should be preserved despite navigation failures');
       return;
     }
 
@@ -372,22 +306,25 @@ test.describe('Cytoscape 3.33.1 Validation Tests', () => {
       expect(finalState.stillActive).toBe(true);
       expect(finalState.nodeCount).toBeGreaterThanOrEqual(0);
     } else {
-      // If states aren't available, just ensure no errors occurred
-      expect(true).toBe(true);
+      // If states aren't available, verify basic graph functionality
+      const basicGraphCheck = await page.evaluate(() => {
+        return {
+          graphExists: typeof globalCy !== 'undefined' && globalCy !== null,
+          basicFunctionality: globalCy ? (globalCy.nodes().length >= 0) : false,
+          noErrors: true
+        };
+      });
+
+      expect(basicGraphCheck.graphExists).toBe(true,
+        'Graph should exist even when state comparison is not possible');
+      expect(basicGraphCheck.basicFunctionality).toBe(true,
+        'Graph should maintain basic functionality regardless of navigation state');
     }
   });
 
-  test('should handle cytoscape extensions correctly', async ({ page }) => {
-    // Execute query first to get graph data
-    const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-    await queryTextarea.fill('SELECT FROM Beer LIMIT 2');
-    await page.getByRole('button', { name: '' }).first().click();
-    await expect(page.getByText('Returned')).toBeVisible({ timeout: 15000 });
-
-    // Wait for graph to render and cytoscape to be available
-    await page.waitForFunction(() => {
-      return typeof globalCy !== 'undefined' && globalCy !== null && globalCy.nodes().length > 0;
-    }, { timeout: 10000 });
+  test('should handle cytoscape extensions correctly', async ({ graphReady }) => {
+    const { helper, canvas } = graphReady;
+    const page = helper.page;
 
     // Test that cytoscape extensions are available through globalCy
     const extensionInfo = await page.evaluate(() => {

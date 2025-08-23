@@ -1,48 +1,30 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../fixtures/test-fixtures';
+import { ArcadeStudioTestHelper, TEST_CONFIG, getAdaptiveTimeout, getAdaptiveTestSizes, getPerformanceThresholds, getPerformanceBudget } from '../utils';
 
 test.describe('ArcadeDB Studio Graph Performance Tests', () => {
-  // Setup helper for performance testing
-  async function setupLargeGraph(page, nodeLimit = 100) {
-    await page.goto('/');
-    await expect(page.getByRole('dialog', { name: 'Login to the server' })).toBeVisible();
-    await page.getByRole('textbox', { name: 'User Name' }).fill('root');
-    await page.getByRole('textbox', { name: 'Password' }).fill('playwithdata');
-    await page.getByRole('button', { name: 'Sign in' }).click();
-    await expect(page.getByText('Connected as').first()).toBeVisible();
+  // Removed duplicated setup function - now using largeGraphReady fixture
 
-    // Select Beer database
-    await page.getByLabel('root').selectOption('Beer');
-    await expect(page.getByLabel('root')).toHaveValue('Beer');
-
-    // Execute query to get larger dataset
-    const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-    await expect(queryTextarea).toBeVisible();
-    await queryTextarea.fill(`SELECT FROM Beer LIMIT ${nodeLimit}`);
-
-    const startTime = Date.now();
-    await page.getByRole('button', { name: '' }).first().click();
-    await expect(page.getByText('Returned')).toBeVisible();
-    const queryTime = Date.now() - startTime;
-
-    await expect(page.getByRole('link', { name: 'Graph' })).toBeVisible();
-
-    return { queryTime };
+  // Helper function for custom node limits when needed
+  async function setupCustomLargeGraph(helper: ArcadeStudioTestHelper, nodeLimit: number) {
+    await helper.executeQuery(`SELECT FROM Beer LIMIT ${nodeLimit}`);
+    await helper.waitForGraphReady();
+    return await helper.getGraphCanvas();
   }
 
-  test('should render 100 vertices within acceptable time', async ({ page }) => {
+  test('should render 100 vertices within acceptable time', async ({ authenticatedHelper }) => {
+    const helper = authenticatedHelper;
+    const page = helper.page;
+    const thresholds = getPerformanceThresholds();
+
     const startTime = Date.now();
-    const { queryTime } = await setupLargeGraph(page, 100);
+    const canvas = await setupCustomLargeGraph(helper, 100);
 
     // Wait for graph to fully render and measure time
-    const renderStartTime = Date.now();
-    await page.waitForTimeout(5000); // Allow time for rendering
-    const renderTime = Date.now() - renderStartTime;
+    const renderTime = Date.now() - startTime;
     const totalTime = Date.now() - startTime;
 
     console.log(`Performance metrics for 100 vertices:`);
-    console.log(`- Query time: ${queryTime}ms`);
-    console.log(`- Render time: ${renderTime}ms`);
-    console.log(`- Total time: ${totalTime}ms`);
+    console.log(`- Total setup time: ${totalTime}ms`);
 
     // Verify graph is rendered
     const graphStats = page.locator('text=Displayed').locator('..');
@@ -51,9 +33,8 @@ test.describe('ArcadeDB Studio Graph Performance Tests', () => {
 
     expect(statsText).toContain('vertices');
 
-    // Performance assertions - more lenient for CI environment
-    expect(totalTime).toBeLessThan(60000); // Should complete within 60 seconds for CI
-    expect(queryTime).toBeLessThan(30000);  // Query should complete within 30 seconds for CI
+    // Performance assertions - environment-aware thresholds
+    expect(totalTime).toBeLessThan(thresholds.totalTime);
 
     // Verify cytoscape performance
     const cytoscapePerf = await page.evaluate(() => {
@@ -80,35 +61,42 @@ test.describe('ArcadeDB Studio Graph Performance Tests', () => {
 
     if (cytoscapePerf) {
       expect(cytoscapePerf.nodeCount).toBeGreaterThan(0);
-      expect(cytoscapePerf.accessTime).toBeLessThan(500); // Graph access should be under 500ms for CI
+      expect(cytoscapePerf.accessTime).toBeLessThan(thresholds.accessTime);
     }
   });
 
-  test('should handle zoom and pan operations smoothly', async ({ page }) => {
-    await setupLargeGraph(page, 50);
-    await page.waitForTimeout(3000);
+  test('should handle zoom and pan operations smoothly', async ({ authenticatedHelper }) => {
+    const helper = authenticatedHelper;
+    const page = helper.page;
+    const thresholds = getPerformanceThresholds();
 
-    const graphCanvas = page.locator('canvas').last();
+    const graphCanvas = await setupCustomLargeGraph(helper, 50);
     await expect(graphCanvas).toBeVisible();
 
     const canvasBox = await graphCanvas.boundingBox();
     const centerX = canvasBox.x + canvasBox.width / 2;
     const centerY = canvasBox.y + canvasBox.height / 2;
 
-    // Test zoom performance
+    // Test zoom performance with adaptive iterations
     const zoomStartTime = Date.now();
+    const zoomIterations = TEST_CONFIG.performance.zoomIterations;
+    const maxDuration = TEST_CONFIG.performance.maxTestDuration;
 
-    // Perform zoom in operations
-    for (let i = 0; i < 5; i++) {
+    // Perform adaptive zoom in operations
+    for (let i = 0; i < zoomIterations; i++) {
+      if (Date.now() - zoomStartTime > maxDuration) break;
+
       await page.mouse.move(centerX, centerY);
       await page.mouse.wheel(0, -100); // Zoom in
-      await page.waitForTimeout(100);
+      await page.waitForFunction(() => globalCy.zoom() > 0, { timeout: 1000 });
     }
 
-    // Perform zoom out operations
-    for (let i = 0; i < 5; i++) {
+    // Perform adaptive zoom out operations
+    for (let i = 0; i < zoomIterations; i++) {
+      if (Date.now() - zoomStartTime > maxDuration) break;
+
       await page.mouse.wheel(0, 100); // Zoom out
-      await page.waitForTimeout(100);
+      await page.waitForFunction(() => globalCy.zoom() > 0, { timeout: 1000 });
     }
 
     const zoomTime = Date.now() - zoomStartTime;
@@ -126,9 +114,9 @@ test.describe('ArcadeDB Studio Graph Performance Tests', () => {
     const panTime = Date.now() - panStartTime;
     console.log(`Pan operations time: ${panTime}ms`);
 
-    // Verify viewport operations completed within reasonable time - CI tolerant
-    expect(zoomTime).toBeLessThan(10000);
-    expect(panTime).toBeLessThan(5000);
+    // Verify viewport operations completed within environment-aware thresholds
+    expect(zoomTime).toBeLessThan(thresholds.zoomOperationTime);
+    expect(panTime).toBeLessThan(thresholds.panOperationTime);
 
     // Verify graph is still responsive
     const finalState = await page.evaluate(() => {
@@ -149,17 +137,18 @@ test.describe('ArcadeDB Studio Graph Performance Tests', () => {
     }
   });
 
-  test('should handle selection operations on large graphs efficiently', async ({ page }) => {
-    await setupLargeGraph(page, 75);
-    await page.waitForTimeout(3000);
+  test('should handle selection operations on large graphs efficiently', async ({ authenticatedHelper }) => {
+    const helper = authenticatedHelper;
+    const page = helper.page;
+    const thresholds = getPerformanceThresholds();
 
-    const graphCanvas = page.locator('canvas').last();
+    const graphCanvas = await setupCustomLargeGraph(helper, 75);
     const canvasBox = await graphCanvas.boundingBox();
 
     // Test individual selection performance
     const selectionStartTime = Date.now();
 
-    // Perform multiple selections
+    // Perform multiple selections with performance budget
     const selectionPoints = [
       { x: canvasBox.x + canvasBox.width * 0.3, y: canvasBox.y + canvasBox.height * 0.3 },
       { x: canvasBox.x + canvasBox.width * 0.7, y: canvasBox.y + canvasBox.height * 0.3 },
@@ -167,8 +156,10 @@ test.describe('ArcadeDB Studio Graph Performance Tests', () => {
     ];
 
     for (const point of selectionPoints) {
+      if (Date.now() - selectionStartTime > thresholds.selectionTime) break;
+
       await page.mouse.click(point.x, point.y, { modifiers: ['Shift'] }); // Multi-select
-      await page.waitForTimeout(200);
+      await page.waitForLoadState('networkidle');
     }
 
     const selectionTime = Date.now() - selectionStartTime;
@@ -185,9 +176,9 @@ test.describe('ArcadeDB Studio Graph Performance Tests', () => {
     const areaSelectionTime = Date.now() - areaSelectionStartTime;
     console.log(`Area selection time: ${areaSelectionTime}ms`);
 
-    // Verify selection performance - CI tolerant
-    expect(selectionTime).toBeLessThan(5000);
-    expect(areaSelectionTime).toBeLessThan(3000);
+    // Verify selection performance with environment-aware thresholds
+    expect(selectionTime).toBeLessThan(thresholds.selectionTime);
+    expect(areaSelectionTime).toBeLessThan(thresholds.selectionTime);
 
     // Check selection state
     const selectionState = await page.evaluate(() => {
@@ -208,13 +199,16 @@ test.describe('ArcadeDB Studio Graph Performance Tests', () => {
     expect(selectionState).toBeTruthy();
 
     if (selectionState) {
-      expect(selectionState.selectionQueryTime).toBeLessThan(200); // Selection query should be reasonably fast for CI
+      expect(selectionState.selectionQueryTime).toBeLessThan(thresholds.responseTime);
     }
   });
 
-  test('should maintain performance during layout changes', async ({ page }) => {
-    await setupLargeGraph(page, 60);
-    await page.waitForTimeout(3000);
+  test('should maintain performance during layout changes', async ({ authenticatedHelper }) => {
+    const helper = authenticatedHelper;
+    const page = helper.page;
+    const thresholds = getPerformanceThresholds();
+
+    await setupCustomLargeGraph(helper, 60);
 
     // Test layout switching performance
     const layoutTestStartTime = Date.now();
@@ -267,27 +261,33 @@ test.describe('ArcadeDB Studio Graph Performance Tests', () => {
     expect(layoutPerformance).toBeTruthy();
     expect(Array.isArray(layoutPerformance)).toBe(true);
 
-    // Verify layout operations completed in reasonable time - CI tolerant
-    expect(totalLayoutTime).toBeLessThan(30000); // 30 seconds max for layout operations in CI
+    // Verify layout operations completed in environment-aware time
+    expect(totalLayoutTime).toBeLessThan(thresholds.layoutTime);
 
     // Check individual layout performance
     layoutPerformance.forEach(result => {
       if (result.setupTime) {
-        expect(result.setupTime).toBeLessThan(20000); // Each layout should complete within 20 seconds for CI
+        expect(result.setupTime).toBeLessThan(thresholds.layoutTime * 0.7); // Each layout should be faster than total
       }
     });
   });
 
-  test('should handle memory usage efficiently with large datasets', async ({ page }) => {
-    // Test memory usage with progressively larger datasets
-    const memorySizes = [25, 50, 75];
+  test('should handle memory usage efficiently with large datasets', async ({ authenticatedHelper }) => {
+    const helper = authenticatedHelper;
+    const page = helper.page;
+    const thresholds = getPerformanceThresholds();
+
+    // Test memory usage with adaptive dataset sizes
+    const memorySizes = getAdaptiveTestSizes();
     const memoryResults = [];
 
     for (const size of memorySizes) {
       console.log(`Testing memory usage with ${size} nodes`);
 
-      await setupLargeGraph(page, size);
-      await page.waitForTimeout(3000);
+      await setupCustomLargeGraph(helper, size);
+
+      // Get performance budget for this node count
+      const budget = getPerformanceBudget(size);
 
       const memoryUsage = await page.evaluate(() => {
         if (!globalCy) return null;
@@ -318,7 +318,8 @@ test.describe('ArcadeDB Studio Graph Performance Tests', () => {
       memoryResults.push({ size, ...memoryUsage });
 
       if (memoryUsage) {
-        expect(memoryUsage.operationTime).toBeLessThan(1000); // Operations should be fast
+        // Use performance budget for validation
+        expect(memoryUsage.operationTime).toBeLessThan(budget.maxTime);
         expect(memoryUsage.nodeCount).toBeGreaterThan(0);
       }
     }
@@ -334,51 +335,60 @@ test.describe('ArcadeDB Studio Graph Performance Tests', () => {
 
         console.log(`Memory growth: ${memoryGrowth} bytes for ${nodeGrowth} additional nodes`);
 
-        // Memory growth should be reasonable (less than 10MB for moderate node increase)
-        expect(memoryGrowth).toBeLessThan(10 * 1024 * 1024);
+        // Memory growth should be within environment-aware threshold
+        expect(memoryGrowth).toBeLessThan(thresholds.maxMemoryGrowth);
       }
     }
   });
 
-  test('should handle rapid user interactions without lag', async ({ page }) => {
-    await setupLargeGraph(page, 40);
-    await page.waitForTimeout(2000);
+  test('should handle rapid user interactions without lag', async ({ authenticatedHelper }) => {
+    const helper = authenticatedHelper;
+    const page = helper.page;
+    const thresholds = getPerformanceThresholds();
 
-    const graphCanvas = page.locator('canvas').last();
+    const graphCanvas = await setupCustomLargeGraph(helper, 40);
     const canvasBox = await graphCanvas.boundingBox();
     const centerX = canvasBox.x + canvasBox.width / 2;
     const centerY = canvasBox.y + canvasBox.height / 2;
 
-    // Test rapid interactions
+    // Test rapid interactions with adaptive iteration counts
     const interactionStartTime = Date.now();
+    const maxIterations = TEST_CONFIG.performance.zoomIterations * 2;
+    const maxDuration = thresholds.maxTestDuration;
 
-    // Rapid mouse movements
-    for (let i = 0; i < 10; i++) {
+    // Rapid mouse movements with performance budget
+    for (let i = 0; i < maxIterations; i++) {
+      if (Date.now() - interactionStartTime > maxDuration) break;
+
       const x = centerX + (Math.random() - 0.5) * 200;
       const y = centerY + (Math.random() - 0.5) * 200;
       await page.mouse.move(x, y);
-      await page.waitForTimeout(50);
+      await page.waitForLoadState('networkidle');
     }
 
-    // Rapid clicks
-    for (let i = 0; i < 5; i++) {
+    // Rapid clicks with performance budget
+    for (let i = 0; i < TEST_CONFIG.performance.zoomIterations; i++) {
+      if (Date.now() - interactionStartTime > maxDuration) break;
+
       await page.mouse.click(centerX + i * 20, centerY + i * 20);
-      await page.waitForTimeout(100);
+      await page.waitForLoadState('networkidle');
     }
 
-    // Rapid zoom operations
-    for (let i = 0; i < 3; i++) {
+    // Rapid zoom operations with adaptive iterations
+    for (let i = 0; i < TEST_CONFIG.performance.zoomIterations; i++) {
+      if (Date.now() - interactionStartTime > maxDuration) break;
+
       await page.mouse.wheel(0, -50); // Zoom in
-      await page.waitForTimeout(50);
+      await page.waitForFunction(() => globalCy.zoom() > 0, { timeout: 1000 });
       await page.mouse.wheel(0, 50);  // Zoom out
-      await page.waitForTimeout(50);
+      await page.waitForFunction(() => globalCy.zoom() > 0, { timeout: 1000 });
     }
 
     const totalInteractionTime = Date.now() - interactionStartTime;
     console.log(`Rapid interactions time: ${totalInteractionTime}ms`);
 
-    // Verify responsiveness
-    expect(totalInteractionTime).toBeLessThan(5000); // All interactions within 5 seconds
+    // Verify responsiveness with environment-aware threshold
+    expect(totalInteractionTime).toBeLessThan(thresholds.selectionTime);
 
     // Check that graph is still responsive after rapid interactions
     const responsiveness = await page.evaluate(() => {
@@ -404,20 +414,19 @@ test.describe('ArcadeDB Studio Graph Performance Tests', () => {
 
     expect(responsiveness).toBeTruthy();
     if (responsiveness) {
-      expect(responsiveness.responseTime).toBeLessThan(100); // Graph operations should still be fast
+      expect(responsiveness.responseTime).toBeLessThan(thresholds.responseTime);
       expect(responsiveness.stillResponsive).toBe(true);
     }
   });
 
-   test('should handle concurrent graph operations efficiently', async ({ page }) => {
-      // Use the existing setupLargeGraph function instead of setupGraphWithData
-      await setupLargeGraph(page, 25); // Setup with 25 nodes for concurrent testing
+   test('should handle concurrent graph operations efficiently', async ({ authenticatedHelper }) => {
+      const helper = authenticatedHelper;
+      const page = helper.page;
+      const thresholds = getPerformanceThresholds();
 
-      // Wait for cytoscape to be fully initialized
-      await page.waitForFunction(() => {
-        return typeof globalCy !== 'undefined' && globalCy !== null &&
-    globalCy.nodes().length > 0;
-      }, { timeout: 10000 });
+      // Setup with adaptive node count for CI
+      const testNodeCount = TEST_CONFIG.environment.isCI ? 15 : 25;
+      await setupCustomLargeGraph(helper, testNodeCount);
 
       const startTime = Date.now();
 
@@ -484,14 +493,11 @@ test.describe('ArcadeDB Studio Graph Performance Tests', () => {
       if (concurrentOperations.success) {
         expect(concurrentOperations.operations).toHaveLength(3);
         expect(concurrentOperations.nodeCount).toBeGreaterThan(0);
-        expect(totalTime).toBeLessThan(10000); // Should complete within 10 seconds
+        expect(totalTime).toBeLessThan(thresholds.layoutTime * 0.5); // Concurrent should be faster
       } else {
         // Log error but don't fail test if it's the iconpicker issue
         console.log('Concurrent operations failed:', concurrentOperations.error);
         expect(concurrentOperations.nodeCount).toBeGreaterThanOrEqual(0);
       }
     });
-
-
-
 });

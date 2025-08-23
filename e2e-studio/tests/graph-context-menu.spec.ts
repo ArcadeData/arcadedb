@@ -1,40 +1,12 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../fixtures/test-fixtures';
+import { ArcadeStudioTestHelper, TEST_CONFIG } from '../utils';
 
 test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
-  // Setup helper for graph operations with proper error handling
-  async function setupGraphWithData(page) {
-    // Navigate and login
-    await page.goto('/');
-    await expect(page.getByRole('dialog', { name: 'Login to the server' })).toBeVisible({ timeout: 10000 });
-    await page.getByRole('textbox', { name: 'User Name' }).fill('root');
-    await page.getByRole('textbox', { name: 'Password' }).fill('playwithdata');
-    await page.getByRole('button', { name: 'Sign in' }).click();
-    await expect(page.getByText('Connected as').first()).toBeVisible({ timeout: 15000 });
+  // Removed duplicated setup function - now using fixtures
 
-    // Select Beer database
-    await page.getByLabel('root').selectOption('Beer');
-    await expect(page.getByLabel('root')).toHaveValue('Beer');
-
-    // Execute query to get vertices with relationships
-    const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-    await expect(queryTextarea).toBeVisible();
-    await queryTextarea.fill('SELECT FROM Beer LIMIT 5');
-    await page.getByRole('button', { name: '' }).first().click();
-
-    // Wait for results and switch to graph view
-    await expect(page.getByText('Returned')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByRole('link', { name: 'Graph' })).toBeVisible();
-
-    // Wait for graph to fully render and globalCy to be available
-    await page.waitForFunction(() => {
-      return typeof globalCy !== 'undefined' && globalCy !== null && globalCy.nodes().length > 0;
-    }, { timeout: 10000 });
-
-    return page.locator('canvas').last(); // Main graph canvas
-  }
-
-  test('should display context menu on vertex right-click', async ({ page }) => {
-    const graphCanvas = await setupGraphWithData(page);
+  test('should display context menu on vertex right-click', async ({ graphReady }) => {
+    const { helper, canvas: graphCanvas } = graphReady;
+    const page = helper.page;
 
     // Verify canvas is visible and get its bounds
     await expect(graphCanvas).toBeVisible();
@@ -48,28 +20,31 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
     // Right-click to trigger context menu
     await page.mouse.click(centerX, centerY, { button: 'right' });
 
-    // Wait for context menu to appear with retries
-    let contextMenuVisible = false;
-    for (let i = 0; i < 3; i++) {
-      await page.waitForTimeout(500);
-      const faIcons = await page.locator('.fa').count();
-      const cxtElements = await page.locator('[id*="cxt"]').count();
-      if (faIcons > 0 || cxtElements > 0) {
-        contextMenuVisible = true;
-        break;
-      }
-      // Try alternative right-click method
-      if (i < 2) {
-        await page.mouse.click(centerX, centerY, { button: 'right', clickCount: 1 });
-      }
-    }
+    // Wait for context menu to appear with proper wait
+    await page.waitForFunction(() => {
+      return document.querySelector('.fa, [id*="cxt"]') !== null;
+    }, { timeout: 3000 }).catch(() => {
+      // Context menu may not appear depending on graph state
+      console.log('Context menu did not appear - this may be expected');
+    });
 
-    // Basic test completion - context menu behavior may vary by graph state
-    expect(true).toBe(true); // Test that right-click operation completes without errors
+    // Verify context menu or graph state after right-click
+    const contextMenuState = await page.evaluate(() => {
+      const contextMenu = document.querySelector('.fa, [id*="cxt"]');
+      return {
+        menuVisible: contextMenu !== null,
+        graphStillResponsive: typeof globalCy !== 'undefined' && globalCy !== null
+      };
+    });
+
+    expect(contextMenuState.graphStillResponsive).toBe(true,
+      'Graph should remain responsive after right-click operation');
+    // Context menu visibility is optional depending on graph state
   });
 
- test('should expand vertex using context menu "both" direction', async ({ page }) => {
-    const graphCanvas = await setupGraphWithData(page);
+ test('should expand vertex using context menu "both" direction', async ({ graphReady }) => {
+    const { helper, canvas: graphCanvas } = graphReady;
+    const page = helper.page;
 
     // Get initial graph stats
     const initialStats = page.locator('text=Displayed').locator('..');
@@ -82,7 +57,7 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
     const centerY = canvasBox.y + canvasBox.height / 2;
 
     await page.mouse.click(centerX, centerY);
-    await page.waitForTimeout(1000);
+    await page.waitForLoadState('networkidle');
 
     // Use the actual ArcadeDB Studio expansion workflow
     try {
@@ -90,7 +65,8 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
       const expandButton = page.locator('button:has-text("Expand"), .fa-expand, .fa-plus');
       if (await expandButton.isVisible({ timeout: 2000 })) {
         await expandButton.first().click();
-        await page.waitForTimeout(2000);
+        await page.waitForLoadState('networkidle');
+        await expect(page.getByText('Returned')).toBeVisible({ timeout: 10000 }).catch(() => {});
       } else {
         // Method 2: Use programmatic expansion via cytoscape API
         await page.evaluate(() => {
@@ -106,7 +82,10 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
             }
           }
         });
-        await page.waitForTimeout(3000);
+        await page.waitForLoadState('networkidle');
+        await page.waitForFunction(() => {
+          return typeof globalCy !== 'undefined' && globalCy !== null;
+        }, { timeout: 5000 }).catch(() => {});
       }
     } catch (error) {
       console.log('Expansion attempt failed:', error.message);
@@ -116,7 +95,7 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
       await queryTextarea.fill('SELECT FROM Beer WHERE out().size() > 0 LIMIT 3');
       await page.getByRole('button', { name: '' }).first().click();
       await expect(page.getByText('Returned')).toBeVisible({ timeout: 15000 });
-      await page.waitForTimeout(2000);
+      await page.waitForLoadState('networkidle');
     }
 
     // Verify expansion occurred - be more flexible with the assertion
@@ -132,14 +111,27 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
 
     // If expansion still didn't work, that's ok - some datasets don't have connections
     if (!hasMoreElements) {
-      console.log('No expansion occurred - this may be expected if Beer vertices have noconnections');
-      expect(true).toBe(true); // Test passes if no errors occurred
+      console.log('No expansion occurred - this may be expected if Beer vertices have no connections');
+      // Verify graph is still functional even without expansion
+      const graphInfo = await helper.page.evaluate(() => {
+        return {
+          cytoscapeResponsive: typeof globalCy !== 'undefined' && globalCy !== null,
+          nodeCount: globalCy ? globalCy.nodes().length : 0
+        };
+      });
+      expect(graphInfo.cytoscapeResponsive).toBe(true,
+        'Cytoscape should remain functional even when expansion fails');
+      expect(graphInfo.nodeCount).toBeGreaterThan(0,
+        'Graph should still contain nodes after expansion attempt');
     } else {
       expect(hasMoreElements).toBe(true);
     }
   });
 
-  test('should handle vertex context menu on mobile touch devices', async ({ page }) => {
+  test('should handle vertex context menu on mobile touch devices', async ({ graphReady }) => {
+     const { helper, canvas: graphCanvas } = graphReady;
+     const page = helper.page;
+
      // Simulate mobile viewport with touch enabled
      await page.setViewportSize({ width: 375, height: 667 });
 
@@ -151,8 +143,6 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
          value: 1,
        });
      });
-
-     const graphCanvas = await setupGraphWithData(page);
      const canvasBox = await graphCanvas.boundingBox();
      const centerX = canvasBox.x + canvasBox.width / 2;
      const centerY = canvasBox.y + canvasBox.height / 2;
@@ -190,7 +180,9 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
        }
      }, { x: centerX, y: centerY });
 
-     await page.waitForTimeout(500);
+     await page.waitForFunction(() => {
+       return document.querySelector('canvas:last-child') !== null;
+     }, { timeout: 2000 });
 
      // Now simulate long press for context menu
      await page.evaluate(async (coords) => {
@@ -224,51 +216,81 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
        }
      }, { x: centerX, y: centerY });
 
-     await page.waitForTimeout(1000);
+     await page.waitForFunction(() => {
+       return document.querySelector('.fa, [class*="menu"],[class*="context"]') !== null;
+     }, { timeout: 3000 }).catch(() => {});
 
      // Verify mobile context menu elements - be more lenient
      const mobileMenuVisible = await page.locator('.fa, [class*="menu"],[class*="context"]').count() > 0;
 
-     // Since mobile context menu behavior varies, just verify the touch events executed without errors
-     expect(true).toBe(true); // Test that touch simulation completes without errors
+     // Verify touch events executed successfully and graph remains responsive
+     const touchTestResult = await page.evaluate(() => {
+       return {
+         graphResponsive: typeof globalCy !== 'undefined' && globalCy !== null,
+         canvasAccessible: document.querySelector('canvas:last-child') !== null,
+         noJavaScriptErrors: true
+       };
+     });
+
+     expect(touchTestResult.graphResponsive).toBe(true,
+       'Graph should remain responsive after touch simulation');
+     expect(touchTestResult.canvasAccessible).toBe(true,
+       'Canvas should remain accessible after touch events');
 
      console.log('Mobile menu elements found:', await page.locator('.fa, [class*="menu"],[class*="context"]').count());
    });
 
-  test('should close context menu when clicking elsewhere', async ({ page }) => {
-    const graphCanvas = await setupGraphWithData(page);
+  test('should close context menu when clicking elsewhere', async ({ graphReady }) => {
+    const { helper, canvas: graphCanvas } = graphReady;
+    const page = helper.page;
     const canvasBox = await graphCanvas.boundingBox();
     const centerX = canvasBox.x + canvasBox.width / 2;
     const centerY = canvasBox.y + canvasBox.height / 2;
 
     // Open context menu
     await page.mouse.click(centerX, centerY, { button: 'right' });
-    await page.waitForTimeout(1000);
+    await page.waitForFunction(() => {
+      return document.querySelector('.fa, [id*="cxt"]') !== null;
+    }, { timeout: 2000 }).catch(() => {});
 
     // Verify menu is open
     const menuOpen = await page.locator('.fa').count() > 0;
     if (!menuOpen) {
       // Try alternative method
       await page.mouse.down({ button: 'right' });
-      await page.waitForTimeout(1000);
+      await page.waitForFunction(() => {
+        return document.querySelector('.fa, [id*="cxt"]') !== null;
+      }, { timeout: 2000 }).catch(() => {});
       await page.mouse.up({ button: 'right' });
     }
 
     // Click elsewhere to close menu
     await page.mouse.click(centerX + 100, centerY + 100);
-    await page.waitForTimeout(500);
+    await page.waitForLoadState('networkidle');
 
     // Verify menu is closed (this is implementation-dependent)
     // The menu elements might still exist but be hidden
     const menuStillVisible = await page.locator('.fa:visible').count();
     console.log('Menu elements still visible:', menuStillVisible);
 
-    // This test mainly ensures no errors occur during menu lifecycle
-    expect(true).toBe(true); // Basic assertion that test completed
+    // Verify context menu lifecycle completed successfully
+    const menuLifecycleState = await page.evaluate(() => {
+      return {
+        graphResponsive: typeof globalCy !== 'undefined' && globalCy !== null,
+        nodeCount: globalCy ? globalCy.nodes().length : 0,
+        noJavaScriptErrors: true
+      };
+    });
+
+    expect(menuLifecycleState.graphResponsive).toBe(true,
+      'Graph should remain responsive after menu lifecycle');
+    expect(menuLifecycleState.nodeCount).toBeGreaterThan(0,
+      'Graph nodes should still be present after context menu operations');
   });
 
-  test('should handle context menu with multiple selected vertices', async ({ page }) => {
-    const graphCanvas = await setupGraphWithData(page);
+  test('should handle context menu with multiple selected vertices', async ({ graphReady }) => {
+    const { helper, canvas: graphCanvas } = graphReady;
+    const page = helper.page;
     const canvasBox = await graphCanvas.boundingBox();
 
     // Select multiple vertices by area selection or shift+click simulation
@@ -283,14 +305,16 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
     await page.mouse.move(endX, endY);
     await page.mouse.up();
 
-    await page.waitForTimeout(1000);
+    await page.waitForLoadState('networkidle');
 
     // Right-click on selected area
     const centerX = (startX + endX) / 2;
     const centerY = (startY + endY) / 2;
     await page.mouse.click(centerX, centerY, { button: 'right' });
 
-    await page.waitForTimeout(1000);
+    await page.waitForFunction(() => {
+      return document.querySelector('.fa, [class*="context"]') !== null;
+    }, { timeout: 2000 }).catch(() => {});
 
     // Verify context menu appears for multiple selection
     const contextMenuElements = await page.locator('.fa, [class*="context"]').count();
@@ -300,8 +324,9 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
     expect(contextMenuElements).toBeGreaterThanOrEqual(0);
   });
 
-  test('should validate context menu positioning at canvas edges', async ({ page }) => {
-    const graphCanvas = await setupGraphWithData(page);
+  test('should validate context menu positioning at canvas edges', async ({ graphReady }) => {
+    const { helper, canvas: graphCanvas } = graphReady;
+    const page = helper.page;
     const canvasBox = await graphCanvas.boundingBox();
 
     // Test context menu near canvas edges
@@ -316,7 +341,9 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
       console.log(`Testing context menu at edge position: ${pos.x}, ${pos.y}`);
 
       await page.mouse.click(pos.x, pos.y, { button: 'right' });
-      await page.waitForTimeout(500);
+      await page.waitForFunction(() => {
+        return document.querySelector('.fa') !== null;
+      }, { timeout: 1000 }).catch(() => {});
 
       // Check if context menu appears and is properly positioned
       const menuElements = await page.locator('.fa').count();
@@ -324,10 +351,23 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
 
       // Click elsewhere to close any menu
       await page.mouse.click(canvasBox.x + canvasBox.width / 2, canvasBox.y + canvasBox.height / 2);
-      await page.waitForTimeout(300);
+      await page.waitForLoadState('networkidle');
     }
 
-    // Test completed successfully
-    expect(true).toBe(true);
+    // Verify edge position context menu tests completed successfully
+    const edgeTestResult = await page.evaluate(() => {
+      return {
+        graphFunctional: typeof globalCy !== 'undefined' && globalCy !== null,
+        nodeCount: globalCy ? globalCy.nodes().length : 0,
+        canvasIntact: document.querySelector('canvas:last-child') !== null
+      };
+    });
+
+    expect(edgeTestResult.graphFunctional).toBe(true,
+      'Graph should remain functional after edge position testing');
+    expect(edgeTestResult.nodeCount).toBeGreaterThan(0,
+      'Graph nodes should be preserved through context menu edge tests');
+    expect(edgeTestResult.canvasIntact).toBe(true,
+      'Canvas element should remain intact after edge position interactions');
   });
 });
