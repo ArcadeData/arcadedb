@@ -46,20 +46,20 @@ import java.rmi.*;
 import java.util.*;
 
 public class PostServerCommandHandler extends AbstractServerHttpHandler {
-  static final String LIST_DATABASES       = "list databases";
-  static final String SHUTDOWN             = "shutdown";
-  static final String CREATE_DATABASE      = "create database";
-  static final String DROP_DATABASE        = "drop database";
-  static final String CLOSE_DATABASE       = "close database";
-  static final String OPEN_DATABASE        = "open database";
-  static final String CREATE_USER          = "create user";
-  static final String DROP_USER            = "drop user";
-  static final String CONNECT_CLUSTER      = "connect cluster";
-  static final String DISCONNECT_CLUSTER   = "disconnect cluster";
-  static final String SET_DATABASE_SETTING = "set database setting";
-  static final String SET_SERVER_SETTING   = "set server setting";
-  static final String GET_SERVER_EVENTS    = "get server events";
-  static final String ALIGN_DATABASE       = "align database";
+  private static final String LIST_DATABASES       = "list databases";
+  private static final String SHUTDOWN             = "shutdown";
+  private static final String CREATE_DATABASE      = "create database";
+  private static final String DROP_DATABASE        = "drop database";
+  private static final String CLOSE_DATABASE       = "close database";
+  private static final String OPEN_DATABASE        = "open database";
+  private static final String CREATE_USER          = "create user";
+  private static final String DROP_USER            = "drop user";
+  private static final String CONNECT_CLUSTER      = "connect cluster";
+  private static final String DISCONNECT_CLUSTER   = "disconnect cluster";
+  private static final String SET_DATABASE_SETTING = "set database setting";
+  private static final String SET_SERVER_SETTING   = "set server setting";
+  private static final String GET_SERVER_EVENTS    = "get server events";
+  private static final String ALIGN_DATABASE       = "align database";
 
   public PostServerCommandHandler(final HttpServer httpServer) {
     super(httpServer);
