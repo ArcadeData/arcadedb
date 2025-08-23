@@ -183,7 +183,7 @@ public class ArcadeCypher extends ArcadeGremlin {
       updatedParameters.put(replacementMap.get(entry.getKey()), entry.getValue());
     }
 
-    return new CypherQueryAndParameters(newCypher.toString(), updatedParameters);
+    return new CypherQueryAndParameters(newCypher, updatedParameters);
   }
 
   private static String generateRandomString(int length) {
