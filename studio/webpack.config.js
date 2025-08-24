@@ -49,7 +49,7 @@ module.exports = {
           to: 'css/bootstrap.min.css',
         },
         {
-          from: 'node_modules/datatables.net/js/jquery.dataTables.min.js',
+          from: 'node_modules/datatables.net/js/dataTables.min.js',
           to: 'js/dataTables.min.js',
         },
         {
@@ -59,6 +59,65 @@ module.exports = {
         {
           from: 'node_modules/datatables.net-bs5/css/dataTables.bootstrap5.min.css',
           to: 'css/dataTables.bootstrap5.min.css',
+        },
+        // DataTables Extensions
+        {
+          from: 'node_modules/datatables.net-buttons/js/dataTables.buttons.min.js',
+          to: 'js/dataTables.buttons.min.js',
+        },
+        {
+          from: 'node_modules/datatables.net-buttons-bs5/js/buttons.bootstrap5.min.js',
+          to: 'js/buttons.bootstrap5.min.js',
+        },
+        {
+          from: 'node_modules/datatables.net-buttons-bs5/css/buttons.bootstrap5.min.css',
+          to: 'css/buttons.bootstrap5.min.css',
+        },
+        {
+          from: 'node_modules/datatables.net-responsive/js/dataTables.responsive.min.js',
+          to: 'js/dataTables.responsive.min.js',
+        },
+        {
+          from: 'node_modules/datatables.net-responsive-bs5/js/responsive.bootstrap5.min.js',
+          to: 'js/responsive.bootstrap5.min.js',
+        },
+        {
+          from: 'node_modules/datatables.net-responsive-bs5/css/responsive.bootstrap5.min.css',
+          to: 'css/responsive.bootstrap5.min.css',
+        },
+        {
+          from: 'node_modules/datatables.net-select/js/dataTables.select.min.js',
+          to: 'js/dataTables.select.min.js',
+        },
+        {
+          from: 'node_modules/datatables.net-select-bs5/js/select.bootstrap5.min.js',
+          to: 'js/select.bootstrap5.min.js',
+        },
+        {
+          from: 'node_modules/datatables.net-select-bs5/css/select.bootstrap5.min.css',
+          to: 'css/select.bootstrap5.min.css',
+        },
+        // DataTables Buttons Extension - Additional Files
+        {
+          from: 'node_modules/datatables.net-buttons/js/buttons.html5.min.js',
+          to: 'js/buttons.html5.min.js',
+        },
+        {
+          from: 'node_modules/datatables.net-buttons/js/buttons.print.min.js',
+          to: 'js/buttons.print.min.js',
+        },
+        // Excel/PDF Export Dependencies for DataTables
+        {
+          from: 'node_modules/jszip/dist/jszip.min.js',
+          to: 'js/jszip.min.js',
+        },
+        {
+          from: 'node_modules/pdfmake/build/pdfmake.min.js',
+          to: 'js/pdfmake.min.js',
+        },
+        {
+          from: 'node_modules/pdfmake/build/vfs_fonts.js',
+          to: 'js/vfs_fonts.js',
         },
         {
           from: 'node_modules/sweetalert2/dist/sweetalert2.all.min.js',
