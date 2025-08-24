@@ -56,6 +56,12 @@ export class ArcadeStudioTestHelper {
 
     // Wait for login success with network state
     await this.page.waitForLoadState('networkidle');
+
+    // Wait for the login modal to disappear first
+    await expect(this.page.getByRole('dialog', { name: 'Login to the server' }))
+      .not.toBeVisible({ timeout: TEST_CONFIG.timeouts.login });
+
+    // Then wait for the "Connected as" text to appear (use first one)
     await expect(this.page.getByText('Connected as').first())
       .toBeVisible({ timeout: TEST_CONFIG.timeouts.login });
 

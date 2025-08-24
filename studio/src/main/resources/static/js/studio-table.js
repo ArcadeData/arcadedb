@@ -58,12 +58,12 @@ function renderTable() {
     for (let i in orderedColumns) {
       if (orderedColumns[i] == "@rid")
         tableColumns.push({
-          sTitle: escapeHtml(orderedColumns[i]),
-          mRender: function (data, type, full) {
+          title: escapeHtml(orderedColumns[i]),
+          render: function (data, type, full) {
             return $("<div/>").html(data).text();
           },
         });
-      else tableColumns.push({ sTitle: escapeHtml(orderedColumns[i]), defaultContent: "" });
+      else tableColumns.push({ title: escapeHtml(orderedColumns[i]), defaultContent: "" });
     }
 
     if (Object.keys(columns).length == 0) return;
@@ -96,9 +96,9 @@ function renderTable() {
       fixedHeader: true,
       paging: true,
       pageLength: 20,
-      bLengthChange: true,
-      aoColumns: tableColumns,
-      aaData: tableRecords,
+      lengthChange: true,
+      columns: tableColumns,
+      data: tableRecords,
       deferRender: true,
       dom: "<Blf>rt<ip>",
       order: [],
@@ -143,8 +143,8 @@ function renderTable() {
     });
 
     $(".dt-buttons").css("padding", "7px");
-    $(".dataTables_length").css("padding", "7px");
-    $(".dataTables_filter").css("padding", "7px");
+    $(".dt-length").css("padding", "7px");
+    $(".dt-search").css("padding", "7px");
     $(".buttons-copy").removeClass("buttons-copy").removeClass("buttons-html5");
     $(".buttons-excel").removeClass("buttons-excel").removeClass("buttons-html5");
     $(".buttons-csv").removeClass("buttons-csv").removeClass("buttons-html5");
