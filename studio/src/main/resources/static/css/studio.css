@@ -73,11 +73,11 @@ a.nav-link.active.show {
 div.dt-buttons {
   float: left;
 }
-div.dataTables_length {
+div.dt-length {
   float: left;
   margin-left: 50px;
 }
-div.dataTables_filter {
+div.dt-search {
   float: right;
 }
 
