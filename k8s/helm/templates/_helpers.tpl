@@ -93,7 +93,7 @@ Preparing a list of plugin ports to build plugin configurations.
     {{- if $config.enabled }}
       {{- $port := int 0}}
       {{- if eq $plugin "gremlin" }}
-        {{- $port = default 8082 $config.port }}
+        {{- $port = default 8182 $config.port }}
       {{- else if eq $plugin "postgres" }}
         {{- $port = default 5432 $config.port }}
       {{- else if eq $plugin "mongo" }}
