@@ -7,8 +7,9 @@ import 'datatables.net-bs5/css/dataTables.bootstrap5.min.css';
 import 'datatables.net-buttons-bs5/css/buttons.bootstrap5.min.css';
 import 'datatables.net-responsive-bs5/css/responsive.bootstrap5.min.css';
 import 'datatables.net-select-bs5/css/select.bootstrap5.min.css';
-import 'codemirror/lib/codemirror.css';
-import 'codemirror/theme/neo.css';
+// CodeMirror v6 doesn't use separate CSS files - styles are included in JS
+// import 'codemirror/lib/codemirror.css';
+// import 'codemirror/theme/neo.css';
 import '@fortawesome/fontawesome-free/css/all.min.css';
 import 'sweetalert2/dist/sweetalert2.min.css';
 import 'notyf/notyf.min.css';
@@ -51,12 +52,14 @@ window.cytoscape = cytoscape;
 import ApexCharts from 'apexcharts';
 window.ApexCharts = ApexCharts;
 
-import CodeMirror from 'codemirror';
-import 'codemirror/mode/sql/sql';
-import 'codemirror/mode/javascript/javascript';
-import 'codemirror/addon/hint/show-hint';
-import 'codemirror/addon/hint/sql-hint';
-window.CodeMirror = CodeMirror;
+// CodeMirror v6 imports - the compatibility layer is loaded via vendor-libs.js
+// The global CodeMirror object is created by the compatibility layer
+// import CodeMirror from 'codemirror';
+// import 'codemirror/mode/sql/sql';
+// import 'codemirror/mode/javascript/javascript';
+// import 'codemirror/addon/hint/show-hint';
+// import 'codemirror/addon/hint/sql-hint';
+// window.CodeMirror = CodeMirror;
 
 // Import custom studio modules (these will be refactored from existing files)
 import './studio-utils';

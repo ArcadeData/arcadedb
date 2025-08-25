@@ -13,8 +13,7 @@
     <link rel="stylesheet" href="dist/css/buttons.bootstrap5.min.css" />
     <link rel="stylesheet" href="dist/css/responsive.bootstrap5.min.css" />
     <link rel="stylesheet" href="dist/css/select.bootstrap5.min.css" />
-    <link rel="stylesheet" href="dist/css/codemirror.css" />
-    <link rel="stylesheet" href="dist/css/neo.css" />
+    <!-- CodeMirror v6 styles are included in the JS bundle -->
     <link rel="stylesheet" href="dist/css/fontawesome.min.css" />
     <link rel="stylesheet" href="dist/css/apexcharts.css" />
     <link rel="stylesheet" href="dist/css/sweetalert2.min.css" />
@@ -32,11 +31,9 @@
     <script src="dist/js/notyf.min.js"></script>
     <script src="dist/js/clipboard.min.js"></script>
 
-    <!-- Code Editor -->
-    <script src="dist/js/codemirror.js"></script>
-    <script src="dist/js/cypher.js"></script>
-    <script src="dist/js/javascript.js"></script>
-    <script src="dist/js/sql.js"></script>
+    <!-- Code Editor - CodeMirror v6 with Compatibility Layer -->
+    <!-- The vendor-libs bundle contains all CodeMirror v6 modules and the compatibility layer -->
+    <script src="dist/js/vendor-libs.bundle.js"></script>
 
     <!-- DataTables Export Dependencies -->
     <script src="dist/js/jszip.min.js"></script>
