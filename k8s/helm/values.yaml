@@ -34,7 +34,7 @@ arcadedb:
       ## @param arcadedb.plugins.gremlin.enabled Enable Gremlin plugin
       # enabled: true
       ## @param arcadedb.plugins.gremlin.port Port for Gremlin HTTP service
-      # port: 8082
+      # port: 8182
     # postgres:
       ## @param arcadedb.plugins.postgres.enabled Enable Postgres plugin
       # enabled: true
