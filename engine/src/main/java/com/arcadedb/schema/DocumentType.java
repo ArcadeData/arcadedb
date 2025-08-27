@@ -38,6 +38,8 @@ import java.util.*;
 public interface DocumentType {
   String getName();
 
+  void rename(String newName);
+
   MutableDocument newRecord();
 
   default byte getType() {

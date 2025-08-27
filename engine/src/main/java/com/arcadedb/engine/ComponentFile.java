@@ -22,8 +22,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.nio.file.*;
 import java.util.logging.*;
 import java.util.zip.*;
 
@@ -91,14 +90,6 @@ public class ComponentFile {
 
     this.osFile = new File(filePath);
     this.open = true;
-  }
-
-  public void rename(final String newFileName) throws IOException {
-    close();
-    LogManager.instance().log(this, Level.FINE, "Renaming file %s (id=%d) to %s...", null, filePath, fileId, newFileName);
-    final File newFile = new File(newFileName);
-    new File(filePath).renameTo(newFile);
-    open(newFile.getAbsolutePath(), mode);
   }
 
   public void drop() throws IOException {

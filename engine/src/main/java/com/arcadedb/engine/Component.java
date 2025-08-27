@@ -27,7 +27,7 @@ import com.arcadedb.database.DatabaseInternal;
  */
 public abstract class Component {
   protected final DatabaseInternal database;
-  protected final String           componentName;
+  protected       String           componentName;
   protected final int              fileId;
   protected final int              version;
   protected final String           filePath;

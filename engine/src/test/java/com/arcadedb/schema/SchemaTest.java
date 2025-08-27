@@ -19,8 +19,6 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
-
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
@@ -58,5 +56,60 @@ public class SchemaTest extends TestHelper {
       database.getSchema().setEncoding("UTF-8");
       assertThat(database.getSchema().getEncoding()).isEqualTo("UTF-8");
     });
+  }
+
+  @Test
+  public void testRenameDocument() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc1");
+    type.createProperty("id", Type.STRING);
+    type.createProperty("total", Type.DOUBLE);
+    type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
+    type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "total");
+
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++)
+        database.newDocument("Doc1").set("id", "id-" + i, "total", i).save();
+    });
+
+    type.rename("Doc2");
+
+    assertThat(database.getSchema().existsType("Doc1")).isFalse();
+
+    assertThat(database.getSchema().existsType("Doc2")).isTrue();
+    assertThat(database.getSchema().getType("Doc2").getProperty("id").getType()).isEqualByComparingTo(Type.STRING);
+    assertThat(database.getSchema().getType("Doc2").getProperty("total").getType()).isEqualByComparingTo(Type.DOUBLE);
+
+    assertThat(database.countType("Doc2", true)).isEqualTo(100L);
+  }
+
+  @Test
+  public void testRenameVertexAndEdges() {
+    final VertexType type = database.getSchema().createVertexType("V1");
+    type.createProperty("id", Type.STRING);
+    type.createProperty("total", Type.DOUBLE);
+    type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
+    type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "total");
+
+    final EdgeType edgeType = database.getSchema().createEdgeType("E1");
+
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++)
+        database.newVertex("V1").set("id", "id-" + i, "total", i).save();
+    });
+
+    type.rename("V2");
+    edgeType.rename("E2");
+
+    assertThat(database.getSchema().existsType("V1")).isFalse();
+
+    assertThat(database.getSchema().existsType("V2")).isTrue();
+    assertThat(database.getSchema().getType("V2").getProperty("id").getType()).isEqualByComparingTo(Type.STRING);
+    assertThat(database.getSchema().getType("V2").getProperty("total").getType()).isEqualByComparingTo(Type.DOUBLE);
+
+    assertThat(database.countType("V2", true)).isEqualTo(100L);
+
+    assertThat(database.getSchema().existsType("E1")).isFalse();
+
+    assertThat(database.getSchema().existsType("E2")).isTrue();
   }
 }

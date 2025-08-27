@@ -143,6 +143,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
+  public void updateTypeName(final String newTypeName) {
+    typeName = newTypeName;
+  }
+
+  @Override
   public byte[] getBinaryKeyTypes() {
     return mutable.binaryKeyTypes;
   }

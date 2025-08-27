@@ -28,22 +28,14 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.stream.*;
 
 /**
  * Document type used by {@link RemoteDatabase} class. The metadata are cached from the server until the schema is changed or
@@ -124,6 +116,12 @@ public class RemoteDocumentType implements DocumentType {
   @Override
   public String getName() {
     return name;
+  }
+
+  @Override
+  public void rename(final String newName) {
+    remoteDatabase.command("sql", "alter type `" + name + "` name `" + newName + "`");
+    remoteDatabase.getSchema().reload();
   }
 
   @Override

@@ -71,6 +71,20 @@ public class PaginatedComponentFile extends ComponentFile {
     this.open = false;
   }
 
+  public void rename(final String newFileName) throws IOException {
+    close();
+    LogManager.instance().log(this, Level.FINE, "Renaming file %s (id=%d) to %s...", null, filePath, fileId, newFileName);
+
+    final String newFilePath = newFileName + filePath.substring(filePath.indexOf("."));
+
+    final File newFile = new File(osFile.getParentFile(), newFilePath);
+    if (!new File(filePath).renameTo(newFile)) {
+      open(filePath, mode);
+      throw new IOException("Error renaming file " + filePath + " to " + newFilePath);
+    }
+    open(newFile.getAbsolutePath(), mode);
+  }
+
   @Override
   public long getSize() throws IOException {
     return channel.size();

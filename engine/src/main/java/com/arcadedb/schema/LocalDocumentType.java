@@ -27,6 +27,7 @@ import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionS
 import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
@@ -38,22 +39,13 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.FileUtils;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
-import java.util.concurrent.Callable;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 public class LocalDocumentType implements DocumentType {
-  protected final String                            name;
+  protected       String                            name;
   protected final LocalSchema                       schema;
   protected final List<LocalDocumentType>           superTypes                   = new ArrayList<>();
   protected final List<LocalDocumentType>           subTypes                     = new ArrayList<>();
@@ -148,6 +140,62 @@ public class LocalDocumentType implements DocumentType {
       return null;
     });
     return this;
+  }
+
+  public void rename(final String newName) {
+    if (schema.existsType(newName))
+      throw new IllegalArgumentException("Type with name '" + newName + "' already exists");
+
+    final String oldName = name;
+
+    final List<Bucket> removedBuckets = new ArrayList<>();
+
+    try {
+      for (Bucket bucket : buckets) {
+        final String oldBucketName = bucket.getName();
+
+        final String newBucketName = newName + oldBucketName.substring(oldBucketName.lastIndexOf("_"));
+
+        ((LocalBucket) bucket).rename(newBucketName);
+
+        removedBuckets.add(bucket);
+
+        schema.bucketMap.remove(oldBucketName);
+        schema.bucketMap.put(bucket.getName(), (LocalBucket) bucket);
+      }
+
+      name = newName;
+
+      schema.types.remove(oldName);
+      schema.types.put(newName, this);
+
+      for (TypeIndex idx : getAllIndexes(false))
+        idx.updateTypeName(newName);
+
+      schema.saveConfiguration();
+
+    } catch (IOException e) {
+      name = oldName;
+      schema.types.put(oldName, this);
+      schema.types.remove(newName);
+
+      boolean corrupted = false;
+      for (Bucket bucket : removedBuckets) {
+        try {
+          final String newBucketName = bucket.getName();
+          final String oldBucketName = oldName + newBucketName.substring(newBucketName.lastIndexOf("_"));
+          ((LocalBucket) bucket).rename(oldBucketName);
+        } catch (IOException ex) {
+          corrupted = true;
+        }
+      }
+
+      if (corrupted)
+        throw new SchemaException("Error on renaming type '" + oldName + "' in '" + newName
+            + "'. The database schema is corrupted, check single file names for buckets " + removedBuckets, e);
+
+      throw new SchemaException("Error on renaming type '" + oldName + "' in '" + newName + "'", e);
+    }
   }
 
   /**

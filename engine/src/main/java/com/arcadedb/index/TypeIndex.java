@@ -41,7 +41,7 @@ import java.util.*;
  * @author Luca Garulli
  */
 public class TypeIndex implements RangeIndex, IndexInternal {
-  private final String              logicName;
+  private       String              logicName;
   private final List<IndexInternal> indexesOnBuckets = new ArrayList<>();
   private final DocumentType        type;
   private       boolean             valid            = true;
@@ -418,6 +418,13 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public IndexInternal getAssociatedIndex() {
     return associatedIndex;
+  }
+
+  @Override
+  public void updateTypeName(final String newTypeName) {
+    logicName = getTypeName() + getPropertyNames().toString().replace(" ", "");
+    for (IndexInternal idx : indexesOnBuckets)
+      idx.updateTypeName(newTypeName);
   }
 
   public void setAssociatedIndex(final IndexInternal associatedIndex) {

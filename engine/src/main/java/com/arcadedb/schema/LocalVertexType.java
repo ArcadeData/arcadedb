@@ -21,12 +21,15 @@ package com.arcadedb.schema;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.exception.SchemaException;
+import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 
+import java.io.*;
 import java.util.*;
 
 public class LocalVertexType extends LocalDocumentType implements VertexType {
-  private List<Bucket> additionalBuckets = new ArrayList<>();
+  private final List<Bucket> additionalBuckets = new ArrayList<>();
 
   public LocalVertexType(final LocalSchema schema, final String name) {
     super(schema, name);
@@ -35,6 +38,59 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
   @Override
   public MutableVertex newRecord() {
     return schema.getDatabase().newVertex(name);
+  }
+
+  @Override
+  public void rename(final String newName) {
+    final String oldName = name;
+
+    super.rename(newName);
+
+    final List<Bucket> removedBuckets = new ArrayList<>();
+
+    try {
+      for (Bucket bucket : additionalBuckets) {
+        final String oldBucketName = bucket.getName();
+
+        String newBucketName;
+        if (oldBucketName.endsWith(GraphEngine.OUT_EDGES_SUFFIX)) {
+          newBucketName = oldBucketName.substring(0, oldBucketName.length() - GraphEngine.OUT_EDGES_SUFFIX.length());
+          newBucketName = newName + newBucketName.substring(newBucketName.lastIndexOf("_")) + GraphEngine.OUT_EDGES_SUFFIX;
+        } else if (oldBucketName.endsWith(GraphEngine.IN_EDGES_SUFFIX)) {
+          newBucketName = oldBucketName.substring(0, oldBucketName.length() - GraphEngine.IN_EDGES_SUFFIX.length());
+          newBucketName = newName + newBucketName.substring(newBucketName.lastIndexOf("_")) + GraphEngine.IN_EDGES_SUFFIX;
+        } else
+          throw new SchemaException(
+              "Cannot rename bucket '" + oldBucketName + "' because it does not follow the naming convention");
+
+        ((LocalBucket) bucket).rename(newBucketName);
+
+        removedBuckets.add(bucket);
+
+        schema.bucketMap.remove(oldBucketName);
+        schema.bucketMap.put(bucket.getName(), (LocalBucket) bucket);
+      }
+
+    } catch (IOException e) {
+      super.rename(oldName);
+
+      boolean corrupted = false;
+      for (Bucket bucket : removedBuckets) {
+        try {
+          final String newBucketName = bucket.getName();
+          final String oldBucketName = oldName + newBucketName.substring(newBucketName.lastIndexOf("_"));
+          ((LocalBucket) bucket).rename(oldBucketName);
+        } catch (IOException ex) {
+          corrupted = true;
+        }
+      }
+
+      if (corrupted)
+        throw new SchemaException("Error on renaming type '" + oldName + "' in '" + newName
+            + "'. The database schema is corrupted, check single file names for buckets " + removedBuckets, e);
+
+      throw new SchemaException("Error on renaming type '" + oldName + "' in '" + newName + "'", e);
+    }
   }
 
   @Override

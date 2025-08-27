@@ -66,6 +66,13 @@ public abstract class PaginatedComponent extends Component {
       pageCount.set((int) (fileSize / pageSize));
   }
 
+  public void rename(final String newName) throws IOException {
+    final String newFilePath = newName + filePath.substring(filePath.indexOf("."));
+    PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(database);
+    file.rename(newFilePath);
+    componentName = newName;
+  }
+
   public PaginatedComponentFile getComponentFile() {
     return file;
   }
