@@ -154,9 +154,7 @@ public class LocalDocumentType implements DocumentType {
       for (Bucket bucket : buckets) {
         final String oldBucketName = bucket.getName();
 
-        final String newBucketName = newName + oldBucketName.substring(oldBucketName.lastIndexOf("_"));
-
-        ((LocalBucket) bucket).rename(newBucketName);
+        ((LocalBucket) bucket).rename(newName);
 
         removedBuckets.add(bucket);
 

@@ -19,6 +19,8 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.ComponentFile;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
@@ -111,5 +113,10 @@ public class SchemaTest extends TestHelper {
     assertThat(database.getSchema().existsType("E1")).isFalse();
 
     assertThat(database.getSchema().existsType("E2")).isTrue();
+
+    for (ComponentFile file : ((DatabaseInternal) database).getFileManager().getFiles()) {
+      assertThat(file.getFileName().contains("V1")).isFalse();
+      assertThat(file.getFileName().contains("E1")).isFalse();
+    }
   }
 }

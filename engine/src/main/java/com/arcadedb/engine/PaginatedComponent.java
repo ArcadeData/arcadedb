@@ -67,9 +67,9 @@ public abstract class PaginatedComponent extends Component {
   }
 
   public void rename(final String newName) throws IOException {
-    final String newFilePath = newName + filePath.substring(filePath.indexOf("."));
     PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(database);
-    file.rename(newFilePath);
+    file.rename(newName);
+    database.getFileManager().renameFile(componentName, newName);
     componentName = newName;
   }
 

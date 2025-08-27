@@ -75,14 +75,19 @@ public class PaginatedComponentFile extends ComponentFile {
     close();
     LogManager.instance().log(this, Level.FINE, "Renaming file %s (id=%d) to %s...", null, filePath, fileId, newFileName);
 
-    final String newFilePath = newFileName + filePath.substring(filePath.indexOf("."));
+    final String newFilePath =
+        newFileName + osFile.getName().substring(osFile.getName().indexOf("_"));
 
     final File newFile = new File(osFile.getParentFile(), newFilePath);
-    if (!new File(filePath).renameTo(newFile)) {
+    try {
+      java.nio.file.Files.move(new File(osFile.getParentFile(), osFile.getName()).getAbsoluteFile().toPath(),
+          newFile.getAbsoluteFile().toPath(),
+          java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+      open(newFile.getAbsolutePath(), mode);
+    } catch (Exception e) {
       open(filePath, mode);
-      throw new IOException("Error renaming file " + filePath + " to " + newFilePath);
+      throw new IOException("Error renaming file " + filePath + " to " + newFilePath, e);
     }
-    open(newFile.getAbsolutePath(), mode);
   }
 
   @Override
