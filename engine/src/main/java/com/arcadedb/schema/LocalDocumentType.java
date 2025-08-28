@@ -282,6 +282,14 @@ public class LocalDocumentType implements DocumentType {
    * Sets the list of aliases for the type. Any previous configuration will be lost.
    */
   public LocalDocumentType setAliases(final Set<String> aliases) {
+    final Set<String> newAliases = new HashSet<>(aliases);
+    newAliases.removeAll(this.aliases);
+    for (String alias : newAliases) {
+      if (schema.existsType(alias))
+        throw new SchemaException("Cannot set alias '" + alias + "' for type '" + name + "' because it is already used by type '"
+            + schema.getType(alias).getName() + "'");
+    }
+
     // DEREGISTER ALL PREVIOUS ALIASES
     for (String alias : this.aliases)
       schema.types.remove(alias);
