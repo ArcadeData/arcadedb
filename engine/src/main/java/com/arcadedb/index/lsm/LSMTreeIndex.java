@@ -32,6 +32,7 @@ import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.EmptyIndexCursor;
 import com.arcadedb.index.IndexCursor;
@@ -140,6 +141,18 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     this.typeName = typeName;
     this.propertyNames = List.of(propertyNames);
     this.associatedBucketId = associatedBucketId;
+  }
+
+  @Override
+  public void updateTypeName(final String newTypeName) {
+    typeName = newTypeName;
+    if (mutable != null) {
+      try {
+        mutable.getComponentFile().rename(newTypeName);
+      } catch (IOException e) {
+        throw new SchemaException("Error on renaming index file for index '" + name + "'", e);
+      }
+    }
   }
 
   @Override

@@ -19,8 +19,8 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
-
-import org.assertj.core.api.Assertions;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.ComponentFile;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
@@ -58,5 +58,117 @@ public class SchemaTest extends TestHelper {
       database.getSchema().setEncoding("UTF-8");
       assertThat(database.getSchema().getEncoding()).isEqualTo("UTF-8");
     });
+  }
+
+  @Test
+  public void testRenameDocument() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc1");
+    type.createProperty("id", Type.STRING);
+    type.createProperty("total", Type.DOUBLE);
+    type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
+    type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "total");
+
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++)
+        database.newDocument("Doc1").set("id", "id-" + i, "total", i).save();
+    });
+
+    type.rename("Doc2");
+
+    assertThat(database.getSchema().existsType("Doc1")).isFalse();
+
+    assertThat(database.getSchema().existsType("Doc2")).isTrue();
+    assertThat(database.getSchema().getType("Doc2").getProperty("id").getType()).isEqualByComparingTo(Type.STRING);
+    assertThat(database.getSchema().getType("Doc2").getProperty("total").getType()).isEqualByComparingTo(Type.DOUBLE);
+
+    assertThat(database.countType("Doc2", true)).isEqualTo(100L);
+  }
+
+  @Test
+  public void testRenameVertexAndEdges() {
+    final VertexType type = database.getSchema().createVertexType("V1");
+    type.createProperty("id", Type.STRING);
+    type.createProperty("total", Type.DOUBLE);
+    type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
+    type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "total");
+
+    final EdgeType edgeType = database.getSchema().createEdgeType("E1");
+
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++)
+        database.newVertex("V1").set("id", "id-" + i, "total", i).save();
+    });
+
+    type.rename("V2");
+    edgeType.rename("E2");
+
+    assertThat(database.getSchema().existsType("V1")).isFalse();
+
+    assertThat(database.getSchema().existsType("V2")).isTrue();
+    assertThat(database.getSchema().getType("V2").getProperty("id").getType()).isEqualByComparingTo(Type.STRING);
+    assertThat(database.getSchema().getType("V2").getProperty("total").getType()).isEqualByComparingTo(Type.DOUBLE);
+
+    assertThat(database.countType("V2", true)).isEqualTo(100L);
+
+    assertThat(database.getSchema().existsType("E1")).isFalse();
+
+    assertThat(database.getSchema().existsType("E2")).isTrue();
+
+    for (ComponentFile file : ((DatabaseInternal) database).getFileManager().getFiles()) {
+      assertThat(file.getFileName().contains("V1")).isFalse();
+      assertThat(file.getFileName().contains("E1")).isFalse();
+    }
+  }
+
+  @Test
+  public void testAliases() {
+    final VertexType type = database.getSchema().createVertexType("V1");
+    type.createProperty("id", Type.STRING);
+    type.createProperty("total", Type.DOUBLE);
+    type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
+    type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "total");
+    type.setAliases(Set.of("V11", "V111"));
+
+    assertThat(database.getSchema().existsType("V1")).isTrue();
+    assertThat(database.getSchema().existsType("V11")).isTrue();
+    assertThat(database.getSchema().existsType("V111")).isTrue();
+
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++) {
+        database.newVertex("V1").set("id", "id-" + i, "total", i).save();
+        database.newVertex("V11").set("id", "idd-" + i, "total", i).save();
+        database.newVertex("V111").set("id", "iddd-" + i, "total", i).save();
+      }
+    });
+
+    assertThat(database.getSchema().getType("V1").getName()).isEqualTo("V1");
+    assertThat(database.getSchema().getType("V11").getName()).isEqualTo("V1");
+    assertThat(database.getSchema().getType("V111").getName()).isEqualTo("V1");
+
+    assertThat(database.countType("V1", true)).isEqualTo(300L);
+    assertThat(database.countType("V11", true)).isEqualTo(300L);
+    assertThat(database.countType("V111", true)).isEqualTo(300L);
+
+    assertThat(database.select().fromType("V1").vertices().toList().size()).isEqualTo(300L);
+    assertThat(database.select().fromType("V11").vertices().toList().size()).isEqualTo(300L);
+    assertThat(database.select().fromType("V111").vertices().toList().size()).isEqualTo(300L);
+
+    assertThat((Long) database.query("sql", "select count(*) as total from V1").nextIfAvailable().getProperty("total")).isEqualTo(
+        300L);
+    assertThat((Long) database.query("sql", "select count(*) as total from V11").nextIfAvailable().getProperty("total")).isEqualTo(
+        300L);
+    assertThat((Long) database.query("sql", "select count(*) as total from V111").nextIfAvailable().getProperty("total")).isEqualTo(
+        300L);
+
+    database.close();
+    reopenDatabase();
+
+    assertThat((Long) database.query("sql", "select count(*) as total from V1").nextIfAvailable().getProperty("total")).isEqualTo(
+        300L);
+    assertThat((Long) database.query("sql", "select count(*) as total from V11").nextIfAvailable().getProperty("total")).isEqualTo(
+        300L);
+    assertThat((Long) database.query("sql", "select count(*) as total from V111").nextIfAvailable().getProperty("total")).isEqualTo(
+        300L);
+
   }
 }

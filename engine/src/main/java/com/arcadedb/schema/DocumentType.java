@@ -38,6 +38,8 @@ import java.util.*;
 public interface DocumentType {
   String getName();
 
+  void rename(String newName);
+
   MutableDocument newRecord();
 
   default byte getType() {
@@ -63,6 +65,10 @@ public interface DocumentType {
   DocumentType setSuperTypes(List<DocumentType> newSuperTypes);
 
   List<DocumentType> getSubTypes();
+
+  Set<String> getAliases();
+
+  DocumentType setAliases(Set<String> aliases);
 
   Set<String> getPropertyNames();
 

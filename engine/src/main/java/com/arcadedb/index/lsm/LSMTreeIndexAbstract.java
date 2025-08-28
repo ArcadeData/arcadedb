@@ -197,6 +197,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
       try {
         file.rename(newFileName);
+        database.getFileManager().renameFile(fileName, newFileName);
       } catch (final IOException e) {
         throw new IndexException(
             "Cannot rename index file '" + file.getFilePath() + "' into temp file '" + newFileName + "' (exists=" + (new File(

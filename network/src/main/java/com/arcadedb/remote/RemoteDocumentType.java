@@ -28,22 +28,14 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.stream.*;
 
 /**
  * Document type used by {@link RemoteDatabase} class. The metadata are cached from the server until the schema is changed or
@@ -62,7 +54,8 @@ public class RemoteDocumentType implements DocumentType {
   private         String                      bucketSelectionStrategy;
   private         List<String>                parentTypes;
   private         Map<String, RemoteProperty> properties;
-  private         Map<String, Object>         custom = new HashMap<>();
+  private         Set<String>                 aliases = Collections.emptySet();
+  private         Map<String, Object>         custom  = new HashMap<>();
 
   RemoteDocumentType(final RemoteDatabase remoteDatabase, final Result record) {
     this.remoteDatabase = remoteDatabase;
@@ -75,6 +68,9 @@ public class RemoteDocumentType implements DocumentType {
     buckets = record.getProperty("buckets");
     bucketSelectionStrategy = record.getProperty("bucketSelectionStrategy");
     parentTypes = record.getProperty("parentTypes");
+
+    if (record.hasProperty("aliases"))
+      aliases = new HashSet(record.getProperty("aliases"));
 
     final List<Map<String, Object>> propertiesMap = record.getProperty("properties");
 
@@ -124,6 +120,12 @@ public class RemoteDocumentType implements DocumentType {
   @Override
   public String getName() {
     return name;
+  }
+
+  @Override
+  public void rename(final String newName) {
+    remoteDatabase.command("sql", "alter type `" + name + "` name `" + newName + "`");
+    remoteDatabase.getSchema().reload();
   }
 
   @Override
@@ -248,6 +250,19 @@ public class RemoteDocumentType implements DocumentType {
   @Override
   public DocumentType removeSuperType(final DocumentType superType) {
     remoteDatabase.command("sql", "alter type `" + name + "` supertype -`" + superType.getName() + "`");
+    remoteDatabase.getSchema().reload();
+    return this;
+  }
+
+  @Override
+  public Set<String> getAliases() {
+    return aliases;
+  }
+
+  @Override
+  public DocumentType setAliases(final Set<String> aliases) {
+    final String aliasesAsString = aliases.stream().map(a -> "`" + a + "`").collect(Collectors.joining(","));
+    remoteDatabase.command("sql", "alter type `" + name + "` aliases " + aliasesAsString);
     remoteDatabase.getSchema().reload();
     return this;
   }

@@ -84,7 +84,7 @@ public class LocalSchema implements Schema {
   private final       DatabaseInternal                       database;
   private final       SecurityManager                        security;
   private final       List<Component>                        files                         = new ArrayList<>();
-  private final       Map<String, LocalBucket>               bucketMap                     = new HashMap<>();
+  final               Map<String, LocalBucket>               bucketMap                     = new HashMap<>();
   private             Map<Integer, LocalDocumentType>        bucketId2TypeMap              = new HashMap<>();
   private             Map<Integer, LocalDocumentType>        bucketId2InvolvedTypeMap      = new HashMap<>();
   protected final     Map<String, IndexInternal>             indexMap                      = new HashMap<>();
@@ -945,7 +945,7 @@ public class LocalSchema implements Schema {
         root = new JSONObject(fileContent);
       }
 
-      if (root.names() == null || root.names().length() == 0)
+      if (root.names() == null || root.names().isEmpty())
         // EMPTY SCHEMA
         return;
 
@@ -976,17 +976,19 @@ public class LocalSchema implements Schema {
         final LocalDocumentType type;
 
         final String kind = (String) schemaType.get("type");
-        if ("v".equals(kind)) {
-          type = new LocalVertexType(this, typeName);
-        } else if ("e".equals(kind)) {
-          type = new LocalEdgeType(this, typeName,
-              schemaType.has("bidirectional") ? schemaType.getBoolean("bidirectional") : true);
-        } else if ("d".equals(kind)) {
-          type = new LocalDocumentType(this, typeName);
-        } else
-          throw new ConfigurationException("Type '" + kind + "' is not supported");
+        type = switch (kind) {
+          case "v" -> new LocalVertexType(this, typeName);
+          case "e" -> new LocalEdgeType(this, typeName, !schemaType.has("bidirectional") || schemaType.getBoolean("bidirectional"));
+          case "d" -> new LocalDocumentType(this, typeName);
+          case null, default -> throw new ConfigurationException("Type '" + kind + "' is not supported");
+        };
 
         this.types.put(typeName, type);
+
+        final Set<String> aliases = !schemaType.isNull("aliases") ?
+            new HashSet<>(schemaType.getJSONArray("aliases").toListOfStrings()) :
+            Collections.emptySet();
+        type.setAliases(aliases);
 
         final JSONArray schemaParent = schemaType.getJSONArray("parents");
         if (schemaParent != null) {
