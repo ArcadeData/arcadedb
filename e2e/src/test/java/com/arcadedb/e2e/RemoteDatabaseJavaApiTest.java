@@ -24,15 +24,17 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.sql.*;
-import java.time.*;
-import java.util.stream.*;
+import java.io.IOException;
+import java.sql.SQLException;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -146,6 +148,20 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
             """);
 
     assertThat(resultSet.stream()).hasSize(3);
+  }
+
+  @Test
+  void renameTypeAndAliases() {
+
+    database.command("sql", "ALTER TYPE Beer NAME Birra");
+    database.command("sql", "ALTER TYPE Birra ALIASES Beer");
+
+    ResultSet result = database.query("sql", "select * from Beer limit 10");
+    assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
+
+    result = database.query("sql", "select * from Birra limit 10");
+    assertThat(result.stream().count()).isEqualTo(10);
+
   }
 
   @Test
