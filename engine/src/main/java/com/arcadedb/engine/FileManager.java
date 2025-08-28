@@ -76,12 +76,12 @@ public class FileManager {
       boolean created = dbDirectory.mkdirs();
       if (!created) {
         LogManager.instance().log(this, Level.SEVERE, "Cannot create the directory '%s'", null, dbDirectory);
-throw new IllegalArgumentException(String.format("Cannot create the directory '%s'", dbDirectory));
+        throw new IllegalArgumentException(String.format("Cannot create the directory '%s'", dbDirectory));
       }
     } else {
       if (!dbDirectory.canRead()) {
         LogManager.instance().log(this, Level.SEVERE, "The directory '%s' doesn't have the proper permissions", null, dbDirectory);
-throw new IllegalArgumentException(String.format("The directory '%s' doesn't have the proper permissions", dbDirectory));
+        throw new IllegalArgumentException(String.format("The directory '%s' doesn't have the proper permissions", dbDirectory));
       }
 
       for (final File f : dbDirectory.listFiles()) {
@@ -215,6 +215,14 @@ throw new IllegalArgumentException(String.format("The directory '%s' doesn't hav
 //
     files.add(RESERVED_SLOT);
     return files.size() - 1;
+  }
+
+  public void renameFile(final String oldName, final String newName) {
+    final ComponentFile file = fileNameMap.remove(oldName);
+    if (file == null)
+      return;
+
+    fileNameMap.put(newName, file);
   }
 
   private void registerFile(final ComponentFile file) {

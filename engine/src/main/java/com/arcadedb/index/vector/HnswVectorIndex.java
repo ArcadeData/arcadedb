@@ -95,7 +95,7 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   private final   int                                  efConstruction;
   private final   ReentrantLock                        globalLock;
   private final   Set<RID>                             excludedCandidates = new HashSet<>();
-  private final   String                               vertexType;
+  private         String                               vertexType;
   private final   String                               edgeType;
   private final   String                               vectorPropertyName;
   private final   String                               idPropertyName;
@@ -235,6 +235,11 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
       save();
       entryPointRIDToLoad = entryPoint.getIdentity();
     }
+  }
+
+  @Override
+  public void updateTypeName(final String newTypeName) {
+    vertexType = newTypeName;
   }
 
   @Override

@@ -31,7 +31,7 @@ import java.util.*;
  */
 @ExcludeFromJacocoGeneratedReport
 public interface IndexInternal extends Index {
-  public enum INDEX_STATUS {UNAVAILABLE, AVAILABLE, COMPACTION_SCHEDULED, COMPACTION_IN_PROGRESS}
+  enum INDEX_STATUS {UNAVAILABLE, AVAILABLE, COMPACTION_SCHEDULED, COMPACTION_IN_PROGRESS}
 
   long build(int buildIndexBatchSize, BuildIndexCallback callback);
 
@@ -74,4 +74,6 @@ public interface IndexInternal extends Index {
   JSONObject toJSON();
 
   IndexInternal getAssociatedIndex();
+
+  void updateTypeName(String newTypeName);
 }

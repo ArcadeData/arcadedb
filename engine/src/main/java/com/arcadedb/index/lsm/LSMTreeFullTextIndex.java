@@ -21,7 +21,6 @@ package com.arcadedb.index.lsm;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.Index;
@@ -114,6 +113,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       throw new IndexException("Cannot create search engine (error=" + e + ")", e);
     }
     analyzer = new StandardAnalyzer();
+  }
+
+  @Override
+  public void updateTypeName(final String newTypeName) {
+    underlyingIndex.updateTypeName(newTypeName);
   }
 
   @Override
