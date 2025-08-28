@@ -24,6 +24,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
@@ -146,6 +147,25 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
             """);
 
     assertThat(resultSet.stream()).hasSize(3);
+  }
+
+  @Test
+  void renameAndRenameTypeAndAliases() {
+
+    database.command("sql", "ALTER TYPE Beer NAME Birra");
+    database.command("sql", "ALTER TYPE Birra ALIASES Beer");
+
+    database.transaction(() -> {
+      final ResultSet result = database.query("SQL", "select * from Beer limit 10");
+      assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
+    }, true, 10);
+
+    database.transaction(() -> {
+      final ResultSet result = database.query("SQL", "select * from Birra limit 10");
+      assertThat(result.stream().count()).isEqualTo(10);
+    }, true, 10);
+
+
   }
 
   @Test
