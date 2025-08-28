@@ -154,6 +154,11 @@ public class AlterTypeStatement extends DDLStatement {
         result.setProperty("supertype", type);
         break;
 
+      case "aliases":
+        doSetAliases(context, type);
+        result.setProperty("aliases", type);
+        break;
+
       case "bucketselectionstrategy": {
         final String implName = identifierValue.getStringValue();
         try {
@@ -206,6 +211,16 @@ public class AlterTypeStatement extends DDLStatement {
       else
         type.removeSuperType(superclass);
     }
+  }
+
+  private void doSetAliases(final CommandContext context, final DocumentType type) {
+    final Set<String> aliases = new HashSet<>();
+
+    if (identifierListValue != null)
+      for (int i = 0; i < identifierListValue.size(); i++)
+        aliases.add(identifierListValue.get(i).getStringValue());
+
+    type.setAliases(aliases);
   }
 }
 /* JavaCC - OriginalChecksum=4668bb1cd336844052df941f39bdb634 (do not edit this line) */

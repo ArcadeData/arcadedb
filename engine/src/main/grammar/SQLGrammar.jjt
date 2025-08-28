@@ -109,7 +109,8 @@ SPECIAL_TOKEN :
 /* reserved words */
 TOKEN:
 {
-  <ALIGN: ("a"|"A")("l"|"L")("i"|"I")("g"|"G")("n"|"N")>
+  <ALIASES: ("a"|"A")("l"|"L")("i"|"I")("a"|"A")("s"|"S")("e"|"E")("s"|"S")>
+  | <ALIGN: ("a"|"A")("l"|"L")("i"|"I")("g"|"G")("n"|"N")>
   | <BATCH: ("b"|"B")("a"|"A")("t"|"T")("c"|"C")("h"|"H")>
 	| <SELECT: ("s"|"S")("e"|"E")("l"|"L")("e"|"E")("c"|"C")("t"|"T")>
   | <TRAVERSE: ("t"|"T")("r"|"R")("a"|"A")("v"|"V")("e"|"E")("r"|"R")("s"|"S")("e"|"E")>
@@ -575,6 +576,7 @@ Identifier Identifier():
 {
 (
   token = <IDENTIFIER>
+  | token = <ALIASES>
   | token = <ALIGN>
   | token = <IN>
   | token = <SET>
@@ -3350,6 +3352,23 @@ AlterTypeStatement AlterTypeStatement():
                 <MINUS> {jjtThis.identifierListAddRemove.add(false);}
               )
             )
+            lastIdentifier = Identifier() { jjtThis.identifierListValue.add(lastIdentifier); }
+          )*
+        )
+        |
+        <NULL> { jjtThis.identifierListValue = null; }
+      )
+    )
+    |
+    (
+      <ALIASES> {
+        jjtThis.property = "aliases";
+      }
+      (
+        (
+          lastIdentifier = Identifier() { jjtThis.identifierListValue.add(lastIdentifier); }
+          (
+            <COMMA>
             lastIdentifier = Identifier() { jjtThis.identifierListValue.add(lastIdentifier); }
           )*
         )
