@@ -54,7 +54,8 @@ public class RemoteDocumentType implements DocumentType {
   private         String                      bucketSelectionStrategy;
   private         List<String>                parentTypes;
   private         Map<String, RemoteProperty> properties;
-  private         Map<String, Object>         custom = new HashMap<>();
+  private         Set<String>                 aliases = Collections.emptySet();
+  private         Map<String, Object>         custom  = new HashMap<>();
 
   RemoteDocumentType(final RemoteDatabase remoteDatabase, final Result record) {
     this.remoteDatabase = remoteDatabase;
@@ -67,6 +68,9 @@ public class RemoteDocumentType implements DocumentType {
     buckets = record.getProperty("buckets");
     bucketSelectionStrategy = record.getProperty("bucketSelectionStrategy");
     parentTypes = record.getProperty("parentTypes");
+
+    if (record.hasProperty("aliases"))
+      aliases = new HashSet(record.getProperty("aliases"));
 
     final List<Map<String, Object>> propertiesMap = record.getProperty("properties");
 
@@ -246,6 +250,19 @@ public class RemoteDocumentType implements DocumentType {
   @Override
   public DocumentType removeSuperType(final DocumentType superType) {
     remoteDatabase.command("sql", "alter type `" + name + "` supertype -`" + superType.getName() + "`");
+    remoteDatabase.getSchema().reload();
+    return this;
+  }
+
+  @Override
+  public Set<String> getAliases() {
+    return aliases;
+  }
+
+  @Override
+  public DocumentType setAliases(final Set<String> aliases) {
+    final String aliasesAsString = aliases.stream().map(a -> "`" + a + "`").collect(Collectors.joining(","));
+    remoteDatabase.command("sql", "alter type `" + name + "` aliases " + aliasesAsString);
     remoteDatabase.getSchema().reload();
     return this;
   }

@@ -119,4 +119,56 @@ public class SchemaTest extends TestHelper {
       assertThat(file.getFileName().contains("E1")).isFalse();
     }
   }
+
+  @Test
+  public void testAliases() {
+    final VertexType type = database.getSchema().createVertexType("V1");
+    type.createProperty("id", Type.STRING);
+    type.createProperty("total", Type.DOUBLE);
+    type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
+    type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "total");
+    type.setAliases(Set.of("V11", "V111"));
+
+    assertThat(database.getSchema().existsType("V1")).isTrue();
+    assertThat(database.getSchema().existsType("V11")).isTrue();
+    assertThat(database.getSchema().existsType("V111")).isTrue();
+
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++) {
+        database.newVertex("V1").set("id", "id-" + i, "total", i).save();
+        database.newVertex("V11").set("id", "idd-" + i, "total", i).save();
+        database.newVertex("V111").set("id", "iddd-" + i, "total", i).save();
+      }
+    });
+
+    assertThat(database.getSchema().getType("V1").getName()).isEqualTo("V1");
+    assertThat(database.getSchema().getType("V11").getName()).isEqualTo("V1");
+    assertThat(database.getSchema().getType("V111").getName()).isEqualTo("V1");
+
+    assertThat(database.countType("V1", true)).isEqualTo(300L);
+    assertThat(database.countType("V11", true)).isEqualTo(300L);
+    assertThat(database.countType("V111", true)).isEqualTo(300L);
+
+    assertThat(database.select().fromType("V1").vertices().toList().size()).isEqualTo(300L);
+    assertThat(database.select().fromType("V11").vertices().toList().size()).isEqualTo(300L);
+    assertThat(database.select().fromType("V111").vertices().toList().size()).isEqualTo(300L);
+
+    assertThat((Long) database.query("sql", "select count(*) as total from V1").nextIfAvailable().getProperty("total")).isEqualTo(
+        300L);
+    assertThat((Long) database.query("sql", "select count(*) as total from V11").nextIfAvailable().getProperty("total")).isEqualTo(
+        300L);
+    assertThat((Long) database.query("sql", "select count(*) as total from V111").nextIfAvailable().getProperty("total")).isEqualTo(
+        300L);
+
+    database.close();
+    reopenDatabase();
+
+    assertThat((Long) database.query("sql", "select count(*) as total from V1").nextIfAvailable().getProperty("total")).isEqualTo(
+        300L);
+    assertThat((Long) database.query("sql", "select count(*) as total from V11").nextIfAvailable().getProperty("total")).isEqualTo(
+        300L);
+    assertThat((Long) database.query("sql", "select count(*) as total from V111").nextIfAvailable().getProperty("total")).isEqualTo(
+        300L);
+
+  }
 }

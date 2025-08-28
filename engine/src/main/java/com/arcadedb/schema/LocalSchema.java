@@ -985,6 +985,11 @@ public class LocalSchema implements Schema {
 
         this.types.put(typeName, type);
 
+        final Set<String> aliases = !schemaType.isNull("aliases") ?
+            new HashSet<>(schemaType.getJSONArray("aliases").toListOfStrings()) :
+            Collections.emptySet();
+        type.setAliases(aliases);
+
         final JSONArray schemaParent = schemaType.getJSONArray("parents");
         if (schemaParent != null) {
           // SAVE THE PARENT HIERARCHY FOR LATER

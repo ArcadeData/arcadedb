@@ -49,6 +49,7 @@ public class LocalDocumentType implements DocumentType {
   protected final LocalSchema                       schema;
   protected final List<LocalDocumentType>           superTypes                   = new ArrayList<>();
   protected final List<LocalDocumentType>           subTypes                     = new ArrayList<>();
+  private         Set<String>                       aliases                      = Collections.emptySet();
   protected final Map<String, Property>             properties                   = new HashMap<>();
   protected final Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new HashMap<>();
   protected final Map<List<String>, TypeIndex>      indexesByProperties          = new HashMap<>();
@@ -268,6 +269,29 @@ public class LocalDocumentType implements DocumentType {
   @Override
   public List<DocumentType> getSubTypes() {
     return Collections.unmodifiableList(subTypes);
+  }
+
+  /**
+   * Returns the list of aliases defined for the type.
+   */
+  public Set<String> getAliases() {
+    return this.aliases;
+  }
+
+  /**
+   * Sets the list of aliases for the type. Any previous configuration will be lost.
+   */
+  public LocalDocumentType setAliases(final Set<String> aliases) {
+    // DEREGISTER ALL PREVIOUS ALIASES
+    for (String alias : this.aliases)
+      schema.types.remove(alias);
+
+    for (String alias : aliases)
+      schema.types.put(alias, this);
+
+    this.aliases = aliases;
+    schema.saveConfiguration();
+    return this;
   }
 
   /**
@@ -1030,6 +1054,8 @@ public class LocalDocumentType implements DocumentType {
       buckets[i] = originalBuckets.get(i).getName();
 
     type.put("buckets", buckets);
+
+    type.put("aliases", aliases);
 
     final JSONObject properties = new JSONObject();
     type.put("properties", properties);

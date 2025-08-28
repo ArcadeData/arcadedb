@@ -66,6 +66,10 @@ public interface DocumentType {
 
   List<DocumentType> getSubTypes();
 
+  Set<String> getAliases();
+
+  DocumentType setAliases(Set<String> aliases);
+
   Set<String> getPropertyNames();
 
   Collection<? extends Property> getProperties();
