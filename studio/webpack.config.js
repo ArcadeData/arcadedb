@@ -147,30 +147,7 @@ module.exports = {
           from: 'node_modules/apexcharts/dist/apexcharts.css',
           to: 'css/apexcharts.css',
         },
-        {
-          from: 'node_modules/codemirror/lib/codemirror.js',
-          to: 'js/codemirror.js',
-        },
-        {
-          from: 'node_modules/codemirror/lib/codemirror.css',
-          to: 'css/codemirror.css',
-        },
-        {
-          from: 'node_modules/codemirror/theme/neo.css',
-          to: 'css/neo.css',
-        },
-        {
-          from: 'node_modules/codemirror/mode/cypher/cypher.js',
-          to: 'js/cypher.js',
-        },
-        {
-          from: 'node_modules/codemirror/mode/javascript/javascript.js',
-          to: 'js/javascript.js',
-        },
-        {
-          from: 'node_modules/codemirror/mode/sql/sql.js',
-          to: 'js/sql.js',
-        },
+        // CodeMirror v6 is now bundled via vendor-libs.js
         {
           from: 'node_modules/cytoscape-cola/cytoscape-cola.js',
           to: 'js/cytoscape-cola.js',
