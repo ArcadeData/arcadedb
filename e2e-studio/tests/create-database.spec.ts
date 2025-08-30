@@ -25,7 +25,7 @@ test.describe('ArcadeDB Studio Database Creation', () => {
     await expect(page.getByRole('heading', { name: 'Database' })).toBeVisible();
 
     // Click the Create button to open database creation dialog
-    await page.getByRole('button', { name: '+ Create' }).click();
+    await page.getByRole('button', { name: 'Create' }).click();
 
     // Wait for the creation dialog to appear
     await expect(page.getByRole('dialog', { name: 'Create a new database' })).toBeVisible();
