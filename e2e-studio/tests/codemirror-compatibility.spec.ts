@@ -5,10 +5,13 @@ test.describe('CodeMirror Compatibility', () => {
     // Login to Studio
     await page.goto('/');
     await expect(page.getByRole('dialog', { name: 'Login to the server' })).toBeVisible();
-    await page.getByRole('textbox', { name: 'User Name' }).fill('root');
-    await page.getByRole('textbox', { name: 'Password' }).fill('playwithdata');
+    await page.locator('input[placeholder="User Name"]').fill('root');
+    await page.locator('input[placeholder="Password"]').fill('playwithdata');
     await page.getByRole('button', { name: 'Sign in' }).click();
-    await expect(page.getByText('Connected as').first()).toBeVisible();
+    await expect(page.getByText('Connected as').first()).toBeVisible({ timeout: 10000 });
+
+    // Wait for UI to fully stabilize after login
+    await page.waitForTimeout(2000);
 
     // Verify CodeMirror library is loaded
     const hasCodeMirror = await page.evaluate(() => {

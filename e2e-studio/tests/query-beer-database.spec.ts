@@ -1,46 +1,21 @@
 import { test, expect } from '@playwright/test';
+import { ArcadeStudioTestHelper } from '../utils';
 
 test.describe('ArcadeDB Studio Beer Database Query', () => {
   test('should query Beer database and display 10 vertices in graph tab', async ({ page }) => {
-    // Navigate to ArcadeDB Studio using dynamic baseURL
-    await page.goto('/');
+    const helper = new ArcadeStudioTestHelper(page);
 
-    // Wait for login dialog to appear
-    await expect(page.getByRole('dialog', { name: 'Login to the server' })).toBeVisible();
+    // Login and select Beer database
+    await helper.login('Beer');
 
-    // Fill in login credentials
-    await page.getByRole('textbox', { name: 'User Name' }).fill('root');
-    await page.getByRole('textbox', { name: 'Password' }).fill('playwithdata');
+    // Execute the query using the test helper (which properly handles CodeMirror)
+    await helper.executeQuery('SELECT FROM Beer LIMIT 10');
 
-    // Click sign in button
-    await page.getByRole('button', { name: 'Sign in' }).click();
-
-    // Wait for the main interface to load
-    await expect(page.getByText('Connected as').first()).toBeVisible();
-
-    // Select the Beer database from the dropdown
-    await page.getByLabel('root').selectOption('Beer');
-
-    // Verify Beer database is selected
-    await expect(page.getByLabel('root')).toHaveValue('Beer');
-
-    // Make sure we're on the Query tab (first tab should be selected by default)
-    // Wait for the query interface to be visible
-    await expect(page.getByText('Auto Limit')).toBeVisible();
-
-    // Wait for the visible query textarea in the main tab panel and enter the SQL query
-    const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-    await expect(queryTextarea).toBeVisible();
-    await queryTextarea.fill('SELECT FROM Beer LIMIT 10');
-
-    // Execute the query by clicking the execute button
-    await page.getByRole('button', { name: '' }).first().click();
-
-    // Wait for query results to load
+    // Verify that 10 records were returned
     await expect(page.getByText('Returned')).toBeVisible();
     await expect(page.getByText('records in')).toBeVisible();
 
-    // Verify that 10 records were returned
+    // Wait a bit for the "10" text to become visible in the results area
     await expect(page.getByText('10', { exact: true }).first()).toBeVisible();
 
     // Verify we're on the Graph tab (it should be selected by default)
@@ -82,12 +57,17 @@ test.describe('ArcadeDB Studio Beer Database Query', () => {
     await expect(page.getByLabel('root')).toHaveValue('Beer');
 
     // Make sure we're on the Query tab
+    await page.getByRole('tab').first().click();
+    await page.waitForTimeout(1000); // Give time for tab to load
     await expect(page.getByText('Auto Limit')).toBeVisible();
 
-    // Enter the SQL query for a single beer record
-    const queryTextarea = page.getByRole('tabpanel').getByRole('textbox');
-    await expect(queryTextarea).toBeVisible();
-    await queryTextarea.fill('SELECT FROM Beer LIMIT 1');
+    // Enter the SQL query for a single beer record using CodeMirror editor (v6 compatible)
+    const codeMirrorEditor = page.locator('.CodeMirror');
+    await expect(codeMirrorEditor).toBeVisible();
+
+    // Click on the CodeMirror editor to focus it, then type the query
+    await codeMirrorEditor.click();
+    await page.keyboard.type('SELECT FROM Beer LIMIT 1');
 
     // Execute the query by clicking the execute button
     await page.getByRole('button', { name: '' }).first().click();
