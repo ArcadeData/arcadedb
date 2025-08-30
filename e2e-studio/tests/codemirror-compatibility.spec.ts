@@ -5,8 +5,17 @@ test.describe('CodeMirror Compatibility', () => {
     // Login to Studio
     await page.goto('/');
     await expect(page.getByRole('dialog', { name: 'Login to the server' })).toBeVisible();
-    await page.locator('input[placeholder="User Name"]').fill('root');
-    await page.locator('input[placeholder="Password"]').fill('playwithdata');
+
+    // Clear and fill username field
+    const usernameField = page.locator('input[placeholder="User Name"]');
+    await usernameField.clear();
+    await usernameField.fill('root');
+
+    // Clear and fill password field
+    const passwordField = page.locator('input[placeholder="Password"]');
+    await passwordField.clear();
+    await passwordField.fill('playwithdata');
+
     await page.getByRole('button', { name: 'Sign in' }).click();
     await expect(page.getByText('Connected as').first()).toBeVisible({ timeout: 10000 });
 
