@@ -122,7 +122,7 @@ public class RemoteDocumentType implements DocumentType {
     return name;
   }
 
-  @Override
+//  @Override
   public void rename(final String newName) {
     remoteDatabase.command("sql", "alter type `" + name + "` name `" + newName + "`");
     remoteDatabase.getSchema().reload();
@@ -254,12 +254,12 @@ public class RemoteDocumentType implements DocumentType {
     return this;
   }
 
-  @Override
+//  @Override
   public Set<String> getAliases() {
     return aliases;
   }
 
-  @Override
+//  @Override
   public DocumentType setAliases(final Set<String> aliases) {
     final String aliasesAsString = aliases.stream().map(a -> "`" + a + "`").collect(Collectors.joining(","));
     remoteDatabase.command("sql", "alter type `" + name + "` aliases " + aliasesAsString);
