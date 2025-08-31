@@ -1,0 +1,390 @@
+syntax = "proto3";
+
+package com.arcadedb.grpc;
+
+option java_multiple_files = true;
+option java_package = "com.arcadedb.server.grpc";
+option java_outer_classname = "ArcadeDbProto";
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+// Main ArcadeDB Service
+service ArcadeDbService {
+  // Database operations
+  rpc CreateDatabase(CreateDatabaseRequest) returns (CreateDatabaseResponse);
+  rpc DropDatabase(DropDatabaseRequest) returns (DropDatabaseResponse);
+  rpc ListDatabases(ListDatabasesRequest) returns (ListDatabasesResponse);
+  rpc GetDatabaseInfo(GetDatabaseInfoRequest) returns (GetDatabaseInfoResponse);
+  
+  // Query operations
+  rpc ExecuteQuery(ExecuteQueryRequest) returns (ExecuteQueryResponse);
+  rpc ExecuteCommand(ExecuteCommandRequest) returns (ExecuteCommandResponse);
+  
+  // Transaction operations
+  rpc BeginTransaction(BeginTransactionRequest) returns (BeginTransactionResponse);
+  rpc CommitTransaction(CommitTransactionRequest) returns (CommitTransactionResponse);
+  rpc RollbackTransaction(RollbackTransactionRequest) returns (RollbackTransactionResponse);
+  
+  // Record operations
+  rpc CreateRecord(CreateRecordRequest) returns (CreateRecordResponse);
+  rpc GetRecord(GetRecordRequest) returns (GetRecordResponse);
+  rpc UpdateRecord(UpdateRecordRequest) returns (UpdateRecordResponse);
+  rpc DeleteRecord(DeleteRecordRequest) returns (DeleteRecordResponse);
+  
+  // Streaming operations
+  rpc StreamQuery(StreamQueryRequest) returns (stream QueryResult);
+
+  rpc BulkInsert       (BulkInsertRequest)              returns (InsertSummary);
+  rpc InsertStream     (stream InsertChunk)             returns (InsertSummary);
+  rpc InsertBidirectional (stream InsertRequest)        returns (stream InsertResponse);
+  
+  // Server operations
+  rpc GetServerStatus(google.protobuf.Empty) returns (ServerStatusResponse);
+  rpc Ping(google.protobuf.Empty) returns (PingResponse);
+}
+
+// Common messages
+message DatabaseCredentials {
+  string username = 1;
+  string password = 2;
+}
+
+message TransactionContext {
+  string transaction_id = 1;  // optional: reuse existing tx or name a new one
+  string database       = 2;  // optional if request already carries database
+
+  // NEW (optional) — all default to false
+  bool begin            = 3;  // start a tx if not already active for this transaction_id
+  bool commit           = 4;  // commit the referenced tx after the RPC work
+  bool rollback         = 5;  // rollback the referenced tx after the RPC work
+
+  // Optional QoS (you can add later if you need)
+  int64 timeout_ms      = 6;  // server may enforce per-tx timeout
+  bool  read_only       = 7;  // hint for engines that support RO tx
+  // enum TxIsolation { DEFAULT=0; READ_COMMITTED=1; REPEATABLE_READ=2; SERIALIZABLE=3; }
+  // TxIsolation isolation = 8;
+}
+
+// Database operations
+message CreateDatabaseRequest {
+  string database_name = 1;
+  DatabaseCredentials credentials = 2;
+  map<string, string> options = 3;
+}
+
+message CreateDatabaseResponse {
+  bool success = 1;
+  string message = 2;
+  string database_id = 3;
+}
+
+message DropDatabaseRequest {
+  string database_name = 1;
+  DatabaseCredentials credentials = 2;
+}
+
+message DropDatabaseResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ListDatabasesRequest {
+  DatabaseCredentials credentials = 1;
+}
+
+message ListDatabasesResponse {
+  repeated DatabaseInfo databases = 1;
+}
+
+message DatabaseInfo {
+  string name = 1;
+  int64 size = 2;
+  string status = 3;
+  map<string, string> properties = 4;
+}
+
+message GetDatabaseInfoRequest {
+  string database_name = 1;
+  DatabaseCredentials credentials = 2;
+}
+
+message GetDatabaseInfoResponse {
+  DatabaseInfo info = 1;
+}
+
+// Query operations
+message ExecuteQueryRequest {
+  string database = 1;
+  string query = 2;
+  map<string, google.protobuf.Value> parameters = 3;
+  DatabaseCredentials credentials = 4;
+  TransactionContext transaction = 5;
+  int32 limit = 6;
+  int32 timeout_ms = 7;
+}
+
+message ExecuteQueryResponse {
+  repeated QueryResult results = 1;
+  int64 execution_time_ms = 2;
+  string query_plan = 3;
+}
+
+// --- REQUEST ---
+message ExecuteCommandRequest {
+  // existing fields — DO NOT renumber
+  string database = 1;
+  string command = 2;
+  map<string, google.protobuf.Value> parameters = 3;
+  DatabaseCredentials credentials = 4;
+  TransactionContext transaction = 5;
+
+  // NEW (optional): language of the command (defaults to "sql" on server if empty)
+  string language = 6;
+
+  // NEW (optional): if true, server may stream/collect rows produced by the command and
+  // include them in ExecuteCommandResponse.records (subject to max_rows).
+  bool return_rows = 7;
+
+  // NEW (optional): hard limit on rows returned when return_rows=true. 0 = server default.
+  int32 max_rows = 8;
+}
+
+// --- RESPONSE ---
+message ExecuteCommandResponse {
+  // existing
+  bool success = 1;
+  string message = 2;
+  int64 affected_records = 3;
+  int64 execution_time_ms = 4;
+
+  // NEW (optional): result rows if return_rows=true and the command produced rows.
+  // Use your existing Record message type from the service.
+  repeated Record records = 5;
+}
+
+message QueryResult {
+  repeated Record records = 1;
+  int32 total_records_in_batch = 2; // renamed for clarity
+  int64 running_total_emitted = 3;  // optional; cumulative count so far
+  bool is_last_batch = 4;
+}
+
+message ColumnMetadata {
+  string name = 1;
+  string type = 2;
+  bool nullable = 3;
+}
+
+// Transaction operations
+message BeginTransactionRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+  TransactionIsolation isolation = 3;
+}
+
+enum TransactionIsolation {
+  READ_UNCOMMITTED = 0;
+  READ_COMMITTED = 1;
+  REPEATABLE_READ = 2;
+  SERIALIZABLE = 3;
+}
+
+message BeginTransactionResponse {
+  string transaction_id = 1;
+  int64 timestamp = 2;
+}
+
+message CommitTransactionRequest {
+  TransactionContext transaction = 1;
+  DatabaseCredentials credentials = 2;
+}
+
+message CommitTransactionResponse {
+  bool success = 1;
+  string message = 2;
+  int64 timestamp = 3;
+}
+
+message RollbackTransactionRequest {
+  TransactionContext transaction = 1;
+  DatabaseCredentials credentials = 2;
+}
+
+message RollbackTransactionResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// Record operations
+message Record {
+  string rid = 1;
+  string type = 2;
+  map<string, google.protobuf.Value> properties = 3;
+  int32 version = 4;
+}
+
+message CreateRecordRequest {
+  string database = 1;
+  string type = 2;
+  map<string, google.protobuf.Value> properties = 3;
+  DatabaseCredentials credentials = 4;
+  TransactionContext transaction = 5;
+}
+
+message CreateRecordResponse {
+  Record record = 1;
+  bool success = 2;
+  string message = 3;
+  string identity = 4;
+}
+
+message GetRecordRequest {
+  string database = 1;
+  string rid = 2;
+  DatabaseCredentials credentials = 3;
+  TransactionContext transaction = 4;
+}
+
+message GetRecordResponse {
+  Record record = 1;
+  bool found = 2;
+}
+
+message UpdateRecordRequest {
+  string database = 1;
+  string rid = 2;
+  map<string, google.protobuf.Value> properties = 3;
+  DatabaseCredentials credentials = 4;
+  TransactionContext transaction = 5;
+  int32 expected_version = 6;
+}
+
+message UpdateRecordResponse {
+  Record record = 1;
+  bool success = 2;
+  bool updated = 3;
+  string message = 4;
+}
+
+message DeleteRecordRequest {
+  string database = 1;
+  string rid = 2;
+  DatabaseCredentials credentials = 3;
+  TransactionContext transaction = 4;
+}
+
+message DeleteRecordResponse {
+  bool success = 1;
+  bool deleted = 2;
+  string message = 3;
+}
+
+// Streaming operations
+message StreamQueryRequest {
+  string database = 1;
+  string query = 2;
+  map<string, google.protobuf.Value> parameters = 3;
+  DatabaseCredentials credentials = 4;
+  int32 batch_size = 5;
+
+  // NEW: how the server should retrieve rows under the hood
+  enum RetrievalMode {
+    // Current behavior: run once and iterate results, pushing as you go.
+    CURSOR = 0;
+
+    // Load all results into memory first, then emit batches.
+    MATERIALIZE_ALL = 1;
+
+    // Re-issue the query per batch using LIMIT/SKIP (or a server-side cursor/offset)
+    // so only enough rows for the next batch are fetched.
+    PAGED = 2;
+  }
+  RetrievalMode retrieval_mode = 6; 
+  
+  // NEW (optional): inline transaction control for streaming
+  TransactionContext transaction = 7;
+
+  // Optional (if you want to allow non-SQL later)
+  string language = 8; // default "sql" on server if empty  
+}
+
+// Server operations
+message ServerStatusResponse {
+  string version = 1;
+  string status = 2;
+  int64 uptime_ms = 3;
+  int32 active_connections = 4;
+  map<string, string> metrics = 5;
+}
+
+message PingResponse {
+  int64 timestamp = 1;
+  string message = 2;
+}
+
+enum ConflictMode { CONFLICT_ABORT = 0; CONFLICT_IGNORE = 1; CONFLICT_UPDATE = 2; }
+enum TransactionMode { PER_BATCH = 0; PER_STREAM = 1; PER_ROW = 2; }
+
+message InsertOptions {
+  string database = 1;
+  string target_class = 2;                 // e.g., "Patient"
+  repeated string key_columns = 3;         // for upsert/dedupe
+  ConflictMode conflict_mode = 4;          // default CONFLICT_ABORT
+  repeated string update_columns_on_conflict = 5;
+  TransactionMode transaction_mode = 6;    // default PER_BATCH
+  uint32 server_batch_size = 7;            // default 1000
+  bool validate_only = 8;                  // dry-run (no commit)
+  DatabaseCredentials credentials = 9;
+}
+
+message RowError {
+  uint64 row_index = 1; string code = 2; string message = 3; string field = 4;
+}
+
+message InsertChunk {
+  string session_id = 1;                   // optional idempotency key
+  uint64 chunk_seq = 2;                    // 1..N
+  repeated Record rows = 3;                // the data
+}
+
+message InsertSummary {
+  uint64 received = 1; uint64 inserted = 2; uint64 updated = 3;
+  uint64 ignored = 4; uint64 failed = 5;
+  repeated RowError errors = 6;            // truncate server-side if large
+  google.protobuf.Timestamp started_at = 7;
+  google.protobuf.Timestamp finished_at = 8;
+}
+
+message BulkInsertRequest { 
+  InsertOptions options = 1; repeated Record rows = 2; 
+}
+
+// message BulkInsertRequest {
+//   string database = 1;
+//   string type = 2;
+//   Record record = 3;
+//   DatabaseCredentials credentials = 4;
+// }
+
+// message BulkInsertResponse {
+//   int64 total_inserted = 1;
+//   int64 total_failed = 2;
+//   repeated string errors = 3;
+// }
+
+message StartInsert       { InsertOptions options = 1; }
+message CommitInsert      { string session_id = 1; }
+
+message Started   { string session_id = 1; }
+message BatchAck  {
+  string session_id = 1; uint64 chunk_seq = 2;
+  uint64 inserted = 3; uint64 updated = 4; uint64 ignored = 5; uint64 failed = 6;
+  repeated RowError errors = 7;
+}
+message Committed { InsertSummary summary = 1; }
+
+message InsertRequest  { oneof msg { StartInsert start = 1; InsertChunk chunk = 2; CommitInsert commit = 3; } }
+message InsertResponse { oneof msg { Started started = 1; BatchAck batch_ack = 2; Committed committed = 3; } }
+

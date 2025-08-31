@@ -41,7 +41,7 @@ public class RemoteImmutableDocument extends ImmutableDocument {
   protected final RemoteDatabase      remoteDatabase;
   protected final Map<String, Object> map;
 
-  protected RemoteImmutableDocument(final RemoteDatabase remoteDatabase, final Map<String, Object> attributes) {
+  public RemoteImmutableDocument(final RemoteDatabase remoteDatabase, final Map<String, Object> attributes) {
     super(null, remoteDatabase.getSchema().getType((String) attributes.get(Property.TYPE_PROPERTY)), null, null);
     this.remoteDatabase = remoteDatabase;
 
