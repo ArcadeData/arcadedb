@@ -3,7 +3,7 @@ const CopyWebpackPlugin = require('copy-webpack-plugin');
 
 module.exports = {
   entry: {
-    'vendor-libs': './src/main/js/vendor-libs.js'
+    'vendor-libs': './src/main/resources/static/js/vendor-libs.js'
   },
   output: {
     path: path.resolve(__dirname, 'src/main/resources/static/dist'),
@@ -147,7 +147,12 @@ module.exports = {
           from: 'node_modules/apexcharts/dist/apexcharts.css',
           to: 'css/apexcharts.css',
         },
-        // CodeMirror v6 is now bundled via vendor-libs.js
+        // CodeMirror v6 JavaScript is bundled via vendor-libs.js
+        // CodeMirror v6 CSS is managed separately
+        {
+          from: 'src/main/resources/static/css/codemirror-v6.css',
+          to: 'css/codemirror-v6.css',
+        },
         {
           from: 'node_modules/cytoscape-cola/cytoscape-cola.js',
           to: 'js/cytoscape-cola.js',
