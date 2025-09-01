@@ -150,6 +150,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	@Override
 	public void listDatabases(ListDatabasesRequest req, StreamObserver<ListDatabasesResponse> resp) {
 	    
+		logger.info("listDatabases(): Entry ...");
+		
 		try {
 
 			validateCredentials(req.getCredentials()); 
@@ -1716,8 +1718,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	}
 
 	private void validateCredentials(DatabaseCredentials credentials) {
+
 		// Implement credential validation logic
 		// This is a placeholder - integrate with ArcadeDB's security system
+		
 		if (credentials == null || credentials.getUsername().isEmpty()) {
 			throw new IllegalArgumentException("Invalid credentials");
 		}

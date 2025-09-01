@@ -6,12 +6,18 @@ import com.arcadedb.server.grpc.DatabaseCredentials;
 import com.arcadedb.server.grpc.DropDatabaseRequest;
 import com.arcadedb.server.grpc.ListDatabasesRequest;
 import com.arcadedb.server.grpc.ListDatabasesResponse;
+
+import io.grpc.CallCredentials;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.grpc.Metadata;
+import io.grpc.CallCredentials.MetadataApplier;
+import io.grpc.CallCredentials.RequestInfo;
 import io.grpc.stub.AbstractStub;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -30,8 +36,8 @@ public class RemoteGrpcServer implements AutoCloseable {
 
 	private final String host;
 	private final int port;
-	private final String user;
-	private final String pass;
+	private final String userName;
+	private final String userPassword;
 
 	private final long defaultTimeoutMs;
 
@@ -43,16 +49,21 @@ public class RemoteGrpcServer implements AutoCloseable {
 	}
 
 	public RemoteGrpcServer(final String host, final int port, final String user, final String pass, final long defaultTimeoutMs) {
+		
 		this.host = Objects.requireNonNull(host, "host");
+		
 		this.port = port;
-		this.user = Objects.requireNonNull(user, "user");
-		this.pass = Objects.requireNonNull(pass, "pass");
+		
+		this.userName = Objects.requireNonNull(user, "user");
+		
+		this.userPassword = Objects.requireNonNull(pass, "pass");
+		
 		this.defaultTimeoutMs = defaultTimeoutMs > 0 ? defaultTimeoutMs : 30_000;
 
 		this.channel = ManagedChannelBuilder.forAddress(this.host, this.port).usePlaintext() // switch to TLS if enabled server-side
 				.build();
 
-		this.blocking = ArcadeDbServiceGrpc.newBlockingStub(channel);
+		this.blocking = ArcadeDbServiceGrpc.newBlockingStub(channel).withCallCredentials(createCallCredentials(userName, userPassword));
 	}
 
 	@Override
@@ -71,8 +82,8 @@ public class RemoteGrpcServer implements AutoCloseable {
 		return stub.withDeadlineAfter(t, TimeUnit.MILLISECONDS);
 	}
 
-	public DatabaseCredentials buildCredentials() {
-		return DatabaseCredentials.newBuilder().setUsername(user == null ? "" : user).setPassword(pass == null ? "" : pass).build();
+	public DatabaseCredentials buildCredentials() {		
+		return DatabaseCredentials.newBuilder().setUsername(userName == null ? "" : userName).setPassword(userPassword == null ? "" : userPassword).build();
 	}
 
 	/** Returns the list of database names from the server. */
@@ -115,6 +126,48 @@ public class RemoteGrpcServer implements AutoCloseable {
 
 	@Override
 	public String toString() {
-		return "RemoteGrpcServer{endpoint=" + endpoint() + ", user='" + user + "'}";
+		return "RemoteGrpcServer{endpoint=" + endpoint() + ", userName='" + userName + "'}";
 	}
+	
+	/**
+	 * Creates call credentials for authentication
+	 */
+	protected CallCredentials createCallCredentials(String userName, String userPassword) {
+		return new CallCredentials() {
+			@Override
+			public void applyRequestMetadata(RequestInfo requestInfo, Executor appExecutor, MetadataApplier applier) {
+				Metadata headers = new Metadata();
+				headers.put(Metadata.Key.of("username", Metadata.ASCII_STRING_MARSHALLER), userName);
+				headers.put(Metadata.Key.of("password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
+				headers.put(Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER), userName);
+				headers.put(Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
+				applier.apply(headers);
+			}
+
+			@Override
+			public void thisUsesUnstableApi() {
+				// Required by the interface
+			}
+		};
+	}
+
+	protected CallCredentials createCredentials() {
+		return new CallCredentials() {
+			@Override
+			public void applyRequestMetadata(RequestInfo requestInfo, Executor appExecutor, MetadataApplier applier) {
+				Metadata headers = new Metadata();
+				headers.put(Metadata.Key.of("username", Metadata.ASCII_STRING_MARSHALLER), userName);
+				headers.put(Metadata.Key.of("password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
+				headers.put(Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER), userName);
+				headers.put(Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
+				applier.apply(headers);
+			}
+
+			// x-arcade-user: root" -H "x-arcade-password: oY9uU2uJ8nD8iY7t" -H "x-arcade-database: local_shakeiq_curonix_poc-app"
+			@Override
+			public void thisUsesUnstableApi() {
+				// Required by the interface
+			}
+		};
+	}	
 }
