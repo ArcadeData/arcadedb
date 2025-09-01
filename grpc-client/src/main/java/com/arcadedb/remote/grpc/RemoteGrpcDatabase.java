@@ -39,36 +39,30 @@ import com.arcadedb.server.grpc.ArcadeDbServiceGrpc;
 import com.arcadedb.server.grpc.BatchAck;
 import com.arcadedb.server.grpc.BeginTransactionRequest;
 import com.arcadedb.server.grpc.BeginTransactionResponse;
-import com.arcadedb.server.grpc.CommitInsert;
+import com.arcadedb.server.grpc.Commit;
 import com.arcadedb.server.grpc.CommitTransactionRequest;
 import com.arcadedb.server.grpc.CommitTransactionResponse;
-import com.arcadedb.server.grpc.CreateRecordRequest;
-import com.arcadedb.server.grpc.CreateRecordResponse;
 import com.arcadedb.server.grpc.DatabaseCredentials;
 import com.arcadedb.server.grpc.DeleteRecordRequest;
 import com.arcadedb.server.grpc.DeleteRecordResponse;
-import com.arcadedb.server.grpc.DropDatabaseRequest;
-import com.arcadedb.server.grpc.DropDatabaseResponse;
 import com.arcadedb.server.grpc.ExecuteCommandRequest;
 import com.arcadedb.server.grpc.ExecuteCommandResponse;
 import com.arcadedb.server.grpc.ExecuteQueryRequest;
 import com.arcadedb.server.grpc.ExecuteQueryResponse;
-import com.arcadedb.server.grpc.GetRecordRequest;
-import com.arcadedb.server.grpc.GetRecordResponse;
 import com.arcadedb.server.grpc.InsertChunk;
 import com.arcadedb.server.grpc.InsertOptions;
 import com.arcadedb.server.grpc.InsertRequest;
 import com.arcadedb.server.grpc.InsertResponse;
 import com.arcadedb.server.grpc.InsertSummary;
+import com.arcadedb.server.grpc.LookupByRidRequest;
+import com.arcadedb.server.grpc.LookupByRidResponse;
 import com.arcadedb.server.grpc.QueryResult;
 import com.arcadedb.server.grpc.RollbackTransactionRequest;
 import com.arcadedb.server.grpc.RollbackTransactionResponse;
-import com.arcadedb.server.grpc.StartInsert;
+import com.arcadedb.server.grpc.Start;
 import com.arcadedb.server.grpc.StreamQueryRequest;
 import com.arcadedb.server.grpc.TransactionContext;
 import com.arcadedb.server.grpc.TransactionIsolation;
-import com.arcadedb.server.grpc.UpdateRecordRequest;
-import com.arcadedb.server.grpc.UpdateRecordResponse;
 import com.google.protobuf.Struct;
 import com.google.protobuf.Value;
 
@@ -79,7 +73,9 @@ import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
 import io.grpc.Status;
+import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
+import io.grpc.stub.BlockingClientCall;
 
 /**
  * Remote Database implementation using gRPC protocol instead of HTTP. Extends
@@ -90,14 +86,14 @@ import io.grpc.StatusRuntimeException;
  * @author Oleg Cohen (oleg.cohen@gmail.com)
  */
 public class RemoteGrpcDatabase extends RemoteDatabase {
-	
+
 	private final ManagedChannel channel;
-	
-	private final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub blockingStub;
+
+	private final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub blockingStub;
 	private final ArcadeDbServiceGrpc.ArcadeDbServiceStub asyncStub;
-	
+
 	private String transactionId;
-	
+
 	private final RemoteSchema schema;
 
 	private final String userName;
@@ -105,18 +101,19 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	private String databaseName;
 	private RemoteTransactionExplicitLock explicitLock;
 
-	public RemoteGrpcDatabase(final String server, final int grpcPort, final int httpPort, final String databaseName, final String userName, final String userPassword) {
+	public RemoteGrpcDatabase(final String server, final int grpcPort, final int httpPort, final String databaseName, final String userName,
+			final String userPassword) {
 		this(server, grpcPort, httpPort, databaseName, userName, userPassword, new ContextConfiguration());
 	}
 
-	public RemoteGrpcDatabase(final String server, final int grpcPort, final int httpPort, final String databaseName, final String userName, final String userPassword,
-			final ContextConfiguration configuration) {
+	public RemoteGrpcDatabase(final String server, final int grpcPort, final int httpPort, final String databaseName, final String userName,
+			final String userPassword, final ContextConfiguration configuration) {
 
 		super(server, httpPort, databaseName, userName, userPassword, configuration);
 
 		this.userName = userName;
 		this.userPassword = userPassword;
-		
+
 		this.databaseName = databaseName;
 
 		// Create gRPC channel
@@ -132,7 +129,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		// Create gRPC-specific schema
 		this.schema = new RemoteSchema(this);
 	}
-	
+
 	/**
 	 * Creates the gRPC channel. Override this for custom channel configuration.
 	 */
@@ -177,19 +174,20 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 				applier.apply(headers);
 			}
 
-			// x-arcade-user: root" -H "x-arcade-password: oY9uU2uJ8nD8iY7t" -H "x-arcade-database: local_shakeiq_curonix_poc-app"
+			// x-arcade-user: root" -H "x-arcade-password: oY9uU2uJ8nD8iY7t" -H
+			// "x-arcade-database: local_shakeiq_curonix_poc-app"
 			@Override
 			public void thisUsesUnstableApi() {
 				// Required by the interface
 			}
 		};
 	}
-	
+
 	/**
 	 * Override this method to customize blocking stub creation
 	 */
-	protected ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub createBlockingStub(ManagedChannel channel) {
-		return ArcadeDbServiceGrpc.newBlockingStub(channel).withCallCredentials(createCredentials());
+	protected ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub createBlockingStub(ManagedChannel channel) {
+		return ArcadeDbServiceGrpc.newBlockingV2Stub(channel).withCallCredentials(createCredentials());
 	}
 
 	protected ArcadeDbServiceGrpc.ArcadeDbServiceStub createAsyncStub(ManagedChannel channel) {
@@ -226,27 +224,6 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	}
 
 	@Override
-	public void drop() {
-		checkDatabaseIsOpen();
-
-		DropDatabaseRequest request = DropDatabaseRequest.newBuilder().setDatabaseName(getName()).setCredentials(buildCredentials()).build();
-
-		try {
-			DropDatabaseResponse response = blockingStub
-					.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
-					.dropDatabase(request);
-			if (!response.getSuccess()) {
-				throw new DatabaseOperationException("Failed to drop database: " + response.getMessage());
-			}
-		}
-		catch (StatusRuntimeException e) {
-			throw new DatabaseOperationException("Error on deleting database", e);
-		}
-
-		close();
-	}
-
-	@Override
 	public void begin(final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel) {
 		checkDatabaseIsOpen();
 		if (transactionId != null)
@@ -256,14 +233,15 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 				.setIsolation(mapIsolationLevel(isolationLevel)).build();
 
 		try {
-			BeginTransactionResponse response = blockingStub
-					.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
-					.beginTransaction(request);
+			BeginTransactionResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).beginTransaction(request);
 			transactionId = response.getTransactionId();
 			// Store transaction ID in parent class session management
 			setSessionId(transactionId);
 		}
 		catch (StatusRuntimeException e) {
+			throw new TransactionException("Error on transaction begin", e);
+		}
+		catch (StatusException e) {
 			throw new TransactionException("Error on transaction begin", e);
 		}
 	}
@@ -281,14 +259,15 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 				.setCredentials(buildCredentials()).build();
 
 		try {
-			CommitTransactionResponse response = blockingStub
-					.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
-					.commitTransaction(request);
+			CommitTransactionResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).commitTransaction(request);
 			if (!response.getSuccess()) {
 				throw new TransactionException("Failed to commit transaction: " + response.getMessage());
 			}
 		}
 		catch (StatusRuntimeException e) {
+			handleGrpcException(e);
+		}
+		catch (StatusException e) {
 			handleGrpcException(e);
 		}
 		finally {
@@ -310,8 +289,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 				.setCredentials(buildCredentials()).build();
 
 		try {
-			RollbackTransactionResponse response = blockingStub
-					.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+			RollbackTransactionResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
 					.rollbackTransaction(request);
 			if (!response.getSuccess()) {
 				throw new TransactionException("Failed to rollback transaction: " + response.getMessage());
@@ -319,6 +297,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		}
 		catch (StatusRuntimeException e) {
 			throw new TransactionException("Error on transaction rollback", e);
+		}
+		catch (StatusException e) {
+			throw new TransactionException("Error on transaction begin", e);
 		}
 		finally {
 			transactionId = null;
@@ -328,19 +309,21 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 	@Override
 	public Record lookupByRID(final RID rid, final boolean loadContent) {
+
 		checkDatabaseIsOpen();
+
 		stats.readRecord.incrementAndGet();
 
 		if (rid == null)
 			throw new IllegalArgumentException("Record is null");
 
-		GetRecordRequest request = GetRecordRequest.newBuilder().setDatabase(getName()).setRid(rid.toString()).setCredentials(buildCredentials())
-				.build();
+		LookupByRidRequest request = LookupByRidRequest.newBuilder().setDatabase(getName()).setRid(rid.toString())
+				.setCredentials(buildCredentials()).build();
 
 		try {
-			GetRecordResponse response = blockingStub
-					.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
-					.getRecord(request);
+
+			LookupByRidResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).lookupByRid(request);
+
 			if (!response.getFound()) {
 				throw new RecordNotFoundException("Record " + rid + " not found", rid);
 			}
@@ -350,10 +333,15 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			handleGrpcException(e);
 			return null;
 		}
+		catch (StatusException e) {
+			handleGrpcException(e);
+			return null;
+		}
 	}
 
 	@Override
 	public void deleteRecord(final Record record) {
+
 		checkDatabaseIsOpen();
 		stats.deleteRecord.incrementAndGet();
 
@@ -364,14 +352,15 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 				.setCredentials(buildCredentials()).build();
 
 		try {
-			DeleteRecordResponse response = blockingStub
-					.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
-					.deleteRecord(request);
+			DeleteRecordResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).deleteRecord(request);
 			if (!response.getSuccess()) {
 				throw new DatabaseOperationException("Failed to delete record: " + response.getMessage());
 			}
 		}
 		catch (StatusRuntimeException e) {
+			handleGrpcException(e);
+		}
+		catch (StatusException e) {
 			handleGrpcException(e);
 		}
 	}
@@ -406,12 +395,15 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		}
 
 		try {
-			ExecuteQueryResponse response = blockingStub
-					.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+			ExecuteQueryResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
 					.executeQuery(requestBuilder.build());
 			return createGrpcResultSet(response);
 		}
 		catch (StatusRuntimeException e) {
+			handleGrpcException(e);
+			return new InternalResultSet();
+		}
+		catch (StatusException e) {
 			handleGrpcException(e);
 			return new InternalResultSet();
 		}
@@ -423,10 +415,10 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		stats.queries.incrementAndGet();
 
 		final Map<String, Object> params = mapArgs(args);
-		
+
 		return query(language, query, params);
 	}
-	
+
 	@Override
 	public ResultSet command(final String language, final String command, final Map<String, Object> params) {
 		checkDatabaseIsOpen();
@@ -444,8 +436,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		}
 
 		try {
-			ExecuteCommandResponse response = blockingStub
-					.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+			ExecuteCommandResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
 					.executeCommand(requestBuilder.build());
 
 			// Create result set with command execution info
@@ -462,117 +453,137 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			handleGrpcException(e);
 			return new InternalResultSet();
 		}
+		catch (StatusException e) {
+			handleGrpcException(e);
+			return new InternalResultSet();
+		}
 	}
 
-	public com.arcadedb.server.grpc.ExecuteCommandResponse execSql(String db, String sql, Map<String,Object> params, long timeoutMs) {
-	    return executeCommand(db, "sql", sql, params, /*returnRows*/ false, /*maxRows*/ 0, txBeginCommit(), timeoutMs);
+	public com.arcadedb.server.grpc.ExecuteCommandResponse execSql(String db, String sql, Map<String, Object> params, long timeoutMs) {
+		return executeCommand(db, "sql", sql, params, /* returnRows */ false, /* maxRows */ 0, txBeginCommit(), timeoutMs);
 	}
-	
-	public com.arcadedb.server.grpc.ExecuteCommandResponse execSql(String sql, Map<String,Object> params, long timeoutMs) {
-	    return executeCommand(databaseName, "sql", sql, params,  /*returnRows*/ false, /*maxRows*/ 0, txBeginCommit(), timeoutMs);
+
+	public com.arcadedb.server.grpc.ExecuteCommandResponse execSql(String sql, Map<String, Object> params, long timeoutMs) {
+		return executeCommand(databaseName, "sql", sql, params, /* returnRows */ false, /* maxRows */ 0, txBeginCommit(), timeoutMs);
 	}
-	
-	public com.arcadedb.server.grpc.ExecuteCommandResponse executeCommand(
-	        String language,
-	        String command,
-	        Map<String, Object> params,
-	        boolean returnRows,
-	        int maxRows,
-	        com.arcadedb.server.grpc.TransactionContext tx,
-	        long timeoutMs) {
 
-	    var reqB = com.arcadedb.server.grpc.ExecuteCommandRequest.newBuilder()
-	        .setDatabase(databaseName)
-	        .setCommand(command)
-	        .putAllParameters(convertParamsToProto(params))
-	        .setLanguage(langOrDefault(language))
-	        .setReturnRows(returnRows)
-	        .setMaxRows(maxRows > 0 ? maxRows : 0);
+	public com.arcadedb.server.grpc.ExecuteCommandResponse executeCommand(String language, String command, Map<String, Object> params,
+			boolean returnRows, int maxRows, com.arcadedb.server.grpc.TransactionContext tx, long timeoutMs) {
 
-	    if (tx != null) reqB.setTransaction(tx);
-	    // credentials: if your stub builds creds implicitly, set here if required
-	    reqB.setCredentials(buildCredentials());
+		var reqB = com.arcadedb.server.grpc.ExecuteCommandRequest.newBuilder().setDatabase(databaseName).setCommand(command)
+				.putAllParameters(convertParamsToProto(params)).setLanguage(langOrDefault(language)).setReturnRows(returnRows)
+				.setMaxRows(maxRows > 0 ? maxRows : 0);
 
-	    return blockingStub
-	        .withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
-	        .executeCommand(reqB.build());
+		if (tx != null)
+			reqB.setTransaction(tx);
+		// credentials: if your stub builds creds implicitly, set here if required
+		reqB.setCredentials(buildCredentials());
+
+		try {
+
+			return blockingStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS).executeCommand(reqB.build());
+		}
+		catch (StatusException e) {
+
+			throw new RuntimeException("Failed to execute command: " + e.getMessage(), e);
+		}
 	}
-	
-	
-	public com.arcadedb.server.grpc.ExecuteCommandResponse executeCommand(
-	        String database,
-	        String language,
-	        String command,
-	        Map<String, Object> params,
-	        boolean returnRows,
-	        int maxRows,
-	        com.arcadedb.server.grpc.TransactionContext tx,
-	        long timeoutMs) {
 
-	    var reqB = com.arcadedb.server.grpc.ExecuteCommandRequest.newBuilder()
-	        .setDatabase(database)
-	        .setCommand(command)
-	        .putAllParameters(convertParamsToProto(params))
-	        .setLanguage(langOrDefault(language))
-	        .setReturnRows(returnRows)
-	        .setMaxRows(maxRows > 0 ? maxRows : 0);
+	public com.arcadedb.server.grpc.ExecuteCommandResponse executeCommand(String database, String language, String command,
+			Map<String, Object> params, boolean returnRows, int maxRows, com.arcadedb.server.grpc.TransactionContext tx, long timeoutMs) {
 
-	    if (tx != null) reqB.setTransaction(tx);
-	    // credentials: if your stub builds creds implicitly, set here if required
-	    reqB.setCredentials(buildCredentials());
+		var reqB = com.arcadedb.server.grpc.ExecuteCommandRequest.newBuilder().setDatabase(database).setCommand(command)
+				.putAllParameters(convertParamsToProto(params)).setLanguage(langOrDefault(language)).setReturnRows(returnRows)
+				.setMaxRows(maxRows > 0 ? maxRows : 0);
 
-	    return blockingStub
-	        .withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
-	        .executeCommand(reqB.build());
+		if (tx != null)
+			reqB.setTransaction(tx);
+		// credentials: if your stub builds creds implicitly, set here if required
+		reqB.setCredentials(buildCredentials());
+
+		try {
+			return blockingStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS).executeCommand(reqB.build());
+		}
+		catch (StatusException e) {
+
+			throw new RuntimeException("Failed to execute command: " + e.getMessage(), e);
+		}
 	}
-	
+
 	@Override
 	protected RID saveRecord(final MutableDocument record) {
 		stats.createRecord.incrementAndGet();
 
-		RID rid = record.getIdentity();
+		final RID rid = record.getIdentity();
+
 		if (rid != null) {
-			// Update existing record
-			UpdateRecordRequest request = UpdateRecordRequest.newBuilder().setDatabase(getName()).setRid(rid.toString())
-					.putAllProperties(convertParamsToProto(record.toMap(false))).setCredentials(buildCredentials()).build();
+
+			// -------- UPDATE (partial) --------
+			// Build the nested proto Record for the "partial" oneof
+			com.arcadedb.server.grpc.Record partial = com.arcadedb.server.grpc.Record.newBuilder()
+					.putAllProperties(convertParamsToProto(record.toMap(false))).build();
+
+			com.arcadedb.server.grpc.UpdateRecordRequest request = com.arcadedb.server.grpc.UpdateRecordRequest.newBuilder()
+					.setDatabase(getName()).setRid(rid.toString()).setRecord(partial).setDatabase(databaseName)
+					.setCredentials(buildCredentials()).build();
 
 			try {
-				UpdateRecordResponse response = blockingStub
-						.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
-						.updateRecord(request);
-				
-				if (!response.getSuccess()) {
-					throw new DatabaseOperationException("Failed to update record");
-				}
+				com.arcadedb.server.grpc.UpdateRecordResponse response = blockingStub
+						.withDeadlineAfter(getTimeout(), java.util.concurrent.TimeUnit.MILLISECONDS).updateRecord(request);
+
+				// If your proto has flags, you can check response.getSuccess()/getUpdated()
+				// Otherwise, treat non-exception as success.
 				return rid;
 			}
-			catch (StatusRuntimeException e) {
+			catch (io.grpc.StatusRuntimeException e) {
+				handleGrpcException(e);
+				return null;
+			}
+			catch (io.grpc.StatusException e) {
 				handleGrpcException(e);
 				return null;
 			}
 		}
 		else {
-			// Create new record
-			CreateRecordRequest request = CreateRecordRequest.newBuilder().setDatabase(getName()).setType(record.getTypeName())
-					.putAllProperties(convertParamsToProto(record.toMap(false))).setCredentials(buildCredentials()).build();
+			// -------- CREATE --------
+			com.arcadedb.server.grpc.Record recMsg = com.arcadedb.server.grpc.Record.newBuilder()
+					.putAllProperties(convertParamsToProto(record.toMap(false))).build();
+
+			com.arcadedb.server.grpc.CreateRecordRequest request = com.arcadedb.server.grpc.CreateRecordRequest.newBuilder()
+					.setDatabase(getName()).setType(record.getTypeName()).setRecord(recMsg) // nested Record payload
+					.setCredentials(buildCredentials()).build();
 
 			try {
-				CreateRecordResponse response = blockingStub
-						.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
-						.createRecord(request);
-				
-				if (!response.getSuccess()) {
-					throw new DatabaseOperationException("Failed to create record");
+				com.arcadedb.server.grpc.CreateRecordResponse response = blockingStub
+						.withDeadlineAfter(getTimeout(), java.util.concurrent.TimeUnit.MILLISECONDS).createRecord(request);
+
+				// Proto returns the newly created RID as a string
+				final String ridStr = response.getRid();
+				if (ridStr == null || ridStr.isEmpty()) {
+					throw new com.arcadedb.exception.DatabaseOperationException("Failed to create record (empty RID)");
 				}
-				return new RID(this, response.getRecord().getRid());
+
+				// Construct a RID from the returned string
+				// Prefer the single-arg ctor if available; otherwise use the (Database, String)
+				// ctor.
+				try {
+					return new com.arcadedb.database.RID(ridStr);
+				}
+				catch (NoSuchMethodError | IllegalArgumentException ex) {
+					// Fallback for older APIs expecting (Database, String)
+					return new com.arcadedb.database.RID(this, ridStr);
+				}
 			}
-			catch (StatusRuntimeException e) {
+			catch (io.grpc.StatusRuntimeException e) {
+				handleGrpcException(e);
+				return null;
+			}
+			catch (io.grpc.StatusException e) {
 				handleGrpcException(e);
 				return null;
 			}
 		}
 	}
-	
 //	/**
 //	 * Executes a streaming query that returns results in batches.
 //	 * Useful for processing large result sets without loading everything into memory.
@@ -678,616 +689,544 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 //	public Iterator<Record> queryStream(final String language, final String query) {
 //	    return queryStream(language, query, 100);
 //	}
-	
+
 	/*
-StreamQueryRequest req = StreamQueryRequest.newBuilder()
-    .setDatabase(db)
-    .setQuery(sql)
-    .setBatchSize(500)
-    .setRetrievalMode(StreamQueryRequest.RetrievalMode.PAGED)
-    .setTransaction(TransactionContext.newBuilder()
-        .setBegin(true)
-        .setCommit(true)   // or setRollback(true)
-        .build())
-    .build(); 
+	 * StreamQueryRequest req = StreamQueryRequest.newBuilder() .setDatabase(db)
+	 * .setQuery(sql) .setBatchSize(500)
+	 * .setRetrievalMode(StreamQueryRequest.RetrievalMode.PAGED)
+	 * .setTransaction(TransactionContext.newBuilder() .setBegin(true)
+	 * .setCommit(true) // or setRollback(true) .build()) .build();
 	 */
-	
+
 	// Convenience: default batch size stays 100, default mode = CURSOR
-	public Iterator<Record> queryStream(final String language,
-	                                    final String query) {
-	    return queryStream(language, query, /*batchSize*/100,
-	            StreamQueryRequest.RetrievalMode.CURSOR);
+	public Iterator<Record> queryStream(final String language, final String query) {
+		return queryStream(language, query, /* batchSize */100, StreamQueryRequest.RetrievalMode.CURSOR);
 	}
 
-	public Iterator<Record> queryStream(final String language,
-	                                    final String query,
-	                                    final int batchSize) {
-	    return queryStream(language, query, batchSize,
-	            StreamQueryRequest.RetrievalMode.CURSOR);
+	public Iterator<Record> queryStream(final String language, final String query, final int batchSize) {
+		return queryStream(language, query, batchSize, StreamQueryRequest.RetrievalMode.CURSOR);
 	}
 
 	// NEW: choose retrieval mode
-	public Iterator<Record> queryStream(final String language,
-	                                    final String query,
-	                                    final int batchSize,
-	                                    final StreamQueryRequest.RetrievalMode mode) {
-	    checkDatabaseIsOpen();
-	    stats.queries.incrementAndGet();
+	public Iterator<Record> queryStream(final String language, final String query, final int batchSize,
+			final StreamQueryRequest.RetrievalMode mode) {
+		checkDatabaseIsOpen();
+		stats.queries.incrementAndGet();
 
-	    StreamQueryRequest request = StreamQueryRequest.newBuilder()
-	        .setDatabase(getName())
-	        .setQuery(query)
-	        .setCredentials(buildCredentials())
-	        .setBatchSize(batchSize > 0 ? batchSize : 100)
-	        .setRetrievalMode(mode) // <--- NEW
-	        .build();
+		StreamQueryRequest request = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(query).setCredentials(buildCredentials())
+				.setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode) // <--- NEW
+				.build();
 
-	    Iterator<QueryResult> responseIterator = blockingStub
-	        .withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
-	        .streamQuery(request);
+		BlockingClientCall<?, QueryResult> responseIterator = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+				.streamQuery(request);
 
-	    return new Iterator<Record>() {
-	        private Iterator<com.arcadedb.server.grpc.Record> currentBatch = Collections.emptyIterator();
+		return new Iterator<Record>() {
 
-	        @Override
-	        public boolean hasNext() {
-	            if (currentBatch.hasNext()) return true;
+			private Iterator<com.arcadedb.server.grpc.Record> currentBatch = Collections.emptyIterator();
 
-	            while (responseIterator.hasNext()) {
-	                QueryResult result = responseIterator.next();
+			@Override
+			public boolean hasNext() {
+				if (currentBatch.hasNext())
+					return true;
 
-	                // Defensive: skip any empty batches the server might send
-	                if (result.getRecordsCount() == 0) {
-	                    if (result.getIsLastBatch()) return false;
-	                    continue;
-	                }
+				try {
+					while (responseIterator.hasNext()) {
 
-	                currentBatch = result.getRecordsList().iterator();
-	                return true;
-	            }
-	            return false;
-	        }
+						QueryResult result = responseIterator.read();
 
-	        @Override
-	        public Record next() {
-	            if (!hasNext()) throw new NoSuchElementException();
-	            return grpcRecordToRecord(currentBatch.next());
-	        }
-	    };
+						// Defensive: skip any empty batches the server might send
+						if (result.getRecordsCount() == 0) {
+							if (result.getIsLastBatch())
+								return false;
+							continue;
+						}
+
+						currentBatch = result.getRecordsList().iterator();
+						return true;
+					}
+				}
+				catch (InterruptedException e) {
+
+					throw new RuntimeException("queryStream: interrupted", e);
+				}
+				catch (StatusException e) {
+
+					throw new RuntimeException("queryStream: error", e);
+				}
+
+				return false;
+			}
+
+			@Override
+			public Record next() {
+				if (!hasNext())
+					throw new NoSuchElementException();
+				return grpcRecordToRecord(currentBatch.next());
+			}
+		};
 	}
 
 	// PARAMETERIZED variant with retrieval mode
-	public Iterator<Record> queryStream(final String language,
-	                                    final String query,
-	                                    final Map<String, Object> params,
-	                                    final int batchSize,
-	                                    final StreamQueryRequest.RetrievalMode mode) {
-	    checkDatabaseIsOpen();
-	    stats.queries.incrementAndGet();
+	public Iterator<Record> queryStream(final String language, final String query, final Map<String, Object> params, final int batchSize,
+			final StreamQueryRequest.RetrievalMode mode) {
+		checkDatabaseIsOpen();
+		stats.queries.incrementAndGet();
 
-	    StreamQueryRequest.Builder b = StreamQueryRequest.newBuilder()
-	        .setDatabase(getName())
-	        .setQuery(query)
-	        .setCredentials(buildCredentials())
-	        .setBatchSize(batchSize > 0 ? batchSize : 100)
-	        .setRetrievalMode(mode); // <--- NEW
+		StreamQueryRequest.Builder b = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(query).setCredentials(buildCredentials())
+				.setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode); // <--- NEW
 
-	    if (params != null && !params.isEmpty()) {
-	        b.putAllParameters(convertParamsToProto(params));
-	    }
+		if (params != null && !params.isEmpty()) {
+			b.putAllParameters(convertParamsToProto(params));
+		}
 
-	    Iterator<QueryResult> responseIterator = blockingStub
-	        .withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
-	        .streamQuery(b.build());
+		BlockingClientCall<?, QueryResult> responseIterator = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+				.streamQuery(b.build());
 
-	    return new Iterator<Record>() {
-	        private Iterator<com.arcadedb.server.grpc.Record> currentBatch = Collections.emptyIterator();
+		return new Iterator<Record>() {
+			private Iterator<com.arcadedb.server.grpc.Record> currentBatch = Collections.emptyIterator();
 
-	        @Override
-	        public boolean hasNext() {
-	            if (currentBatch.hasNext()) return true;
+			@Override
+			public boolean hasNext() {
+				if (currentBatch.hasNext())
+					return true;
 
-	            while (responseIterator.hasNext()) {
-	                QueryResult result = responseIterator.next();
+				try {
+					while (responseIterator.hasNext()) {
+						QueryResult result = responseIterator.read();
 
-	                if (result.getRecordsCount() == 0) {
-	                    if (result.getIsLastBatch()) return false;
-	                    continue;
-	                }
+						if (result.getRecordsCount() == 0) {
+							if (result.getIsLastBatch())
+								return false;
+							continue;
+						}
 
-	                currentBatch = result.getRecordsList().iterator();
-	                return true;
-	            }
-	            return false;
-	        }
+						currentBatch = result.getRecordsList().iterator();
+						return true;
+					}
+				}
+				catch (InterruptedException e) {
 
-	        @Override
-	        public Record next() {
-	            if (!hasNext()) throw new NoSuchElementException();
-	            return grpcRecordToRecord(currentBatch.next());
-	        }
-	    };
+					throw new RuntimeException("queryStream: interrupted", e);
+				}
+				catch (StatusException e) {
+
+					throw new RuntimeException("queryStream: error", e);
+				}
+
+				return false;
+			}
+
+			@Override
+			public Record next() {
+				if (!hasNext())
+					throw new NoSuchElementException();
+				return grpcRecordToRecord(currentBatch.next());
+			}
+		};
 	}
 
 	// Keep the old signature working (defaults to CURSOR)
-	public Iterator<Record> queryStream(final String language,
-	                                    final String query,
-	                                    final Map<String, Object> params,
-	                                    final int batchSize) {
-	    return queryStream(language, query, params, batchSize,
-	            StreamQueryRequest.RetrievalMode.CURSOR);
+	public Iterator<Record> queryStream(final String language, final String query, final Map<String, Object> params, final int batchSize) {
+		return queryStream(language, query, params, batchSize, StreamQueryRequest.RetrievalMode.CURSOR);
 	}
-	
+
 	public static final class QueryBatch {
-	    private final List<Record> records;
-	    private final int totalInBatch;
-	    private final long runningTotal;
-	    private final boolean lastBatch;
+		private final List<Record> records;
+		private final int totalInBatch;
+		private final long runningTotal;
+		private final boolean lastBatch;
 
-	    public QueryBatch(List<Record> list, int totalInBatch, long runningTotal, boolean lastBatch) {
-	        this.records = list;
-	        this.totalInBatch = totalInBatch;
-	        this.runningTotal = runningTotal;
-	        this.lastBatch = lastBatch;
-	    }
-	    public List<Record> records() { return records; }
-	    public int totalInBatch() { return totalInBatch; }
-	    public long runningTotal() { return runningTotal; }
-	    public boolean isLastBatch() { return lastBatch; }
+		public QueryBatch(List<Record> list, int totalInBatch, long runningTotal, boolean lastBatch) {
+			this.records = list;
+			this.totalInBatch = totalInBatch;
+			this.runningTotal = runningTotal;
+			this.lastBatch = lastBatch;
+		}
+
+		public List<Record> records() {
+			return records;
+		}
+
+		public int totalInBatch() {
+			return totalInBatch;
+		}
+
+		public long runningTotal() {
+			return runningTotal;
+		}
+
+		public boolean isLastBatch() {
+			return lastBatch;
+		}
 	}
 
-	public Iterator<QueryBatch> queryStreamBatches(final String language,
-	                                               final String query,
-	                                               final Map<String, Object> params,
-	                                               final int batchSize,
-	                                               final StreamQueryRequest.RetrievalMode mode) {
-	    checkDatabaseIsOpen();
-	    stats.queries.incrementAndGet();
+	public Iterator<QueryBatch> queryStreamBatches(final String language, final String query, final Map<String, Object> params,
+			final int batchSize, final StreamQueryRequest.RetrievalMode mode) {
+		checkDatabaseIsOpen();
+		stats.queries.incrementAndGet();
 
-	    StreamQueryRequest.Builder b = StreamQueryRequest.newBuilder()
-	        .setDatabase(getName())
-	        .setQuery(query)
-	        .setCredentials(buildCredentials())
-	        .setBatchSize(batchSize > 0 ? batchSize : 100)
-	        .setRetrievalMode(mode);
+		StreamQueryRequest.Builder b = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(query).setCredentials(buildCredentials())
+				.setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode);
 
-	    if (params != null && !params.isEmpty()) {
-	        b.putAllParameters(convertParamsToProto(params));
-	    }
+		if (params != null && !params.isEmpty()) {
+			b.putAllParameters(convertParamsToProto(params));
+		}
 
-	    Iterator<QueryResult> responseIterator = blockingStub
-	        .withWaitForReady() // optional, improves robustness
-	        .withDeadlineAfter(/* e.g. */ 10, TimeUnit.MINUTES)
-	        .streamQuery(b.build());
+		BlockingClientCall<?, QueryResult> responseIterator = blockingStub.withWaitForReady() // optional, improves robustness
+				.withDeadlineAfter(/* e.g. */ 10, TimeUnit.MINUTES).streamQuery(b.build());
 
-	    return new Iterator<QueryBatch>() {
-	        private QueryBatch nextBatch = null;
-	        private boolean drained = false;
+		return new Iterator<QueryBatch>() {
+			private QueryBatch nextBatch = null;
+			private boolean drained = false;
 
-	        @Override
-	        public boolean hasNext() {
-	            if (nextBatch != null) return true;
-	            if (drained) return false;
+			@Override
+			public boolean hasNext() {
+				if (nextBatch != null)
+					return true;
+				if (drained)
+					return false;
 
-	            while (responseIterator.hasNext()) {
-	                QueryResult qr = responseIterator.next();
-	                int n = qr.getTotalRecordsInBatch(); // server-populated
-	                // Guard: some servers could omit this; fallback to list size.
-	                if (n == 0) n = qr.getRecordsCount();
+				try {
+					while (responseIterator.hasNext()) {
+						QueryResult qr = responseIterator.read();
+						int n = qr.getTotalRecordsInBatch(); // server-populated
+						// Guard: some servers could omit this; fallback to list size.
+						if (n == 0)
+							n = qr.getRecordsCount();
 
-	                if (qr.getRecordsCount() == 0 && !qr.getIsLastBatch()) {
-	                    // skip empty non-terminal batch
-	                    continue;
-	                }
+						if (qr.getRecordsCount() == 0 && !qr.getIsLastBatch()) {
+							// skip empty non-terminal batch
+							continue;
+						}
 
-	                List<Record> converted = new ArrayList<>(qr.getRecordsCount());
-	                for (com.arcadedb.server.grpc.Record gr : qr.getRecordsList()) {
-	                    converted.add(grpcRecordToRecord(gr));
-	                }
+						List<Record> converted = new ArrayList<>(qr.getRecordsCount());
+						for (com.arcadedb.server.grpc.Record gr : qr.getRecordsList()) {
+							converted.add(grpcRecordToRecord(gr));
+						}
 
-	                nextBatch = new QueryBatch(
-	                    converted,
-	                    n,
-	                    qr.getRunningTotalEmitted(),
-	                    qr.getIsLastBatch()
-	                );
+						nextBatch = new QueryBatch(converted, n, qr.getRunningTotalEmitted(), qr.getIsLastBatch());
 
-	                if (qr.getIsLastBatch()) {
-	                    drained = true; // no more after this (even if server sent empty terminal)
-	                }
-	                return true;
-	            }
+						if (qr.getIsLastBatch()) {
+							drained = true; // no more after this (even if server sent empty terminal)
+						}
+						return true;
+					}
+				}
+				catch (InterruptedException e) {
 
-	            drained = true;
-	            return false;
-	        }
+					throw new RuntimeException("queryStreamBatches: interrupted", e);
+				}
+				catch (StatusException e) {
 
-	        @Override
-	        public QueryBatch next() {
-	            if (!hasNext()) throw new NoSuchElementException();
-	            QueryBatch out = nextBatch;
-	            nextBatch = null;
-	            return out;
-	        }
-	    };
-	}
-	
-	public Iterator<com.arcadedb.server.grpc.Record> queryStream(
-	        String database,
-	        String sql,
-	        Map<String, Object> params,
-	        int batchSize,
-	        com.arcadedb.server.grpc.StreamQueryRequest.RetrievalMode mode,
-	        com.arcadedb.server.grpc.TransactionContext tx,
-	        long timeoutMs) {
+					throw new RuntimeException("queryStreamBatches: error", e);
+				}
 
-	    var reqB = com.arcadedb.server.grpc.StreamQueryRequest.newBuilder()
-	        .setDatabase(database)
-	        .setQuery(sql)
-	        .putAllParameters(convertParamsToProto(params))
-	        .setCredentials(buildCredentials())
-	        .setBatchSize(batchSize > 0 ? batchSize : 100)
-	        .setRetrievalMode(mode);
+				drained = true;
+				return false;
+			}
 
-	    if (tx != null) reqB.setTransaction(tx);
-
-	    Iterator<com.arcadedb.server.grpc.QueryResult> it = blockingStub
-	        .withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
-	        .streamQuery(reqB.build());
-
-	    return new Iterator<>() {
-	        private Iterator<com.arcadedb.server.grpc.Record> curr = java.util.Collections.emptyIterator();
-	        public boolean hasNext() {
-	            if (curr.hasNext()) return true;
-	            if (it.hasNext()) { curr = it.next().getRecordsList().iterator(); return hasNext(); }
-	            return false;
-	        }
-	        public com.arcadedb.server.grpc.Record next() {
-	            if (!hasNext()) throw new java.util.NoSuchElementException();
-	            return curr.next();
-	        }
-	    };
-	}	
-	
-	public Iterator<QueryBatch> queryStreamBatches(
-	        String passLabel,
-	        String sql,
-	        Map<String,Object> params,
-	        int batchSize,
-	        com.arcadedb.server.grpc.StreamQueryRequest.RetrievalMode mode,
-	        com.arcadedb.server.grpc.TransactionContext tx,
-	        long timeoutMs) {
-
-	    var reqB = com.arcadedb.server.grpc.StreamQueryRequest.newBuilder()
-	        .setDatabase(getName())
-	        .setQuery(sql)
-	        .putAllParameters(convertParamsToProto(params))
-	        .setCredentials(buildCredentials())
-	        .setBatchSize(batchSize > 0 ? batchSize : 100)
-	        .setRetrievalMode(mode);
-
-	    if (tx != null) reqB.setTransaction(tx);
-
-	    Iterator<com.arcadedb.server.grpc.QueryResult> respIter = blockingStub
-	        .withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
-	        .streamQuery(reqB.build());
-
-	    return new Iterator<>() {
-	        public boolean hasNext() { return respIter.hasNext(); }
-	        public QueryBatch next() {
-	            
-	        	var qr = respIter.next();
-	        	
-	        	
-                List<Record> converted = new ArrayList<>(qr.getRecordsCount());
-                for (com.arcadedb.server.grpc.Record gr : qr.getRecordsList()) {
-                    converted.add(grpcRecordToRecord(gr));
-                }
-	            
-	            return new QueryBatch(
-	            		converted,
-	            	    qr.getTotalRecordsInBatch(),             // int totalInBatch
-	            	    qr.getRunningTotalEmitted(),             // long runningTotal
-	            	    qr.getIsLastBatch()                      // boolean lastBatch
-	            	);	            
-	        }
-	    };
-	}	
-	
-	// 	    public QueryBatch(List<Record> records, int totalInBatch, long runningTotal, boolean lastBatch) {
-
-	public String createVertex(String cls, Map<String,Object> props, long timeoutMs) {
-	    var req = com.arcadedb.server.grpc.CreateRecordRequest.newBuilder()
-	        .setDatabase(getName())
-	        .setType(cls)
-	        .putAllProperties(convertParamsToProto(props))
-	        .setCredentials(buildCredentials())
-	        .build();
-	    var res = blockingStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS).createRecord(req);
-	    // adjust to your response field name
-	    return res.getIdentity(); // e.g., "#12:0"
+			@Override
+			public QueryBatch next() {
+				if (!hasNext())
+					throw new NoSuchElementException();
+				QueryBatch out = nextBatch;
+				nextBatch = null;
+				return out;
+			}
+		};
 	}
 
-	public boolean updateRecord(String rid, Map<String,Object> props, long timeoutMs) {
-	    var req = com.arcadedb.server.grpc.UpdateRecordRequest.newBuilder()
-	        .setDatabase(getName())
-	        .setRid(rid)
-	        .putAllProperties(convertParamsToProto(props))
-	        .setCredentials(buildCredentials())
-	        // .setTransaction(txBeginCommit()) // if you add tx to this RPC
-	        .build();
-	    var res = blockingStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS).updateRecord(req);
-	    return res.getSuccess();
+	public Iterator<com.arcadedb.server.grpc.Record> queryStream(String database, String sql, Map<String, Object> params, int batchSize,
+			com.arcadedb.server.grpc.StreamQueryRequest.RetrievalMode mode, com.arcadedb.server.grpc.TransactionContext tx, long timeoutMs) {
+
+		var reqB = com.arcadedb.server.grpc.StreamQueryRequest.newBuilder().setDatabase(database).setQuery(sql)
+				.putAllParameters(convertParamsToProto(params)).setCredentials(buildCredentials()).setBatchSize(batchSize > 0 ? batchSize : 100)
+				.setRetrievalMode(mode);
+
+		if (tx != null)
+			reqB.setTransaction(tx);
+
+		BlockingClientCall<?, QueryResult> it = blockingStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+				.streamQuery(reqB.build());
+
+		return new Iterator<>() {
+
+			private Iterator<com.arcadedb.server.grpc.Record> curr = java.util.Collections.emptyIterator();
+
+			public boolean hasNext() {
+
+				if (curr.hasNext())
+					return true;
+
+				try {
+					if (it.hasNext()) {
+						curr = it.read().getRecordsList().iterator();
+						return hasNext();
+					}
+				}
+				catch (InterruptedException e) {
+
+					throw new RuntimeException("queryStream: interrupted", e);
+				}
+				catch (StatusException e) {
+
+					throw new RuntimeException("queryStream: error", e);
+				}
+
+				return false;
+			}
+
+			public com.arcadedb.server.grpc.Record next() {
+				if (!hasNext())
+					throw new java.util.NoSuchElementException();
+				return curr.next();
+			}
+		};
+	}
+
+	public Iterator<QueryBatch> queryStreamBatches(String passLabel, String sql, Map<String, Object> params, int batchSize,
+			com.arcadedb.server.grpc.StreamQueryRequest.RetrievalMode mode, com.arcadedb.server.grpc.TransactionContext tx, long timeoutMs) {
+
+		var reqB = com.arcadedb.server.grpc.StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(sql)
+				.putAllParameters(convertParamsToProto(params)).setCredentials(buildCredentials()).setBatchSize(batchSize > 0 ? batchSize : 100)
+				.setRetrievalMode(mode);
+
+		if (tx != null)
+			reqB.setTransaction(tx);
+
+		BlockingClientCall<?, QueryResult> respIter = blockingStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+				.streamQuery(reqB.build());
+
+		return new Iterator<>() {
+
+			public boolean hasNext() {
+
+				try {
+					return respIter.hasNext();
+				}
+				catch (InterruptedException e) {
+
+					throw new RuntimeException("queryStreamBatches: interrupted", e);
+				}
+				catch (StatusException e) {
+
+					throw new RuntimeException("queryStreamBatches: error", e);
+				}
+			}
+
+			public QueryBatch next() {
+
+				QueryResult qr;
+
+				try {
+					qr = respIter.read();
+					List<Record> converted = new ArrayList<>(qr.getRecordsCount());
+					for (com.arcadedb.server.grpc.Record gr : qr.getRecordsList()) {
+						converted.add(grpcRecordToRecord(gr));
+					}
+
+					return new QueryBatch(converted, qr.getTotalRecordsInBatch(), // int totalInBatch
+							qr.getRunningTotalEmitted(), // long runningTotal
+							qr.getIsLastBatch() // boolean lastBatch
+					);
+				}
+				catch (InterruptedException e) {
+
+					throw new RuntimeException("queryStreamBatches: interrupted", e);
+				}
+				catch (StatusException e) {
+
+					throw new RuntimeException("queryStreamBatches: error", e);
+				}
+			}
+		};
+	}
+
+	public String createVertex(String cls, Map<String, Object> props, long timeoutMs) {
+		// Build the nested proto Record payload
+		com.arcadedb.server.grpc.Record recMsg = com.arcadedb.server.grpc.Record.newBuilder().putAllProperties(convertParamsToProto(props))
+				.build();
+
+		// Build the Create request
+		com.arcadedb.server.grpc.CreateRecordRequest req = com.arcadedb.server.grpc.CreateRecordRequest.newBuilder().setDatabase(getName())
+				.setType(cls).setRecord(recMsg) // <<<< NESTED RECORD (not top-level properties)
+				.setCredentials(buildCredentials()).build();
+
+		// Call RPC
+		com.arcadedb.server.grpc.CreateRecordResponse res;
+
+		try {
+
+			res = blockingStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS).createRecord(req);
+
+			// Response carries new RID string
+			return res.getRid(); // e.g., "#12:0"
+		}
+		catch (StatusException e) {
+
+			throw new RuntimeException("Failed to create vertex", e);
+		}
+	}
+
+	public boolean updateRecord(String rid, Map<String, Object> props, long timeoutMs) {
+
+		// Build the nested proto Record payload for a PATCH
+		com.arcadedb.server.grpc.Record record = com.arcadedb.server.grpc.Record.newBuilder().putAllProperties(convertParamsToProto(props))
+				.build();
+
+		// Build the Update request (use setRecord(...) for full replace instead)
+		com.arcadedb.server.grpc.UpdateRecordRequest req = com.arcadedb.server.grpc.UpdateRecordRequest.newBuilder().setDatabase(getName())
+				.setRid(rid).setRecord(record) // <<<< oneof {record|partial}
+				.setCredentials(buildCredentials()).build();
+
+		// Call RPC
+		com.arcadedb.server.grpc.UpdateRecordResponse res;
+
+		try {
+			res = blockingStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS).updateRecord(req);
+
+			// Choose the flag your proto defines. Most builds expose getSuccess().
+			return res.getSuccess();
+			// If your generated class exposes getUpdated() instead, use:
+			// return res.getUpdated();
+		}
+		catch (StatusException e) {
+
+			throw new RuntimeException("Failed to update record", e);
+		}
 	}
 
 	public boolean deleteRecord(String rid, long timeoutMs) {
-	    var req = com.arcadedb.server.grpc.DeleteRecordRequest.newBuilder()
-	        .setDatabase(getName())
-	        .setRid(rid)
-	        .setCredentials(buildCredentials())
-	        .build();
-	    var res = blockingStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS).deleteRecord(req);
-	    return res.getDeleted();
-	}	
-	
+		var req = com.arcadedb.server.grpc.DeleteRecordRequest.newBuilder().setDatabase(getName()).setRid(rid).setCredentials(buildCredentials())
+				.build();
+		DeleteRecordResponse res;
+
+		try {
+
+			res = blockingStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS).deleteRecord(req);
+			return res.getDeleted();
+		}
+		catch (StatusException e) {
+
+			throw new RuntimeException("Failed to delete record", e);
+		}
+	}
+
 	@Override
 	public RemoteTransactionExplicitLock acquireLock() {
-	    // Need gRPC-specific implementation
-	    if (explicitLock == null)
-	        explicitLock = new RemoteGrpcTransactionExplicitLock(this);
-	    
-	    return explicitLock;
-	}	
-	
+		// Need gRPC-specific implementation
+		if (explicitLock == null)
+			explicitLock = new RemoteGrpcTransactionExplicitLock(this);
+
+		return explicitLock;
+	}
+
 	@Override
 	public long countBucket(final String bucketName) {
-	    checkDatabaseIsOpen();
-	    stats.countBucket.incrementAndGet();
-	    ResultSet result = query("sql", "select count(*) as count from bucket:" + bucketName);
-	    if (result.hasNext()) {
-	        Number count = result.next().getProperty("count");
-	        return count != null ? count.longValue() : 0;
-	    }
-	    return 0;
+		checkDatabaseIsOpen();
+		stats.countBucket.incrementAndGet();
+		ResultSet result = query("sql", "select count(*) as count from bucket:" + bucketName);
+		if (result.hasNext()) {
+			Number count = result.next().getProperty("count");
+			return count != null ? count.longValue() : 0;
+		}
+		return 0;
 	}
-	
+
 	@Override
 	public long countType(final String typeName, final boolean polymorphic) {
-	    checkDatabaseIsOpen();
-	    stats.countType.incrementAndGet();
-	    final String appendix = polymorphic ? "" : " where @type = '" + typeName + "'";
-	    ResultSet result = query("sql", "select count(*) as count from " + typeName + appendix);
-	    if (result.hasNext()) {
-	        Number count = result.next().getProperty("count");
-	        return count != null ? count.longValue() : 0;
-	    }
-	    return 0;
+		checkDatabaseIsOpen();
+		stats.countType.incrementAndGet();
+		final String appendix = polymorphic ? "" : " where @type = '" + typeName + "'";
+		ResultSet result = query("sql", "select count(*) as count from " + typeName + appendix);
+		if (result.hasNext()) {
+			Number count = result.next().getProperty("count");
+			return count != null ? count.longValue() : 0;
+		}
+		return 0;
 	}
-	
+
 	@Override
 	public Record lookupByRID(final RID rid) {
-	    return lookupByRID(rid, true);
+		return lookupByRID(rid, true);
 	}
 
 	@Override
 	public boolean existsRecord(RID rid) {
-	    stats.existsRecord.incrementAndGet();
-	    if (rid == null)
-	        throw new IllegalArgumentException("Record is null");
-	    try {
-	        return lookupByRID(rid, false) != null;
-	    } catch (RecordNotFoundException e) {
-	        return false;
-	    }
+		stats.existsRecord.incrementAndGet();
+		if (rid == null)
+			throw new IllegalArgumentException("Record is null");
+		try {
+			return lookupByRID(rid, false) != null;
+		}
+		catch (RecordNotFoundException e) {
+			return false;
+		}
 	}
-	
-		
-	public com.arcadedb.server.grpc.InsertSummary insertBulk(
-	        final com.arcadedb.server.grpc.InsertOptions options,
-	        final java.util.List<com.arcadedb.server.grpc.Record> protoRows,
-	        final long timeoutMs) {
 
-	    // Ensure options carry DB + credentials as the server expects
-	    com.arcadedb.server.grpc.InsertOptions.Builder ob = options.toBuilder();
+	public com.arcadedb.server.grpc.InsertSummary insertBulk(final com.arcadedb.server.grpc.InsertOptions options,
+			final java.util.List<com.arcadedb.server.grpc.Record> protoRows, final long timeoutMs) {
 
-	    if (options.getDatabase() == null || options.getDatabase().isEmpty()) {
-	        ob.setDatabase(getName());                 // your wrapper's DB name
-	    }
-	    
-	    boolean missingCreds =
-	            !options.hasCredentials()
-	            || options.getCredentials().getUsername().isEmpty();
-	    if (missingCreds) {
-	        ob.setCredentials(buildCredentials());     // your existing helper used by queries
-	    }
-	    
-	    InsertOptions newOptions = ob.build();
-	    
-	    com.arcadedb.server.grpc.BulkInsertRequest req =
-	        com.arcadedb.server.grpc.BulkInsertRequest.newBuilder()
-	            .setOptions(newOptions)
-	            .addAllRows(protoRows)
-	            .build();
+		// Ensure options carry DB + credentials as the server expects
+		com.arcadedb.server.grpc.InsertOptions.Builder ob = options.toBuilder();
 
-	    return blockingStub
-	        .withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
-	        .bulkInsert(req);
+		if (options.getDatabase() == null || options.getDatabase().isEmpty()) {
+			ob.setDatabase(getName()); // your wrapper's DB name
+		}
+
+		boolean missingCreds = !options.hasCredentials() || options.getCredentials().getUsername().isEmpty();
+		if (missingCreds) {
+			ob.setCredentials(buildCredentials()); // your existing helper used by queries
+		}
+
+		InsertOptions newOptions = ob.build();
+
+		com.arcadedb.server.grpc.BulkInsertRequest req = com.arcadedb.server.grpc.BulkInsertRequest.newBuilder().setOptions(newOptions)
+				.addAllRows(protoRows).build();
+
+		try {
+			return blockingStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS).bulkInsert(req);
+		}
+		catch (StatusException e) {
+
+			throw new RuntimeException("insertBulk() -> failed: " + e.getStatus());
+		}
 	}
 
 	// Convenience overload that accepts domain rows (convert first)
-	public com.arcadedb.server.grpc.InsertSummary insertBulkAsListOfMaps(
-	        final com.arcadedb.server.grpc.InsertOptions options,
-	        final java.util.List<java.util.Map<String, Object>> rows,
-	        final long timeoutMs) {
+	public com.arcadedb.server.grpc.InsertSummary insertBulkAsListOfMaps(final com.arcadedb.server.grpc.InsertOptions options,
+			final java.util.List<java.util.Map<String, Object>> rows, final long timeoutMs) {
 
-	    java.util.List<com.arcadedb.server.grpc.Record> protoRows =
-	        rows.stream()
-	            .map(this::toProtoRecordFromMap) // your converter
-	            .collect(java.util.stream.Collectors.toList());
+		java.util.List<com.arcadedb.server.grpc.Record> protoRows = rows.stream().map(this::toProtoRecordFromMap) // your converter
+				.collect(java.util.stream.Collectors.toList());
 
-	    return insertBulk(options, protoRows, timeoutMs);
+		return insertBulk(options, protoRows, timeoutMs);
 	}
-	
-	public com.arcadedb.server.grpc.InsertSummary ingestStream(
-	        final com.arcadedb.server.grpc.InsertOptions options,             // note: InsertStream RPC does not carry options
-	        final java.util.List<com.arcadedb.server.grpc.Record> protoRows,
-	        final int chunkSize,
-	        final long timeoutMs) throws InterruptedException {
 
-	    final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-	    final java.util.concurrent.atomic.AtomicReference<com.arcadedb.server.grpc.InsertSummary> summaryRef =
-	            new java.util.concurrent.atomic.AtomicReference<>();
-	    
-	    // Ensure options carry DB + credentials as the server expects
-	    com.arcadedb.server.grpc.InsertOptions.Builder ob = options.toBuilder();
+	public com.arcadedb.server.grpc.InsertSummary ingestStream(final com.arcadedb.server.grpc.InsertOptions options,
+			final java.util.List<com.arcadedb.server.grpc.Record> protoRows, final int chunkSize, final long timeoutMs)
+			throws InterruptedException {
 
-	    if (options.getDatabase() == null || options.getDatabase().isEmpty()) {
-	        ob.setDatabase(getName());                 // your wrapper's DB name
-	    }
-	    
-	    boolean missingCreds =
-	            !options.hasCredentials()
-	            || options.getCredentials().getUsername().isEmpty();
-	    if (missingCreds) {
-	        ob.setCredentials(buildCredentials());     // your existing helper used by queries
-	    }	    
-
-	    io.grpc.stub.StreamObserver<com.arcadedb.server.grpc.InsertSummary> resp =
-	            new io.grpc.stub.StreamObserver<>() {
-	                @Override public void onNext(com.arcadedb.server.grpc.InsertSummary value) { summaryRef.set(value); }
-	                @Override public void onError(Throwable t) { done.countDown(); }
-	                @Override public void onCompleted() { done.countDown(); }
-	            };
-
-	    // Use the write service async stub, per-call deadline
-	    var stub =
-	            this.asyncStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
-
-	    final io.grpc.stub.StreamObserver<com.arcadedb.server.grpc.InsertChunk> req = stub.insertStream(resp);
-
-	    // Stream chunks
-	    final String sessionId = "sess-" + System.nanoTime();
-	    long seq = 1;
-	    for (int i = 0; i < protoRows.size(); i += chunkSize) {
-	        final int end = Math.min(i + chunkSize, protoRows.size());
-	        final com.arcadedb.server.grpc.InsertChunk chunk =
-	                com.arcadedb.server.grpc.InsertChunk.newBuilder()
-	                        .setSessionId(sessionId)
-	                        .setChunkSeq(seq++)
-	                        .addAllRows(protoRows.subList(i, end))
-	                        .build();
-	        req.onNext(chunk);
-	    }
-	    req.onCompleted();
-
-	    done.await(timeoutMs + 5_000, java.util.concurrent.TimeUnit.MILLISECONDS);
-
-	    final com.arcadedb.server.grpc.InsertSummary s = summaryRef.get();
-	    return (s != null)
-	            ? s
-	            : com.arcadedb.server.grpc.InsertSummary.newBuilder().setReceived(protoRows.size()).build();
-	}
-	
-	// Convenience overload
-	public com.arcadedb.server.grpc.InsertSummary ingestStreamAsListOfMaps(
-	        final com.arcadedb.server.grpc.InsertOptions options,
-	        final java.util.List<java.util.Map<String,Object>> rows,
-	        final int chunkSize,
-	        final long timeoutMs) throws InterruptedException {
-
-	    java.util.List<com.arcadedb.server.grpc.Record> protoRows =
-	        rows.stream().map(this::toProtoRecordFromMap).collect(java.util.stream.Collectors.toList());
-	    return ingestStream(options, protoRows, chunkSize, timeoutMs);
-	}
-	
-	/** Push records using InsertBidirectional with per-batch ACKs. */
-	public InsertSummary ingestBidi(List<Record> rows, InsertOptions opts, int chunkSize, int maxInflight) throws InterruptedException {
-		
-		final String sessionId = UUID.randomUUID().toString();
-		
-	    // Ensure options carry DB + credentials as the server expects
-	    com.arcadedb.server.grpc.InsertOptions.Builder ob = opts.toBuilder();
-
-	    if (opts.getDatabase() == null || opts.getDatabase().isEmpty()) {
-	        ob.setDatabase(getName());                 // your wrapper's DB name
-	    }
-	    
-	    boolean missingCreds =
-	            !opts.hasCredentials()
-	            || opts.getCredentials().getUsername().isEmpty();
-	    if (missingCreds) {
-	        ob.setCredentials(buildCredentials());     // your existing helper used by queries
-	    }
-		
 		final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-		final java.util.concurrent.atomic.AtomicLong seq = new java.util.concurrent.atomic.AtomicLong(1);
-		final java.util.concurrent.atomic.AtomicInteger sent = new java.util.concurrent.atomic.AtomicInteger(0);
-		final java.util.concurrent.atomic.AtomicInteger acked = new java.util.concurrent.atomic.AtomicInteger(0);
-		final java.util.List<BatchAck> acks = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
-		final java.util.concurrent.atomic.AtomicReference<InsertSummary> committed = new java.util.concurrent.atomic.AtomicReference<>();
+		final java.util.concurrent.atomic.AtomicReference<com.arcadedb.server.grpc.InsertSummary> summaryRef = new java.util.concurrent.atomic.AtomicReference<>();
 
-		io.grpc.stub.ClientResponseObserver<InsertRequest, InsertResponse> obs = new io.grpc.stub.ClientResponseObserver<>() {
-			
-			io.grpc.stub.ClientCallStreamObserver<InsertRequest> req;
+		// Ensure options carry DB + credentials as the server expects
+		com.arcadedb.server.grpc.InsertOptions.Builder ob = options.toBuilder();
 
+		if (options.getDatabase() == null || options.getDatabase().isEmpty()) {
+			ob.setDatabase(getName()); // your wrapper's DB name
+		}
+
+		boolean missingCreds = !options.hasCredentials() || options.getCredentials().getUsername().isEmpty();
+
+		if (missingCreds) {
+			ob.setCredentials(buildCredentials()); // your existing helper used by queries
+		}
+
+		io.grpc.stub.StreamObserver<com.arcadedb.server.grpc.InsertSummary> resp = new io.grpc.stub.StreamObserver<>() {
 			@Override
-			public void beforeStart(io.grpc.stub.ClientCallStreamObserver<InsertRequest> r) {
-				this.req = r;
-				r.disableAutoInboundFlowControl();
-				r.setOnReadyHandler(this::drain);
-			}
-
-			private int cursor = 0;
-
-			private void drain() {
-				if (!req.isReady())
-					return;
-				if (seq.get() == 1) { // send START once
-					req.onNext(InsertRequest.newBuilder().setStart(StartInsert.newBuilder().setOptions(ob.build())).build());
-				}
-				while (req.isReady() && (sent.get() - acked.get()) < maxInflight) {
-					
-					if (cursor >= rows.size())
-						break;
-					
-					int end = Math.min(cursor + chunkSize, rows.size());
-							
-					List<com.arcadedb.server.grpc.Record> protoRows = rows.stream()
-						    .map(RemoteGrpcDatabase.this::toProtoRecordFromDbRecord)
-						    .toList();
-
-						InsertChunk chunk = InsertChunk.newBuilder()
-						    .setSessionId(sessionId)
-						    .setChunkSeq(seq.getAndIncrement())
-						    .addAllRows(protoRows)   
-						    .build();					
-					
-					req.onNext(InsertRequest.newBuilder().setChunk(chunk).build());
-					cursor = end;
-					sent.incrementAndGet();
-				}
-				req.request(1);
-				if (cursor >= rows.size() && acked.get() >= sent.get()) {
-					req.onNext(InsertRequest.newBuilder().setCommit(CommitInsert.newBuilder().setSessionId(sessionId)).build());
-					req.onCompleted();
-				}
-			}
-
-			@Override
-			public void onNext(InsertResponse v) {
-				switch (v.getMsgCase()) {
-				case STARTED -> {
-					/* ok */ }
-				case BATCH_ACK -> {
-					acks.add(v.getBatchAck());
-					acked.incrementAndGet();
-					drain();
-				}
-				case COMMITTED -> committed.set(v.getCommitted().getSummary());
-				case MSG_NOT_SET -> {
-				}
-				}
-				req.request(1);
+			public void onNext(com.arcadedb.server.grpc.InsertSummary value) {
+				summaryRef.set(value);
 			}
 
 			@Override
@@ -1301,255 +1240,355 @@ StreamQueryRequest req = StreamQueryRequest.newBuilder()
 			}
 		};
 
-		asyncStub.insertBidirectional(obs);
-		
-		done.await(5, java.util.concurrent.TimeUnit.MINUTES);
+		// Use the write service async stub, per-call deadline
+		var stub = this.asyncStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
 
-		InsertSummary s = committed.get();
-		if (s != null)
-			return s;
+		final io.grpc.stub.StreamObserver<com.arcadedb.server.grpc.InsertChunk> req = stub.insertStream(resp);
 
-		long ins = acks.stream().mapToLong(BatchAck::getInserted).sum();
-		long upd = acks.stream().mapToLong(BatchAck::getUpdated).sum();
-		long ign = acks.stream().mapToLong(BatchAck::getIgnored).sum();
-		long fail = acks.stream().mapToLong(BatchAck::getFailed).sum();
-		
-		return InsertSummary.newBuilder().setReceived(rows.size()).setInserted(ins).setUpdated(upd).setIgnored(ign).setFailed(fail).build();
-	}	
-	
+		// Stream chunks
+		final String sessionId = "sess-" + System.nanoTime();
+
+		long seq = 1;
+
+		for (int i = 0; i < protoRows.size(); i += chunkSize) {
+
+			final int end = Math.min(i + chunkSize, protoRows.size());
+
+			final com.arcadedb.server.grpc.InsertChunk chunk = com.arcadedb.server.grpc.InsertChunk.newBuilder().setSessionId(sessionId)
+					.setOptions(ob.build()).setChunkSeq(seq++).addAllRows(protoRows.subList(i, end)).build();
+
+			req.onNext(chunk);
+		}
+
+		req.onCompleted();
+
+		done.await(timeoutMs + 5_000, java.util.concurrent.TimeUnit.MILLISECONDS);
+
+		final com.arcadedb.server.grpc.InsertSummary s = summaryRef.get();
+		return (s != null) ? s : com.arcadedb.server.grpc.InsertSummary.newBuilder().setReceived(protoRows.size()).build();
+	}
+
+	// Convenience overload
+	public com.arcadedb.server.grpc.InsertSummary ingestStreamAsListOfMaps(final com.arcadedb.server.grpc.InsertOptions options,
+			final java.util.List<java.util.Map<String, Object>> rows, final int chunkSize, final long timeoutMs) throws InterruptedException {
+
+		java.util.List<com.arcadedb.server.grpc.Record> protoRows = rows.stream().map(this::toProtoRecordFromMap)
+				.collect(java.util.stream.Collectors.toList());
+
+		return ingestStream(options, protoRows, chunkSize, timeoutMs);
+	}
+
 	/**
-	 * Bidirectional streaming ingest with per-batch ACKs.
+	 * Core implementation of InsertBidirectional ingest: - Sends a START once with
+	 * effective InsertOptions (db/creds enforced) - Streams chunks of mapped rows
+	 * (using chunkSize) while respecting backpressure (maxInflight) - Collects
+	 * per-batch ACKs and returns COMMITTED summary if present, else aggregates ACKs
 	 *
-	 * @param options InsertOptions (database, target class, conflict mode, tx mode, etc.)
-	 * @param rowsProto list of PROTO Records (com.arcadedb.server.grpc.Record)
-	 * @param chunkSize rows per chunk
-	 * @param maxInflight max unacked chunks
-	 * @param timeoutMs overall timeout for the ingest (client-side)
+	 * @param <T>         row type (e.g., com.arcadedb.database.Record or
+	 *                    Map<String,Object>)
+	 * @param rows        source rows
+	 * @param options     base InsertOptions; db/credentials will be injected if
+	 *                    missing
+	 * @param chunkSize   max rows per chunk
+	 * @param maxInflight max number of unacknowledged chunks allowed
+	 * @param timeoutMs   overall client-side timeout
+	 * @param mapper      maps T → grpc Record (must be pure & fast)
+	 * @return InsertSummary as returned by COMMITTED, or aggregated from ACKs if
+	 *         COMMITTED missing
+	 * @throws InterruptedException if the await is interrupted
 	 */
-	public com.arcadedb.server.grpc.InsertSummary ingestBidi(
-	        final com.arcadedb.server.grpc.InsertOptions options,
-	        final java.util.List<java.util.Map<String, Object>> rows,
-	        final int chunkSize,
-	        final int maxInflight,
-	        final long timeoutMs) throws InterruptedException {
-		
-	    // Ensure options carry DB + credentials as the server expects
-	    com.arcadedb.server.grpc.InsertOptions.Builder ob = options.toBuilder();
+	private com.arcadedb.server.grpc.InsertSummary ingestBidiCore(final java.util.List<?> rows,
+			final com.arcadedb.server.grpc.InsertOptions options, final int chunkSize, final int maxInflight, final long timeoutMs,
+			final java.util.function.Function<Object, com.arcadedb.server.grpc.Record> mapper) throws InterruptedException {
 
-	    if (options.getDatabase() == null || options.getDatabase().isEmpty()) {
-	        ob.setDatabase(getName());                 // your wrapper's DB name
-	    }
-	    
-	    boolean missingCreds =
-	            !options.hasCredentials()
-	            || options.getCredentials().getUsername().isEmpty();
-	    if (missingCreds) {
-	        ob.setCredentials(buildCredentials());     // your existing helper used by queries
-	    }
-		
-	    // Pre-convert to PROTO records (outside the observer!)
-	    final java.util.List<com.arcadedb.server.grpc.Record> protoRows =
-	            rows.stream()
-	                .map(RemoteGrpcDatabase.this::toProtoRecordFromMap)
-	                .collect(java.util.stream.Collectors.toList());
+		// 1) Ensure options carry DB + credentials the server expects
+		final com.arcadedb.server.grpc.InsertOptions.Builder ob = options.toBuilder();
+		if (options.getDatabase() == null || options.getDatabase().isEmpty()) {
+			ob.setDatabase(getName());
+		}
+		final boolean missingCreds = !options.hasCredentials() || options.getCredentials().getUsername().isEmpty();
+		if (missingCreds) {
+			ob.setCredentials(buildCredentials());
+		}
+		final com.arcadedb.server.grpc.InsertOptions effectiveOpts = ob.build();
 
-	    final String sessionId = "sess-" + System.nanoTime();
-	    final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-	    final java.util.concurrent.atomic.AtomicLong seq = new java.util.concurrent.atomic.AtomicLong(1);
-	    final java.util.concurrent.atomic.AtomicInteger cursor = new java.util.concurrent.atomic.AtomicInteger(0);
-	    final java.util.concurrent.atomic.AtomicInteger sent = new java.util.concurrent.atomic.AtomicInteger(0);
-	    final java.util.concurrent.atomic.AtomicInteger acked = new java.util.concurrent.atomic.AtomicInteger(0);
-	    final java.util.List<com.arcadedb.server.grpc.BatchAck> acks =
-	            java.util.Collections.synchronizedList(new java.util.ArrayList<>());
-	    final java.util.concurrent.atomic.AtomicReference<com.arcadedb.server.grpc.InsertSummary> committed =
-	            new java.util.concurrent.atomic.AtomicReference<>();
+		// 2) Pre-map rows → proto once (outside the observer)
+		final java.util.List<com.arcadedb.server.grpc.Record> protoRows = rows.stream().map(mapper)
+				.collect(java.util.stream.Collectors.toList());
 
-	    io.grpc.stub.ClientResponseObserver<com.arcadedb.server.grpc.InsertRequest,
-	                                        com.arcadedb.server.grpc.InsertResponse> observer =
-	            new io.grpc.stub.ClientResponseObserver<>() {
-	                io.grpc.stub.ClientCallStreamObserver<com.arcadedb.server.grpc.InsertRequest> req;
+		// 3) Streaming state
+		final String sessionId = "sess-" + System.nanoTime();
+		final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+		final java.util.concurrent.atomic.AtomicLong seq = new java.util.concurrent.atomic.AtomicLong(1);
+		final java.util.concurrent.atomic.AtomicInteger cursor = new java.util.concurrent.atomic.AtomicInteger(0);
+		final java.util.concurrent.atomic.AtomicInteger sent = new java.util.concurrent.atomic.AtomicInteger(0);
+		final java.util.concurrent.atomic.AtomicInteger acked = new java.util.concurrent.atomic.AtomicInteger(0);
+		final java.util.concurrent.atomic.AtomicReference<com.arcadedb.server.grpc.InsertSummary> committed = new java.util.concurrent.atomic.AtomicReference<>();
+		final java.util.List<com.arcadedb.server.grpc.BatchAck> acks = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
 
-	                @Override
-	                public void beforeStart(io.grpc.stub.ClientCallStreamObserver<com.arcadedb.server.grpc.InsertRequest> r) {
-	                    this.req = r;
-	                    r.disableAutoInboundFlowControl();
-	                    r.setOnReadyHandler(this::drain);
-	                }
+		final io.grpc.stub.ClientResponseObserver<com.arcadedb.server.grpc.InsertRequest, com.arcadedb.server.grpc.InsertResponse> observer = new io.grpc.stub.ClientResponseObserver<>() {
 
-	                private void drain() {
-	                    if (!req.isReady()) return;
+			io.grpc.stub.ClientCallStreamObserver<com.arcadedb.server.grpc.InsertRequest> req;
+			volatile boolean started = false;
 
-	                    if (seq.get() == 1) {
-	                        req.onNext(com.arcadedb.server.grpc.InsertRequest.newBuilder()
-	                                .setStart(com.arcadedb.server.grpc.StartInsert.newBuilder().setOptions(ob.build()))
-	                                .build());
-	                    }
+			@Override
+			public void beforeStart(io.grpc.stub.ClientCallStreamObserver<com.arcadedb.server.grpc.InsertRequest> r) {
+				this.req = r;
+				r.disableAutoInboundFlowControl();
+				r.setOnReadyHandler(this::drain);
+			}
 
-	                    while (req.isReady() && (sent.get() - acked.get()) < maxInflight) {
-	                        int start = cursor.get();
-	                        if (start >= protoRows.size()) break;
-	                        int end = Math.min(start + chunkSize, protoRows.size());
+			private void drain() {
+				if (!req.isReady())
+					return;
 
-	                        com.arcadedb.server.grpc.InsertChunk chunk =
-	                                com.arcadedb.server.grpc.InsertChunk.newBuilder()
-	                                        .setSessionId(sessionId)
-	                                        .setChunkSeq(seq.getAndIncrement())
-	                                        .addAllRows(protoRows.subList(start, end))
-	                                        .build();
+				// Send START exactly once
+				if (!started) {
+					req.onNext(com.arcadedb.server.grpc.InsertRequest.newBuilder()
+							.setStart(com.arcadedb.server.grpc.Start.newBuilder().setOptions(effectiveOpts)).build());
+					started = true;
+				}
 
-	                        req.onNext(com.arcadedb.server.grpc.InsertRequest.newBuilder().setChunk(chunk).build());
-	                        cursor.set(end);
-	                        sent.incrementAndGet();
-	                    }
+				// While there is capacity (backpressure) and in-flight < maxInflight → send
+				// chunks
+				while (req.isReady() && (sent.get() - acked.get()) < maxInflight) {
+					final int start = cursor.get();
+					if (start >= protoRows.size())
+						break;
 
-	                    req.request(1);
+					final int end = Math.min(start + chunkSize, protoRows.size());
+					final java.util.List<com.arcadedb.server.grpc.Record> slice = protoRows.subList(start, end);
 
-	                    if (cursor.get() >= protoRows.size() && acked.get() >= sent.get()) {
-	                        req.onNext(com.arcadedb.server.grpc.InsertRequest.newBuilder()
-	                                .setCommit(com.arcadedb.server.grpc.CommitInsert.newBuilder().setSessionId(sessionId))
-	                                .build());
-	                        req.onCompleted();
-	                    }
-	                }
+					final com.arcadedb.server.grpc.InsertChunk chunk = com.arcadedb.server.grpc.InsertChunk.newBuilder().setSessionId(sessionId)
+							.setChunkSeq(seq.getAndIncrement()).addAllRows(slice).build();
 
-	                @Override
-	                public void onNext(com.arcadedb.server.grpc.InsertResponse v) {
-	                    switch (v.getMsgCase()) {
-	                        case STARTED -> { /* ok */ }
-	                        case BATCH_ACK -> {
-	                            acks.add(v.getBatchAck());
-	                            acked.incrementAndGet();
-	                            drain();
-	                        }
-	                        case COMMITTED -> committed.set(v.getCommitted().getSummary());
-	                        case MSG_NOT_SET -> {}
-	                    }
-	                    req.request(1);
-	                }
+					req.onNext(com.arcadedb.server.grpc.InsertRequest.newBuilder().setChunk(chunk).build());
 
-	                @Override public void onError(Throwable t) { done.countDown(); }
-	                @Override public void onCompleted() { done.countDown(); }
-	            };
+					cursor.set(end);
+					sent.incrementAndGet();
+				}
 
-	    var stub = this.asyncStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
-	    stub.insertBidirectional(observer);
+				// If we sent everything and all ACKed → send COMMIT and half-close
+				if (cursor.get() >= protoRows.size() && acked.get() >= sent.get()) {
+					req.onNext(com.arcadedb.server.grpc.InsertRequest.newBuilder()
+							.setCommit(com.arcadedb.server.grpc.Commit.newBuilder().setSessionId(sessionId)).build());
+					req.onCompleted();
+				}
+			}
 
-	    done.await(timeoutMs + 5_000, java.util.concurrent.TimeUnit.MILLISECONDS);
+			@Override
+			public void onNext(com.arcadedb.server.grpc.InsertResponse v) {
+				switch (v.getMsgCase()) {
+				case STARTED -> {
+					/* ok */ }
+				case BATCH_ACK -> {
+					acks.add(v.getBatchAck());
+					acked.incrementAndGet();
+					// Now that capacity freed up, try to send more
+					drain();
+				}
+				case COMMITTED -> committed.set(v.getCommitted().getSummary());
+				case MSG_NOT_SET -> {
+					/* ignore */ }
+				}
+				// NOTE: no req.request(1) here; responses are server-pushed
+			}
 
-	    var summary = committed.get();
-	    if (summary != null) return summary;
+			@Override
+			public void onError(Throwable t) {
+				done.countDown();
+			}
 
-	    long ins = acks.stream().mapToLong(com.arcadedb.server.grpc.BatchAck::getInserted).sum();
-	    long upd = acks.stream().mapToLong(com.arcadedb.server.grpc.BatchAck::getUpdated).sum();
-	    long ign = acks.stream().mapToLong(com.arcadedb.server.grpc.BatchAck::getIgnored).sum();
-	    long fail = acks.stream().mapToLong(com.arcadedb.server.grpc.BatchAck::getFailed).sum();
+			@Override
+			public void onCompleted() {
+				done.countDown();
+			}
+		};
 
-	    return com.arcadedb.server.grpc.InsertSummary.newBuilder()
-	            .setReceived(protoRows.size())
-	            .setInserted(ins)
-	            .setUpdated(upd)
-	            .setIgnored(ign)
-	            .setFailed(fail)
-	            .build();
+		// 4) Kick off the bidi call with deadline
+		this.asyncStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS).insertBidirectional(observer);
+
+		// 5) Wait for completion
+		done.await(timeoutMs + 5_000, java.util.concurrent.TimeUnit.MILLISECONDS);
+
+		// 6) Prefer COMMITTED summary if present; otherwise aggregate ACKs
+		final com.arcadedb.server.grpc.InsertSummary finalSummary = committed.get();
+		if (finalSummary != null)
+			return finalSummary;
+
+		final long ins = acks.stream().mapToLong(com.arcadedb.server.grpc.BatchAck::getInserted).sum();
+		final long upd = acks.stream().mapToLong(com.arcadedb.server.grpc.BatchAck::getUpdated).sum();
+		final long ign = acks.stream().mapToLong(com.arcadedb.server.grpc.BatchAck::getIgnored).sum();
+		final long fail = acks.stream().mapToLong(com.arcadedb.server.grpc.BatchAck::getFailed).sum();
+
+		return com.arcadedb.server.grpc.InsertSummary.newBuilder().setReceived(protoRows.size()).setInserted(ins).setUpdated(upd).setIgnored(ign)
+				.setFailed(fail).build();
+	}
+
+	/**
+	 * Pushes domain {@code com.arcadedb.database.Record} rows via
+	 * InsertBidirectional with per-batch ACKs.
+	 *
+	 * <p>
+	 * Behavior:
+	 * <ul>
+	 * <li>Sends a {@code START} with effective {@link InsertOptions}
+	 * (DB/credentials auto-injected if missing).</li>
+	 * <li>Streams chunks of rows (size = {@code chunkSize}) while respecting
+	 * backpressure (at most {@code maxInflight} unacknowledged chunks).</li>
+	 * <li>Each server {@code BATCH_ACK} reduces in-flight count and triggers
+	 * sending more.</li>
+	 * <li>When all chunks are acked, sends {@code COMMIT} and returns the final
+	 * {@code InsertSummary} from the server if available; otherwise aggregates ACKs
+	 * to form a summary.</li>
+	 * </ul>
+	 *
+	 * @param rows        domain records to send
+	 * @param opts        base InsertOptions (target class, conflict mode, tx mode).
+	 *                    DB/credentials will be filled if missing
+	 * @param chunkSize   number of rows per chunk (must be > 0)
+	 * @param maxInflight max unacknowledged chunks allowed (backpressure window)
+	 * @return InsertSummary from COMMITTED or aggregated from ACKs
+	 * @throws InterruptedException if waiting for completion is interrupted
+	 */
+	public com.arcadedb.server.grpc.InsertSummary ingestBidi(final java.util.List<com.arcadedb.database.Record> rows,
+			final com.arcadedb.server.grpc.InsertOptions opts, final int chunkSize, final int maxInflight) throws InterruptedException {
+		return ingestBidiCore(rows, opts, chunkSize, maxInflight, /* timeoutMs */ 5 * 60_000L, // or pass a parameter if you prefer
+				(Object o) -> toProtoRecordFromDbRecord((com.arcadedb.database.Record) o));
+	}
+
+	/**
+	 * Pushes map-shaped rows (property map per row) via InsertBidirectional with
+	 * per-batch ACKs.
+	 *
+	 * <p>
+	 * Behavior is identical to {@link #ingestBidi(List, InsertOptions, int, int)}
+	 * but accepts pre-materialized property maps. This is useful when ingesting
+	 * from JSON/CSV or an HTTP pipeline.
+	 *
+	 * @param options     base InsertOptions (target class, conflict mode, tx mode).
+	 *                    DB/credentials will be filled if missing
+	 * @param rows        list of maps (one per record) to insert/update
+	 * @param chunkSize   rows per chunk
+	 * @param maxInflight max unacknowledged chunks allowed
+	 * @param timeoutMs   overall client-side timeout
+	 * @return InsertSummary from COMMITTED or aggregated from ACKs
+	 * @throws InterruptedException if the await is interrupted
+	 */
+	public com.arcadedb.server.grpc.InsertSummary ingestBidi(final com.arcadedb.server.grpc.InsertOptions options,
+			final java.util.List<java.util.Map<String, Object>> rows, final int chunkSize, final int maxInflight, final long timeoutMs)
+			throws InterruptedException {
+		return ingestBidiCore(rows, options, chunkSize, maxInflight, timeoutMs,
+				(Object o) -> toProtoRecordFromMap((java.util.Map<String, Object>) o));
 	}
 
 	// Map -> PROTO Value
 	private com.arcadedb.server.grpc.Record toProtoRecord(Map<String, Object> row) {
-	    com.arcadedb.server.grpc.Record.Builder b = com.arcadedb.server.grpc.Record.newBuilder();
-	    // Example if your proto uses a map<string, google.protobuf.Value> fields/properties
-	    row.forEach((k, v) -> b.putProperties(k, toProtoValue(v)));
-	    return b.build();
+		com.arcadedb.server.grpc.Record.Builder b = com.arcadedb.server.grpc.Record.newBuilder();
+		// Example if your proto uses a map<string, google.protobuf.Value>
+		// fields/properties
+		row.forEach((k, v) -> b.putProperties(k, toProtoValue(v)));
+		return b.build();
 	}
 
 	// Map -> PROTO Record
 	private com.arcadedb.server.grpc.Record toProtoRecordFromMap(java.util.Map<String, Object> row) {
-	    com.arcadedb.server.grpc.Record.Builder b = com.arcadedb.server.grpc.Record.newBuilder();
-	    row.forEach((k, v) -> b.putProperties(k, toProtoValue(v)));
-	    return b.build();
+		com.arcadedb.server.grpc.Record.Builder b = com.arcadedb.server.grpc.Record.newBuilder();
+		row.forEach((k, v) -> b.putProperties(k, toProtoValue(v)));
+		return b.build();
 	}
-	
+
 	// Domain Record (storage) -> PROTO Record
-	private com.arcadedb.server.grpc.Record toProtoRecordFromDbRecord(
-	        com.arcadedb.database.Record rec) {
+	private com.arcadedb.server.grpc.Record toProtoRecordFromDbRecord(com.arcadedb.database.Record rec) {
 
-	    // Promote to a read-only Document; null if this record isn't a document
-	    com.arcadedb.database.Document doc = rec.asDocument();
-	    if (doc == null) {
-	        return com.arcadedb.server.grpc.Record.getDefaultInstance();
-	    }
+		// Promote to a read-only Document; null if this record isn't a document
+		com.arcadedb.database.Document doc = rec.asDocument();
+		if (doc == null) {
+			return com.arcadedb.server.grpc.Record.getDefaultInstance();
+		}
 
-	    com.arcadedb.server.grpc.Record.Builder b = com.arcadedb.server.grpc.Record.newBuilder();
+		com.arcadedb.server.grpc.Record.Builder b = com.arcadedb.server.grpc.Record.newBuilder();
 
-	    // Iterate document properties
-	    for (String name : doc.getPropertyNames()) {
-	        // Depending on your ArcadeDB version, use ONE of these:
-	        Object v = doc.get(name);           // <-- common in ArcadeDB
-	        // Object v = doc.getProperty(name); // <-- use this if doc.get(...) doesn't exist in your API
-	        b.putProperties(name, toProtoValue(v));  // or putFields(...) if your proto uses "fields"
-	    }
-	    return b.build();
-	}	
-	
+		// Iterate document properties
+		for (String name : doc.getPropertyNames()) {
+			// Depending on your ArcadeDB version, use ONE of these:
+			Object v = doc.get(name); // <-- common in ArcadeDB
+			// Object v = doc.getProperty(name); // <-- use this if doc.get(...) doesn't
+			// exist in your API
+			b.putProperties(name, toProtoValue(v)); // or putFields(...) if your proto uses "fields"
+		}
+		return b.build();
+	}
 
 	// google.protobuf.Value -> Java (mirror of your toProtoValue)
 	private static Object fromProtoValue(com.google.protobuf.Value v) {
-	  if (v == null) return null;
-	  switch (v.getKindCase()) {
-	    case NULL_VALUE:   return null;
-	    case BOOL_VALUE:   return v.getBoolValue();
-	    case NUMBER_VALUE: return v.getNumberValue();
-	    case STRING_VALUE: return v.getStringValue();
-	    case LIST_VALUE: {
-	      java.util.List<Object> out = new java.util.ArrayList<>();
-	      for (com.google.protobuf.Value item : v.getListValue().getValuesList()) {
-	        out.add(fromProtoValue(item));
-	      }
-	      return out;
-	    }
-	    case STRUCT_VALUE: {
-	      java.util.Map<String,Object> m = new java.util.LinkedHashMap<>();
-	      v.getStructValue().getFieldsMap().forEach((k,vv) -> m.put(k, fromProtoValue(vv)));
-	      return m; // server-side schema can later coerce EMBEDDED if needed
-	    }
-	    case KIND_NOT_SET:
-	    default:
-	      return null;
-	  }
+		if (v == null)
+			return null;
+		switch (v.getKindCase()) {
+		case NULL_VALUE:
+			return null;
+		case BOOL_VALUE:
+			return v.getBoolValue();
+		case NUMBER_VALUE:
+			return v.getNumberValue();
+		case STRING_VALUE:
+			return v.getStringValue();
+		case LIST_VALUE: {
+			java.util.List<Object> out = new java.util.ArrayList<>();
+			for (com.google.protobuf.Value item : v.getListValue().getValuesList()) {
+				out.add(fromProtoValue(item));
+			}
+			return out;
+		}
+		case STRUCT_VALUE: {
+			java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+			v.getStructValue().getFieldsMap().forEach((k, vv) -> m.put(k, fromProtoValue(vv)));
+			return m; // server-side schema can later coerce EMBEDDED if needed
+		}
+		case KIND_NOT_SET:
+		default:
+			return null;
+		}
 	}
-	
+
 	// Query Result -> PROTO Record
 	private com.arcadedb.server.grpc.Record toProtoRecordFromResult(Result res) {
-	    com.arcadedb.server.grpc.Record.Builder b = com.arcadedb.server.grpc.Record.newBuilder();
-	    for (String name : res.getPropertyNames()) {
-	        Object v = res.getProperty(name);
-	        b.putProperties(name, toProtoValue(v));   // or putFields(...)
-	    }
-	    return b.build();
-	}	
+		com.arcadedb.server.grpc.Record.Builder b = com.arcadedb.server.grpc.Record.newBuilder();
+		for (String name : res.getPropertyNames()) {
+			Object v = res.getProperty(name);
+			b.putProperties(name, toProtoValue(v)); // or putFields(...)
+		}
+		return b.build();
+	}
 
 	// Convert Java object -> protobuf Value (extend as needed)
 	private com.google.protobuf.Value toProtoValue(Object v) {
-	    com.google.protobuf.Value.Builder vb = com.google.protobuf.Value.newBuilder();
-	    if (v == null) return vb.setNullValue(com.google.protobuf.NullValue.NULL_VALUE).build();
-	    if (v instanceof String s)  return vb.setStringValue(s).build();
-	    if (v instanceof Boolean b) return vb.setBoolValue(b).build();
-	    if (v instanceof Number n)  return vb.setNumberValue(n.doubleValue()).build();
-	    if (v instanceof java.time.Instant t)
-	        return vb.setStringValue(t.toString()).build(); // or a Struct for Timestamp if you prefer
-	    if (v instanceof java.util.Map<?,?> m) {
-	        var sb = com.google.protobuf.Struct.newBuilder();
-	        for (var e : m.entrySet())
-	            sb.putFields(String.valueOf(e.getKey()), toProtoValue(e.getValue()));
-	        return vb.setStructValue(sb.build()).build();
-	    }
-	    if (v instanceof java.util.List<?> list) {
-	        var lb = com.google.protobuf.ListValue.newBuilder();
-	        for (Object e : list) lb.addValues(toProtoValue(e));
-	        return vb.setListValue(lb.build()).build();
-	    }
-	    return vb.setStringValue(String.valueOf(v)).build();
-	}	
-	
+		com.google.protobuf.Value.Builder vb = com.google.protobuf.Value.newBuilder();
+		if (v == null)
+			return vb.setNullValue(com.google.protobuf.NullValue.NULL_VALUE).build();
+		if (v instanceof String s)
+			return vb.setStringValue(s).build();
+		if (v instanceof Boolean b)
+			return vb.setBoolValue(b).build();
+		if (v instanceof Number n)
+			return vb.setNumberValue(n.doubleValue()).build();
+		if (v instanceof java.time.Instant t)
+			return vb.setStringValue(t.toString()).build(); // or a Struct for Timestamp if you prefer
+		if (v instanceof java.util.Map<?, ?> m) {
+			var sb = com.google.protobuf.Struct.newBuilder();
+			for (var e : m.entrySet())
+				sb.putFields(String.valueOf(e.getKey()), toProtoValue(e.getValue()));
+			return vb.setStructValue(sb.build()).build();
+		}
+		if (v instanceof java.util.List<?> list) {
+			var lb = com.google.protobuf.ListValue.newBuilder();
+			for (Object e : list)
+				lb.addValues(toProtoValue(e));
+			return vb.setListValue(lb.build()).build();
+		}
+		return vb.setStringValue(String.valueOf(v)).build();
+	}
+
 	// Override HTTP-specific methods to prevent usage
 //	@Override
 //	HttpRequest.Builder createRequestBuilder(String httpMethod, String url) {
@@ -1591,27 +1630,27 @@ StreamQueryRequest req = StreamQueryRequest.newBuilder()
 			return TransactionIsolation.READ_COMMITTED;
 		}
 	}
-	
+
 	// ---- TX helpers -------------------------------------------------------------
 	private static com.arcadedb.server.grpc.TransactionContext txBeginCommit() {
-	    return com.arcadedb.server.grpc.TransactionContext.newBuilder()
-	        .setBegin(true).setCommit(true).build();
+		return com.arcadedb.server.grpc.TransactionContext.newBuilder().setBegin(true).setCommit(true).build();
 	}
+
 	private static com.arcadedb.server.grpc.TransactionContext txNone() {
-	    return com.arcadedb.server.grpc.TransactionContext.getDefaultInstance();
+		return com.arcadedb.server.grpc.TransactionContext.getDefaultInstance();
 	}
 
 	// Optional: language defaulting (server defaults to "sql" too)
 	private static String langOrDefault(String language) {
-	    return (language == null || language.isEmpty()) ? "sql" : language;
-	}	
+		return (language == null || language.isEmpty()) ? "sql" : language;
+	}
 
 	private Iterator<Record> streamQuery(final String query) {
+
 		StreamQueryRequest request = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(query).setCredentials(buildCredentials())
 				.setBatchSize(100).build();
 
-		Iterator<QueryResult> responseIterator = blockingStub
-				.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+		final BlockingClientCall<?, QueryResult> blockingClientCall = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
 				.streamQuery(request);
 
 		return new Iterator<Record>() {
@@ -1619,14 +1658,28 @@ StreamQueryRequest req = StreamQueryRequest.newBuilder()
 
 			@Override
 			public boolean hasNext() {
+
 				if (currentBatch.hasNext()) {
 					return true;
 				}
-				if (responseIterator.hasNext()) {
-					QueryResult result = responseIterator.next();
-					currentBatch = result.getRecordsList().iterator();
-					return currentBatch.hasNext();
+
+				try {
+
+					if (blockingClientCall.hasNext()) {
+						QueryResult result = blockingClientCall.read();
+						currentBatch = result.getRecordsList().iterator();
+						return currentBatch.hasNext();
+					}
 				}
+				catch (InterruptedException e) {
+
+					throw new RuntimeException("streamQuery: Interrupted", e);
+				}
+				catch (StatusException e) {
+
+					throw new RuntimeException("streamQuery: error occured", e);
+				}
+
 				return false;
 			}
 
@@ -1800,13 +1853,33 @@ StreamQueryRequest req = StreamQueryRequest.newBuilder()
 		}
 	}
 
+	private void handleGrpcException(StatusException e) {
+		Status status = e.getStatus();
+		switch (status.getCode()) {
+		case NOT_FOUND:
+			throw new RecordNotFoundException(status.getDescription(), null);
+		case ALREADY_EXISTS:
+			throw new DuplicatedKeyException("", "", null);
+		case ABORTED:
+			throw new ConcurrentModificationException(status.getDescription());
+		case DEADLINE_EXCEEDED:
+			throw new TimeoutException(status.getDescription());
+		case PERMISSION_DENIED:
+			throw new SecurityException(status.getDescription());
+		case UNAVAILABLE:
+			throw new NeedRetryException(status.getDescription());
+		default:
+			throw new RemoteException("gRPC error: " + status.getDescription(), e);
+		}
+	}
+
 	/**
 	 * Extended version with compression support
 	 */
 	public static class RemoteGrpcDatabaseWithCompression extends RemoteGrpcDatabase {
 
-		public RemoteGrpcDatabaseWithCompression(String server, int grpcPort, int httpPort, String databaseName, String userName, String userPassword,
-				ContextConfiguration configuration) {
+		public RemoteGrpcDatabaseWithCompression(String server, int grpcPort, int httpPort, String databaseName, String userName,
+				String userPassword, ContextConfiguration configuration) {
 			super(server, grpcPort, httpPort, databaseName, userName, userPassword, configuration);
 		}
 
@@ -1814,8 +1887,7 @@ StreamQueryRequest req = StreamQueryRequest.newBuilder()
 		protected ManagedChannel createChannel(String server, int port) {
 
 			return ManagedChannelBuilder.forAddress(server, port).usePlaintext() // No TLS/SSL
-					.compressorRegistry(CompressorRegistry.getDefaultInstance())
-					.decompressorRegistry(DecompressorRegistry.getDefaultInstance())
+					.compressorRegistry(CompressorRegistry.getDefaultInstance()).decompressorRegistry(DecompressorRegistry.getDefaultInstance())
 					.maxInboundMessageSize(100 * 1024 * 1024) // 100MB max message size
 					.keepAliveTime(30, TimeUnit.SECONDS) // Keep-alive configuration
 					.keepAliveTimeout(10, TimeUnit.SECONDS).keepAliveWithoutCalls(true).build();

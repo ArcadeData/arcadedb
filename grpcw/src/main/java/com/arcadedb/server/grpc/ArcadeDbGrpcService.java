@@ -1,6 +1,5 @@
 package com.arcadedb.server.grpc;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -17,7 +16,6 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.ComponentFile;
-import com.arcadedb.engine.ComponentFile.MODE;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
@@ -29,7 +27,8 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
+import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.Value;
 
@@ -94,118 +93,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			}
 		}
 		activeTransactions.clear();
-	}
-
-	@Override
-	public void createDatabase(CreateDatabaseRequest request, StreamObserver<CreateDatabaseResponse> responseObserver) {
-
-		try {
-			// Validate credentials if needed
-			validateCredentials(request.getCredentials());
-
-			ServerDatabase db = arcadeServer.createDatabase(request.getDatabaseName(), MODE.READ_WRITE);
-			
-			CreateDatabaseResponse response = CreateDatabaseResponse.newBuilder().setSuccess(true).setMessage("Database created successfully")
-					.setDatabaseId(request.getDatabaseName()).build();
-
-			responseObserver.onNext(response);
-			responseObserver.onCompleted();
-
-		}
-		catch (Exception e) {
-			logger.error("Error creating database: {}", e.getMessage(), e);
-			responseObserver.onError(Status.INTERNAL.withDescription("Failed to create database: " + e.getMessage()).asException());
-		}
-	}
-
-	@Override
-	public void dropDatabase(DropDatabaseRequest req, StreamObserver<DropDatabaseResponse> resp) {
-
-		try {
-
-			final String name = req.getDatabaseName();
-
-			if (name == null || name.isEmpty())
-				throw new IllegalArgumentException("database name is required");
-
-			try (// Create new database factory for this specific database
-					DatabaseFactory dbFactory = new DatabaseFactory(databasePath + "/" + req.getDatabaseName())) {
-				// Create the database
-				Database database = dbFactory.create();
-				database.drop();
-			}
-
-			resp.onNext(DropDatabaseResponse.newBuilder().setSuccess(true).build());
-			resp.onCompleted();
-		}
-		catch (Exception e) {
-			resp.onError(Status.INTERNAL.withDescription("DropDatabase: " + e.getMessage()).asException());
-		}
-	}
-
-	@Override
-	public void listDatabases(ListDatabasesRequest req, StreamObserver<ListDatabasesResponse> resp) {
-	    
-		try {
-
-			validateCredentials(req.getCredentials()); 
-
-	        java.util.Collection<String> names = arcadeServer.getDatabaseNames();
-	        java.util.ArrayList<String> out = new java.util.ArrayList<>(names);
-
-	        java.util.Collections.sort(out, String.CASE_INSENSITIVE_ORDER);
-
-	        List<DatabaseInfo> allDatabaseInfos = new ArrayList<>();
-	        
-	        for (String dbName : out) {
-	        	
-	        	//ServerDatabase db = arcadeServer.getDatabase(dbName);
-	        	
-	        	DatabaseInfo dbInfo = DatabaseInfo.newBuilder().setName(dbName).build();
-	        	
-	        	allDatabaseInfos.add(dbInfo);
-	        }
-	        
-			// 3) Build and send response
-	        ListDatabasesResponse respMsg = ListDatabasesResponse.newBuilder()
-	                .addAllDatabases(allDatabaseInfos)
-	                .build();
-
-	        resp.onNext(respMsg);
-	        resp.onCompleted();
-	    } 
-		catch (SecurityException se) {
-	        resp.onError(io.grpc.Status.PERMISSION_DENIED
-	                .withDescription("ListDatabases: " + se.getMessage())
-	                .asException());
-	    } 
-		catch (Exception e) {
-	        resp.onError(io.grpc.Status.INTERNAL
-	                .withDescription("ListDatabases: " + e.getMessage())
-	                .asException());
-	    }
-	}
-	
-	@Override
-	public void getDatabaseInfo(GetDatabaseInfoRequest req, StreamObserver<GetDatabaseInfoResponse> resp) {
-
-		try {
-			final String name = req.getDatabaseName();
-			Database db = getDatabase(name, req.getCredentials());
-
-			Schema schema = db.getSchema();
-			int typeCount = schema.getTypes().size();
-
-			DatabaseInfo databaseInfo = DatabaseInfo.newBuilder().setName(name).setClasses(typeCount).build();
-
-			GetDatabaseInfoResponse.Builder b = GetDatabaseInfoResponse.newBuilder().setInfo(databaseInfo);
-
-			resp.onNext(b.build());
-			resp.onCompleted();
-		}
-		catch (Exception e) {
-			resp.onError(Status.INTERNAL.withDescription("GetDatabaseInfo: " + e.getMessage()).asException());
-		}
 	}
 
 	@Override
@@ -332,9 +219,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 	@Override
 	public void createRecord(CreateRecordRequest req, StreamObserver<CreateRecordResponse> resp) {
-		
+
 		try {
-		
+
 			Database db = getDatabase(req.getDatabase(), req.getCredentials());
 
 			final String cls = req.getType(); // or req.getTargetClass() if that’s your proto
@@ -346,21 +233,21 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			if (dt == null)
 				throw new IllegalArgumentException("Class not found: " + cls);
 
-			// All properties from the request (proto map)
-			final java.util.Map<String, com.google.protobuf.Value> props = req.getPropertiesMap();
+			// All properties from the request (proto map) — nested under "record"
+			final java.util.Map<String, com.google.protobuf.Value> props = req.getRecord().getPropertiesMap();
 
 			// --- Vertex ---
-			if (dt instanceof VertexType) {
+			if (dt instanceof com.arcadedb.schema.VertexType) {
 				com.arcadedb.graph.MutableVertex v = db.newVertex(cls);
-				// apply properties
+
+				// apply properties with proper coercion
 				props.forEach((k, val) -> v.set(k, toJavaForProperty(db, dt, k, val)));
+
 				v.save();
 
-				CreateRecordResponse.Builder b = CreateRecordResponse.newBuilder();
-				
-				// Adjust to your actual response field name (e.g., setIdentity / setRidStr)
-				b.setIdentity(v.getIdentity().toString());
-				
+				// Build response: proto has setRid(String)
+				CreateRecordResponse.Builder b = CreateRecordResponse.newBuilder().setRid(v.getIdentity().toString());
+
 				resp.onNext(b.build());
 				resp.onCompleted();
 				return;
@@ -402,10 +289,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				e.save();
 
 				CreateRecordResponse.Builder b = CreateRecordResponse.newBuilder();
-				// Adjust to your actual response field name
-				b.setIdentity(e.getIdentity().toString());
+
+				b.setRid(e.getIdentity().toString());
+
 				resp.onNext(b.build());
 				resp.onCompleted();
+
 				return;
 			}
 
@@ -415,8 +304,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			d.save();
 
 			CreateRecordResponse.Builder b = CreateRecordResponse.newBuilder();
-			// Adjust to your actual response field name
-			b.setIdentity(d.getIdentity().toString());
+
+			b.setRid(d.getIdentity().toString());
+
 			resp.onNext(b.build());
 			resp.onCompleted();
 
@@ -427,28 +317,32 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	}
 
 	@Override
-	public void getRecord(GetRecordRequest req, StreamObserver<GetRecordResponse> resp) {
+	public void lookupByRid(LookupByRidRequest req, StreamObserver<LookupByRidResponse> resp) {
 		try {
 			Database db = getDatabase(req.getDatabase(), req.getCredentials());
-			String ridStr = req.getRid();
-			if (ridStr == null || ridStr.isEmpty())
+
+			final String ridStr = req.getRid();
+			if (ridStr == null || ridStr.isBlank())
 				throw new IllegalArgumentException("rid is required");
 
 			var el = db.lookupByRID(new RID(ridStr), true);
 			if (el == null) {
-				resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + ridStr).asException());
+				resp.onNext(LookupByRidResponse.newBuilder().setFound(false).build());
+				resp.onCompleted();
 				return;
 			}
-			resp.onNext(GetRecordResponse.newBuilder().setRecord(convertToGrpcRecord(el.getRecord())).build());
+
+			resp.onNext(LookupByRidResponse.newBuilder().setFound(true).setRecord(convertToGrpcRecord(el.getRecord())).build());
 			resp.onCompleted();
 		}
 		catch (Exception e) {
-			resp.onError(Status.INTERNAL.withDescription("GetRecord: " + e.getMessage()).asException());
+			resp.onError(Status.INTERNAL.withDescription("LookupByRid: " + e.getMessage()).asException());
 		}
 	}
 
 	@Override
 	public void updateRecord(UpdateRecordRequest req, StreamObserver<UpdateRecordResponse> resp) {
+
 		Database db = null;
 		boolean beganHere = false;
 
@@ -483,7 +377,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			final var dbRef = db;
 
 			// Apply updates
-			req.getPropertiesMap().forEach((k, v) -> mdoc.set(k, toJavaForProperty(dbRef, dtype, k, v)));
+
+			final java.util.Map<String, com.google.protobuf.Value> props = req.hasRecord() ? req.getRecord().getPropertiesMap()
+					: req.hasPartial() ? req.getPartial().getPropertiesMap() : java.util.Collections.emptyMap();
+
+			// apply updates
+			props.forEach((k, v) -> mdoc.set(k, toJavaForProperty(dbRef, dtype, k, v)));
 
 			mdoc.save();
 
@@ -518,26 +417,66 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 	@Override
 	public void deleteRecord(DeleteRecordRequest req, StreamObserver<DeleteRecordResponse> resp) {
+		Database db = null;
+		boolean beganHere = false;
+
 		try {
-			Database db = getDatabase(req.getDatabase(), req.getCredentials());
-			String ridStr = req.getRid();
-			if (ridStr == null || ridStr.isEmpty())
+			db = getDatabase(req.getDatabase(), req.getCredentials());
+
+			final String ridStr = req.getRid();
+			if (ridStr == null || ridStr.isBlank())
 				throw new IllegalArgumentException("rid is required");
 
-			var el = db.lookupByRID(new RID(ridStr), true);
+			// Optional tx begin
+			if (req.hasTransaction() && req.getTransaction().getBegin()) {
+				db.begin();
+				beganHere = true;
+			}
 
+			var el = db.lookupByRID(new RID(ridStr), true);
 			if (el == null) {
-				resp.onNext(DeleteRecordResponse.newBuilder().setSuccess(false).setDeleted(false).build());
+				// Soft "not found"
+				resp.onNext(
+						DeleteRecordResponse.newBuilder().setSuccess(true).setDeleted(false).setMessage("Record not found: " + ridStr).build());
 				resp.onCompleted();
+				// If we began here and no explicit rollback flag, default to commit (or
+				// rollback—your policy)
+				if (beganHere && req.hasTransaction() && !req.getTransaction().getRollback())
+					db.commit();
 				return;
 			}
 
-			el.delete();
+			el.delete(); // deletes document/vertex/edge
+
+			// Optional tx end controls
+			if (req.hasTransaction()) {
+				var tx = req.getTransaction();
+				if (tx.getCommit())
+					db.commit();
+				else if (tx.getRollback())
+					db.rollback();
+				else if (beganHere)
+					db.commit(); // began here with no explicit end → commit by default
+			}
+			else if (beganHere) {
+				db.commit();
+			}
+
 			resp.onNext(DeleteRecordResponse.newBuilder().setSuccess(true).setDeleted(true).build());
 			resp.onCompleted();
+
 		}
 		catch (Exception e) {
-			resp.onError(Status.INTERNAL.withDescription("DeleteRecord: " + e.getMessage()).asException());
+			// Best-effort rollback if we started the tx
+			try {
+				if (beganHere && db != null)
+					db.rollback();
+			}
+			catch (Exception ignore) {
+			}
+
+			resp.onError(
+					Status.INTERNAL.withDescription("DeleteRecord: " + (e.getMessage() == null ? e.toString() : e.getMessage())).asException());
 		}
 	}
 
@@ -678,83 +617,93 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 	@Override
 	public void streamQuery(StreamQueryRequest request, StreamObserver<QueryResult> responseObserver) {
-	  
+
 		final ServerCallStreamObserver<QueryResult> scso = (ServerCallStreamObserver<QueryResult>) responseObserver;
 
-	  final java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
-	  scso.setOnCancelHandler(() -> cancelled.set(true));
+		final java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
+		scso.setOnCancelHandler(() -> cancelled.set(true));
 
-	  Database db = null;
-	  boolean beganHere = false;
+		Database db = null;
+		boolean beganHere = false;
 
-	  try {
-	    db = getDatabase(request.getDatabase(), request.getCredentials());
-	    final int batchSize = Math.max(1, request.getBatchSize());
+		try {
+			db = getDatabase(request.getDatabase(), request.getCredentials());
+			final int batchSize = Math.max(1, request.getBatchSize());
 
-	    // --- TX begin if requested ---
-	    final boolean hasTx = request.hasTransaction();
-	    final var tx = hasTx ? request.getTransaction() : null;
-	    if (hasTx && tx.getBegin()) {
-	      db.begin();
-	      beganHere = true;
-	    }
+			// --- TX begin if requested ---
+			final boolean hasTx = request.hasTransaction();
+			final var tx = hasTx ? request.getTransaction() : null;
+			if (hasTx && tx.getBegin()) {
+				db.begin();
+				beganHere = true;
+			}
 
-	    // --- Dispatch on mode (helpers do NOT manage transactions) ---
-	    switch (request.getRetrievalMode()) {
-	      case MATERIALIZE_ALL -> streamMaterialized(db, request, batchSize, scso, cancelled);
-	      case PAGED          -> streamPaged(db, request, batchSize, scso, cancelled);
-	      case CURSOR         -> streamCursor(db, request, batchSize, scso, cancelled);
-	      default             -> streamCursor(db, request, batchSize, scso, cancelled);
-	    }
+			// --- Dispatch on mode (helpers do NOT manage transactions) ---
+			switch (request.getRetrievalMode()) {
+			case MATERIALIZE_ALL -> streamMaterialized(db, request, batchSize, scso, cancelled);
+			case PAGED -> streamPaged(db, request, batchSize, scso, cancelled);
+			case CURSOR -> streamCursor(db, request, batchSize, scso, cancelled);
+			default -> streamCursor(db, request, batchSize, scso, cancelled);
+			}
 
-	    // If the client cancelled mid-stream, choose rollback unless caller explicitly asked to commit/rollback.
-	    if (cancelled.get()) {
-	      if (hasTx) {
-	        if (tx.getRollback()) {
-	          db.rollback();
-	        } else if (tx.getCommit()) {
-	          db.commit();     // caller explicitly wanted commit even if they cancelled
-	        } else if (beganHere) {
-	          db.rollback();   // safe default on cancellation
-	        }
-	      }
-	      return; // don't call onCompleted()
-	    }
+			// If the client cancelled mid-stream, choose rollback unless caller explicitly
+			// asked to commit/rollback.
+			if (cancelled.get()) {
+				if (hasTx) {
+					if (tx.getRollback()) {
+						db.rollback();
+					}
+					else if (tx.getCommit()) {
+						db.commit(); // caller explicitly wanted commit even if they cancelled
+					}
+					else if (beganHere) {
+						db.rollback(); // safe default on cancellation
+					}
+				}
+				return; // don't call onCompleted()
+			}
 
-	    // --- TX end (normal path) — precedence: rollback > commit > begin-only ⇒ commit ---
-	    if (hasTx) {
-	      if (tx.getRollback()) {
-	        db.rollback();
-	      } else if (tx.getCommit()) {
-	        db.commit();
-	      } else if (beganHere) {
-	        db.commit();
-	      }
-	    }
+			// --- TX end (normal path) — precedence: rollback > commit > begin-only ⇒
+			// commit ---
+			if (hasTx) {
+				if (tx.getRollback()) {
+					db.rollback();
+				}
+				else if (tx.getCommit()) {
+					db.commit();
+				}
+				else if (beganHere) {
+					db.commit();
+				}
+			}
 
-	    scso.onCompleted();
+			scso.onCompleted();
 
-	  } catch (Exception e) {
-	    // Best-effort rollback only if we began here and there wasn't an explicit commit/rollback
-	    try {
-	      if (beganHere && db != null) {
-	        if (request.hasTransaction()) {
-	          var tx = request.getTransaction();
-	          if (!tx.getCommit() && !tx.getRollback()) db.rollback();
-	        } else {
-	          db.rollback();
-	        }
-	      }
-	    } catch (Exception ignore) { /* no-op */ }
+		}
+		catch (Exception e) {
+			// Best-effort rollback only if we began here and there wasn't an explicit
+			// commit/rollback
+			try {
+				if (beganHere && db != null) {
+					if (request.hasTransaction()) {
+						var tx = request.getTransaction();
+						if (!tx.getCommit() && !tx.getRollback())
+							db.rollback();
+					}
+					else {
+						db.rollback();
+					}
+				}
+			}
+			catch (Exception ignore) {
+				/* no-op */ }
 
-	    if (!cancelled.get()) {
-	      responseObserver.onError(Status.INTERNAL
-	          .withDescription("Stream query failed: " + e.getMessage())
-	          .asException());
-	    }
-	  }
+			if (!cancelled.get()) {
+				responseObserver.onError(Status.INTERNAL.withDescription("Stream query failed: " + e.getMessage()).asException());
+			}
+		}
 	}
-	
+
 	/**
 	 * Mode 1 (existing behavior-ish): run once and iterate results, batching as we
 	 * go.
@@ -942,57 +891,88 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	public StreamObserver<InsertChunk> insertStream(StreamObserver<InsertSummary> resp) {
 		final ServerCallStreamObserver<InsertSummary> call = (ServerCallStreamObserver<InsertSummary>) resp;
 
-		// manual pull of inbound request messages (chunks)
 		call.disableAutoInboundFlowControl();
 
 		final long startedAt = System.currentTimeMillis();
 
-		// server defaults; if you want options via first chunk, parse sessionId and
-		// look them up
-		final InsertOptions opts = defaults(InsertOptions.newBuilder().build());
-
-		final InsertContext ctx;
-		try {
-			ctx = new InsertContext(opts); // begins tx for PER_STREAM/PER_BATCH if needed
-		}
-		catch (Exception e) {
-			resp.onError(Status.FAILED_PRECONDITION.withDescription(e.getMessage()).asException());
-			// return a no-op observer
-			return new StreamObserver<>() {
-				public void onNext(InsertChunk c) {
-				}
-
-				public void onError(Throwable t) {
-				}
-
-				public void onCompleted() {
-				}
-			};
-		}
-
-		// accumulate totals across chunks
-		final Counts totals = new Counts();
 		final java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
+		final java.util.concurrent.atomic.AtomicReference<InsertContext> ctxRef = new java.util.concurrent.atomic.AtomicReference<>();
+
+		final Counts totals = new Counts();
+
+		// cache the first-chunk effective options to validate consistency
+		final java.util.concurrent.atomic.AtomicReference<InsertOptions> firstOptsRef = new java.util.concurrent.atomic.AtomicReference<>();
+
 		call.setOnCancelHandler(() -> cancelled.set(true));
 
-		// start pulling the first inbound message
+		// Pull the very first inbound message
 		call.request(1);
 
 		return new StreamObserver<>() {
+
 			@Override
 			public void onNext(InsertChunk c) {
-				if (cancelled.get())
+
+				if (cancelled.get()) {
 					return;
+				}
+
 				try {
-					Counts cts = insertRows(ctx, c.getRowsList().iterator()); // returns per-chunk counts
+
+					InsertContext ctx = ctxRef.get();
+
+					if (ctx == null) {
+
+						// -------- First chunk: derive effective options and build context --------
+
+						// Options may be provided on the first chunk; otherwise use server defaults
+						InsertOptions sent = c.hasOptions() ? c.getOptions() : InsertOptions.getDefaultInstance();
+
+						InsertOptions effective = defaults(sent); // your existing default-merging helper
+
+						// (Optional) If your chunk carries db/creds (recommended), you can validate/set
+						// them here
+
+						// Otherwise InsertContext will resolve them via 'effective' or server defaults
+						// Example if your proto carries these on the chunk:
+						// String dbName = c.getDatabase();
+						// DatabaseCredentials creds = c.getCredentials();
+						// and pass them to the InsertContext ctor if it expects them.
+
+						// Create and cache context
+						ctx = new InsertContext(effective); // begins tx if PER_STREAM / PER_BATCH per your logic
+
+						ctxRef.set(ctx);
+
+						firstOptsRef.set(effective);
+
+						if (logger.isDebugEnabled())
+							logger.debug("insertStream: initialized context with options:\n{}", effective);
+					}
+					else {
+
+						// -------- Subsequent chunks: optionally validate option consistency --------
+						if (c.hasOptions()) {
+							InsertOptions prev = firstOptsRef.get();
+							InsertOptions cur = defaults(c.getOptions());
+							// Minimal consistency check (customize as you wish)
+							if (!sameInsertContract(prev, cur)) {
+								// contract changed mid-stream -> fail fast
+								throw new IllegalArgumentException("insertStream: options changed after first chunk");
+							}
+						}
+					}
+
+					// -------- Insert rows for this chunk --------
+					Counts cts = insertRows(ctxRef.get(), c.getRowsList().iterator());
 					totals.add(cts);
 				}
 				catch (Exception e) {
-					// surface as a failed row group; you can also fail the whole call if you prefer
-					totals.err(Math.max(0, ctx.received - 1), "DB_ERROR", e.getMessage(), "");
+					// Register as an error on totals; keep stream alive unless you prefer to fail
+					// the call
+					totals.err(Math.max(0, (ctxRef.get() != null ? ctxRef.get().received : 0) - 1), "DB_ERROR", e.getMessage(), "");
 				}
 				finally {
-					// ask gRPC to deliver the next chunk
 					if (!cancelled.get())
 						call.request(1);
 				}
@@ -1000,16 +980,27 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 			@Override
 			public void onError(Throwable t) {
-				// client cancelled or errored mid-stream
-				ctx.closeQuietly();
+				InsertContext ctx = ctxRef.get();
+				if (ctx != null)
+					ctx.closeQuietly();
 			}
 
 			@Override
 			public void onCompleted() {
 				try {
-					ctx.flushCommit(true); // commit if not validate_only
+
+					InsertContext ctx = ctxRef.get();
+					if (ctx == null) {
+						// Client closed without sending a first chunk → nothing to do
+						resp.onNext(InsertSummary.newBuilder().setReceived(0).setInserted(0).setUpdated(0).setIgnored(0).setFailed(0)
+								.setExecutionTimeMs(System.currentTimeMillis() - startedAt).build());
+
+						resp.onCompleted();
+						return;
+					}
+
+					ctx.flushCommit(true); // commit if not validate-only
 					if (!cancelled.get()) {
-						// build summary FROM totals + startedAt
 						resp.onNext(ctx.summary(totals, startedAt));
 						resp.onCompleted();
 					}
@@ -1018,113 +1009,163 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 					resp.onError(Status.INTERNAL.withDescription("insertStream: " + e.getMessage()).asException());
 				}
 				finally {
-					ctx.closeQuietly();
+					InsertContext ctx = ctxRef.get();
+					if (ctx != null)
+						ctx.closeQuietly();
 				}
 			}
 		};
 	}
 
-	// --- 3) Bi-di with per-batch ACKs ---
+	/** Minimal consistency check: same "contract" for the stream. */
+	private boolean sameInsertContract(InsertOptions a, InsertOptions b) {
+		if (a == null || b == null)
+			return a == b;
+		// lock down the knobs that must not change mid-stream
+		if (a.getTargetClass() != null && !a.getTargetClass().equals(b.getTargetClass()))
+			return false;
+		if (a.getConflictMode() != b.getConflictMode())
+			return false;
+		if (a.getTransactionMode() != b.getTransactionMode())
+			return false;
+		// You can also compare key/update columns if you require strict equality:
+		if (!a.getKeyColumnsList().equals(b.getKeyColumnsList()))
+			return false;
+		if (!a.getUpdateColumnsOnConflictList().equals(b.getUpdateColumnsOnConflictList()))
+			return false;
+		return true;
+	}
+
 	@Override
 	public StreamObserver<InsertRequest> insertBidirectional(StreamObserver<InsertResponse> resp) {
 		final ServerCallStreamObserver<InsertResponse> call = (ServerCallStreamObserver<InsertResponse>) resp;
 		call.disableAutoInboundFlowControl();
 
-		// track one active session InsertContext
 		final java.util.concurrent.atomic.AtomicReference<InsertContext> ref = new java.util.concurrent.atomic.AtomicReference<>();
 		final java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
+		final java.util.concurrent.atomic.AtomicBoolean started = new java.util.concurrent.atomic.AtomicBoolean(false);
 
 		call.setOnCancelHandler(() -> {
 			cancelled.set(true);
-			InsertContext ctx = ref.get();
+			final InsertContext ctx = ref.getAndSet(null);
 			if (ctx != null) {
 				sessionWatermark.remove(ctx.sessionId);
 				ctx.closeQuietly();
 			}
 		});
 
-		// start pulling inbound messages
 		call.request(1);
 
 		return new StreamObserver<>() {
 			@Override
-			public void onNext(InsertRequest req) {
+			public void onNext(InsertRequest reqMsg) {
 				if (cancelled.get())
 					return;
 
-				switch (req.getMsgCase()) {
-				case START -> {
-					// Build context with defaults+client opts; begin tx as needed
-					InsertOptions opts = defaults(req.getStart().getOptions());
-					InsertContext ctx = new InsertContext(opts);
-					// init per-session metadata
-					ctx.startedAt = System.currentTimeMillis();
-					ctx.totals = new Counts();
+				try {
+					switch (reqMsg.getMsgCase()) {
 
-					ref.set(ctx);
-					sessionWatermark.put(ctx.sessionId, 0L);
+					case START -> {
+						if (!started.compareAndSet(false, true)) {
+							resp.onError(
+									Status.FAILED_PRECONDITION.withDescription("insertBidirectional: START already received").asException());
+							return;
+						}
 
-					resp.onNext(InsertResponse.newBuilder().setStarted(Started.newBuilder().setSessionId(ctx.sessionId)).build());
+						final InsertOptions opts = defaults(reqMsg.getStart().getOptions());
+						final InsertContext ctx = new InsertContext(opts);
+						ctx.startedAt = System.currentTimeMillis();
+						ctx.totals = new Counts();
 
-					call.request(1);
-				}
+						ref.set(ctx);
+						sessionWatermark.put(ctx.sessionId, 0L);
 
-				case CHUNK -> {
-					InsertContext ctx = require(ref.get(), "session not started");
-					InsertChunk c = req.getChunk();
+						resp.onNext(InsertResponse.newBuilder().setStarted(Started.newBuilder().setSessionId(ctx.sessionId).build()).build());
 
-					// Idempotent replay guard
-					long hi = sessionWatermark.getOrDefault(ctx.sessionId, 0L);
-					if (c.getChunkSeq() <= hi) {
-						resp.onNext(InsertResponse.newBuilder()
-								.setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())).build());
+						// pull next message
 						call.request(1);
-						return;
 					}
 
-					// Process rows and accumulate totals
-					Counts perChunk = insertRows(ctx, c.getRowsList().iterator());
-					ctx.totals.add(perChunk);
+					case CHUNK -> {
+						final InsertContext ctx = require(ref.get(), "session not started");
+						final InsertChunk c = reqMsg.getChunk();
 
-					sessionWatermark.put(ctx.sessionId, c.getChunkSeq());
+						// idempotent replay guard
+						final long hi = sessionWatermark.getOrDefault(ctx.sessionId, 0L);
+						if (c.getChunkSeq() <= hi) {
+							resp.onNext(InsertResponse.newBuilder().setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId)
+									.setChunkSeq(c.getChunkSeq()).setInserted(0).setUpdated(0).setIgnored(0).setFailed(0).build()).build());
+							call.request(1);
+							return;
+						}
 
-					// Ack this chunk with per-chunk counts
-					resp.onNext(
-							InsertResponse.newBuilder()
-									.setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
-											.setInserted(perChunk.inserted).setUpdated(perChunk.updated).setIgnored(perChunk.ignored)
-											.setFailed(perChunk.failed))
-									.build());
+						Counts perChunk;
+						try {
+							perChunk = insertRows(ctx, c.getRowsList().iterator());
+							ctx.totals.add(perChunk);
+							sessionWatermark.put(ctx.sessionId, c.getChunkSeq());
+						}
+						catch (Exception e) {
+							// surface as failed chunk and continue (or switch to resp.onError(...) if you
+							// want to fail fast)
+							
+							perChunk = new Counts();
+							
+							perChunk.failed = c.getRowsCount();
+							
+							perChunk.errors.add(InsertError.newBuilder().setRowIndex(Math.max(0, ctx.received - 1)).setCode("DB_ERROR")
+									.setMessage(String.valueOf(e.getMessage())).build());
+							ctx.totals.add(perChunk);
+							// intentionally do not advance watermark on failure; client may replay safely
+						}
 
-					call.request(1);
+						resp.onNext(InsertResponse.newBuilder()
+								.setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
+										.setInserted(perChunk.inserted).setUpdated(perChunk.updated).setIgnored(perChunk.ignored)
+										.setFailed(perChunk.failed).addAllErrors(perChunk.errors).build())
+								.build());
+
+						call.request(1);
+					}
+
+					case COMMIT -> {
+						final InsertContext ctx = require(ref.get(), "session not started");
+						try {
+							ctx.flushCommit(true); // commit unless validate_only in your InsertContext logic
+							final InsertSummary sum = ctx.summary(ctx.totals, ctx.startedAt);
+							resp.onNext(InsertResponse.newBuilder().setCommitted(Committed.newBuilder().setSummary(sum).build()).build());
+							resp.onCompleted();
+						}
+						catch (Exception e) {
+							resp.onError(Status.INTERNAL.withDescription("commit: " + e.getMessage()).asException());
+						}
+						finally {
+							sessionWatermark.remove(ctx.sessionId);
+							ctx.closeQuietly();
+							ref.set(null);
+						}
+					}
+
+					case MSG_NOT_SET -> {
+						// ignore
+						call.request(1);
+					}
+					}
 				}
-
-				case COMMIT -> {
-					InsertContext ctx = require(ref.get(), "session not started");
-					try {
-						ctx.flushCommit(true);
-						// final committed summary must use TOTALS + startedAt
-						InsertSummary sum = ctx.summary(ctx.totals, ctx.startedAt);
-						resp.onNext(InsertResponse.newBuilder().setCommitted(Committed.newBuilder().setSummary(sum)).build());
-						resp.onCompleted();
-					}
-					catch (Exception e) {
-						resp.onError(Status.INTERNAL.withDescription("commit: " + e.getMessage()).asException());
-					}
-					finally {
+				catch (Exception unexpected) {
+					// defensive: fail fast on unexpected exceptions
+					resp.onError(Status.INTERNAL.withDescription("insertBidirectional: " + unexpected.getMessage()).asException());
+					final InsertContext ctx = ref.getAndSet(null);
+					if (ctx != null) {
 						sessionWatermark.remove(ctx.sessionId);
 						ctx.closeQuietly();
 					}
-				}
-
-				case MSG_NOT_SET -> {
-					/* ignore */ }
 				}
 			}
 
 			@Override
 			public void onError(Throwable t) {
-				InsertContext ctx = ref.get();
+				final InsertContext ctx = ref.getAndSet(null);
 				if (ctx != null) {
 					sessionWatermark.remove(ctx.sessionId);
 					ctx.closeQuietly();
@@ -1133,11 +1174,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 			@Override
 			public void onCompleted() {
-				// client half-closed without COMMIT -> choose policy (rollback/commit/ignore)
-				InsertContext ctx = ref.get();
+				// Define your policy for half-close without COMMIT:
+				final InsertContext ctx = ref.getAndSet(null);
 				if (ctx != null) {
 					try {
-						ctx.flushCommit(true);
+						// Safer default is rollback; if you prefer auto-commit on close, call
+						// flushCommit(true)
+						ctx.flushCommit(false); // or ctx.rollbackQuietly() if you have a helper
 					}
 					catch (Exception ignore) {
 					}
@@ -1201,8 +1244,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	// ---------- Core insert plumbing ----------
 
 	private static final class Counts {
+
 		long received, inserted, updated, ignored, failed;
-		final java.util.List<RowError> errors = new java.util.ArrayList<>();
+
+		final java.util.List<InsertError> errors = new java.util.ArrayList<>();
 
 		void add(Counts o) {
 			received += o.received;
@@ -1215,12 +1260,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 		void err(long rowIndex, String code, String msg, String field) {
 			failed++;
-			errors.add(RowError.newBuilder().setRowIndex(rowIndex).setCode(code).setMessage(msg).setField(field).build());
+			errors.add(InsertError.newBuilder().setRowIndex(rowIndex).setCode(code).setMessage(msg).setField(field).build());
 		}
 	}
 
 	private InsertSummary toSummary(Counts c, long startedAtMs) {
+
 		long now = System.currentTimeMillis();
+
 		return InsertSummary.newBuilder().setReceived(c.received).setInserted(c.inserted).setUpdated(c.updated).setIgnored(c.ignored)
 				.setFailed(c.failed).addAllErrors(c.errors).setStartedAt(ts(startedAtMs)).setFinishedAt(ts(now)).build();
 	}
@@ -1235,6 +1282,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 		boolean isEdge = dt instanceof EdgeType;
 
 		while (it.hasNext()) {
+
 			Record r = it.next();
 			c.received++;
 			ctx.received++;
@@ -1260,8 +1308,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 					String inRid = getStringProp(r, "in");
 
 					if (outRid == null || inRid == null) {
+
 						c.failed++;
-						c.errors.add(RowError.newBuilder().setRowIndex(ctx.received - 1).setCode("MISSING_ENDPOINTS")
+
+						c.errors.add(InsertError.newBuilder().setRowIndex(ctx.received - 1).setCode("MISSING_ENDPOINTS")
 								.setMessage("Edge requires 'out' and 'in'").build());
 					}
 					else {
@@ -1446,31 +1496,37 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	}
 
 	private static Object toJava(Value v) {
-	    if (v == null) return null;
-	    switch (v.getKindCase()) {
-	        case STRING_VALUE: return v.getStringValue();
-	        case NUMBER_VALUE: return v.getNumberValue();   // Double
-	        case BOOL_VALUE:   return v.getBoolValue();
-	        case NULL_VALUE:   return null;
+		if (v == null)
+			return null;
+		switch (v.getKindCase()) {
+		case STRING_VALUE:
+			return v.getStringValue();
+		case NUMBER_VALUE:
+			return v.getNumberValue(); // Double
+		case BOOL_VALUE:
+			return v.getBoolValue();
+		case NULL_VALUE:
+			return null;
 
-	        case STRUCT_VALUE: {
-	            // Convert each nested Value -> Java recursively
-	            java.util.LinkedHashMap<String,Object> m = new java.util.LinkedHashMap<>();
-	            v.getStructValue().getFieldsMap().forEach((k, vv) -> m.put(k, toJava(vv)));
-	            return m; // plain Map<String,Object>
-	        }
+		case STRUCT_VALUE: {
+			// Convert each nested Value -> Java recursively
+			java.util.LinkedHashMap<String, Object> m = new java.util.LinkedHashMap<>();
+			v.getStructValue().getFieldsMap().forEach((k, vv) -> m.put(k, toJava(vv)));
+			return m; // plain Map<String,Object>
+		}
 
-	        case LIST_VALUE: {
-	            java.util.ArrayList<Object> list = new java.util.ArrayList<>(v.getListValue().getValuesCount());
-	            for (com.google.protobuf.Value item : v.getListValue().getValuesList()) {
-	                list.add(toJava(item));
-	            }
-	            return list;
-	        }
+		case LIST_VALUE: {
+			java.util.ArrayList<Object> list = new java.util.ArrayList<>(v.getListValue().getValuesCount());
+			for (com.google.protobuf.Value item : v.getListValue().getValuesList()) {
+				list.add(toJava(item));
+			}
+			return list;
+		}
 
-	        case KIND_NOT_SET:
-	        default: return null;
-	    }
+		case KIND_NOT_SET:
+		default:
+			return null;
+		}
 	}
 
 	private InsertOptions defaults(InsertOptions in) {
@@ -1493,20 +1549,29 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	}
 
 	private final class InsertContext implements AutoCloseable {
+
 		protected Counts totals;
+
 		final InsertOptions opts;
+
 		final Database db;
+
 		final java.util.List<String> keyCols;
 		final java.util.List<String> updateCols;
+
 		long startedAt;
 
 		final String sessionId = java.util.UUID.randomUUID().toString();
 		long received = 0;
 
 		InsertContext(InsertOptions opts) {
+
 			this.opts = opts;
+
 			this.db = getDatabase(opts.getDatabase(), opts.getCredentials());
+
 			this.keyCols = opts.getKeyColumnsList();
+
 			this.updateCols = opts.getUpdateColumnsOnConflictList();
 
 			if (!opts.getValidateOnly()) {
@@ -1517,6 +1582,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 		}
 
 		void flushCommit(boolean end) {
+
 			if (opts.getValidateOnly()) {
 				if (end)
 					db.rollback();
@@ -1524,6 +1590,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			}
 			switch (opts.getTransactionMode()) {
 			case PER_ROW -> db.commit();
+			case PER_REQUEST -> db.commit();
 			case PER_BATCH -> {
 				db.commit();
 				if (!end)
@@ -1690,7 +1757,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 		// Implement credential validation logic
 		// This is a placeholder - integrate with ArcadeDB's security system
-		
+
 		if (credentials == null || credentials.getUsername().isEmpty()) {
 			throw new IllegalArgumentException("Invalid credentials");
 		}
@@ -1732,10 +1799,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	}
 
 	private Record convertToGrpcRecord(com.arcadedb.database.Record dbRecord) {
+
 		Record.Builder builder = Record.newBuilder().setRid(dbRecord.getIdentity().toString());
 
 		// Handle different record types
 		if (dbRecord instanceof Document) {
+
 			Document doc = (Document) dbRecord;
 			builder.setType(doc.getTypeName());
 
@@ -1841,9 +1910,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	// If property type is EMBEDDED and client sent a Struct/Map, create embedded
 	// document
 	private Object toJavaForProperty(Database db, DocumentType dt, String key, com.google.protobuf.Value v) {
-		
+
 		var p = (dt != null) ? dt.getPropertyIfExists(key) : null;
-		
+
 		if (p != null && p.getType() == com.arcadedb.schema.Type.EMBEDDED && v.hasStructValue()) {
 			MutableDocument emb = db.newDocument(dt.getName());
 			v.getStructValue().getFieldsMap().forEach((k2, vv) -> emb.set(k2, toJava(vv)));

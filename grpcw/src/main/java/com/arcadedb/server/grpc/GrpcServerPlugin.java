@@ -127,7 +127,10 @@ public class GrpcServerPlugin implements ServerPlugin {
         // Configure the server
         configureServer(serverBuilder, config);
         
-        grpcServer = serverBuilder.build().start();
+        grpcServer = serverBuilder
+        		.maxInboundMessageSize(256 * 1024 * 1024)
+        		.maxInboundMetadataSize(32 * 1024 * 1024)
+        		.build().start();
         
         // Build status message
         StringBuilder status = new StringBuilder();
@@ -161,7 +164,10 @@ public class GrpcServerPlugin implements ServerPlugin {
         // Configure the XDS server as a ServerBuilder
         configureServer(xdsBuilder, config);
         
-        xdsServer = xdsBuilder.build().start();
+        xdsServer = xdsBuilder
+        		    .maxInboundMessageSize(256 * 1024 * 1024)
+                    .maxInboundMetadataSize(32 * 1024 * 1024)
+                        .build().start();
         
         logger.info("gRPC XDS server started on port {} (xDS management enabled)", port);
     }
