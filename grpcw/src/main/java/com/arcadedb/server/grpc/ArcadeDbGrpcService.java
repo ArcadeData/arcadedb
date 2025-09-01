@@ -17,6 +17,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.ComponentFile.MODE;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
@@ -28,6 +29,7 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ServerDatabase;
 import com.google.protobuf.Empty;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.Value;
@@ -102,13 +104,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			// Validate credentials if needed
 			validateCredentials(request.getCredentials());
 
-			try (// Create new database factory for this specific database
-					DatabaseFactory dbFactory = new DatabaseFactory(databasePath + "/" + request.getDatabaseName())) {
-				// Create the database
-				Database database = dbFactory.create();
-				database.close();
-			}
-
+			ServerDatabase db = arcadeServer.createDatabase(request.getDatabaseName(), MODE.READ_WRITE);
+			
 			CreateDatabaseResponse response = CreateDatabaseResponse.newBuilder().setSuccess(true).setMessage("Database created successfully")
 					.setDatabaseId(request.getDatabaseName()).build();
 
@@ -150,8 +147,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	@Override
 	public void listDatabases(ListDatabasesRequest req, StreamObserver<ListDatabasesResponse> resp) {
 	    
-		logger.info("listDatabases(): Entry ...");
-		
 		try {
 
 			validateCredentials(req.getCredentials()); 
