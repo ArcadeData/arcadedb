@@ -105,14 +105,14 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	private String databaseName;
 	private RemoteTransactionExplicitLock explicitLock;
 
-	public RemoteGrpcDatabase(final String server, final int port, final String databaseName, final String userName, final String userPassword) {
-		this(server, port, databaseName, userName, userPassword, new ContextConfiguration());
+	public RemoteGrpcDatabase(final String server, final int grpcPort, final int httpPort, final String databaseName, final String userName, final String userPassword) {
+		this(server, grpcPort, httpPort, databaseName, userName, userPassword, new ContextConfiguration());
 	}
 
-	public RemoteGrpcDatabase(final String server, final int port, final String databaseName, final String userName, final String userPassword,
+	public RemoteGrpcDatabase(final String server, final int grpcPort, final int httpPort, final String databaseName, final String userName, final String userPassword,
 			final ContextConfiguration configuration) {
 
-		super(server, 2480, databaseName, userName, userPassword, configuration);
+		super(server, httpPort, databaseName, userName, userPassword, configuration);
 
 		this.userName = userName;
 		this.userPassword = userPassword;
@@ -120,7 +120,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		this.databaseName = databaseName;
 
 		// Create gRPC channel
-		this.channel = createChannel(server, port);
+		this.channel = createChannel(server, grpcPort);
 
 		// Create stubs with authentication
 		CallCredentials credentials = createCallCredentials(userName, userPassword);
@@ -184,7 +184,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			}
 		};
 	}
-
+	
 	/**
 	 * Override this method to customize blocking stub creation
 	 */
@@ -1542,7 +1542,7 @@ StreamQueryRequest req = StreamQueryRequest.newBuilder()
 
 	// gRPC-specific helper methods
 
-	private DatabaseCredentials buildCredentials() {
+	public DatabaseCredentials buildCredentials() {
 		return DatabaseCredentials.newBuilder().setUsername(getUserName()).setPassword(getUserPassword()).build();
 	}
 
@@ -1774,9 +1774,9 @@ StreamQueryRequest req = StreamQueryRequest.newBuilder()
 	 */
 	public static class RemoteGrpcDatabaseWithCompression extends RemoteGrpcDatabase {
 
-		public RemoteGrpcDatabaseWithCompression(String server, int port, String databaseName, String userName, String userPassword,
+		public RemoteGrpcDatabaseWithCompression(String server, int grpcPort, int httpPort, String databaseName, String userName, String userPassword,
 				ContextConfiguration configuration) {
-			super(server, port, databaseName, userName, userPassword, configuration);
+			super(server, grpcPort, httpPort, databaseName, userName, userPassword, configuration);
 		}
 
 		@Override

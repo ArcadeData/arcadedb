@@ -1,5 +1,6 @@
 package com.arcadedb.server.grpc;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -148,19 +149,47 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 	@Override
 	public void listDatabases(ListDatabasesRequest req, StreamObserver<ListDatabasesResponse> resp) {
-
+	    
 		try {
-			// TODO implement: mirror GetDatabasesHandler
-			// java.util.List<String> names = server.getServer().getDatabaseNames();
-			// resp.onNext(ListDatabasesResponse.newBuilder().addAllNames(names).build());
-			// resp.onCompleted();
-			resp.onError(io.grpc.Status.UNIMPLEMENTED.withDescription("ListDatabases not implemented").asException());
-		}
-		catch (Exception e) {
-			resp.onError(io.grpc.Status.INTERNAL.withDescription("ListDatabases: " + e.getMessage()).asException());
-		}
-	}
 
+			validateCredentials(req.getCredentials()); 
+
+	        java.util.Collection<String> names = arcadeServer.getDatabaseNames();
+	        java.util.ArrayList<String> out = new java.util.ArrayList<>(names);
+
+	        java.util.Collections.sort(out, String.CASE_INSENSITIVE_ORDER);
+
+	        List<DatabaseInfo> allDatabaseInfos = new ArrayList<>();
+	        
+	        for (String dbName : out) {
+	        	
+	        	//ServerDatabase db = arcadeServer.getDatabase(dbName);
+	        	
+	        	DatabaseInfo dbInfo = DatabaseInfo.newBuilder().setName(dbName).build();
+	        	
+	        	allDatabaseInfos.add(dbInfo);
+	        }
+	        
+			// 3) Build and send response
+	        ListDatabasesResponse respMsg = ListDatabasesResponse.newBuilder()
+	                .addAllDatabases(allDatabaseInfos)
+	                .build();
+
+	        resp.onNext(respMsg);
+	        resp.onCompleted();
+	    } 
+		catch (SecurityException se) {
+	        resp.onError(io.grpc.Status.PERMISSION_DENIED
+	                .withDescription("ListDatabases: " + se.getMessage())
+	                .asException());
+	    } 
+		catch (Exception e) {
+	        resp.onError(io.grpc.Status.INTERNAL
+	                .withDescription("ListDatabases: " + e.getMessage())
+	                .asException());
+	    }
+	}
+	
 	@Override
 	public void getDatabaseInfo(GetDatabaseInfoRequest req, StreamObserver<GetDatabaseInfoResponse> resp) {
 

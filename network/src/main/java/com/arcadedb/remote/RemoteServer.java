@@ -18,14 +18,15 @@
  */
 package com.arcadedb.remote;
 
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.serializer.json.JSONObject;
-
-import java.net.*;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.util.*;
 
 /**
  * Remote Database implementation. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
