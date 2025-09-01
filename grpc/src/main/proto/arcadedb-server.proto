@@ -39,10 +39,24 @@ service ArcadeDbService {
   rpc BulkInsert       (BulkInsertRequest)              returns (InsertSummary);
   rpc InsertStream     (stream InsertChunk)             returns (InsertSummary);
   rpc InsertBidirectional (stream InsertRequest)        returns (stream InsertResponse);
-  
-  // Server operations
+}
+
+service ArcadeDbAdminService {
+ 
+  rpc Ping(PingRequest) returns (PingResponse);
+  rpc GetServerInfo(GetServerInfoRequest) returns (GetServerInfoResponse);
   rpc GetServerStatus(google.protobuf.Empty) returns (ServerStatusResponse);
-  rpc Ping(google.protobuf.Empty) returns (PingResponse);
+
+  rpc ListDatabases(ListDatabasesRequest) returns (ListDatabasesResponse);
+  rpc ExistsDatabase(ExistsDatabaseRequest) returns (ExistsDatabaseResponse);
+  rpc CreateDatabase(CreateDatabaseRequest) returns (CreateDatabaseResponse);
+  rpc DropDatabase(DropDatabaseRequest) returns (DropDatabaseResponse);
+
+  rpc GetDatabaseInfo(GetDatabaseInfoRequest) returns (GetDatabaseInfoResponse);
+
+  // Optional user management
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
 }
 
 // Common messages
@@ -70,8 +84,9 @@ message TransactionContext {
 // Database operations
 message CreateDatabaseRequest {
   string database_name = 1;
-  DatabaseCredentials credentials = 2;
-  map<string, string> options = 3;
+  string database_type = 2;
+  DatabaseCredentials credentials = 3;
+  map<string, string> options = 4;
 }
 
 message CreateDatabaseResponse {
@@ -99,12 +114,16 @@ message ListDatabasesResponse {
 }
 
 message DatabaseInfo {
-  string name = 1;
-  int64 size = 2;
-  string status = 3;
-  map<string, string> properties = 4;
+  string name         = 1;
+  string type         = 2;   // "graph" / "document"
+  int64  records      = 3;   // total records (approx or exact based on engine)
+  int32  classes      = 4;
+  int32  indexes      = 5;
+  int64  size_bytes   = 6;   // if available
+  map<string, string> properties = 7; // extra info, free-form
 }
 
+// Database-level info summary
 message GetDatabaseInfoRequest {
   string database_name = 1;
   DatabaseCredentials credentials = 2;
@@ -310,20 +329,6 @@ message StreamQueryRequest {
   string language = 8; // default "sql" on server if empty  
 }
 
-// Server operations
-message ServerStatusResponse {
-  string version = 1;
-  string status = 2;
-  int64 uptime_ms = 3;
-  int32 active_connections = 4;
-  map<string, string> metrics = 5;
-}
-
-message PingResponse {
-  int64 timestamp = 1;
-  string message = 2;
-}
-
 enum ConflictMode { CONFLICT_ABORT = 0; CONFLICT_IGNORE = 1; CONFLICT_UPDATE = 2; }
 enum TransactionMode { PER_BATCH = 0; PER_STREAM = 1; PER_ROW = 2; }
 
@@ -388,3 +393,72 @@ message Committed { InsertSummary summary = 1; }
 message InsertRequest  { oneof msg { StartInsert start = 1; InsertChunk chunk = 2; CommitInsert commit = 3; } }
 message InsertResponse { oneof msg { Started started = 1; BatchAck batch_ack = 2; Committed committed = 3; } }
 
+message PingRequest {
+  // Optional: include credentials if your server enforces auth on ping
+  DatabaseCredentials credentials = 1;
+}
+
+message PingResponse {
+  bool ok = 1;
+  int64 server_time_ms = 2; // epoch millis
+  int64 timestamp = 3;
+  string message = 4;
+}
+
+// Server operations
+message ServerStatusResponse {
+  string version = 1;
+  string status = 2;
+  int64 uptime_ms = 3;
+  int32 active_connections = 4;
+  map<string, string> metrics = 5;
+}
+
+// Lightweight server info; extend as needed
+message GetServerInfoRequest {
+  DatabaseCredentials credentials = 1;
+}
+
+message GetServerInfoResponse {
+  string version            = 1;  // e.g. "25.8.1-SNAPSHOT"
+  string edition            = 2;  // "CE"/"EE" (if applicable)
+  int64  start_time_ms      = 3;  // epoch millis
+  int64  uptime_ms          = 4;
+  int32  http_port          = 5;
+  int32  grpc_port          = 6;
+  int32  binary_port        = 7;
+  int32  databases_count    = 8;
+  map<string, string> features = 9; // arbitrary flags: {"ssl":"true",...}
+}
+
+// If you don't already have this pair:
+message ExistsDatabaseRequest {
+  string database = 1;
+  DatabaseCredentials credentials = 2;
+}
+message ExistsDatabaseResponse {
+  bool exists = 1;
+}
+
+// Optional user management (server-scope)
+message CreateUserRequest {
+  DatabaseCredentials credentials = 1; // admin credentials
+  string user    = 2;
+  string password = 3;
+  string role     = 4; // or permissions string; adjust to your security model
+}
+
+message CreateUserResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message DeleteUserRequest {
+  DatabaseCredentials credentials = 1; // admin credentials
+  string user = 2;
+}
+
+message DeleteUserResponse {
+  bool success = 1;
+  string message = 2;
+}

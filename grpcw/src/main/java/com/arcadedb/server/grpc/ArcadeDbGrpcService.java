@@ -30,7 +30,6 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
-import com.google.protobuf.Empty;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.Value;
 
@@ -197,7 +196,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			Schema schema = db.getSchema();
 			int typeCount = schema.getTypes().size();
 
-			DatabaseInfo databaseInfo = DatabaseInfo.newBuilder().setName(name).setStatus("").setSize(typeCount).build();
+			DatabaseInfo databaseInfo = DatabaseInfo.newBuilder().setName(name).setClasses(typeCount).build();
 
 			GetDatabaseInfoResponse.Builder b = GetDatabaseInfoResponse.newBuilder().setInfo(databaseInfo);
 
@@ -1555,31 +1554,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			}
 			catch (Exception ignore) {
 			}
-		}
-	}
-
-	@Override
-	public void ping(Empty request, StreamObserver<PingResponse> responseObserver) {
-		PingResponse response = PingResponse.newBuilder().setTimestamp(System.currentTimeMillis()).setMessage("pong").build();
-
-		responseObserver.onNext(response);
-		responseObserver.onCompleted();
-	}
-
-	@Override
-	public void getServerStatus(Empty request, StreamObserver<ServerStatusResponse> responseObserver) {
-		try {
-			ServerStatusResponse response = ServerStatusResponse.newBuilder().setVersion("25.8.1-SNAPSHOT").setStatus("RUNNING")
-					.setUptimeMs(getUptime()).setActiveConnections(getActiveConnections())
-					.putMetrics("active_transactions", String.valueOf(activeTransactions.size())).build();
-
-			responseObserver.onNext(response);
-			responseObserver.onCompleted();
-
-		}
-		catch (Exception e) {
-			logger.error("Error getting server status: {}", e.getMessage(), e);
-			responseObserver.onError(Status.INTERNAL.withDescription("Failed to get server status: " + e.getMessage()).asException());
 		}
 	}
 
