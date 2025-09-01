@@ -1099,12 +1099,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 						ref.set(ctx);
 						sessionWatermark.put(ctx.sessionId, 0L);
-
-						sendOrQueue.accept(InsertResponse.newBuilder()
+						
+						sendOrQueue.accept(
+							InsertResponse.newBuilder()
 							    .setStarted(Started.newBuilder().setSessionId(ctx.sessionId).build())
 							    .build());
-
-						resp.onNext(InsertResponse.newBuilder().setStarted(Started.newBuilder().setSessionId(ctx.sessionId).build()).build());
 
 						// pull next message
 						call.request(1);
@@ -1118,8 +1117,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 						final long hi = sessionWatermark.getOrDefault(ctx.sessionId, 0L);
 						
 						if (c.getChunkSeq() <= hi) {
+							
 							resp.onNext(InsertResponse.newBuilder().setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId)
 									.setChunkSeq(c.getChunkSeq()).setInserted(0).setUpdated(0).setIgnored(0).setFailed(0).build()).build());
+							
 							call.request(1);
 							return;
 						}
@@ -1155,12 +1156,25 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 							// intentionally do not advance watermark on failure; client may replay safely
 						}
 
-						resp.onNext(InsertResponse.newBuilder()
-								.setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
-										.setInserted(perChunk.inserted).setUpdated(perChunk.updated).setIgnored(perChunk.ignored)
-										.setFailed(perChunk.failed).addAllErrors(perChunk.errors).build())
-								.build());
+//						resp.onNext(InsertResponse.newBuilder()
+//								.setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
+//										.setInserted(perChunk.inserted).setUpdated(perChunk.updated).setIgnored(perChunk.ignored)
+//										.setFailed(perChunk.failed).addAllErrors(perChunk.errors).build())
+//								.build());
 
+						sendOrQueue.accept(
+							     InsertResponse.newBuilder()
+									.setBatchAck(BatchAck.newBuilder()
+									.setSessionId(ctx.sessionId)
+									.setChunkSeq(c.getChunkSeq())
+									.setInserted(perChunk.inserted)
+									.setUpdated(perChunk.updated)
+									.setIgnored(perChunk.ignored)
+									.setFailed(perChunk.failed)
+									.addAllErrors(perChunk.errors)
+									.build())
+								.build());							
+							
 						call.request(1);
 					}
 
@@ -1228,11 +1242,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	}
 
 	private boolean tryUpsertVertex(InsertContext ctx, com.arcadedb.graph.MutableVertex incoming) {
+		
 		var keys = ctx.keyCols;
+		
 		if (keys.isEmpty())
 			return false;
 
 		String where = String.join(" AND ", keys.stream().map(k -> k + " = ?").toList());
+		
 		Object[] params = keys.stream()
 				// read key values from the incoming vertex as a document
 				.map(k -> ((MutableDocument) incoming).get(k)).toArray();
@@ -1245,7 +1262,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				return false;
 
 			// mutate via MutableDocument view (valid for vertex records)
-			MutableDocument existingDoc = (MutableDocument) res.getElement().get().asDocument(true);
+			MutableVertex existingDoc = (MutableVertex) res.getElement().get().asDocument(true);
 			for (String col : ctx.updateCols) {
 				existingDoc.set(col, ((MutableDocument) incoming).get(col));
 			}
