@@ -1044,7 +1044,27 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 		final java.util.concurrent.atomic.AtomicReference<InsertContext> ref = new java.util.concurrent.atomic.AtomicReference<>();
 		final java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
 		final java.util.concurrent.atomic.AtomicBoolean started = new java.util.concurrent.atomic.AtomicBoolean(false);
+		
+		final java.util.concurrent.ConcurrentLinkedQueue<InsertResponse> outQueue = new java.util.concurrent.ConcurrentLinkedQueue<>();
 
+		// drain helper
+		final Runnable drain = () -> {
+			while (call.isReady()) {
+				InsertResponse next = outQueue.poll();
+				if (next == null)
+					break;
+				resp.onNext(next);
+			}
+		};
+
+		// enqueue or send immediately
+		final java.util.function.Consumer<InsertResponse> sendOrQueue = (ir) -> {
+			outQueue.offer(ir);
+			drain.run();
+		};		
+
+		call.setOnReadyHandler(drain);
+		
 		call.setOnCancelHandler(() -> {
 			cancelled.set(true);
 			final InsertContext ctx = ref.getAndSet(null);
@@ -1080,6 +1100,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 						ref.set(ctx);
 						sessionWatermark.put(ctx.sessionId, 0L);
 
+						sendOrQueue.accept(InsertResponse.newBuilder()
+							    .setStarted(Started.newBuilder().setSessionId(ctx.sessionId).build())
+							    .build());
+
 						resp.onNext(InsertResponse.newBuilder().setStarted(Started.newBuilder().setSessionId(ctx.sessionId).build()).build());
 
 						// pull next message
@@ -1092,6 +1116,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 						// idempotent replay guard
 						final long hi = sessionWatermark.getOrDefault(ctx.sessionId, 0L);
+						
 						if (c.getChunkSeq() <= hi) {
 							resp.onNext(InsertResponse.newBuilder().setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId)
 									.setChunkSeq(c.getChunkSeq()).setInserted(0).setUpdated(0).setIgnored(0).setFailed(0).build()).build());
@@ -1104,6 +1129,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 							perChunk = insertRows(ctx, c.getRowsList().iterator());
 							ctx.totals.add(perChunk);
 							sessionWatermark.put(ctx.sessionId, c.getChunkSeq());
+							
+							sendOrQueue.accept(InsertResponse.newBuilder()
+								    .setBatchAck(BatchAck.newBuilder()
+								        .setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
+								        .setInserted(perChunk.inserted).setUpdated(perChunk.updated)
+								        .setIgnored(perChunk.ignored).setFailed(perChunk.failed)
+								        .addAllErrors(perChunk.errors)
+								        .build())
+								    .build());
+							
+							
 						}
 						catch (Exception e) {
 							// surface as failed chunk and continue (or switch to resp.onError(...) if you
