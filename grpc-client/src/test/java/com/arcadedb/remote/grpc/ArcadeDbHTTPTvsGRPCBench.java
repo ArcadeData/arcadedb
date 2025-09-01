@@ -53,16 +53,20 @@ public class ArcadeDbHTTPTvsGRPCBench {
 
 		System.out.printf("Benchmarking DB='%s' HTTP=%s:%d gRPC=%s:%d as %s%n", DB_NAME, HTTP_HOST, HTTP_PORT, GRPC_HOST, GRPC_PORT, USER);
 
-		RemoteGrpcServer grpcServer = new RemoteGrpcServer(GRPC_HOST, GRPC_PORT, USER, PASS);
-		
-		if (grpcServer.existsDatabase(DB_NAME)) {
-		
-			System.out.println("Database exists");
-		}
-		else {
+		try (RemoteGrpcServer grpcServer = new RemoteGrpcServer(GRPC_HOST, GRPC_PORT, USER, PASS)) {
 			
-			grpcServer.createDatabase(DB_NAME);
+			if (grpcServer.existsDatabase(DB_NAME)) {
+				
+				System.out.printf("Database %s exists%n", DB_NAME);
+			}
+			else {
+				
+				System.out.printf("Creating database %s%n", DB_NAME);
+				
+				grpcServer.createDatabase(DB_NAME);
+			}
 		}
+		
 				
 		// ---------- Open both clients ----------
 		try (RemoteDatabase http = new RemoteDatabase(HTTP_HOST, HTTP_PORT, DB_NAME, USER, PASS);
