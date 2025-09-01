@@ -1044,7 +1044,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 		final java.util.concurrent.atomic.AtomicReference<InsertContext> ref = new java.util.concurrent.atomic.AtomicReference<>();
 		final java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
 		final java.util.concurrent.atomic.AtomicBoolean started = new java.util.concurrent.atomic.AtomicBoolean(false);
-		
+
 		final java.util.concurrent.ConcurrentLinkedQueue<InsertResponse> outQueue = new java.util.concurrent.ConcurrentLinkedQueue<>();
 
 		// drain helper
@@ -1061,10 +1061,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 		final java.util.function.Consumer<InsertResponse> sendOrQueue = (ir) -> {
 			outQueue.offer(ir);
 			drain.run();
-		};		
+		};
 
 		call.setOnReadyHandler(drain);
-		
+
 		call.setOnCancelHandler(() -> {
 			cancelled.set(true);
 			final InsertContext ctx = ref.getAndSet(null);
@@ -1099,11 +1099,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 						ref.set(ctx);
 						sessionWatermark.put(ctx.sessionId, 0L);
-						
+
 						sendOrQueue.accept(
-							InsertResponse.newBuilder()
-							    .setStarted(Started.newBuilder().setSessionId(ctx.sessionId).build())
-							    .build());
+								InsertResponse.newBuilder().setStarted(Started.newBuilder().setSessionId(ctx.sessionId).build()).build());
 
 						// pull next message
 						call.request(1);
@@ -1115,12 +1113,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 						// idempotent replay guard
 						final long hi = sessionWatermark.getOrDefault(ctx.sessionId, 0L);
-						
+
 						if (c.getChunkSeq() <= hi) {
-							
+
 							resp.onNext(InsertResponse.newBuilder().setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId)
 									.setChunkSeq(c.getChunkSeq()).setInserted(0).setUpdated(0).setIgnored(0).setFailed(0).build()).build());
-							
+
 							call.request(1);
 							return;
 						}
@@ -1130,26 +1128,22 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 							perChunk = insertRows(ctx, c.getRowsList().iterator());
 							ctx.totals.add(perChunk);
 							sessionWatermark.put(ctx.sessionId, c.getChunkSeq());
-							
+
 							sendOrQueue.accept(InsertResponse.newBuilder()
-								    .setBatchAck(BatchAck.newBuilder()
-								        .setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
-								        .setInserted(perChunk.inserted).setUpdated(perChunk.updated)
-								        .setIgnored(perChunk.ignored).setFailed(perChunk.failed)
-								        .addAllErrors(perChunk.errors)
-								        .build())
-								    .build());
-							
-							
+									.setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
+											.setInserted(perChunk.inserted).setUpdated(perChunk.updated).setIgnored(perChunk.ignored)
+											.setFailed(perChunk.failed).addAllErrors(perChunk.errors).build())
+									.build());
+
 						}
 						catch (Exception e) {
 							// surface as failed chunk and continue (or switch to resp.onError(...) if you
 							// want to fail fast)
-							
+
 							perChunk = new Counts();
-							
+
 							perChunk.failed = c.getRowsCount();
-							
+
 							perChunk.errors.add(InsertError.newBuilder().setRowIndex(Math.max(0, ctx.received - 1)).setCode("DB_ERROR")
 									.setMessage(String.valueOf(e.getMessage())).build());
 							ctx.totals.add(perChunk);
@@ -1162,19 +1156,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 //										.setFailed(perChunk.failed).addAllErrors(perChunk.errors).build())
 //								.build());
 
-						sendOrQueue.accept(
-							     InsertResponse.newBuilder()
-									.setBatchAck(BatchAck.newBuilder()
-									.setSessionId(ctx.sessionId)
-									.setChunkSeq(c.getChunkSeq())
-									.setInserted(perChunk.inserted)
-									.setUpdated(perChunk.updated)
-									.setIgnored(perChunk.ignored)
-									.setFailed(perChunk.failed)
-									.addAllErrors(perChunk.errors)
-									.build())
-								.build());							
-							
+						sendOrQueue.accept(InsertResponse.newBuilder()
+								.setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
+										.setInserted(perChunk.inserted).setUpdated(perChunk.updated).setIgnored(perChunk.ignored)
+										.setFailed(perChunk.failed).addAllErrors(perChunk.errors).build())
+								.build());
+
 						call.request(1);
 					}
 
@@ -1241,57 +1228,76 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 		};
 	}
 
-	private boolean tryUpsertVertex(InsertContext ctx, com.arcadedb.graph.MutableVertex incoming) {
+	private boolean tryUpsertVertex(final InsertContext ctx, final com.arcadedb.graph.MutableVertex incoming) {
 		
 		var keys = ctx.keyCols;
 		
 		if (keys.isEmpty())
 			return false;
 
-		String where = String.join(" AND ", keys.stream().map(k -> k + " = ?").toList());
-		
-		Object[] params = keys.stream()
-				// read key values from the incoming vertex as a document
-				.map(k -> ((MutableDocument) incoming).get(k)).toArray();
+		// Read incoming values via the (read-only) document view
+		var inDoc = incoming.asDocument();
 
-		try (var rs = ctx.db.query("sql", "SELECT FROM " + ctx.opts.getTargetClass() + " WHERE " + where, params)) {
+		String where = String.join(" AND ", keys.stream().map(k -> k + " = ?").toList());
+		Object[] params = keys.stream().map(inDoc::get).toArray();
+
+		// Prefer selecting the element so we can get a mutable vertex directly
+		final String sql = "SELECT FROM " + ctx.opts.getTargetClass() + " WHERE " + where;
+
+		try (var rs = ctx.db.query("sql", sql, params)) {
 			if (!rs.hasNext())
 				return false;
+
 			var res = rs.next();
 			if (!res.isElement())
 				return false;
 
-			// mutate via MutableDocument view (valid for vertex records)
-			MutableVertex existingDoc = (MutableVertex) res.getElement().get().asDocument(true);
+			Vertex v = res.getElement().get().asVertex();
+			
+			MutableVertex existingV = v.modify();
+
+			// Apply the updates
 			for (String col : ctx.updateCols) {
-				existingDoc.set(col, ((MutableDocument) incoming).get(col));
+				existingV.set(col, inDoc.get(col));
 			}
-			existingDoc.save();
+			
+			existingV.save();
+			
 			return true;
 		}
 	}
 
 	private boolean tryUpsertDocument(InsertContext ctx, MutableDocument incoming) {
+
 		var keys = ctx.keyCols;
+
 		if (keys.isEmpty())
 			return false;
 
 		String where = String.join(" AND ", keys.stream().map(k -> k + " = ?").toList());
 		Object[] params = keys.stream().map(incoming::get).toArray();
-
-		try (var rs = ctx.db.query("sql", "SELECT FROM " + ctx.opts.getTargetClass() + " WHERE " + where, params)) {
-			if (!rs.hasNext())
-				return false;
+		
+		try (ResultSet rs = ctx.db.query("sql", "SELECT FROM " + ctx.opts.getTargetClass() + " WHERE " + where, params)) {
+	       
+			if (!rs.hasNext()) {
+	            return false;
+	        }
+			
 			var res = rs.next();
 			if (!res.isElement())
 				return false;
 
-			var existing = (MutableDocument) res.getElement().get().asDocument(true);
+			Document d = res.getElement().get().asDocument();
+
+			var existing = d.modify();
+
 			for (String col : ctx.updateCols)
 				existing.set(col, incoming.get(col));
+
 			existing.save();
+
 			return true;
-		}
+	    }
 	}
 
 	// ---------- Core insert plumbing ----------
