@@ -370,7 +370,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			}
 
 			// Get mutable view for updates (works for docs, vertices, edges)
-			MutableDocument mdoc = (MutableDocument) el.asDocument(true);
+			MutableDocument mdoc = (MutableDocument) el.asDocument(true).modify();
 
 			var dtype = db.getSchema().getType(mdoc.getTypeName());
 
