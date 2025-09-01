@@ -465,14 +465,45 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	}
 
 	public com.arcadedb.server.grpc.ExecuteCommandResponse execSql(String db, String sql, Map<String,Object> params, long timeoutMs) {
-	    return executeCommand(db, sql, params, "sql", /*returnRows*/ false, /*maxRows*/ 0, txBeginCommit(), timeoutMs);
+	    return executeCommand(db, "sql", sql, params, /*returnRows*/ false, /*maxRows*/ 0, txBeginCommit(), timeoutMs);
+	}
+	
+	public com.arcadedb.server.grpc.ExecuteCommandResponse execSql(String sql, Map<String,Object> params, long timeoutMs) {
+	    return executeCommand(databaseName, "sql", sql, params,  /*returnRows*/ false, /*maxRows*/ 0, txBeginCommit(), timeoutMs);
 	}
 	
 	public com.arcadedb.server.grpc.ExecuteCommandResponse executeCommand(
-	        String database,
+	        String language,
 	        String command,
 	        Map<String, Object> params,
+	        boolean returnRows,
+	        int maxRows,
+	        com.arcadedb.server.grpc.TransactionContext tx,
+	        long timeoutMs) {
+
+	    var reqB = com.arcadedb.server.grpc.ExecuteCommandRequest.newBuilder()
+	        .setDatabase(databaseName)
+	        .setCommand(command)
+	        .putAllParameters(convertParamsToProto(params))
+	        .setLanguage(langOrDefault(language))
+	        .setReturnRows(returnRows)
+	        .setMaxRows(maxRows > 0 ? maxRows : 0);
+
+	    if (tx != null) reqB.setTransaction(tx);
+	    // credentials: if your stub builds creds implicitly, set here if required
+	    reqB.setCredentials(buildCredentials());
+
+	    return blockingStub
+	        .withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+	        .executeCommand(reqB.build());
+	}
+	
+	
+	public com.arcadedb.server.grpc.ExecuteCommandResponse executeCommand(
+	        String database,
 	        String language,
+	        String command,
+	        Map<String, Object> params,
 	        boolean returnRows,
 	        int maxRows,
 	        com.arcadedb.server.grpc.TransactionContext tx,
