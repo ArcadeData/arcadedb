@@ -1,6 +1,11 @@
 package com.arcadedb.remote.grpc;
 
-import com.arcadedb.server.grpc.ArcadeDbServiceGrpc;
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+
+import com.arcadedb.server.grpc.ArcadeDbAdminServiceGrpc;
 import com.arcadedb.server.grpc.CreateDatabaseRequest;
 import com.arcadedb.server.grpc.DatabaseCredentials;
 import com.arcadedb.server.grpc.DropDatabaseRequest;
@@ -11,14 +16,8 @@ import io.grpc.CallCredentials;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
-import io.grpc.CallCredentials.MetadataApplier;
-import io.grpc.CallCredentials.RequestInfo;
+import io.grpc.StatusException;
 import io.grpc.stub.AbstractStub;
-
-import java.util.List;
-import java.util.Objects;
-import java.util.concurrent.Executor;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Minimal server-scope gRPC wrapper (HTTP RemoteServer equivalent), implemented
@@ -42,7 +41,7 @@ public class RemoteGrpcServer implements AutoCloseable {
 	private final long defaultTimeoutMs;
 
 	private final ManagedChannel channel;
-	private final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub blocking;
+	private final ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub blockingV2Stub;
 
 	public RemoteGrpcServer(final String host, final int port, final String user, final String pass) {
 		this(host, port, user, pass, 30_000);
@@ -63,7 +62,7 @@ public class RemoteGrpcServer implements AutoCloseable {
 		this.channel = ManagedChannelBuilder.forAddress(this.host, this.port).usePlaintext() // switch to TLS if enabled server-side
 				.build();
 
-		this.blocking = ArcadeDbServiceGrpc.newBlockingStub(channel).withCallCredentials(createCallCredentials(userName, userPassword));
+		this.blockingV2Stub = ArcadeDbAdminServiceGrpc.newBlockingV2Stub(channel).withCallCredentials(createCallCredentials(userName, userPassword));
 	}
 
 	@Override
@@ -89,10 +88,18 @@ public class RemoteGrpcServer implements AutoCloseable {
 	/** Returns the list of database names from the server. */
 	public List<String> listDatabases() {
 		
-		ListDatabasesResponse resp = withDeadline(blocking, defaultTimeoutMs)
-				.listDatabases(ListDatabasesRequest.newBuilder().setCredentials(buildCredentials()).build());
+		ListDatabasesResponse resp = null;
 		
-		return resp.getDatabasesList().stream().map(dbInfo -> dbInfo.getName()).toList();
+		try {
+
+			resp = withDeadline(blockingV2Stub, defaultTimeoutMs)
+					.listDatabases(ListDatabasesRequest.newBuilder().setCredentials(buildCredentials()).build());
+			return resp.getDatabasesList();
+		}
+		catch (StatusException e) {
+			
+			throw new RuntimeException("Failed to list databases: " + e.getMessage(), e);
+		}		
 	}
 
 	/** Checks existence by listing (no ExistsDatabaseRequest needed). */
@@ -102,9 +109,15 @@ public class RemoteGrpcServer implements AutoCloseable {
 
 	/** Creates a database with type "graph" or "document". */
 	public void createDatabase(final String database) {
-		withDeadline(blocking, defaultTimeoutMs).createDatabase(CreateDatabaseRequest.newBuilder()
-				.setDatabaseName(database)
-				.setCredentials(buildCredentials()).build());
+		
+		try {
+			withDeadline(blockingV2Stub, defaultTimeoutMs).createDatabase(CreateDatabaseRequest.newBuilder()
+					.setName(database)
+					.setCredentials(buildCredentials()).build());
+		}
+		catch (StatusException e) {
+			throw new RuntimeException("Failed to create database: " + e.getMessage(), e);
+		}
 	}
 
 	/** No-op if already present; creates otherwise. */
@@ -116,8 +129,14 @@ public class RemoteGrpcServer implements AutoCloseable {
 
 	/** Drops a database. If your proto supports 'force', add it here. */
 	public void dropDatabase(final String database) {
-		withDeadline(blocking, defaultTimeoutMs)
-				.dropDatabase(DropDatabaseRequest.newBuilder().setDatabaseName(database).setCredentials(buildCredentials()).build());
+		
+		try {
+			withDeadline(blockingV2Stub, defaultTimeoutMs)
+					.dropDatabase(DropDatabaseRequest.newBuilder().setName(database).setCredentials(buildCredentials()).build());
+		}
+		catch (StatusException e) {
+			throw new RuntimeException("Failed to drop database: " + e.getMessage(), e);
+		}
 	}
 
 	public String endpoint() {

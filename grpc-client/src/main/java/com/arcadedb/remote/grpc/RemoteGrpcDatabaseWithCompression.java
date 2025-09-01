@@ -28,8 +28,8 @@ public class RemoteGrpcDatabaseWithCompression extends RemoteGrpcDatabase {
 	}
 
 	@Override
-	protected ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub createBlockingStub(ManagedChannel channel) {
-		return ArcadeDbServiceGrpc.newBlockingStub(channel).withCompression("gzip") // Enable GZIP compression
+	protected ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub createBlockingStub(ManagedChannel channel) {
+		return ArcadeDbServiceGrpc.newBlockingV2Stub(channel).withCompression("gzip") // Enable GZIP compression
 				.withCallCredentials(createCredentials()).withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS);
 	}
 

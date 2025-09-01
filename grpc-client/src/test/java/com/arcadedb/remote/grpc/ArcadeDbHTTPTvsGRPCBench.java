@@ -14,6 +14,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import com.arcadedb.remote.RemoteDatabase; // HTTP client
 import com.arcadedb.server.grpc.InsertOptions;
+import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
+import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
 import com.arcadedb.server.grpc.InsertSummary;
 import com.arcadedb.server.grpc.StreamQueryRequest;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -287,9 +289,9 @@ public class ArcadeDbHTTPTvsGRPCBench {
 		// Minimal options: target class + key columns for idempotency; update
 		// last-write-wins
 		return InsertOptions.newBuilder().setDatabase(DB_NAME).setTargetClass(targetClass).addAllKeyColumns(keyCols)
-				.setConflictMode(com.arcadedb.server.grpc.ConflictMode.CONFLICT_UPDATE)
+				.setConflictMode(ConflictMode.CONFLICT_UPDATE)
 				.addAllUpdateColumnsOnConflict(Arrays.asList("feedback", "image", "timestamp", "applicationArea", "empowerType"))
-				.setTransactionMode(com.arcadedb.server.grpc.TransactionMode.PER_BATCH).setServerBatchSize(500)
+				.setTransactionMode(TransactionMode.PER_BATCH).setServerBatchSize(500)
 				.setCredentials(grpc.buildCredentials()) // if your server validates per-request creds
 				.build();
 	}

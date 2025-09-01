@@ -98,18 +98,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 			ArrayList<String> names = new ArrayList<>(getDatabaseNames());
 			names.sort(String.CASE_INSENSITIVE_ORDER);
 
-	        List<DatabaseInfo> allDatabaseInfos = new ArrayList<>();
-	        
-	        for (String dbName : names) {
-	        	
-	        	//ServerDatabase db = arcadeServer.getDatabase(dbName);
-	        	
-	        	DatabaseInfo dbInfo = DatabaseInfo.newBuilder().setName(dbName).build();
-	        	
-	        	allDatabaseInfos.add(dbInfo);
-	        }
-			
-			resp.onNext(ListDatabasesResponse.newBuilder().addAllDatabases(allDatabaseInfos).build());
+			resp.onNext(ListDatabasesResponse.newBuilder().addAllDatabases(names).build());
 			resp.onCompleted();
 		}
 		catch (SecurityException se) {
@@ -127,7 +116,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 		
 			authenticate(req.getCredentials());
 			
-			final String name = req.getDatabase(); // proto should define 'name' for the DB
+			final String name = req.getName(); // proto should define 'name' for the DB
 			
 			boolean exists = containsDatabaseIgnoreCase(name);
 			
@@ -148,8 +137,8 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 		try {
 			authenticate(req.getCredentials());
 
-			final String name = req.getDatabaseName(); // DB name in proto
-			final String type = req.getDatabaseType(); // "graph" or "document" (logical)
+			final String name = req.getName(); // DB name in proto
+			final String type = req.getType(); // "graph" or "document" (logical)
 
 			if (containsDatabaseIgnoreCase(name)) {
 				
@@ -190,7 +179,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 		
 			authenticate(req.getCredentials());
 			
-			final String name = req.getDatabaseName();
+			final String name = req.getName();
 
 			if (!containsDatabaseIgnoreCase(name)) {
 				resp.onNext(DropDatabaseResponse.newBuilder().build());
@@ -218,7 +207,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 		
 			authenticate(req.getCredentials());
 			
-			final String name = req.getDatabaseName();
+			final String name = req.getName();
 
 			if (!containsDatabaseIgnoreCase(name)) {
 				resp.onError(Status.NOT_FOUND.withDescription("Database not found: " + name).asException());
@@ -250,21 +239,22 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 				long records = approximateRecordCount(db);
 
 				// Infer db kind: "graph" if any vertex type exists
-				String kind = "document";
+				String type = "document";
 				
 				try {
 					
 					var vIter = schema.getTypes().stream().filter(t -> t instanceof VertexType);
 				
 					if (vIter != null && vIter.iterator().hasNext())
-						kind = "graph";
+						type = "graph";
 				}
 				catch (Throwable ignore) {
 				}
 
-	        	DatabaseInfo dbInfo = DatabaseInfo.newBuilder().setName(name).setClasses(classes).setIndexes(indexes).setRecords(records).build();
-				
-				GetDatabaseInfoResponse out = GetDatabaseInfoResponse.newBuilder().setInfo(dbInfo).build();
+				GetDatabaseInfoResponse out = GetDatabaseInfoResponse.newBuilder()
+						.setDatabase(name)
+						.setClasses(classes).setIndexes(indexes).setRecords(records).setType(type)
+						.build();
 
 				resp.onNext(out);
 				resp.onCompleted();
@@ -280,8 +270,11 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 
 	@Override
 	public void createUser(CreateUserRequest req, StreamObserver<CreateUserResponse> resp) {
+		
 		try {
+		
 			authenticate(req.getCredentials());
+			
 			final String user = req.getUser();
 			final String pwd = req.getPassword();
 			final String role = req.getRole();
