@@ -126,14 +126,14 @@
 			<groupId>org.slf4j</groupId>
 			<artifactId>slf4j-simple</artifactId>
 			<version>2.0.17</version>
-			<scope>runtime</scope>
+			<scope>test</scope>
 		</dependency>
 		        
 		<dependency>
 			<groupId>com.fasterxml.jackson.core</groupId>
 			<artifactId>jackson-databind</artifactId>
 			<version>2.19.2</version>
-			<scope>runtime</scope>
+			<scope>test</scope>
 		</dependency>      
 		  
     </dependencies>
