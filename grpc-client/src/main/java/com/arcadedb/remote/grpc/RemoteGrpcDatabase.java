@@ -8,7 +8,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
-import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
@@ -36,10 +35,8 @@ import com.arcadedb.remote.RemoteImmutableVertex;
 import com.arcadedb.remote.RemoteSchema;
 import com.arcadedb.remote.RemoteTransactionExplicitLock;
 import com.arcadedb.server.grpc.ArcadeDbServiceGrpc;
-import com.arcadedb.server.grpc.BatchAck;
 import com.arcadedb.server.grpc.BeginTransactionRequest;
 import com.arcadedb.server.grpc.BeginTransactionResponse;
-import com.arcadedb.server.grpc.Commit;
 import com.arcadedb.server.grpc.CommitTransactionRequest;
 import com.arcadedb.server.grpc.CommitTransactionResponse;
 import com.arcadedb.server.grpc.DatabaseCredentials;
@@ -49,17 +46,12 @@ import com.arcadedb.server.grpc.ExecuteCommandRequest;
 import com.arcadedb.server.grpc.ExecuteCommandResponse;
 import com.arcadedb.server.grpc.ExecuteQueryRequest;
 import com.arcadedb.server.grpc.ExecuteQueryResponse;
-import com.arcadedb.server.grpc.InsertChunk;
 import com.arcadedb.server.grpc.InsertOptions;
-import com.arcadedb.server.grpc.InsertRequest;
-import com.arcadedb.server.grpc.InsertResponse;
-import com.arcadedb.server.grpc.InsertSummary;
 import com.arcadedb.server.grpc.LookupByRidRequest;
 import com.arcadedb.server.grpc.LookupByRidResponse;
 import com.arcadedb.server.grpc.QueryResult;
 import com.arcadedb.server.grpc.RollbackTransactionRequest;
 import com.arcadedb.server.grpc.RollbackTransactionResponse;
-import com.arcadedb.server.grpc.Start;
 import com.arcadedb.server.grpc.StreamQueryRequest;
 import com.arcadedb.server.grpc.TransactionContext;
 import com.arcadedb.server.grpc.TransactionIsolation;
@@ -1303,13 +1295,17 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 		// 1) Ensure options carry DB + credentials the server expects
 		final com.arcadedb.server.grpc.InsertOptions.Builder ob = options.toBuilder();
+
 		if (options.getDatabase() == null || options.getDatabase().isEmpty()) {
 			ob.setDatabase(getName());
 		}
+
 		final boolean missingCreds = !options.hasCredentials() || options.getCredentials().getUsername().isEmpty();
+
 		if (missingCreds) {
 			ob.setCredentials(buildCredentials());
 		}
+
 		final com.arcadedb.server.grpc.InsertOptions effectiveOpts = ob.build();
 
 		// 2) Pre-map rows → proto once (outside the observer)
@@ -1326,6 +1322,58 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		final java.util.concurrent.atomic.AtomicReference<com.arcadedb.server.grpc.InsertSummary> committed = new java.util.concurrent.atomic.AtomicReference<>();
 		final java.util.List<com.arcadedb.server.grpc.BatchAck> acks = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
 
+		// small holder to access req inside helpers
+		final java.util.concurrent.atomic.AtomicReference<io.grpc.stub.ClientCallStreamObserver<com.arcadedb.server.grpc.InsertRequest>> observerRef = 
+				new java.util.concurrent.atomic.AtomicReference<>();
+
+		final java.util.concurrent.atomic.AtomicBoolean commitSent = new java.util.concurrent.atomic.AtomicBoolean(false);
+		final java.util.concurrent.ScheduledExecutorService scheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+			Thread t = new Thread(r, "grpc-ack-grace-timer");
+			t.setDaemon(true);
+			return t;
+		});
+		final long ackGraceMillis = Math.min(Math.max(timeoutMs / 10, 1_000L), 10_000L); // e.g., 1s..10s window
+		final Object timerLock = new Object();
+		final java.util.concurrent.atomic.AtomicReference<java.util.concurrent.ScheduledFuture<?>> ackGraceFuture = new java.util.concurrent.atomic.AtomicReference<>();
+
+		// helper: schedule COMMIT if still waiting
+		final Runnable sendCommitIfNeeded = () -> {
+			if (commitSent.compareAndSet(false, true)) {
+				try {
+					if (observerRef.get() != null) {
+						observerRef.get().onNext(com.arcadedb.server.grpc.InsertRequest.newBuilder()
+								.setCommit(com.arcadedb.server.grpc.Commit.newBuilder().setSessionId(sessionId)).build());
+						observerRef.get().onCompleted();
+					}
+				}
+				catch (Throwable ignore) {
+					/* best effort */ }
+			}
+		};
+
+		// helper: (re)arm the grace timer
+		final Runnable armAckGraceTimer = () -> {
+			synchronized (timerLock) {
+				var prev = ackGraceFuture.getAndSet(null);
+				if (prev != null)
+					prev.cancel(false);
+				// only arm if we've sent all chunks but acks are still pending
+				if (cursor.get() >= protoRows.size() && acked.get() < sent.get() && !commitSent.get()) {
+					var fut = scheduler.schedule(sendCommitIfNeeded, ackGraceMillis, java.util.concurrent.TimeUnit.MILLISECONDS);
+					ackGraceFuture.set(fut);
+				}
+			}
+		};
+
+		// helper: cancel timer (e.g., once all ACKed or after COMMIT observed)
+		final Runnable cancelAckGraceTimer = () -> {
+			synchronized (timerLock) {
+				var prev = ackGraceFuture.getAndSet(null);
+				if (prev != null)
+					prev.cancel(false);
+			}
+		};
+
 		final io.grpc.stub.ClientResponseObserver<com.arcadedb.server.grpc.InsertRequest, com.arcadedb.server.grpc.InsertResponse> observer = new io.grpc.stub.ClientResponseObserver<>() {
 
 			io.grpc.stub.ClientCallStreamObserver<com.arcadedb.server.grpc.InsertRequest> req;
@@ -1334,45 +1382,54 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			@Override
 			public void beforeStart(io.grpc.stub.ClientCallStreamObserver<com.arcadedb.server.grpc.InsertRequest> r) {
 				this.req = r;
+				observerRef.set(r); // <-- make req visible to helper
 				r.disableAutoInboundFlowControl();
 				r.setOnReadyHandler(this::drain);
 			}
 
 			private void drain() {
+				
 				if (!req.isReady())
 					return;
 
-				// Send START exactly once
 				if (!started) {
+					
 					req.onNext(com.arcadedb.server.grpc.InsertRequest.newBuilder()
 							.setStart(com.arcadedb.server.grpc.Start.newBuilder().setOptions(effectiveOpts)).build());
+					
 					started = true;
+					
+					// Now that the call is started, it's safe to pull the first response
+					req.request(1);
 				}
 
-				// While there is capacity (backpressure) and in-flight < maxInflight → send
-				// chunks
 				while (req.isReady() && (sent.get() - acked.get()) < maxInflight) {
 					final int start = cursor.get();
 					if (start >= protoRows.size())
 						break;
 
 					final int end = Math.min(start + chunkSize, protoRows.size());
-					final java.util.List<com.arcadedb.server.grpc.Record> slice = protoRows.subList(start, end);
+					final var slice = protoRows.subList(start, end);
 
-					final com.arcadedb.server.grpc.InsertChunk chunk = com.arcadedb.server.grpc.InsertChunk.newBuilder().setSessionId(sessionId)
+					final var chunk = com.arcadedb.server.grpc.InsertChunk.newBuilder().setSessionId(sessionId)
 							.setChunkSeq(seq.getAndIncrement()).addAllRows(slice).build();
 
 					req.onNext(com.arcadedb.server.grpc.InsertRequest.newBuilder().setChunk(chunk).build());
-
 					cursor.set(end);
 					sent.incrementAndGet();
 				}
 
-				// If we sent everything and all ACKed → send COMMIT and half-close
-				if (cursor.get() >= protoRows.size() && acked.get() >= sent.get()) {
-					req.onNext(com.arcadedb.server.grpc.InsertRequest.newBuilder()
-							.setCommit(com.arcadedb.server.grpc.Commit.newBuilder().setSessionId(sessionId)).build());
-					req.onCompleted();
+				// If all chunks sent:
+				if (cursor.get() >= protoRows.size()) {
+					if (acked.get() >= sent.get()) {
+						// all acked → commit immediately
+						sendCommitIfNeeded.run();
+					}
+					else {
+						// not all acked → (re)arm grace timer; if last ACK never arrives, timer will
+						// COMMIT
+						armAckGraceTimer.run();
+					}
 				}
 			}
 
@@ -1384,32 +1441,49 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 				case BATCH_ACK -> {
 					acks.add(v.getBatchAck());
 					acked.incrementAndGet();
-					// Now that capacity freed up, try to send more
+					// Each ACK may free capacity: push more & manage timer
 					drain();
+					if (cursor.get() >= protoRows.size()) {
+						if (acked.get() >= sent.get()) {
+							cancelAckGraceTimer.run();
+							sendCommitIfNeeded.run();
+						}
+						else {
+							armAckGraceTimer.run();
+						}
+					}
 				}
-				case COMMITTED -> committed.set(v.getCommitted().getSummary());
+				case COMMITTED -> {
+					committed.set(v.getCommitted().getSummary());
+					cancelAckGraceTimer.run();
+				}
 				case MSG_NOT_SET -> {
 					/* ignore */ }
 				}
-				// NOTE: no req.request(1) here; responses are server-pushed
+				req.request(1); // continue pulling responses
 			}
 
 			@Override
 			public void onError(Throwable t) {
+				cancelAckGraceTimer.run();
 				done.countDown();
 			}
 
 			@Override
 			public void onCompleted() {
+				cancelAckGraceTimer.run();
 				done.countDown();
 			}
 		};
-
 		// 4) Kick off the bidi call with deadline
-		this.asyncStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS).insertBidirectional(observer);
 
-		// 5) Wait for completion
-		done.await(timeoutMs + 5_000, java.util.concurrent.TimeUnit.MILLISECONDS);
+		try {
+			asyncStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS).insertBidirectional(observer);			
+			boolean finished = done.await(timeoutMs + 5_000, java.util.concurrent.TimeUnit.MILLISECONDS);
+		}
+		finally {
+			scheduler.shutdownNow();
+		}
 
 		// 6) Prefer COMMITTED summary if present; otherwise aggregate ACKs
 		final com.arcadedb.server.grpc.InsertSummary finalSummary = committed.get();
@@ -1452,19 +1526,20 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	 * @throws InterruptedException if waiting for completion is interrupted
 	 */
 	public com.arcadedb.server.grpc.InsertSummary ingestBidi(final java.util.List<com.arcadedb.database.Record> rows,
-			final com.arcadedb.server.grpc.InsertOptions opts, final int chunkSize, final int maxInflight, final long timeoutMs) throws InterruptedException {
-		
+			final com.arcadedb.server.grpc.InsertOptions opts, final int chunkSize, final int maxInflight, final long timeoutMs)
+			throws InterruptedException {
+
 		return ingestBidiCore(rows, opts, chunkSize, maxInflight, timeoutMs,
 				(Object o) -> toProtoRecordFromDbRecord((com.arcadedb.database.Record) o));
 	}
 
 	public com.arcadedb.server.grpc.InsertSummary ingestBidi(final java.util.List<com.arcadedb.database.Record> rows,
 			final com.arcadedb.server.grpc.InsertOptions opts, final int chunkSize, final int maxInflight) throws InterruptedException {
-		
-		return ingestBidiCore(rows, opts, chunkSize, maxInflight, /* timeoutMs */ 5 * 60_000L, 
+
+		return ingestBidiCore(rows, opts, chunkSize, maxInflight, /* timeoutMs */ 5 * 60_000L,
 				(Object o) -> toProtoRecordFromDbRecord((com.arcadedb.database.Record) o));
 	}
-	
+
 	/**
 	 * Pushes map-shaped rows (property map per row) via InsertBidirectional with
 	 * per-batch ACKs.
@@ -1484,9 +1559,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	 * @throws InterruptedException if the await is interrupted
 	 */
 	public com.arcadedb.server.grpc.InsertSummary ingestBidi(final com.arcadedb.server.grpc.InsertOptions options,
-			final java.util.List<java.util.Map<String, Object>> rows, final int chunkSize, final int maxInflight)
-			throws InterruptedException {
-		
+			final java.util.List<java.util.Map<String, Object>> rows, final int chunkSize, final int maxInflight) throws InterruptedException {
+
 		return ingestBidiCore(rows, options, chunkSize, maxInflight, /* timeoutMs */ 5 * 60_000L,
 				(Object o) -> toProtoRecordFromMap((java.util.Map<String, Object>) o));
 	}
@@ -1494,11 +1568,11 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	public com.arcadedb.server.grpc.InsertSummary ingestBidi(final com.arcadedb.server.grpc.InsertOptions options,
 			final java.util.List<java.util.Map<String, Object>> rows, final int chunkSize, final int maxInflight, final long timeoutMs)
 			throws InterruptedException {
-		
+
 		return ingestBidiCore(rows, options, chunkSize, maxInflight, timeoutMs,
 				(Object o) -> toProtoRecordFromMap((java.util.Map<String, Object>) o));
 	}
-	
+
 	// Map -> PROTO Value
 	private com.arcadedb.server.grpc.Record toProtoRecord(Map<String, Object> row) {
 		com.arcadedb.server.grpc.Record.Builder b = com.arcadedb.server.grpc.Record.newBuilder();
