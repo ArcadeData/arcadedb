@@ -1452,11 +1452,19 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	 * @throws InterruptedException if waiting for completion is interrupted
 	 */
 	public com.arcadedb.server.grpc.InsertSummary ingestBidi(final java.util.List<com.arcadedb.database.Record> rows,
-			final com.arcadedb.server.grpc.InsertOptions opts, final int chunkSize, final int maxInflight) throws InterruptedException {
-		return ingestBidiCore(rows, opts, chunkSize, maxInflight, /* timeoutMs */ 5 * 60_000L, // or pass a parameter if you prefer
+			final com.arcadedb.server.grpc.InsertOptions opts, final int chunkSize, final int maxInflight, final long timeoutMs) throws InterruptedException {
+		
+		return ingestBidiCore(rows, opts, chunkSize, maxInflight, timeoutMs,
 				(Object o) -> toProtoRecordFromDbRecord((com.arcadedb.database.Record) o));
 	}
 
+	public com.arcadedb.server.grpc.InsertSummary ingestBidi(final java.util.List<com.arcadedb.database.Record> rows,
+			final com.arcadedb.server.grpc.InsertOptions opts, final int chunkSize, final int maxInflight) throws InterruptedException {
+		
+		return ingestBidiCore(rows, opts, chunkSize, maxInflight, /* timeoutMs */ 5 * 60_000L, 
+				(Object o) -> toProtoRecordFromDbRecord((com.arcadedb.database.Record) o));
+	}
+	
 	/**
 	 * Pushes map-shaped rows (property map per row) via InsertBidirectional with
 	 * per-batch ACKs.
@@ -1476,12 +1484,21 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	 * @throws InterruptedException if the await is interrupted
 	 */
 	public com.arcadedb.server.grpc.InsertSummary ingestBidi(final com.arcadedb.server.grpc.InsertOptions options,
-			final java.util.List<java.util.Map<String, Object>> rows, final int chunkSize, final int maxInflight, final long timeoutMs)
+			final java.util.List<java.util.Map<String, Object>> rows, final int chunkSize, final int maxInflight)
 			throws InterruptedException {
-		return ingestBidiCore(rows, options, chunkSize, maxInflight, timeoutMs,
+		
+		return ingestBidiCore(rows, options, chunkSize, maxInflight, /* timeoutMs */ 5 * 60_000L,
 				(Object o) -> toProtoRecordFromMap((java.util.Map<String, Object>) o));
 	}
 
+	public com.arcadedb.server.grpc.InsertSummary ingestBidi(final com.arcadedb.server.grpc.InsertOptions options,
+			final java.util.List<java.util.Map<String, Object>> rows, final int chunkSize, final int maxInflight, final long timeoutMs)
+			throws InterruptedException {
+		
+		return ingestBidiCore(rows, options, chunkSize, maxInflight, timeoutMs,
+				(Object o) -> toProtoRecordFromMap((java.util.Map<String, Object>) o));
+	}
+	
 	// Map -> PROTO Value
 	private com.arcadedb.server.grpc.Record toProtoRecord(Map<String, Object> row) {
 		com.arcadedb.server.grpc.Record.Builder b = com.arcadedb.server.grpc.Record.newBuilder();
