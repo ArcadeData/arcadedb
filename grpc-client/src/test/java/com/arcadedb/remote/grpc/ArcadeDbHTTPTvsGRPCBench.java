@@ -30,7 +30,7 @@ public class ArcadeDbHTTPTvsGRPCBench {
 	static String PASS = System.getenv().getOrDefault("ARCADE_PASS", "root1234");
 
 	public static void main(String[] args) throws Exception {
-		
+
 		// override via args if provided: host/ports/db/user/pass
 		for (String a : args) {
 			if (a.startsWith("--db="))
@@ -54,24 +54,23 @@ public class ArcadeDbHTTPTvsGRPCBench {
 		System.out.printf("Benchmarking DB='%s' HTTP=%s:%d gRPC=%s:%d as %s%n", DB_NAME, HTTP_HOST, HTTP_PORT, GRPC_HOST, GRPC_PORT, USER);
 
 		try (RemoteGrpcServer grpcServer = new RemoteGrpcServer(GRPC_HOST, GRPC_PORT, USER, PASS)) {
-			
+
 			if (grpcServer.existsDatabase(DB_NAME)) {
-				
+
 				System.out.printf("Database %s exists%n", DB_NAME);
 			}
 			else {
-				
+
 				System.out.printf("Creating database %s%n", DB_NAME);
-				
+
 				grpcServer.createDatabase(DB_NAME);
 			}
 		}
-		
-				
+
 		// ---------- Open both clients ----------
 		try (RemoteDatabase http = new RemoteDatabase(HTTP_HOST, HTTP_PORT, DB_NAME, USER, PASS);
 				RemoteGrpcDatabase grpc = new RemoteGrpcDatabase(GRPC_HOST, GRPC_PORT, HTTP_PORT, DB_NAME, USER, PASS)) {
-			
+
 			// ensure schema aligned
 			prepareSchemaHTTP(http);
 			prepareSchemaGRPC(grpc);
@@ -86,7 +85,7 @@ public class ArcadeDbHTTPTvsGRPCBench {
 				http.begin();
 				// Replace with your HTTP bulk insert (if you don’t have one, fallback to looped
 				// insert)
-				rows.forEach(m -> http.command("sql", "INSERT INTO UserFeedback CONTENT ?", Map.of("param1", m)));
+				rows.forEach(m -> http.command("sql", "INSERT INTO UserFeedback :m", Map.of("m", m)));
 				http.commit();
 			});
 
@@ -168,36 +167,43 @@ public class ArcadeDbHTTPTvsGRPCBench {
 	}
 
 	// ------------------------------------------------------
-	// Schema prep
+	// Schema prep - HTTP
 	// ------------------------------------------------------
-
 	private static void prepareSchemaHTTP(RemoteDatabase http) {
-		// Create vertex type + index if missing (id unique)
+		// Create vertex type
 		http.command("sql", "CREATE VERTEX TYPE UserFeedback IF NOT EXISTS");
-		http.command("sql", "CREATE PROPERTY UserFeedback.id STRING IF NOT EXISTS");
-		http.command("sql", "CREATE INDEX UserFeedback.id IF NOT EXISTS UNIQUE");
-		http.command("sql", "CREATE PROPERTY UserFeedback.applicationArea STRING IF NOT EXISTS");
-		http.command("sql", "CREATE PROPERTY UserFeedback.empowerTenantId STRING IF NOT EXISTS");
-		http.command("sql", "CREATE PROPERTY UserFeedback.empowerType STRING IF NOT EXISTS");
-		http.command("sql", "CREATE PROPERTY UserFeedback.feedback STRING IF NOT EXISTS");
-		http.command("sql", "CREATE PROPERTY UserFeedback.timestamp DATETIME IF NOT EXISTS");
-		http.command("sql", "CREATE PROPERTY UserFeedback.image EMBEDDED IF NOT EXISTS");
+
+		// Create properties
+		http.command("sql", "CREATE PROPERTY UserFeedback.id IF NOT EXISTS STRING");
+		http.command("sql", "CREATE PROPERTY UserFeedback.applicationArea IF NOT EXISTS STRING");
+		http.command("sql", "CREATE PROPERTY UserFeedback.empowerTenantId IF NOT EXISTS STRING");
+		http.command("sql", "CREATE PROPERTY UserFeedback.empowerType IF NOT EXISTS STRING");
+		http.command("sql", "CREATE PROPERTY UserFeedback.feedback IF NOT EXISTS STRING");
+		http.command("sql", "CREATE PROPERTY UserFeedback.timestamp IF NOT EXISTS DATETIME");
+		http.command("sql", "CREATE PROPERTY UserFeedback.image IF NOT EXISTS EMBEDDED");
+		
+		// Create index
+		http.command("sql", "CREATE INDEX IF NOT EXISTS ON UserFeedback (id) UNIQUE");
 	}
 
+	// ------------------------------------------------------
+	// Schema prep - gRPC
+	// ------------------------------------------------------
 	private static void prepareSchemaGRPC(RemoteGrpcDatabase grpc) {
-		// Mirror the same via command API for apples-to-apples
+		// Create vertex type
 		grpc.executeCommand(DB_NAME, "CREATE VERTEX TYPE UserFeedback IF NOT EXISTS", Map.of(), "sql", false, 0, null, 60_000);
-		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.id STRING IF NOT EXISTS", Map.of(), "sql", false, 0, null, 60_000);
-		grpc.executeCommand(DB_NAME, "CREATE INDEX UserFeedback.id IF NOT EXISTS UNIQUE", Map.of(), "sql", false, 0, null, 60_000);
 
-		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.applicationArea STRING IF NOT EXISTS", Map.of(), "sql", false, 0, null,
-				60_000);
-		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.empowerTenantId STRING IF NOT EXISTS", Map.of(), "sql", false, 0, null,
-				60_000);
-		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.empowerType STRING IF NOT EXISTS", Map.of(), "sql", false, 0, null, 60_000);
-		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.feedback STRING IF NOT EXISTS", Map.of(), "sql", false, 0, null, 60_000);
-		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.timestamp DATETIME IF NOT EXISTS", Map.of(), "sql", false, 0, null, 60_000);
-		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.image EMBEDDED IF NOT EXISTS", Map.of(), "sql", false, 0, null, 60_000);
+		// Create properties
+		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.id IF NOT EXISTS STRING", Map.of(), "sql", false, 0, null, 60_000);
+		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.applicationArea IF NOT EXISTS STRING", Map.of(), "sql", false, 0, null, 60_000);
+		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.empowerTenantId IF NOT EXISTS STRING", Map.of(), "sql", false, 0, null, 60_000);
+		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.empowerType IF NOT EXISTS STRING", Map.of(), "sql", false, 0, null, 60_000);
+		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.feedback IF NOT EXISTS STRING", Map.of(), "sql", false, 0, null, 60_000);
+		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.timestamp IF NOT EXISTS DATETIME", Map.of(), "sql", false, 0, null, 60_000);
+		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.image IF NOT EXISTS EMBEDDED", Map.of(), "sql", false, 0, null, 60_000);
+		
+		// Create index
+		grpc.executeCommand(DB_NAME, "CREATE INDEX IF NOT EXISTS ON UserFeedback (id) UNIQUE", Map.of(), "sql", false, 0, null, 60_000);
 	}
 
 	private static void cleanupHTTP(RemoteDatabase http) {
