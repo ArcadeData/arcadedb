@@ -16,6 +16,7 @@ import com.arcadedb.remote.RemoteDatabase; // HTTP client
 import com.arcadedb.server.grpc.InsertOptions;
 import com.arcadedb.server.grpc.InsertSummary;
 import com.arcadedb.server.grpc.StreamQueryRequest;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 public class ArcadeDbHTTPTvsGRPCBench {
 
@@ -28,6 +29,8 @@ public class ArcadeDbHTTPTvsGRPCBench {
 
 	static String USER = System.getenv().getOrDefault("ARCADE_USER", "root");
 	static String PASS = System.getenv().getOrDefault("ARCADE_PASS", "root1234");
+	
+	static ObjectMapper objectMapper = new ObjectMapper();
 
 	public static void main(String[] args) throws Exception {
 
@@ -81,11 +84,17 @@ public class ArcadeDbHTTPTvsGRPCBench {
 
 			// ---------- BULK INSERT (100 rows) ----------
 			List<Map<String, Object>> rows = buildFeedbackRows(100);
+			
+			String jsonContent = objectMapper.writeValueAsString(rows);
+			
+			System.out.printf("JSON:%n%s%n", jsonContent);
+			
 			time("HTTP bulkInsert(100)", () -> {
+				
 				http.begin();
-				// Replace with your HTTP bulk insert (if you don’t have one, fallback to looped
-				// insert)
-				rows.forEach(m -> http.command("sql", "INSERT INTO UserFeedback :m", Map.of("m", m)));
+
+				http.command("sqlscript", "INSERT INTO UserFeedback CONTENT " + jsonContent);
+				
 				http.commit();
 			});
 
@@ -102,7 +111,7 @@ public class ArcadeDbHTTPTvsGRPCBench {
 			Map<String, Object> one = uf("UF-SINGLE", "tenantZ", "UI", "FEATURE", "Single insert via API", null, Instant.now());
 			time("HTTP insert(1)", () -> {
 				http.begin();
-				http.command("sql", "INSERT INTO UserFeedback CONTENT :m", Map.of("m", one));
+				http.command("sqlscript", "INSERT INTO UserFeedback CONTENT :m", Map.of("m", one));
 				http.commit();
 			});
 			time("gRPC insert(1)", () -> {
@@ -115,12 +124,12 @@ public class ArcadeDbHTTPTvsGRPCBench {
 			// ---------- Update ----------
 			time("HTTP update by id", () -> {
 				http.begin();
-				http.command("sql", "UPDATE UserFeedback SET feedback = 'UPDATED_HTTP' WHERE id = 'UF-0001'");
+				http.command("sqlscript", "UPDATE UserFeedback SET feedback = 'UPDATED_HTTP' WHERE id = 'UF-0001'");
 				http.commit();
 			});
 			time("gRPC update by id", () -> {
 				grpc.begin();
-				grpc.executeCommand(DB_NAME, "UPDATE UserFeedback SET feedback = 'UPDATED_GRPC' WHERE id = 'UF-0001'", Map.of(), "sql", false, 0,
+				grpc.executeCommand("sql", "UPDATE UserFeedback SET feedback = 'UPDATED_GRPC' WHERE id = 'UF-0001'", Map.of(), false, 0,
 						/* tx */ null, 60_000);
 				grpc.commit();
 			});
@@ -159,7 +168,7 @@ public class ArcadeDbHTTPTvsGRPCBench {
 			});
 			time("gRPC delete subset", () -> {
 				grpc.begin();
-				grpc.executeCommand(DB_NAME, "DELETE FROM UserFeedback WHERE id LIKE 'UF-00%'", Map.of(), "sql", false, 0, null, 60_000);
+				grpc.executeCommand("sql", "DELETE FROM UserFeedback WHERE id LIKE 'UF-00%'", Map.of(), false, 0, null, 60_000);
 				grpc.commit();
 			});
 
@@ -174,36 +183,37 @@ public class ArcadeDbHTTPTvsGRPCBench {
 		http.command("sql", "CREATE VERTEX TYPE UserFeedback IF NOT EXISTS");
 
 		// Create properties
-		http.command("sql", "CREATE PROPERTY UserFeedback.id IF NOT EXISTS STRING");
-		http.command("sql", "CREATE PROPERTY UserFeedback.applicationArea IF NOT EXISTS STRING");
-		http.command("sql", "CREATE PROPERTY UserFeedback.empowerTenantId IF NOT EXISTS STRING");
-		http.command("sql", "CREATE PROPERTY UserFeedback.empowerType IF NOT EXISTS STRING");
-		http.command("sql", "CREATE PROPERTY UserFeedback.feedback IF NOT EXISTS STRING");
-		http.command("sql", "CREATE PROPERTY UserFeedback.timestamp IF NOT EXISTS DATETIME");
-		http.command("sql", "CREATE PROPERTY UserFeedback.image IF NOT EXISTS EMBEDDED");
+		http.command("sqlscript", "CREATE PROPERTY UserFeedback.id IF NOT EXISTS STRING");
+		http.command("sqlscript", "CREATE PROPERTY UserFeedback.applicationArea IF NOT EXISTS STRING");
+		http.command("sqlscript", "CREATE PROPERTY UserFeedback.empowerTenantId IF NOT EXISTS STRING");
+		http.command("sqlscript", "CREATE PROPERTY UserFeedback.empowerType IF NOT EXISTS STRING");
+		http.command("sqlscript", "CREATE PROPERTY UserFeedback.feedback IF NOT EXISTS STRING");
+		http.command("sqlscript", "CREATE PROPERTY UserFeedback.timestamp IF NOT EXISTS DATETIME");
+		http.command("sqlscript", "CREATE PROPERTY UserFeedback.image IF NOT EXISTS EMBEDDED");
 		
 		// Create index
-		http.command("sql", "CREATE INDEX IF NOT EXISTS ON UserFeedback (id) UNIQUE");
+		http.command("sqlscript", "CREATE INDEX IF NOT EXISTS ON UserFeedback (id) UNIQUE");
 	}
 
 	// ------------------------------------------------------
 	// Schema prep - gRPC
 	// ------------------------------------------------------
 	private static void prepareSchemaGRPC(RemoteGrpcDatabase grpc) {
+		
 		// Create vertex type
-		grpc.executeCommand(DB_NAME, "CREATE VERTEX TYPE UserFeedback IF NOT EXISTS", Map.of(), "sql", false, 0, null, 60_000);
+		grpc.executeCommand("sqlscript", "CREATE VERTEX TYPE UserFeedback IF NOT EXISTS", Map.of(), false, 0, null, 60_000);
 
 		// Create properties
-		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.id IF NOT EXISTS STRING", Map.of(), "sql", false, 0, null, 60_000);
-		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.applicationArea IF NOT EXISTS STRING", Map.of(), "sql", false, 0, null, 60_000);
-		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.empowerTenantId IF NOT EXISTS STRING", Map.of(), "sql", false, 0, null, 60_000);
-		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.empowerType IF NOT EXISTS STRING", Map.of(), "sql", false, 0, null, 60_000);
-		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.feedback IF NOT EXISTS STRING", Map.of(), "sql", false, 0, null, 60_000);
-		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.timestamp IF NOT EXISTS DATETIME", Map.of(), "sql", false, 0, null, 60_000);
-		grpc.executeCommand(DB_NAME, "CREATE PROPERTY UserFeedback.image IF NOT EXISTS EMBEDDED", Map.of(), "sql", false, 0, null, 60_000);
+		grpc.executeCommand("sqlscript", "CREATE PROPERTY UserFeedback.id IF NOT EXISTS STRING", Map.of(), false, 0, null, 60_000);
+		grpc.executeCommand("sqlscript", "CREATE PROPERTY UserFeedback.applicationArea IF NOT EXISTS STRING", Map.of(), false, 0, null, 60_000);
+		grpc.executeCommand("sqlscript", "CREATE PROPERTY UserFeedback.empowerTenantId IF NOT EXISTS STRING", Map.of(), false, 0, null, 60_000);
+		grpc.executeCommand("sqlscript", "CREATE PROPERTY UserFeedback.empowerType IF NOT EXISTS STRING", Map.of(), false, 0, null, 60_000);
+		grpc.executeCommand("sqlscript", "CREATE PROPERTY UserFeedback.feedback IF NOT EXISTS STRING", Map.of(), false, 0, null, 60_000);
+		grpc.executeCommand("sqlscript", "CREATE PROPERTY UserFeedback.timestamp IF NOT EXISTS DATETIME", Map.of(), false, 0, null, 60_000);
+		grpc.executeCommand("sqlscript", "CREATE PROPERTY UserFeedback.image IF NOT EXISTS EMBEDDED", Map.of(),  false, 0, null, 60_000);
 		
 		// Create index
-		grpc.executeCommand(DB_NAME, "CREATE INDEX IF NOT EXISTS ON UserFeedback (id) UNIQUE", Map.of(), "sql", false, 0, null, 60_000);
+		grpc.executeCommand("sqlscript", "CREATE INDEX IF NOT EXISTS ON UserFeedback (id) UNIQUE", Map.of(), false, 0, null, 60_000);
 	}
 
 	private static void cleanupHTTP(RemoteDatabase http) {
@@ -211,7 +221,7 @@ public class ArcadeDbHTTPTvsGRPCBench {
 	}
 
 	private static void cleanupGRPC(RemoteGrpcDatabase grpc) {
-		grpc.executeCommand(DB_NAME, "DELETE FROM UserFeedback", Map.of(), "sql", false, 0, null, 60_000);
+		grpc.executeCommand("sql", "DELETE FROM UserFeedback", Map.of(), false, 0, null, 60_000);
 	}
 
 	// ------------------------------------------------------
