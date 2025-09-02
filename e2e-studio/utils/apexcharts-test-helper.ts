@@ -3,7 +3,7 @@ import { Page, Locator, expect } from '@playwright/test';
 /**
  * Specialized helper class for testing ApexCharts functionality
  * in the ArcadeDB Studio server monitoring interface.
- * 
+ *
  * Provides utilities for testing chart rendering, interactions,
  * performance, and compatibility during the v3.54.1 -> v5.3.4 upgrade.
  */
@@ -38,10 +38,10 @@ export class ApexChartsTestHelper {
    */
   async navigateToServerAndWaitForCharts(): Promise<void> {
     console.log('Navigating to ArcadeDB Studio server monitoring...');
-    
+
     // Navigate to the Studio using dynamic baseURL
     await this.page.goto('/');
-    
+
     // Wait for login dialog to appear
     await expect(this.page.getByRole('dialog', { name: 'Login to the server' })).toBeVisible();
 
@@ -54,17 +54,17 @@ export class ApexChartsTestHelper {
 
     // Wait for login dialog to disappear
     await expect(this.page.getByRole('dialog', { name: 'Login to the server' })).toBeHidden({ timeout: 10000 });
-    
+
     // Wait for the main interface to load
     await expect(this.page.getByText('Connected as').first()).toBeVisible({ timeout: 10000 });
-    
+
     // Navigate to Server monitoring tab using the specific selector
     await this.page.click('#tab-server-sel');
     await this.page.waitForTimeout(3000);
-    
+
     // Wait for all server monitoring charts to be present
     await this.waitForAllChartsReady();
-    
+
     console.log('✓ Successfully navigated to server monitoring with charts loaded');
   }
 
@@ -73,7 +73,7 @@ export class ApexChartsTestHelper {
    */
   async waitForAllChartsReady(timeoutMs: number = 15000): Promise<void> {
     console.log('Waiting for all ApexCharts to be ready...');
-    
+
     const chartIds = [
       'serverChartCommands',
       'serverChartOSCPU',
@@ -90,7 +90,7 @@ export class ApexChartsTestHelper {
 
     // Wait for ApexCharts canvas elements to be present
     for (const chartId of chartIds) {
-      await this.page.waitForSelector(`#${chartId} .apexcharts-canvas`, { 
+      await this.page.waitForSelector(`#${chartId} .apexcharts-canvas`, {
         timeout: timeoutMs,
         state: 'attached'
       });
@@ -98,7 +98,7 @@ export class ApexChartsTestHelper {
 
     // Additional wait for chart rendering to complete
     await this.page.waitForTimeout(2000);
-    
+
     console.log('✓ All 6 ApexCharts are ready');
   }
 
@@ -107,7 +107,7 @@ export class ApexChartsTestHelper {
    */
   async getChartMetrics(chartLocator: Locator): Promise<ChartMetrics> {
     const chartId = await chartLocator.getAttribute('id') || 'unknown';
-    
+
     const metrics: ChartMetrics = {
       chartId,
       isVisible: await chartLocator.isVisible(),
@@ -229,7 +229,7 @@ export class ApexChartsTestHelper {
       // Check for pie slices (specific to donut/pie charts)
       const pieSlices = chartLocator.locator('.apexcharts-pie-slice');
       const sliceCount = await pieSlices.count();
-      
+
       if (sliceCount === 0) {
         console.log('No pie slices found in donut chart');
         return false;
@@ -258,7 +258,7 @@ export class ApexChartsTestHelper {
       const resizedMetrics = await this.getChartMetrics(chartLocator);
 
       // Verify chart is still visible and dimensions changed appropriately
-      const resizedCorrectly = resizedMetrics.isVisible && 
+      const resizedCorrectly = resizedMetrics.isVisible &&
                               resizedMetrics.hasApexchartsCanvas &&
                               (resizedMetrics.width !== initialMetrics.width ||
                                resizedMetrics.height !== initialMetrics.height);
@@ -279,17 +279,17 @@ export class ApexChartsTestHelper {
    */
   async measureChartRenderTime(chartLocator: Locator): Promise<number> {
     const startTime = Date.now();
-    
+
     try {
       // Wait for chart to be visible
       await expect(chartLocator).toBeVisible({ timeout: 10000 });
-      
+
       // Wait for ApexCharts canvas to be present
       await expect(chartLocator.locator('.apexcharts-canvas')).toBeVisible({ timeout: 10000 });
-      
+
       // Additional wait for rendering completion
       await this.page.waitForTimeout(500);
-      
+
     } catch (error) {
       console.log(`Chart render measurement failed: ${error}`);
       return -1;
@@ -303,11 +303,11 @@ export class ApexChartsTestHelper {
    */
   async assertChartPerformance(chartLocator: Locator, maxRenderTimeMs: number = 2000): Promise<void> {
     const renderTime = await this.measureChartRenderTime(chartLocator);
-    
+
     if (renderTime === -1) {
       throw new Error('Chart failed to render');
     }
-    
+
     if (renderTime > maxRenderTimeMs) {
       throw new Error(`Chart render time ${renderTime}ms exceeds maximum ${maxRenderTimeMs}ms`);
     }
@@ -409,11 +409,11 @@ export class ApexChartsTestHelper {
   async verifyChartAccessibility(chartLocator: Locator): Promise<boolean> {
     try {
       const svg = chartLocator.locator('.apexcharts-svg');
-      
+
       // Check for ARIA attributes
       const role = await svg.getAttribute('role');
       const ariaLabel = await svg.getAttribute('aria-label');
-      
+
       // ApexCharts should have proper accessibility attributes
       return role !== null || ariaLabel !== null;
     } catch (error) {
@@ -428,7 +428,7 @@ export class ApexChartsTestHelper {
   async waitForAnimationsComplete(timeoutMs: number = 3000): Promise<void> {
     // Wait for CSS animations to complete
     await this.page.waitForTimeout(1000);
-    
+
     // Check if animations are still running
     const animationsRunning = await this.page.evaluate(() => {
       const elements = document.querySelectorAll('.apexcharts-canvas *');
