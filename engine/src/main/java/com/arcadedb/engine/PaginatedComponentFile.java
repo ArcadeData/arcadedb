@@ -75,18 +75,29 @@ public class PaginatedComponentFile extends ComponentFile {
     close();
     LogManager.instance().log(this, Level.FINE, "Renaming file %s (id=%d) to %s...", null, filePath, fileId, newFileName);
 
-    final String newFilePath =
-        newFileName + osFile.getName().substring(osFile.getName().indexOf("_"));
-
-    final File newFile = new File(osFile.getParentFile(), newFilePath);
+    final File newFile;
+    if (newFileName.contains(File.separator) || (File.separatorChar != '/' && newFileName.contains("/"))) {
+      // newFileName is an absolute path (e.g., from removeTempSuffix)
+      newFile = new File(newFileName);
+    } else if (newFileName.contains(".") && newFileName.contains("_")) {
+      // newFileName is already a complete filename, but not an absolute path
+      newFile = new File(osFile.getParentFile(), newFileName);
+    } else {
+      // newFileName is a component name, append the suffix from original file
+      final int suffixStart = osFile.getName().indexOf("_");
+      if (suffixStart < 0)
+        throw new IOException("Original file name '" + osFile.getName() + "' does not contain '_' to extract suffix");
+      final String newFilePath = newFileName + osFile.getName().substring(suffixStart);
+      newFile = new File(osFile.getParentFile(), newFilePath);
+    }
     try {
-      java.nio.file.Files.move(new File(osFile.getParentFile(), osFile.getName()).getAbsoluteFile().toPath(),
+      java.nio.file.Files.move(osFile.getAbsoluteFile().toPath(),
           newFile.getAbsoluteFile().toPath(),
           java.nio.file.StandardCopyOption.ATOMIC_MOVE);
       open(newFile.getAbsolutePath(), mode);
     } catch (Exception e) {
       open(filePath, mode);
-      throw new IOException("Error renaming file " + filePath + " to " + newFilePath, e);
+      throw new IOException("Error renaming file " + filePath + " to " + newFile.getAbsolutePath(), e);
     }
   }
 
