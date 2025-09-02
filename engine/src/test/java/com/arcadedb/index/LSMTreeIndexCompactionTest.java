@@ -135,18 +135,30 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
 
   private void insertData() {
     database.transaction(() -> {
-      if (!database.getSchema().existsType(TYPE_NAME)) {
-        final DocumentType v = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(PARALLEL).create();
+      Schema schema = database.getSchema();
+      if (!schema.existsType(TYPE_NAME)) {
+        final DocumentType v = schema.buildDocumentType().withName(TYPE_NAME).withTotalBuckets(PARALLEL).create();
 
         v.createProperty("id", String.class);
         v.createProperty("number", Integer.class);
         v.createProperty("relativeName", String.class);
-
         v.createProperty("Name", String.class);
 
-        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "id" }, INDEX_PAGE_SIZE);
-        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "number" }, INDEX_PAGE_SIZE);
-        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "relativeName" }, INDEX_PAGE_SIZE);
+        schema.buildTypeIndex(TYPE_NAME,new String[] { "id" })
+            .withType( Schema.INDEX_TYPE.LSM_TREE)
+            .withUnique(false)
+            .withPageSize(INDEX_PAGE_SIZE)
+            .create();
+        schema.buildTypeIndex(TYPE_NAME,new String[] { "number" })
+            .withType( Schema.INDEX_TYPE.LSM_TREE)
+            .withUnique(false)
+            .withPageSize(INDEX_PAGE_SIZE)
+            .create();
+        schema.buildTypeIndex(TYPE_NAME,new String[] { "relativeName" })
+            .withType( Schema.INDEX_TYPE.LSM_TREE)
+            .withUnique(false)
+            .withPageSize(INDEX_PAGE_SIZE)
+            .create();
       }
     });
 
