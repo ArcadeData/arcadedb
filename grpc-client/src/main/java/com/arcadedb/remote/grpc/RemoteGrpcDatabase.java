@@ -300,37 +300,6 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		}
 	}
 
-	@Override
-	public Record lookupByRID(final RID rid, final boolean loadContent) {
-
-		checkDatabaseIsOpen();
-
-		stats.readRecord.incrementAndGet();
-
-		if (rid == null)
-			throw new IllegalArgumentException("Record is null");
-
-		LookupByRidRequest request = LookupByRidRequest.newBuilder().setDatabase(getName()).setRid(rid.toString())
-				.setCredentials(buildCredentials()).build();
-
-		try {
-
-			LookupByRidResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).lookupByRid(request);
-
-			if (!response.getFound()) {
-				throw new RecordNotFoundException("Record " + rid + " not found", rid);
-			}
-			return grpcRecordToRecord(response.getRecord());
-		}
-		catch (StatusRuntimeException e) {
-			handleGrpcException(e);
-			return null;
-		}
-		catch (StatusException e) {
-			handleGrpcException(e);
-			return null;
-		}
-	}
 
 	@Override
 	public void deleteRecord(final Record record) {
@@ -754,7 +723,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			public Record next() {
 				if (!hasNext())
 					throw new NoSuchElementException();
-				return grpcRecordToRecord(currentBatch.next());
+				return grpcRecordToDBRecord(currentBatch.next());
 			}
 		};
 	}
@@ -813,7 +782,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			public Record next() {
 				if (!hasNext())
 					throw new NoSuchElementException();
-				return grpcRecordToRecord(currentBatch.next());
+				return grpcRecordToDBRecord(currentBatch.next());
 			}
 		};
 	}
@@ -894,7 +863,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 						List<Record> converted = new ArrayList<>(qr.getRecordsCount());
 						for (com.arcadedb.server.grpc.Record gr : qr.getRecordsList()) {
-							converted.add(grpcRecordToRecord(gr));
+							converted.add(grpcRecordToDBRecord(gr));
 						}
 
 						nextBatch = new QueryBatch(converted, n, qr.getRunningTotalEmitted(), qr.getIsLastBatch());
@@ -1015,7 +984,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 					qr = respIter.read();
 					List<Record> converted = new ArrayList<>(qr.getRecordsCount());
 					for (com.arcadedb.server.grpc.Record gr : qr.getRecordsList()) {
-						converted.add(grpcRecordToRecord(gr));
+						converted.add(grpcRecordToDBRecord(gr));
 					}
 
 					return new QueryBatch(converted, qr.getTotalRecordsInBatch(), // int totalInBatch
@@ -1080,7 +1049,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		
 		// Build the Update request (use setRecord(...) for full replace instead)
 		com.arcadedb.server.grpc.UpdateRecordRequest req = com.arcadedb.server.grpc.UpdateRecordRequest.newBuilder().setDatabase(getName())
-				.setRid(rid).setRecord(record) // <<<< oneof {record|partial}
+				.setRid(rid).setRecord(record) 
+				.setTransaction(TransactionContext.newBuilder().setBegin(true).setCommit(true))
 				.setCredentials(buildCredentials()).build();
 
 		// Call RPC
@@ -1154,7 +1124,39 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	public Record lookupByRID(final RID rid) {
 		return lookupByRID(rid, true);
 	}
+	
+	@Override
+	public Record lookupByRID(final RID rid, final boolean loadContent) {
 
+		checkDatabaseIsOpen();
+
+		stats.readRecord.incrementAndGet();
+
+		if (rid == null)
+			throw new IllegalArgumentException("Record is null");
+
+		LookupByRidRequest request = LookupByRidRequest.newBuilder().setDatabase(getName()).setRid(rid.toString())
+				.setCredentials(buildCredentials()).build();
+
+		try {
+
+			LookupByRidResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).lookupByRid(request);
+
+			if (!response.getFound()) {
+				throw new RecordNotFoundException("Record " + rid + " not found", rid);
+			}
+			return grpcRecordToDBRecord(response.getRecord());
+		}
+		catch (StatusRuntimeException e) {
+			handleGrpcException(e);
+			return null;
+		}
+		catch (StatusException e) {
+			handleGrpcException(e);
+			return null;
+		}
+	}
+	
 	@Override
 	public boolean existsRecord(RID rid) {
 		stats.existsRecord.incrementAndGet();
@@ -1791,7 +1793,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 				if (!hasNext()) {
 					throw new NoSuchElementException();
 				}
-				return grpcRecordToRecord(currentBatch.next());
+				return grpcRecordToDBRecord(currentBatch.next());
 			}
 		};
 	}
@@ -1807,7 +1809,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	}
 
 	private Result grpcRecordToResult(com.arcadedb.server.grpc.Record grpcRecord) {
-		Record record = grpcRecordToRecord(grpcRecord);
+		Record record = grpcRecordToDBRecord(grpcRecord);
 		if (record == null) {
 			Map<String, Object> properties = new HashMap<>();
 			grpcRecord.getPropertiesMap().forEach((k, v) -> properties.put(k, valueToObject(v)));
@@ -1816,7 +1818,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		return new ResultInternal(record);
 	}
 
-	private Record grpcRecordToRecord(com.arcadedb.server.grpc.Record grpcRecord) {
+	private Record grpcRecordToDBRecord(com.arcadedb.server.grpc.Record grpcRecord) {
 		Map<String, Object> map = new HashMap<>();
 
 		// Convert properties
@@ -1877,7 +1879,15 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		Map<String, Value> protoParams = new HashMap<>();
 		
 		for (Map.Entry<String, Object> entry : params.entrySet()) {
-			protoParams.put(entry.getKey(), objectToValue(entry.getValue()));
+			
+			Value value = objectToValue(entry.getValue());
+			
+			if (value != null) {
+				
+				System.out.println("Converting object to Value: " + entry.getKey() + " " + entry.getValue().getClass() + " -> " + value.hasStructValue());
+            }
+			
+			protoParams.put(entry.getKey(), value);
 		}
 		
 		return protoParams;
