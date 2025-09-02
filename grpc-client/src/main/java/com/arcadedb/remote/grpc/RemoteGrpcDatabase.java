@@ -1882,10 +1882,10 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			
 			Value value = objectToValue(entry.getValue());
 			
-			if (value != null) {
-				
-				System.out.println("Converting object to Value: " + entry.getKey() + " " + entry.getValue().getClass() + " -> " + value.hasStructValue());
-            }
+//			if (value != null) {
+//				
+//				System.out.println("Converting object to Value: " + entry.getKey() + " " + entry.getValue().getClass() + " -> " + value.hasStructValue());
+//            }
 			
 			protoParams.put(entry.getKey(), value);
 		}

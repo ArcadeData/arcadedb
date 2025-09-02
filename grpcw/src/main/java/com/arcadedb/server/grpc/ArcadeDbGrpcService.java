@@ -241,7 +241,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				com.arcadedb.graph.MutableVertex v = db.newVertex(cls);
 
 				// apply properties with proper coercion
-				props.forEach((k, val) -> v.set(k, toJavaForProperty(db, dt, k, val)));
+				props.forEach((k, val) -> v.set(k, toJavaForProperty(db, v, dt, k, val)));
 
 				v.save();
 
@@ -282,7 +282,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				// apply remaining properties (skip endpoints)
 				props.forEach((k, val) -> {
 					if (!"out".equals(k) && !"in".equals(k)) {
-						e.set(k, toJavaForProperty(db, dt, k, val));
+						e.set(k, toJavaForProperty(db, e, dt, k, val));
 					}
 				});
 
@@ -300,7 +300,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 			// --- Document ---
 			MutableDocument d = db.newDocument(cls);
-			props.forEach((k, val) -> d.set(k, toJavaForProperty(db, dt, k, val)));
+			props.forEach((k, val) -> d.set(k, toJavaForProperty(db, d, dt, k, val)));
 			d.save();
 
 			CreateRecordResponse.Builder b = CreateRecordResponse.newBuilder();
@@ -356,7 +356,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 			// Begin transaction if requested
 			final boolean hasTx = req.hasTransaction();
+
 			final var tx = hasTx ? req.getTransaction() : null;
+
 			if (hasTx && tx.getBegin()) {
 				db.begin();
 				beganHere = true;
@@ -364,30 +366,78 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 			// Lookup the record by RID
 			var el = db.lookupByRID(new RID(ridStr), true);
+
 			if (el == null) {
 				resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + ridStr).asException());
 				return;
 			}
 
-			// Get mutable view for updates (works for docs, vertices, edges)
-			MutableDocument mdoc = (MutableDocument) el.asDocument(true).modify();
-
-			var dtype = db.getSchema().getType(mdoc.getTypeName());
-
 			final var dbRef = db;
+			
+			logger.debug("updateRecord(): el = {}; type = {}", el, el.getRecordType());
 
-			// Apply updates
+			if (el instanceof Vertex) {
 
-			final java.util.Map<String, com.google.protobuf.Value> props = req.hasRecord() ? req.getRecord().getPropertiesMap()
-					: req.hasPartial() ? req.getPartial().getPropertiesMap() : java.util.Collections.emptyMap();
+				logger.debug("updateRecord(): Processing Vertex ...");
 
-			// apply updates
-			props.forEach((k, v) -> mdoc.set(k, toJavaForProperty(dbRef, dtype, k, v)));
+				// Get mutable view for updates (works for docs, vertices, edges)
+				MutableVertex mvertex = (MutableVertex) el.asVertex(true).modify();
 
-			mdoc.save();
+				var dtype = db.getSchema().getType(mvertex.getTypeName());
+
+				// Apply updates
+
+				final java.util.Map<String, com.google.protobuf.Value> props = req.hasRecord() ? req.getRecord().getPropertiesMap()
+						: req.hasPartial() ? req.getPartial().getPropertiesMap() : java.util.Collections.emptyMap();
+
+				// Exclude ArcadeDB system fields during update
+				
+				props.forEach((k, v) -> {
+				    String key = k.trim().toLowerCase();
+				    if (key.equals("@rid") || key.equals("@type") || key.equals("@cat")) {
+				        // Skip internal fields to prevent accidental overwrites
+				        logger.debug("Skipping internal field during update: {}", k);
+				        return;
+				    }
+				    // Perform the update for user-defined fields
+				    mvertex.set(k, toJavaForProperty(dbRef, mvertex, dtype, k, v));
+				});
+				
+				mvertex.save();
+			}
+			else if (el instanceof Document) {
+
+				logger.debug("updateRecord(): Processing Document ...");
+
+				// Get mutable view for updates (works for docs, vertices, edges)
+				MutableDocument mdoc = (MutableDocument) el.asDocument(true).modify();
+
+				var dtype = db.getSchema().getType(mdoc.getTypeName());
+
+				// Apply updates
+
+				final java.util.Map<String, com.google.protobuf.Value> props = req.hasRecord() ? req.getRecord().getPropertiesMap()
+						: req.hasPartial() ? req.getPartial().getPropertiesMap() : java.util.Collections.emptyMap();
+
+				// Exclude ArcadeDB system fields during update
+				
+				props.forEach((k, v) -> {
+				    String key = k.trim().toLowerCase();
+				    if (key.equals("@rid") || key.equals("@type") || key.equals("@cat")) {
+				        // Skip internal fields to prevent accidental overwrites
+				        logger.debug("Skipping internal field during update: {}", k);
+				        return;
+				    }
+				    // Perform the update for user-defined fields
+				    mdoc.set(k, toJavaForProperty(dbRef, mdoc, dtype, k, v));
+				});
+
+				mdoc.save();
+			}
 
 			// Commit/rollback with proper precedence
 			if (hasTx) {
+
 				if (tx.getRollback()) {
 					db.rollback();
 				}
@@ -400,10 +450,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			}
 
 			resp.onNext(UpdateRecordResponse.newBuilder().setUpdated(true).setSuccess(true).build());
-			resp.onCompleted();
 
+			resp.onCompleted();
 		}
 		catch (Exception e) {
+
+			logger.error("ERROR in updateRecord", e);
+
 			try {
 				if (beganHere && db != null)
 					db.rollback();
@@ -411,6 +464,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			catch (Exception ignore) {
 				// ignore rollback errors
 			}
+
 			resp.onError(Status.INTERNAL.withDescription("UpdateRecord: " + e.getMessage()).asException());
 		}
 	}
@@ -1229,9 +1283,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	}
 
 	private boolean tryUpsertVertex(final InsertContext ctx, final com.arcadedb.graph.MutableVertex incoming) {
-		
+
 		var keys = ctx.keyCols;
-		
+
 		if (keys.isEmpty())
 			return false;
 
@@ -1253,16 +1307,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				return false;
 
 			Vertex v = res.getElement().get().asVertex();
-			
+
 			MutableVertex existingV = v.modify();
 
 			// Apply the updates
+
 			for (String col : ctx.updateCols) {
 				existingV.set(col, inDoc.get(col));
 			}
-			
+
 			existingV.save();
-			
+
 			return true;
 		}
 	}
@@ -1276,13 +1331,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 		String where = String.join(" AND ", keys.stream().map(k -> k + " = ?").toList());
 		Object[] params = keys.stream().map(incoming::get).toArray();
-		
+
 		try (ResultSet rs = ctx.db.query("sql", "SELECT FROM " + ctx.opts.getTargetClass() + " WHERE " + where, params)) {
-	       
+
 			if (!rs.hasNext()) {
-	            return false;
-	        }
-			
+				return false;
+			}
+
 			var res = rs.next();
 			if (!res.isElement())
 				return false;
@@ -1291,13 +1346,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 			var existing = d.modify();
 
-			for (String col : ctx.updateCols)
+			// Apply the updates
+
+			for (String col : ctx.updateCols) {
 				existing.set(col, incoming.get(col));
+			}
 
 			existing.save();
 
 			return true;
-	    }
+		}
 	}
 
 	// ---------- Core insert plumbing ----------
@@ -1868,11 +1926,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			builder.setType(doc.getTypeName());
 
 			// Convert properties
-			Set<String> properties = doc.getPropertyNames();
-			for (String property : properties) {
-				Object value = doc.get(property);
+			Set<String> propertyNames = doc.getPropertyNames();
+			for (String propertyName : propertyNames) {
+				Object value = doc.get(propertyName);
 				if (value != null) {
-					builder.putProperties(property, convertToProtobufValue(value));
+					builder.putProperties(propertyName, convertToProtobufValue(propertyName, value));
 				}
 			}
 		}
@@ -1881,11 +1939,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			builder.setType(vertex.getTypeName());
 
 			// Convert properties
-			Set<String> properties = vertex.getPropertyNames();
-			for (String property : properties) {
-				Object value = vertex.get(property);
+			Set<String> propertyNames = vertex.getPropertyNames();
+			for (String propertyName : propertyNames) {
+				Object value = vertex.get(propertyName);
 				if (value != null) {
-					builder.putProperties(property, convertToProtobufValue(value));
+					builder.putProperties(propertyName, convertToProtobufValue(propertyName, value));
 				}
 			}
 		}
@@ -1894,11 +1952,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			builder.setType(edge.getTypeName());
 
 			// Convert properties
-			Set<String> properties = edge.getPropertyNames();
-			for (String property : properties) {
-				Object value = edge.get(property);
+			Set<String> propertyNames = edge.getPropertyNames();
+			for (String propertyName : propertyNames) {
+				Object value = edge.get(propertyName);
 				if (value != null) {
-					builder.putProperties(property, convertToProtobufValue(value));
+					builder.putProperties(propertyName, convertToProtobufValue(propertyName, value));
 				}
 			}
 		}
@@ -1906,84 +1964,294 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 		return builder.build();
 	}
 
-	private Value convertToProtobufValue(Object value) {
-		if (value == null) {
-			return Value.newBuilder().setNullValue(com.google.protobuf.NullValue.NULL_VALUE).build();
-		}
-		else if (value instanceof Boolean) {
-			return Value.newBuilder().setBoolValue((Boolean) value).build();
-		}
-		else if (value instanceof Number) {
-			return Value.newBuilder().setNumberValue(((Number) value).doubleValue()).build();
-		}
-		else if (value instanceof String) {
-			return Value.newBuilder().setStringValue((String) value).build();
-		}
-		else {
-			// For complex objects, convert to string
-			return Value.newBuilder().setStringValue(value.toString()).build();
-		}
+	private Value convertToProtobufValue(String propName, Object value) {
+
+		// logger.debug("convertToProtobufValue(): propName = {}, value.class = {}",
+		// propName, value.getClass());
+
+		return toProtoValue(value);
 	}
 
-	// Proto Value builder from Java (mirror of toJava)
 	private com.google.protobuf.Value toProtoValue(Object o) {
-		com.google.protobuf.Value.Builder b = com.google.protobuf.Value.newBuilder();
 		if (o == null)
-			return b.setNullValue(com.google.protobuf.NullValue.NULL_VALUE).build();
+			return com.google.protobuf.Value.newBuilder().setNullValue(com.google.protobuf.NullValue.NULL_VALUE).build();
+
 		if (o instanceof String s)
-			return b.setStringValue(s).build();
+			return com.google.protobuf.Value.newBuilder().setStringValue(s).build();
+		if (o instanceof Boolean b)
+			return com.google.protobuf.Value.newBuilder().setBoolValue(b).build();
 		if (o instanceof Number n)
-			return b.setNumberValue(n.doubleValue()).build();
-		if (o instanceof Boolean bo)
-			return b.setBoolValue(bo).build();
+			return com.google.protobuf.Value.newBuilder().setNumberValue(n.doubleValue()).build();
+
+		if (o instanceof java.math.BigDecimal bd)
+			return com.google.protobuf.Value.newBuilder().setStringValue(bd.toPlainString()).build();
+
+		if (o instanceof byte[] bytes)
+			return com.google.protobuf.Value.newBuilder().setStringValue(java.util.Base64.getEncoder().encodeToString(bytes)).build();
+
+		// Date/Time → ISO-8601
+		if (o instanceof java.util.Date d)
+			return com.google.protobuf.Value.newBuilder().setStringValue(d.toInstant().toString()).build();
+		if (o instanceof java.time.Instant inst)
+			return com.google.protobuf.Value.newBuilder().setStringValue(inst.toString()).build();
+		if (o instanceof java.time.LocalDate ld)
+			return com.google.protobuf.Value.newBuilder().setStringValue(ld.toString()).build();
+		if (o instanceof java.time.LocalDateTime ldt)
+			return com.google.protobuf.Value.newBuilder().setStringValue(ldt.toString()).build();
+
+		// Embedded docs (mutable/immutable)
+		if (o instanceof com.arcadedb.database.Document doc) {
+			var sb = com.google.protobuf.Struct.newBuilder();
+			for (String k : doc.getPropertyNames()) {
+				sb.putFields(k, toProtoValue(doc.get(k)));
+			}
+			return com.google.protobuf.Value.newBuilder().setStructValue(sb).build();
+		}
+
 		if (o instanceof java.util.Map<?, ?> m) {
 			var sb = com.google.protobuf.Struct.newBuilder();
 			m.forEach((k, v) -> sb.putFields(String.valueOf(k), toProtoValue(v)));
 			return com.google.protobuf.Value.newBuilder().setStructValue(sb).build();
 		}
-		if (o instanceof java.util.List<?> list) {
+
+		if (o instanceof java.util.Collection<?> c) {
 			var lb = com.google.protobuf.ListValue.newBuilder();
-			list.forEach(v -> lb.addValues(toProtoValue(v)));
+			c.forEach(v -> lb.addValues(toProtoValue(v)));
 			return com.google.protobuf.Value.newBuilder().setListValue(lb).build();
 		}
-		return b.setStringValue(String.valueOf(o)).build();
+
+		if (o.getClass().isArray()) {
+			int len = java.lang.reflect.Array.getLength(o);
+			var lb = com.google.protobuf.ListValue.newBuilder();
+			for (int i = 0; i < len; i++) {
+				lb.addValues(toProtoValue(java.lang.reflect.Array.get(o, i)));
+			}
+			return com.google.protobuf.Value.newBuilder().setListValue(lb).build();
+		}
+
+		// RID or Identifiable → string rid
+		if (o instanceof com.arcadedb.database.Identifiable id)
+			return com.google.protobuf.Value.newBuilder().setStringValue(id.getIdentity().toString()).build();
+		if (o instanceof com.arcadedb.database.RID rid)
+			return com.google.protobuf.Value.newBuilder().setStringValue(rid.toString()).build();
+
+		// Fallback
+		return com.google.protobuf.Value.newBuilder().setStringValue(String.valueOf(o)).build();
+	}
+
+	private com.arcadedb.server.grpc.Record toProtoRecordFromDbRecord(com.arcadedb.database.Record rec) {
+		var doc = rec.asDocument(); // read-only view if not a document
+		var b = com.arcadedb.server.grpc.Record.newBuilder().setRid(rec.getIdentity() != null ? rec.getIdentity().toString() : "")
+				.setType(doc != null ? doc.getTypeName() : "");
+		if (doc != null) {
+			for (String name : doc.getPropertyNames()) {
+				b.putProperties(name, toProtoValue(doc.get(name)));
+			}
+		}
+		return b.build();
 	}
 
 	// Apply properties from proto Record to a document/vertex/edge, schema-aware
 	// for EMBEDDED
 	private void applyGrpcRecord(MutableDocument d, com.arcadedb.server.grpc.Record r, Database db, String targetClass) {
 		DocumentType dt = db.getSchema().getType(targetClass);
-		r.getPropertiesMap().forEach((k, val) -> d.set(k, toJavaForProperty(db, dt, k, val)));
+		r.getPropertiesMap().forEach((k, val) -> d.set(k, toJavaForProperty(db, d, dt, k, val)));
 	}
 
 	private void applyGrpcRecord(MutableVertex v, com.arcadedb.server.grpc.Record r, Database db) {
 		DocumentType dt = db.getSchema().getType(v.getTypeName());
-		r.getPropertiesMap().forEach((k, val) -> v.set(k, toJavaForProperty(db, dt, k, val)));
+		r.getPropertiesMap().forEach((k, val) -> v.set(k, toJavaForProperty(db, v, dt, k, val)));
 	}
 
 	private void applyGrpcRecord(MutableEdge e, com.arcadedb.server.grpc.Record r, Database db, String edgeClass) {
 		DocumentType dt = db.getSchema().getType(edgeClass);
-		r.getPropertiesMap().forEach((k, val) -> e.set(k, toJavaForProperty(db, dt, k, val)));
+		r.getPropertiesMap().forEach((k, val) -> e.set(k, toJavaForProperty(db, e, dt, k, val)));
 	}
 
-	// If property type is EMBEDDED and client sent a Struct/Map, create embedded
-	// document
-	private Object toJavaForProperty(Database db, DocumentType dt, String key, com.google.protobuf.Value v) {
-
-		var p = (dt != null) ? dt.getPropertyIfExists(key) : null;
-
-		if (p != null && p.getType() == com.arcadedb.schema.Type.EMBEDDED && v.hasStructValue()) {
-			MutableDocument emb = db.newDocument(dt.getName());
-			v.getStructValue().getFieldsMap().forEach((k2, vv) -> emb.set(k2, toJava(vv)));
-			return emb;
+	// Generic fallback (schema-agnostic) for nested values
+	private Object toJavaLoose(com.google.protobuf.Value v) {
+		return switch (v.getKindCase()) {
+		case NULL_VALUE -> null;
+		case STRING_VALUE -> v.getStringValue();
+		case NUMBER_VALUE -> v.getNumberValue();
+		case BOOL_VALUE -> v.getBoolValue();
+		case LIST_VALUE -> v.getListValue().getValuesList().stream().map(this::toJavaLoose).toList();
+		case STRUCT_VALUE -> {
+			var m = new java.util.LinkedHashMap<String, Object>();
+			v.getStructValue().getFieldsMap().forEach((k, val) -> m.put(k, toJavaLoose(val)));
+			yield m;
 		}
-		return toJava(v);
+		case KIND_NOT_SET -> null;
+		};
 	}
 
+	private Object toJavaForProperty(final Database db, final com.arcadedb.database.MutableDocument parent, final com.arcadedb.schema.DocumentType dtype,
+			final String propName, final com.google.protobuf.Value v) {
+		
+		logger.debug("toJavaForProperty(): propName = {}, dtype = {}, v = {}", propName, dtype, v);
+		
+		com.arcadedb.schema.Property p = null;
+		
+		try {
+			
+			p = (dtype != null) ? dtype.getProperty(propName) : null;			
+		}
+		catch (com.arcadedb.exception.SchemaException schemaException) {
+			
+			//logger.warn("SchemaException: " + schemaException.getMessage());
+		}
+		
+		if (p == null)
+			return toJavaLoose(v);
+
+		final var prop = dtype != null ? dtype.getProperty(propName) : null;
+		final var t    = prop != null ? prop.getType() : null;
+
+		switch (t) {
+
+		case STRING:
+			return (v.getKindCase() == com.google.protobuf.Value.KindCase.STRING_VALUE) ? v.getStringValue() : String.valueOf(toJavaLoose(v));
+
+		case BOOLEAN:
+			return (v.getKindCase() == com.google.protobuf.Value.KindCase.BOOL_VALUE) ? v.getBoolValue()
+					: Boolean.valueOf(String.valueOf(toJavaLoose(v)));
+
+		case BYTE:
+			// treat as number 0..255 (or string), store as Byte
+			if (v.getKindCase() == com.google.protobuf.Value.KindCase.NUMBER_VALUE)
+				return (byte) ((int) v.getNumberValue());
+			if (v.getKindCase() == com.google.protobuf.Value.KindCase.STRING_VALUE)
+				return Byte.valueOf(v.getStringValue());
+			return (byte) 0;
+
+		case SHORT:
+			if (v.getKindCase() == com.google.protobuf.Value.KindCase.NUMBER_VALUE)
+				return (short) ((int) v.getNumberValue());
+			return Short.valueOf(String.valueOf(toJavaLoose(v)));
+
+		case INTEGER:
+			if (v.getKindCase() == com.google.protobuf.Value.KindCase.NUMBER_VALUE)
+				return (int) v.getNumberValue();
+			return Integer.valueOf(String.valueOf(toJavaLoose(v)));
+
+		case LONG:
+			if (v.getKindCase() == com.google.protobuf.Value.KindCase.NUMBER_VALUE)
+				return (long) v.getNumberValue();
+			return Long.valueOf(String.valueOf(toJavaLoose(v)));
+
+		case FLOAT:
+			if (v.getKindCase() == com.google.protobuf.Value.KindCase.NUMBER_VALUE)
+				return (float) v.getNumberValue();
+			return Float.valueOf(String.valueOf(toJavaLoose(v)));
+
+		case DOUBLE:
+			if (v.getKindCase() == com.google.protobuf.Value.KindCase.NUMBER_VALUE)
+				return v.getNumberValue();
+			return Double.valueOf(String.valueOf(toJavaLoose(v)));
+
+		case DECIMAL:
+			// use string to preserve precision
+			if (v.getKindCase() == com.google.protobuf.Value.KindCase.STRING_VALUE)
+				return new java.math.BigDecimal(v.getStringValue());
+			if (v.getKindCase() == com.google.protobuf.Value.KindCase.NUMBER_VALUE)
+				return java.math.BigDecimal.valueOf(v.getNumberValue());
+			return null;
+
+		case DATE:
+			// prefer ISO (yyyy-MM-dd). Accept epoch millis as number.
+			if (v.getKindCase() == com.google.protobuf.Value.KindCase.STRING_VALUE)
+				return java.sql.Date.valueOf(java.time.LocalDate.parse(v.getStringValue()));
+			if (v.getKindCase() == com.google.protobuf.Value.KindCase.NUMBER_VALUE)
+				return new java.util.Date((long) v.getNumberValue());
+			return null;
+
+		case DATETIME:
+		case DATETIME_MICROS:
+		case DATETIME_NANOS:
+		case DATETIME_SECOND:
+			if (v.getKindCase() == com.google.protobuf.Value.KindCase.STRING_VALUE) {
+				// ISO-8601 → Instant
+				java.time.Instant inst = java.time.Instant.parse(v.getStringValue());
+				return java.util.Date.from(inst);
+			}
+			if (v.getKindCase() == com.google.protobuf.Value.KindCase.NUMBER_VALUE) {
+				// epoch millis
+				return new java.util.Date((long) v.getNumberValue());
+			}
+			return null;
+
+		case BINARY:
+			// base64 string on the wire
+			if (v.getKindCase() == com.google.protobuf.Value.KindCase.STRING_VALUE)
+				return java.util.Base64.getDecoder().decode(v.getStringValue());
+			return null;
+
+		case MAP:
+			// Struct → Map (NOT a document)
+			if (v.getKindCase() != com.google.protobuf.Value.KindCase.STRUCT_VALUE)
+				return java.util.Map.of();
+			var mm = new java.util.LinkedHashMap<String, Object>();
+			v.getStructValue().getFieldsMap().forEach((k, val) -> mm.put(k, toJavaLoose(val)));
+			return mm;
+
+		case LIST:
+			if (v.getKindCase() != com.google.protobuf.Value.KindCase.LIST_VALUE)
+				return java.util.List.of();
+			return v.getListValue().getValuesList().stream().map(this::toJavaLoose).toList();
+
+		case EMBEDDED: {
+			
+		    // Must be a STRUCT in proto
+		    if (v.getKindCase() != com.google.protobuf.Value.KindCase.STRUCT_VALUE) {
+		      // choose policy (reject or coerce); rejecting is safer:
+		      throw new IllegalArgumentException("EMBEDDED property '" + propName + "' expects STRUCT");
+		    }
+		    
+		    String propTypeName = prop.getOfType();
+		    
+		    logger.debug("EMBEDDED: property '" + propName + "' expects STRUCT of type '" + propTypeName + "'. Received: " + v.getStructValue().getFieldsMap().keySet());
+
+		    DocumentType propType = db.getSchema().getType(propTypeName);
+		    
+		    // Guard: if someone mislinked a vertex/edge type here, fail loudly
+		    if (propType instanceof com.arcadedb.schema.VertexType || propType instanceof com.arcadedb.schema.EdgeType) {
+		      throw new IllegalArgumentException(
+		          "EMBEDDED property '" + propName + "' cannot link to non-document type: " + propType.getName());
+		    }
+
+		    // Create embedded from the parent. Passing null is allowed for “untyped” embedded docs.
+		    final com.arcadedb.database.MutableEmbeddedDocument ed = parent.newEmbeddedDocument(propTypeName, propName);
+
+		    // populate fields
+		    v.getStructValue().getFieldsMap().forEach((k, vv) -> ed.set(k, toJavaLoose(vv)));
+		    return ed;
+		}
+
+		case LINK: {
+			// Expect "#<cluster>:<pos>" in string; adjust if you send a struct instead
+			if (v.getKindCase() == com.google.protobuf.Value.KindCase.STRING_VALUE) {
+				return new com.arcadedb.database.RID(v.getStringValue());
+			}
+			return null;
+		}
+
+		// Collections of links/embedded/arrays → treat as list/map with toJavaLoose
+		case ARRAY_OF_SHORTS:
+		case ARRAY_OF_INTEGERS:
+		case ARRAY_OF_LONGS:
+		case ARRAY_OF_FLOATS:
+		case ARRAY_OF_DOUBLES:
+			return toJavaLoose(v);
+
+		default:
+			return toJavaLoose(v);
+		}
+	}
+	
 	private String generateTransactionId() {
 		return "tx_" + System.nanoTime();
 	}
-
+	
 	private long getUptime() {
 		// Implement uptime calculation
 		return System.currentTimeMillis();
