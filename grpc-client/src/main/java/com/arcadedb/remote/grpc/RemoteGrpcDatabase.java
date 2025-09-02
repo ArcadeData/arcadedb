@@ -34,6 +34,7 @@ import com.arcadedb.remote.RemoteImmutableEdge;
 import com.arcadedb.remote.RemoteImmutableVertex;
 import com.arcadedb.remote.RemoteSchema;
 import com.arcadedb.remote.RemoteTransactionExplicitLock;
+import com.arcadedb.remote.grpc.utils.ProtoUtils;
 import com.arcadedb.server.grpc.ArcadeDbServiceGrpc;
 import com.arcadedb.server.grpc.BeginTransactionRequest;
 import com.arcadedb.server.grpc.BeginTransactionResponse;
@@ -1062,10 +1063,21 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 	public boolean updateRecord(String rid, Map<String, Object> props, long timeoutMs) {
 
-		// Build the nested proto Record payload for a PATCH
 		com.arcadedb.server.grpc.Record record = com.arcadedb.server.grpc.Record.newBuilder().putAllProperties(convertParamsToProto(props))
 				.build();
 
+		return updateRecord(rid, record, timeoutMs);
+	}
+
+	public boolean updateRecord(String rid, Record dbRecord, long timeoutMs) {
+
+		com.arcadedb.server.grpc.Record record = ProtoUtils.toProtoRecord(dbRecord);
+
+		return updateRecord(rid, record, timeoutMs);
+	}
+
+	private boolean updateRecord(String rid, com.arcadedb.server.grpc.Record record, long timeoutMs) {
+		
 		// Build the Update request (use setRecord(...) for full replace instead)
 		com.arcadedb.server.grpc.UpdateRecordRequest req = com.arcadedb.server.grpc.UpdateRecordRequest.newBuilder().setDatabase(getName())
 				.setRid(rid).setRecord(record) // <<<< oneof {record|partial}
@@ -1087,7 +1099,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			throw new RuntimeException("Failed to update record", e);
 		}
 	}
-
+	
 	public boolean deleteRecord(String rid, long timeoutMs) {
 		var req = com.arcadedb.server.grpc.DeleteRecordRequest.newBuilder().setDatabase(getName()).setRid(rid).setCredentials(buildCredentials())
 				.build();
@@ -1861,15 +1873,20 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	}
 
 	private Map<String, Value> convertParamsToProto(Map<String, Object> params) {
+		
 		Map<String, Value> protoParams = new HashMap<>();
+		
 		for (Map.Entry<String, Object> entry : params.entrySet()) {
 			protoParams.put(entry.getKey(), objectToValue(entry.getValue()));
 		}
+		
 		return protoParams;
 	}
 
 	private Value objectToValue(Object obj) {
+		
 		Value.Builder builder = Value.newBuilder();
+		
 		if (obj == null) {
 			builder.setNullValue(com.google.protobuf.NullValue.NULL_VALUE);
 		}
