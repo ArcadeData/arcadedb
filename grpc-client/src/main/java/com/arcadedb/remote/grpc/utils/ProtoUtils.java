@@ -68,35 +68,36 @@ public class ProtoUtils {
     	if (value == null) {
             return Values.ofNull();
         }
-        if (value instanceof String s) {
+        
+    	if (value instanceof String s) {
             return Values.of(s);
         }
+        
         if (value instanceof Integer i) {
             return Values.of(i);
         }
+        
         if (value instanceof Long l) {
             return Values.of(l);
         }
+        
         if (value instanceof Float f) {
             return Values.of(f);
         }
+        
         if (value instanceof Double d) {
             return Values.of(d);
         }
+        
         if (value instanceof Boolean b) {
             return Values.of(b);
         }
+        
         if (value instanceof java.util.Date dt) {
             // Serialize date as ISO8601 string
             return Values.of(dt.toInstant().toString());
         }
-        if (value instanceof Iterable<?> list) {
-            var lv = com.google.protobuf.ListValue.newBuilder();
-            for (Object item : list) {
-                lv.addValues(toProtoValue(item));
-            }
-            return Values.of(lv.build());
-        }
+
         if (value instanceof Map<?, ?> map) {
             var structBuilder = com.google.protobuf.Struct.newBuilder();
             for (Map.Entry<?, ?> entry : map.entrySet()) {
@@ -104,6 +105,15 @@ public class ProtoUtils {
             }
             return Values.of(structBuilder.build());
         }
+        
+        if (value instanceof Iterable<?> list) {
+            var lv = com.google.protobuf.ListValue.newBuilder();
+            for (Object item : list) {
+                lv.addValues(toProtoValue(item));
+            }
+            return Values.of(lv.build());
+        }
+                
         // fallback to string
         return Values.of(String.valueOf(value));
     }
