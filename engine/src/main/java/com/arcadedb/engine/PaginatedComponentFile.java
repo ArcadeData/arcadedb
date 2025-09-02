@@ -75,12 +75,19 @@ public class PaginatedComponentFile extends ComponentFile {
     close();
     LogManager.instance().log(this, Level.FINE, "Renaming file %s (id=%d) to %s...", null, filePath, fileId, newFileName);
 
-    final String newFilePath =
-        newFileName + osFile.getName().substring(osFile.getName().indexOf("_"));
+    final String newFilePath;
+    if (newFileName.contains(".") && newFileName.contains("_")) {
+      // newFileName is already a complete filename (e.g., from removeTempSuffix)
+      newFilePath = newFileName;
+    } else {
+      // newFileName is a component name, append the suffix from original file
+      newFilePath = newFileName + osFile.getName().substring(osFile.getName().indexOf("_"));
+    }
 
     final File newFile = new File(osFile.getParentFile(), newFilePath);
     try {
-      java.nio.file.Files.move(new File(osFile.getParentFile(), osFile.getName()).getAbsoluteFile().toPath(),
+      File oldFile = new File(osFile.getParentFile(), osFile.getName());
+      java.nio.file.Files.move(oldFile.getAbsoluteFile().toPath(),
           newFile.getAbsoluteFile().toPath(),
           java.nio.file.StandardCopyOption.ATOMIC_MOVE);
       open(newFile.getAbsolutePath(), mode);
