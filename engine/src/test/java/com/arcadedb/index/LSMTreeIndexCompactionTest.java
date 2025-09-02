@@ -144,17 +144,17 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
         v.createProperty("relativeName", String.class);
         v.createProperty("Name", String.class);
 
-        schema.buildTypeIndex("Device",new String[] { "id" })
+        schema.buildTypeIndex(TYPE_NAME,new String[] { "id" })
             .withType( Schema.INDEX_TYPE.LSM_TREE)
             .withUnique(false)
             .withPageSize(INDEX_PAGE_SIZE)
             .create();
-        schema.buildTypeIndex("Device",new String[] { "number" })
+        schema.buildTypeIndex(TYPE_NAME,new String[] { "number" })
             .withType( Schema.INDEX_TYPE.LSM_TREE)
             .withUnique(false)
             .withPageSize(INDEX_PAGE_SIZE)
             .create();
-        schema.buildTypeIndex("Device",new String[] { "relativeName" })
+        schema.buildTypeIndex(TYPE_NAME,new String[] { "relativeName" })
             .withType( Schema.INDEX_TYPE.LSM_TREE)
             .withUnique(false)
             .withPageSize(INDEX_PAGE_SIZE)
