@@ -115,6 +115,8 @@ public class LSMTreeIndexCompactor {
 
       if (totalRAMNeeded > indexCompactionRAM) {
         pagesToCompact = (int) (indexCompactionRAM / mutableIndex.getPageSize());
+        if (pagesToCompact < 1)
+          pagesToCompact = 1;
         LogManager.instance()
             .log(mainIndex, Level.WARNING, "- Creating partial index with %d pages by using %s (totalRAMNeeded=%s, threadId=%d)",
                 null, pagesToCompact, FileUtils.getSizeAsString(indexCompactionRAM), FileUtils.getSizeAsString(totalRAMNeeded),
