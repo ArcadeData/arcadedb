@@ -104,6 +104,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   @Override
   public void close() {
+    super.close();
     setSessionId(null);
     open = false;
   }

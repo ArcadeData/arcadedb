@@ -129,6 +129,13 @@ public class RemoteHttpComponent extends RWLockContext {
     requestClusterConfiguration();
   }
 
+  public void close() {
+    if (httpClient != null) {
+      httpClient.shutdownNow();
+      httpClient.close();
+    }
+  }
+
   public int getTimeout() {
     return timeout;
   }
