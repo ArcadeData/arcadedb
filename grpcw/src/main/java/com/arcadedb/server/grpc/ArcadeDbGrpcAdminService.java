@@ -13,6 +13,8 @@ import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.security.credential.CredentialsValidator;
 
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
@@ -26,10 +28,11 @@ import io.grpc.stub.StreamObserver;
 public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceImplBase {
 
 	// Replace with your concrete server class if needed
-	private final Object server;
+	private final ArcadeDBServer server;
 	private final CredentialsValidator credentialsValidator;
 
-	public ArcadeDbGrpcAdminService(final Object server, final CredentialsValidator credentialsValidator) {
+	public ArcadeDbGrpcAdminService(final ArcadeDBServer server, CredentialsValidator credentialsValidator) {
+		
 		this.server = Objects.requireNonNull(server, "server");
 		this.credentialsValidator = Objects.requireNonNull(credentialsValidator, "credentialsValidator");
 	}
@@ -325,16 +328,16 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 	// ------------------------------------------------------------------------------------
 
 	private void authenticate(DatabaseCredentials creds) {
+		
 		if (creds == null)
 			throw new SecurityException("Authentication required");
 		final String user = creds.getUsername(); // matches your proto (not getUser())
 		final String pass = creds.getPassword();
+		
 		if (user == null || user.isBlank())
 			throw new SecurityException("Authentication required");
 
-		if (!credentialsValidator.authenticateServer(user, pass)) {
-			throw new SecurityException("Invalid credentials");
-		}
+		credentialsValidator.validateCredentials(user, pass);
 	}
 
 	/**
@@ -517,12 +520,5 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 		catch (Throwable ignore) {
 		}
 		return -1;
-	}
-
-	// ------------------------------------------------------------------------------------
-	// Auth hook
-	// ------------------------------------------------------------------------------------
-	public interface CredentialsValidator {
-		boolean authenticateServer(String user, String password);
 	}
 }

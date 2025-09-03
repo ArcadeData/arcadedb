@@ -11,6 +11,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
 
 import io.grpc.CompressorRegistry;
 import io.grpc.DecompressorRegistry;
@@ -173,7 +174,8 @@ public class GrpcServerPlugin implements ServerPlugin {
     }
     
     private void configureServer(ServerBuilder<?> serverBuilder, ContextConfiguration config) {
-        // Get database directory path
+
+    	// Get database directory path
         String databasePath = arcadeServer.getRootPath() + File.separator + "databases";
         
         // Create the main service
@@ -182,6 +184,12 @@ public class GrpcServerPlugin implements ServerPlugin {
         // Add the main service
         serverBuilder.addService(mainService);
         
+        // Create the Admin service
+        ArcadeDbGrpcAdminService adminService = new ArcadeDbGrpcAdminService(arcadeServer, new DefaultCredentialsValidator());
+
+        // Add the Admin service
+        serverBuilder.addService(adminService);
+
         // Add health service if enabled
         if (getConfigBoolean(config, CONFIG_HEALTH_ENABLED, true)) {
             healthManager = new HealthStatusManager();
