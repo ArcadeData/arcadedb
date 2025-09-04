@@ -257,6 +257,22 @@ public class BatchTest extends TestHelper {
   }
 
   @Test
+  public void testForeachResultSetReadFieldName() {
+    database.command("sql", "CREATE DOCUMENT TYPE DocumentType");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO DocumentType set a = 'aaaa' ");
+    });
+
+    final ResultSet result = database.command("sqlscript", """
+        LET row = select from DocumentType;
+        LET counter = $row.a;
+        RETURN $counter;
+        """);
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("value")).isEqualTo("aaaa");
+  }
+
+  @Test
   public void testUsingReservedVariableNames() {
     try {
       database.command("sqlscript", """

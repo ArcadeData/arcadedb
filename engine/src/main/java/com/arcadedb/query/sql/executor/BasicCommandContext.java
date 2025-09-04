@@ -23,7 +23,10 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Basic implementation of CommandContext interface that stores variables in a map. Supports parent/child context to build a tree
@@ -109,47 +112,56 @@ public class BasicCommandContext implements CommandContext {
     return getVariable(name, null);
   }
 
-  public Object getVariable(String name, final Object iDefault) {
+  public Object getVariable(String name, final Object defaultValue) {
     if (name == null)
-      return iDefault;
+      return defaultValue;
 
-    final Object result;
+    Object result;
 
     if (name.startsWith("$"))
       name = name.substring(1);
 
-    final String firstPart;
-    firstPart = name;
+    String fieldName = null;
+    if (name.contains(".")) {
+      String[] parts = name.split("\\.");
+      name = parts[0];
+      fieldName = parts[1];
+    }
 
-    if (firstPart.equalsIgnoreCase("CONTEXT"))
+    if (name.equalsIgnoreCase("CONTEXT"))
       result = getVariables();
-    else if (firstPart.equalsIgnoreCase("PARENT"))
+    else if (name.equalsIgnoreCase("PARENT"))
       result = parent;
-    else if (firstPart.equalsIgnoreCase("ROOT")) {
+    else if (name.equalsIgnoreCase("ROOT")) {
       CommandContext p = this;
       while (p.getParent() != null)
         p = p.getParent();
       result = p;
+
     } else {
-      if (variables != null && variables.containsKey(firstPart))
-        result = variables.get(firstPart);
+      if (variables != null && variables.containsKey(name))
+        result = variables.get(name);
       else {
         if (child != null)
-          result = child.getVariable(firstPart);
+          result = child.getVariable(name);
         else
-          result = getVariableFromParentHierarchy(firstPart);
+          result = getVariableFromParentHierarchy(name);
       }
     }
 
-    return result != null ? result : iDefault;
+    if (fieldName != null) {
+      if (result instanceof Result result1)
+        result = result1.getProperty(fieldName);
+    }
+    return result != null ? result : defaultValue;
   }
 
-  protected Object getVariableFromParentHierarchy(final String varName) {
-    if (this.variables != null && variables.containsKey(varName)) {
-      return variables.get(varName);
+  protected Object getVariableFromParentHierarchy(final String name) {
+    if (this.variables != null && variables.containsKey(name)) {
+      return variables.get(name);
     }
     if (parent != null && parent instanceof BasicCommandContext context) {
-      return context.getVariableFromParentHierarchy(varName);
+      return context.getVariableFromParentHierarchy(name);
     }
     return null;
   }
