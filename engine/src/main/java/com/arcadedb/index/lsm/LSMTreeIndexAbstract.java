@@ -35,9 +35,16 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.BinaryTypes;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.File;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.logging.Level;
 
 import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
@@ -208,9 +215,17 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
   public void drop() throws IOException {
     if (database.isOpen()) {
-      database.getPageManager().deleteFile(database, file.getFileId());
-      database.getFileManager().dropFile(file.getFileId());
-      database.getSchema().getEmbedded().removeFile(file.getFileId());
+      try {
+        database.getPageManager().deleteFile(database, file.getFileId());
+        database.getFileManager().dropFile(file.getFileId());
+        database.getSchema().getEmbedded().removeFile(file.getFileId());
+      } catch (Exception e) {
+        // If database is closed during operation, fall back to file deletion
+        LogManager.instance()
+            .log(this, Level.WARNING, "Database closed during index drop, falling back to file deletion: %s", e, e.getMessage());
+        if (!new File(file.getFilePath()).delete())
+          LogManager.instance().log(this, Level.WARNING, "Error on deleting index file '%s'", null, file.getFilePath());
+      }
     } else {
       if (!new File(file.getFilePath()).delete())
         LogManager.instance().log(this, Level.WARNING, "Error on deleting index file '%s'", null, file.getFilePath());
@@ -499,7 +514,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return allValues;
   }
 
-  protected int getCount(final BasePage currentPage) {
+  public int getCount(final BasePage currentPage) {
     return currentPage.readInt(INT_SERIALIZED_SIZE);
   }
 
@@ -507,7 +522,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     currentPage.writeInt(INT_SERIALIZED_SIZE, newCount);
   }
 
-  protected boolean isMutable(final BasePage currentPage) {
+  public boolean isMutable(final BasePage currentPage) {
     return currentPage.readByte(INT_SERIALIZED_SIZE + INT_SERIALIZED_SIZE) == 1;
   }
 

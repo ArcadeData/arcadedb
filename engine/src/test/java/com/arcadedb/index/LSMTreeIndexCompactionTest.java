@@ -29,12 +29,14 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
-
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.util.Iterator;
+import java.util.Optional;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.concurrent.CountDownLatch;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -83,7 +85,8 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       semaphore1.await();
 
       // INSERT DATA ON TOP OF THE MIXED MUTABLE-COMPACTED INDEX AND CHECK WITH LOOKUPS
-      LogManager.instance().log(this, Level.FINE, "TEST: INSERT DATA ON TOP OF THE MIXED MUTABLE-COMPACTED INDEX AND CHECK WITH LOOKUPS");
+      LogManager.instance()
+          .log(this, Level.FINE, "TEST: INSERT DATA ON TOP OF THE MIXED MUTABLE-COMPACTED INDEX AND CHECK WITH LOOKUPS");
       insertData();
       checkLookups(1, 2);
       checkRanges(1, 2);
@@ -144,18 +147,18 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
         v.createProperty("relativeName", String.class);
         v.createProperty("Name", String.class);
 
-        schema.buildTypeIndex(TYPE_NAME,new String[] { "id" })
-            .withType( Schema.INDEX_TYPE.LSM_TREE)
+        schema.buildTypeIndex(TYPE_NAME, new String[] { "id" })
+            .withType(Schema.INDEX_TYPE.LSM_TREE)
             .withUnique(false)
             .withPageSize(INDEX_PAGE_SIZE)
             .create();
-        schema.buildTypeIndex(TYPE_NAME,new String[] { "number" })
-            .withType( Schema.INDEX_TYPE.LSM_TREE)
+        schema.buildTypeIndex(TYPE_NAME, new String[] { "number" })
+            .withType(Schema.INDEX_TYPE.LSM_TREE)
             .withUnique(false)
             .withPageSize(INDEX_PAGE_SIZE)
             .create();
-        schema.buildTypeIndex(TYPE_NAME,new String[] { "relativeName" })
-            .withType( Schema.INDEX_TYPE.LSM_TREE)
+        schema.buildTypeIndex(TYPE_NAME, new String[] { "relativeName" })
+            .withType(Schema.INDEX_TYPE.LSM_TREE)
             .withUnique(false)
             .withPageSize(INDEX_PAGE_SIZE)
             .create();
@@ -205,7 +208,8 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
 
             if (counter % 1000 == 0) {
               if (System.currentTimeMillis() - lastLap > 1000) {
-                LogManager.instance().log(this, Level.FINE, "TEST: - Progress %d/%d (%d records/sec)", null, counter, totalToInsert, counter - lastLapCounter);
+                LogManager.instance().log(this, Level.FINE, "TEST: - Progress %d/%d (%d records/sec)", null, counter, totalToInsert,
+                    counter - lastLapCounter);
                 lastLap = System.currentTimeMillis();
                 lastLapCounter = counter;
               }
@@ -214,7 +218,8 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
         }
       });
 
-      LogManager.instance().log(this, Level.FINE, "TEST: Inserted " + totalToInsert + " elements in " + (System.currentTimeMillis() - begin) + "ms");
+      LogManager.instance()
+          .log(this, Level.FINE, "TEST: Inserted " + totalToInsert + " elements in " + (System.currentTimeMillis() - begin) + "ms");
 
     } finally {
       LogManager.instance().log(this, Level.FINE, "TEST: Insertion finished in " + (System.currentTimeMillis() - begin) + "ms");
@@ -224,7 +229,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
   }
 
   private void checkLookups(final int step, final int expectedItemsPerSameKey) {
-    database.transaction(() -> assertThat(database.countType(TYPE_NAME,false)).isEqualTo(TOT * expectedItemsPerSameKey));
+    database.transaction(() -> assertThat(database.countType(TYPE_NAME, false)).isEqualTo(TOT * expectedItemsPerSameKey));
 
     LogManager.instance().log(this, Level.FINE, "TEST: Lookup all the keys...");
 
@@ -256,7 +261,8 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
           long delta = System.currentTimeMillis() - begin;
           if (delta < 1)
             delta = 1;
-          LogManager.instance().log(this, Level.FINE, "Checked " + checked + " lookups in " + delta + "ms = " + (10000 / delta) + " lookups/msec");
+          LogManager.instance()
+              .log(this, Level.FINE, "Checked " + checked + " lookups in " + delta + "ms = " + (10000 / delta) + " lookups/msec");
           begin = System.currentTimeMillis();
         }
       } catch (final Exception e) {
@@ -267,7 +273,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
   }
 
   private void checkRanges(final int step, final int expectedItemsPerSameKey) {
-    database.transaction(() -> assertThat(database.countType(TYPE_NAME,false)).isEqualTo(TOT * expectedItemsPerSameKey));
+    database.transaction(() -> assertThat(database.countType(TYPE_NAME, false)).isEqualTo(TOT * expectedItemsPerSameKey));
 
     LogManager.instance().log(this, Level.FINE, "TEST: Range pair of keys...");
 
@@ -279,7 +285,8 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
 
     for (long number = 0; number < TOT - 1; number += step) {
       try {
-        final IndexCursor records = ((RangeIndex) index).range(true, new Object[] { number }, true, new Object[] { number + 1 }, true);
+        final IndexCursor records = ((RangeIndex) index).range(true, new Object[] { number }, true, new Object[] { number + 1 },
+            true);
         assertThat(Optional.ofNullable(records)).isNotNull();
 
         int count = 0;
@@ -303,7 +310,8 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
           long delta = System.currentTimeMillis() - begin;
           if (delta < 1)
             delta = 1;
-          LogManager.instance().log(this, Level.FINE, "Checked " + checked + " lookups in " + delta + "ms = " + (10000 / delta) + " lookups/msec");
+          LogManager.instance()
+              .log(this, Level.FINE, "Checked " + checked + " lookups in " + delta + "ms = " + (10000 / delta) + " lookups/msec");
           begin = System.currentTimeMillis();
         }
       } catch (final Exception e) {

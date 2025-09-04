@@ -32,9 +32,14 @@ import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.logging.Level;
 
 import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
@@ -168,7 +173,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     return new LookupResult(true, false, mid, new int[] { currentPageBuffer.position() });
   }
 
-  protected MutablePage createNewPage(final int compactedPageNumberOfSeries) {
+  public MutablePage createNewPage(final int compactedPageNumberOfSeries) {
     // NEW FILE, CREATE HEADER PAGE
     final int txPageCounter = getTotalPages();
 

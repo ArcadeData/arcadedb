@@ -42,6 +42,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.compaction.CompactionOrchestrator;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.LocalSchema;
@@ -54,11 +55,19 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockManager;
 import com.arcadedb.utility.RWLockContext;
 
-import java.io.*;
-import java.nio.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.io.File;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
 
 /**
  * LSM-Tree index implementation. It relies on a mutable index and its underlying immutable, compacted index.
@@ -245,7 +254,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       return false;
 
     try {
-      return new LSMTreeIndexCompactor().compact(this);
+      // Use the new refactored compaction orchestrator while maintaining backward compatibility
+      return new CompactionOrchestrator().compact(this);
     } catch (final TimeoutException e) {
       // IGNORE IT, WILL RETRY LATER
       return false;
@@ -528,7 +538,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     return name;
   }
 
-  protected LSMTreeIndexMutable splitIndex(final int startingFromPage, final LSMTreeIndexCompacted compactedIndex) {
+  public LSMTreeIndexMutable splitIndex(final int startingFromPage, final LSMTreeIndexCompacted compactedIndex) {
     checkIsValid();
     final DatabaseInternal database = getDatabase();
     if (database.isTransactionActive())

@@ -233,7 +233,7 @@ public class DefaultLogger implements Logger {
 
         try {
           String msg = message;
-          if (args.length > 0)
+          if (args != null && args.length > 0)
             msg = message.formatted(args);
           System.err.println(msg);
 
@@ -247,7 +247,7 @@ public class DefaultLogger implements Logger {
             message = "<" + context + "> " + message;
 
           String msg = message;
-          if (args.length > 0)
+          if (args != null && args.length > 0)
             msg = message.formatted(args);
 
           if (log.isLoggable(level)) {
