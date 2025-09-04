@@ -22,22 +22,26 @@ public class DatabaseWrapper {
   private static final Logger            logger = LoggerFactory.getLogger(DatabaseWrapper.class);
   private final        String            host;
   private final        int               port;
-  private final        RemoteDatabase    db;
   private final        Supplier<Integer> idSupplier;
+  private final        TextSupplier      textSupplier;
+  private final        RemoteDatabase    db;
   private final        Timer             photosTimer;
   private final        Timer             usersTimer;
   private final        Timer             friendshipTimer;
   private final        Timer             likeTimer;
 
-  public DatabaseWrapper(String host, int port, Supplier<Integer> idSupplier) {
+  public DatabaseWrapper(String host, int port, Supplier<Integer> idSupplier, TextSupplier textSupplier) {
     this.host = host;
     this.port = port;
-    this.db = connectToDatabase();
     this.idSupplier = idSupplier;
+    this.textSupplier = textSupplier;
+    this.db = connectToDatabase();
+
     usersTimer = Metrics.timer("arcadedb.test.inserted.users");
     photosTimer = Metrics.timer("arcadedb.test.inserted.photos");
     friendshipTimer = Metrics.timer("arcadedb.test.inserted.friendship");
     likeTimer = Metrics.timer("arcadedb.test.inserted.like");
+
   }
 
   private RemoteDatabase connectToDatabase() {
@@ -84,7 +88,10 @@ public class DatabaseWrapper {
 
             CREATE VERTEX TYPE Photo;
             CREATE PROPERTY Photo.id INTEGER;
+            CREATE PROPERTY Photo.name STRING;
+            CREATE PROPERTY Photo.description STRING;
             CREATE INDEX ON Photo (id) UNIQUE;
+            CREATE INDEX ON Photo (description) FULL_TEXT;
 
             CREATE EDGE TYPE HasUploaded;
 
@@ -151,17 +158,18 @@ public class DatabaseWrapper {
     for (int i = 0; i < numberOfPhotos; i++) {
       int photoId = idSupplier.get();
       String photoName = String.format("download-%s.jpg", photoId);
+      String description = textSupplier.get();
       String sqlScript = """
           BEGIN;
           LOCK TYPE User, Photo, HasUploaded;
-          LET photo = CREATE VERTEX Photo SET id = ?, name = ?;
+          LET photo = CREATE VERTEX Photo SET id = ?, name = ?, description = ?;
           LET user = SELECT FROM User WHERE id = ?;
           CREATE EDGE HasUploaded FROM $user TO $photo;
           COMMIT RETRY 30;
           """;
       try {
         photosTimer.record(() -> {
-              db.command("sqlscript", sqlScript, photoId, photoName, userId);
+              db.command("sqlscript", sqlScript, photoId, photoName, description, userId);
             }
         );
 

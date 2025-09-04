@@ -1,6 +1,7 @@
 package com.arcadedb.test.performance;
 
 import com.arcadedb.test.support.DatabaseWrapper;
+import com.arcadedb.test.support.TextSupplier;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.logging.LoggingMeterRegistry;
 import io.micrometer.core.instrument.logging.LoggingRegistryConfig;
@@ -50,10 +51,12 @@ public class SingleLocalhostServerSimpleLoadTestIT {
       return id.getAndIncrement();
     }
   };
+  private   TextSupplier      textSupplier;
 
   @BeforeEach
   void setUp() throws IOException, InterruptedException {
 
+    textSupplier = new TextSupplier(20);
     // METRICS
     LoggingRegistryConfig config = new LoggingRegistryConfig() {
       @Override
@@ -86,7 +89,7 @@ public class SingleLocalhostServerSimpleLoadTestIT {
 
     String host = "localhost"; // Assuming localhost for the database connection
     int port = 2480; // Default ArcadeDB port
-    DatabaseWrapper db = new DatabaseWrapper(host, port, idSupplier);
+    DatabaseWrapper db = new DatabaseWrapper(host, port, idSupplier, textSupplier);
     db.createDatabase();
     db.createSchema();
 
@@ -111,7 +114,7 @@ public class SingleLocalhostServerSimpleLoadTestIT {
     for (int i = 0; i < numOfThreads; i++) {
       // Each thread will create users and photos
       executor.submit(() -> {
-        DatabaseWrapper db1 = new DatabaseWrapper(host, port, idSupplier);
+        DatabaseWrapper db1 = new DatabaseWrapper(host, port, idSupplier, textSupplier);
         db1.addUserAndPhotos(numOfUsers, numOfPhotos);
         db1.close();
       });
@@ -120,7 +123,7 @@ public class SingleLocalhostServerSimpleLoadTestIT {
     if (numOfFriendship > 0) {
       // Each thread will create friendships
       executor.submit(() -> {
-        DatabaseWrapper db1 = new DatabaseWrapper(host, port, idSupplier);
+        DatabaseWrapper db1 = new DatabaseWrapper(host, port, idSupplier, textSupplier);
         db1.createFriendships(numOfFriendship);
         db1.close();
       });
@@ -129,7 +132,7 @@ public class SingleLocalhostServerSimpleLoadTestIT {
     if (numOfLike > 0) {
       // Each thread will create friendships
       executor.submit(() -> {
-        DatabaseWrapper db1 = new DatabaseWrapper(host, port, idSupplier);
+        DatabaseWrapper db1 = new DatabaseWrapper(host, port, idSupplier, textSupplier);
         ;
         db1.createLike(numOfLike);
         db1.close();

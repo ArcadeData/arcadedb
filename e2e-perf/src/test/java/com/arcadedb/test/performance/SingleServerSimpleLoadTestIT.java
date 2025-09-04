@@ -22,7 +22,7 @@ public class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
     startContainers();
     String host = arcadeContainer.getHost();
     int port = arcadeContainer.getMappedPort(2480);
-    DatabaseWrapper db = new DatabaseWrapper(host, port, idSupplier);
+    DatabaseWrapper db = new DatabaseWrapper(host, port, idSupplier, textSupplier);
     db.createDatabase();
     db.createSchema();
 
@@ -38,7 +38,7 @@ public class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
     for (int i = 0; i < numOfThreads; i++) {
       // Each thread will create users and photos
       executor.submit(() -> {
-        DatabaseWrapper db1 = new DatabaseWrapper(host, port, idSupplier);
+        DatabaseWrapper db1 = new DatabaseWrapper(host, port, idSupplier, textSupplier);
         db1.addUserAndPhotos(numOfUsers, numOfPhotos);
         db1.close();
       });
