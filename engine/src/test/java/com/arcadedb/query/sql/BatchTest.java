@@ -20,6 +20,7 @@ package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -257,19 +258,49 @@ public class BatchTest extends TestHelper {
   }
 
   @Test
-  public void testForeachResultSetReadFieldName() {
+  public void testFromSingleResultReadValueFromField() {
     database.command("sql", "CREATE DOCUMENT TYPE DocumentType");
     database.transaction(() -> {
-      database.command("sql", "INSERT INTO DocumentType set a = 'aaaa' ");
+      database.command("sql", "INSERT INTO DocumentType set field = 'aaaa' ");
     });
 
     final ResultSet result = database.command("sqlscript", """
         LET row = select from DocumentType;
-        LET counter = $row.a;
-        RETURN $counter;
+        LET fieldValue = $row.field;
+        RETURN $fieldValue;
         """);
     assertThat(result.hasNext()).isTrue();
     assertThat(result.next().<String>getProperty("value")).isEqualTo("aaaa");
+  }
+
+  @Test
+  public void testReadTypeFromVariable() {
+    database.command("sql", "CREATE VERTEX TYPE V1");
+    database.command("sql", "CREATE VERTEX TYPE V2");
+    database.command("sql", "CREATE EDGE TYPE HasSource");
+    database.transaction(() -> {
+      for (int i = 0; i < 10; i++) {
+        database.command("sql", "INSERT INTO V1 set id = ? , vType = ? ", i, "V2");
+        database.command("sql", "INSERT INTO V2 set id = ? ", i);
+      }
+    });
+
+    final ResultSet resultSet = database.command("sqlscript", """
+        BEGIN;
+        LET sources = SELECT FROM V1 WHERE id = '1';
+        LET source = $sources[0];
+        LET type = $source.vType;
+        LET target = SELECT FROM $type WHERE id = '9';
+        LET e = CREATE EDGE HasSource FROM $target TO $source IF NOT EXISTS ;
+        COMMIT;
+        RETURN $e;
+        """);
+
+    assertThat(resultSet.hasNext()).isTrue();
+    Edge edge = resultSet.next().getEdge().get();
+    assertThat(edge.getInVertex().getInteger("id")).isEqualTo(1);
+    assertThat(edge.getOutVertex().getInteger("id")).isEqualTo(9);
+
   }
 
   @Test

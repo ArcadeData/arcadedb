@@ -72,8 +72,18 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.Pair;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.schema.Schema.INDEX_TYPE.FULL_TEXT;
@@ -432,13 +442,24 @@ public class SelectExecutionPlanner {
   }
 
   private static void rewriteIndexChainsAsSubqueries(QueryPlanningInfo info, CommandContext context) {
-    if (context == null || context.getDatabase() == null) {
+    if (context == null ||
+        context.getDatabase() == null) {
       return;
     }
-    if (info.whereClause != null && info.target != null && info.target.getItem().getIdentifier() != null) {
+
+    if (info.whereClause != null &&
+        info.target != null &&
+        info.target.getItem().getIdentifier() != null) {
+
       String className = info.target.getItem().getIdentifier().getStringValue();
+      if (className.startsWith("$")) {
+        className = (String) context.getVariable(className);
+        info.target.getItem().setIdentifier(new Identifier(className));
+      }
+
       Schema schema = context.getDatabase().getSchema();
       DocumentType type = schema.getType(className);
+
       info.whereClause.getBaseExpression().rewriteIndexChainsAsSubqueries(context, type);
     }
   }
