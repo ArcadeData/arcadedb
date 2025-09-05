@@ -124,7 +124,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			
 			final var tx = hasTx ? req.getTransaction() : null;
 
-			logger.info("executeCommand(): hasTx = {} tx ={}", hasTx, tx);
+			logger.debug("executeCommand(): hasTx = {} tx ={}", hasTx, tx);
 
 			if (hasTx && tx.getBegin()) {
 				db.begin();
@@ -140,17 +140,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 			// Execute the command
 			
-			logger.info("executeCommand(): command = {}", req.getCommand());
+			logger.debug("executeCommand(): command = {}", req.getCommand());
  
 			try (ResultSet rs = db.command(language, req.getCommand(), params)) {
 
 				if (rs != null) {
 					
-					logger.info("executeCommand(): rs = {}", rs);
+					logger.debug("executeCommand(): rs = {}", rs);
 
 					if (returnRows) {
 						
-						logger.info("executeCommand(): returning rows ...");
+						logger.debug("executeCommand(): returning rows ...");
 						
 						int emitted = 0;
 						
@@ -193,7 +193,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 					}
 					else {
 						
-						logger.info("executeCommand(): not returning rows ... rs = {}", rs);
+						logger.debug("executeCommand(): not returning rows ... rs = {}", rs);
 
 						// Not returning rows: still consume to compute 'affected'
 						while (rs.hasNext()) {
@@ -213,7 +213,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				}
 			}
 
-			logger.info("executeCommand(): after - hasTx = {} tx ={}", hasTx, tx);
+			logger.debug("executeCommand(): after - hasTx = {} tx ={}", hasTx, tx);
 			
 			// Transaction end — precedence: rollback > commit > begin-only⇒commit
 			if (hasTx) {
@@ -600,7 +600,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			// Check if this is part of a transaction
 			if (request.hasTransaction()) {
 				
-				logger.info("executeQuery(): has Tx {}", request.getTransaction().getTransactionId());
+				logger.debug("executeQuery(): has Tx {}", request.getTransaction().getTransactionId());
 				
 				database = activeTransactions.get(request.getTransaction().getTransactionId());
 				if (database == null) {
@@ -611,11 +611,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			// Execute the query
 			long startTime = System.currentTimeMillis();
 			
-			logger.info("executeQuery(): query = {}", request.getQuery());
+			logger.debug("executeQuery(): query = {}", request.getQuery());
 			
 			ResultSet resultSet = database.query("sql", request.getQuery(), convertParameters(request.getParametersMap()));
 
-			logger.info("executeQuery(): to get resultSet = {}", (System.currentTimeMillis() - startTime));
+			logger.debug("executeQuery(): to get resultSet = {}", (System.currentTimeMillis() - startTime));
 
 			// Build response
 			QueryResult.Builder resultBuilder = QueryResult.newBuilder();
@@ -623,17 +623,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			// Process results
 			int count = 0;
 
-			logger.info("executeQuery(): resultSet.size = {}", resultSet.getExactSizeIfKnown());
+			logger.debug("executeQuery(): resultSet.size = {}", resultSet.getExactSizeIfKnown());
 
 			while (resultSet.hasNext()) {
 
 				Result result = resultSet.next();
 
-				logger.info("executeQuery(): result = {}", result);
+				logger.debug("executeQuery(): result = {}", result);
 
 				if (result.isElement()) {
 
-					logger.info("executeQuery(): isElement");
+					logger.debug("executeQuery(): isElement");
 
 					com.arcadedb.database.Record dbRecord = result.getElement().get();
 
@@ -648,7 +648,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				}
 				else {
 
-					logger.info("executeQuery(): NOT isElement");
+					logger.debug("executeQuery(): NOT isElement");
 					
 					// Scalar / projection row (e.g., RETURN COUNT)
 					
@@ -663,7 +663,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				}
 			}
 
-			logger.info("executeQuery(): count = {}",  count);
+			logger.debug("executeQuery(): count = {}",  count);
 
 			resultBuilder.setTotalRecordsInBatch(count);
 
@@ -2252,7 +2252,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 		GrpcRecord.Builder builder = GrpcRecord.newBuilder().setRid(dbRecord.getIdentity().toString());
 
-		logger.info("convertToGrpcRecord(): dbRecord = {}, db = {}", dbRecord, db);
+		logger.debug("convertToGrpcRecord(): dbRecord = {}, db = {}", dbRecord, db);
 		
 		if (dbRecord instanceof Document) {
 
@@ -2290,7 +2290,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 		}
 		else {
 			
-			logger.info("convertToGrpcRecord(): dbRecord = {} not a Document", dbRecord);
+			logger.debug("convertToGrpcRecord(): dbRecord = {} not a Document", dbRecord);
 		}
 		
 
