@@ -42,6 +42,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 	private static final Logger logger = LoggerFactory.getLogger(ArcadeDbGrpcService.class);
 
+
 	// Transaction management
 	private final Map<String, Database> activeTransactions = new ConcurrentHashMap<>();
 
@@ -1576,7 +1577,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			// Skip system fields
 			if (k.startsWith("@"))
 				return;
-			doc.set(k, fromGrpcValue(grpcVal));
+			Object javaVal = fromGrpcValue(grpcVal);
+			if (logger.isDebugEnabled()) logger.debug("APPLY-DOC {} <= {} -> {}", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
+						doc.set(k, javaVal);
 		});
 	}
 
@@ -1585,7 +1588,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			// Skip system fields
 			if (k.startsWith("@"))
 				return;
-			vertex.set(k, fromGrpcValue(grpcVal));
+			Object javaVal = fromGrpcValue(grpcVal);
+			if (logger.isDebugEnabled()) logger.debug("APPLY-VERTEX {} <= {} -> {}", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
+						vertex.set(k, javaVal);
 		});
 	}
 
@@ -1594,7 +1599,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			// Skip system fields
 			if (k.startsWith("@"))
 				return;
-			edge.set(k, fromGrpcValue(grpcVal));
+			Object javaVal = fromGrpcValue(grpcVal);
+			if (logger.isDebugEnabled()) logger.debug("APPLY-EDGE {} <= {} -> {}", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
+						edge.set(k, javaVal);
 		});
 	}
 
@@ -1604,55 +1611,55 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 	private Object fromGrpcValue(GrpcValue v) {
 		if (v == null)
-			return null;
+			return dbgDec("fromGrpcValue", v, null, null);
 		switch (v.getKindCase()) {
 		case BOOL_VALUE:
-			return v.getBoolValue();
+			return dbgDec("fromGrpcValue", v, v.getBoolValue(), null);
 		case INT32_VALUE:
-			return v.getInt32Value();
+			return dbgDec("fromGrpcValue", v, v.getInt32Value(), null);
 		case INT64_VALUE:
-			return v.getInt64Value();
+			return dbgDec("fromGrpcValue", v, v.getInt64Value(), null);
 		case FLOAT_VALUE:
-			return v.getFloatValue();
+			return dbgDec("fromGrpcValue", v, v.getFloatValue(), null);
 		case DOUBLE_VALUE:
-			return v.getDoubleValue();
+			return dbgDec("fromGrpcValue", v, v.getDoubleValue(), null);
 		case STRING_VALUE:
-			return v.getStringValue();
+			return dbgDec("fromGrpcValue", v, v.getStringValue(), null);
 		case BYTES_VALUE:
-			return v.getBytesValue().toByteArray();
+			return dbgDec("fromGrpcValue", v, v.getBytesValue().toByteArray(), null);
 		case TIMESTAMP_VALUE:
-			return new java.util.Date(tsToMillis(v.getTimestampValue()));
+			return dbgDec("fromGrpcValue", v, new java.util.Date(tsToMillis(v.getTimestampValue())), null);
 		case LINK_VALUE:
-			return new com.arcadedb.database.RID(v.getLinkValue().getRid());
+			return dbgDec("fromGrpcValue", v, new com.arcadedb.database.RID(v.getLinkValue().getRid()), null);
 
 		case DECIMAL_VALUE: {
 			var d = v.getDecimalValue();
-			return new java.math.BigDecimal(java.math.BigInteger.valueOf(d.getUnscaled()), d.getScale());
+			return dbgDec("fromGrpcValue", v, new java.math.BigDecimal(java.math.BigInteger.valueOf(d.getUnscaled()), d.getScale()), null);
 		}
 
 		case LIST_VALUE: {
 			var out = new java.util.ArrayList<>();
 			for (GrpcValue e : v.getListValue().getValuesList())
 				out.add(fromGrpcValue(e));
-			return out;
+			return dbgDec("fromGrpcValue", v, out, null);
 		}
 
 		case MAP_VALUE: {
 			var out = new java.util.LinkedHashMap<String, Object>();
 			v.getMapValue().getEntriesMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
-			return out;
+			return dbgDec("fromGrpcValue", v, out, null);
 		}
 
 		case EMBEDDED_VALUE: {
 			var out = new java.util.LinkedHashMap<String, Object>();
 			v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
-			return out;
+			return dbgDec("fromGrpcValue", v, out, null);
 		}
 
 		case KIND_NOT_SET:
-			return null;
+			return dbgDec("fromGrpcValue", v, null, null);
 		}
-		return null;
+		return dbgDec("fromGrpcValue", v, null, null);
 	}
 
 	private static com.google.protobuf.Timestamp msToTimestamp(long ms) {
@@ -1664,29 +1671,29 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	private GrpcValue toGrpcValue(Object o) {
 		GrpcValue.Builder b = GrpcValue.newBuilder();
 		if (o == null)
-			return b.build();
+			return dbgEnc("toGrpcValue", o, b.build(), null);
 
 		if (o instanceof Boolean v)
-			return b.setBoolValue(v).build();
+			return dbgEnc("toGrpcValue", o, b.setBoolValue(v).build(), null);
 		if (o instanceof Integer v)
-			return b.setInt32Value(v).build();
+			return dbgEnc("toGrpcValue", o, b.setInt32Value(v).build(), null);
 		if (o instanceof Long v)
-			return b.setInt64Value(v).build();
+			return dbgEnc("toGrpcValue", o, b.setInt64Value(v).build(), null);
 		if (o instanceof Float v)
-			return b.setFloatValue(v).build();
+			return dbgEnc("toGrpcValue", o, b.setFloatValue(v).build(), null);
 		if (o instanceof Double v)
-			return b.setDoubleValue(v).build();
+			return dbgEnc("toGrpcValue", o, b.setDoubleValue(v).build(), null);
 		if (o instanceof CharSequence v)
-			return b.setStringValue(v.toString()).build();
+			return dbgEnc("toGrpcValue", o, b.setStringValue(v.toString()).build(), null);
 		if (o instanceof byte[] v)
-			return b.setBytesValue(com.google.protobuf.ByteString.copyFrom(v)).build();
+			return dbgEnc("toGrpcValue", o, b.setBytesValue(com.google.protobuf.ByteString.copyFrom(v)).build(), null);
 
 		if (o instanceof java.util.Date v) {
-			return GrpcValue.newBuilder().setTimestampValue(msToTimestamp(v.getTime())).setLogicalType("datetime").build();
+			return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setTimestampValue(msToTimestamp(v.getTime())).setLogicalType("datetime").build(), null);
 		}
 
 		if (o instanceof com.arcadedb.database.RID rid) {
-			return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType("rid").build();
+			return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType("rid").build(), null);
 		}
 
 		if (o instanceof java.math.BigDecimal v) {
@@ -1698,7 +1705,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			else {
 				// if you need >64-bit unscaled, switch GrpcDecimal.unscaled to bytes in the
 				// proto
-				return GrpcValue.newBuilder().setStringValue(v.toPlainString()).setLogicalType("decimal").build();
+				return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setStringValue(v.toPlainString()).setLogicalType("decimal").build(), null);
 			}
 		}
 
@@ -1709,7 +1716,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			for (String k : edoc.getPropertyNames()) {
 				eb.putFields(k, toGrpcValue(edoc.get(k)));
 			}
-			return GrpcValue.newBuilder().setEmbeddedValue(eb.build()).build();
+			return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setEmbeddedValue(eb.build()).build(), null);
 		}
 
 		if (o instanceof java.util.Map<?, ?> m) {
@@ -1717,14 +1724,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			for (var e : m.entrySet()) {
 				mb.putEntries(String.valueOf(e.getKey()), toGrpcValue(e.getValue()));
 			}
-			return GrpcValue.newBuilder().setMapValue(mb.build()).build();
+			return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setMapValue(mb.build()).build(), null);
 		}
 
 		if (o instanceof java.util.Collection<?> c) {
 			GrpcList.Builder lb = GrpcList.newBuilder();
 			for (Object e : c)
 				lb.addValues(toGrpcValue(e));
-			return GrpcValue.newBuilder().setListValue(lb.build()).build();
+			return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setListValue(lb.build()).build(), null);
 		}
 
 		if (o.getClass().isArray()) {
@@ -1733,16 +1740,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			for (int i = 0; i < len; i++) {
 				lb.addValues(toGrpcValue(java.lang.reflect.Array.get(o, i)));
 			}
-			return GrpcValue.newBuilder().setListValue(lb.build()).build();
+			return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setListValue(lb.build()).build(), null);
 		}
 
 		// RID/Identifiable string fallback
 		if (o instanceof com.arcadedb.database.Identifiable id)
-			return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(id.getIdentity().toString()).build()).setLogicalType("rid")
-					.build();
+			return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(id.getIdentity().toString()).build()).setLogicalType("rid").build(), null);
+			
 
 		// Fallback
-		return GrpcValue.newBuilder().setStringValue(String.valueOf(o)).build();
+		return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setStringValue(String.valueOf(o)).build(), null);
 	}
 
 	private InsertOptions defaults(InsertOptions in) {
@@ -1944,8 +1951,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			// set all properties
 			for (String propertyName : doc.getPropertyNames()) {
 				Object value = doc.get(propertyName);
-				if (value != null)
-					builder.putProperties(propertyName, toGrpcValue(value));
+				if (value != null) {
+					GrpcValue gv = toGrpcValue(value);
+					if (logger.isDebugEnabled()) logger.debug("ENC-REC {}.{}: {} -> {}", builder.getRid(), propertyName, summarizeJava(value), summarizeGrpc(gv));
+					builder.putProperties(propertyName, gv);
+				}
 			}
 
 			// If this is an Edge, include @out / @in for convenience (string rid or link)
@@ -1959,6 +1969,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			}
 		}
 
+		if (logger.isDebugEnabled()) logger.debug("ENC-REC DONE rid={} type={} props={}", builder.getRid(), builder.getType(), builder.getPropertiesCount());
 		return builder.build();
 	}
 
@@ -2239,5 +2250,50 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 	private String generateTransactionId() {
 		return "tx_" + System.nanoTime();
+	}
+	
+	// ---- Debug helpers ----
+	private static String summarizeJava(Object o) {
+		if (o == null) return "null";
+		try {
+			if (o instanceof CharSequence s) return "String(" + s.length() + ")=\"" + (s.length() > 120 ? s.subSequence(0,120) + "…" : s) + "\"";
+			if (o instanceof byte[] b) return "bytes[" + b.length + "]";
+			if (o instanceof java.util.Collection<?> c) return o.getClass().getSimpleName() + "[size=" + c.size() + "]";
+			if (o instanceof java.util.Map<?,?> m) return o.getClass().getSimpleName() + "[size=" + m.size() + "]";
+			return o.getClass().getSimpleName() + "(" + String.valueOf(o) + ")";
+		} catch (Exception e) { return o.getClass().getSimpleName(); }
+	}
+
+	private static String summarizeGrpc(GrpcValue v) {
+		if (v == null) return "GrpcValue(null)";
+		switch (v.getKindCase()) {
+			case BOOL_VALUE: return "BOOL(" + v.getBoolValue() + ")";
+			case INT32_VALUE: return "INT32(" + v.getInt32Value() + ")";
+			case INT64_VALUE: return "INT64(" + v.getInt64Value() + ")";
+			case FLOAT_VALUE: return "FLOAT(" + v.getFloatValue() + ")";
+			case DOUBLE_VALUE: return "DOUBLE(" + v.getDoubleValue() + ")";
+			case STRING_VALUE: {
+				String s = v.getStringValue();
+				return "STRING(" + s.length() + ")=\"" + (s.length() > 120 ? s.substring(0,120) + "…" : s) + "\"";
+			}
+			case BYTES_VALUE: return "BYTES[" + v.getBytesValue().size() + "]";
+			case TIMESTAMP_VALUE: return "TIMESTAMP(" + v.getTimestampValue().getSeconds() + "." + v.getTimestampValue().getNanos() + ")";
+			case LIST_VALUE: return "LIST[size=" + v.getListValue().getValuesCount() + "]";
+			case MAP_VALUE: return "MAP[size=" + v.getMapValue().getEntriesCount() + "]";
+			case EMBEDDED_VALUE: return "EMBEDDED[type=" + v.getEmbeddedValue().getType() + ", size=" + v.getEmbeddedValue().getFieldsCount() + "]";
+			case LINK_VALUE: return "LINK(" + v.getLinkValue().getRid() + ")";
+			case DECIMAL_VALUE: return "DECIMAL(unscaled=" + v.getDecimalValue().getUnscaled() + ", scale=" + v.getDecimalValue().getScale() + ")";
+			case KIND_NOT_SET: default: return "GrpcValue(KIND_NOT_SET)";
+		}
+	}
+
+	private GrpcValue dbgEnc(String where, Object in, GrpcValue out, String ctx) {
+		if (logger.isDebugEnabled()) logger.debug("GRPC-ENC [{}]{} in={} -> out={}", where, (ctx==null?"" : " "+ctx), summarizeJava(in), summarizeGrpc(out));
+		return out;
+	}
+
+	private Object dbgDec(String where, GrpcValue in, Object out, String ctx) {
+		if (logger.isDebugEnabled()) logger.debug("GRPC-DEC [{}]{} in={} -> out={}", where, (ctx==null?"" : " "+ctx), summarizeGrpc(in), summarizeJava(out));
+		return out;
 	}
 }
