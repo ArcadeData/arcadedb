@@ -451,14 +451,14 @@ public class SelectExecutionPlanner {
         info.target != null &&
         info.target.getItem().getIdentifier() != null) {
 
-      String className = info.target.getItem().getIdentifier().getStringValue();
-      if (className.startsWith("$")) {
-        className = (String) context.getVariable(className);
-        info.target.getItem().setIdentifier(new Identifier(className));
+      String typeName = info.target.getItem().getIdentifier().getStringValue();
+      if (typeName.startsWith("$")) {
+        typeName = (String) context.getVariable(typeName);
+        info.target.getItem().setIdentifier(new Identifier(typeName));
       }
 
       Schema schema = context.getDatabase().getSchema();
-      DocumentType type = schema.getType(className);
+      DocumentType type = schema.getType(typeName);
 
       info.whereClause.getBaseExpression().rewriteIndexChainsAsSubqueries(context, type);
     }

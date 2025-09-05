@@ -291,7 +291,8 @@ public class BatchTest extends TestHelper {
         LET source = $sources[0];
         LET type = $source.vType;
         LET target = SELECT FROM $type WHERE id = '9';
-        LET e = CREATE EDGE HasSource FROM $target TO $source IF NOT EXISTS ;
+        LET edgeType = 'HasSource';
+        LET e = CREATE EDGE $edgeType FROM $target TO $source IF NOT EXISTS ;
         COMMIT;
         RETURN $e;
         """);

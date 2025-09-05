@@ -136,9 +136,11 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
 
     database.command("sqlscript",
         """
-            BEGIN;LET photo = CREATE VERTEX Photos SET id = "p5555", name = "download3.jpg";
+            BEGIN;
+            LET photo = CREATE VERTEX Photos SET id = "p5555", name = "download3.jpg";
             LET user = SELECT FROM Users WHERE id = "u1111";
-            LET userEdge = CREATE EDGE HasUploaded FROM $user TO $photo SET kind = "User_Photos";
+            LET edgeType = 'HasUploaded';
+            LET userEdge = CREATE EDGE $edgeType FROM $user TO $photo SET kind = "User_Photos";
             COMMIT RETRY 30;
             RETURN $photo;""");
 

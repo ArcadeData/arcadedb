@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandSQLParsingException;
-import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.parser.CreateEdgeStatement;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -29,7 +28,6 @@ import com.arcadedb.query.sql.parser.InsertSetExpression;
 import com.arcadedb.query.sql.parser.JsonArray;
 import com.arcadedb.query.sql.parser.UpdateItem;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -39,7 +37,7 @@ import java.util.List;
  */
 public class CreateEdgeExecutionPlanner {
 
-  protected       Identifier targetClass;
+  protected       Identifier targetType;
   protected final Identifier targetBucketName;
   protected final Expression leftExpression;
   protected final Expression rightExpression;
@@ -48,7 +46,7 @@ public class CreateEdgeExecutionPlanner {
   protected final InsertBody body;
 
   public CreateEdgeExecutionPlanner(final CreateEdgeStatement statement) {
-    this.targetClass = statement.getTargetType() == null ? null : statement.getTargetType().copy();
+    this.targetType = statement.getTargetType() == null ? null : statement.getTargetType().copy();
     this.targetBucketName = statement.getTargetBucketName() == null ? null : statement.getTargetBucketName().copy();
     this.leftExpression = statement.getLeftExpression() == null ? null : statement.getLeftExpression().copy();
     this.rightExpression = statement.getRightExpression() == null ? null : statement.getRightExpression().copy();
@@ -65,7 +63,12 @@ public class CreateEdgeExecutionPlanner {
 
   public InsertExecutionPlan createExecutionPlan(final CommandContext context) {
 
-    if (targetClass == null) {
+    if (targetType.getStringValue().startsWith("$")) {
+      String variable = (String) context.getVariable(targetType.getStringValue());
+      targetType = new Identifier(variable);
+    }
+
+    if (targetType == null) {
       if (targetBucketName == null) {
         throw new CommandSQLParsingException("Missing target");
       } else {
@@ -73,7 +76,7 @@ public class CreateEdgeExecutionPlanner {
         final DocumentType typez = db.getSchema()
             .getTypeByBucketId((db.getSchema().getBucketByName(targetBucketName.getStringValue()).getFileId()));
         if (typez != null) {
-          targetClass = new Identifier(typez.getName());
+          targetType = new Identifier(typez.getName());
         } else {
           throw new CommandSQLParsingException("Missing target");
         }
@@ -100,10 +103,10 @@ public class CreateEdgeExecutionPlanner {
 //          .findFirst()
 //          .orElse(null);
 //    } else
-      uniqueIndexName = null;
+    uniqueIndexName = null;
 
     result.chain(
-        new CreateEdgesStep(targetClass, targetBucketName, uniqueIndexName, new Identifier("$__ARCADEDB_CREATE_EDGE_fromV"),
+        new CreateEdgesStep(targetType, targetBucketName, uniqueIndexName, new Identifier("$__ARCADEDB_CREATE_EDGE_fromV"),
             new Identifier("$__ARCADEDB_CREATE_EDGE_toV"), unidirectional, ifNotExists, context));
 
     handleSetFields(result, body, context);
@@ -118,8 +121,8 @@ public class CreateEdgeExecutionPlanner {
   }
 
   private void handleCheckType(final InsertExecutionPlan result, final CommandContext context) {
-    if (targetClass != null) {
-      result.chain(new CheckIsEdgeTypeStep(targetClass.getStringValue(), context));
+    if (targetType != null) {
+      result.chain(new CheckIsEdgeTypeStep(targetType.getStringValue(), context));
     }
   }
 
