@@ -33,11 +33,49 @@ message RowError {
   uint64 row_index = 1; string code = 2; string message = 3; string field = 4;
 }
 
-// Generic record payload (document/vertex/edge)
-message Record {
+message GrpcRecord {
   string rid = 1;
   string type = 2; // optional logical type/class name
-  map<string, google.protobuf.Value> properties = 3;
+  map<string, GrpcValue> properties = 3;
+}
+
+message GrpcValue {
+
+  GrpcValueType valueType = 1;
+  google.protobuf.Value value = 2;
+
+  // Optional type parameter for complex types
+  // For LIST: element type (e.g., "String", "OrderItem")
+  // For MAP: value type (e.g., "Integer", "Address")
+  // For EMBEDDED: document type (e.g., "Address")
+  // For LINK: target type (e.g., "Customer", "Product")
+  optional string ofType = 3;
+}
+
+enum GrpcValueType {
+
+  // Default value (0), typically used to indicate an unset/unspecified type
+  RECORD_VALUE_TYPE_UNSPECIFIED = 0;
+
+  // Primitive types
+  BOOLEAN = 1;
+  BYTE = 2;
+  SHORT = 3;
+  INTEGER = 4;
+  LONG = 5;
+  STRING = 6;
+  LINK = 7;
+  BINARY = 8;
+  DATE = 9;
+  DATETIME = 10;
+  FLOAT = 11;
+  DOUBLE = 12;
+  DECIMAL = 13;
+
+  // Complex types (use with ofType)
+  LIST = 14;      // ofType specifies element type
+  MAP = 15;       // ofType specifies value type
+  EMBEDDED = 16;  // ofType specifies document type
 }
 
 // -----------------------------------------------------------------------------
@@ -45,10 +83,14 @@ message Record {
 // -----------------------------------------------------------------------------
 
 message StreamQueryRequest {
+
   string database = 1;
   string query = 2;
-  map<string, google.protobuf.Value> parameters = 3;
+
+  map<string, GrpcValue> parameters = 3;
+
   DatabaseCredentials credentials = 4;
+
   int32 batch_size = 5;
 
   enum RetrievalMode {
@@ -63,7 +105,7 @@ message StreamQueryRequest {
 }
 
 message QueryResult {
-  repeated Record records = 1;
+  repeated GrpcRecord records = 1;
   int32  total_records_in_batch = 2;
   int64  running_total_emitted  = 3;
   bool   is_last_batch          = 4;
@@ -160,9 +202,13 @@ message DeleteRecordResponse {
 // -----------------------------------------------------------------------------
 
 message ExecuteCommandRequest {
+
   string database = 1;
+
   string command  = 2;
-  map<string, google.protobuf.Value> parameters = 3;
+
+  map<string, GrpcValue> parameters = 3;
+
   DatabaseCredentials credentials = 4;
   TransactionContext  transaction = 5;
 
@@ -179,7 +225,7 @@ message ExecuteCommandResponse {
   int64 affected_records = 3; // server-computed (elements + numeric scalars)
   int64 execution_time_ms = 4;
 
-  repeated Record records = 5; // optional row payload if return_rows=true
+  repeated GrpcRecord records = 5; // optional row payload if return_rows=true
 }
 
 // -----------------------------------------------------------------------------
@@ -187,9 +233,12 @@ message ExecuteCommandResponse {
 // -----------------------------------------------------------------------------
 
 message ExecuteQueryRequest {
+
   string database = 1;
   string query = 2;
-  map<string, google.protobuf.Value> parameters = 3;
+
+  map<string, GrpcValue> parameters = 3;
+
   DatabaseCredentials credentials = 4;
   TransactionContext transaction = 5;
   int32 limit = 6;
@@ -203,23 +252,24 @@ message ExecuteQueryResponse {
 }
 
 // -----------------------------------------------------------------------------
-// Record CRUD helpers
+// GrpcRecord CRUD helpers
 // -----------------------------------------------------------------------------
 
 message CreateRecordRequest {
   string database = 1;
   DatabaseCredentials credentials = 2;
   string type = 3;   // target class/type
-  Record record = 4; // payload
+  GrpcRecord record = 4; // payload
   TransactionContext transaction = 5;
 }
+
 message CreateRecordResponse {
   string rid = 1;
 }
 
 // Helper wrapper so we can use a map with oneof
 message PropertiesUpdate {
-  map<string, google.protobuf.Value> properties = 1;
+  map<string, GrpcValue> properties = 1;
 }
 
 message UpdateRecordRequest {
@@ -228,7 +278,7 @@ message UpdateRecordRequest {
   string rid = 3;
 
   oneof payload {
-    Record           record  = 4; // full replacement
+    GrpcRecord       record  = 4; // full replacement
     PropertiesUpdate partial = 5; // partial update (map wrapped)
   }
 
@@ -247,7 +297,7 @@ message LookupByRidRequest {
 }
 message LookupByRidResponse {
   bool   found = 1;
-  Record record = 2; // present if found
+  GrpcRecord record = 2; // present if found
 }
 
 // -----------------------------------------------------------------------------
@@ -316,7 +366,7 @@ message BulkInsertRequest {
   DatabaseCredentials credentials = 2;
 
   InsertOptions options = 3;
-  repeated Record rows  = 4;
+  repeated GrpcRecord rows  = 4;
 
   TransactionContext transaction = 5; // optional
 }
@@ -337,7 +387,7 @@ message InsertChunk {
   int64  chunk_seq  = 6; // 1,2,3,...
 
   // Payload
-  repeated Record rows = 7;
+  repeated GrpcRecord rows = 7;
 
   // Optional client hint
   bool last = 8;
