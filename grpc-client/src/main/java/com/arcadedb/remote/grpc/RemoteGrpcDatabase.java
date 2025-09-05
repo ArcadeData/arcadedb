@@ -342,13 +342,17 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		}
 
 		try {
+		
 			ExecuteQueryResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
 					.executeQuery(requestBuilder.build());
+			
 			return createGrpcResultSet(response);
-		} catch (StatusRuntimeException e) {
+		} 
+		catch (StatusRuntimeException e) {
 			handleGrpcException(e);
 			return new InternalResultSet();
-		} catch (StatusException e) {
+		} 
+		catch (StatusException e) {
 			handleGrpcException(e);
 			return new InternalResultSet();
 		}
@@ -381,11 +385,17 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		}
 
 		try {
+			
 			ExecuteCommandResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
 					.executeCommand(requestBuilder.build());
+			
+			if (! response.getSuccess()) {
+				throw new DatabaseOperationException("Failed to execute command: " + response.getMessage());
+			}
 
 			// Create result set with command execution info
 			InternalResultSet resultSet = new InternalResultSet();
+			
 			if (response.getAffectedRecords() > 0) {
 				Map<String, Object> result = new HashMap<>();
 				result.put("affected", response.getAffectedRecords());
@@ -1533,6 +1543,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	}
 
 	private Record grpcRecordToDBRecord(GrpcRecord grpcRecord) {
+		
 		Map<String, Object> map = new HashMap<>();
 
 		// Convert properties
@@ -1544,6 +1555,12 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		map.put("@cat", mapRecordType(grpcRecord));
 
 		String cat = (String) map.get("@cat");
+		
+		if (cat == null) {
+			
+			return null;
+		}
+		
 		switch (cat) {
 		case "d":
 			return new RemoteImmutableDocument(this, map);
@@ -1557,31 +1574,49 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	}
 
 	private String mapRecordType(GrpcRecord grpcRecord) {
+		
 		// Determine record category from type name
 		String typeName = grpcRecord.getType();
 
 		// Check schema to determine actual type
 		try {
+			
 			if (getSchema().existsType(typeName)) {
+				
 				Object type = getSchema().getType(typeName);
-				if (type instanceof com.arcadedb.schema.VertexType) {
+				
+				if (type instanceof com.arcadedb.schema.VertexType) {				
 					return "v";
-				} else if (type instanceof com.arcadedb.schema.EdgeType) {
+				} 
+				else if (type instanceof com.arcadedb.schema.EdgeType) {
 					return "e";
 				}
+				else if (type instanceof com.arcadedb.schema.DocumentType) {
+					return "d";
+				}
+				else {
+                    return null;
+                }
 			}
-		} catch (Exception e) {
+			else {
+				
+				return null;
+			}
+		} 
+		catch (Exception e) {
 			// Fall back to name-based detection
 		}
 
-		// Fall back to name-based detection
-		if (typeName.contains("Vertex") || typeName.startsWith("V_")) {
-			return "v";
-		} else if (typeName.contains("Edge") || typeName.startsWith("E_")) {
-			return "e";
-		} else {
-			return "d";
-		}
+		return null;
+		
+//		// Fall back to name-based detection
+//		if (typeName.contains("Vertex") || typeName.startsWith("V_")) {
+//			return "v";
+//		} else if (typeName.contains("Edge") || typeName.startsWith("E_")) {
+//			return "e";
+//		} else {
+//			return "d";
+//		}
 	}
 
 	private Map<String, GrpcValue> convertParamsToGrpcValue(Map<String, Object> params) {

@@ -104,13 +104,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 	@Override
 	public void executeCommand(ExecuteCommandRequest req, StreamObserver<ExecuteCommandResponse> resp) {
+		
 		final long t0 = System.nanoTime();
 
 		Database db = null;
 		boolean beganHere = false;
 
 		try {
-			// Resolve DB + params
+			
+			// Resolve DB + params			
 			db = getDatabase(req.getDatabase(), req.getCredentials());
 			final java.util.Map<String, Object> params = convertParameters(req.getParametersMap());
 
@@ -119,79 +121,100 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 			// Transaction: begin if requested
 			final boolean hasTx = req.hasTransaction();
+			
 			final var tx = hasTx ? req.getTransaction() : null;
+
+			logger.info("executeCommand(): hasTx = {} tx ={}", hasTx, tx);
+
 			if (hasTx && tx.getBegin()) {
 				db.begin();
 				beganHere = true;
 			}
 
 			long affected = 0L;
+			
 			final boolean returnRows = req.getReturnRows();
 			final int maxRows = req.getMaxRows() > 0 ? req.getMaxRows() : DEFAULT_MAX_COMMAND_ROWS;
 
 			ExecuteCommandResponse.Builder out = ExecuteCommandResponse.newBuilder().setSuccess(true).setMessage("OK");
 
 			// Execute the command
-
+			
+			logger.info("executeCommand(): command = {}", req.getCommand());
+ 
 			try (ResultSet rs = db.command(language, req.getCommand(), params)) {
 
-				if (returnRows) {
-					int emitted = 0;
-					while (rs.hasNext()) {
+				if (rs != null) {
+					
+					logger.info("executeCommand(): rs = {}", rs);
 
-						Result r = rs.next();
+					if (returnRows) {
+						
+						logger.info("executeCommand(): returning rows ...");
+						
+						int emitted = 0;
+						
+						while (rs.hasNext()) {
 
-						if (r.isElement()) {
-							affected++; // count modified/returned records
-							if (emitted < maxRows) {
-								out.addRecords(convertToGrpcRecord(r.getElement().get(), db));
-								emitted++;
+							Result r = rs.next();
+
+							if (r.isElement()) {
+								affected++; // count modified/returned records
+								if (emitted < maxRows) {
+									out.addRecords(convertToGrpcRecord(r.getElement().get(), db));
+									emitted++;
+								}
 							}
-						}
-						else {
+							else {
 
-							// Scalar / projection row (e.g., RETURN COUNT)
+								// Scalar / projection row (e.g., RETURN COUNT)
 
-							if (emitted < maxRows) {
+								if (emitted < maxRows) {
 
-								GrpcRecord.Builder recB = GrpcRecord.newBuilder();
+									GrpcRecord.Builder recB = GrpcRecord.newBuilder();
 
-								for (String p : r.getPropertyNames()) {
+									for (String p : r.getPropertyNames()) {
 
-									recB.putProperties(p, convertPropToGrpcValue(p, r));
+										recB.putProperties(p, convertPropToGrpcValue(p, r));
+									}
+
+									out.addRecords(recB.build());
+
+									emitted++;
 								}
 
-								out.addRecords(recB.build());
-
-								emitted++;
-							}
-
-							for (String p : r.getPropertyNames()) {
-								Object v = r.getProperty(p);
-								if (v instanceof Number n)
-									affected += n.longValue();
+								for (String p : r.getPropertyNames()) {
+									Object v = r.getProperty(p);
+									if (v instanceof Number n)
+										affected += n.longValue();
+								}
 							}
 						}
 					}
-				}
-				else {
-					// Not returning rows: still consume to compute 'affected'
-					while (rs.hasNext()) {
-						Result r = rs.next();
-						if (r.isElement()) {
-							affected++;
-						}
-						else {
-							for (String p : r.getPropertyNames()) {
-								Object v = r.getProperty(p);
-								if (v instanceof Number n)
-									affected += n.longValue();
+					else {
+						
+						logger.info("executeCommand(): not returning rows ... rs = {}", rs);
+
+						// Not returning rows: still consume to compute 'affected'
+						while (rs.hasNext()) {
+							Result r = rs.next();
+							if (r.isElement()) {
+								affected++;
+							}
+							else {
+								for (String p : r.getPropertyNames()) {
+									Object v = r.getProperty(p);
+									if (v instanceof Number n)
+										affected += n.longValue();
+								}
 							}
 						}
 					}
 				}
 			}
 
+			logger.info("executeCommand(): after - hasTx = {} tx ={}", hasTx, tx);
+			
 			// Transaction end — precedence: rollback > commit > begin-only⇒commit
 			if (hasTx) {
 				if (tx.getRollback()) {
@@ -214,6 +237,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 		}
 		catch (Exception e) {
+			
+			logger.error("ERROR", e);
+			
 			// Best-effort rollback if we began here and failed
 			try {
 				if (beganHere && db != null)
@@ -573,6 +599,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 			// Check if this is part of a transaction
 			if (request.hasTransaction()) {
+				
+				logger.info("executeQuery(): has Tx {}", request.getTransaction().getTransactionId());
+				
 				database = activeTransactions.get(request.getTransaction().getTransactionId());
 				if (database == null) {
 					throw new IllegalArgumentException("Invalid transaction ID");
@@ -581,20 +610,30 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 			// Execute the query
 			long startTime = System.currentTimeMillis();
+			
+			logger.info("executeQuery(): query = {}", request.getQuery());
+			
 			ResultSet resultSet = database.query("sql", request.getQuery(), convertParameters(request.getParametersMap()));
 
-			logger.debug("executeQuery(): to get resultSet = {}", (System.currentTimeMillis() - startTime));
+			logger.info("executeQuery(): to get resultSet = {}", (System.currentTimeMillis() - startTime));
 
 			// Build response
 			QueryResult.Builder resultBuilder = QueryResult.newBuilder();
 
 			// Process results
 			int count = 0;
+
+			logger.info("executeQuery(): resultSet.size = {}", resultSet.getExactSizeIfKnown());
+
 			while (resultSet.hasNext()) {
 
 				Result result = resultSet.next();
 
+				logger.info("executeQuery(): result = {}", result);
+
 				if (result.isElement()) {
+
+					logger.info("executeQuery(): isElement");
 
 					com.arcadedb.database.Record dbRecord = result.getElement().get();
 
@@ -607,7 +646,24 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 						break;
 					}
 				}
+				else {
+
+					logger.info("executeQuery(): NOT isElement");
+					
+					// Scalar / projection row (e.g., RETURN COUNT)
+					
+					GrpcRecord.Builder recB = GrpcRecord.newBuilder();
+
+					for (String p : result.getPropertyNames()) {
+
+						recB.putProperties(p, convertPropToGrpcValue(p, result));
+					}
+
+					resultBuilder.addRecords(recB.build());
+				}
 			}
+
+			logger.info("executeQuery(): count = {}",  count);
 
 			resultBuilder.setTotalRecordsInBatch(count);
 
@@ -2196,6 +2252,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 		GrpcRecord.Builder builder = GrpcRecord.newBuilder().setRid(dbRecord.getIdentity().toString());
 
+		logger.info("convertToGrpcRecord(): dbRecord = {}, db = {}", dbRecord, db);
+		
 		if (dbRecord instanceof Document) {
 
 			Document doc = (Document) dbRecord;
@@ -2230,10 +2288,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				}
 			}
 		}
+		else {
+			
+			logger.info("convertToGrpcRecord(): dbRecord = {} not a Document", dbRecord);
+		}
+		
 
 		return builder.build();
 	}
-
+	
 	private GrpcValue convertPropToGrpcValue(String propName, Result result) {
 
 		Object propValue = result.getProperty(propName);
