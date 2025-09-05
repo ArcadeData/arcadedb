@@ -108,14 +108,14 @@ public class RemoteGrpcDatabaseRegressionTest {
 	}
 
 	private long countAll(String type) {
-		
+
 		String sql = "SELECT count(*) AS c FROM " + type;
-		
+
 		try (ResultSet rs = grpc.query("sql", sql, Map.of())) {
 			long c = 0;
 			while (rs.hasNext()) {
 				Result r = rs.next();
-				//System.out.println("Count all: r = " + r);
+				// System.out.println("Count all: r = " + r);
 				Number n = r.getProperty("c");
 				c = (n == null) ? 0 : n.longValue();
 			}
@@ -191,7 +191,7 @@ public class RemoteGrpcDatabaseRegressionTest {
 		grpc.begin();
 		grpc.command("sql", "UPDATE `" + TYPE + "` SET name = :name, n = :n WHERE id = :id", Map.of("name", "ONE!", "n", 11, "id", "x1"));
 		grpc.commit();
-		
+
 		try (ResultSet rs = grpc.query("sql", "SELECT from `" + TYPE + "` WHERE id = :id", Map.of("id", "x1"))) {
 			Result r = rs.next();
 			assertEquals("ONE!", r.<String>getProperty("name"));
@@ -199,7 +199,7 @@ public class RemoteGrpcDatabaseRegressionTest {
 		}
 
 		// Delete
-		grpc.command("sql", "DELETE FROM `" + TYPE + "` WHERE id = :id", Map.of("id", "x2"));		
+		grpc.command("sql", "DELETE FROM `" + TYPE + "` WHERE id = :id", Map.of("id", "x2"));
 		assertEquals(1, countAll(TYPE), "one row remains after delete");
 	}
 
@@ -219,5 +219,67 @@ public class RemoteGrpcDatabaseRegressionTest {
 		grpc.command("sql", "INSERT INTO `" + TYPE + "` set id = :id, name = :name, n = :n", Map.of("id", "tx2", "name", "persisted", "n", 100));
 		grpc.commit();
 		assertEquals(before + 1, countAll(TYPE), "commit must persist insert");
+	}
+
+	@Test
+	@DisplayName("schema:types → properties decoded as List<Map<..>>")
+	void schemaTypesPropertiesDecodedAsMaps() {
+		
+		try (ResultSet rs = grpc.query("sql", "SELECT FROM schema:types WHERE name = :name", Map.of("name", TYPE))) {
+		
+			assertTrue(rs.hasNext(), "schema:types should contain our test type");
+			
+			Result r = rs.next();
+			
+			Object propsObj = r.getProperty("properties");
+			
+			assertTrue(propsObj instanceof java.util.List<?>, "properties must be a List");
+			
+			java.util.List<?> props = (java.util.List<?>) propsObj;
+			assertTrue(!props.isEmpty(), "properties list should not be empty");
+			
+			Object first = props.get(0);
+			assertTrue(first instanceof java.util.Map<?, ?>, "each property is expected to be a Map");
+			
+			java.util.Map<?, ?> p0 = (java.util.Map<?, ?>) first;
+			
+			// Spot-check expected keys
+			assertTrue(p0.containsKey("name"), "property map must have 'name'");
+			assertTrue(p0.containsKey("type"), "property map must have 'type'");
+		}
+	}
+
+	@Test
+	@DisplayName("Embedded _auditMetadata map round-trips with Long timestamps")
+	void embeddedAuditMetadataRoundTrip() {
+		
+		final String recId = "audit1";
+		final java.util.Map<String, Object> audit = new java.util.LinkedHashMap<>();
+		
+		audit.put("createdDate", 1720225210408L);
+		audit.put("createdByUser", "service-account-empower-platform-admin");
+		audit.put("lastModifiedDate", 1741795459718L);
+		audit.put("lastModifiedByUser", "service-account-empower-platform-admin");
+
+		grpc.command("sql", "INSERT INTO `" + TYPE + "` SET id = :id, name = :name, n = :n, _auditMetadata = :audit",
+				Map.of("id", recId, "name", "with-audit", "n", 1, "audit", audit));
+
+		try (ResultSet rs = grpc.query("sql", "SELECT FROM `" + TYPE + "` WHERE id = :id", Map.of("id", recId))) {
+			assertTrue(rs.hasNext(), "inserted record should be queriable");
+			Result r = rs.next();
+			Object auditObj = r.getProperty("_auditMetadata");
+			assertTrue(auditObj instanceof java.util.Map<?, ?>, "_auditMetadata must be a Map");
+			@SuppressWarnings("unchecked")
+			java.util.Map<String, Object> m = (java.util.Map<String, Object>) auditObj;
+
+			Object cd = m.get("createdDate");
+			Object md = m.get("lastModifiedDate");
+			assertTrue(cd instanceof Number, "createdDate must be numeric");
+			assertTrue(md instanceof Number, "lastModifiedDate must be numeric");
+			assertEquals(1720225210408L, ((Number) cd).longValue(), "createdDate must be precise long");
+			assertEquals(1741795459718L, ((Number) md).longValue(), "lastModifiedDate must be precise long");
+			assertEquals("service-account-empower-platform-admin", m.get("createdByUser"));
+			assertEquals("service-account-empower-platform-admin", m.get("lastModifiedByUser"));
+		}
 	}
 }

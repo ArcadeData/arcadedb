@@ -1,11 +1,5 @@
 package com.arcadedb.server.grpc;
 
-import com.google.gson.JsonElement;
-import com.google.gson.JsonPrimitive;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonArray;
-import com.google.gson.JsonNull;
-
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -34,6 +28,9 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
 import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 import com.google.protobuf.Timestamp;
 
 import io.grpc.Status;
@@ -1678,6 +1675,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 	private GrpcValue toGrpcValue(Object o) {
 		
+		if (logger.isDebugEnabled()) {			
+			logger.debug("toGrpcValue(): Converting\n   value ={}\n   class = {}", o, o.getClass());
+		}
+		
+		// class com.arcadedb.query.sql.executor.ResultInternal
 		if (o instanceof JsonElement je) {
 			return gsonToGrpc(je);
 		}
@@ -1765,6 +1767,18 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder()
 					.setLinkValue(GrpcLink.newBuilder().setRid(id.getIdentity().toString()).build()).setLogicalType("rid").build(), null);
 
+		// Support ArcadeDB Result/ResultInternal as structural MAP
+		if (o instanceof com.arcadedb.query.sql.executor.Result res) {
+		    GrpcMap.Builder mb = GrpcMap.newBuilder();
+		    try {
+		        for (String k : res.getPropertyNames()) {
+		            mb.putEntries(k, toGrpcValue(res.getProperty(k)));
+		        }
+		    } catch (Throwable ignore) { }
+		    
+		    return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setMapValue(mb.build()).build(), null);
+		}
+		
 		// Fallback
 		return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setStringValue(String.valueOf(o)).build(), null);
 	}
@@ -1969,9 +1983,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			for (String propertyName : doc.getPropertyNames()) {
 				Object value = doc.get(propertyName);
 				if (value != null) {
+					if (logger.isDebugEnabled()) {						
+						logger.debug("convertToGrpcRecord(): Converting {}\n  value = {}\n  class = {}", propertyName, value, value.getClass());
+					}
 					GrpcValue gv = toGrpcValue(value);
 					if (logger.isDebugEnabled())
 						logger.debug("ENC-REC {}.{}: {} -> {}", builder.getRid(), propertyName, summarizeJava(value), summarizeGrpc(gv));
+					
 					builder.putProperties(propertyName, gv);
 				}
 			}
@@ -1996,6 +2014,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 		Object propValue = result.getProperty(propName);
 
+		if (logger.isDebugEnabled()) {						
+			logger.debug("convertPropToGrpcValue(): Converting {}\n  value = {}\n  class = {}", propName, propValue, propValue.getClass());
+		}
+		
 		return toGrpcValue(propValue);
 	}
 
@@ -2343,7 +2365,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 	// --- Gson structural encoder: JsonElement -> GrpcValue ---
 	private GrpcValue gsonToGrpc(JsonElement n) {
+		
 		GrpcValue.Builder b = GrpcValue.newBuilder();
+		
 		if (n == null || n.isJsonNull()) {
 			return b.build(); // KIND_NOT_SET => null on the client
 		}
