@@ -131,7 +131,7 @@ public class ArcadeDbHTTPTvsGRPCBench {
 			});
 			time("gRPC update by id", () -> {
 				grpc.begin();
-				grpc.executeCommand("sql", "UPDATE UserFeedback SET feedback = 'UPDATED_GRPC' WHERE id = 'UF-0001'", Map.of(), false, 0,
+				grpc.command("sql", "UPDATE UserFeedback SET feedback = 'UPDATED_GRPC' WHERE id = 'UF-0001'", Map.of(), false, 0,
 						/* tx */ null, 60_000);
 				grpc.commit();
 			});
@@ -232,12 +232,14 @@ public class ArcadeDbHTTPTvsGRPCBench {
 
 	private static void runStreamBench(RemoteGrpcDatabase grpc, String sql, int batchSize, StreamQueryRequest.RetrievalMode mode) {
 		time("gRPC stream " + mode + " (batchSize=" + batchSize + ")", () -> {
+			
 			var it = grpc.queryStream(DB_NAME, sql, Map.of(), batchSize, mode, /* tx */ null, 120_000);
 			var total = new AtomicInteger(0);
 			while (it.hasNext()) {
 				it.next();
 				total.incrementAndGet();
 			}
+			
 			System.out.println("  rows=" + total.get());
 		});
 	}
