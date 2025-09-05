@@ -1,10 +1,7 @@
 package com.arcadedb.server.grpc;
 
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -14,7 +11,6 @@ import org.slf4j.LoggerFactory;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
-import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
@@ -23,21 +19,16 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.index.Index;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
-import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
-import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
 import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
 import com.google.protobuf.Timestamp;
-import com.google.protobuf.Value;
 
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -104,15 +95,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 	@Override
 	public void executeCommand(ExecuteCommandRequest req, StreamObserver<ExecuteCommandResponse> resp) {
-		
+
 		final long t0 = System.nanoTime();
 
 		Database db = null;
 		boolean beganHere = false;
 
 		try {
-			
-			// Resolve DB + params			
+
+			// Resolve DB + params
 			db = getDatabase(req.getDatabase(), req.getCredentials());
 			final java.util.Map<String, Object> params = convertParameters(req.getParametersMap());
 
@@ -121,7 +112,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 			// Transaction: begin if requested
 			final boolean hasTx = req.hasTransaction();
-			
+
 			final var tx = hasTx ? req.getTransaction() : null;
 
 			logger.debug("executeCommand(): hasTx = {} tx ={}", hasTx, tx);
@@ -132,28 +123,28 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			}
 
 			long affected = 0L;
-			
+
 			final boolean returnRows = req.getReturnRows();
 			final int maxRows = req.getMaxRows() > 0 ? req.getMaxRows() : DEFAULT_MAX_COMMAND_ROWS;
 
 			ExecuteCommandResponse.Builder out = ExecuteCommandResponse.newBuilder().setSuccess(true).setMessage("OK");
 
 			// Execute the command
-			
+
 			logger.debug("executeCommand(): command = {}", req.getCommand());
- 
+
 			try (ResultSet rs = db.command(language, req.getCommand(), params)) {
 
 				if (rs != null) {
-					
+
 					logger.debug("executeCommand(): rs = {}", rs);
 
 					if (returnRows) {
-						
+
 						logger.debug("executeCommand(): returning rows ...");
-						
+
 						int emitted = 0;
-						
+
 						while (rs.hasNext()) {
 
 							Result r = rs.next();
@@ -192,7 +183,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 						}
 					}
 					else {
-						
+
 						logger.debug("executeCommand(): not returning rows ... rs = {}", rs);
 
 						// Not returning rows: still consume to compute 'affected'
@@ -214,7 +205,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			}
 
 			logger.debug("executeCommand(): after - hasTx = {} tx ={}", hasTx, tx);
-			
+
 			// Transaction end — precedence: rollback > commit > begin-only⇒commit
 			if (hasTx) {
 				if (tx.getRollback()) {
@@ -237,9 +228,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 		}
 		catch (Exception e) {
-			
+
 			logger.error("ERROR", e);
-			
+
 			// Best-effort rollback if we began here and failed
 			try {
 				if (beganHere && db != null)
@@ -305,14 +296,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 				if (props.containsKey("out")) {
 
-					var pv = props.get("out").getValue();
-					outStr = pv.hasStringValue() ? pv.getStringValue() : String.valueOf(toJava(pv));
+					GrpcValue pv = props.get("out");
+					outStr = (pv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) ? pv.getStringValue() : String.valueOf(fromGrpcValue(pv));
 				}
 
 				if (props.containsKey("in")) {
 
-					var pv = props.get("in").getValue();
-					inStr = pv.hasStringValue() ? pv.getStringValue() : String.valueOf(toJava(pv));
+					GrpcValue pv = props.get("in");
+					inStr = (pv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) ? pv.getStringValue() : String.valueOf(fromGrpcValue(pv));
 				}
 
 				if (outStr == null || inStr == null)
@@ -599,9 +590,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 			// Check if this is part of a transaction
 			if (request.hasTransaction()) {
-				
+
 				logger.debug("executeQuery(): has Tx {}", request.getTransaction().getTransactionId());
-				
+
 				database = activeTransactions.get(request.getTransaction().getTransactionId());
 				if (database == null) {
 					throw new IllegalArgumentException("Invalid transaction ID");
@@ -610,9 +601,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 			// Execute the query
 			long startTime = System.currentTimeMillis();
-			
+
 			logger.debug("executeQuery(): query = {}", request.getQuery());
-			
+
 			ResultSet resultSet = database.query("sql", request.getQuery(), convertParameters(request.getParametersMap()));
 
 			logger.debug("executeQuery(): to get resultSet = {}", (System.currentTimeMillis() - startTime));
@@ -649,9 +640,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				else {
 
 					logger.debug("executeQuery(): NOT isElement");
-					
+
 					// Scalar / projection row (e.g., RETURN COUNT)
-					
+
 					GrpcRecord.Builder recB = GrpcRecord.newBuilder();
 
 					for (String p : result.getPropertyNames()) {
@@ -663,7 +654,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				}
 			}
 
-			logger.debug("executeQuery(): count = {}",  count);
+			logger.debug("executeQuery(): count = {}", count);
 
 			resultBuilder.setTotalRecordsInBatch(count);
 
@@ -852,7 +843,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	 */
 	private void streamCursor(Database db, StreamQueryRequest req, int batchSize, ServerCallStreamObserver<QueryResult> scso,
 			AtomicBoolean cancelled) {
+
 		long running = 0L;
+
 		QueryResult.Builder batch = QueryResult.newBuilder();
 		int inBatch = 0;
 
@@ -1132,9 +1125,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 			@Override
 			public void onCompleted() {
+				
 				try {
 
 					InsertContext ctx = ctxRef.get();
+					
 					if (ctx == null) {
 						// Client closed without sending a first chunk → nothing to do
 						resp.onNext(InsertSummary.newBuilder().setReceived(0).setInserted(0).setUpdated(0).setIgnored(0).setFailed(0)
@@ -1145,6 +1140,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 					}
 
 					ctx.flushCommit(true); // commit if not validate-only
+
 					if (!cancelled.get()) {
 						resp.onNext(ctx.summary(totals, startedAt));
 						resp.onCompleted();
@@ -1294,12 +1290,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 							ctx.totals.add(perChunk);
 							// intentionally do not advance watermark on failure; client may replay safely
 						}
-
-//						resp.onNext(InsertResponse.newBuilder()
-//								.setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
-//										.setInserted(perChunk.inserted).setUpdated(perChunk.updated).setIgnored(perChunk.ignored)
-//										.setFailed(perChunk.failed).addAllErrors(perChunk.errors).build())
-//								.build());
 
 						sendOrQueue.accept(InsertResponse.newBuilder()
 								.setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
@@ -1472,16 +1462,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 		}
 	}
 
-	private InsertSummary toSummary(Counts c, long startedAtMs) {
-
-		long now = System.currentTimeMillis();
-
-		return InsertSummary.newBuilder().setReceived(c.received).setInserted(c.inserted).setUpdated(c.updated).setIgnored(c.ignored)
-				.setFailed(c.failed).addAllErrors(c.errors).setStartedAt(ts(startedAtMs)).setFinishedAt(ts(now)).build();
-	}
-
 	private Counts insertRows(InsertContext ctx, java.util.Iterator<GrpcRecord> it) {
+		
 		Counts c = new Counts();
+		
 		int inBatch = 0;
 
 		Schema schema = ctx.db.getSchema();
@@ -1552,6 +1536,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				case CONFLICT_IGNORE -> c.ignored++;
 				case CONFLICT_ABORT, UNRECOGNIZED -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
 				case CONFLICT_UPDATE -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
+				case CONFLICT_ERROR -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
 				}
 			}
 			catch (Exception e) {
@@ -1572,25 +1557,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	}
 
 	private String getStringProp(GrpcRecord r, String key) {
-
-		if (r == null || key == null || key.isEmpty()) {
+		if (r == null || key == null || key.isEmpty())
 			return null;
-		}
-
-		if (r.getPropertiesMap().containsKey(key)) {
-
-			GrpcValue grpcVal = r.getPropertiesMap().get(key);
-
-			if (grpcVal.getValueType() == GrpcValueType.STRING || grpcVal.getValue().hasStringValue()) {
-
-				return grpcVal.getValue().getStringValue();
-			}
-
-			// Try to convert to string
-			return String.valueOf(fromGrpcValue(grpcVal));
-		}
-
-		return null;
+		GrpcValue v = r.getPropertiesMap().get(key);
+		if (v == null)
+			return null;
+		if (v.getKindCase() == GrpcValue.KindCase.STRING_VALUE)
+			return v.getStringValue();
+		return String.valueOf(fromGrpcValue(v));
 	}
 
 	private int serverBatchSize(InsertContext ctx) {
@@ -1624,382 +1598,151 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 		});
 	}
 
-	private Object fromGrpcValue(GrpcValue grpcValue) {
-
-		if (grpcValue == null)
-			return null;
-
-		Value value = grpcValue.getValue();
-		GrpcValueType type = grpcValue.getValueType();
-
-		// Use the type hint to properly convert
-		switch (type) {
-
-		case BOOLEAN:
-			return value.getBoolValue();
-
-		case BYTE:
-			if (value.hasNumberValue())
-				return (byte) value.getNumberValue();
-			if (value.hasStringValue())
-				return Byte.parseByte(value.getStringValue());
-			return null;
-
-		case SHORT:
-			if (value.hasNumberValue())
-				return (short) value.getNumberValue();
-			if (value.hasStringValue())
-				return Short.parseShort(value.getStringValue());
-			return null;
-
-		case INTEGER:
-			if (value.hasNumberValue())
-				return (int) value.getNumberValue();
-			if (value.hasStringValue())
-				return Integer.parseInt(value.getStringValue());
-			return null;
-
-		case LONG:
-			if (value.hasNumberValue())
-				return (long) value.getNumberValue();
-			if (value.hasStringValue())
-				return Long.parseLong(value.getStringValue());
-			return null;
-
-		case FLOAT:
-			if (value.hasNumberValue())
-				return (float) value.getNumberValue();
-			if (value.hasStringValue())
-				return Float.parseFloat(value.getStringValue());
-			return null;
-
-		case DOUBLE:
-			return value.getNumberValue();
-
-		case STRING:
-			return value.getStringValue();
-
-		case DECIMAL:
-			if (value.hasStringValue())
-				return new java.math.BigDecimal(value.getStringValue());
-			if (value.hasNumberValue())
-				return java.math.BigDecimal.valueOf(value.getNumberValue());
-			return null;
-
-		case DATE:
-			if (value.hasStringValue()) {
-				return java.sql.Date.valueOf(java.time.LocalDate.parse(value.getStringValue()));
-			}
-			if (value.hasNumberValue()) {
-				return new java.util.Date((long) value.getNumberValue());
-			}
-			return null;
-
-		case DATETIME:
-			if (value.hasStringValue()) {
-				return java.util.Date.from(java.time.Instant.parse(value.getStringValue()));
-			}
-			if (value.hasNumberValue()) {
-				return new java.util.Date((long) value.getNumberValue());
-			}
-			return null;
-
-		case BINARY:
-			if (value.hasStringValue()) {
-				return java.util.Base64.getDecoder().decode(value.getStringValue());
-			}
-			return null;
-
-		case LINK:
-			if (value.hasStringValue()) {
-				return new com.arcadedb.database.RID(value.getStringValue());
-			}
-			return null;
-
-		case EMBEDDED:
-			// Handle embedded document - create from struct
-			if (value.hasStructValue()) {
-				// This would need database context to create proper embedded document
-				return convertStructToMap(value.getStructValue());
-			}
-			return null;
-
-		case MAP:
-			if (value.hasStructValue()) {
-				return convertStructToMap(value.getStructValue());
-			}
-			return null;
-
-		case LIST:
-			if (value.hasListValue()) {
-				return value.getListValue().getValuesList().stream().map(this::convertProtobufValueToJava)
-						.collect(java.util.stream.Collectors.toList());
-			}
-			return null;
-
-		default:
-			return toJava(value);
-		}
+	private static long tsToMillis(com.google.protobuf.Timestamp ts) {
+		return ts.getSeconds() * 1000L + ts.getNanos() / 1_000_000L;
 	}
 
-	private Map<String, Object> convertStructToMap(com.google.protobuf.Struct struct) {
-		if (struct == null) {
-			return new java.util.LinkedHashMap<>();
-		}
-
-		Map<String, Object> map = new java.util.LinkedHashMap<>();
-		struct.getFieldsMap().forEach((key, value) -> {
-			map.put(key, convertProtobufValueToJava(value));
-		});
-
-		return map;
-	}
-
-	private Object convertProtobufValueToJava(com.google.protobuf.Value value) {
-		if (value == null) {
-			return null;
-		}
-
-		switch (value.getKindCase()) {
-		case NULL_VALUE:
-			return null;
-
-		case NUMBER_VALUE:
-			double num = value.getNumberValue();
-			// Try to preserve integer types when possible
-			if (num == Math.floor(num) && !Double.isInfinite(num)) {
-				long longVal = (long) num;
-				if (longVal >= Integer.MIN_VALUE && longVal <= Integer.MAX_VALUE) {
-					return (int) longVal;
-				}
-				return longVal;
-			}
-			return num;
-
-		case STRING_VALUE:
-			return value.getStringValue();
-
-		case BOOL_VALUE:
-			return value.getBoolValue();
-
-		case STRUCT_VALUE:
-			// Recursively convert nested struct
-			return convertStructToMap(value.getStructValue());
-
-		case LIST_VALUE:
-			// Convert list values
-			java.util.List<Object> list = new java.util.ArrayList<>();
-			value.getListValue().getValuesList().forEach(item -> {
-				list.add(convertProtobufValueToJava(item));
-			});
-			return list;
-
-		case KIND_NOT_SET:
-		default:
-			return null;
-		}
-	}
-
-	// Alternative version that preserves more type information if needed
-	private Map<String, Object> convertStructToMapWithTypeHints(com.google.protobuf.Struct struct, Map<String, GrpcValueType> typeHints) {
-
-		if (struct == null) {
-			return new java.util.LinkedHashMap<>();
-		}
-
-		Map<String, Object> map = new java.util.LinkedHashMap<>();
-		struct.getFieldsMap().forEach((key, value) -> {
-			GrpcValueType hint = typeHints != null ? typeHints.get(key) : null;
-			map.put(key, convertProtobufValueWithTypeHint(value, hint));
-		});
-
-		return map;
-	}
-
-	private Object convertProtobufValueWithTypeHint(com.google.protobuf.Value value, GrpcValueType typeHint) {
-
-		if (value == null || value.hasNullValue()) {
-			return null;
-		}
-
-		// If we have a type hint, use it for more precise conversion
-		if (typeHint != null) {
-			switch (typeHint) {
-			case BYTE:
-				if (value.hasNumberValue())
-					return (byte) value.getNumberValue();
-				if (value.hasStringValue())
-					return Byte.parseByte(value.getStringValue());
-				break;
-
-			case SHORT:
-				if (value.hasNumberValue())
-					return (short) value.getNumberValue();
-				if (value.hasStringValue())
-					return Short.parseShort(value.getStringValue());
-				break;
-
-			case INTEGER:
-				if (value.hasNumberValue())
-					return (int) value.getNumberValue();
-				if (value.hasStringValue())
-					return Integer.parseInt(value.getStringValue());
-				break;
-
-			case LONG:
-				if (value.hasNumberValue())
-					return (long) value.getNumberValue();
-				if (value.hasStringValue())
-					return Long.parseLong(value.getStringValue());
-				break;
-
-			case FLOAT:
-				if (value.hasNumberValue())
-					return (float) value.getNumberValue();
-				if (value.hasStringValue())
-					return Float.parseFloat(value.getStringValue());
-				break;
-
-			case DECIMAL:
-				if (value.hasStringValue())
-					return new java.math.BigDecimal(value.getStringValue());
-				if (value.hasNumberValue())
-					return java.math.BigDecimal.valueOf(value.getNumberValue());
-				break;
-
-			case DATE:
-				if (value.hasStringValue()) {
-					try {
-						return java.sql.Date.valueOf(java.time.LocalDate.parse(value.getStringValue()));
-					}
-					catch (Exception e) {
-						logger.debug("Failed to parse date: {}", value.getStringValue());
-					}
-				}
-				if (value.hasNumberValue()) {
-					return new java.sql.Date((long) value.getNumberValue());
-				}
-				break;
-
-			case DATETIME:
-				if (value.hasStringValue()) {
-					try {
-						return java.util.Date.from(java.time.Instant.parse(value.getStringValue()));
-					}
-					catch (Exception e) {
-						logger.debug("Failed to parse datetime: {}", value.getStringValue());
-					}
-				}
-				if (value.hasNumberValue()) {
-					return new java.util.Date((long) value.getNumberValue());
-				}
-				break;
-
-			case BINARY:
-				if (value.hasStringValue()) {
-					return java.util.Base64.getDecoder().decode(value.getStringValue());
-				}
-				break;
-
-			case LINK:
-				if (value.hasStringValue()) {
-					return new com.arcadedb.database.RID(value.getStringValue());
-				}
-				break;
-
-			default:
-				// Fall through to generic conversion
-				break;
-			}
-		}
-
-		// Generic conversion without type hint
-		return convertProtobufValueToJava(value);
-	}
-
-	private void applyGrpcRecordToDocument(GrpcRecord r, MutableDocument doc) {
-		// Example if proto = message Record { map<string, google.protobuf.Value>
-		// properties = 1; }
-		if (hasMethod(r, "getPropertiesMap")) {
-			@SuppressWarnings("unchecked")
-			Map<String, com.google.protobuf.Value> props = (Map<String, com.google.protobuf.Value>) invokeNoArg(r, "getPropertiesMap");
-			props.forEach((k, v) -> doc.set(k, toJava(v)));
-			return;
-		}
-
-		// Example if proto = message Record { repeated Property properties = 1; message
-		// Property { string key=1; google.protobuf.Value value=2; } }
-		if (hasMethod(r, "getPropertiesList")) {
-			@SuppressWarnings("unchecked")
-			List<Object> list = (List<Object>) invokeNoArg(r, "getPropertiesList");
-			for (Object p : list) {
-				String key = (String) invokeNoArg(p, "getKey");
-				com.google.protobuf.Value val = (com.google.protobuf.Value) invokeNoArg(p, "getValue");
-				doc.set(key, toJava(val));
-			}
-			return;
-		}
-
-		// Fallback: if your proto DOES have fields map after all
-		if (hasMethod(r, "getFieldsMap")) {
-			@SuppressWarnings("unchecked")
-			Map<String, com.google.protobuf.Value> fields = (Map<String, com.google.protobuf.Value>) invokeNoArg(r, "getFieldsMap");
-			fields.forEach((k, v) -> doc.set(k, toJava(v)));
-		}
-	}
-
-	// tiny reflection helpers (compile-time safe across proto variants)
-	private static boolean hasMethod(Object o, String name) {
-		try {
-			o.getClass().getMethod(name);
-			return true;
-		}
-		catch (NoSuchMethodException e) {
-			return false;
-		}
-	}
-
-	private static Object invokeNoArg(Object o, String name) {
-		try {
-			return o.getClass().getMethod(name).invoke(o);
-		}
-		catch (Exception e) {
-			throw new RuntimeException(e);
-		}
-	}
-
-	private static Object toJava(Value v) {
+	private Object fromGrpcValue(GrpcValue v) {
 		if (v == null)
 			return null;
 		switch (v.getKindCase()) {
-		case STRING_VALUE:
-			return v.getStringValue();
-		case NUMBER_VALUE:
-			return v.getNumberValue(); // Double
 		case BOOL_VALUE:
 			return v.getBoolValue();
-		case NULL_VALUE:
-			return null;
+		case INT32_VALUE:
+			return v.getInt32Value();
+		case INT64_VALUE:
+			return v.getInt64Value();
+		case FLOAT_VALUE:
+			return v.getFloatValue();
+		case DOUBLE_VALUE:
+			return v.getDoubleValue();
+		case STRING_VALUE:
+			return v.getStringValue();
+		case BYTES_VALUE:
+			return v.getBytesValue().toByteArray();
+		case TIMESTAMP_VALUE:
+			return new java.util.Date(tsToMillis(v.getTimestampValue()));
+		case LINK_VALUE:
+			return new com.arcadedb.database.RID(v.getLinkValue().getRid());
 
-		case STRUCT_VALUE: {
-			// Convert each nested Value -> Java recursively
-			java.util.LinkedHashMap<String, Object> m = new java.util.LinkedHashMap<>();
-			v.getStructValue().getFieldsMap().forEach((k, vv) -> m.put(k, toJava(vv)));
-			return m; // plain Map<String,Object>
+		case DECIMAL_VALUE: {
+			var d = v.getDecimalValue();
+			return new java.math.BigDecimal(java.math.BigInteger.valueOf(d.getUnscaled()), d.getScale());
 		}
 
 		case LIST_VALUE: {
-			java.util.ArrayList<Object> list = new java.util.ArrayList<>(v.getListValue().getValuesCount());
-			for (com.google.protobuf.Value item : v.getListValue().getValuesList()) {
-				list.add(toJava(item));
-			}
-			return list;
+			var out = new java.util.ArrayList<>();
+			for (GrpcValue e : v.getListValue().getValuesList())
+				out.add(fromGrpcValue(e));
+			return out;
+		}
+
+		case MAP_VALUE: {
+			var out = new java.util.LinkedHashMap<String, Object>();
+			v.getMapValue().getEntriesMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
+			return out;
+		}
+
+		case EMBEDDED_VALUE: {
+			var out = new java.util.LinkedHashMap<String, Object>();
+			v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
+			return out;
 		}
 
 		case KIND_NOT_SET:
-		default:
 			return null;
 		}
+		return null;
+	}
+
+	private static com.google.protobuf.Timestamp msToTimestamp(long ms) {
+		long seconds = Math.floorDiv(ms, 1000L);
+		int nanos = (int) Math.floorMod(ms, 1000L) * 1_000_000;
+		return com.google.protobuf.Timestamp.newBuilder().setSeconds(seconds).setNanos(nanos).build();
+	}
+
+	private GrpcValue toGrpcValue(Object o) {
+		GrpcValue.Builder b = GrpcValue.newBuilder();
+		if (o == null)
+			return b.build();
+
+		if (o instanceof Boolean v)
+			return b.setBoolValue(v).build();
+		if (o instanceof Integer v)
+			return b.setInt32Value(v).build();
+		if (o instanceof Long v)
+			return b.setInt64Value(v).build();
+		if (o instanceof Float v)
+			return b.setFloatValue(v).build();
+		if (o instanceof Double v)
+			return b.setDoubleValue(v).build();
+		if (o instanceof CharSequence v)
+			return b.setStringValue(v.toString()).build();
+		if (o instanceof byte[] v)
+			return b.setBytesValue(com.google.protobuf.ByteString.copyFrom(v)).build();
+
+		if (o instanceof java.util.Date v) {
+			return GrpcValue.newBuilder().setTimestampValue(msToTimestamp(v.getTime())).setLogicalType("datetime").build();
+		}
+
+		if (o instanceof com.arcadedb.database.RID rid) {
+			return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType("rid").build();
+		}
+
+		if (o instanceof java.math.BigDecimal v) {
+			var unscaled = v.unscaledValue();
+			if (unscaled.bitLength() <= 63) {
+				return GrpcValue.newBuilder().setDecimalValue(GrpcDecimal.newBuilder().setUnscaled(unscaled.longValue()).setScale(v.scale()))
+						.setLogicalType("decimal").build();
+			}
+			else {
+				// if you need >64-bit unscaled, switch GrpcDecimal.unscaled to bytes in the
+				// proto
+				return GrpcValue.newBuilder().setStringValue(v.toPlainString()).setLogicalType("decimal").build();
+			}
+		}
+
+		if (o instanceof com.arcadedb.database.Document edoc && edoc.getIdentity() == null) {
+			GrpcEmbedded.Builder eb = GrpcEmbedded.newBuilder();
+			if (edoc.getType() != null)
+				eb.setType(edoc.getTypeName());
+			for (String k : edoc.getPropertyNames()) {
+				eb.putFields(k, toGrpcValue(edoc.get(k)));
+			}
+			return GrpcValue.newBuilder().setEmbeddedValue(eb.build()).build();
+		}
+
+		if (o instanceof java.util.Map<?, ?> m) {
+			GrpcMap.Builder mb = GrpcMap.newBuilder();
+			for (var e : m.entrySet()) {
+				mb.putEntries(String.valueOf(e.getKey()), toGrpcValue(e.getValue()));
+			}
+			return GrpcValue.newBuilder().setMapValue(mb.build()).build();
+		}
+
+		if (o instanceof java.util.Collection<?> c) {
+			GrpcList.Builder lb = GrpcList.newBuilder();
+			for (Object e : c)
+				lb.addValues(toGrpcValue(e));
+			return GrpcValue.newBuilder().setListValue(lb.build()).build();
+		}
+
+		if (o.getClass().isArray()) {
+			int len = java.lang.reflect.Array.getLength(o);
+			GrpcList.Builder lb = GrpcList.newBuilder();
+			for (int i = 0; i < len; i++) {
+				lb.addValues(toGrpcValue(java.lang.reflect.Array.get(o, i)));
+			}
+			return GrpcValue.newBuilder().setListValue(lb.build()).build();
+		}
+
+		// RID/Identifiable string fallback
+		if (o instanceof com.arcadedb.database.Identifiable id)
+			return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(id.getIdentity().toString()).build()).setLogicalType("rid")
+					.build();
+
+		// Fallback
+		return GrpcValue.newBuilder().setStringValue(String.valueOf(o)).build();
 	}
 
 	private InsertOptions defaults(InsertOptions in) {
@@ -2079,7 +1822,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 		}
 
 		InsertSummary summary(Counts c, long startedAtMs) {
+			
 			long now = System.currentTimeMillis();
+			
 			return InsertSummary.newBuilder().setReceived(c.received).setInserted(c.inserted).setUpdated(c.updated).setIgnored(c.ignored)
 					.setFailed(c.failed).addAllErrors(c.errors).setStartedAt(ts(startedAtMs)).setFinishedAt(ts(now)).build();
 		}
@@ -2094,65 +1839,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			}
 			catch (Exception ignore) {
 			}
-		}
-	}
-
-	// --- TX helpers --------------------------------------------------------------
-
-	private static final class TxScope {
-		final boolean beganHere;
-		final String txId;
-
-		TxScope(boolean beganHere, String txId) {
-			this.beganHere = beganHere;
-			this.txId = txId;
-		}
-	}
-
-	/**
-	 * Begin a transaction if requested by TransactionContext. Policy: - If tx.begin
-	 * == true: begin() and mark beganHere=true (we’re not doing per-tx registry in
-	 * this patch). - If tx.timeout_ms > 0 or tx.read_only set: optionally apply
-	 * hints (no-ops here unless your DB supports). Returns a TxScope to be passed
-	 * to endTx().
-	 */
-	private TxScope beginTx(Database db, com.arcadedb.server.grpc.TransactionContext tx) {
-		if (tx == null)
-			return new TxScope(false, null);
-		boolean begin = tx.getBegin();
-		String txId = tx.getTransactionId().isEmpty() ? null : tx.getTransactionId();
-
-		if (begin) {
-			db.begin(); // You can add isolation/RO if your ArcadeDB build supports it
-			return new TxScope(true, txId);
-		}
-		return new TxScope(false, txId);
-	}
-
-	/**
-	 * End the transaction according to commit/rollback flags. Precedence: rollback
-	 * > commit > (if we beganHere and neither flag set) commit()
-	 */
-	private void endTx(Database db, com.arcadedb.server.grpc.TransactionContext tx, TxScope scope) {
-		if (tx == null)
-			return;
-		try {
-			if (tx.getRollback()) {
-				db.rollback();
-				return;
-			}
-			if (tx.getCommit()) {
-				db.commit();
-				return;
-			}
-			if (scope.beganHere) {
-				// Policy for “begin only”: commit by default (you can change to leave-open if
-				// you add a tx registry)
-				db.commit();
-			}
-		}
-		catch (Exception ignore) {
-			// swallow – upstream handler will report the original RPC result
 		}
 	}
 
@@ -2249,337 +1935,38 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	}
 
 	private GrpcRecord convertToGrpcRecord(com.arcadedb.database.Record dbRecord, Database db) {
-
 		GrpcRecord.Builder builder = GrpcRecord.newBuilder().setRid(dbRecord.getIdentity().toString());
 
-		logger.debug("convertToGrpcRecord(): dbRecord = {}, db = {}", dbRecord, db);
-		
-		if (dbRecord instanceof Document) {
+		if (dbRecord instanceof Document doc) {
+			if (doc.getType() != null)
+				builder.setType(doc.getTypeName());
 
-			Document doc = (Document) dbRecord;
-			builder.setType(doc.getTypeName());
-
-			// Get schema information for type-aware conversion
-			DocumentType docType = null;
-			try {
-				docType = db.getSchema().getType(doc.getTypeName());
-			}
-			catch (Exception e) {
-				// Type might not exist in schema
-			}
-
-			Set<String> propertyNames = doc.getPropertyNames();
-			for (String propertyName : propertyNames) {
+			// set all properties
+			for (String propertyName : doc.getPropertyNames()) {
 				Object value = doc.get(propertyName);
-				if (value != null) {
-					builder.putProperties(propertyName, convertToGrpcValue(propertyName, value, doc, docType));
-				}
+				if (value != null)
+					builder.putProperties(propertyName, toGrpcValue(value));
 			}
 
-			// Add special handling for edges to include endpoints
-			if (dbRecord instanceof Edge) {
-				Edge edge = (Edge) dbRecord;
-				// Add out/in as properties if not already present
-				if (!propertyNames.contains("@out")) {
-					builder.putProperties("@out", convertToGrpcValue("@out", edge.getOut(), doc, docType));
+			// If this is an Edge, include @out / @in for convenience (string rid or link)
+			if (dbRecord instanceof Edge edge) {
+				if (!builder.getPropertiesMap().containsKey("@out")) {
+					builder.putProperties("@out", toGrpcValue(edge.getOut().getIdentity()));
 				}
-				if (!propertyNames.contains("@in")) {
-					builder.putProperties("@in", convertToGrpcValue("@in", edge.getIn(), doc, docType));
+				if (!builder.getPropertiesMap().containsKey("@in")) {
+					builder.putProperties("@in", toGrpcValue(edge.getIn().getIdentity()));
 				}
 			}
 		}
-		else {
-			
-			logger.debug("convertToGrpcRecord(): dbRecord = {} not a Document", dbRecord);
-		}
-		
 
 		return builder.build();
 	}
-	
+
 	private GrpcValue convertPropToGrpcValue(String propName, Result result) {
 
 		Object propValue = result.getProperty(propName);
 
-		GrpcValue.Builder builder = GrpcValue.newBuilder();
-
-		GrpcValueType valueType = determineValueType(propValue);
-		String ofType = inferOfType(propValue);
-
-		builder.setValueType(valueType);
-		builder.setValue(toProtoValue(propValue));
-
-		if (ofType != null) {
-			builder.setOfType(ofType);
-		}
-
-		return builder.build();
-	}
-
-	private GrpcValue convertToGrpcValue(String propName, Object value, Document parentDoc, DocumentType docType) {
-
-		GrpcValue.Builder builder = GrpcValue.newBuilder();
-
-		// Try to get schema information for this property
-		com.arcadedb.schema.Property schemaProp = null;
-
-		if (docType != null) {
-			try {
-				schemaProp = docType.getProperty(propName);
-			}
-			catch (Exception e) {
-				// Property not defined in schema
-			}
-		}
-
-		// Determine the value type
-		GrpcValueType valueType;
-		String ofType = null;
-
-		if (schemaProp != null) {
-			// Use schema type if available
-			valueType = schemaTypeToGrpcType(schemaProp.getType());
-			if (schemaProp.getOfType() != null) {
-				ofType = schemaProp.getOfType();
-			}
-		}
-		else {
-			// Infer type from value
-			valueType = determineValueType(value);
-			ofType = inferOfType(value);
-		}
-
-		builder.setValueType(valueType);
-		builder.setValue(toProtoValue(value));
-
-		if (ofType != null) {
-			builder.setOfType(ofType);
-		}
-
-		return builder.build();
-	}
-
-	private GrpcValueType schemaTypeToGrpcType(com.arcadedb.schema.Type schemaType) {
-
-		switch (schemaType) {
-		case BOOLEAN:
-			return GrpcValueType.BOOLEAN;
-		case BYTE:
-			return GrpcValueType.BYTE;
-		case SHORT:
-			return GrpcValueType.SHORT;
-		case INTEGER:
-			return GrpcValueType.INTEGER;
-		case LONG:
-			return GrpcValueType.LONG;
-		case FLOAT:
-			return GrpcValueType.FLOAT;
-		case DOUBLE:
-			return GrpcValueType.DOUBLE;
-		case DECIMAL:
-			return GrpcValueType.DECIMAL;
-		case STRING:
-			return GrpcValueType.STRING;
-		case BINARY:
-			return GrpcValueType.BINARY;
-		case DATE:
-			return GrpcValueType.DATE;
-		case DATETIME:
-		case DATETIME_MICROS:
-		case DATETIME_NANOS:
-		case DATETIME_SECOND:
-			return GrpcValueType.DATETIME;
-		case LINK:
-			return GrpcValueType.LINK;
-		case EMBEDDED:
-			return GrpcValueType.EMBEDDED;
-		case LIST:
-			return GrpcValueType.LIST;
-		case MAP:
-			return GrpcValueType.MAP;
-		default:
-			return GrpcValueType.STRING;
-		}
-	}
-
-	private String inferOfType(Object value) {
-		if (value instanceof Document) {
-			return ((Document) value).getTypeName();
-		}
-		if (value instanceof Identifiable) {
-			try {
-				Document linked = ((Identifiable) value).getRecord().asDocument();
-				return linked.getTypeName();
-			}
-			catch (Exception e) {
-				return null;
-			}
-		}
-		if (value instanceof List && !((List<?>) value).isEmpty()) {
-			Object first = ((List<?>) value).get(0);
-			if (first instanceof Document) {
-				return ((Document) first).getTypeName();
-			}
-		}
-		return null;
-	}
-
-	private GrpcValueType determineValueType(Object value) {
-		if (value == null)
-			return GrpcValueType.RECORD_VALUE_TYPE_UNSPECIFIED;
-		if (value instanceof Boolean)
-			return GrpcValueType.BOOLEAN;
-		if (value instanceof Byte)
-			return GrpcValueType.BYTE;
-		if (value instanceof Short)
-			return GrpcValueType.SHORT;
-		if (value instanceof Integer)
-			return GrpcValueType.INTEGER;
-		if (value instanceof Long)
-			return GrpcValueType.LONG;
-		if (value instanceof Float)
-			return GrpcValueType.FLOAT;
-		if (value instanceof Double)
-			return GrpcValueType.DOUBLE;
-		if (value instanceof String)
-			return GrpcValueType.STRING;
-		if (value instanceof java.math.BigDecimal)
-			return GrpcValueType.DECIMAL;
-		if (value instanceof byte[])
-			return GrpcValueType.BINARY;
-		if (value instanceof java.util.Date || value instanceof java.time.LocalDate)
-			return GrpcValueType.DATE;
-		if (value instanceof java.time.Instant || value instanceof java.time.LocalDateTime)
-			return GrpcValueType.DATETIME;
-		if (value instanceof com.arcadedb.database.RID || value instanceof com.arcadedb.database.Identifiable)
-			return GrpcValueType.LINK;
-		if (value instanceof com.arcadedb.database.Document)
-			return GrpcValueType.EMBEDDED;
-		if (value instanceof java.util.Map)
-			return GrpcValueType.MAP;
-		if (value instanceof java.util.Collection || value.getClass().isArray())
-			return GrpcValueType.LIST;
-
-		return GrpcValueType.STRING; // fallback
-	}
-
-	private String determineOfType(Object value, String propName, String parentTypeName) {
-		if (value instanceof com.arcadedb.database.Document) {
-			return ((Document) value).getTypeName();
-		}
-		if (value instanceof com.arcadedb.database.Identifiable) {
-			// For links, return the target type if known
-			try {
-				Document linked = ((Identifiable) value).getRecord().asDocument();
-				return linked.getTypeName();
-			}
-			catch (Exception e) {
-				return null;
-			}
-		}
-		// For collections, you might need schema info to determine element type
-		return null;
-	}
-
-	private com.google.protobuf.Value toProtoValue(Object o) {
-		if (o == null)
-			return com.google.protobuf.Value.newBuilder().setNullValue(com.google.protobuf.NullValue.NULL_VALUE).build();
-
-		if (o instanceof String s)
-			return com.google.protobuf.Value.newBuilder().setStringValue(s).build();
-		if (o instanceof Boolean b)
-			return com.google.protobuf.Value.newBuilder().setBoolValue(b).build();
-		if (o instanceof Number n)
-			return com.google.protobuf.Value.newBuilder().setNumberValue(n.doubleValue()).build();
-
-		if (o instanceof java.math.BigDecimal bd)
-			return com.google.protobuf.Value.newBuilder().setStringValue(bd.toPlainString()).build();
-
-		if (o instanceof byte[] bytes)
-			return com.google.protobuf.Value.newBuilder().setStringValue(java.util.Base64.getEncoder().encodeToString(bytes)).build();
-
-		// Date/Time → ISO-8601
-		if (o instanceof java.util.Date d)
-			return com.google.protobuf.Value.newBuilder().setStringValue(d.toInstant().toString()).build();
-		if (o instanceof java.time.Instant inst)
-			return com.google.protobuf.Value.newBuilder().setStringValue(inst.toString()).build();
-		if (o instanceof java.time.LocalDate ld)
-			return com.google.protobuf.Value.newBuilder().setStringValue(ld.toString()).build();
-		if (o instanceof java.time.LocalDateTime ldt)
-			return com.google.protobuf.Value.newBuilder().setStringValue(ldt.toString()).build();
-
-		// Embedded docs (mutable/immutable)
-		if (o instanceof com.arcadedb.database.Document doc) {
-			var sb = com.google.protobuf.Struct.newBuilder();
-			for (String k : doc.getPropertyNames()) {
-				sb.putFields(k, toProtoValue(doc.get(k)));
-			}
-			return com.google.protobuf.Value.newBuilder().setStructValue(sb).build();
-		}
-
-		if (o instanceof java.util.Map<?, ?> m) {
-			var sb = com.google.protobuf.Struct.newBuilder();
-			m.forEach((k, v) -> sb.putFields(String.valueOf(k), toProtoValue(v)));
-			return com.google.protobuf.Value.newBuilder().setStructValue(sb).build();
-		}
-
-		if (o instanceof java.util.Collection<?> c) {
-			var lb = com.google.protobuf.ListValue.newBuilder();
-			c.forEach(v -> lb.addValues(toProtoValue(v)));
-			return com.google.protobuf.Value.newBuilder().setListValue(lb).build();
-		}
-
-		if (o.getClass().isArray()) {
-			int len = java.lang.reflect.Array.getLength(o);
-			var lb = com.google.protobuf.ListValue.newBuilder();
-			for (int i = 0; i < len; i++) {
-				lb.addValues(toProtoValue(java.lang.reflect.Array.get(o, i)));
-			}
-			return com.google.protobuf.Value.newBuilder().setListValue(lb).build();
-		}
-
-		// RID or Identifiable → string rid
-		if (o instanceof com.arcadedb.database.Identifiable id)
-			return com.google.protobuf.Value.newBuilder().setStringValue(id.getIdentity().toString()).build();
-		if (o instanceof com.arcadedb.database.RID rid)
-			return com.google.protobuf.Value.newBuilder().setStringValue(rid.toString()).build();
-
-		// Fallback
-		return com.google.protobuf.Value.newBuilder().setStringValue(String.valueOf(o)).build();
-	}
-
-	// Apply properties from proto Record to a document/vertex/edge, schema-aware
-	// for EMBEDDED
-	private void applyGrpcRecord(MutableDocument d, GrpcRecord r, Database db, String targetClass) {
-		DocumentType dt = db.getSchema().getType(targetClass);
-		r.getPropertiesMap().forEach((k, val) -> d.set(k, toJavaForProperty(db, d, dt, k, val)));
-	}
-
-	private void applyGrpcRecord(MutableVertex v, GrpcRecord r, Database db) {
-		DocumentType dt = db.getSchema().getType(v.getTypeName());
-		r.getPropertiesMap().forEach((k, val) -> v.set(k, toJavaForProperty(db, v, dt, k, val)));
-	}
-
-	private void applyGrpcRecord(MutableEdge e, GrpcRecord r, Database db, String edgeClass) {
-		DocumentType dt = db.getSchema().getType(edgeClass);
-		r.getPropertiesMap().forEach((k, val) -> e.set(k, toJavaForProperty(db, e, dt, k, val)));
-	}
-
-	// Generic fallback (schema-agnostic) for nested values
-	private Object toJavaLoose(com.google.protobuf.Value v) {
-		return switch (v.getKindCase()) {
-		case NULL_VALUE -> null;
-		case STRING_VALUE -> v.getStringValue();
-		case NUMBER_VALUE -> v.getNumberValue();
-		case BOOL_VALUE -> v.getBoolValue();
-		case LIST_VALUE -> v.getListValue().getValuesList().stream().map(this::toJavaLoose).toList();
-		case STRUCT_VALUE -> {
-			var m = new java.util.LinkedHashMap<String, Object>();
-			v.getStructValue().getFieldsMap().forEach((k, val) -> m.put(k, toJavaLoose(val)));
-			yield m;
-		}
-		case KIND_NOT_SET -> null;
-		};
+		return toGrpcValue(propValue);
 	}
 
 	private Object toJavaForProperty(final Database db, final MutableDocument parent, final DocumentType dtype, final String propName,
@@ -2588,467 +1975,266 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 		if (grpcValue == null)
 			return null;
 
-		// Try to get schema information
+		// Try schema
 		com.arcadedb.schema.Property prop = null;
 		try {
 			prop = (dtype != null) ? dtype.getProperty(propName) : null;
 		}
-		catch (com.arcadedb.exception.SchemaException e) {
-			// Property not in schema, use the type hint from GrpcValue
+		catch (com.arcadedb.exception.SchemaException ignore) {
 		}
 
-		// If we have schema info, use it; otherwise use the type from GrpcValue
-		if (prop != null) {
+		if (prop != null)
 			return convertWithSchemaType(db, parent, prop, propName, grpcValue);
-		}
-		else {
-			// No schema, use the type hint from the GrpcValue
-			return fromGrpcValue(grpcValue);
-		}
+
+		// No schema → generic
+		return fromGrpcValue(grpcValue);
 	}
 
-	private Object convertWithSchemaType(Database db, MutableDocument parent, com.arcadedb.schema.Property prop, String propName,
-			GrpcValue grpcValue) {
-		Value v = grpcValue.getValue();
-		com.arcadedb.schema.Type schemaType = prop.getType();
-
-		// Handle null values
-		if (v.hasNullValue()) {
-			return null;
-		}
-
-		switch (schemaType) {
-		case BOOLEAN:
-			if (v.hasBoolValue())
-				return v.getBoolValue();
-			if (v.hasStringValue())
-				return Boolean.parseBoolean(v.getStringValue());
-			return null;
-
-		case BYTE:
-			if (v.hasNumberValue())
-				return (byte) v.getNumberValue();
-			if (v.hasStringValue())
-				return Byte.parseByte(v.getStringValue());
-			return null;
-
-		case SHORT:
-			if (v.hasNumberValue())
-				return (short) v.getNumberValue();
-			if (v.hasStringValue())
-				return Short.parseShort(v.getStringValue());
-			return null;
-
-		case INTEGER:
-			if (v.hasNumberValue())
-				return (int) v.getNumberValue();
-			if (v.hasStringValue())
-				return Integer.parseInt(v.getStringValue());
-			return null;
-
-		case LONG:
-			if (v.hasNumberValue())
-				return (long) v.getNumberValue();
-			if (v.hasStringValue())
-				return Long.parseLong(v.getStringValue());
-			return null;
-
-		case FLOAT:
-			if (v.hasNumberValue())
-				return (float) v.getNumberValue();
-			if (v.hasStringValue())
-				return Float.parseFloat(v.getStringValue());
-			return null;
-
-		case DOUBLE:
-			if (v.hasNumberValue())
-				return v.getNumberValue();
-			if (v.hasStringValue())
-				return Double.parseDouble(v.getStringValue());
-			return null;
-
-		case DECIMAL:
-			if (v.hasStringValue())
-				return new java.math.BigDecimal(v.getStringValue());
-			if (v.hasNumberValue())
-				return java.math.BigDecimal.valueOf(v.getNumberValue());
-			return null;
-
-		case STRING:
-			if (v.hasStringValue())
-				return v.getStringValue();
-			// Convert other types to string representation
-			if (v.hasNumberValue())
-				return String.valueOf(v.getNumberValue());
-			if (v.hasBoolValue())
-				return String.valueOf(v.getBoolValue());
-			return null;
-
-		case BINARY:
-			if (v.hasStringValue()) {
-				// Expect base64 encoded string
-				return java.util.Base64.getDecoder().decode(v.getStringValue());
-			}
-			return null;
-
-		case DATE:
-			if (v.hasStringValue()) {
-				// Parse ISO date format (yyyy-MM-dd)
-				return java.sql.Date.valueOf(java.time.LocalDate.parse(v.getStringValue()));
-			}
-			if (v.hasNumberValue()) {
-				// Epoch millis
-				return new java.sql.Date((long) v.getNumberValue());
-			}
-			return null;
-
-		case DATETIME:
-		case DATETIME_MICROS:
-		case DATETIME_NANOS:
-		case DATETIME_SECOND:
-			if (v.hasStringValue()) {
-				// Parse ISO-8601 datetime
-				java.time.Instant instant = java.time.Instant.parse(v.getStringValue());
-				return java.util.Date.from(instant);
-			}
-			if (v.hasNumberValue()) {
-				// Epoch millis
-				return new java.util.Date((long) v.getNumberValue());
-			}
-			return null;
-
-		case LINK:
-			if (v.hasStringValue()) {
-				// Parse RID string format (#cluster:position)
-				return new com.arcadedb.database.RID(v.getStringValue());
-			}
-			return null;
-
-		case EMBEDDED:
-			if (v.hasStructValue()) {
-				String embeddedTypeName = grpcValue.hasOfType() ? grpcValue.getOfType() : prop.getOfType();
-
+	private Object convertWithSchemaType(Database db, MutableDocument parent, com.arcadedb.schema.Property prop, String propName, GrpcValue v) {
+		
+		var t = prop.getType();
+		
+		switch (t) {
+		
+			case BOOLEAN:
+				return switch (v.getKindCase()) {
+				case BOOL_VALUE -> v.getBoolValue();
+				case STRING_VALUE -> Boolean.parseBoolean(v.getStringValue());
+				default -> null;
+				};
+	
+			case BYTE:
+				return switch (v.getKindCase()) {
+				case INT32_VALUE, INT64_VALUE, DOUBLE_VALUE, FLOAT_VALUE -> (byte) (long) fromGrpcValue(v);
+				case STRING_VALUE -> Byte.parseByte(v.getStringValue());
+				default -> null;
+				};
+	
+			case SHORT:
+				return switch (v.getKindCase()) {
+				case INT32_VALUE, INT64_VALUE, DOUBLE_VALUE, FLOAT_VALUE -> (short) (long) fromGrpcValue(v);
+				case STRING_VALUE -> Short.parseShort(v.getStringValue());
+				default -> null;
+				};
+	
+			case INTEGER:
+				return switch (v.getKindCase()) {
+				case INT32_VALUE -> v.getInt32Value();
+				case INT64_VALUE -> (int) v.getInt64Value();
+				case DOUBLE_VALUE -> (int) v.getDoubleValue();
+				case FLOAT_VALUE -> (int) v.getFloatValue();
+				case STRING_VALUE -> Integer.parseInt(v.getStringValue());
+				default -> null;
+				};
+	
+			case LONG:
+				return switch (v.getKindCase()) {
+				case INT64_VALUE -> v.getInt64Value();
+				case INT32_VALUE -> (long) v.getInt32Value();
+				case DOUBLE_VALUE -> (long) v.getDoubleValue();
+				case FLOAT_VALUE -> (long) v.getFloatValue();
+				case STRING_VALUE -> Long.parseLong(v.getStringValue());
+				default -> null;
+				};
+	
+			case FLOAT:
+				return switch (v.getKindCase()) {
+				case FLOAT_VALUE -> v.getFloatValue();
+				case DOUBLE_VALUE -> (float) v.getDoubleValue();
+				case INT32_VALUE -> (float) v.getInt32Value();
+				case INT64_VALUE -> (float) v.getInt64Value();
+				case STRING_VALUE -> Float.parseFloat(v.getStringValue());
+				default -> null;
+				};
+	
+			case DOUBLE:
+				return switch (v.getKindCase()) {
+				case DOUBLE_VALUE -> v.getDoubleValue();
+				case FLOAT_VALUE -> (double) v.getFloatValue();
+				case INT32_VALUE -> (double) v.getInt32Value();
+				case INT64_VALUE -> (double) v.getInt64Value();
+				case STRING_VALUE -> Double.parseDouble(v.getStringValue());
+				default -> null;
+				};
+	
+			case STRING:
+				return switch (v.getKindCase()) {
+				case STRING_VALUE -> v.getStringValue();
+				default -> String.valueOf(fromGrpcValue(v));
+				};
+	
+			case DECIMAL:
+				return switch (v.getKindCase()) {
+				case DECIMAL_VALUE -> {
+					var d = v.getDecimalValue();
+					yield new java.math.BigDecimal(java.math.BigInteger.valueOf(d.getUnscaled()), d.getScale());
+				}
+				case STRING_VALUE -> new java.math.BigDecimal(v.getStringValue());
+				case DOUBLE_VALUE -> java.math.BigDecimal.valueOf(v.getDoubleValue());
+				case INT32_VALUE -> java.math.BigDecimal.valueOf(v.getInt32Value());
+				case INT64_VALUE -> java.math.BigDecimal.valueOf(v.getInt64Value());
+				default -> null;
+				};
+	
+			case DATE:
+			case DATETIME:
+				// Prefer timestamp_value; else accept epoch ms in int64; else parse string
+				return switch (v.getKindCase()) {
+				case TIMESTAMP_VALUE -> new java.util.Date(tsToMillis(v.getTimestampValue()));
+				case INT64_VALUE -> new java.util.Date(v.getInt64Value());
+				case STRING_VALUE -> new java.util.Date(Long.parseLong(v.getStringValue())); // or parse ISO if you emit it
+				default -> null;
+				};
+	
+			case BINARY:
+				return switch (v.getKindCase()) {
+				case BYTES_VALUE -> v.getBytesValue().toByteArray();
+				case STRING_VALUE -> v.getStringValue().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+				default -> null;
+				};
+	
+			case LINK:
+				return switch (v.getKindCase()) {
+				case LINK_VALUE -> new com.arcadedb.database.RID(v.getLinkValue().getRid());
+				case STRING_VALUE -> new com.arcadedb.database.RID(v.getStringValue());
+				default -> null;
+				};
+	
+			case EMBEDDED: {
+				// Use schema ofType if present; otherwise use embedded.type from the payload
+				String embeddedTypeName = (v.getKindCase() == GrpcValue.KindCase.EMBEDDED_VALUE && !v.getEmbeddedValue().getType().isEmpty())
+						? v.getEmbeddedValue().getType()
+						: prop.getOfType();
+	
+				if (v.getKindCase() != GrpcValue.KindCase.EMBEDDED_VALUE || embeddedTypeName == null || embeddedTypeName.isEmpty()) {
+					// Fallback to a Map if we can't create a typed embedded doc
+					return fromGrpcValue(v);
+				}
+	
 				MutableEmbeddedDocument ed = parent.newEmbeddedDocument(embeddedTypeName, propName);
-
-				// Recursively convert struct fields
-				v.getStructValue().getFieldsMap().forEach((k, vv) -> {
-					// Try to get schema for embedded type
-					DocumentType embeddedType = null;
-					com.arcadedb.schema.Property embeddedProp = null;
-
-					if (embeddedTypeName != null) {
-						try {
-							embeddedType = db.getSchema().getType(embeddedTypeName);
-							embeddedProp = embeddedType.getProperty(k);
-						}
-						catch (Exception e) {
-							// Property not in schema
-						}
-					}
-
-					if (embeddedProp != null && embeddedType != null) {
-						// Create a simple GrpcValue wrapper for recursive conversion
-						GrpcValue.Builder rvBuilder = GrpcValue.newBuilder().setValue(vv)
-								.setValueType(schemaTypeToGrpcType(embeddedProp.getType()));
-						ed.set(k, convertWithSchemaType(db, ed, embeddedProp, k, rvBuilder.build()));
-					}
-					else {
-						// No schema, use generic conversion
-						ed.set(k, toJava(vv));
-					}
+				DocumentType embeddedType = null;
+				try {
+					embeddedType = db.getSchema().getType(embeddedTypeName);
+				}
+				catch (Exception ignore) {
+				}
+	
+				final DocumentType embeddedTypeFinal = embeddedType;
+	
+				v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> {
+					Object j = (embeddedTypeFinal != null) ? toJavaForProperty(db, ed, embeddedTypeFinal, k, vv) : fromGrpcValue(vv);
+					ed.set(k, j);
 				});
 				return ed;
 			}
-			return null;
-
-		case LIST:
-		case ARRAY_OF_SHORTS:
-		case ARRAY_OF_INTEGERS:
-		case ARRAY_OF_LONGS:
-		case ARRAY_OF_FLOATS:
-		case ARRAY_OF_DOUBLES:
-			if (v.hasListValue()) {
-				java.util.List<Object> list = new java.util.ArrayList<>();
-
-				// Determine element type
-				com.arcadedb.schema.Type elementType = getListElementType(schemaType);
-
-				for (com.google.protobuf.Value item : v.getListValue().getValuesList()) {
-					if (elementType != null) {
-						// Create wrapper for typed conversion
-						GrpcValue.Builder rvBuilder = GrpcValue.newBuilder().setValue(item).setValueType(schemaTypeToGrpcType(elementType));
-
-						// Create a dummy property for element conversion
-						com.arcadedb.schema.Property elementProp = createVirtualProperty(elementType, prop.getOfType());
-						list.add(convertWithSchemaType(db, parent, elementProp, propName + "[element]", rvBuilder.build()));
+	
+			case MAP:
+				if (v.getKindCase() == GrpcValue.KindCase.MAP_VALUE) {
+					var m = new java.util.LinkedHashMap<String, Object>();
+					v.getMapValue().getEntriesMap().forEach((k, vv) -> m.put(k, fromGrpcValue(vv)));
+					return m;
+				}
+				return null;
+	
+			case LIST:
+				if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
+					var list = new java.util.ArrayList<>();
+					for (GrpcValue item : v.getListValue().getValuesList()) {
+						list.add(fromGrpcValue(item));
 					}
-					else {
-						// Generic conversion
-						list.add(toJava(item));
+					return list;
+				}
+				return null;
+			case ARRAY_OF_SHORTS: {
+				if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
+					var out = new java.util.ArrayList<Short>();
+					for (GrpcValue item : v.getListValue().getValuesList()) {
+						Object o = fromGrpcValue(item);
+						if (o instanceof Number n)
+							out.add(n.shortValue());
+						else if (o instanceof String s)
+							out.add(Short.parseShort(s));
 					}
+					return out;
 				}
-
-				// Convert to appropriate array type if needed
-				if (schemaType == com.arcadedb.schema.Type.ARRAY_OF_SHORTS) {
-					return list.stream().mapToInt(o -> ((Number) o).shortValue()).toArray();
-				}
-				else if (schemaType == com.arcadedb.schema.Type.ARRAY_OF_INTEGERS) {
-					return list.stream().mapToInt(o -> ((Number) o).intValue()).toArray();
-				}
-				else if (schemaType == com.arcadedb.schema.Type.ARRAY_OF_LONGS) {
-					return list.stream().mapToLong(o -> ((Number) o).longValue()).toArray();
-				}
-				else if (schemaType == com.arcadedb.schema.Type.ARRAY_OF_FLOATS) {
-					float[] array = new float[list.size()];
-					for (int i = 0; i < list.size(); i++) {
-						array[i] = ((Number) list.get(i)).floatValue();
-					}
-					return array;
-				}
-				else if (schemaType == com.arcadedb.schema.Type.ARRAY_OF_DOUBLES) {
-					return list.stream().mapToDouble(o -> ((Number) o).doubleValue()).toArray();
-				}
-
-				return list;
-			}
-			return null;
-
-		case MAP:
-			if (v.hasStructValue()) {
-				java.util.Map<String, Object> map = new java.util.LinkedHashMap<>();
-				v.getStructValue().getFieldsMap().forEach((k, vv) -> {
-					map.put(k, toJava(vv));
-				});
-				return map;
-			}
-			return null;
-
-		default:
-			// Fallback to generic conversion
-			return toJava(v);
-		}
-	}
-
-	private com.arcadedb.schema.Property createVirtualProperty(final com.arcadedb.schema.Type type, final String ofType) {
-
-		return new com.arcadedb.schema.Property() {
-			private final Map<String, Object> customValues = new HashMap<>();
-			private Object defaultValue = null;
-			private boolean readonly = false;
-			private boolean mandatory = false;
-			private boolean notNull = false;
-			private boolean hidden = false;
-			private String max = null;
-			private String min = null;
-			private String regexp = null;
-
-			@Override
-			public Index createIndex(Schema.INDEX_TYPE indexType, boolean unique) {
-				// Virtual properties cannot create indexes
-				throw new UnsupportedOperationException("Cannot create index on virtual property");
-			}
-
-			@Override
-			public Index getOrCreateIndex(Schema.INDEX_TYPE indexType, boolean unique) {
-				// Virtual properties don't have indexes
 				return null;
 			}
-
-			@Override
-			public String getName() {
-				return "__virtual_" + type.name().toLowerCase();
-			}
-
-			@Override
-			public Type getType() {
-				return type;
-			}
-
-			@Override
-			public int getId() {
-				// Virtual properties don't have database IDs
-				return -1;
-			}
-
-			@Override
-			public Object getDefaultValue() {
-				return defaultValue;
-			}
-
-			@Override
-			public Property setDefaultValue(Object defaultValue) {
-				this.defaultValue = defaultValue;
-				return this;
-			}
-
-			@Override
-			public String getOfType() {
-				return ofType;
-			}
-
-			@Override
-			public Property setOfType(String ofType) {
-				// Cannot modify virtual property's ofType after creation
-				throw new UnsupportedOperationException("Cannot modify virtual property's ofType");
-			}
-
-			@Override
-			public Property setReadonly(boolean readonly) {
-				this.readonly = readonly;
-				return this;
-			}
-
-			@Override
-			public boolean isReadonly() {
-				return readonly;
-			}
-
-			@Override
-			public Property setMandatory(boolean mandatory) {
-				this.mandatory = mandatory;
-				return this;
-			}
-
-			@Override
-			public boolean isMandatory() {
-				return mandatory;
-			}
-
-			@Override
-			public Property setNotNull(boolean notNull) {
-				this.notNull = notNull;
-				return this;
-			}
-
-			@Override
-			public boolean isNotNull() {
-				return notNull;
-			}
-
-			@Override
-			public Property setHidden(boolean hidden) {
-				this.hidden = hidden;
-				return this;
-			}
-
-			@Override
-			public boolean isHidden() {
-				return hidden;
-			}
-
-			@Override
-			public Property setMax(String max) {
-				this.max = max;
-				return this;
-			}
-
-			@Override
-			public String getMax() {
-				return max;
-			}
-
-			@Override
-			public Property setMin(String min) {
-				this.min = min;
-				return this;
-			}
-
-			@Override
-			public String getMin() {
-				return min;
-			}
-
-			@Override
-			public Property setRegexp(String regexp) {
-				this.regexp = regexp;
-				return this;
-			}
-
-			@Override
-			public String getRegexp() {
-				return regexp;
-			}
-
-			@Override
-			public Set<String> getCustomKeys() {
-				return customValues.keySet();
-			}
-
-			@Override
-			public Object getCustomValue(String key) {
-				return customValues.get(key);
-			}
-
-			@Override
-			public Object setCustomValue(String key, Object value) {
-				return customValues.put(key, value);
-			}
-
-			@Override
-			public JSONObject toJSON() {
-				JSONObject json = new JSONObject();
-				json.put("name", getName());
-				json.put("type", type.name());
-				if (ofType != null) {
-					json.put("ofType", ofType);
+	
+			case ARRAY_OF_INTEGERS: {
+				if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
+					var out = new java.util.ArrayList<Integer>();
+					for (GrpcValue item : v.getListValue().getValuesList()) {
+						Object o = fromGrpcValue(item);
+						if (o instanceof Number n)
+							out.add(n.intValue());
+						else if (o instanceof String s)
+							out.add(Integer.parseInt(s));
+					}
+					return out;
 				}
-				if (defaultValue != null) {
-					json.put("default", defaultValue);
+				return null;
+			}
+	
+			case ARRAY_OF_LONGS: {
+				if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
+					var out = new java.util.ArrayList<Long>();
+					for (GrpcValue item : v.getListValue().getValuesList()) {
+						Object o = fromGrpcValue(item);
+						if (o instanceof Number n)
+							out.add(n.longValue());
+						else if (o instanceof String s)
+							out.add(Long.parseLong(s));
+					}
+					return out;
 				}
-				json.put("readonly", readonly);
-				json.put("mandatory", mandatory);
-				json.put("notNull", notNull);
-				json.put("hidden", hidden);
-				if (max != null)
-					json.put("max", max);
-				if (min != null)
-					json.put("min", min);
-				if (regexp != null)
-					json.put("regexp", regexp);
-				if (!customValues.isEmpty()) {
-					json.put("custom", new JSONObject(customValues));
+				return null;
+			}
+	
+			case ARRAY_OF_FLOATS: {
+				if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
+					var out = new java.util.ArrayList<Float>();
+					for (GrpcValue item : v.getListValue().getValuesList()) {
+						Object o = fromGrpcValue(item);
+						if (o instanceof Number n)
+							out.add(n.floatValue());
+						else if (o instanceof String s)
+							out.add(Float.parseFloat(s));
+					}
+					return out;
 				}
-				return json;
+				return null;
 			}
-
-			@Override
-			public boolean equals(Object obj) {
-				if (this == obj)
-					return true;
-				if (!(obj instanceof com.arcadedb.schema.Property))
-					return false;
-				com.arcadedb.schema.Property other = (com.arcadedb.schema.Property) obj;
-				return type == other.getType() && Objects.equals(ofType, other.getOfType());
+	
+			case ARRAY_OF_DOUBLES: {
+				if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
+					var out = new java.util.ArrayList<Double>();
+					for (GrpcValue item : v.getListValue().getValuesList()) {
+						Object o = fromGrpcValue(item);
+						if (o instanceof Number n)
+							out.add(n.doubleValue());
+						else if (o instanceof String s)
+							out.add(Double.parseDouble(s));
+					}
+					return out;
+				}
+				return null;
 			}
-
-			@Override
-			public int hashCode() {
-				return Objects.hash(type, ofType);
-			}
-
-			@Override
-			public String toString() {
-				return "VirtualProperty{type=" + type + (ofType != null ? ", ofType=" + ofType : "") + "}";
-			}
-		};
-	}
-
-	// Helper method to determine element type for arrays/lists
-	private com.arcadedb.schema.Type getListElementType(com.arcadedb.schema.Type listType) {
-		switch (listType) {
-		case ARRAY_OF_SHORTS:
-			return com.arcadedb.schema.Type.SHORT;
-		case ARRAY_OF_INTEGERS:
-			return com.arcadedb.schema.Type.INTEGER;
-		case ARRAY_OF_LONGS:
-			return com.arcadedb.schema.Type.LONG;
-		case ARRAY_OF_FLOATS:
-			return com.arcadedb.schema.Type.FLOAT;
-		case ARRAY_OF_DOUBLES:
-			return com.arcadedb.schema.Type.DOUBLE;
-		default:
-			return null;
+			
+			case DATETIME_SECOND:
+			case DATETIME_MICROS:
+			case DATETIME_NANOS: {
+			  // Same handling as DATETIME
+			  return switch (v.getKindCase()) {
+			    case TIMESTAMP_VALUE -> new java.util.Date(tsToMillis(v.getTimestampValue()));
+			    case INT64_VALUE     -> new java.util.Date(v.getInt64Value());        // epoch ms expected
+			    case STRING_VALUE    -> new java.util.Date(Long.parseLong(v.getStringValue()));
+			    default              -> null;
+			  };
+			}			
 		}
+
+		// default fallback
+		return fromGrpcValue(v);
 	}
 
 	private String generateTransactionId() {

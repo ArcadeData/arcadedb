@@ -33,49 +33,57 @@ message RowError {
   uint64 row_index = 1; string code = 2; string message = 3; string field = 4;
 }
 
+// -----------------------------------------------------------------------------
+// GRPC Record
+// -----------------------------------------------------------------------------
+
+// A record (vertex/document)
 message GrpcRecord {
-  string rid = 1;
-  string type = 2; // optional logical type/class name
+  string rid  = 1;  // empty for embedded docs
+  string type = 2;  // ArcadeDB class/type name (optional for embedded)
   map<string, GrpcValue> properties = 3;
 }
 
+// Typed values, recursively composable
 message GrpcValue {
+  oneof kind {
+    bool                      bool_value       = 1;
+    int32                     int32_value      = 2;
+    int64                     int64_value      = 3;  // epoch ms, counters, etc.
+    float                     float_value      = 4;
+    double                    double_value     = 5;
+    string                    string_value     = 6;
+    bytes                     bytes_value      = 7;  // binary
+    google.protobuf.Timestamp timestamp_value  = 8;  // date/datetime
+    GrpcList                  list_value       = 9;  // LIST
+    GrpcMap                   map_value        = 10; // schemaless MAP
+    GrpcEmbedded              embedded_value   = 11; // embedded doc
+    GrpcLink                  link_value       = 12; // RID link
+    GrpcDecimal               decimal_value    = 13; // exact decimal
+  }
 
-  GrpcValueType valueType = 1;
-  google.protobuf.Value value = 2;
-
-  // Optional type parameter for complex types
-  // For LIST: element type (e.g., "String", "OrderItem")
-  // For MAP: value type (e.g., "Integer", "Address")
-  // For EMBEDDED: document type (e.g., "Address")
-  // For LINK: target type (e.g., "Customer", "Product")
-  optional string ofType = 3;
+  // Optional semantic hint (non-breaking): "date", "datetime", "rid", "decimal(38,9)", etc.
+  string logical_type = 14;
 }
 
-enum GrpcValueType {
+// Containers
+message GrpcList    { repeated GrpcValue values = 1; }
+message GrpcMap     { map<string, GrpcValue> entries = 1; }
+message GrpcEmbedded{
+  string type = 1;  // ArcadeDB class name if present; may be empty
+  map<string, GrpcValue> fields = 2;
+}
 
-  // Default value (0), typically used to indicate an unset/unspecified type
-  RECORD_VALUE_TYPE_UNSPECIFIED = 0;
+// RID link
+message GrpcLink {
+  string rid  = 1;  // e.g., "#12:0"
+  string type = 2;  // optional target class
+}
 
-  // Primitive types
-  BOOLEAN = 1;
-  BYTE = 2;
-  SHORT = 3;
-  INTEGER = 4;
-  LONG = 5;
-  STRING = 6;
-  LINK = 7;
-  BINARY = 8;
-  DATE = 9;
-  DATETIME = 10;
-  FLOAT = 11;
-  DOUBLE = 12;
-  DECIMAL = 13;
-
-  // Complex types (use with ofType)
-  LIST = 14;      // ofType specifies element type
-  MAP = 15;       // ofType specifies value type
-  EMBEDDED = 16;  // ofType specifies document type
+// Exact decimal without loss
+message GrpcDecimal {
+  sint64 unscaled = 1; // unscaled value
+  int32  scale    = 2; // number of decimal places
 }
 
 // -----------------------------------------------------------------------------
