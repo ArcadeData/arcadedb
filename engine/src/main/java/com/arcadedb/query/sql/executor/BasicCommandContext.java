@@ -123,9 +123,15 @@ public class BasicCommandContext implements CommandContext {
 
     String fieldName = null;
     if (name.contains(".")) {
-      String[] parts = name.split("\\.");
+      final String[] parts = name.split("\\.");
+      if (parts.length > 2) {
+        throw new com.arcadedb.exception.CommandSQLParsingException(
+            "Nested property access is not supported in this context: " + name);
+      }
       name = parts[0];
-      fieldName = parts[1];
+      if (parts.length > 1) {
+        fieldName = parts[1];
+      }
     }
 
     if (name.equalsIgnoreCase("CONTEXT"))
