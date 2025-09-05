@@ -1,4 +1,6 @@
 package com.arcadedb.remote.grpc;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -9,9 +11,6 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.Database;
@@ -98,57 +97,47 @@ import io.grpc.stub.StreamObserver;
  */
 public class RemoteGrpcDatabase extends RemoteDatabase {
 
-	private static final Logger logger = LoggerFactory.getLogger(RemoteGrpcDatabase.class);
+
+private static final Logger logger = LoggerFactory.getLogger(RemoteGrpcDatabase.class);
 
 // --- Debug helpers (client) ---
-	private static String summarize(Object o) {
-		if (o == null)
-			return "null";
-		try {
-			if (o instanceof CharSequence s)
-				return "String(" + s.length() + ")";
-			if (o instanceof byte[] b)
-				return "bytes[" + b.length + "]";
-			if (o instanceof java.util.Collection<?> c)
-				return o.getClass().getSimpleName() + "[size=" + c.size() + "]";
-			if (o instanceof java.util.Map<?, ?> m)
-				return o.getClass().getSimpleName() + "[size=" + m.size() + "]";
-			return o.getClass().getSimpleName();
-		}
-		catch (Exception e) {
-			return o.getClass().getSimpleName();
-		}
-	}
+private static String summarize(Object o) {
+    if (o == null) return "null";
+    try {
+        if (o instanceof CharSequence s) return "String(" + s.length() + ")";
+        if (o instanceof byte[] b) return "bytes[" + b.length + "]";
+        if (o instanceof java.util.Collection<?> c) return o.getClass().getSimpleName() + "[size=" + c.size() + "]";
+        if (o instanceof java.util.Map<?,?> m) return o.getClass().getSimpleName() + "[size=" + m.size() + "]";
+        return o.getClass().getSimpleName();
+    } catch (Exception e) { return o.getClass().getSimpleName(); }
+}
+private static String summarize(GrpcValue v) {
+    if (v == null) return "GrpcValue(null)";
+    return switch (v.getKindCase()) {
+        case BOOL_VALUE -> "BOOL";
+        case INT32_VALUE -> "INT32";
+        case INT64_VALUE -> "INT64";
+        case FLOAT_VALUE -> "FLOAT";
+        case DOUBLE_VALUE -> "DOUBLE";
+        case STRING_VALUE -> "STRING(" + v.getStringValue().length() + ")";
+        case BYTES_VALUE -> "BYTES[" + v.getBytesValue().size() + "]";
+        case TIMESTAMP_VALUE -> "TIMESTAMP";
+        case LIST_VALUE -> "LIST[" + v.getListValue().getValuesCount() + "]";
+        case MAP_VALUE -> "MAP[" + v.getMapValue().getEntriesCount() + "]";
+        case EMBEDDED_VALUE -> "EMBEDDED";
+        case LINK_VALUE -> "LINK(" + v.getLinkValue().getRid() + ")";
+        case DECIMAL_VALUE -> "DECIMAL(scale=" + v.getDecimalValue().getScale() + ")";
+        case KIND_NOT_SET -> "KIND_NOT_SET";
+    };
+}
+private static String summarize(GrpcRecord r) {
+    if (r == null) return "GrpcRecord(null)";
+    String rid = r.getRid();
+    String ty  = r.getType();
+    int props  = r.getPropertiesCount();
+    return "GrpcRecord{rid=" + rid + ", type=" + ty + ", props=" + props + "}";
+}
 
-	private static String summarize(GrpcValue v) {
-		if (v == null)
-			return "GrpcValue(null)";
-		return switch (v.getKindCase()) {
-		case BOOL_VALUE -> "BOOL";
-		case INT32_VALUE -> "INT32";
-		case INT64_VALUE -> "INT64";
-		case FLOAT_VALUE -> "FLOAT";
-		case DOUBLE_VALUE -> "DOUBLE";
-		case STRING_VALUE -> "STRING(" + v.getStringValue().length() + ")";
-		case BYTES_VALUE -> "BYTES[" + v.getBytesValue().size() + "]";
-		case TIMESTAMP_VALUE -> "TIMESTAMP";
-		case LIST_VALUE -> "LIST[" + v.getListValue().getValuesCount() + "]";
-		case MAP_VALUE -> "MAP[" + v.getMapValue().getEntriesCount() + "]";
-		case EMBEDDED_VALUE -> "EMBEDDED";
-		case LINK_VALUE -> "LINK(" + v.getLinkValue().getRid() + ")";
-		case DECIMAL_VALUE -> "DECIMAL(scale=" + v.getDecimalValue().getScale() + ")";
-		case KIND_NOT_SET -> "KIND_NOT_SET";
-		};
-	}
-
-	private static String summarize(GrpcRecord r) {
-		if (r == null)
-			return "GrpcRecord(null)";
-		String rid = r.getRid();
-		String ty = r.getType();
-		int props = r.getPropertiesCount();
-		return "GrpcRecord{rid=" + rid + ", type=" + ty + ", props=" + props + "}";
-	}
 
 	private final ManagedChannel channel;
 
@@ -259,8 +248,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			if (!channel.awaitTermination(5, TimeUnit.SECONDS)) {
 				channel.shutdownNow();
 			}
-		}
-		catch (InterruptedException e) {
+		} catch (InterruptedException e) {
 			channel.shutdownNow();
 		}
 	}
@@ -279,11 +267,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			transactionId = response.getTransactionId();
 			// Store transaction ID in parent class session management
 			setSessionId(transactionId);
-		}
-		catch (StatusRuntimeException e) {
+		} catch (StatusRuntimeException e) {
 			throw new TransactionException("Error on transaction begin", e);
-		}
-		catch (StatusException e) {
+		} catch (StatusException e) {
 			throw new TransactionException("Error on transaction begin", e);
 		}
 	}
@@ -305,14 +291,11 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			if (!response.getSuccess()) {
 				throw new TransactionException("Failed to commit transaction: " + response.getMessage());
 			}
-		}
-		catch (StatusRuntimeException e) {
+		} catch (StatusRuntimeException e) {
 			handleGrpcException(e);
-		}
-		catch (StatusException e) {
+		} catch (StatusException e) {
 			handleGrpcException(e);
-		}
-		finally {
+		} finally {
 			transactionId = null;
 			setSessionId(null);
 		}
@@ -336,14 +319,11 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			if (!response.getSuccess()) {
 				throw new TransactionException("Failed to rollback transaction: " + response.getMessage());
 			}
-		}
-		catch (StatusRuntimeException e) {
+		} catch (StatusRuntimeException e) {
 			throw new TransactionException("Error on transaction rollback", e);
-		}
-		catch (StatusException e) {
+		} catch (StatusException e) {
 			throw new TransactionException("Error on transaction rollback", e);
-		}
-		finally {
+		} finally {
 			transactionId = null;
 			setSessionId(null);
 		}
@@ -365,11 +345,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			if (!response.getSuccess()) {
 				throw new DatabaseOperationException("Failed to delete record: " + response.getMessage());
 			}
-		}
-		catch (StatusRuntimeException e) {
+		} catch (StatusRuntimeException e) {
 			handleGrpcException(e);
-		}
-		catch (StatusException e) {
+		} catch (StatusException e) {
 			handleGrpcException(e);
 		}
 	}
@@ -404,26 +382,20 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		}
 
 		try {
+		
+			if (logger.isDebugEnabled()) logger.debug("CLIENT executeQuery: db={}, tx={}, queryLen={}, params={}", getName(), (transactionId!=null), requestBuilder.getQuery().length(), requestBuilder.getParametersCount());
 
-			if (logger.isDebugEnabled())
-				logger.debug("CLIENT executeQuery: db={}, tx={}, queryLen={}, params={}", getName(), (transactionId != null),
-						requestBuilder.getQuery().length(), requestBuilder.getParametersCount());
-
+		
 			ExecuteQueryResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
 					.executeQuery(requestBuilder.build());
-
-			if (logger.isDebugEnabled()) {
-				int _r = 0;
-				for (var qr : response.getResultsList())
-					_r += qr.getRecordsCount();
-				logger.debug("CLIENT executeQuery: results={}", _r);
-			}
-			return createGrpcResultSet(response);
-		}
+			
+			if (logger.isDebugEnabled()) { int _r=0; for (var qr : response.getResultsList()) _r+=qr.getRecordsCount(); logger.debug("CLIENT executeQuery: results={}", _r);} 
+return createGrpcResultSet(response);
+		} 
 		catch (StatusRuntimeException e) {
 			handleGrpcException(e);
 			return new InternalResultSet();
-		}
+		} 
 		catch (StatusException e) {
 			handleGrpcException(e);
 			return new InternalResultSet();
@@ -457,24 +429,21 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		}
 
 		try {
+			
+			if (logger.isDebugEnabled()) logger.debug("CLIENT executeCommand: db={}, tx={}, cmdLen={}, params={}", getName(), (transactionId!=null), requestBuilder.getCommand().length(), requestBuilder.getParametersCount());
 
-			if (logger.isDebugEnabled())
-				logger.debug("CLIENT executeCommand: db={}, tx={}, cmdLen={}, params={}", getName(), (transactionId != null),
-						requestBuilder.getCommand().length(), requestBuilder.getParametersCount());
-
+			
 			ExecuteCommandResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
 					.executeCommand(requestBuilder.build());
-
-			if (logger.isDebugEnabled())
-				logger.debug("CLIENT executeCommand: success = {}", response.getSuccess());
-
-			if (!response.getSuccess()) {
+			
+			if (logger.isDebugEnabled()) logger.debug("CLIENT executeCommand: status={}", response.getStatus());
+if (! response.getSuccess()) {
 				throw new DatabaseOperationException("Failed to execute command: " + response.getMessage());
 			}
 
 			// Create result set with command execution info
 			InternalResultSet resultSet = new InternalResultSet();
-
+			
 			if (response.getAffectedRecords() > 0) {
 				Map<String, Object> result = new HashMap<>();
 				result.put("affected", response.getAffectedRecords());
@@ -482,12 +451,10 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 				resultSet.add(new ResultInternal(result));
 			}
 			return resultSet;
-		}
-		catch (StatusRuntimeException e) {
+		} catch (StatusRuntimeException e) {
 			handleGrpcException(e);
 			return new InternalResultSet();
-		}
-		catch (StatusException e) {
+		} catch (StatusException e) {
 			handleGrpcException(e);
 			return new InternalResultSet();
 		}
@@ -501,8 +468,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		return executeCommand(databaseName, "sql", sql, params, /* returnRows */ false, /* maxRows */ 0, txBeginCommit(), timeoutMs);
 	}
 
-	public ExecuteCommandResponse executeCommand(String language, String command, Map<String, Object> params, boolean returnRows, int maxRows,
-			TransactionContext tx, long timeoutMs) {
+	public ExecuteCommandResponse executeCommand(String language, String command, Map<String, Object> params,
+			boolean returnRows, int maxRows, TransactionContext tx, long timeoutMs) {
 
 		var reqB = ExecuteCommandRequest.newBuilder().setDatabase(databaseName).setCommand(command)
 				.putAllParameters(convertParamsToGrpcValue(params)).setLanguage(langOrDefault(language)).setReturnRows(returnRows)
@@ -515,14 +482,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 		try {
 			return blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).executeCommand(reqB.build());
-		}
-		catch (StatusException e) {
+		} catch (StatusException e) {
 			throw new RuntimeException("Failed to execute command: " + e.getMessage(), e);
 		}
 	}
 
-	public ExecuteCommandResponse executeCommand(String database, String language, String command, Map<String, Object> params,
-			boolean returnRows, int maxRows, TransactionContext tx, long timeoutMs) {
+	public ExecuteCommandResponse executeCommand(String database, String language, String command,
+			Map<String, Object> params, boolean returnRows, int maxRows, TransactionContext tx, long timeoutMs) {
 
 		var reqB = ExecuteCommandRequest.newBuilder().setDatabase(database).setCommand(command)
 				.putAllParameters(convertParamsToGrpcValue(params)).setLanguage(langOrDefault(language)).setReturnRows(returnRows)
@@ -535,8 +501,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 		try {
 			return blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).executeCommand(reqB.build());
-		}
-		catch (StatusException e) {
+		} catch (StatusException e) {
 			throw new RuntimeException("Failed to execute command: " + e.getMessage(), e);
 		}
 	}
@@ -549,40 +514,50 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 		if (rid != null) {
 			// -------- UPDATE (partial) --------
-			PropertiesUpdate partial = PropertiesUpdate.newBuilder().putAllProperties(convertParamsToGrpcValue(record.toMap(false))).build();
+			PropertiesUpdate partial = PropertiesUpdate.newBuilder()
+					.putAllProperties(convertParamsToGrpcValue(record.toMap(false)))
+					.build();
 
-			UpdateRecordRequest request = UpdateRecordRequest.newBuilder().setDatabase(getName()).setRid(rid.toString()).setPartial(partial)
-					.setDatabase(databaseName).setCredentials(buildCredentials()).build();
+			UpdateRecordRequest request = UpdateRecordRequest.newBuilder()
+					.setDatabase(getName())
+					.setRid(rid.toString())
+					.setPartial(partial)
+					.setDatabase(databaseName)
+					.setCredentials(buildCredentials()).build();
 
 			try {
-
+				
 				@SuppressWarnings("unused")
-				UpdateRecordResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).updateRecord(request);
+				UpdateRecordResponse response = blockingStub
+						.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+						.updateRecord(request);
 
 				// If your proto has flags, you can check response.getSuccess()/getUpdated()
 				// Otherwise, treat non-exception as success.
 				return rid;
-			}
-			catch (StatusRuntimeException e) {
+			} catch (StatusRuntimeException e) {
+				handleGrpcException(e);
+				return null;
+			} catch (StatusException e) {
 				handleGrpcException(e);
 				return null;
 			}
-			catch (StatusException e) {
-				handleGrpcException(e);
-				return null;
-			}
-		}
-		else {
+		} else {
 			// -------- CREATE --------
-			GrpcRecord recMsg = GrpcRecord.newBuilder().putAllProperties(convertParamsToGrpcValue(record.toMap(false))).build();
+			GrpcRecord recMsg = GrpcRecord.newBuilder()
+					.putAllProperties(convertParamsToGrpcValue(record.toMap(false)))
+					.build();
 
-			CreateRecordRequest request = CreateRecordRequest.newBuilder().setDatabase(getName()).setType(record.getTypeName()).setRecord(recMsg) // nested
-																																					// GrpcRecord
-																																					// payload
+			CreateRecordRequest request = CreateRecordRequest.newBuilder()
+					.setDatabase(getName())
+					.setType(record.getTypeName())
+					.setRecord(recMsg) // nested GrpcRecord payload
 					.setCredentials(buildCredentials()).build();
 
 			try {
-				CreateRecordResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).createRecord(request);
+				CreateRecordResponse response = blockingStub
+						.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+						.createRecord(request);
 
 				// Proto returns the newly created RID as a string
 				final String ridStr = response.getRid();
@@ -593,17 +568,14 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 				// Construct a RID from the returned string
 				try {
 					return new RID(ridStr);
-				}
-				catch (NoSuchMethodError | IllegalArgumentException ex) {
+				} catch (NoSuchMethodError | IllegalArgumentException ex) {
 					// Fallback for older APIs expecting (Database, String)
 					return new RID(this, ridStr);
 				}
-			}
-			catch (StatusRuntimeException e) {
+			} catch (StatusRuntimeException e) {
 				handleGrpcException(e);
 				return null;
-			}
-			catch (StatusException e) {
+			} catch (StatusException e) {
 				handleGrpcException(e);
 				return null;
 			}
@@ -699,9 +671,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 					return true;
 
 				try {
-
+					
 					while (responseIterator.hasNext()) {
-
+						
 						QueryResult result = responseIterator.read();
 
 						if (result.getRecordsCount() == 0) {
@@ -717,9 +689,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 					return false;
 				}
 				catch (Exception e) {
-
+					
 					throw new RuntimeException("Interrupted while waiting for stream", e);
-				}
+				}				
 			}
 
 			@Override
@@ -791,13 +763,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 					return true;
 				if (drained)
 					return false;
-
+				
 				try {
-
+					
 					while (responseIterator.hasNext()) {
-
+						
 						QueryResult qr = responseIterator.read();
-
+						
 						int n = qr.getTotalRecordsInBatch(); // server-populated
 						// Guard: some servers could omit this; fallback to list size.
 						if (n == 0)
@@ -825,9 +797,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 					return false;
 				}
 				catch (Exception e) {
-
+					
 					throw new RuntimeException("Interrupted while waiting for stream", e);
-				}
+				}				
 			}
 
 			@Override
@@ -844,27 +816,29 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	public Iterator<GrpcRecord> queryStream(String database, String sql, Map<String, Object> params, int batchSize,
 			StreamQueryRequest.RetrievalMode mode, TransactionContext tx, long timeoutMs) {
 
-		var reqB = StreamQueryRequest.newBuilder().setDatabase(database).setQuery(sql).putAllParameters(convertParamsToGrpcValue(params))
-				.setCredentials(buildCredentials()).setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode);
+		var reqB = StreamQueryRequest.newBuilder().setDatabase(database).setQuery(sql)
+				.putAllParameters(convertParamsToGrpcValue(params)).setCredentials(buildCredentials()).setBatchSize(batchSize > 0 ? batchSize : 100)
+				.setRetrievalMode(mode);
 
 		if (tx != null)
 			reqB.setTransaction(tx);
 
-		final BlockingClientCall<?, QueryResult> it = blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).streamQuery(reqB.build());
+		final BlockingClientCall<?, QueryResult> it = blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+				.streamQuery(reqB.build());
 
 		return new Iterator<>() {
-
+			
 			private Iterator<GrpcRecord> curr = Collections.emptyIterator();
 
 			public boolean hasNext() {
-
+				
 				if (curr.hasNext())
 					return true;
 
 				try {
-
+					
 					if (it.hasNext()) {
-
+					
 						curr = it.read().getRecordsList().iterator();
 						return hasNext();
 					}
@@ -890,8 +864,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	public Iterator<QueryBatch> queryStreamBatches(String passLabel, String sql, Map<String, Object> params, int batchSize,
 			StreamQueryRequest.RetrievalMode mode, TransactionContext tx, long timeoutMs) {
 
-		var reqB = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(sql).putAllParameters(convertParamsToGrpcValue(params))
-				.setCredentials(buildCredentials()).setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode);
+		var reqB = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(sql)
+				.putAllParameters(convertParamsToGrpcValue(params)).setCredentials(buildCredentials()).setBatchSize(batchSize > 0 ? batchSize : 100)
+				.setRetrievalMode(mode);
 
 		if (tx != null)
 			reqB.setTransaction(tx);
@@ -900,9 +875,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 				.streamQuery(reqB.build());
 
 		return new Iterator<>() {
-
+			
 			public boolean hasNext() {
-
+				
 				try {
 					return respIter.hasNext();
 				}
@@ -910,18 +885,18 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 					throw new RuntimeException(e);
 				}
 				catch (StatusException e) {
-					throw new RuntimeException(e);
+					throw new RuntimeException(e);					
 				}
 			}
 
 			public QueryBatch next() {
 
 				QueryResult qr;
-
+				
 				try {
 					qr = respIter.read();
 					List<Record> converted = new ArrayList<>(qr.getRecordsCount());
-
+					
 					for (GrpcRecord gr : qr.getRecordsList()) {
 						converted.add(grpcRecordToDBRecord(gr));
 					}
@@ -935,20 +910,20 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 					throw new RuntimeException(e);
 				}
 				catch (StatusException e) {
-					throw new RuntimeException(e);
-				}
+					throw new RuntimeException(e);	
+				}				
 			}
 		};
 	}
 
 	public String createVertex(String cls, Map<String, Object> props, long timeoutMs) {
 		// Build the nested proto GrpcRecord payload
-		GrpcRecord recMsg = GrpcRecord.newBuilder().putAllProperties(convertParamsToGrpcValue(props)).build();
+		GrpcRecord recMsg = GrpcRecord.newBuilder().putAllProperties(convertParamsToGrpcValue(props))
+				.build();
 
 		// Build the Create request
-		CreateRecordRequest req = CreateRecordRequest.newBuilder().setDatabase(getName()).setType(cls).setRecord(recMsg) // <<<< NESTED RECORD
-																															// (not top-level
-																															// properties)
+		CreateRecordRequest req = CreateRecordRequest.newBuilder().setDatabase(getName())
+				.setType(cls).setRecord(recMsg) // <<<< NESTED RECORD (not top-level properties)
 				.setCredentials(buildCredentials()).build();
 
 		// Call RPC
@@ -958,14 +933,15 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			res = blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).createRecord(req);
 			// Response carries new RID string
 			return res.getRid(); // e.g., "#12:0"
-		}
-		catch (StatusException e) {
+		} catch (StatusException e) {
 			throw new RuntimeException("Failed to create vertex", e);
 		}
 	}
 
 	public boolean updateRecord(String rid, Map<String, Object> props, long timeoutMs) {
-		PropertiesUpdate partial = PropertiesUpdate.newBuilder().putAllProperties(convertParamsToGrpcValue(props)).build();
+		PropertiesUpdate partial = PropertiesUpdate.newBuilder()
+				.putAllProperties(convertParamsToGrpcValue(props))
+				.build();
 
 		return updateRecord(rid, partial, timeoutMs);
 	}
@@ -977,8 +953,10 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 	private boolean updateRecord(String rid, PropertiesUpdate partial, long timeoutMs) {
 		// Build the Update request using setPartial for partial update
-		UpdateRecordRequest req = UpdateRecordRequest.newBuilder().setDatabase(getName()).setRid(rid).setPartial(partial)
-				.setTransaction(TransactionContext.newBuilder().setBegin(true).setCommit(true)).setCredentials(buildCredentials()).build();
+		UpdateRecordRequest req = UpdateRecordRequest.newBuilder().setDatabase(getName())
+				.setRid(rid).setPartial(partial)
+				.setTransaction(TransactionContext.newBuilder().setBegin(true).setCommit(true))
+				.setCredentials(buildCredentials()).build();
 
 		// Call RPC
 		UpdateRecordResponse res;
@@ -987,16 +965,17 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			res = blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).updateRecord(req);
 			// Choose the flag your proto defines. Most builds expose getSuccess().
 			return res.getSuccess();
-		}
-		catch (StatusException e) {
+		} catch (StatusException e) {
 			throw new RuntimeException("Failed to update record", e);
 		}
 	}
 
 	private boolean updateRecordFull(String rid, GrpcRecord record, long timeoutMs) {
 		// Build the Update request using setRecord for full replacement
-		UpdateRecordRequest req = UpdateRecordRequest.newBuilder().setDatabase(getName()).setRid(rid).setRecord(record)
-				.setTransaction(TransactionContext.newBuilder().setBegin(true).setCommit(true)).setCredentials(buildCredentials()).build();
+		UpdateRecordRequest req = UpdateRecordRequest.newBuilder().setDatabase(getName())
+				.setRid(rid).setRecord(record)
+				.setTransaction(TransactionContext.newBuilder().setBegin(true).setCommit(true))
+				.setCredentials(buildCredentials()).build();
 
 		// Call RPC
 		UpdateRecordResponse res;
@@ -1004,21 +983,20 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		try {
 			res = blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).updateRecord(req);
 			return res.getSuccess();
-		}
-		catch (StatusException e) {
+		} catch (StatusException e) {
 			throw new RuntimeException("Failed to update record", e);
 		}
 	}
-
+	
 	public boolean deleteRecord(String rid, long timeoutMs) {
-		var req = DeleteRecordRequest.newBuilder().setDatabase(getName()).setRid(rid).setCredentials(buildCredentials()).build();
+		var req = DeleteRecordRequest.newBuilder().setDatabase(getName()).setRid(rid).setCredentials(buildCredentials())
+				.build();
 		DeleteRecordResponse res;
 
 		try {
 			res = blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).deleteRecord(req);
 			return res.getDeleted();
-		}
-		catch (StatusException e) {
+		} catch (StatusException e) {
 			throw new RuntimeException("Failed to delete record", e);
 		}
 	}
@@ -1061,7 +1039,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	public Record lookupByRID(final RID rid) {
 		return lookupByRID(rid, true);
 	}
-
+	
 	@Override
 	public Record lookupByRID(final RID rid, final boolean loadContent) {
 		checkDatabaseIsOpen();
@@ -1080,17 +1058,17 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 				throw new RecordNotFoundException("Record " + rid + " not found", rid);
 			}
 			return grpcRecordToDBRecord(response.getRecord());
-		}
+		} 
 		catch (StatusRuntimeException e) {
 			handleGrpcException(e);
 			return null;
-		}
+		} 
 		catch (StatusException e) {
 			handleGrpcException(e);
 			return null;
 		}
 	}
-
+	
 	@Override
 	public boolean existsRecord(RID rid) {
 		stats.existsRecord.incrementAndGet();
@@ -1098,13 +1076,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			throw new IllegalArgumentException("Record is null");
 		try {
 			return lookupByRID(rid, false) != null;
-		}
-		catch (RecordNotFoundException e) {
+		} catch (RecordNotFoundException e) {
 			return false;
 		}
 	}
 
-	public InsertSummary insertBulk(final InsertOptions options, final List<GrpcRecord> protoRows, final long timeoutMs) {
+	public InsertSummary insertBulk(final InsertOptions options,
+			final List<GrpcRecord> protoRows, final long timeoutMs) {
 
 		// Ensure options carry DB + credentials as the server expects
 		InsertOptions.Builder ob = options.toBuilder();
@@ -1120,20 +1098,20 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 		InsertOptions newOptions = ob.build();
 
-		BulkInsertRequest req = BulkInsertRequest.newBuilder().setOptions(newOptions).addAllRows(protoRows).build();
+		BulkInsertRequest req = BulkInsertRequest.newBuilder().setOptions(newOptions)
+				.addAllRows(protoRows).build();
 
 		try {
-			if (logger.isDebugEnabled())
-				logger.debug("CLIENT insertBulk: rows={}, timeoutMs={}", req.getRowsCount(), timeoutMs);
-			return blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).bulkInsert(req);
-		}
-		catch (StatusException e) {
+			if (logger.isDebugEnabled()) logger.debug("CLIENT insertBulk: rows={}, timeoutMs={}", req.getRowsCount(), timeoutMs);
+            return blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).bulkInsert(req);
+		} catch (StatusException e) {
 			throw new RuntimeException("insertBulk() -> failed: " + e.getStatus());
 		}
 	}
 
 	// Convenience overload that accepts domain rows (convert first)
-	public InsertSummary insertBulkAsListOfMaps(final InsertOptions options, final List<Map<String, Object>> rows, final long timeoutMs) {
+	public InsertSummary insertBulkAsListOfMaps(final InsertOptions options,
+			final List<Map<String, Object>> rows, final long timeoutMs) {
 
 		List<GrpcRecord> protoRows = rows.stream().map(this::toProtoRecordFromMap) // your converter
 				.collect(java.util.stream.Collectors.toList());
@@ -1141,7 +1119,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		return insertBulk(options, protoRows, timeoutMs);
 	}
 
-	public InsertSummary ingestStream(final InsertOptions options, final List<GrpcRecord> protoRows, final int chunkSize, final long timeoutMs)
+	public InsertSummary ingestStream(final InsertOptions options,
+			final List<GrpcRecord> protoRows, final int chunkSize, final long timeoutMs)
 			throws InterruptedException {
 
 		final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
@@ -1190,8 +1169,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		for (int i = 0; i < protoRows.size(); i += chunkSize) {
 			final int end = Math.min(i + chunkSize, protoRows.size());
 
-			final InsertChunk chunk = InsertChunk.newBuilder().setSessionId(sessionId).setOptions(ob.build()).setChunkSeq(seq++)
-					.addAllRows(protoRows.subList(i, end)).build();
+			final InsertChunk chunk = InsertChunk.newBuilder().setSessionId(sessionId)
+					.setOptions(ob.build()).setChunkSeq(seq++).addAllRows(protoRows.subList(i, end)).build();
 
 			req.onNext(chunk);
 		}
@@ -1205,10 +1184,11 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	}
 
 	// Convenience overload
-	public InsertSummary ingestStreamAsListOfMaps(final InsertOptions options, final List<Map<String, Object>> rows, final int chunkSize,
-			final long timeoutMs) throws InterruptedException {
+	public InsertSummary ingestStreamAsListOfMaps(final InsertOptions options,
+			final List<Map<String, Object>> rows, final int chunkSize, final long timeoutMs) throws InterruptedException {
 
-		List<GrpcRecord> protoRows = rows.stream().map(this::toProtoRecordFromMap).collect(java.util.stream.Collectors.toList());
+		List<GrpcRecord> protoRows = rows.stream().map(this::toProtoRecordFromMap)
+				.collect(java.util.stream.Collectors.toList());
 
 		return ingestStream(options, protoRows, chunkSize, timeoutMs);
 	}
@@ -1216,8 +1196,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	/**
 	 * Core implementation of InsertBidirectional ingest
 	 */
-	private <T> InsertSummary ingestBidiCore(final List<T> rows, final InsertOptions options, final int chunkSize, final int maxInflight,
-			final long timeoutMs, final java.util.function.Function<? super T, GrpcRecord> mapper) throws InterruptedException {
+	private <T> InsertSummary ingestBidiCore(final List<T> rows,
+			final InsertOptions options, final int chunkSize, final int maxInflight, final long timeoutMs,
+			final java.util.function.Function<? super T, GrpcRecord> mapper) throws InterruptedException {
 
 		// 1) Ensure options carry DB + credentials the server expects
 		final InsertOptions.Builder ob = options.toBuilder();
@@ -1235,11 +1216,10 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		final InsertOptions effectiveOpts = ob.build();
 
 		// 2) Pre-map rows → proto once (outside the observer)
-		final List<GrpcRecord> protoRows = rows.stream().map(mapper).collect(java.util.stream.Collectors.toList());
+		final List<GrpcRecord> protoRows = rows.stream().map(mapper)
+				.collect(java.util.stream.Collectors.toList());
 
-		if (logger.isDebugEnabled())
-			logger.debug("CLIENT ingestBidi start: rows={}, chunkSize={}, maxInflight={}, timeoutMs={}", protoRows.size(), chunkSize,
-					maxInflight, timeoutMs);
+		if (logger.isDebugEnabled()) logger.debug("CLIENT ingestBidi start: rows={}, chunkSize={}, maxInflight={}, timeoutMs={}", protoRows.size(), chunkSize, maxInflight, timeoutMs);
 // 3) Streaming state
 		final String sessionId = "sess-" + System.nanoTime();
 		final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
@@ -1251,7 +1231,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		final List<BatchAck> acks = java.util.Collections.synchronizedList(new ArrayList<>());
 
 		// small holder to access req inside helpers
-		final java.util.concurrent.atomic.AtomicReference<ClientCallStreamObserver<InsertRequest>> observerRef = new java.util.concurrent.atomic.AtomicReference<>();
+		final java.util.concurrent.atomic.AtomicReference<ClientCallStreamObserver<InsertRequest>> observerRef = 
+				new java.util.concurrent.atomic.AtomicReference<>();
 
 		final java.util.concurrent.atomic.AtomicBoolean commitSent = new java.util.concurrent.atomic.AtomicBoolean(false);
 		final java.util.concurrent.ScheduledExecutorService scheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
@@ -1268,11 +1249,11 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			if (commitSent.compareAndSet(false, true)) {
 				try {
 					if (observerRef.get() != null) {
-						observerRef.get().onNext(InsertRequest.newBuilder().setCommit(Commit.newBuilder().setSessionId(sessionId)).build());
+						observerRef.get().onNext(InsertRequest.newBuilder()
+								.setCommit(Commit.newBuilder().setSessionId(sessionId)).build());
 						observerRef.get().onCompleted();
 					}
-				}
-				catch (Throwable ignore) {
+				} catch (Throwable ignore) {
 					/* best effort */ }
 			}
 		};
@@ -1318,10 +1299,11 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 					return;
 
 				if (!started) {
-					req.onNext(InsertRequest.newBuilder().setStart(Start.newBuilder().setOptions(effectiveOpts)).build());
-
+					req.onNext(InsertRequest.newBuilder()
+							.setStart(Start.newBuilder().setOptions(effectiveOpts)).build());
+					
 					started = true;
-
+					
 					// Now that the call is started, it's safe to pull the first response
 					req.request(1);
 				}
@@ -1334,8 +1316,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 					final int end = Math.min(start + chunkSize, protoRows.size());
 					final var slice = protoRows.subList(start, end);
 
-					final var chunk = InsertChunk.newBuilder().setSessionId(sessionId).setChunkSeq(seq.getAndIncrement()).addAllRows(slice)
-							.build();
+					final var chunk = InsertChunk.newBuilder().setSessionId(sessionId)
+							.setChunkSeq(seq.getAndIncrement()).addAllRows(slice).build();
 
 					req.onNext(InsertRequest.newBuilder().setChunk(chunk).build());
 					cursor.set(end);
@@ -1347,10 +1329,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 					if (acked.get() >= sent.get()) {
 						// all acked → commit immediately
 						sendCommitIfNeeded.run();
-					}
-					else {
-						// not all acked → (re)arm grace timer; if last ACK never arrives, timer will
-						// COMMIT
+					} else {
+						// not all acked → (re)arm grace timer; if last ACK never arrives, timer will COMMIT
 						armAckGraceTimer.run();
 					}
 				}
@@ -1370,8 +1350,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 						if (acked.get() >= sent.get()) {
 							cancelAckGraceTimer.run();
 							sendCommitIfNeeded.run();
-						}
-						else {
+						} else {
 							armAckGraceTimer.run();
 						}
 					}
@@ -1381,13 +1360,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 					cancelAckGraceTimer.run();
 				}
 				case MSG_NOT_SET -> {
-					/* ignore */
-				}
+					/* ignore */ 
+					}
 				case ERROR -> {
 					/* TBD */
+					}
 				}
-				}
-
+				
 				req.request(1); // continue pulling responses
 			}
 
@@ -1406,19 +1385,12 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		// 4) Kick off the bidi call with deadline
 
 		try {
-			if (logger.isDebugEnabled())
-				logger.debug("CLIENT ingestBidi opening stream: timeoutMs={}", timeoutMs);
-			asyncStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).insertBidirectional(observer);
+			if (logger.isDebugEnabled()) logger.debug("CLIENT ingestBidi opening stream: timeoutMs={}", timeoutMs);
+            asyncStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).insertBidirectional(observer);			
 			@SuppressWarnings("unused")
 			boolean finished = done.await(timeoutMs + 5_000, TimeUnit.MILLISECONDS);
-			if (logger.isDebugEnabled())
-				try {
-					logger.debug("CLIENT ingestBidi finished: finished={}, sent={}, acked={}", finished, sent.get(), acked.get());
-				}
-				catch (Throwable ignore) {
-				}
-		}
-		finally {
+		if (logger.isDebugEnabled()) try { logger.debug("CLIENT ingestBidi finished: finished={}, sent={}, acked={}", finished, sent.get(), acked.get()); } catch (Throwable ignore) {}
+} finally {
 			scheduler.shutdownNow();
 		}
 
@@ -1432,60 +1404,62 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		final long ign = acks.stream().mapToLong(BatchAck::getIgnored).sum();
 		final long fail = acks.stream().mapToLong(BatchAck::getFailed).sum();
 
-		return InsertSummary.newBuilder().setReceived(protoRows.size()).setInserted(ins).setUpdated(upd).setIgnored(ign).setFailed(fail).build();
+		return InsertSummary.newBuilder().setReceived(protoRows.size()).setInserted(ins).setUpdated(upd).setIgnored(ign)
+				.setFailed(fail).build();
 	}
 
 	/**
-	 * Pushes domain {@code com.arcadedb.database.Record} rows via
-	 * InsertBidirectional with per-batch ACKs.
+	 * Pushes domain {@code com.arcadedb.database.Record} rows via InsertBidirectional with per-batch ACKs.
 	 */
-	public InsertSummary ingestBidi(final List<com.arcadedb.database.Record> rows, final InsertOptions opts, final int chunkSize,
-			final int maxInflight, final long timeoutMs) throws InterruptedException {
+	public InsertSummary ingestBidi(final List<com.arcadedb.database.Record> rows,
+			final InsertOptions opts, final int chunkSize, final int maxInflight, final long timeoutMs)
+			throws InterruptedException {
 
 		return ingestBidiCore(rows, opts, chunkSize, maxInflight, timeoutMs,
 				(Object o) -> toProtoRecordFromDbRecord((com.arcadedb.database.Record) o));
 	}
 
-	public InsertSummary ingestBidi(final List<com.arcadedb.database.Record> rows, final InsertOptions opts, final int chunkSize,
-			final int maxInflight) throws InterruptedException {
+	public InsertSummary ingestBidi(final List<com.arcadedb.database.Record> rows,
+			final InsertOptions opts, final int chunkSize, final int maxInflight) throws InterruptedException {
 
-		return ingestBidiCore(rows, opts, chunkSize, maxInflight, /* timeoutMs */ 5 * 60_000L, this::toProtoRecordFromDbRecord);
+		return ingestBidiCore(rows, opts, chunkSize, maxInflight, /* timeoutMs */ 5 * 60_000L,
+				this::toProtoRecordFromDbRecord);
 	}
 
 	/**
-	 * Pushes map-shaped rows (property map per row) via InsertBidirectional with
-	 * per-batch ACKs.
+	 * Pushes map-shaped rows (property map per row) via InsertBidirectional with per-batch ACKs.
 	 */
-	public InsertSummary ingestBidi(final InsertOptions options, final List<Map<String, Object>> rows, final int chunkSize,
-			final int maxInflight) throws InterruptedException {
+	public InsertSummary ingestBidi(final InsertOptions options,
+			final List<Map<String, Object>> rows, final int chunkSize, final int maxInflight) throws InterruptedException {
 
-		return ingestBidiCore(rows, options, chunkSize, maxInflight, /* timeoutMs */ 5 * 60_000L, this::toProtoRecordFromMap);
+		return ingestBidiCore(rows, options, chunkSize, maxInflight, /* timeoutMs */ 5 * 60_000L,
+				this::toProtoRecordFromMap);
 	}
 
-	public InsertSummary ingestBidi(final InsertOptions options, final List<Map<String, Object>> rows, final int chunkSize,
-			final int maxInflight, final long timeoutMs) throws InterruptedException {
+	public InsertSummary ingestBidi(final InsertOptions options,
+			final List<Map<String, Object>> rows, final int chunkSize, final int maxInflight, final long timeoutMs)
+			throws InterruptedException {
 
-		return ingestBidiCore(rows, options, chunkSize, maxInflight, timeoutMs, this::toProtoRecordFromMap);
+		return ingestBidiCore(rows, options, chunkSize, maxInflight, timeoutMs,
+				this::toProtoRecordFromMap);
 	}
 
 	// Map -> GrpcRecord
 	private GrpcRecord toProtoRecordFromMap(Map<String, Object> row) {
-		GrpcRecord.Builder b = GrpcRecord.newBuilder();
-		row.forEach((k, v) -> b.putProperties(k, objectToGrpcValue(v)));
-		GrpcRecord rec = b.build();
-		if (logger.isDebugEnabled())
-			logger.debug("CLIENT toProtoRecordFromMap: {}", summarize(rec));
-		return rec;
-	}
+        GrpcRecord.Builder b = GrpcRecord.newBuilder();
+        row.forEach((k, v) -> b.putProperties(k, objectToGrpcValue(v)));
+        GrpcRecord rec = b.build();
+        if (logger.isDebugEnabled()) logger.debug("CLIENT toProtoRecordFromMap: {}", summarize(rec));
+        return rec;
+    }
 
 	// Domain Record (storage) -> GrpcRecord
 	private GrpcRecord toProtoRecordFromDbRecord(com.arcadedb.database.Record rec) {
-		// Use ProtoUtils for proper conversion
-		GrpcRecord out = ProtoUtils.toProtoRecord(rec);
-		if (logger.isDebugEnabled())
-			logger.debug("CLIENT toProtoRecordFromDbRecord: {}", summarize(out));
-		return out;
-	}
+        // Use ProtoUtils for proper conversion
+        GrpcRecord out = ProtoUtils.toProtoRecord(rec);
+        if (logger.isDebugEnabled()) logger.debug("CLIENT toProtoRecordFromDbRecord: {}", summarize(out));
+        return out;
+    }
 
 	// Convert Java object -> GrpcValue (extend as needed)
 	private GrpcValue objectToGrpcValue(Object v) {
@@ -1537,7 +1511,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 			@Override
 			public boolean hasNext() {
-
+				
 				if (currentBatch.hasNext()) {
 					return true;
 				}
@@ -1546,9 +1520,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 					if (responseIterator.hasNext()) {
 
 						QueryResult result;
-						result = responseIterator.read();
-						currentBatch = result.getRecordsList().iterator();
-						return currentBatch.hasNext();
+							result = responseIterator.read();
+							currentBatch = result.getRecordsList().iterator();
+							return currentBatch.hasNext();
 					}
 				}
 				catch (InterruptedException e) {
@@ -1582,21 +1556,21 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	}
 
 	private Result grpcRecordToResult(GrpcRecord grpcRecord) {
-
+		
 		Record record = grpcRecordToDBRecord(grpcRecord);
-
+		
 		if (record == null) {
-
+		
 			Map<String, Object> properties = new HashMap<>();
 			grpcRecord.getPropertiesMap().forEach((k, v) -> properties.put(k, grpcValueToObject(v)));
 			return new ResultInternal(properties);
 		}
-
+		
 		return new ResultInternal(record);
 	}
 
 	private Record grpcRecordToDBRecord(GrpcRecord grpcRecord) {
-
+		
 		Map<String, Object> map = new HashMap<>();
 
 		// Convert properties
@@ -1608,12 +1582,12 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		map.put("@cat", mapRecordType(grpcRecord));
 
 		String cat = (String) map.get("@cat");
-
+		
 		if (cat == null) {
-
+			
 			return null;
 		}
-
+		
 		switch (cat) {
 		case "d":
 			return new RemoteImmutableDocument(this, map);
@@ -1627,20 +1601,20 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	}
 
 	private String mapRecordType(GrpcRecord grpcRecord) {
-
+		
 		// Determine record category from type name
 		String typeName = grpcRecord.getType();
 
 		// Check schema to determine actual type
 		try {
-
+			
 			if (getSchema().existsType(typeName)) {
-
+				
 				Object type = getSchema().getType(typeName);
-
-				if (type instanceof com.arcadedb.schema.VertexType) {
+				
+				if (type instanceof com.arcadedb.schema.VertexType) {				
 					return "v";
-				}
+				} 
 				else if (type instanceof com.arcadedb.schema.EdgeType) {
 					return "e";
 				}
@@ -1648,38 +1622,39 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 					return "d";
 				}
 				else {
-					return null;
-				}
+                    return null;
+                }
 			}
 			else {
-
+				
 				return null;
 			}
-		}
+		} 
 		catch (Exception e) {
 			// Fall back to name-based detection
 		}
 
-		return null;
+		return null;		
 	}
 
 	private Map<String, GrpcValue> convertParamsToGrpcValue(Map<String, Object> params) {
 		Map<String, GrpcValue> grpcParams = new HashMap<>();
-
+		
 		for (Map.Entry<String, Object> entry : params.entrySet()) {
 			GrpcValue value = objectToGrpcValue(entry.getValue());
 			grpcParams.put(entry.getKey(), value);
 		}
-
+		
 		return grpcParams;
 	}
 
+	
 	private Object grpcValueToObject(GrpcValue grpcValue) {
-		Object out = ProtoUtils.fromGrpcValue(grpcValue);
-		if (logger.isDebugEnabled())
-			logger.debug("CLIENT decode grpcValueToObject: {} -> {}", summarize(grpcValue), summarize(out));
-		return out;
-	}
+        Object out = ProtoUtils.fromGrpcValue(grpcValue);
+        if (logger.isDebugEnabled()) logger.debug("CLIENT decode grpcValueToObject: {} -> {}", summarize(grpcValue), summarize(out));
+        return out;
+    }
+
 
 	private void handleGrpcException(StatusRuntimeException e) {
 		Status status = e.getStatus();
