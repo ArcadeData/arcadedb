@@ -42,7 +42,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 	private static final Logger logger = LoggerFactory.getLogger(ArcadeDbGrpcService.class);
 
-
 	// Transaction management
 	private final Map<String, Database> activeTransactions = new ConcurrentHashMap<>();
 

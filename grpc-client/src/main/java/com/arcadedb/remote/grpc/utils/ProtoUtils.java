@@ -1,353 +1,310 @@
 package com.arcadedb.remote.grpc.utils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import java.util.Map;
-import java.util.HashMap;
-import java.util.List;
-import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Map;
 
 import com.arcadedb.database.Document;
-import com.arcadedb.database.Record;
 import com.arcadedb.database.RID;
-import com.arcadedb.graph.Vertex;
+import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.server.grpc.GrpcRecord;
 import com.arcadedb.server.grpc.GrpcValue;
-import com.arcadedb.server.grpc.GrpcValueType;
-import com.google.protobuf.Value;
-import com.google.protobuf.Struct;
-import com.google.protobuf.ListValue;
-import com.google.protobuf.NullValue;
 
 public class ProtoUtils {
 
-    /**
-     * Converts an ArcadeDB Record into a gRPC GrpcRecord message.
-     *
-     * @param rec ArcadeDB record (Document, Vertex, or Edge)
-     * @return Proto GrpcRecord message
-     */
-    public static GrpcRecord toProtoRecord(Record rec) {
-        if (rec == null) {
-            throw new IllegalArgumentException("Record cannot be null");
-        }
+    private static final Logger logger = LoggerFactory.getLogger(ProtoUtils.class);
 
-        GrpcRecord.Builder builder = GrpcRecord.newBuilder();
-        
-        // Set RID if available
-        if (rec.getIdentity() != null) {
-            builder.setRid(rec.getIdentity().toString());
-        }
+    // Logging config via system properties (optional)
+    private static final int LOG_STR_PREVIEW = Integer.getInteger("arcadedb.grpc.log.preview", 96);
+    private static final boolean LOG_SHOW_STR_AT_DEBUG = Boolean.getBoolean("arcadedb.grpc.log.showString");
 
-        // Determine logical type/class name
-        String typeName = null;
-        
-        if (rec instanceof Vertex) {
-            Vertex vertex = rec.asVertex();
-            if (vertex != null && vertex.getType() != null) {
-                typeName = vertex.getType().getName();
-            }
-        } else if (rec instanceof Edge) {
-            Edge edge = rec.asEdge();
-            if (edge != null && edge.getType() != null) {
-                typeName = edge.getType().getName();
-            }
-        } else if (rec instanceof Document) {
-            Document doc = rec.asDocument();
-            if (doc != null && doc.getType() != null) {
-                typeName = doc.getType().getName();
-            }
-        }
-        
-        if (typeName != null && !typeName.isEmpty()) {
-            builder.setType(typeName);
-        }
-
-        // Convert properties
-        if (rec instanceof Document) {
-            Document doc = (Document) rec;
-            for (String propName : doc.getPropertyNames()) {
-                Object value = doc.get(propName);
-                builder.putProperties(propName, toGrpcValue(value));
-            }
-        }
-
-        return builder.build();
+    // Optional per-thread context for logs
+    private static final ThreadLocal<String> LOG_CTX = new ThreadLocal<>();
+    public static AutoCloseable pushLogContext(String ctx) {
+        final String prev = LOG_CTX.get();
+        LOG_CTX.set(ctx);
+        return () -> LOG_CTX.set(prev);
+    }
+    private static String ctx() {
+        String c = LOG_CTX.get();
+        return (c == null || c.isEmpty()) ? "" : " " + c;
     }
 
-    /**
-     * Converts a Map into a gRPC GrpcRecord message.
-     *
-     * @param map Map with properties
-     * @param rid Optional RID
-     * @param type Optional type name
-     * @return Proto GrpcRecord message
-     */
-    public static GrpcRecord mapToProtoRecord(Map<String, Object> map, String rid, String type) {
-        GrpcRecord.Builder builder = GrpcRecord.newBuilder();
-        
-        if (rid != null && !rid.isEmpty()) {
-            builder.setRid(rid);
-        }
-        
-        if (type != null && !type.isEmpty()) {
-            builder.setType(type);
-        }
-        
-        for (Map.Entry<String, Object> entry : map.entrySet()) {
-            builder.putProperties(entry.getKey(), toGrpcValue(entry.getValue()));
-        }
-        
-        return builder.build();
-    }
-
-    /**
-     * Converts a Java Object into a GrpcValue for GrpcRecord.properties map.
-     *
-     * Supports primitives, strings, numbers, booleans, lists, maps, dates, and RIDs.
-     *
-     * @param value Object value
-     * @return GrpcValue
-     */
-    public static GrpcValue toGrpcValue(Object value) {
-        GrpcValue.Builder builder = GrpcValue.newBuilder();
-        Value.Builder valueBuilder = Value.newBuilder();
-        
-        if (value == null) {
-            valueBuilder.setNullValue(NullValue.NULL_VALUE);
-            builder.setValueType(GrpcValueType.RECORD_VALUE_TYPE_UNSPECIFIED);
-        } else if (value instanceof Boolean) {
-            valueBuilder.setBoolValue((Boolean) value);
-            builder.setValueType(GrpcValueType.BOOLEAN);
-        } else if (value instanceof Byte) {
-            valueBuilder.setNumberValue(((Byte) value).doubleValue());
-            builder.setValueType(GrpcValueType.BYTE);
-        } else if (value instanceof Short) {
-            valueBuilder.setNumberValue(((Short) value).doubleValue());
-            builder.setValueType(GrpcValueType.SHORT);
-        } else if (value instanceof Integer) {
-            valueBuilder.setNumberValue(((Integer) value).doubleValue());
-            builder.setValueType(GrpcValueType.INTEGER);
-        } else if (value instanceof Long) {
-            valueBuilder.setNumberValue(((Long) value).doubleValue());
-            builder.setValueType(GrpcValueType.LONG);
-        } else if (value instanceof Float) {
-            valueBuilder.setNumberValue(((Float) value).doubleValue());
-            builder.setValueType(GrpcValueType.FLOAT);
-        } else if (value instanceof Double) {
-            valueBuilder.setNumberValue((Double) value);
-            builder.setValueType(GrpcValueType.DOUBLE);
-        } else if (value instanceof String) {
-            valueBuilder.setStringValue((String) value);
-            builder.setValueType(GrpcValueType.STRING);
-        } else if (value instanceof RID) {
-            valueBuilder.setStringValue(value.toString());
-            builder.setValueType(GrpcValueType.LINK);
-        } else if (value instanceof java.util.Date) {
-            // Serialize date as ISO8601 string
-            valueBuilder.setStringValue(((java.util.Date) value).toInstant().toString());
-            builder.setValueType(GrpcValueType.DATETIME);
-        } else if (value instanceof java.time.LocalDate) {
-            valueBuilder.setStringValue(value.toString());
-            builder.setValueType(GrpcValueType.DATE);
-        } else if (value instanceof java.time.LocalDateTime) {
-            valueBuilder.setStringValue(value.toString());
-            builder.setValueType(GrpcValueType.DATETIME);
-        } else if (value instanceof java.time.Instant) {
-            valueBuilder.setStringValue(value.toString());
-            builder.setValueType(GrpcValueType.DATETIME);
-        } else if (value instanceof byte[]) {
-            // For binary data, encode as base64 string
-            valueBuilder.setStringValue(java.util.Base64.getEncoder().encodeToString((byte[]) value));
-            builder.setValueType(GrpcValueType.BINARY);
-        } else if (value instanceof Map) {
-            Struct.Builder structBuilder = Struct.newBuilder();
-            Map<?, ?> map = (Map<?, ?>) value;
-            
-            // Determine if this is an embedded document or a regular map
-            boolean isEmbedded = map.containsKey("@type") || map.containsKey("@class");
-            
-            for (Map.Entry<?, ?> entry : map.entrySet()) {
-                GrpcValue nestedValue = toGrpcValue(entry.getValue());
-                structBuilder.putFields(String.valueOf(entry.getKey()), nestedValue.getValue());
-            }
-            
-            valueBuilder.setStructValue(structBuilder.build());
-            builder.setValueType(isEmbedded ? GrpcValueType.EMBEDDED : GrpcValueType.MAP);
-            
-            // Set ofType if this is an embedded document with a known type
-            if (isEmbedded && map.containsKey("@type")) {
-                builder.setOfType(String.valueOf(map.get("@type")));
-            }
-        } else if (value instanceof Collection) {
-            ListValue.Builder listBuilder = ListValue.newBuilder();
-            Collection<?> collection = (Collection<?>) value;
-            
-            String elementType = null;
-            for (Object item : collection) {
-                GrpcValue nestedValue = toGrpcValue(item);
-                listBuilder.addValues(nestedValue.getValue());
-                
-                // Try to infer element type from first non-null element
-                if (elementType == null && item != null) {
-                    elementType = inferTypeString(item);
+    private static String summarizeJava(Object o) {
+        if (o == null) return "null";
+        try {
+            if (o instanceof CharSequence s) {
+                if (logger.isTraceEnabled() || LOG_SHOW_STR_AT_DEBUG) {
+                    String txt = s.toString();
+                    return "String(" + s.length() + ")=\"" + (txt.length() > LOG_STR_PREVIEW ? txt.substring(0, LOG_STR_PREVIEW) + "…" : txt) + "\"";
                 }
+                return "String(" + s.length() + ")";
             }
-            
-            valueBuilder.setListValue(listBuilder.build());
-            builder.setValueType(GrpcValueType.LIST);
-            
-            if (elementType != null) {
-                builder.setOfType(elementType);
-            }
-        } else if (value instanceof Document) {
-            // Handle embedded documents
-            Document doc = (Document) value;
-            Map<String, Object> docMap = new HashMap<>();
-            
-            for (String propName : doc.getPropertyNames()) {
-                docMap.put(propName, doc.get(propName));
-            }
-            
-            if (doc.getType() != null) {
-                docMap.put("@type", doc.getType().getName());
-            }
-            
-            // Recursive call to handle as map
-            return toGrpcValue(docMap);
-        } else {
-            // Fallback to string representation
-            valueBuilder.setStringValue(value.toString());
-            builder.setValueType(GrpcValueType.STRING);
-        }
-        
-        builder.setValue(valueBuilder.build());
-        return builder.build();
+            if (o instanceof byte[] b) return "bytes[" + b.length + "]";
+            if (o instanceof java.util.Collection<?> c) return o.getClass().getSimpleName() + "[size=" + c.size() + "]";
+            if (o instanceof java.util.Map<?,?> m) return o.getClass().getSimpleName() + "[size=" + m.size() + "]";
+            return o.getClass().getSimpleName() + "(" + String.valueOf(o) + ")";
+        } catch (Exception e) { return o.getClass().getSimpleName(); }
     }
 
-    /**
-     * Converts a GrpcValue back to a Java Object.
-     *
-     * @param grpcValue GrpcValue to convert
-     * @return Java Object
-     */
-    public static Object fromGrpcValue(GrpcValue grpcValue) {
-        if (grpcValue == null) {
-            return null;
-        }
-
-        Value value = grpcValue.getValue();
-        GrpcValueType type = grpcValue.getValueType();
-
-        switch (value.getKindCase()) {
-        case NULL_VALUE:
-            return null;
-            
-        case BOOL_VALUE:
-            return value.getBoolValue();
-            
-        case NUMBER_VALUE:
-            double numValue = value.getNumberValue();
-            // Use the type hint to determine the specific numeric type
-            switch (type) {
-            case BYTE:
-                return (byte) numValue;
-            case SHORT:
-                return (short) numValue;
-            case INTEGER:
-                return (int) numValue;
-            case LONG:
-                return (long) numValue;
-            case FLOAT:
-                return (float) numValue;
-            case DOUBLE:
-            case DECIMAL:
-            default:
-                return numValue;
-            }
-            
-        case STRING_VALUE:
-            String strValue = value.getStringValue();
-            // Check if this is a special string type
-            switch (type) {
-            case LINK:
-                // Parse as RID if it looks like one
-                if (strValue.startsWith("#")) {
-                    try {
-                        return new RID(strValue);
-                    } catch (Exception e) {
-                        return strValue;
-                    }
+    private static String summarizeGrpc(GrpcValue v) {
+        if (v == null) return "GrpcValue(null)";
+        switch (v.getKindCase()) {
+            case BOOL_VALUE:       return "BOOL(" + v.getBoolValue() + ")";
+            case INT32_VALUE:      return "INT32(" + v.getInt32Value() + ")";
+            case INT64_VALUE:      return "INT64(" + v.getInt64Value() + ")";
+            case FLOAT_VALUE:      return "FLOAT(" + v.getFloatValue() + ")";
+            case DOUBLE_VALUE:     return "DOUBLE(" + v.getDoubleValue() + ")";
+            case STRING_VALUE: {
+                String s = v.getStringValue();
+                if (logger.isTraceEnabled() || LOG_SHOW_STR_AT_DEBUG) {
+                    String txt = s;
+                    return "STRING(" + s.length() + ")=\"" + (txt.length() > LOG_STR_PREVIEW ? txt.substring(0, LOG_STR_PREVIEW) + "…" : txt) + "\"";
                 }
-                return strValue;
-            case BINARY:
-                // Decode base64 string back to byte array
-                try {
-                    return java.util.Base64.getDecoder().decode(strValue);
-                } catch (Exception e) {
-                    return strValue;
-                }
-            case DATE:
-            case DATETIME:
-                // Could parse as date/time if needed
-                // For now, return as string and let the caller handle parsing
-                return strValue;
-            default:
-                return strValue;
+                return "STRING(" + s.length() + ")";
             }
-            
-        case STRUCT_VALUE:
-            Map<String, Object> map = new HashMap<>();
-            value.getStructValue().getFieldsMap().forEach((k, v) -> {
-                // Create a GrpcValue wrapper for recursive conversion
-                // We don't have type info for nested values, so use UNSPECIFIED
-                GrpcValue nestedValue = GrpcValue.newBuilder()
-                        .setValue(v)
-                        .setValueType(GrpcValueType.RECORD_VALUE_TYPE_UNSPECIFIED)
-                        .build();
-                map.put(k, fromGrpcValue(nestedValue));
-            });
-            return map;
-            
-        case LIST_VALUE:
-            List<Object> list = new ArrayList<>();
-            value.getListValue().getValuesList().forEach(v -> {
-                // Create a GrpcValue wrapper for recursive conversion
-                GrpcValue nestedValue = GrpcValue.newBuilder()
-                        .setValue(v)
-                        .setValueType(GrpcValueType.RECORD_VALUE_TYPE_UNSPECIFIED)
-                        .build();
-                list.add(fromGrpcValue(nestedValue));
-            });
-            return list;
-            
-        default:
-            return null;
+            case BYTES_VALUE:      return "BYTES[" + v.getBytesValue().size() + "]";
+            case TIMESTAMP_VALUE:  return "TIMESTAMP(" + v.getTimestampValue().getSeconds() + "." + v.getTimestampValue().getNanos() + ")";
+            case LIST_VALUE:       return "LIST[size=" + v.getListValue().getValuesCount() + "]";
+            case MAP_VALUE:        return "MAP[size=" + v.getMapValue().getEntriesCount() + "]";
+            case EMBEDDED_VALUE:   return "EMBEDDED[type=" + v.getEmbeddedValue().getType() + ", size=" + v.getEmbeddedValue().getFieldsCount() + "]";
+            case LINK_VALUE:       return "LINK(" + v.getLinkValue().getRid() + ")";
+            case DECIMAL_VALUE:    return "DECIMAL(unscaled=" + v.getDecimalValue().getUnscaled() + ", scale=" + v.getDecimalValue().getScale() + ")";
+            case KIND_NOT_SET: default: return "GrpcValue(KIND_NOT_SET)";
         }
     }
 
-    /**
-     * Helper method to infer type string from an object.
-     * Used for setting the ofType field in collections.
-     */
-    private static String inferTypeString(Object obj) {
-        if (obj == null) return null;
-        if (obj instanceof String) return "String";
-        if (obj instanceof Integer) return "Integer";
-        if (obj instanceof Long) return "Long";
-        if (obj instanceof Double) return "Double";
-        if (obj instanceof Float) return "Float";
-        if (obj instanceof Boolean) return "Boolean";
-        if (obj instanceof java.util.Date) return "Date";
-        if (obj instanceof RID) return "Link";
-        if (obj instanceof Map) {
-            Map<?, ?> map = (Map<?, ?>) obj;
-            if (map.containsKey("@type")) {
-                return String.valueOf(map.get("@type"));
-            }
-            return "Map";
-        }
-        if (obj instanceof Collection) return "List";
-        return obj.getClass().getSimpleName();
+    private static GrpcValue dbgEnc(String where, Object in, GrpcValue out) {
+        if (logger.isDebugEnabled()) logger.debug("CLIENT GRPC-ENC [{}]{} in={} -> out={}", where, ctx(), summarizeJava(in), summarizeGrpc(out));
+        return out;
     }
+
+    private static Object dbgDec(String where, GrpcValue in, Object out) {
+        if (logger.isDebugEnabled()) logger.debug("CLIENT GRPC-DEC [{}]{} in={} -> out={}", where, ctx(), summarizeGrpc(in), summarizeJava(out));
+        return out;
+    }
+
+
+	/**
+	 * Converts an ArcadeDB Record into a gRPC GrpcRecord message.
+	 *
+	 * @param rec ArcadeDB record (Document, Vertex, or Edge)
+	 * @return Proto GrpcRecord message
+	 */
+	public static GrpcRecord toProtoRecord(Record rec) {
+
+		if (rec == null) {
+			throw new IllegalArgumentException("Record cannot be null");
+		}
+
+		GrpcRecord.Builder builder = GrpcRecord.newBuilder();
+
+		// Set RID if available
+		if (rec.getIdentity() != null) {
+			builder.setRid(rec.getIdentity().toString());
+		}
+
+		// Determine logical type/class name
+		String typeName = null;
+
+		if (rec instanceof Vertex) {
+			Vertex vertex = rec.asVertex();
+			if (vertex != null && vertex.getType() != null) {
+				typeName = vertex.getType().getName();
+			}
+		}
+		else if (rec instanceof Edge) {
+			Edge edge = rec.asEdge();
+			if (edge != null && edge.getType() != null) {
+				typeName = edge.getType().getName();
+			}
+		}
+		else if (rec instanceof Document) {
+			Document doc = rec.asDocument();
+			if (doc != null && doc.getType() != null) {
+				typeName = doc.getType().getName();
+			}
+		}
+
+		if (typeName != null && !typeName.isEmpty()) {
+			builder.setType(typeName);
+		}
+
+		// Convert properties
+		if (rec instanceof Document) {
+			Document doc = (Document) rec;
+			for (String propName : doc.getPropertyNames()) {
+				Object value = doc.get(propName);
+
+				System.out.print("toProtoRecord: " + propName + ": " + value);
+
+				builder.putProperties(propName, toGrpcValue(value));
+			}
+		}
+
+		return builder.build();
+	}
+
+	/**
+	 * Converts a Map into a gRPC GrpcRecord message.
+	 *
+	 * @param map  Map with properties
+	 * @param rid  Optional RID
+	 * @param type Optional type name
+	 * @return Proto GrpcRecord message
+	 */
+	public static GrpcRecord mapToProtoRecord(Map<String, Object> map, String rid, String type) {
+		GrpcRecord.Builder builder = GrpcRecord.newBuilder();
+
+		if (rid != null && !rid.isEmpty()) {
+			builder.setRid(rid);
+		}
+
+		if (type != null && !type.isEmpty()) {
+			builder.setType(type);
+		}
+
+		for (Map.Entry<String, Object> entry : map.entrySet()) {
+			builder.putProperties(entry.getKey(), toGrpcValue(entry.getValue()));
+		}
+
+		return builder.build();
+	}
+
+	/**
+	 * Converts a Java Object into a GrpcValue for GrpcRecord.properties map.
+	 *
+	 * Supports primitives, strings, numbers, booleans, lists, maps, dates, and
+	 * RIDs.
+	 *
+	 * @param value Object value
+	 * @return GrpcValue
+	 */
+	
+public static GrpcValue toGrpcValue(Object value) {
+	GrpcValue.Builder b = GrpcValue.newBuilder();
+	if (value == null) return dbgEnc("toGrpcValue", value, b.build());
+
+	if (value instanceof Boolean v)     return dbgEnc("toGrpcValue", value, b.setBoolValue(v).build());
+	if (value instanceof Integer v)     return dbgEnc("toGrpcValue", value, b.setInt32Value(v).build());
+	if (value instanceof Long v)        return dbgEnc("toGrpcValue", value, b.setInt64Value(v).build());
+	if (value instanceof Float v)       return dbgEnc("toGrpcValue", value, b.setFloatValue(v).build());
+	if (value instanceof Double v)      return dbgEnc("toGrpcValue", value, b.setDoubleValue(v).build());
+	if (value instanceof CharSequence v)return dbgEnc("toGrpcValue", value, b.setStringValue(v.toString()).build());
+	if (value instanceof byte[] v)      return dbgEnc("toGrpcValue", value, b.setBytesValue(com.google.protobuf.ByteString.copyFrom(v)).build());
+
+	if (value instanceof java.util.Date v) {
+		return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder()
+			.setTimestampValue(com.google.protobuf.Timestamp.newBuilder()
+				.setSeconds(Math.floorDiv(v.getTime(), 1000L))
+				.setNanos((int)Math.floorMod(v.getTime(), 1000L)*1_000_000)
+				.build())
+			.setLogicalType("datetime")
+			.build());
+	}
+
+	if (value instanceof RID rid) {
+		return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder()
+			.setLinkValue(com.arcadedb.server.grpc.GrpcLink.newBuilder().setRid(rid.toString()).build())
+			.setLogicalType("rid")
+			.build());
+	}
+
+	if (value instanceof java.math.BigDecimal v) {
+		java.math.BigInteger unscaled = v.unscaledValue();
+		if (unscaled.bitLength() <= 63) {
+			return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder()
+				.setDecimalValue(com.arcadedb.server.grpc.GrpcDecimal.newBuilder()
+					.setUnscaled(unscaled.longValue())
+					.setScale(v.scale())
+					.build())
+				.setLogicalType("decimal")
+				.build());
+		} else {
+			return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setStringValue(v.toPlainString()).setLogicalType("decimal").build());
+		}
+	}
+
+	if (value instanceof Document edoc && (edoc.getIdentity() == null)) {
+		com.arcadedb.server.grpc.GrpcEmbedded.Builder eb = com.arcadedb.server.grpc.GrpcEmbedded.newBuilder();
+		if (edoc.getType() != null) eb.setType(edoc.getType().getName());
+		for (String k : edoc.getPropertyNames()) {
+			eb.putFields(k, toGrpcValue(edoc.get(k)));
+		}
+		return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setEmbeddedValue(eb.build()).build());
+	}
+
+	if (value instanceof Map<?,?> m) {
+		com.arcadedb.server.grpc.GrpcMap.Builder mb = com.arcadedb.server.grpc.GrpcMap.newBuilder();
+		for (var e : m.entrySet()) {
+			mb.putEntries(String.valueOf(e.getKey()), toGrpcValue(e.getValue()));
+		}
+		return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setMapValue(mb.build()).build());
+	}
+
+	if (value instanceof Collection<?> c) {
+		com.arcadedb.server.grpc.GrpcList.Builder lb = com.arcadedb.server.grpc.GrpcList.newBuilder();
+		for (Object e : c) lb.addValues(toGrpcValue(e));
+		return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setListValue(lb.build()).build());
+	}
+
+	return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setStringValue(String.valueOf(value)).build());
+}
+
+
+	public static Object fromGrpcValue(GrpcValue v) {
+		
+		switch (v.getKindCase()) {
+		case BOOL_VALUE:
+			return dbgDec("fromGrpcValue", v, v.getBoolValue());
+		case INT32_VALUE:
+			return dbgDec("fromGrpcValue", v, v.getInt32Value());
+		case INT64_VALUE:
+			return dbgDec("fromGrpcValue", v, v.getInt64Value());
+		case FLOAT_VALUE:
+			return dbgDec("fromGrpcValue", v, v.getFloatValue());
+		case DOUBLE_VALUE:
+			return dbgDec("fromGrpcValue", v, v.getDoubleValue());
+		case STRING_VALUE:
+			return dbgDec("fromGrpcValue", v, v.getStringValue());
+		case BYTES_VALUE:
+			return dbgDec("fromGrpcValue", v, v.getBytesValue().toByteArray());
+		case TIMESTAMP_VALUE:
+			return dbgDec("fromGrpcValue", v, tsToMillis(v.getTimestampValue())); // or Instant
+		case LIST_VALUE: {
+			var out = new java.util.ArrayList<>();
+			for (GrpcValue e : v.getListValue().getValuesList())
+				out.add(fromGrpcValue(e));
+			return dbgDec("fromGrpcValue", v, out);
+		}
+		case MAP_VALUE: {
+			var out = new java.util.LinkedHashMap<String, Object>();
+			v.getMapValue().getEntriesMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
+			return dbgDec("fromGrpcValue", v, out);
+		}
+		case EMBEDDED_VALUE: {
+			var out = new java.util.LinkedHashMap<String, Object>();
+			v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
+			// v.getEmbeddedValue().getType() is available if you want to instantiate a
+			// typed DTO
+			return dbgDec("fromGrpcValue", v, out);
+		}
+		case LINK_VALUE:
+			return dbgDec("fromGrpcValue", v, v.getLinkValue().getRid()); // or a Link object
+		case DECIMAL_VALUE: {
+			var d = v.getDecimalValue();
+			return dbgDec("fromGrpcValue", v, new java.math.BigDecimal(java.math.BigInteger.valueOf(d.getUnscaled()), d.getScale()));
+		}
+		case KIND_NOT_SET:
+			return dbgDec("fromGrpcValue", v, null);
+		}
+		return dbgDec("fromGrpcValue", v, null);
+	}
+
+	static long tsToMillis(com.google.protobuf.Timestamp ts) {
+		return ts.getSeconds() * 1000L + ts.getNanos() / 1_000_000L;
+	}
 }
