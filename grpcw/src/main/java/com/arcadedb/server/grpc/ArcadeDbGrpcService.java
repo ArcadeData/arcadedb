@@ -1,5 +1,11 @@
 package com.arcadedb.server.grpc;
 
+import com.google.gson.JsonElement;
+import com.google.gson.JsonPrimitive;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonNull;
+
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -1125,11 +1131,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 			@Override
 			public void onCompleted() {
-				
+
 				try {
 
 					InsertContext ctx = ctxRef.get();
-					
+
 					if (ctx == null) {
 						// Client closed without sending a first chunk → nothing to do
 						resp.onNext(InsertSummary.newBuilder().setReceived(0).setInserted(0).setUpdated(0).setIgnored(0).setFailed(0)
@@ -1463,9 +1469,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	}
 
 	private Counts insertRows(InsertContext ctx, java.util.Iterator<GrpcRecord> it) {
-		
+
 		Counts c = new Counts();
-		
+
 		int inBatch = 0;
 
 		Schema schema = ctx.db.getSchema();
@@ -1577,8 +1583,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			if (k.startsWith("@"))
 				return;
 			Object javaVal = fromGrpcValue(grpcVal);
-			if (logger.isDebugEnabled()) logger.debug("APPLY-DOC {} <= {} -> {}", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
-						doc.set(k, javaVal);
+			if (logger.isDebugEnabled())
+				logger.debug("APPLY-DOC {} <= {} -> {}", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
+			doc.set(k, javaVal);
 		});
 	}
 
@@ -1588,8 +1595,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			if (k.startsWith("@"))
 				return;
 			Object javaVal = fromGrpcValue(grpcVal);
-			if (logger.isDebugEnabled()) logger.debug("APPLY-VERTEX {} <= {} -> {}", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
-						vertex.set(k, javaVal);
+			if (logger.isDebugEnabled())
+				logger.debug("APPLY-VERTEX {} <= {} -> {}", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
+			vertex.set(k, javaVal);
 		});
 	}
 
@@ -1599,8 +1607,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			if (k.startsWith("@"))
 				return;
 			Object javaVal = fromGrpcValue(grpcVal);
-			if (logger.isDebugEnabled()) logger.debug("APPLY-EDGE {} <= {} -> {}", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
-						edge.set(k, javaVal);
+			if (logger.isDebugEnabled())
+				logger.debug("APPLY-EDGE {} <= {} -> {}", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
+			edge.set(k, javaVal);
 		});
 	}
 
@@ -1668,6 +1677,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	}
 
 	private GrpcValue toGrpcValue(Object o) {
+		
+		if (o instanceof JsonElement je) {
+			return gsonToGrpc(je);
+		}
+
 		GrpcValue.Builder b = GrpcValue.newBuilder();
 		if (o == null)
 			return dbgEnc("toGrpcValue", o, b.build(), null);
@@ -1688,11 +1702,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			return dbgEnc("toGrpcValue", o, b.setBytesValue(com.google.protobuf.ByteString.copyFrom(v)).build(), null);
 
 		if (o instanceof java.util.Date v) {
-			return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setTimestampValue(msToTimestamp(v.getTime())).setLogicalType("datetime").build(), null);
+			return dbgEnc("toGrpcValue", o,
+					GrpcValue.newBuilder().setTimestampValue(msToTimestamp(v.getTime())).setLogicalType("datetime").build(), null);
 		}
 
 		if (o instanceof com.arcadedb.database.RID rid) {
-			return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType("rid").build(), null);
+			return dbgEnc("toGrpcValue", o,
+					GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType("rid").build(),
+					null);
 		}
 
 		if (o instanceof java.math.BigDecimal v) {
@@ -1704,7 +1721,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			else {
 				// if you need >64-bit unscaled, switch GrpcDecimal.unscaled to bytes in the
 				// proto
-				return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setStringValue(v.toPlainString()).setLogicalType("decimal").build(), null);
+				return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setStringValue(v.toPlainString()).setLogicalType("decimal").build(),
+						null);
 			}
 		}
 
@@ -1744,8 +1762,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 		// RID/Identifiable string fallback
 		if (o instanceof com.arcadedb.database.Identifiable id)
-			return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(id.getIdentity().toString()).build()).setLogicalType("rid").build(), null);
-			
+			return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder()
+					.setLinkValue(GrpcLink.newBuilder().setRid(id.getIdentity().toString()).build()).setLogicalType("rid").build(), null);
 
 		// Fallback
 		return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setStringValue(String.valueOf(o)).build(), null);
@@ -1828,9 +1846,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 		}
 
 		InsertSummary summary(Counts c, long startedAtMs) {
-			
+
 			long now = System.currentTimeMillis();
-			
+
 			return InsertSummary.newBuilder().setReceived(c.received).setInserted(c.inserted).setUpdated(c.updated).setIgnored(c.ignored)
 					.setFailed(c.failed).addAllErrors(c.errors).setStartedAt(ts(startedAtMs)).setFinishedAt(ts(now)).build();
 		}
@@ -1952,7 +1970,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				Object value = doc.get(propertyName);
 				if (value != null) {
 					GrpcValue gv = toGrpcValue(value);
-					if (logger.isDebugEnabled()) logger.debug("ENC-REC {}.{}: {} -> {}", builder.getRid(), propertyName, summarizeJava(value), summarizeGrpc(gv));
+					if (logger.isDebugEnabled())
+						logger.debug("ENC-REC {}.{}: {} -> {}", builder.getRid(), propertyName, summarizeJava(value), summarizeGrpc(gv));
 					builder.putProperties(propertyName, gv);
 				}
 			}
@@ -1968,7 +1987,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			}
 		}
 
-		if (logger.isDebugEnabled()) logger.debug("ENC-REC DONE rid={} type={} props={}", builder.getRid(), builder.getType(), builder.getPropertiesCount());
+		if (logger.isDebugEnabled())
+			logger.debug("ENC-REC DONE rid={} type={} props={}", builder.getRid(), builder.getType(), builder.getPropertiesCount());
 		return builder.build();
 	}
 
@@ -2001,246 +2021,246 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	}
 
 	private Object convertWithSchemaType(Database db, MutableDocument parent, com.arcadedb.schema.Property prop, String propName, GrpcValue v) {
-		
+
 		var t = prop.getType();
-		
+
 		switch (t) {
-		
-			case BOOLEAN:
-				return switch (v.getKindCase()) {
-				case BOOL_VALUE -> v.getBoolValue();
-				case STRING_VALUE -> Boolean.parseBoolean(v.getStringValue());
-				default -> null;
-				};
-	
-			case BYTE:
-				return switch (v.getKindCase()) {
-				case INT32_VALUE, INT64_VALUE, DOUBLE_VALUE, FLOAT_VALUE -> (byte) (long) fromGrpcValue(v);
-				case STRING_VALUE -> Byte.parseByte(v.getStringValue());
-				default -> null;
-				};
-	
-			case SHORT:
-				return switch (v.getKindCase()) {
-				case INT32_VALUE, INT64_VALUE, DOUBLE_VALUE, FLOAT_VALUE -> (short) (long) fromGrpcValue(v);
-				case STRING_VALUE -> Short.parseShort(v.getStringValue());
-				default -> null;
-				};
-	
-			case INTEGER:
-				return switch (v.getKindCase()) {
-				case INT32_VALUE -> v.getInt32Value();
-				case INT64_VALUE -> (int) v.getInt64Value();
-				case DOUBLE_VALUE -> (int) v.getDoubleValue();
-				case FLOAT_VALUE -> (int) v.getFloatValue();
-				case STRING_VALUE -> Integer.parseInt(v.getStringValue());
-				default -> null;
-				};
-	
-			case LONG:
-				return switch (v.getKindCase()) {
-				case INT64_VALUE -> v.getInt64Value();
-				case INT32_VALUE -> (long) v.getInt32Value();
-				case DOUBLE_VALUE -> (long) v.getDoubleValue();
-				case FLOAT_VALUE -> (long) v.getFloatValue();
-				case STRING_VALUE -> Long.parseLong(v.getStringValue());
-				default -> null;
-				};
-	
-			case FLOAT:
-				return switch (v.getKindCase()) {
-				case FLOAT_VALUE -> v.getFloatValue();
-				case DOUBLE_VALUE -> (float) v.getDoubleValue();
-				case INT32_VALUE -> (float) v.getInt32Value();
-				case INT64_VALUE -> (float) v.getInt64Value();
-				case STRING_VALUE -> Float.parseFloat(v.getStringValue());
-				default -> null;
-				};
-	
-			case DOUBLE:
-				return switch (v.getKindCase()) {
-				case DOUBLE_VALUE -> v.getDoubleValue();
-				case FLOAT_VALUE -> (double) v.getFloatValue();
-				case INT32_VALUE -> (double) v.getInt32Value();
-				case INT64_VALUE -> (double) v.getInt64Value();
-				case STRING_VALUE -> Double.parseDouble(v.getStringValue());
-				default -> null;
-				};
-	
-			case STRING:
-				return switch (v.getKindCase()) {
-				case STRING_VALUE -> v.getStringValue();
-				default -> String.valueOf(fromGrpcValue(v));
-				};
-	
-			case DECIMAL:
-				return switch (v.getKindCase()) {
-				case DECIMAL_VALUE -> {
-					var d = v.getDecimalValue();
-					yield new java.math.BigDecimal(java.math.BigInteger.valueOf(d.getUnscaled()), d.getScale());
-				}
-				case STRING_VALUE -> new java.math.BigDecimal(v.getStringValue());
-				case DOUBLE_VALUE -> java.math.BigDecimal.valueOf(v.getDoubleValue());
-				case INT32_VALUE -> java.math.BigDecimal.valueOf(v.getInt32Value());
-				case INT64_VALUE -> java.math.BigDecimal.valueOf(v.getInt64Value());
-				default -> null;
-				};
-	
-			case DATE:
-			case DATETIME:
-				// Prefer timestamp_value; else accept epoch ms in int64; else parse string
-				return switch (v.getKindCase()) {
-				case TIMESTAMP_VALUE -> new java.util.Date(tsToMillis(v.getTimestampValue()));
-				case INT64_VALUE -> new java.util.Date(v.getInt64Value());
-				case STRING_VALUE -> new java.util.Date(Long.parseLong(v.getStringValue())); // or parse ISO if you emit it
-				default -> null;
-				};
-	
-			case BINARY:
-				return switch (v.getKindCase()) {
-				case BYTES_VALUE -> v.getBytesValue().toByteArray();
-				case STRING_VALUE -> v.getStringValue().getBytes(java.nio.charset.StandardCharsets.UTF_8);
-				default -> null;
-				};
-	
-			case LINK:
-				return switch (v.getKindCase()) {
-				case LINK_VALUE -> new com.arcadedb.database.RID(v.getLinkValue().getRid());
-				case STRING_VALUE -> new com.arcadedb.database.RID(v.getStringValue());
-				default -> null;
-				};
-	
-			case EMBEDDED: {
-				// Use schema ofType if present; otherwise use embedded.type from the payload
-				String embeddedTypeName = (v.getKindCase() == GrpcValue.KindCase.EMBEDDED_VALUE && !v.getEmbeddedValue().getType().isEmpty())
-						? v.getEmbeddedValue().getType()
-						: prop.getOfType();
-	
-				if (v.getKindCase() != GrpcValue.KindCase.EMBEDDED_VALUE || embeddedTypeName == null || embeddedTypeName.isEmpty()) {
-					// Fallback to a Map if we can't create a typed embedded doc
-					return fromGrpcValue(v);
-				}
-	
-				MutableEmbeddedDocument ed = parent.newEmbeddedDocument(embeddedTypeName, propName);
-				DocumentType embeddedType = null;
-				try {
-					embeddedType = db.getSchema().getType(embeddedTypeName);
-				}
-				catch (Exception ignore) {
-				}
-	
-				final DocumentType embeddedTypeFinal = embeddedType;
-	
-				v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> {
-					Object j = (embeddedTypeFinal != null) ? toJavaForProperty(db, ed, embeddedTypeFinal, k, vv) : fromGrpcValue(vv);
-					ed.set(k, j);
-				});
-				return ed;
+
+		case BOOLEAN:
+			return switch (v.getKindCase()) {
+			case BOOL_VALUE -> v.getBoolValue();
+			case STRING_VALUE -> Boolean.parseBoolean(v.getStringValue());
+			default -> null;
+			};
+
+		case BYTE:
+			return switch (v.getKindCase()) {
+			case INT32_VALUE, INT64_VALUE, DOUBLE_VALUE, FLOAT_VALUE -> (byte) (long) fromGrpcValue(v);
+			case STRING_VALUE -> Byte.parseByte(v.getStringValue());
+			default -> null;
+			};
+
+		case SHORT:
+			return switch (v.getKindCase()) {
+			case INT32_VALUE, INT64_VALUE, DOUBLE_VALUE, FLOAT_VALUE -> (short) (long) fromGrpcValue(v);
+			case STRING_VALUE -> Short.parseShort(v.getStringValue());
+			default -> null;
+			};
+
+		case INTEGER:
+			return switch (v.getKindCase()) {
+			case INT32_VALUE -> v.getInt32Value();
+			case INT64_VALUE -> (int) v.getInt64Value();
+			case DOUBLE_VALUE -> (int) v.getDoubleValue();
+			case FLOAT_VALUE -> (int) v.getFloatValue();
+			case STRING_VALUE -> Integer.parseInt(v.getStringValue());
+			default -> null;
+			};
+
+		case LONG:
+			return switch (v.getKindCase()) {
+			case INT64_VALUE -> v.getInt64Value();
+			case INT32_VALUE -> (long) v.getInt32Value();
+			case DOUBLE_VALUE -> (long) v.getDoubleValue();
+			case FLOAT_VALUE -> (long) v.getFloatValue();
+			case STRING_VALUE -> Long.parseLong(v.getStringValue());
+			default -> null;
+			};
+
+		case FLOAT:
+			return switch (v.getKindCase()) {
+			case FLOAT_VALUE -> v.getFloatValue();
+			case DOUBLE_VALUE -> (float) v.getDoubleValue();
+			case INT32_VALUE -> (float) v.getInt32Value();
+			case INT64_VALUE -> (float) v.getInt64Value();
+			case STRING_VALUE -> Float.parseFloat(v.getStringValue());
+			default -> null;
+			};
+
+		case DOUBLE:
+			return switch (v.getKindCase()) {
+			case DOUBLE_VALUE -> v.getDoubleValue();
+			case FLOAT_VALUE -> (double) v.getFloatValue();
+			case INT32_VALUE -> (double) v.getInt32Value();
+			case INT64_VALUE -> (double) v.getInt64Value();
+			case STRING_VALUE -> Double.parseDouble(v.getStringValue());
+			default -> null;
+			};
+
+		case STRING:
+			return switch (v.getKindCase()) {
+			case STRING_VALUE -> v.getStringValue();
+			default -> String.valueOf(fromGrpcValue(v));
+			};
+
+		case DECIMAL:
+			return switch (v.getKindCase()) {
+			case DECIMAL_VALUE -> {
+				var d = v.getDecimalValue();
+				yield new java.math.BigDecimal(java.math.BigInteger.valueOf(d.getUnscaled()), d.getScale());
 			}
-	
-			case MAP:
-				if (v.getKindCase() == GrpcValue.KindCase.MAP_VALUE) {
-					var m = new java.util.LinkedHashMap<String, Object>();
-					v.getMapValue().getEntriesMap().forEach((k, vv) -> m.put(k, fromGrpcValue(vv)));
-					return m;
-				}
-				return null;
-	
-			case LIST:
-				if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-					var list = new java.util.ArrayList<>();
-					for (GrpcValue item : v.getListValue().getValuesList()) {
-						list.add(fromGrpcValue(item));
-					}
-					return list;
-				}
-				return null;
-			case ARRAY_OF_SHORTS: {
-				if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-					var out = new java.util.ArrayList<Short>();
-					for (GrpcValue item : v.getListValue().getValuesList()) {
-						Object o = fromGrpcValue(item);
-						if (o instanceof Number n)
-							out.add(n.shortValue());
-						else if (o instanceof String s)
-							out.add(Short.parseShort(s));
-					}
-					return out;
-				}
-				return null;
+			case STRING_VALUE -> new java.math.BigDecimal(v.getStringValue());
+			case DOUBLE_VALUE -> java.math.BigDecimal.valueOf(v.getDoubleValue());
+			case INT32_VALUE -> java.math.BigDecimal.valueOf(v.getInt32Value());
+			case INT64_VALUE -> java.math.BigDecimal.valueOf(v.getInt64Value());
+			default -> null;
+			};
+
+		case DATE:
+		case DATETIME:
+			// Prefer timestamp_value; else accept epoch ms in int64; else parse string
+			return switch (v.getKindCase()) {
+			case TIMESTAMP_VALUE -> new java.util.Date(tsToMillis(v.getTimestampValue()));
+			case INT64_VALUE -> new java.util.Date(v.getInt64Value());
+			case STRING_VALUE -> new java.util.Date(Long.parseLong(v.getStringValue())); // or parse ISO if you emit it
+			default -> null;
+			};
+
+		case BINARY:
+			return switch (v.getKindCase()) {
+			case BYTES_VALUE -> v.getBytesValue().toByteArray();
+			case STRING_VALUE -> v.getStringValue().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+			default -> null;
+			};
+
+		case LINK:
+			return switch (v.getKindCase()) {
+			case LINK_VALUE -> new com.arcadedb.database.RID(v.getLinkValue().getRid());
+			case STRING_VALUE -> new com.arcadedb.database.RID(v.getStringValue());
+			default -> null;
+			};
+
+		case EMBEDDED: {
+			// Use schema ofType if present; otherwise use embedded.type from the payload
+			String embeddedTypeName = (v.getKindCase() == GrpcValue.KindCase.EMBEDDED_VALUE && !v.getEmbeddedValue().getType().isEmpty())
+					? v.getEmbeddedValue().getType()
+					: prop.getOfType();
+
+			if (v.getKindCase() != GrpcValue.KindCase.EMBEDDED_VALUE || embeddedTypeName == null || embeddedTypeName.isEmpty()) {
+				// Fallback to a Map if we can't create a typed embedded doc
+				return fromGrpcValue(v);
 			}
-	
-			case ARRAY_OF_INTEGERS: {
-				if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-					var out = new java.util.ArrayList<Integer>();
-					for (GrpcValue item : v.getListValue().getValuesList()) {
-						Object o = fromGrpcValue(item);
-						if (o instanceof Number n)
-							out.add(n.intValue());
-						else if (o instanceof String s)
-							out.add(Integer.parseInt(s));
-					}
-					return out;
-				}
-				return null;
+
+			MutableEmbeddedDocument ed = parent.newEmbeddedDocument(embeddedTypeName, propName);
+			DocumentType embeddedType = null;
+			try {
+				embeddedType = db.getSchema().getType(embeddedTypeName);
 			}
-	
-			case ARRAY_OF_LONGS: {
-				if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-					var out = new java.util.ArrayList<Long>();
-					for (GrpcValue item : v.getListValue().getValuesList()) {
-						Object o = fromGrpcValue(item);
-						if (o instanceof Number n)
-							out.add(n.longValue());
-						else if (o instanceof String s)
-							out.add(Long.parseLong(s));
-					}
-					return out;
-				}
-				return null;
+			catch (Exception ignore) {
 			}
-	
-			case ARRAY_OF_FLOATS: {
-				if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-					var out = new java.util.ArrayList<Float>();
-					for (GrpcValue item : v.getListValue().getValuesList()) {
-						Object o = fromGrpcValue(item);
-						if (o instanceof Number n)
-							out.add(n.floatValue());
-						else if (o instanceof String s)
-							out.add(Float.parseFloat(s));
-					}
-					return out;
-				}
-				return null;
+
+			final DocumentType embeddedTypeFinal = embeddedType;
+
+			v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> {
+				Object j = (embeddedTypeFinal != null) ? toJavaForProperty(db, ed, embeddedTypeFinal, k, vv) : fromGrpcValue(vv);
+				ed.set(k, j);
+			});
+			return ed;
+		}
+
+		case MAP:
+			if (v.getKindCase() == GrpcValue.KindCase.MAP_VALUE) {
+				var m = new java.util.LinkedHashMap<String, Object>();
+				v.getMapValue().getEntriesMap().forEach((k, vv) -> m.put(k, fromGrpcValue(vv)));
+				return m;
 			}
-	
-			case ARRAY_OF_DOUBLES: {
-				if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-					var out = new java.util.ArrayList<Double>();
-					for (GrpcValue item : v.getListValue().getValuesList()) {
-						Object o = fromGrpcValue(item);
-						if (o instanceof Number n)
-							out.add(n.doubleValue());
-						else if (o instanceof String s)
-							out.add(Double.parseDouble(s));
-					}
-					return out;
+			return null;
+
+		case LIST:
+			if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
+				var list = new java.util.ArrayList<>();
+				for (GrpcValue item : v.getListValue().getValuesList()) {
+					list.add(fromGrpcValue(item));
 				}
-				return null;
+				return list;
 			}
-			
-			case DATETIME_SECOND:
-			case DATETIME_MICROS:
-			case DATETIME_NANOS: {
-			  // Same handling as DATETIME
-			  return switch (v.getKindCase()) {
-			    case TIMESTAMP_VALUE -> new java.util.Date(tsToMillis(v.getTimestampValue()));
-			    case INT64_VALUE     -> new java.util.Date(v.getInt64Value());        // epoch ms expected
-			    case STRING_VALUE    -> new java.util.Date(Long.parseLong(v.getStringValue()));
-			    default              -> null;
-			  };
-			}			
+			return null;
+		case ARRAY_OF_SHORTS: {
+			if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
+				var out = new java.util.ArrayList<Short>();
+				for (GrpcValue item : v.getListValue().getValuesList()) {
+					Object o = fromGrpcValue(item);
+					if (o instanceof Number n)
+						out.add(n.shortValue());
+					else if (o instanceof String s)
+						out.add(Short.parseShort(s));
+				}
+				return out;
+			}
+			return null;
+		}
+
+		case ARRAY_OF_INTEGERS: {
+			if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
+				var out = new java.util.ArrayList<Integer>();
+				for (GrpcValue item : v.getListValue().getValuesList()) {
+					Object o = fromGrpcValue(item);
+					if (o instanceof Number n)
+						out.add(n.intValue());
+					else if (o instanceof String s)
+						out.add(Integer.parseInt(s));
+				}
+				return out;
+			}
+			return null;
+		}
+
+		case ARRAY_OF_LONGS: {
+			if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
+				var out = new java.util.ArrayList<Long>();
+				for (GrpcValue item : v.getListValue().getValuesList()) {
+					Object o = fromGrpcValue(item);
+					if (o instanceof Number n)
+						out.add(n.longValue());
+					else if (o instanceof String s)
+						out.add(Long.parseLong(s));
+				}
+				return out;
+			}
+			return null;
+		}
+
+		case ARRAY_OF_FLOATS: {
+			if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
+				var out = new java.util.ArrayList<Float>();
+				for (GrpcValue item : v.getListValue().getValuesList()) {
+					Object o = fromGrpcValue(item);
+					if (o instanceof Number n)
+						out.add(n.floatValue());
+					else if (o instanceof String s)
+						out.add(Float.parseFloat(s));
+				}
+				return out;
+			}
+			return null;
+		}
+
+		case ARRAY_OF_DOUBLES: {
+			if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
+				var out = new java.util.ArrayList<Double>();
+				for (GrpcValue item : v.getListValue().getValuesList()) {
+					Object o = fromGrpcValue(item);
+					if (o instanceof Number n)
+						out.add(n.doubleValue());
+					else if (o instanceof String s)
+						out.add(Double.parseDouble(s));
+				}
+				return out;
+			}
+			return null;
+		}
+
+		case DATETIME_SECOND:
+		case DATETIME_MICROS:
+		case DATETIME_NANOS: {
+			// Same handling as DATETIME
+			return switch (v.getKindCase()) {
+			case TIMESTAMP_VALUE -> new java.util.Date(tsToMillis(v.getTimestampValue()));
+			case INT64_VALUE -> new java.util.Date(v.getInt64Value()); // epoch ms expected
+			case STRING_VALUE -> new java.util.Date(Long.parseLong(v.getStringValue()));
+			default -> null;
+			};
+		}
 		}
 
 		// default fallback
@@ -2250,49 +2270,147 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	private String generateTransactionId() {
 		return "tx_" + System.nanoTime();
 	}
-	
+
 	// ---- Debug helpers ----
 	private static String summarizeJava(Object o) {
-		if (o == null) return "null";
+		if (o == null)
+			return "null";
 		try {
-			if (o instanceof CharSequence s) return "String(" + s.length() + ")=\"" + (s.length() > 120 ? s.subSequence(0,120) + "…" : s) + "\"";
-			if (o instanceof byte[] b) return "bytes[" + b.length + "]";
-			if (o instanceof java.util.Collection<?> c) return o.getClass().getSimpleName() + "[size=" + c.size() + "]";
-			if (o instanceof java.util.Map<?,?> m) return o.getClass().getSimpleName() + "[size=" + m.size() + "]";
+			if (o instanceof CharSequence s)
+				return "String(" + s.length() + ")=\"" + (s.length() > 120 ? s.subSequence(0, 120) + "…" : s) + "\"";
+			if (o instanceof byte[] b)
+				return "bytes[" + b.length + "]";
+			if (o instanceof java.util.Collection<?> c)
+				return o.getClass().getSimpleName() + "[size=" + c.size() + "]";
+			if (o instanceof java.util.Map<?, ?> m)
+				return o.getClass().getSimpleName() + "[size=" + m.size() + "]";
 			return o.getClass().getSimpleName() + "(" + String.valueOf(o) + ")";
-		} catch (Exception e) { return o.getClass().getSimpleName(); }
+		}
+		catch (Exception e) {
+			return o.getClass().getSimpleName();
+		}
 	}
 
 	private static String summarizeGrpc(GrpcValue v) {
-		if (v == null) return "GrpcValue(null)";
+		if (v == null)
+			return "GrpcValue(null)";
 		switch (v.getKindCase()) {
-			case BOOL_VALUE: return "BOOL(" + v.getBoolValue() + ")";
-			case INT32_VALUE: return "INT32(" + v.getInt32Value() + ")";
-			case INT64_VALUE: return "INT64(" + v.getInt64Value() + ")";
-			case FLOAT_VALUE: return "FLOAT(" + v.getFloatValue() + ")";
-			case DOUBLE_VALUE: return "DOUBLE(" + v.getDoubleValue() + ")";
-			case STRING_VALUE: {
-				String s = v.getStringValue();
-				return "STRING(" + s.length() + ")=\"" + (s.length() > 120 ? s.substring(0,120) + "…" : s) + "\"";
-			}
-			case BYTES_VALUE: return "BYTES[" + v.getBytesValue().size() + "]";
-			case TIMESTAMP_VALUE: return "TIMESTAMP(" + v.getTimestampValue().getSeconds() + "." + v.getTimestampValue().getNanos() + ")";
-			case LIST_VALUE: return "LIST[size=" + v.getListValue().getValuesCount() + "]";
-			case MAP_VALUE: return "MAP[size=" + v.getMapValue().getEntriesCount() + "]";
-			case EMBEDDED_VALUE: return "EMBEDDED[type=" + v.getEmbeddedValue().getType() + ", size=" + v.getEmbeddedValue().getFieldsCount() + "]";
-			case LINK_VALUE: return "LINK(" + v.getLinkValue().getRid() + ")";
-			case DECIMAL_VALUE: return "DECIMAL(unscaled=" + v.getDecimalValue().getUnscaled() + ", scale=" + v.getDecimalValue().getScale() + ")";
-			case KIND_NOT_SET: default: return "GrpcValue(KIND_NOT_SET)";
+		case BOOL_VALUE:
+			return "BOOL(" + v.getBoolValue() + ")";
+		case INT32_VALUE:
+			return "INT32(" + v.getInt32Value() + ")";
+		case INT64_VALUE:
+			return "INT64(" + v.getInt64Value() + ")";
+		case FLOAT_VALUE:
+			return "FLOAT(" + v.getFloatValue() + ")";
+		case DOUBLE_VALUE:
+			return "DOUBLE(" + v.getDoubleValue() + ")";
+		case STRING_VALUE: {
+			String s = v.getStringValue();
+			return "STRING(" + s.length() + ")=\"" + (s.length() > 120 ? s.substring(0, 120) + "…" : s) + "\"";
+		}
+		case BYTES_VALUE:
+			return "BYTES[" + v.getBytesValue().size() + "]";
+		case TIMESTAMP_VALUE:
+			return "TIMESTAMP(" + v.getTimestampValue().getSeconds() + "." + v.getTimestampValue().getNanos() + ")";
+		case LIST_VALUE:
+			return "LIST[size=" + v.getListValue().getValuesCount() + "]";
+		case MAP_VALUE:
+			return "MAP[size=" + v.getMapValue().getEntriesCount() + "]";
+		case EMBEDDED_VALUE:
+			return "EMBEDDED[type=" + v.getEmbeddedValue().getType() + ", size=" + v.getEmbeddedValue().getFieldsCount() + "]";
+		case LINK_VALUE:
+			return "LINK(" + v.getLinkValue().getRid() + ")";
+		case DECIMAL_VALUE:
+			return "DECIMAL(unscaled=" + v.getDecimalValue().getUnscaled() + ", scale=" + v.getDecimalValue().getScale() + ")";
+		case KIND_NOT_SET:
+		default:
+			return "GrpcValue(KIND_NOT_SET)";
 		}
 	}
 
 	private GrpcValue dbgEnc(String where, Object in, GrpcValue out, String ctx) {
-		if (logger.isDebugEnabled()) logger.debug("GRPC-ENC [{}]{} in={} -> out={}", where, (ctx==null?"" : " "+ctx), summarizeJava(in), summarizeGrpc(out));
+		if (logger.isDebugEnabled())
+			logger.debug("GRPC-ENC [{}]{} in={} -> out={}", where, (ctx == null ? "" : " " + ctx), summarizeJava(in), summarizeGrpc(out));
 		return out;
 	}
 
 	private Object dbgDec(String where, GrpcValue in, Object out, String ctx) {
-		if (logger.isDebugEnabled()) logger.debug("GRPC-DEC [{}]{} in={} -> out={}", where, (ctx==null?"" : " "+ctx), summarizeGrpc(in), summarizeJava(out));
+		if (logger.isDebugEnabled())
+			logger.debug("GRPC-DEC [{}]{} in={} -> out={}", where, (ctx == null ? "" : " " + ctx), summarizeGrpc(in), summarizeJava(out));
 		return out;
+	}
+
+	// --- Gson structural encoder: JsonElement -> GrpcValue ---
+	private GrpcValue gsonToGrpc(JsonElement n) {
+		GrpcValue.Builder b = GrpcValue.newBuilder();
+		if (n == null || n.isJsonNull()) {
+			return b.build(); // KIND_NOT_SET => null on the client
+		}
+
+		if (n.isJsonPrimitive()) {
+			JsonPrimitive p = n.getAsJsonPrimitive();
+			if (p.isBoolean())
+				return b.setBoolValue(p.getAsBoolean()).build();
+			if (p.isNumber()) {
+				java.math.BigDecimal bd;
+				try {
+					bd = p.getAsBigDecimal();
+				}
+				catch (Exception e) {
+					return b.setDoubleValue(p.getAsDouble()).build();
+				}
+				if (bd.scale() == 0) {
+					try {
+						int i = bd.intValueExact();
+						return b.setInt32Value(i).build();
+					}
+					catch (ArithmeticException ignore) {
+					}
+					try {
+						long l = bd.longValueExact();
+						return b.setInt64Value(l).build();
+					}
+					catch (ArithmeticException ignore) {
+					}
+					java.math.BigInteger unscaled = bd.unscaledValue();
+					if (unscaled.bitLength() <= 63) {
+						return b.setDecimalValue(GrpcDecimal.newBuilder().setUnscaled(unscaled.longValue()).setScale(bd.scale()).build())
+								.build();
+					}
+					return b.setStringValue(bd.toPlainString()).build();
+				}
+				else {
+					java.math.BigInteger unscaled = bd.unscaledValue();
+					if (unscaled.bitLength() <= 63) {
+						return b.setDecimalValue(GrpcDecimal.newBuilder().setUnscaled(unscaled.longValue()).setScale(bd.scale()).build())
+								.build();
+					}
+					return b.setStringValue(bd.toPlainString()).build();
+				}
+			}
+			if (p.isString())
+				return b.setStringValue(p.getAsString()).build();
+			return b.setStringValue(p.getAsString()).build();
+		}
+
+		if (n.isJsonArray()) {
+			GrpcList.Builder lb = GrpcList.newBuilder();
+			for (JsonElement e : n.getAsJsonArray()) {
+				lb.addValues(gsonToGrpc(e));
+			}
+			return b.setListValue(lb.build()).build();
+		}
+
+		if (n.isJsonObject()) {
+			GrpcMap.Builder mb = GrpcMap.newBuilder();
+			JsonObject obj = n.getAsJsonObject();
+			for (var entry : obj.entrySet()) {
+				mb.putEntries(entry.getKey(), gsonToGrpc(entry.getValue()));
+			}
+			return b.setMapValue(mb.build()).build();
+		}
+
+		return b.setStringValue(n.toString()).build();
 	}
 }
