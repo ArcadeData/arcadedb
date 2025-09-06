@@ -630,9 +630,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 					logger.debug("executeQuery(): isElement");
 
 					com.arcadedb.database.Record dbRecord = result.getElement().get();
+					
+					logger.debug("executeQuery(): dbRecord -> @rid = {}", dbRecord.asDocument().get("@rid"));
 
 					GrpcRecord grpcRecord = convertToGrpcRecord(dbRecord, database);
+					
+					logger.debug("executeQuery(): grpcRecord -> @rid = {}", grpcRecord.getRid());
+					
 					resultBuilder.addRecords(grpcRecord);
+					
 					count++;
 
 					// Apply limit if specified
@@ -1973,20 +1979,30 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	}
 
 	private GrpcRecord convertToGrpcRecord(com.arcadedb.database.Record dbRecord, Database db) {
+		
 		GrpcRecord.Builder builder = GrpcRecord.newBuilder().setRid(dbRecord.getIdentity().toString());
 
 		if (dbRecord instanceof Document doc) {
+			
 			if (doc.getType() != null)
 				builder.setType(doc.getTypeName());
 
+			if (doc.getIdentity() != null)
+				builder.setRid(doc.getIdentity().toString());
+
 			// set all properties
 			for (String propertyName : doc.getPropertyNames()) {
+
 				Object value = doc.get(propertyName);
+				
 				if (value != null) {
+				
 					if (logger.isDebugEnabled()) {						
 						logger.debug("convertToGrpcRecord(): Converting {}\n  value = {}\n  class = {}", propertyName, value, value.getClass());
 					}
+					
 					GrpcValue gv = toGrpcValue(value);
+					
 					if (logger.isDebugEnabled())
 						logger.debug("ENC-REC {}.{}: {} -> {}", builder.getRid(), propertyName, summarizeJava(value), summarizeGrpc(gv));
 					
@@ -1996,9 +2012,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 			// If this is an Edge, include @out / @in for convenience (string rid or link)
 			if (dbRecord instanceof Edge edge) {
+				
 				if (!builder.getPropertiesMap().containsKey("@out")) {
 					builder.putProperties("@out", toGrpcValue(edge.getOut().getIdentity()));
 				}
+				
+				
 				if (!builder.getPropertiesMap().containsKey("@in")) {
 					builder.putProperties("@in", toGrpcValue(edge.getIn().getIdentity()));
 				}
@@ -2007,6 +2026,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 		if (logger.isDebugEnabled())
 			logger.debug("ENC-REC DONE rid={} type={} props={}", builder.getRid(), builder.getType(), builder.getPropertiesCount());
+		
 		return builder.build();
 	}
 
