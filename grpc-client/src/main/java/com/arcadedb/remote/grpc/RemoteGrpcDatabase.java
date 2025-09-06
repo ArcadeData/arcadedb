@@ -157,7 +157,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 	private String transactionId;
 
-	private final RemoteSchema schema;
+	private RemoteSchema schema;
 
 	private final String userName;
 	private final String userPassword;
@@ -386,7 +386,120 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	public Iterator<Record> iterateBucket(final String bucketName) {
 		return streamQuery("select from bucket:`" + bucketName + "`");
 	}
+	
+//	@Override
+//	public ResultSet command(final String language, final String command) {
+//		checkDatabaseIsOpen();
+//		stats.commands.incrementAndGet();
+//
+//		final Map<String, Object> params = new HashMap<String, Object>();
+//		
+//		return commandInternal(language, command, params);
+//	}
+//	
 
+	@Override
+	public ResultSet command(final String language, final String command, final ContextConfiguration configuration, final Object... args) {
+		
+		checkDatabaseIsOpen();
+		stats.commands.incrementAndGet();
+
+		final Map<String, Object> params = mapArgs(args);
+
+		return commandInternal(language, command, params);
+	}
+
+	@Override
+	public ResultSet command(final String language, final String command, final ContextConfiguration configuration,
+			final Map<String, Object> params) {
+		checkDatabaseIsOpen();
+		stats.commands.incrementAndGet();
+		
+		return commandInternal(language, command, params);
+	}
+
+	@Override
+	public ResultSet command(final String language, final String command, final Object... args) {
+		checkDatabaseIsOpen();
+		stats.commands.incrementAndGet();
+
+		final Map<String, Object> params = mapArgs(args);
+		
+		return commandInternal(language, command, params);
+	}
+	
+	@Override
+	public ResultSet command(final String language, final String command, final Map<String, Object> params) {
+		checkDatabaseIsOpen();
+		stats.commands.incrementAndGet();
+
+		return commandInternal(language, command, params);
+	}
+
+	private ResultSet commandInternal(final String language, final String command, final Map<String, Object> params) {
+		
+		ExecuteCommandRequest.Builder requestBuilder = ExecuteCommandRequest.newBuilder().setDatabase(getName()).setCommand(command)
+				.setLanguage(language).setCredentials(buildCredentials());
+
+		if (transactionId != null) {
+			requestBuilder.setTransaction(TransactionContext.newBuilder().setTransactionId(transactionId).setDatabase(getName()).build());
+		}
+
+		if (params != null && !params.isEmpty()) {
+			requestBuilder.putAllParameters(convertParamsToGrpcValue(params));
+		}
+		
+		boolean returnRows = true;
+		
+		requestBuilder.setReturnRows(returnRows);
+		
+		try {
+
+			if (logger.isDebugEnabled())
+				logger.debug("CLIENT executeCommand: db={}, tx={}, cmdLen={}, params={}", getName(), (transactionId != null),
+						requestBuilder.getCommand().length(), requestBuilder.getParametersCount());
+
+			ExecuteCommandResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+					.executeCommand(requestBuilder.build());
+
+			if (logger.isDebugEnabled())
+				logger.debug("CLIENT executeCommand: success = {}", response.getSuccess());
+
+			if (!response.getSuccess()) {
+				throw new DatabaseOperationException("Failed to execute command: " + response.getMessage());
+			}
+
+			ResultSet resultSet;
+			
+			if (returnRows) {				
+				resultSet = createGrpcResultSet(response);
+			}
+			else {
+				
+				resultSet = new InternalResultSet();
+
+				if (response.getAffectedRecords() > 0) {
+					
+					Map<String, Object> result = new HashMap<>();
+					result.put("affected", response.getAffectedRecords());
+					result.put("executionTime", response.getExecutionTimeMs());
+					
+					((InternalResultSet)resultSet).add(new ResultInternal(result));
+				}
+			}
+			
+			return resultSet;
+		}
+		catch (StatusRuntimeException e) {
+			handleGrpcException(e);
+			return new InternalResultSet();
+		}
+		catch (StatusException e) {
+			handleGrpcException(e);
+			return new InternalResultSet();
+		}
+	}
+	
 	@Override
 	public ResultSet query(final String language, final String query, final Map<String, Object> params) {
 		checkDatabaseIsOpen();
@@ -440,58 +553,6 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		return query(language, query, params);
 	}
 
-	@Override
-	public ResultSet command(final String language, final String command, final Map<String, Object> params) {
-		checkDatabaseIsOpen();
-		stats.commands.incrementAndGet();
-
-		ExecuteCommandRequest.Builder requestBuilder = ExecuteCommandRequest.newBuilder().setDatabase(getName()).setCommand(command)
-				.setCredentials(buildCredentials());
-
-		if (transactionId != null) {
-			requestBuilder.setTransaction(TransactionContext.newBuilder().setTransactionId(transactionId).setDatabase(getName()).build());
-		}
-
-		if (params != null && !params.isEmpty()) {
-			requestBuilder.putAllParameters(convertParamsToGrpcValue(params));
-		}
-
-		try {
-
-			if (logger.isDebugEnabled())
-				logger.debug("CLIENT executeCommand: db={}, tx={}, cmdLen={}, params={}", getName(), (transactionId != null),
-						requestBuilder.getCommand().length(), requestBuilder.getParametersCount());
-
-			ExecuteCommandResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
-					.executeCommand(requestBuilder.build());
-
-			if (logger.isDebugEnabled())
-				logger.debug("CLIENT executeCommand: success = {}", response.getSuccess());
-
-			if (!response.getSuccess()) {
-				throw new DatabaseOperationException("Failed to execute command: " + response.getMessage());
-			}
-
-			// Create result set with command execution info
-			InternalResultSet resultSet = new InternalResultSet();
-
-			if (response.getAffectedRecords() > 0) {
-				Map<String, Object> result = new HashMap<>();
-				result.put("affected", response.getAffectedRecords());
-				result.put("executionTime", response.getExecutionTimeMs());
-				resultSet.add(new ResultInternal(result));
-			}
-			return resultSet;
-		}
-		catch (StatusRuntimeException e) {
-			handleGrpcException(e);
-			return new InternalResultSet();
-		}
-		catch (StatusException e) {
-			handleGrpcException(e);
-			return new InternalResultSet();
-		}
-	}
 
 	public ExecuteCommandResponse execSql(String db, String sql, Map<String, Object> params, long timeoutMs) {
 		return executeCommand(db, "sql", sql, params, /* returnRows */ false, /* maxRows */ 0, txBeginCommit(), timeoutMs);
@@ -1581,6 +1642,14 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		return resultSet;
 	}
 
+	private ResultSet createGrpcResultSet(ExecuteCommandResponse response) {		
+		InternalResultSet resultSet = new InternalResultSet();		
+		for (GrpcRecord record : response.getRecordsList()) {
+			resultSet.add(grpcRecordToResult(record));
+		}
+		return resultSet;
+	}
+	
 	private Result grpcRecordToResult(GrpcRecord grpcRecord) {
 
 		Record record = grpcRecordToDBRecord(grpcRecord);
@@ -1605,9 +1674,24 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		// Add metadata
 		map.put("@rid", grpcRecord.getRid());
 		map.put("@type", grpcRecord.getType());
-		map.put("@cat", mapRecordType(grpcRecord));
 
-		String cat = (String) map.get("@cat");
+		GrpcValue catFromGrpcRecord = grpcRecord.getPropertiesMap().get("@cat");
+
+		String cat = null;
+
+		if (catFromGrpcRecord != null) {
+
+			cat = catFromGrpcRecord.getStringValue();
+		}
+		else {
+
+			cat = mapRecordType(grpcRecord);
+		}
+
+		if (cat != null) {
+
+			map.put("@cat", cat);
+		}
 
 		if (cat == null) {
 
@@ -1616,11 +1700,17 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 		switch (cat) {
 		case "d":
+
 			return new RemoteImmutableDocument(this, map);
+
 		case "v":
+
 			return new RemoteImmutableVertex(this, map);
+
 		case "e":
+
 			return new RemoteImmutableEdge(this, map);
+
 		default:
 			return null;
 		}
@@ -1634,20 +1724,24 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		// Check schema to determine actual type
 		try {
 
-			if (getSchema().existsType(typeName)) {
+			if (typeName != null && !typeName.isBlank() && getSchema().existsType(typeName)) {
 
 				Object type = getSchema().getType(typeName);
 
 				if (type instanceof com.arcadedb.schema.VertexType) {
+
 					return "v";
 				}
 				else if (type instanceof com.arcadedb.schema.EdgeType) {
+
 					return "e";
 				}
 				else if (type instanceof com.arcadedb.schema.DocumentType) {
+
 					return "d";
 				}
 				else {
+
 					return null;
 				}
 			}
@@ -1657,10 +1751,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			}
 		}
 		catch (Exception e) {
-			// Fall back to name-based detection
-		}
 
-		return null;
+			throw new RuntimeException(e);
+		}
 	}
 
 	private Map<String, GrpcValue> convertParamsToGrpcValue(Map<String, Object> params) {
