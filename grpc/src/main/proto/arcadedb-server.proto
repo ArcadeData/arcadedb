@@ -87,6 +87,20 @@ message GrpcDecimal {
   int32  scale    = 2; // number of decimal places
 }
 
+message ProjectionSettings {
+  bool include_projections = 1;
+
+  // Reuse the same enum (either nested under ExecuteQueryRequest or a top-level enum)
+  enum ProjectionEncoding {
+    PROJECTION_AS_LINK = 0;
+    PROJECTION_AS_MAP  = 1;
+    PROJECTION_AS_JSON = 2;
+  }
+  ProjectionEncoding projection_encoding = 2;
+
+  optional google.protobuf.Int32Value soft_limit_bytes = 3;  // <-- this is the one protoc complained about; use 3
+}
+
 // -----------------------------------------------------------------------------
 // Query (streaming) API
 // -----------------------------------------------------------------------------
@@ -111,6 +125,8 @@ message StreamQueryRequest {
 
   string language = 7; // e.g., "sql" (default if empty)
   TransactionContext transaction = 8; // optional
+
+  ProjectionSettings projectionSettings = 9;
 }
 
 message QueryResult {
@@ -225,6 +241,8 @@ message ExecuteCommandRequest {
 
   bool  return_rows = 7; // include rows in response
   int32 max_rows    = 8; // cap returned rows (server may still count all)
+
+  ProjectionSettings projectionSettings = 9;
 }
 
 message ExecuteCommandResponse {
@@ -251,17 +269,7 @@ message ExecuteQueryRequest {
   int32 limit = 6;
   int32 timeout_ms = 7;
 
-  // NEW
-  bool include_projections = 8;  // default: false (RID only in results)
-  enum ProjectionEncoding {
-    PROJECTION_AS_LINK  = 0;     // RID only (GrpcValue.link_value)
-    PROJECTION_AS_MAP   = 1;     // Fully typed GrpcValue map/embedded tree
-    PROJECTION_AS_JSON  = 2;     // UTF-8 JSON bytes (GrpcValue.bytes_value, logical_type="json")
-  }
-  ProjectionEncoding projection_encoding = 9; // default: PROJECTION_AS_LINK
-
-  // (optional, helps avoid giant messages)
-  google.protobuf.Int32Value projection_soft_limit_bytes = 10;// e.g., 32768; server may downshift encoding if exceeded
+  ProjectionSettings projectionSettings = 8;
 }
 
 message ExecuteQueryResponse {

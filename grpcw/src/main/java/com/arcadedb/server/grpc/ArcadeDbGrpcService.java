@@ -28,6 +28,7 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
 import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
+import com.arcadedb.server.grpc.ProjectionSettings.ProjectionEncoding;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
@@ -598,13 +599,25 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 		try {
 
-			final boolean includeProjections = request.getIncludeProjections();
-			final var projMode = request.getProjectionEncoding();
+			ProjectionConfig projectionConfig = null;
 
-			int softLimit = request.hasProjectionSoftLimitBytes() ? request.getProjectionSoftLimitBytes().getValue() : 0; // choose your default
-																															// or 0 = unlimited
+			if (request.hasProjectionSettings()) {
 
-			ProjectionConfig projectionConfig = new ProjectionConfig(includeProjections, projMode, softLimit);
+				var projectionSettings = request.getProjectionSettings();
+
+				final boolean includeProjections = projectionSettings.getIncludeProjections();
+				final var projMode = projectionSettings.getProjectionEncoding();
+
+				int softLimit = projectionSettings.hasSoftLimitBytes() ? projectionSettings.getSoftLimitBytes().getValue() : 0; // choose your
+																																// default
+																																// or 0 =
+																																// unlimited
+				projectionConfig = new ProjectionConfig(includeProjections, projMode, softLimit);
+			}
+			else {
+
+				projectionConfig = new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);
+			}
 
 			// Force compression for streaming (usually beneficial)
 			CompressionAwareService.setResponseCompression(responseObserver, "gzip");
@@ -780,6 +793,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	@Override
 	public void streamQuery(StreamQueryRequest request, StreamObserver<QueryResult> responseObserver) {
 
+		ProjectionConfig projectionConfig = getProjectionConfigFromRequest(request);
+
 		final ServerCallStreamObserver<QueryResult> scso = (ServerCallStreamObserver<QueryResult>) responseObserver;
 
 		final java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -802,10 +817,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 			// --- Dispatch on mode (helpers do NOT manage transactions) ---
 			switch (request.getRetrievalMode()) {
-			case MATERIALIZE_ALL -> streamMaterialized(db, request, batchSize, scso, cancelled);
-			case PAGED -> streamPaged(db, request, batchSize, scso, cancelled);
-			case CURSOR -> streamCursor(db, request, batchSize, scso, cancelled);
-			default -> streamCursor(db, request, batchSize, scso, cancelled);
+			case MATERIALIZE_ALL -> streamMaterialized(db, request, batchSize, scso, cancelled, projectionConfig);
+			case PAGED -> streamPaged(db, request, batchSize, scso, cancelled, projectionConfig);
+			case CURSOR -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig);
+			default -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig);
 			}
 
 			// If the client cancelled mid-stream, choose rollback unless caller explicitly
@@ -870,58 +885,102 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	 * Mode 1 (existing behavior-ish): run once and iterate results, batching as we
 	 * go.
 	 */
-	private void streamCursor(Database db, StreamQueryRequest req, int batchSize, ServerCallStreamObserver<QueryResult> scso,
-			AtomicBoolean cancelled) {
+	private void streamCursor(Database db, StreamQueryRequest request, int batchSize, ServerCallStreamObserver<QueryResult> scso,
+			AtomicBoolean cancelled, ProjectionConfig projectionConfig) {
 
 		long running = 0L;
 
 		QueryResult.Builder batch = QueryResult.newBuilder();
 		int inBatch = 0;
 
-		try (ResultSet rs = db.query("sql", req.getQuery(), convertParameters(req.getParametersMap()))) {
+		try (ResultSet rs = db.query("sql", request.getQuery(), convertParameters(request.getParametersMap()))) {
+			
 			while (rs.hasNext()) {
+				
 				if (cancelled.get())
 					return;
 				waitUntilReady(scso, cancelled);
 
 				Result r = rs.next();
-				if (!r.isElement())
-					continue;
 
-				com.arcadedb.database.Record rec = r.getElement().get();
-				batch.addRecords(convertToGrpcRecord(rec, db));
-				inBatch++;
-				running++;
+				if (r.isElement()) {
 
-				if (inBatch >= batchSize) {
-					safeOnNext(scso, cancelled,
-							batch.setTotalRecordsInBatch(inBatch).setRunningTotalEmitted(running).setIsLastBatch(false).build());
-					batch = QueryResult.newBuilder();
-					inBatch = 0;
+					com.arcadedb.database.Record rec = r.getElement().get();
+					
+					batch.addRecords(convertToGrpcRecord(rec, db));
+					
+					inBatch++;
+					running++;
+
+					if (inBatch >= batchSize) {
+						safeOnNext(scso, cancelled,
+								batch.setTotalRecordsInBatch(inBatch).setRunningTotalEmitted(running).setIsLastBatch(false).build());
+						batch = QueryResult.newBuilder();
+						inBatch = 0;
+					}
+				}
+				else {
+
+					GrpcRecord.Builder rb = GrpcRecord.newBuilder();
+					
+					for (String p : r.getPropertyNames()) {
+						rb.putProperties(p, convertPropToGrpcValue(p, r, projectionConfig)); // overload below
+					}
+
+					batch.addRecords(rb.build());
+					
+					inBatch++;
+					running++;
+
+					if (inBatch >= batchSize) {
+						
+						safeOnNext(scso, cancelled,
+								batch.setTotalRecordsInBatch(inBatch).setRunningTotalEmitted(running).setIsLastBatch(false).build());
+						
+						batch = QueryResult.newBuilder();
+						inBatch = 0;
+					}
 				}
 			}
+		}
 
-			if (!cancelled.get() && inBatch > 0) {
-				safeOnNext(scso, cancelled, batch.setTotalRecordsInBatch(inBatch).setRunningTotalEmitted(running).setIsLastBatch(true).build());
-			}
+		if (!cancelled.get() && inBatch > 0) {
+			safeOnNext(scso, cancelled, batch.setTotalRecordsInBatch(inBatch).setRunningTotalEmitted(running).setIsLastBatch(true).build());
 		}
 	}
 
-	/** Mode 2: materialize everything first (simple, but can be memory-heavy). */
-	private void streamMaterialized(Database db, StreamQueryRequest req, int batchSize, ServerCallStreamObserver<QueryResult> scso,
-			AtomicBoolean cancelled) {
+	/**
+	 * Mode 2: materialize everything first (simple, but can be memory-heavy).
+	 * 
+	 * @param projectionConfig
+	 */
+	private void streamMaterialized(Database db, StreamQueryRequest request, int batchSize, ServerCallStreamObserver<QueryResult> scso,
+			AtomicBoolean cancelled, ProjectionConfig projectionConfig) {
 
 		final java.util.List<GrpcRecord> all = new java.util.ArrayList<>();
 
-		try (ResultSet rs = db.query("sql", req.getQuery(), convertParameters(req.getParametersMap()))) {
+		try (ResultSet rs = db.query("sql", request.getQuery(), convertParameters(request.getParametersMap()))) {
 
 			while (rs.hasNext()) {
 				if (cancelled.get())
 					return;
+
 				Result r = rs.next();
-				if (!r.isElement())
-					continue;
-				all.add(convertToGrpcRecord(r.getElement().get(), db));
+
+				if (r.isElement()) {
+					
+					all.add(convertToGrpcRecord(r.getElement().get(), db));
+				}
+				else {
+					
+					GrpcRecord.Builder rb = GrpcRecord.newBuilder();
+					
+					for (String p : r.getPropertyNames()) {
+						rb.putProperties(p, convertPropToGrpcValue(p, r, projectionConfig)); // overload below
+					}
+					
+					all.add(rb.build());
+				}
 			}
 		}
 
@@ -942,11 +1001,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 		}
 	}
 
-	/** Mode 3: only fetch one page’s worth of rows per emission via LIMIT/SKIP. */
-	private void streamPaged(Database db, StreamQueryRequest req, int batchSize, ServerCallStreamObserver<QueryResult> scso,
-			AtomicBoolean cancelled) {
+	/**
+	 * Mode 3: only fetch one page’s worth of rows per emission via LIMIT/SKIP.
+	 * 
+	 * @param projectionConfig
+	 */
+	private void streamPaged(Database db, StreamQueryRequest request, int batchSize, ServerCallStreamObserver<QueryResult> scso,
+			AtomicBoolean cancelled, ProjectionConfig projectionConfig) {
 
-		final String pagedSql = wrapWithSkipLimit(req.getQuery()); // see helper below
+		final String pagedSql = wrapWithSkipLimit(request.getQuery()); // see helper below
 		int offset = 0;
 		long running = 0L;
 
@@ -955,7 +1018,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				return;
 			waitUntilReady(scso, cancelled);
 
-			java.util.Map<String, Object> params = new java.util.HashMap<>(convertParameters(req.getParametersMap()));
+			java.util.Map<String, Object> params = new java.util.HashMap<>(convertParameters(request.getParametersMap()));
 			params.put("_skip", offset);
 			params.put("_limit", batchSize);
 
@@ -966,11 +1029,25 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				while (rs.hasNext()) {
 					if (cancelled.get())
 						return;
+										
 					Result r = rs.next();
-					if (!r.isElement())
-						continue;
-					b.addRecords(convertToGrpcRecord(r.getElement().get(), db));
-					count++;
+					
+					if (r.isElement()) {
+						
+						b.addRecords(convertToGrpcRecord(r.getElement().get(), db));
+						count++;
+					}
+					else {
+						
+						GrpcRecord.Builder rb = GrpcRecord.newBuilder();
+						
+						for (String p : r.getPropertyNames()) {
+							rb.putProperties(p, convertPropToGrpcValue(p, r, projectionConfig)); // overload below
+						}
+						
+						b.addRecords(rb.build());
+						count++;
+					}
 				}
 			}
 
@@ -986,6 +1063,30 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				return;
 			offset += batchSize;
 		}
+	}
+
+	private ProjectionConfig getProjectionConfigFromRequest(StreamQueryRequest request) {
+
+		ProjectionConfig projectionConfig = null;
+
+		if (request.hasProjectionSettings()) {
+
+			var projectionSettings = request.getProjectionSettings();
+
+			final boolean includeProjections = projectionSettings.getIncludeProjections();
+			final var projMode = projectionSettings.getProjectionEncoding();
+
+			int softLimit = projectionSettings.hasSoftLimitBytes() ? projectionSettings.getSoftLimitBytes().getValue() : 0; // choose your
+																															// default
+																															// or 0 = unlimited
+			projectionConfig = new ProjectionConfig(includeProjections, projMode, softLimit);
+		}
+		else {
+
+			projectionConfig = new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);
+		}
+
+		return projectionConfig;
 	}
 
 	/** Wrap arbitrary SQL so we can safely inject LIMIT/SKIP outside. */
@@ -1797,10 +1898,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			}
 
 			// In a PROJECTION row: obey encoding mode
-			ExecuteQueryRequest.ProjectionEncoding enc = pc.enc;
+			ProjectionEncoding enc = pc.enc;
 
 			// 3.1 LINK mode
-			if (enc == ExecuteQueryRequest.ProjectionEncoding.PROJECTION_AS_LINK) {
+			if (enc == ProjectionEncoding.PROJECTION_AS_LINK) {
 				if (doc.getIdentity() != null && doc.getIdentity().isValid()) {
 					if (logger.isDebugEnabled()) {
 						logger.debug("GRPC-ENC [toGrpcValue] PROJECTION -> LINK rid={}", doc.getIdentity());
@@ -1812,11 +1913,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				if (logger.isDebugEnabled()) {
 					logger.debug("GRPC-ENC [toGrpcValue] PROJECTION LINK fallback -> MAP (no rid)");
 				}
-				enc = ExecuteQueryRequest.ProjectionEncoding.PROJECTION_AS_MAP;
+				enc = ProjectionEncoding.PROJECTION_AS_MAP;
 			}
 
 			// 3.2 MAP mode
-			if (enc == ExecuteQueryRequest.ProjectionEncoding.PROJECTION_AS_MAP) {
+			if (enc == ProjectionEncoding.PROJECTION_AS_MAP) {
 				if (logger.isDebugEnabled()) {
 					logger.debug("GRPC-ENC [toGrpcValue] PROJECTION -> MAP rid={} type={}",
 							(doc.getIdentity() != null ? doc.getIdentity() : "null"), (doc.getType() != null ? doc.getTypeName() : "null"));
@@ -1863,7 +1964,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			}
 
 			// 3.3 JSON mode
-			if (enc == ExecuteQueryRequest.ProjectionEncoding.PROJECTION_AS_JSON) {
+			if (enc == ProjectionEncoding.PROJECTION_AS_JSON) {
 
 				if (logger.isDebugEnabled()) {
 					logger.debug("GRPC-ENC [toGrpcValue] PROJECTION -> JSON rid={} type={}",
@@ -1882,7 +1983,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				for (String k : doc.getPropertyNames())
 					m.put(k, doc.get(k));
 
-				
 				Object sanitized = sanitizeForJson(m);
 				byte[] jsonBytes = GSON.toJson(sanitized).getBytes(java.nio.charset.StandardCharsets.UTF_8);
 
@@ -2825,16 +2925,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 	static final class ProjectionConfig {
 		final boolean include;
-		final ExecuteQueryRequest.ProjectionEncoding enc;
+		final ProjectionEncoding enc;
 		final int softLimitBytes; // 0 = no soft limit
 
 		// Running counter for MAP/JSON builds:
 		final java.util.concurrent.atomic.AtomicInteger used = new java.util.concurrent.atomic.AtomicInteger(0);
 		volatile boolean truncated = false;
 
-		ProjectionConfig(boolean include, ExecuteQueryRequest.ProjectionEncoding enc, int softLimitBytes) {
+		ProjectionConfig(boolean include, ProjectionEncoding enc, int softLimitBytes) {
 			this.include = include;
-			this.enc = enc == null ? ExecuteQueryRequest.ProjectionEncoding.PROJECTION_AS_LINK : enc;
+			this.enc = enc == null ? ProjectionEncoding.PROJECTION_AS_LINK : enc;
 			this.softLimitBytes = Math.max(softLimitBytes, 0);
 		}
 
