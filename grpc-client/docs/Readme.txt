@@ -18,7 +18,7 @@ Logging:
 d exec -it arcadedb1-vulcan sh
 
 
-/home/arcadedb/config/arcadedb-log.properties
+vi /home/arcadedb/config/arcadedb-log.properties
 
 
 handlers = java.util.logging.ConsoleHandler, java.util.logging.FileHandler
@@ -27,7 +27,7 @@ handlers = java.util.logging.ConsoleHandler, java.util.logging.FileHandler
 com.arcadedb.level = INFO
 com.arcadedb.server.grpc.level = FINE
 
-java.util.logging.ConsoleHandler.level = FINE
+java.util.logging.ConsoleHandler.level = INFO
 java.util.logging.ConsoleHandler.formatter = com.arcadedb.utility.AnsiLogFormatter
 
 java.util.logging.FileHandler.level = FINE
@@ -39,4 +39,9 @@ java.util.logging.FileHandler.count=10
 
 
 
-tail -f /home/arcadedb/log/arcadedb.log.
+tail -f /home/arcadedb/log/arcadedb.log.0
+
+
+
+
+d exec -it arcadedb1-vulcan sh

@@ -45,6 +45,18 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 	private static final Logger logger = LoggerFactory.getLogger(ArcadeDbGrpcService.class);
 
+	private static final java.util.Base64.Encoder B64 = java.util.Base64.getEncoder();
+
+	private static final com.google.gson.Gson GSON = new com.google.gson.GsonBuilder().disableHtmlEscaping().serializeNulls()
+			.registerTypeHierarchyAdapter(java.nio.ByteBuffer.class,
+					(com.google.gson.JsonSerializer<java.nio.ByteBuffer>) (src, t,
+							ctx) -> new com.google.gson.JsonPrimitive(B64.encodeToString(toBytes(src))))
+			// Optional: make byte[] consistent too
+			.registerTypeHierarchyAdapter(byte[].class,
+					(com.google.gson.JsonSerializer<byte[]>) (src, t, ctx) -> new com.google.gson.JsonPrimitive(B64.encodeToString(src)))
+			
+			.create();
+
 	// Transaction management
 	private final Map<String, Database> activeTransactions = new ConcurrentHashMap<>();
 
@@ -398,6 +410,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			db = getDatabase(req.getDatabase(), req.getCredentials());
 
 			final String ridStr = req.getRid();
+
 			if (ridStr == null || ridStr.isEmpty())
 				throw new IllegalArgumentException("rid is required");
 
@@ -423,12 +436,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 			logger.debug("updateRecord(): el = {}; type = {}", el, el.getRecordType());
 
-			if (el instanceof Vertex) {
+			if (el instanceof Vertex elAsVertex) {
 
 				logger.debug("updateRecord(): Processing Vertex ...");
 
 				// Get mutable view for updates (works for docs, vertices, edges)
-				MutableVertex mvertex = (MutableVertex) el.asVertex(true).modify();
+				MutableVertex mvertex = elAsVertex.modify();
 
 				var dtype = db.getSchema().getType(mvertex.getTypeName());
 
@@ -452,12 +465,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 				mvertex.save();
 			}
-			else if (el instanceof Document) {
+			else if (el instanceof Document elAsDocument) {
 
 				logger.debug("updateRecord(): Processing Document ...");
 
-				// Get mutable view for updates (works for docs, vertices, edges)
-				MutableDocument mdoc = (MutableDocument) el.asDocument(true).modify();
+				MutableDocument mdoc = elAsDocument.modify();
 
 				var dtype = db.getSchema().getType(mdoc.getTypeName());
 
@@ -586,6 +598,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 		try {
 
+			final boolean includeProjections = request.getIncludeProjections();
+			final var projMode = request.getProjectionEncoding();
+
+			int softLimit = request.hasProjectionSoftLimitBytes() ? request.getProjectionSoftLimitBytes().getValue() : 0; // choose your default
+																															// or 0 = unlimited
+
+			ProjectionConfig projectionConfig = new ProjectionConfig(includeProjections, projMode, softLimit);
+
 			// Force compression for streaming (usually beneficial)
 			CompressionAwareService.setResponseCompression(responseObserver, "gzip");
 
@@ -630,15 +650,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 					logger.debug("executeQuery(): isElement");
 
 					com.arcadedb.database.Record dbRecord = result.getElement().get();
-					
+
 					logger.debug("executeQuery(): dbRecord -> @rid = {}", dbRecord.asDocument().get("@rid"));
 
 					GrpcRecord grpcRecord = convertToGrpcRecord(dbRecord, database);
-					
+
 					logger.debug("executeQuery(): grpcRecord -> @rid = {}", grpcRecord.getRid());
-					
+
 					resultBuilder.addRecords(grpcRecord);
-					
+
 					count++;
 
 					// Apply limit if specified
@@ -656,7 +676,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 					for (String p : result.getPropertyNames()) {
 
-						recB.putProperties(p, convertPropToGrpcValue(p, result));
+						recB.putProperties(p, convertPropToGrpcValue(p, result, projectionConfig));
 					}
 
 					resultBuilder.addRecords(recB.build());
@@ -1680,17 +1700,22 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	}
 
 	private GrpcValue toGrpcValue(Object o) {
-		
-		if (logger.isDebugEnabled()) {			
-			logger.debug("toGrpcValue(): Converting\n   value ={}\n   class = {}", o, o.getClass());
+
+		return toGrpcValue(o, null);
+	}
+
+	private GrpcValue toGrpcValue(Object o, ProjectionConfig pc) {
+
+		if (logger.isDebugEnabled()) {
+			logger.debug("toGrpcValue(): Converting\n   value = {}\n   class = {}", o, (o == null ? "null" : o.getClass().getName()));
 		}
-		
-		// class com.arcadedb.query.sql.executor.ResultInternal
+
 		if (o instanceof JsonElement je) {
 			return gsonToGrpc(je);
 		}
 
 		GrpcValue.Builder b = GrpcValue.newBuilder();
+
 		if (o == null)
 			return dbgEnc("toGrpcValue", o, b.build(), null);
 
@@ -1744,6 +1769,165 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setEmbeddedValue(eb.build()).build(), null);
 		}
 
+		// ===== PROJECTION-AWARE Document handling =====
+		if (o instanceof com.arcadedb.database.Document doc) {
+
+			final boolean inProjection = (pc != null && pc.include);
+
+			if (!inProjection) {
+				// Not a projection row: send as LINK if possible, else fall back
+				if (doc.getIdentity() != null && doc.getIdentity().isValid()) {
+					if (logger.isDebugEnabled()) {
+						logger.debug("GRPC-ENC [toGrpcValue] DOC-NON-PROJECTION -> LINK rid={}", doc.getIdentity());
+					}
+					return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build())
+							.setLogicalType("rid").build();
+				}
+				// No identity → treat as EMBEDDED-like MAP
+				if (logger.isDebugEnabled()) {
+					logger.debug("GRPC-ENC [toGrpcValue] DOC-NON-PROJECTION (no rid) -> MAP");
+				}
+				GrpcMap.Builder mb = GrpcMap.newBuilder();
+				if (doc.getType() != null)
+					mb.putEntries("@type", GrpcValue.newBuilder().setStringValue(doc.getTypeName()).build());
+				for (String k : doc.getPropertyNames()) {
+					mb.putEntries(k, toGrpcValue(doc.get(k), pc));
+				}
+				return GrpcValue.newBuilder().setMapValue(mb.build()).build();
+			}
+
+			// In a PROJECTION row: obey encoding mode
+			ExecuteQueryRequest.ProjectionEncoding enc = pc.enc;
+
+			// 3.1 LINK mode
+			if (enc == ExecuteQueryRequest.ProjectionEncoding.PROJECTION_AS_LINK) {
+				if (doc.getIdentity() != null && doc.getIdentity().isValid()) {
+					if (logger.isDebugEnabled()) {
+						logger.debug("GRPC-ENC [toGrpcValue] PROJECTION -> LINK rid={}", doc.getIdentity());
+					}
+					return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build())
+							.setLogicalType("rid").build();
+				}
+				// No rid: fall back to MAP
+				if (logger.isDebugEnabled()) {
+					logger.debug("GRPC-ENC [toGrpcValue] PROJECTION LINK fallback -> MAP (no rid)");
+				}
+				enc = ExecuteQueryRequest.ProjectionEncoding.PROJECTION_AS_MAP;
+			}
+
+			// 3.2 MAP mode
+			if (enc == ExecuteQueryRequest.ProjectionEncoding.PROJECTION_AS_MAP) {
+				if (logger.isDebugEnabled()) {
+					logger.debug("GRPC-ENC [toGrpcValue] PROJECTION -> MAP rid={} type={}",
+							(doc.getIdentity() != null ? doc.getIdentity() : "null"), (doc.getType() != null ? doc.getTypeName() : "null"));
+				}
+				GrpcMap.Builder mb = GrpcMap.newBuilder();
+
+				// meta
+				if (doc.getIdentity() != null && doc.getIdentity().isValid()) {
+					GrpcValue ridVal = GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build())
+							.setLogicalType("rid").build();
+					// soft limit accounting (precise, using serialized sizes)
+					if (!pc.wouldExceed(bytesOf("@rid") + ridVal.getSerializedSize())) {
+						mb.putEntries("@rid", ridVal);
+					}
+					else {
+						pc.truncated = true;
+					}
+				}
+				if (doc.getType() != null) {
+					GrpcValue typeVal = GrpcValue.newBuilder().setStringValue(doc.getTypeName()).build();
+					if (!pc.wouldExceed(bytesOf("@type") + typeVal.getSerializedSize())) {
+						mb.putEntries("@type", typeVal);
+					}
+					else {
+						pc.truncated = true;
+					}
+				}
+
+				for (String k : doc.getPropertyNames()) {
+					GrpcValue child = toGrpcValue(doc.get(k), pc); // recurse with config
+					int add = bytesOf(k) + child.getSerializedSize();
+					if (pc.wouldExceed(add)) {
+						if (logger.isDebugEnabled()) {
+							logger.debug("GRPC-ENC [toGrpcValue] PROJECTION MAP soft-limit hit; skipping '{}' (limit={}, used~{})", k,
+									pc.softLimitBytes, pc.used.get());
+						}
+						pc.truncated = true;
+						break;
+					}
+					mb.putEntries(k, child);
+				}
+
+				return GrpcValue.newBuilder().setMapValue(mb.build()).build();
+			}
+
+			// 3.3 JSON mode
+			if (enc == ExecuteQueryRequest.ProjectionEncoding.PROJECTION_AS_JSON) {
+
+				if (logger.isDebugEnabled()) {
+					logger.debug("GRPC-ENC [toGrpcValue] PROJECTION -> JSON rid={} type={}",
+							(doc.getIdentity() != null ? doc.getIdentity() : "null"), (doc.getType() != null ? doc.getTypeName() : "null"));
+				}
+
+				// Build a simple Map and serialize via your existing Gson
+				java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+
+				if (doc.getIdentity() != null && doc.getIdentity().isValid())
+					m.put("@rid", doc.getIdentity().toString());
+
+				if (doc.getType() != null)
+					m.put("@type", doc.getTypeName());
+
+				for (String k : doc.getPropertyNames())
+					m.put(k, doc.get(k));
+
+				
+				Object sanitized = sanitizeForJson(m);
+				byte[] jsonBytes = GSON.toJson(sanitized).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+				if (pc.softLimitBytes > 0 && jsonBytes.length > pc.softLimitBytes) {
+
+					pc.truncated = true;
+
+					if (logger.isDebugEnabled()) {
+						logger.debug("GRPC-ENC [toGrpcValue] PROJECTION JSON soft-limit hit; size={} limit={}", jsonBytes.length,
+								pc.softLimitBytes);
+					}
+
+					// Choose your policy: truncate, or fall back to LINK if possible
+					if (doc.getIdentity() != null && doc.getIdentity().isValid()) {
+						return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build())
+								.setLogicalType("rid").build();
+					}
+					else {
+						// Send a tiny marker instead of giant JSON
+						jsonBytes = "{\"__truncated\":true}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+					}
+				}
+				else {
+					pc.used.addAndGet(jsonBytes.length);
+				}
+
+				return GrpcValue.newBuilder().setBytesValue(com.google.protobuf.ByteString.copyFrom(jsonBytes)).setLogicalType("json").build();
+			}
+
+			// Shouldn’t get here, but fall back
+			if (logger.isDebugEnabled()) {
+				logger.debug("GRPC-ENC [toGrpcValue] PROJECTION unknown encoding {}; falling back to LINK/STRING", enc.name());
+			}
+			if (doc.getIdentity() != null && doc.getIdentity().isValid()) {
+				return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build())
+						.setLogicalType("rid").build();
+			}
+
+			// else small MAP fallback
+			GrpcMap.Builder mb = GrpcMap.newBuilder();
+			for (String k : doc.getPropertyNames())
+				mb.putEntries(k, toGrpcValue(doc.get(k), pc));
+			return GrpcValue.newBuilder().setMapValue(mb.build()).build();
+		}
+
 		if (o instanceof java.util.Map<?, ?> m) {
 			GrpcMap.Builder mb = GrpcMap.newBuilder();
 			for (var e : m.entrySet()) {
@@ -1775,18 +1959,28 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 		// Support ArcadeDB Result/ResultInternal as structural MAP
 		if (o instanceof com.arcadedb.query.sql.executor.Result res) {
-		    GrpcMap.Builder mb = GrpcMap.newBuilder();
-		    try {
-		        for (String k : res.getPropertyNames()) {
-		            mb.putEntries(k, toGrpcValue(res.getProperty(k)));
-		        }
-		    } catch (Throwable ignore) { }
-		    
-		    return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setMapValue(mb.build()).build(), null);
+			GrpcMap.Builder mb = GrpcMap.newBuilder();
+			try {
+				for (String k : res.getPropertyNames()) {
+					mb.putEntries(k, toGrpcValue(res.getProperty(k)));
+				}
+			}
+			catch (Throwable ignore) {
+			}
+
+			return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setMapValue(mb.build()).build(), null);
 		}
-		
+
 		// Fallback
+		if (logger.isDebugEnabled()) {
+			logger.debug("GRPC-ENC [toGrpcValue] FALLBACK-TO-STRING for class={} value={}", o.getClass().getName(), String.valueOf(o));
+		}
+
 		return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setStringValue(String.valueOf(o)).build(), null);
+	}
+
+	private static int bytesOf(String s) {
+		return s == null ? 0 : s.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
 	}
 
 	private InsertOptions defaults(InsertOptions in) {
@@ -1979,11 +2173,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	}
 
 	private GrpcRecord convertToGrpcRecord(com.arcadedb.database.Record dbRecord, Database db) {
-		
+
 		GrpcRecord.Builder builder = GrpcRecord.newBuilder().setRid(dbRecord.getIdentity().toString());
 
 		if (dbRecord instanceof Document doc) {
-			
+
 			if (doc.getType() != null)
 				builder.setType(doc.getTypeName());
 
@@ -1994,30 +2188,29 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			for (String propertyName : doc.getPropertyNames()) {
 
 				Object value = doc.get(propertyName);
-				
+
 				if (value != null) {
-				
-					if (logger.isDebugEnabled()) {						
+
+					if (logger.isDebugEnabled()) {
 						logger.debug("convertToGrpcRecord(): Converting {}\n  value = {}\n  class = {}", propertyName, value, value.getClass());
 					}
-					
+
 					GrpcValue gv = toGrpcValue(value);
-					
+
 					if (logger.isDebugEnabled())
 						logger.debug("ENC-REC {}.{}: {} -> {}", builder.getRid(), propertyName, summarizeJava(value), summarizeGrpc(gv));
-					
+
 					builder.putProperties(propertyName, gv);
 				}
 			}
 
 			// If this is an Edge, include @out / @in for convenience (string rid or link)
 			if (dbRecord instanceof Edge edge) {
-				
+
 				if (!builder.getPropertiesMap().containsKey("@out")) {
 					builder.putProperties("@out", toGrpcValue(edge.getOut().getIdentity()));
 				}
-				
-				
+
 				if (!builder.getPropertiesMap().containsKey("@in")) {
 					builder.putProperties("@in", toGrpcValue(edge.getIn().getIdentity()));
 				}
@@ -2026,18 +2219,29 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 		if (logger.isDebugEnabled())
 			logger.debug("ENC-REC DONE rid={} type={} props={}", builder.getRid(), builder.getType(), builder.getPropertiesCount());
-		
+
 		return builder.build();
+	}
+
+	private GrpcValue convertPropToGrpcValue(String propName, Result result, ProjectionConfig pc) {
+
+		Object propValue = result.getProperty(propName);
+
+		if (logger.isDebugEnabled()) {
+			logger.debug("convertPropToGrpcValue(): Converting {}\n  value = {}\n  class = {}", propName, propValue, propValue.getClass());
+		}
+
+		return toGrpcValue(propValue, pc);
 	}
 
 	private GrpcValue convertPropToGrpcValue(String propName, Result result) {
 
 		Object propValue = result.getProperty(propName);
 
-		if (logger.isDebugEnabled()) {						
+		if (logger.isDebugEnabled()) {
 			logger.debug("convertPropToGrpcValue(): Converting {}\n  value = {}\n  class = {}", propName, propValue, propValue.getClass());
 		}
-		
+
 		return toGrpcValue(propValue);
 	}
 
@@ -2173,30 +2377,99 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 			};
 
 		case EMBEDDED: {
+
 			// Use schema ofType if present; otherwise use embedded.type from the payload
+			if (logger.isDebugEnabled()) {
+				logger.debug("EMBEDDED: prop='{}', incoming kind={}, schema ofType='{}'", propName, v.getKindCase(), prop.getOfType());
+			}
+
 			String embeddedTypeName = (v.getKindCase() == GrpcValue.KindCase.EMBEDDED_VALUE && !v.getEmbeddedValue().getType().isEmpty())
 					? v.getEmbeddedValue().getType()
 					: prop.getOfType();
 
-			if (v.getKindCase() != GrpcValue.KindCase.EMBEDDED_VALUE || embeddedTypeName == null || embeddedTypeName.isEmpty()) {
-				// Fallback to a Map if we can't create a typed embedded doc
+			// If still unknown, try to discover from MAP payload keys
+			// (type/@type/empowerType)
+			if ((embeddedTypeName == null || embeddedTypeName.isEmpty()) && v.getKindCase() == GrpcValue.KindCase.MAP_VALUE) {
+				var entries = v.getMapValue().getEntriesMap();
+				GrpcValue tv = entries.getOrDefault("type", entries.getOrDefault("@type", entries.get("empowerType")));
+				if (tv != null && tv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) {
+					embeddedTypeName = tv.getStringValue();
+					if (logger.isDebugEnabled()) {
+						logger.debug("EMBEDDED: discovered embeddedTypeName='{}' from MAP payload", embeddedTypeName);
+					}
+				}
+			}
+
+			// If we still don't know the type and payload isn't EMBEDDED, fall back to Map
+			if ((embeddedTypeName == null || embeddedTypeName.isEmpty()) && v.getKindCase() != GrpcValue.KindCase.EMBEDDED_VALUE) {
+
+				if (logger.isDebugEnabled()) {
+					logger.debug("EMBEDDED: fallback to Map for prop='{}' (kind={}, embeddedTypeName='{}')", propName, v.getKindCase(),
+							embeddedTypeName);
+				}
 				return fromGrpcValue(v);
 			}
 
+			if (logger.isDebugEnabled()) {
+				final String source = (v.getKindCase() == GrpcValue.KindCase.EMBEDDED_VALUE && !v.getEmbeddedValue().getType().isEmpty())
+						? "payload"
+						: "schema/discovered";
+				int fields = (v.getKindCase() == GrpcValue.KindCase.EMBEDDED_VALUE) ? v.getEmbeddedValue().getFieldsCount()
+						: (v.getKindCase() == GrpcValue.KindCase.MAP_VALUE) ? v.getMapValue().getEntriesCount() : 0;
+				logger.debug("EMBEDDED: resolved embeddedTypeName='{}' (source={}), fields={}", embeddedTypeName, source, fields);
+			}
+
+			// Build typed embedded document
 			MutableEmbeddedDocument ed = parent.newEmbeddedDocument(embeddedTypeName, propName);
 			DocumentType embeddedType = null;
 			try {
 				embeddedType = db.getSchema().getType(embeddedTypeName);
+				if (logger.isDebugEnabled()) {
+					logger.debug("EMBEDDED: schema type lookup '{}' -> {}", embeddedTypeName, (embeddedType != null ? "FOUND" : "NOT FOUND"));
+				}
 			}
-			catch (Exception ignore) {
+			catch (Exception e) {
+				if (logger.isDebugEnabled()) {
+					logger.debug("EMBEDDED: schema type lookup failed for '{}': {}", embeddedTypeName, e.toString());
+				}
 			}
-
 			final DocumentType embeddedTypeFinal = embeddedType;
 
-			v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> {
-				Object j = (embeddedTypeFinal != null) ? toJavaForProperty(db, ed, embeddedTypeFinal, k, vv) : fromGrpcValue(vv);
-				ed.set(k, j);
-			});
+			// Populate from either EMBEDDED_VALUE.fields or MAP_VALUE.entries
+			switch (v.getKindCase()) {
+			case EMBEDDED_VALUE:
+				v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> {
+					if (logger.isDebugEnabled())
+						logger.debug("EMBEDDED: field '{}' raw kind={}", k, vv.getKindCase());
+					Object j = (embeddedTypeFinal != null) ? toJavaForProperty(db, ed, embeddedTypeFinal, k, vv) : fromGrpcValue(vv);
+					if (logger.isDebugEnabled())
+						logger.debug("EMBEDDED: field '{}' converted -> {}", k, (j == null ? "null" : j.getClass().getSimpleName()));
+					ed.set(k, j);
+				});
+				break;
+
+			case MAP_VALUE:
+				v.getMapValue().getEntriesMap().forEach((k, vv) -> {
+					if (logger.isDebugEnabled())
+						logger.debug("EMBEDDED: field '{}' raw kind={}", k, vv.getKindCase());
+					Object j = (embeddedTypeFinal != null) ? toJavaForProperty(db, ed, embeddedTypeFinal, k, vv) : fromGrpcValue(vv);
+					if (logger.isDebugEnabled())
+						logger.debug("EMBEDDED: field '{}' converted -> {}", k, (j == null ? "null" : j.getClass().getSimpleName()));
+					ed.set(k, j);
+				});
+				break;
+
+			default:
+				// Shouldn't happen; be safe
+				if (logger.isDebugEnabled()) {
+					logger.debug("EMBEDDED: unexpected kind={}, falling back to Map for prop='{}'", v.getKindCase(), propName);
+				}
+				return fromGrpcValue(v);
+			}
+
+			if (logger.isDebugEnabled()) {
+				logger.debug("EMBEDDED: built embedded doc type='{}' for prop='{}'", embeddedTypeName, propName);
+			}
 			return ed;
 		}
 
@@ -2385,9 +2658,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 	// --- Gson structural encoder: JsonElement -> GrpcValue ---
 	private GrpcValue gsonToGrpc(JsonElement n) {
-		
+
 		GrpcValue.Builder b = GrpcValue.newBuilder();
-		
+
 		if (n == null || n.isJsonNull()) {
 			return b.build(); // KIND_NOT_SET => null on the client
 		}
@@ -2456,5 +2729,123 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 		}
 
 		return b.setStringValue(n.toString()).build();
+	}
+
+	private static byte[] toBytes(java.nio.ByteBuffer buf) {
+		java.nio.ByteBuffer dup = buf.asReadOnlyBuffer();
+		byte[] out = new byte[dup.remaining()];
+		dup.get(out);
+		return out;
+	}
+
+	/**
+	 * Deep-scrub arbitrary objects into a JSON-safe graph
+	 * (Map/List/primitive/String).
+	 */
+	private Object sanitizeForJson(Object x) {
+		if (x == null)
+			return null;
+
+		// Primitives & simple types
+		if (x instanceof String || x instanceof Number || x instanceof Boolean)
+			return x;
+
+		// Common binary holders -> base64 string
+		if (x instanceof byte[] arr)
+			return B64.encodeToString(arr);
+		if (x instanceof java.nio.ByteBuffer bb)
+			return B64.encodeToString(toBytes(bb));
+
+		// Arcade IDs/links/dates
+		if (x instanceof com.arcadedb.database.RID rid)
+			return rid.toString();
+		if (x instanceof com.arcadedb.database.Identifiable id)
+			return id.getIdentity() != null ? id.getIdentity().toString() : null;
+		if (x instanceof java.util.Date d)
+			return java.time.Instant.ofEpochMilli(d.getTime()).toString();
+
+		// Arcade Result -> Map projection
+		if (x instanceof com.arcadedb.query.sql.executor.Result res) {
+			var m = new java.util.LinkedHashMap<String, Object>();
+			try {
+				for (String k : res.getPropertyNames()) {
+					m.put(k, sanitizeForJson(res.getProperty(k)));
+				}
+			}
+			catch (Throwable ignore) {
+			}
+			return m;
+		}
+
+		// Embedded / Document
+		if (x instanceof com.arcadedb.database.Document doc) {
+			var m = new java.util.LinkedHashMap<String, Object>();
+			if (doc.getIdentity() != null && doc.getIdentity().isValid())
+				m.put("@rid", doc.getIdentity().toString());
+			if (doc.getType() != null)
+				m.put("@type", doc.getTypeName());
+			for (String k : doc.getPropertyNames()) {
+				m.put(k, sanitizeForJson(doc.get(k)));
+			}
+			return m;
+		}
+
+		// Collections/arrays
+		if (x instanceof java.util.Map<?, ?> in) {
+			var m = new java.util.LinkedHashMap<String, Object>();
+			in.forEach((k, v) -> m.put(String.valueOf(k), sanitizeForJson(v)));
+			return m;
+		}
+		if (x instanceof java.util.Collection<?> c) {
+			var out = new java.util.ArrayList<>();
+			for (Object e : c)
+				out.add(sanitizeForJson(e));
+			return out;
+		}
+		if (x.getClass().isArray()) {
+			int n = java.lang.reflect.Array.getLength(x);
+			var out = new java.util.ArrayList<>(n);
+			for (int i = 0; i < n; i++)
+				out.add(sanitizeForJson(java.lang.reflect.Array.get(x, i)));
+			return out;
+		}
+
+		// FINAL GUARD: any JDK “handle-ish” or unknown classes -> describe as String
+		String pkg = x.getClass().getPackageName();
+		if (pkg.startsWith("java.io") || pkg.startsWith("java.nio") || pkg.startsWith("sun.") || pkg.startsWith("jdk.")) {
+			if (logger.isDebugEnabled()) {
+				logger.debug("GRPC-ENC [toGrpcValue] JSON scrubbed {} via toString()", x.getClass().getName());
+			}
+			return String.valueOf(x);
+		}
+
+		// Default safe fallback
+		return String.valueOf(x);
+	}
+
+	static final class ProjectionConfig {
+		final boolean include;
+		final ExecuteQueryRequest.ProjectionEncoding enc;
+		final int softLimitBytes; // 0 = no soft limit
+
+		// Running counter for MAP/JSON builds:
+		final java.util.concurrent.atomic.AtomicInteger used = new java.util.concurrent.atomic.AtomicInteger(0);
+		volatile boolean truncated = false;
+
+		ProjectionConfig(boolean include, ExecuteQueryRequest.ProjectionEncoding enc, int softLimitBytes) {
+			this.include = include;
+			this.enc = enc == null ? ExecuteQueryRequest.ProjectionEncoding.PROJECTION_AS_LINK : enc;
+			this.softLimitBytes = Math.max(softLimitBytes, 0);
+		}
+
+		boolean wouldExceed(int add) {
+			if (softLimitBytes <= 0)
+				return false;
+			int after = used.addAndGet(add);
+			if (after > softLimitBytes) {
+				truncated = true;
+			}
+			return after > softLimitBytes;
+		}
 	}
 }

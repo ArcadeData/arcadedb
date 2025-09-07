@@ -9,6 +9,7 @@ option java_outer_classname = "ArcadeDbProto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
 
 // -----------------------------------------------------------------------------
 // Common types
@@ -241,16 +242,26 @@ message ExecuteCommandResponse {
 // -----------------------------------------------------------------------------
 
 message ExecuteQueryRequest {
-
   string database = 1;
   string query = 2;
-
   map<string, GrpcValue> parameters = 3;
 
   DatabaseCredentials credentials = 4;
   TransactionContext transaction = 5;
   int32 limit = 6;
   int32 timeout_ms = 7;
+
+  // NEW
+  bool include_projections = 8;  // default: false (RID only in results)
+  enum ProjectionEncoding {
+    PROJECTION_AS_LINK  = 0;     // RID only (GrpcValue.link_value)
+    PROJECTION_AS_MAP   = 1;     // Fully typed GrpcValue map/embedded tree
+    PROJECTION_AS_JSON  = 2;     // UTF-8 JSON bytes (GrpcValue.bytes_value, logical_type="json")
+  }
+  ProjectionEncoding projection_encoding = 9; // default: PROJECTION_AS_LINK
+
+  // (optional, helps avoid giant messages)
+  google.protobuf.Int32Value projection_soft_limit_bytes = 10;// e.g., 32768; server may downshift encoding if exceeded
 }
 
 message ExecuteQueryResponse {

@@ -53,6 +53,7 @@ import com.arcadedb.server.grpc.DeleteRecordResponse;
 import com.arcadedb.server.grpc.ExecuteCommandRequest;
 import com.arcadedb.server.grpc.ExecuteCommandResponse;
 import com.arcadedb.server.grpc.ExecuteQueryRequest;
+import com.arcadedb.server.grpc.ExecuteQueryRequest.ProjectionEncoding;
 import com.arcadedb.server.grpc.ExecuteQueryResponse;
 import com.arcadedb.server.grpc.GrpcRecord;
 import com.arcadedb.server.grpc.GrpcValue;
@@ -73,12 +74,9 @@ import com.arcadedb.server.grpc.TransactionContext;
 import com.arcadedb.server.grpc.TransactionIsolation;
 import com.arcadedb.server.grpc.UpdateRecordRequest;
 import com.arcadedb.server.grpc.UpdateRecordResponse;
+import com.google.protobuf.Int32Value;
 
 import io.grpc.CallCredentials;
-import io.grpc.CompressorRegistry;
-import io.grpc.DecompressorRegistry;
-import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusException;
@@ -100,58 +98,6 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 	private static final Logger logger = LoggerFactory.getLogger(RemoteGrpcDatabase.class);
 
-// --- Debug helpers (client) ---
-	private static String summarize(Object o) {
-		if (o == null)
-			return "null";
-		try {
-			if (o instanceof CharSequence s)
-				return "String(" + s.length() + ")";
-			if (o instanceof byte[] b)
-				return "bytes[" + b.length + "]";
-			if (o instanceof java.util.Collection<?> c)
-				return o.getClass().getSimpleName() + "[size=" + c.size() + "]";
-			if (o instanceof java.util.Map<?, ?> m)
-				return o.getClass().getSimpleName() + "[size=" + m.size() + "]";
-			return o.getClass().getSimpleName();
-		}
-		catch (Exception e) {
-			return o.getClass().getSimpleName();
-		}
-	}
-
-	private static String summarize(GrpcValue v) {
-		if (v == null)
-			return "GrpcValue(null)";
-		return switch (v.getKindCase()) {
-		case BOOL_VALUE -> "BOOL";
-		case INT32_VALUE -> "INT32";
-		case INT64_VALUE -> "INT64";
-		case FLOAT_VALUE -> "FLOAT";
-		case DOUBLE_VALUE -> "DOUBLE";
-		case STRING_VALUE -> "STRING(" + v.getStringValue().length() + ")";
-		case BYTES_VALUE -> "BYTES[" + v.getBytesValue().size() + "]";
-		case TIMESTAMP_VALUE -> "TIMESTAMP";
-		case LIST_VALUE -> "LIST[" + v.getListValue().getValuesCount() + "]";
-		case MAP_VALUE -> "MAP[" + v.getMapValue().getEntriesCount() + "]";
-		case EMBEDDED_VALUE -> "EMBEDDED";
-		case LINK_VALUE -> "LINK(" + v.getLinkValue().getRid() + ")";
-		case DECIMAL_VALUE -> "DECIMAL(scale=" + v.getDecimalValue().getScale() + ")";
-		case KIND_NOT_SET -> "KIND_NOT_SET";
-		};
-	}
-
-	private static String summarize(GrpcRecord r) {
-		if (r == null)
-			return "GrpcRecord(null)";
-		String rid = r.getRid();
-		String ty = r.getType();
-		int props = r.getPropertiesCount();
-		return "GrpcRecord{rid=" + rid + ", type=" + ty + ", props=" + props + "}";
-	}
-
-	private final ManagedChannel channel;
-
 	private final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub blockingStub;
 	private final ArcadeDbServiceGrpc.ArcadeDbServiceStub asyncStub;
 
@@ -163,39 +109,31 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	private final String userPassword;
 	private String databaseName;
 	private RemoteTransactionExplicitLock explicitLock;
+	
+	protected RemoteGrpcServer remoteGrpcServer;
 
-	public RemoteGrpcDatabase(final String server, final int grpcPort, final int httpPort, final String databaseName, final String userName,
+	public RemoteGrpcDatabase(final RemoteGrpcServer remoteGrpcServer, final String server, final int grpcPort, final int httpPort, final String databaseName, final String userName,
 			final String userPassword) {
-		this(server, grpcPort, httpPort, databaseName, userName, userPassword, new ContextConfiguration());
+		this(remoteGrpcServer, server, grpcPort, httpPort, databaseName, userName, userPassword, new ContextConfiguration());
 	}
 
-	public RemoteGrpcDatabase(final String server, final int grpcPort, final int httpPort, final String databaseName, final String userName,
+	public RemoteGrpcDatabase(final RemoteGrpcServer remoteGrpcServer, final String host, final int grpcPort, final int httpPort, final String databaseName, final String userName,
 			final String userPassword, final ContextConfiguration configuration) {
 
-		super(server, httpPort, databaseName, userName, userPassword, configuration);
+		super(host, httpPort, databaseName, userName, userPassword, configuration);
+		
+		this.remoteGrpcServer = remoteGrpcServer;
 
 		this.userName = userName;
 		this.userPassword = userPassword;
 
 		this.databaseName = databaseName;
 
-		// Create gRPC channel
-		this.channel = createChannel(server, grpcPort);
+		this.blockingStub = createBlockingStub();
 
-		this.blockingStub = createBlockingStub(channel);
+		this.asyncStub = createAsyncStub();
 
-		this.asyncStub = createAsyncStub(channel);
-
-		// Create gRPC-specific schema
 		this.schema = new RemoteSchema(this);
-	}
-
-	/**
-	 * Creates the gRPC channel. Override this for custom channel configuration.
-	 */
-	protected ManagedChannel createChannel(String server, int port) {
-		return ManagedChannelBuilder.forAddress(server, port).usePlaintext() // No TLS by default
-				.build();
 	}
 
 	/**
@@ -228,17 +166,17 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	/**
 	 * Override this method to customize blocking stub creation
 	 */
-	protected ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub createBlockingStub(ManagedChannel channel) {
-		return ArcadeDbServiceGrpc.newBlockingV2Stub(channel).withCallCredentials(createCredentials());
+	protected ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub createBlockingStub() {
+		return this.remoteGrpcServer.newBlockingStub(getTimeout());
 	}
 
-	protected ArcadeDbServiceGrpc.ArcadeDbServiceStub createAsyncStub(ManagedChannel channel) {
-		return ArcadeDbServiceGrpc.newStub(channel).withCallCredentials(createCredentials()).withCompression("gzip");
+	protected ArcadeDbServiceGrpc.ArcadeDbServiceStub createAsyncStub() {
+		return this.remoteGrpcServer.newAsyncStub(getTimeout());
 	}
 
 	@Override
 	public String getDatabasePath() {
-		return "grpc://" + channel.authority() + "/" + getName();
+		return "grpc://" + this.remoteGrpcServer.channel().authority() + "/" + getName();
 	}
 
 	@Override
@@ -248,21 +186,11 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 	@Override
 	public void close() {
+		
 		if (transactionId != null) {
 			rollback();
 		}
 		super.close();
-
-		// Shutdown gRPC channel
-		channel.shutdown();
-		try {
-			if (!channel.awaitTermination(5, TimeUnit.SECONDS)) {
-				channel.shutdownNow();
-			}
-		}
-		catch (InterruptedException e) {
-			channel.shutdownNow();
-		}
 	}
 
 	@Override
@@ -515,6 +443,10 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		if (params != null && !params.isEmpty()) {
 			requestBuilder.putAllParameters(convertParamsToGrpcValue(params));
 		}
+		
+		requestBuilder.setIncludeProjections(true);		
+		requestBuilder.setProjectionEncoding(ProjectionEncoding.PROJECTION_AS_JSON);
+		requestBuilder.setProjectionSoftLimitBytes(Int32Value.newBuilder().setValue(0).build());
 
 		try {
 
@@ -1814,31 +1746,60 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		}
 	}
 
-	/**
-	 * Extended version with compression support
-	 */
-	public static class RemoteGrpcDatabaseWithCompression extends RemoteGrpcDatabase {
-
-		public RemoteGrpcDatabaseWithCompression(String server, int grpcPort, int httpPort, String databaseName, String userName,
-				String userPassword, ContextConfiguration configuration) {
-			super(server, grpcPort, httpPort, databaseName, userName, userPassword, configuration);
-		}
-
-		@Override
-		protected ManagedChannel createChannel(String server, int port) {
-
-			return ManagedChannelBuilder.forAddress(server, port).usePlaintext() // No TLS/SSL
-					.compressorRegistry(CompressorRegistry.getDefaultInstance()).decompressorRegistry(DecompressorRegistry.getDefaultInstance())
-					.maxInboundMessageSize(100 * 1024 * 1024) // 100MB max message size
-					.keepAliveTime(30, TimeUnit.SECONDS) // Keep-alive configuration
-					.keepAliveTimeout(10, TimeUnit.SECONDS).keepAliveWithoutCalls(true).build();
-		}
-	}
-
 	// Add the missing RemoteGrpcTransactionExplicitLock class reference
 	private static class RemoteGrpcTransactionExplicitLock extends RemoteTransactionExplicitLock {
 		public RemoteGrpcTransactionExplicitLock(RemoteGrpcDatabase database) {
 			super(database);
 		}
 	}
+	
+	// --- Debug helpers (client) ---
+	private static String summarize(Object o) {
+		if (o == null)
+			return "null";
+		try {
+			if (o instanceof CharSequence s)
+				return "String(" + s.length() + ")";
+			if (o instanceof byte[] b)
+				return "bytes[" + b.length + "]";
+			if (o instanceof java.util.Collection<?> c)
+				return o.getClass().getSimpleName() + "[size=" + c.size() + "]";
+			if (o instanceof java.util.Map<?, ?> m)
+				return o.getClass().getSimpleName() + "[size=" + m.size() + "]";
+			return o.getClass().getSimpleName();
+		}
+		catch (Exception e) {
+			return o.getClass().getSimpleName();
+		}
+	}
+
+	private static String summarize(GrpcValue v) {
+		if (v == null)
+			return "GrpcValue(null)";
+		return switch (v.getKindCase()) {
+		case BOOL_VALUE -> "BOOL";
+		case INT32_VALUE -> "INT32";
+		case INT64_VALUE -> "INT64";
+		case FLOAT_VALUE -> "FLOAT";
+		case DOUBLE_VALUE -> "DOUBLE";
+		case STRING_VALUE -> "STRING(" + v.getStringValue().length() + ")";
+		case BYTES_VALUE -> "BYTES[" + v.getBytesValue().size() + "]";
+		case TIMESTAMP_VALUE -> "TIMESTAMP";
+		case LIST_VALUE -> "LIST[" + v.getListValue().getValuesCount() + "]";
+		case MAP_VALUE -> "MAP[" + v.getMapValue().getEntriesCount() + "]";
+		case EMBEDDED_VALUE -> "EMBEDDED";
+		case LINK_VALUE -> "LINK(" + v.getLinkValue().getRid() + ")";
+		case DECIMAL_VALUE -> "DECIMAL(scale=" + v.getDecimalValue().getScale() + ")";
+		case KIND_NOT_SET -> "KIND_NOT_SET";
+		};
+	}
+
+	private static String summarize(GrpcRecord r) {
+		if (r == null)
+			return "GrpcRecord(null)";
+		String rid = r.getRid();
+		String ty = r.getType();
+		int props = r.getPropertiesCount();
+		return "GrpcRecord{rid=" + rid + ", type=" + ty + ", props=" + props + "}";
+	}	
 }
