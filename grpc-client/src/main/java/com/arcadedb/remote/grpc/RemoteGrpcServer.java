@@ -5,7 +5,10 @@ import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
+import javax.annotation.PreDestroy;
+
 import com.arcadedb.server.grpc.ArcadeDbAdminServiceGrpc;
+import com.arcadedb.server.grpc.ArcadeDbServiceGrpc;
 import com.arcadedb.server.grpc.CreateDatabaseRequest;
 import com.arcadedb.server.grpc.DatabaseCredentials;
 import com.arcadedb.server.grpc.DropDatabaseRequest;
@@ -13,10 +16,19 @@ import com.arcadedb.server.grpc.ListDatabasesRequest;
 import com.arcadedb.server.grpc.ListDatabasesResponse;
 
 import io.grpc.CallCredentials;
+import io.grpc.Channel;
+import io.grpc.ClientInterceptor;
+import io.grpc.ClientInterceptors;
+import io.grpc.CompressorRegistry;
+import io.grpc.DecompressorRegistry;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
 import io.grpc.StatusException;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+import io.grpc.netty.shaded.io.netty.channel.EventLoopGroup;
+import io.grpc.netty.shaded.io.netty.channel.nio.NioEventLoopGroup;
+import io.grpc.netty.shaded.io.netty.channel.socket.nio.NioSocketChannel;
 import io.grpc.stub.AbstractStub;
 
 /**
@@ -39,40 +51,124 @@ public class RemoteGrpcServer implements AutoCloseable {
 	private final String userPassword;
 
 	private final long defaultTimeoutMs;
+	
+	private final List<ClientInterceptor> interceptors;
+	private final boolean plaintext;
 
-	private final ManagedChannel channel;
-	private final ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub blockingV2Stub;
+	private ManagedChannel channel;
+	
+	private ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub adminServiceBlockingV2Stub;
 
-	public RemoteGrpcServer(final String host, final int port, final String user, final String pass) {
-		this(host, port, user, pass, 30_000);
+	public RemoteGrpcServer(final String host, final int port, final String user, final String pass, boolean plaintext, List<ClientInterceptor> interceptors) {
+		this(host, port, user, pass, plaintext, interceptors, 30_000);
 	}
 
-	public RemoteGrpcServer(final String host, final int port, final String user, final String pass, final long defaultTimeoutMs) {
-		
+	public RemoteGrpcServer(final String host, final int port, final String user, final String pass, boolean plaintext, List<ClientInterceptor> interceptors, final long defaultTimeoutMs) {
+
 		this.host = Objects.requireNonNull(host, "host");
-		
+
 		this.port = port;
-		
+
+		this.plaintext = plaintext;
+	    this.interceptors = interceptors == null ? List.of() : List.copyOf(interceptors);
+	    
 		this.userName = Objects.requireNonNull(user, "user");
-		
+
 		this.userPassword = Objects.requireNonNull(pass, "pass");
-		
+
 		this.defaultTimeoutMs = defaultTimeoutMs > 0 ? defaultTimeoutMs : 30_000;
-
-		this.channel = ManagedChannelBuilder.forAddress(this.host, this.port).usePlaintext() // switch to TLS if enabled server-side
-				.build();
-
-		this.blockingV2Stub = ArcadeDbAdminServiceGrpc.newBlockingV2Stub(channel).withCallCredentials(createCallCredentials(userName, userPassword));
 	}
 
+	
+	public synchronized void start() {
+	    
+		if (channel != null) return;
+		
+//		NettyChannelBuilder b = NettyChannelBuilder.forAddress(host, port)
+//				.maxInboundMessageSize(100 * 1024 * 1024) // 100MB max message size
+//				.keepAliveTime(30, TimeUnit.SECONDS) // Keep-alive configuration
+//				.keepAliveTimeout(10, TimeUnit.SECONDS)
+//				.keepAliveWithoutCalls(true)				
+//				.decompressorRegistry(DecompressorRegistry.getDefaultInstance())
+//				.compressorRegistry(CompressorRegistry.getDefaultInstance());
+		
+		
+		EventLoopGroup elg = new NioEventLoopGroup();
+		
+		NettyChannelBuilder chBuilder = NettyChannelBuilder.forAddress(host, port)
+			    .eventLoopGroup(elg)                           // share across clients
+			    .channelType(NioSocketChannel.class)
+			    .maxInboundMessageSize(150 * 1024 * 1024)
+			    .maxInboundMetadataSize(32 * 1024 * 1024)
+			    .keepAliveTime(30, TimeUnit.SECONDS)
+			    .keepAliveTimeout(10, TimeUnit.SECONDS)
+			    .keepAliveWithoutCalls(true)
+			    .decompressorRegistry(DecompressorRegistry.getDefaultInstance())
+			    .compressorRegistry(CompressorRegistry.getDefaultInstance())
+			    .flowControlWindow(8 * 1024 * 1024);
+		
+			    // .proxyDetector(myProxyDetector)
+	    
+		if (plaintext) chBuilder.usePlaintext();
+	    
+		channel = chBuilder.build();
+	}
+	
+	/** Returns a Channel (wrapped with interceptors if provided). */
+	public Channel channel() {
+		
+		if (channel == null) {
+			start();
+		}
+		
+		return interceptors.isEmpty() ? channel : ClientInterceptors.intercept(channel, interceptors);
+	}
+
+	public ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub newBlockingStub(int timeout) {
+				
+		return ArcadeDbServiceGrpc.newBlockingV2Stub(channel())
+				.withCallCredentials(createCredentials())
+				.withDeadlineAfter(timeout, TimeUnit.MILLISECONDS)
+				.withCompression("gzip");
+	}
+
+	public ArcadeDbServiceGrpc.ArcadeDbServiceStub newAsyncStub(int timeout) {
+		
+		return ArcadeDbServiceGrpc.newStub(channel())
+				.withCallCredentials(createCredentials())
+				.withDeadlineAfter(timeout, TimeUnit.MILLISECONDS)
+				.withCompression("gzip");
+	}
+
+	private ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub adminServiceBlockingV2Stub() {
+		
+		if (this.adminServiceBlockingV2Stub == null) {
+			
+			this.adminServiceBlockingV2Stub =  ArcadeDbAdminServiceGrpc.newBlockingV2Stub(channel())
+					.withCallCredentials(createCallCredentials(userName, userPassword));
+		}
+		
+		return this.adminServiceBlockingV2Stub;		
+	}
+	
+	@PreDestroy
 	@Override
 	public void close() {
-		channel.shutdown();
+		if (channel == null)
+			return;
 		try {
-			channel.awaitTermination(5, TimeUnit.SECONDS);
+			channel.shutdown();
+			if (!channel.awaitTermination(5, TimeUnit.SECONDS)) {
+				channel.shutdownNow();
+				channel.awaitTermination(2, TimeUnit.SECONDS);
+			}
 		}
-		catch (InterruptedException e) {
+		catch (InterruptedException ie) {
 			Thread.currentThread().interrupt();
+			channel.shutdownNow();
+		}
+		finally {
+			// log.info("gRPC channel to {}:{} closed.", host, port);
 		}
 	}
 
@@ -81,25 +177,26 @@ public class RemoteGrpcServer implements AutoCloseable {
 		return stub.withDeadlineAfter(t, TimeUnit.MILLISECONDS);
 	}
 
-	public DatabaseCredentials buildCredentials() {		
-		return DatabaseCredentials.newBuilder().setUsername(userName == null ? "" : userName).setPassword(userPassword == null ? "" : userPassword).build();
+	public DatabaseCredentials buildCredentials() {
+		return DatabaseCredentials.newBuilder().setUsername(userName == null ? "" : userName)
+				.setPassword(userPassword == null ? "" : userPassword).build();
 	}
 
 	/** Returns the list of database names from the server. */
 	public List<String> listDatabases() {
-		
+
 		ListDatabasesResponse resp = null;
-		
+
 		try {
 
-			resp = withDeadline(blockingV2Stub, defaultTimeoutMs)
+			resp = withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs)
 					.listDatabases(ListDatabasesRequest.newBuilder().setCredentials(buildCredentials()).build());
 			return resp.getDatabasesList();
 		}
 		catch (StatusException e) {
-			
+
 			throw new RuntimeException("Failed to list databases: " + e.getMessage(), e);
-		}		
+		}
 	}
 
 	/** Checks existence by listing (no ExistsDatabaseRequest needed). */
@@ -109,11 +206,10 @@ public class RemoteGrpcServer implements AutoCloseable {
 
 	/** Creates a database with type "graph" or "document". */
 	public void createDatabase(final String database) {
-		
+
 		try {
-			withDeadline(blockingV2Stub, defaultTimeoutMs).createDatabase(CreateDatabaseRequest.newBuilder()
-					.setName(database)
-					.setCredentials(buildCredentials()).build());
+			withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs)
+					.createDatabase(CreateDatabaseRequest.newBuilder().setName(database).setCredentials(buildCredentials()).build());
 		}
 		catch (StatusException e) {
 			throw new RuntimeException("Failed to create database: " + e.getMessage(), e);
@@ -129,9 +225,9 @@ public class RemoteGrpcServer implements AutoCloseable {
 
 	/** Drops a database. If your proto supports 'force', add it here. */
 	public void dropDatabase(final String database) {
-		
+
 		try {
-			withDeadline(blockingV2Stub, defaultTimeoutMs)
+			withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs)
 					.dropDatabase(DropDatabaseRequest.newBuilder().setName(database).setCredentials(buildCredentials()).build());
 		}
 		catch (StatusException e) {
@@ -147,7 +243,7 @@ public class RemoteGrpcServer implements AutoCloseable {
 	public String toString() {
 		return "RemoteGrpcServer{endpoint=" + endpoint() + ", userName='" + userName + "'}";
 	}
-	
+
 	/**
 	 * Creates call credentials for authentication
 	 */
@@ -182,11 +278,12 @@ public class RemoteGrpcServer implements AutoCloseable {
 				applier.apply(headers);
 			}
 
-			// x-arcade-user: root" -H "x-arcade-password: oY9uU2uJ8nD8iY7t" -H "x-arcade-database: local_shakeiq_curonix_poc-app"
+			// x-arcade-user: root" -H "x-arcade-password: oY9uU2uJ8nD8iY7t" -H
+			// "x-arcade-database: local_shakeiq_curonix_poc-app"
 			@Override
 			public void thisUsesUnstableApi() {
 				// Required by the interface
 			}
 		};
-	}	
+	}
 }

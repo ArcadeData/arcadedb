@@ -113,7 +113,8 @@ public class GrpcServerPlugin implements ServerPlugin {
     }
     
     private void startStandardServer(ContextConfiguration config) throws IOException {
-        int port = getConfigInt(config, CONFIG_PORT, 50051);
+        
+    	int port = getConfigInt(config, CONFIG_PORT, 50051);
         String host = getConfigString(config, CONFIG_HOST, "0.0.0.0");
         
         ServerBuilder<?> serverBuilder;
@@ -143,8 +144,10 @@ public class GrpcServerPlugin implements ServerPlugin {
         }
         
         if (getConfigBoolean(config, CONFIG_COMPRESSION_ENABLED, true)) {
-            status.append(", compression: ");
-            if (getConfigBoolean(config, CONFIG_COMPRESSION_FORCE, false)) {
+            
+        	status.append(", compression: ");
+            
+        	if (getConfigBoolean(config, CONFIG_COMPRESSION_FORCE, false)) {
                 status.append("forced-").append(getConfigString(config, CONFIG_COMPRESSION_TYPE, "gzip"));
             } else {
                 status.append("available");
@@ -211,6 +214,7 @@ public class GrpcServerPlugin implements ServerPlugin {
         
         // Configure max message size
         int maxMessageSizeMB = getConfigInt(config, CONFIG_MAX_MESSAGE_SIZE, 100);
+        
         serverBuilder.maxInboundMessageSize(maxMessageSizeMB * 1024 * 1024);
         
         // Add interceptors for logging, metrics, auth, etc.
@@ -364,7 +368,8 @@ public class GrpcServerPlugin implements ServerPlugin {
     }
     
     private int getConfigInt(ContextConfiguration config, String key, int defaultValue) {
-        String value = getConfigString(config, key, null);
+        
+    	String value = getConfigString(config, key, null);
         if (value != null) {
             try {
                 return Integer.parseInt(value);

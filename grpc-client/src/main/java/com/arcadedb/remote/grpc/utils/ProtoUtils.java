@@ -1,4 +1,5 @@
 package com.arcadedb.remote.grpc.utils;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -12,81 +13,113 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.server.grpc.GrpcRecord;
 import com.arcadedb.server.grpc.GrpcValue;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.ToNumberPolicy;
 
 public class ProtoUtils {
 
-    private static final Logger logger = LoggerFactory.getLogger(ProtoUtils.class);
+	private static final Logger logger = LoggerFactory.getLogger(ProtoUtils.class);
+	
+	private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().serializeNulls().
+			setObjectToNumberStrategy(ToNumberPolicy.LONG_OR_DOUBLE).create();
 
-    // Logging config via system properties (optional)
-    private static final int LOG_STR_PREVIEW = Integer.getInteger("arcadedb.grpc.log.preview", 96);
-    private static final boolean LOG_SHOW_STR_AT_DEBUG = Boolean.getBoolean("arcadedb.grpc.log.showString");
+	// Logging config via system properties (optional)
+	private static final int LOG_STR_PREVIEW = Integer.getInteger("arcadedb.grpc.log.preview", 96);
+	private static final boolean LOG_SHOW_STR_AT_DEBUG = Boolean.getBoolean("arcadedb.grpc.log.showString");
 
-    // Optional per-thread context for logs
-    private static final ThreadLocal<String> LOG_CTX = new ThreadLocal<>();
-    public static AutoCloseable pushLogContext(String ctx) {
-        final String prev = LOG_CTX.get();
-        LOG_CTX.set(ctx);
-        return () -> LOG_CTX.set(prev);
-    }
-    private static String ctx() {
-        String c = LOG_CTX.get();
-        return (c == null || c.isEmpty()) ? "" : " " + c;
-    }
+	// Optional per-thread context for logs
+	private static final ThreadLocal<String> LOG_CTX = new ThreadLocal<>();
 
-    private static String summarizeJava(Object o) {
-        if (o == null) return "null";
-        try {
-            if (o instanceof CharSequence s) {
-                if (logger.isTraceEnabled() || LOG_SHOW_STR_AT_DEBUG) {
-                    String txt = s.toString();
-                    return "String(" + s.length() + ")=\"" + (txt.length() > LOG_STR_PREVIEW ? txt.substring(0, LOG_STR_PREVIEW) + "…" : txt) + "\"";
-                }
-                return "String(" + s.length() + ")";
-            }
-            if (o instanceof byte[] b) return "bytes[" + b.length + "]";
-            if (o instanceof java.util.Collection<?> c) return o.getClass().getSimpleName() + "[size=" + c.size() + "]";
-            if (o instanceof java.util.Map<?,?> m) return o.getClass().getSimpleName() + "[size=" + m.size() + "]";
-            return o.getClass().getSimpleName() + "(" + String.valueOf(o) + ")";
-        } catch (Exception e) { return o.getClass().getSimpleName(); }
-    }
+	public static AutoCloseable pushLogContext(String ctx) {
+		final String prev = LOG_CTX.get();
+		LOG_CTX.set(ctx);
+		return () -> LOG_CTX.set(prev);
+	}
 
-    private static String summarizeGrpc(GrpcValue v) {
-        if (v == null) return "GrpcValue(null)";
-        switch (v.getKindCase()) {
-            case BOOL_VALUE:       return "BOOL(" + v.getBoolValue() + ")";
-            case INT32_VALUE:      return "INT32(" + v.getInt32Value() + ")";
-            case INT64_VALUE:      return "INT64(" + v.getInt64Value() + ")";
-            case FLOAT_VALUE:      return "FLOAT(" + v.getFloatValue() + ")";
-            case DOUBLE_VALUE:     return "DOUBLE(" + v.getDoubleValue() + ")";
-            case STRING_VALUE: {
-                String s = v.getStringValue();
-                if (logger.isTraceEnabled() || LOG_SHOW_STR_AT_DEBUG) {
-                    String txt = s;
-                    return "STRING(" + s.length() + ")=\"" + (txt.length() > LOG_STR_PREVIEW ? txt.substring(0, LOG_STR_PREVIEW) + "…" : txt) + "\"";
-                }
-                return "STRING(" + s.length() + ")";
-            }
-            case BYTES_VALUE:      return "BYTES[" + v.getBytesValue().size() + "]";
-            case TIMESTAMP_VALUE:  return "TIMESTAMP(" + v.getTimestampValue().getSeconds() + "." + v.getTimestampValue().getNanos() + ")";
-            case LIST_VALUE:       return "LIST[size=" + v.getListValue().getValuesCount() + "]";
-            case MAP_VALUE:        return "MAP[size=" + v.getMapValue().getEntriesCount() + "]";
-            case EMBEDDED_VALUE:   return "EMBEDDED[type=" + v.getEmbeddedValue().getType() + ", size=" + v.getEmbeddedValue().getFieldsCount() + "]";
-            case LINK_VALUE:       return "LINK(" + v.getLinkValue().getRid() + ")";
-            case DECIMAL_VALUE:    return "DECIMAL(unscaled=" + v.getDecimalValue().getUnscaled() + ", scale=" + v.getDecimalValue().getScale() + ")";
-            case KIND_NOT_SET: default: return "GrpcValue(KIND_NOT_SET)";
-        }
-    }
+	private static String ctx() {
+		String c = LOG_CTX.get();
+		return (c == null || c.isEmpty()) ? "" : " " + c;
+	}
 
-    private static GrpcValue dbgEnc(String where, Object in, GrpcValue out) {
-        if (logger.isDebugEnabled()) logger.debug("CLIENT GRPC-ENC [{}]{} in={} -> out={}", where, ctx(), summarizeJava(in), summarizeGrpc(out));
-        return out;
-    }
+	private static String summarizeJava(Object o) {
+		if (o == null)
+			return "null";
+		try {
+			if (o instanceof CharSequence s) {
+				if (logger.isTraceEnabled() || LOG_SHOW_STR_AT_DEBUG) {
+					String txt = s.toString();
+					return "String(" + s.length() + ")=\"" + (txt.length() > LOG_STR_PREVIEW ? txt.substring(0, LOG_STR_PREVIEW) + "…" : txt)
+							+ "\"";
+				}
+				return "String(" + s.length() + ")";
+			}
+			if (o instanceof byte[] b)
+				return "bytes[" + b.length + "]";
+			if (o instanceof java.util.Collection<?> c)
+				return o.getClass().getSimpleName() + "[size=" + c.size() + "]";
+			if (o instanceof java.util.Map<?, ?> m)
+				return o.getClass().getSimpleName() + "[size=" + m.size() + "]";
+			return o.getClass().getSimpleName() + "(" + String.valueOf(o) + ")";
+		}
+		catch (Exception e) {
+			return o.getClass().getSimpleName();
+		}
+	}
 
-    private static Object dbgDec(String where, GrpcValue in, Object out) {
-        if (logger.isDebugEnabled()) logger.debug("CLIENT GRPC-DEC [{}]{} in={} -> out={}", where, ctx(), summarizeGrpc(in), summarizeJava(out));
-        return out;
-    }
+	private static String summarizeGrpc(GrpcValue v) {
+		if (v == null)
+			return "GrpcValue(null)";
+		switch (v.getKindCase()) {
+		case BOOL_VALUE:
+			return "BOOL(" + v.getBoolValue() + ")";
+		case INT32_VALUE:
+			return "INT32(" + v.getInt32Value() + ")";
+		case INT64_VALUE:
+			return "INT64(" + v.getInt64Value() + ")";
+		case FLOAT_VALUE:
+			return "FLOAT(" + v.getFloatValue() + ")";
+		case DOUBLE_VALUE:
+			return "DOUBLE(" + v.getDoubleValue() + ")";
+		case STRING_VALUE: {
+			String s = v.getStringValue();
+			if (logger.isTraceEnabled() || LOG_SHOW_STR_AT_DEBUG) {
+				String txt = s;
+				return "STRING(" + s.length() + ")=\"" + (txt.length() > LOG_STR_PREVIEW ? txt.substring(0, LOG_STR_PREVIEW) + "…" : txt) + "\"";
+			}
+			return "STRING(" + s.length() + ")";
+		}
+		case BYTES_VALUE:
+			return "BYTES[" + v.getBytesValue().size() + "]";
+		case TIMESTAMP_VALUE:
+			return "TIMESTAMP(" + v.getTimestampValue().getSeconds() + "." + v.getTimestampValue().getNanos() + ")";
+		case LIST_VALUE:
+			return "LIST[size=" + v.getListValue().getValuesCount() + "]";
+		case MAP_VALUE:
+			return "MAP[size=" + v.getMapValue().getEntriesCount() + "]";
+		case EMBEDDED_VALUE:
+			return "EMBEDDED[type=" + v.getEmbeddedValue().getType() + ", size=" + v.getEmbeddedValue().getFieldsCount() + "]";
+		case LINK_VALUE:
+			return "LINK(" + v.getLinkValue().getRid() + ")";
+		case DECIMAL_VALUE:
+			return "DECIMAL(unscaled=" + v.getDecimalValue().getUnscaled() + ", scale=" + v.getDecimalValue().getScale() + ")";
+		case KIND_NOT_SET:
+		default:
+			return "GrpcValue(KIND_NOT_SET)";
+		}
+	}
 
+	private static GrpcValue dbgEnc(String where, Object in, GrpcValue out) {
+		if (logger.isDebugEnabled())
+			logger.debug("CLIENT GRPC-ENC [{}]{} in={} -> out={}", where, ctx(), summarizeJava(in), summarizeGrpc(out));
+		return out;
+	}
+
+	private static Object dbgDec(String where, GrpcValue in, Object out) {
+		if (logger.isDebugEnabled())
+			logger.debug("CLIENT GRPC-DEC [{}]{} in={} -> out={}", where, ctx(), summarizeGrpc(in), summarizeJava(out));
+		return out;
+	}
 
 	/**
 	 * Converts an ArcadeDB Record into a gRPC GrpcRecord message.
@@ -183,80 +216,82 @@ public class ProtoUtils {
 	 * @param value Object value
 	 * @return GrpcValue
 	 */
-	
-public static GrpcValue toGrpcValue(Object value) {
-	GrpcValue.Builder b = GrpcValue.newBuilder();
-	if (value == null) return dbgEnc("toGrpcValue", value, b.build());
 
-	if (value instanceof Boolean v)     return dbgEnc("toGrpcValue", value, b.setBoolValue(v).build());
-	if (value instanceof Integer v)     return dbgEnc("toGrpcValue", value, b.setInt32Value(v).build());
-	if (value instanceof Long v)        return dbgEnc("toGrpcValue", value, b.setInt64Value(v).build());
-	if (value instanceof Float v)       return dbgEnc("toGrpcValue", value, b.setFloatValue(v).build());
-	if (value instanceof Double v)      return dbgEnc("toGrpcValue", value, b.setDoubleValue(v).build());
-	if (value instanceof CharSequence v)return dbgEnc("toGrpcValue", value, b.setStringValue(v.toString()).build());
-	if (value instanceof byte[] v)      return dbgEnc("toGrpcValue", value, b.setBytesValue(com.google.protobuf.ByteString.copyFrom(v)).build());
+	public static GrpcValue toGrpcValue(Object value) {
+		GrpcValue.Builder b = GrpcValue.newBuilder();
+		if (value == null)
+			return dbgEnc("toGrpcValue", value, b.build());
 
-	if (value instanceof java.util.Date v) {
-		return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder()
-			.setTimestampValue(com.google.protobuf.Timestamp.newBuilder()
-				.setSeconds(Math.floorDiv(v.getTime(), 1000L))
-				.setNanos((int)Math.floorMod(v.getTime(), 1000L)*1_000_000)
-				.build())
-			.setLogicalType("datetime")
-			.build());
-	}
+		if (value instanceof Boolean v)
+			return dbgEnc("toGrpcValue", value, b.setBoolValue(v).build());
+		if (value instanceof Integer v)
+			return dbgEnc("toGrpcValue", value, b.setInt32Value(v).build());
+		if (value instanceof Long v)
+			return dbgEnc("toGrpcValue", value, b.setInt64Value(v).build());
+		if (value instanceof Float v)
+			return dbgEnc("toGrpcValue", value, b.setFloatValue(v).build());
+		if (value instanceof Double v)
+			return dbgEnc("toGrpcValue", value, b.setDoubleValue(v).build());
+		if (value instanceof CharSequence v)
+			return dbgEnc("toGrpcValue", value, b.setStringValue(v.toString()).build());
+		if (value instanceof byte[] v)
+			return dbgEnc("toGrpcValue", value, b.setBytesValue(com.google.protobuf.ByteString.copyFrom(v)).build());
 
-	if (value instanceof RID rid) {
-		return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder()
-			.setLinkValue(com.arcadedb.server.grpc.GrpcLink.newBuilder().setRid(rid.toString()).build())
-			.setLogicalType("rid")
-			.build());
-	}
+		if (value instanceof java.util.Date v) {
+			return dbgEnc("toGrpcValue", value,
+					GrpcValue.newBuilder().setTimestampValue(com.google.protobuf.Timestamp.newBuilder()
+							.setSeconds(Math.floorDiv(v.getTime(), 1000L)).setNanos((int) Math.floorMod(v.getTime(), 1000L) * 1_000_000).build())
+							.setLogicalType("datetime").build());
+		}
 
-	if (value instanceof java.math.BigDecimal v) {
-		java.math.BigInteger unscaled = v.unscaledValue();
-		if (unscaled.bitLength() <= 63) {
+		if (value instanceof RID rid) {
 			return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder()
-				.setDecimalValue(com.arcadedb.server.grpc.GrpcDecimal.newBuilder()
-					.setUnscaled(unscaled.longValue())
-					.setScale(v.scale())
-					.build())
-				.setLogicalType("decimal")
-				.build());
-		} else {
-			return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setStringValue(v.toPlainString()).setLogicalType("decimal").build());
+					.setLinkValue(com.arcadedb.server.grpc.GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType("rid").build());
 		}
-	}
 
-	if (value instanceof Document edoc && (edoc.getIdentity() == null)) {
-		com.arcadedb.server.grpc.GrpcEmbedded.Builder eb = com.arcadedb.server.grpc.GrpcEmbedded.newBuilder();
-		if (edoc.getType() != null) eb.setType(edoc.getType().getName());
-		for (String k : edoc.getPropertyNames()) {
-			eb.putFields(k, toGrpcValue(edoc.get(k)));
+		if (value instanceof java.math.BigDecimal v) {
+			java.math.BigInteger unscaled = v.unscaledValue();
+			if (unscaled.bitLength() <= 63) {
+				return dbgEnc("toGrpcValue", value,
+						GrpcValue.newBuilder().setDecimalValue(
+								com.arcadedb.server.grpc.GrpcDecimal.newBuilder().setUnscaled(unscaled.longValue()).setScale(v.scale()).build())
+								.setLogicalType("decimal").build());
+			}
+			else {
+				return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setStringValue(v.toPlainString()).setLogicalType("decimal").build());
+			}
 		}
-		return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setEmbeddedValue(eb.build()).build());
-	}
 
-	if (value instanceof Map<?,?> m) {
-		com.arcadedb.server.grpc.GrpcMap.Builder mb = com.arcadedb.server.grpc.GrpcMap.newBuilder();
-		for (var e : m.entrySet()) {
-			mb.putEntries(String.valueOf(e.getKey()), toGrpcValue(e.getValue()));
+		if (value instanceof Document edoc && (edoc.getIdentity() == null)) {
+			com.arcadedb.server.grpc.GrpcEmbedded.Builder eb = com.arcadedb.server.grpc.GrpcEmbedded.newBuilder();
+			if (edoc.getType() != null)
+				eb.setType(edoc.getType().getName());
+			for (String k : edoc.getPropertyNames()) {
+				eb.putFields(k, toGrpcValue(edoc.get(k)));
+			}
+			return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setEmbeddedValue(eb.build()).build());
 		}
-		return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setMapValue(mb.build()).build());
+
+		if (value instanceof Map<?, ?> m) {
+			com.arcadedb.server.grpc.GrpcMap.Builder mb = com.arcadedb.server.grpc.GrpcMap.newBuilder();
+			for (var e : m.entrySet()) {
+				mb.putEntries(String.valueOf(e.getKey()), toGrpcValue(e.getValue()));
+			}
+			return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setMapValue(mb.build()).build());
+		}
+
+		if (value instanceof Collection<?> c) {
+			com.arcadedb.server.grpc.GrpcList.Builder lb = com.arcadedb.server.grpc.GrpcList.newBuilder();
+			for (Object e : c)
+				lb.addValues(toGrpcValue(e));
+			return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setListValue(lb.build()).build());
+		}
+
+		return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setStringValue(String.valueOf(value)).build());
 	}
-
-	if (value instanceof Collection<?> c) {
-		com.arcadedb.server.grpc.GrpcList.Builder lb = com.arcadedb.server.grpc.GrpcList.newBuilder();
-		for (Object e : c) lb.addValues(toGrpcValue(e));
-		return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setListValue(lb.build()).build());
-	}
-
-	return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setStringValue(String.valueOf(value)).build());
-}
-
 
 	public static Object fromGrpcValue(GrpcValue v) {
-		
+
 		switch (v.getKindCase()) {
 		case BOOL_VALUE:
 			return dbgDec("fromGrpcValue", v, v.getBoolValue());
@@ -271,7 +306,17 @@ public static GrpcValue toGrpcValue(Object value) {
 		case STRING_VALUE:
 			return dbgDec("fromGrpcValue", v, v.getStringValue());
 		case BYTES_VALUE:
+
+			if ("json".equalsIgnoreCase(v.getLogicalType())) {
+				String json = v.getBytesValue().toStringUtf8();
+				
+				@SuppressWarnings("unchecked")
+				java.util.Map<String, Object> map = GSON.fromJson(json, java.util.Map.class);
+				
+				return dbgDec("fromGrpcValue", v, map);
+			}
 			return dbgDec("fromGrpcValue", v, v.getBytesValue().toByteArray());
+
 		case TIMESTAMP_VALUE:
 			return dbgDec("fromGrpcValue", v, tsToMillis(v.getTimestampValue())); // or Instant
 		case LIST_VALUE: {
@@ -301,6 +346,7 @@ public static GrpcValue toGrpcValue(Object value) {
 		case KIND_NOT_SET:
 			return dbgDec("fromGrpcValue", v, null);
 		}
+		
 		return dbgDec("fromGrpcValue", v, null);
 	}
 

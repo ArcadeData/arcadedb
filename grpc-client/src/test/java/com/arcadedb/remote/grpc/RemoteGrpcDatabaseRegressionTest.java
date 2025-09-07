@@ -53,26 +53,26 @@ public class RemoteGrpcDatabaseRegressionTest {
 	// Test type & props
 	static final String TYPE = "RG_Feedback";
 
+	private RemoteGrpcServer grpcServer;
 	private RemoteGrpcDatabase grpc;
 
 	@BeforeAll
 	void ensureDatabaseExists() {
+		
+		this.grpcServer = new RemoteGrpcServer(GRPC_HOST, GRPC_PORT, USER, PASS, true, List.of());
+
+		
 		// Prefer using the gRPC admin helper if available (same package).
-		try (RemoteGrpcServer admin = new RemoteGrpcServer(GRPC_HOST, GRPC_PORT, USER, PASS)) {
-			if (!admin.existsDatabase(DB_NAME)) {
-				admin.createDatabase(DB_NAME);
-			}
-		}
-		catch (Throwable t) {
-			// If admin tooling isn't on the classpath, tests may still pass provided DB
-			// exists.
-			System.err.println("[WARN] Could not verify/create DB via RemoteGrpcServer: " + t.getMessage());
+		if (!grpcServer.existsDatabase(DB_NAME)) {
+			grpcServer.createDatabase(DB_NAME);
 		}
 	}
 
 	@BeforeEach
 	void open() {
-		grpc = new RemoteGrpcDatabase(GRPC_HOST, GRPC_PORT, HTTP_PORT, DB_NAME, USER, PASS);
+		
+		grpc = new RemoteGrpcDatabase(this.grpcServer, GRPC_HOST, GRPC_PORT, HTTP_PORT, DB_NAME, USER, PASS);
+		
 		// Create isolated schema for these tests (id unique, name string, n integer)
 		grpc.command("sql", "CREATE VERTEX TYPE `" + TYPE + "` IF NOT EXISTS", Map.of());
 		grpc.command("sql", "CREATE PROPERTY `" + TYPE + "`.id IF NOT EXISTS STRING", Map.of());
