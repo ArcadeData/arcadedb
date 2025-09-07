@@ -43,18 +43,19 @@ public class SQLMethodSize extends AbstractSQLMethod {
 
     final int size;
     if (value != null) {
-      if (value instanceof Result result)
+      if (value instanceof Result result) {
         size = result.getRecord().isPresent() ? result.getRecord().get().size() : -1;
-      else if (value instanceof Identifiable rid) {
+      } else if (value instanceof Identifiable rid) {
         final Record record = rid.getRecord(true);
         if (record != null)
           size = record.size();
         else
           size = 0;
-      } else if (value instanceof String)
-        size = value.toString().length();
-      else
+      } else if (value instanceof String s) {
+        size = s.length();
+      } else {
         size = MultiValue.getSize(value);
+      }
 
     } else {
       size = 0;

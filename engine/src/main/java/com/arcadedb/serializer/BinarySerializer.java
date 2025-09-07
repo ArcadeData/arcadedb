@@ -418,6 +418,14 @@ public class BinarySerializer {
         for (final Iterator<Object> it = list.iterator(); it.hasNext(); ) {
           final Object entryValue = it.next();
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue, null);
+          if (entryType == -1) {
+            // INVALID: SKIP IT
+            LogManager.instance()
+                .log(BinaryTypes.class, Level.WARNING,
+                    "Cannot serialize entry in list of type %s, value %s. The entry will be ignored",
+                    entryValue.getClass(), entryValue);
+            continue;
+          }
           content.putByte(entryType);
           serializeValue(database, content, entryType, entryValue);
         }
@@ -425,6 +433,13 @@ public class BinarySerializer {
         content.putUnsignedNumber(array.length);
         for (final Object entryValue : array) {
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue, null);
+          if (entryType == -1) {
+            LogManager.instance()
+                .log(BinaryTypes.class, Level.WARNING,
+                    "Cannot serialize entry in array of type %s, value %s. The entry will be ignored",
+                    entryValue.getClass(), entryValue);
+            continue;
+          }
           content.putByte(entryType);
           serializeValue(database, content, entryType, entryValue);
         }
@@ -437,6 +452,13 @@ public class BinarySerializer {
         for (final Iterator it = list.iterator(); it.hasNext(); ) {
           final Object entryValue = it.next();
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue, null);
+          if (entryType == -1) {
+            LogManager.instance()
+                .log(BinaryTypes.class, Level.WARNING,
+                    "Cannot serialize entry in iterable of type %s, value %s. The entry will be ignored",
+                    entryValue.getClass(), entryValue);
+            continue;
+          }
           content.putByte(entryType);
           serializeValue(database, content, entryType, entryValue);
         }
@@ -447,6 +469,13 @@ public class BinarySerializer {
           final Object entryValue = Array.get(value, i);
           try {
             final byte entryType = BinaryTypes.getTypeFromValue(entryValue, null);
+            if (entryType == -1) {
+              LogManager.instance()
+                  .log(BinaryTypes.class, Level.WARNING,
+                      "Cannot serialize entry in array of type %s, value %s. The entry will be ignored",
+                      entryValue.getClass(), entryValue);
+              continue;
+            }
             content.putByte(entryType);
             serializeValue(database, content, entryType, entryValue);
           } catch (Exception e) {
@@ -472,6 +501,13 @@ public class BinarySerializer {
           // WRITE THE KEY
           Object entryKey = entry.getKey();
           byte entryKeyType = BinaryTypes.getTypeFromValue(entryKey, null);
+          if (entryKeyType == -1) {
+            LogManager.instance()
+                .log(BinaryTypes.class, Level.WARNING,
+                    "Cannot serialize entry key in map of type %s, value %s. The entry will be ignored",
+                    entryKey.getClass(), entryKey);
+            continue;
+          }
 
           if (entryKey != null && entryKeyType == BinaryTypes.TYPE_STRING) {
             final int id = dictionary.getIdByName((String) entryKey, false);
@@ -488,13 +524,21 @@ public class BinarySerializer {
           // WRITE THE VALUE
           final Object entryValue = entry.getValue();
           final byte entryValueType = BinaryTypes.getTypeFromValue(entryValue, null);
+          if (entryValueType == -1) {
+            LogManager.instance()
+                .log(BinaryTypes.class, Level.WARNING,
+                    "Cannot serialize entry in map of type %s, value %s. The entry will be ignored",
+                    entryValue.getClass(), entryValue);
+            continue;
+          }
+
           content.putByte(entryValueType);
           serializeValue(database, content, entryValueType, entryValue);
         } catch (Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on serializing map value for key '%s' = '%s'",
               entry.getKey(), entry.getValue());
           throw new SerializationException(
-              "Error on serializing map value for key '" + entry.getKey() + "' = '" + entry.getValue() + "'");
+              "Error on serializing map value for key '" + entry.getKey() + "' = '" + entry.getValue() + "'", e);
         }
       }
       break;
@@ -752,6 +796,14 @@ public class BinarySerializer {
 
       final Property propertyType = documentType.getPropertyIfExists(propertyName);
       byte type = BinaryTypes.getTypeFromValue(value, propertyType);
+      if (type == -1) {
+        // INVALID: SKIP IT
+        LogManager.instance()
+            .log(BinaryTypes.class, Level.WARNING,
+                "Cannot serialize property '%s' of type %s, value %s. The property will be ignored",
+                propertyName, value.getClass(), value);
+        continue;
+      }
 
       if (value != null && type == BinaryTypes.TYPE_STRING) {
         final int id = dictionary.getIdByName((String) value, false);

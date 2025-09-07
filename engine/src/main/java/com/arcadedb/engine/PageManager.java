@@ -221,16 +221,19 @@ public class PageManager extends LockContext {
       if (page.getVersion() == 0 && mostRecentPageVersion > 1) {
         final ComponentFile file = fileManager.getFile(page.pageId.getFileId());
 
-        LogManager.instance().log(this, Level.SEVERE,
-            "New page %s cannot be written because already present in file '%s' with version %d. Reloading page count (threadId=%d)",
-            page, file.getFileName(), mostRecentPageVersion, Thread.currentThread().getId());
-
+        // @TODO: TEMPORARY PATCH TO OVERCOME THE ISSUE OF PAGES NOT UPDATED IN THE FILE MANAGER
         final Component component = page.pageId.getDatabase().getSchema().getFileById(page.pageId.getFileId());
         if (component instanceof LocalBucket b) {
           final int realPages = (int) (file.getSize() / b.pageSize);
           try {
-            b.setPageCount(realPages);
-          } catch (java.util.ConcurrentModificationException e) {
+            if (realPages > b.pageCount.get()) {
+              LogManager.instance().log(this, Level.SEVERE,
+                  "New page %s cannot be written because already present in file '%s' with version %d. Updating page count (threadId=%d)",
+                  page, file.getFileName(), mostRecentPageVersion, Thread.currentThread().getId());
+
+              b.updatePageCount(realPages);
+            }
+          } catch (ConcurrentModificationException e) {
             // IGNORE IT
           }
         }
@@ -353,8 +356,10 @@ public class PageManager extends LockContext {
     }
 
     final FileManager fileManager = database.getFileManager();
-    if (fileManager.existsFile(page.pageId.getFileId())) {
-      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getFile(page.pageId.getFileId());
+    final int fileId = page.pageId.getFileId();
+
+    if (fileManager.existsFile(fileId)) {
+      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getFile(fileId);
       if (!file.isOpen())
         throw new DatabaseMetadataException("Cannot flush pages on disk because file '" + file.getFileName() + "' is closed");
 
@@ -366,6 +371,10 @@ public class PageManager extends LockContext {
         final int written = file.write(page);
         totalPagesWrittenSize.addAndGet(written);
       });
+
+      final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileById(fileId);
+      if (component != null)
+        component.updatePageCount(page.pageId.getPageNumber() + 1);
 
       totalPagesWritten.incrementAndGet();
 

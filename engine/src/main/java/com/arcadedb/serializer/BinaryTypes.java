@@ -22,21 +22,17 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
-import java.lang.reflect.Array;
-import java.math.BigDecimal;
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.ZonedDateTime;
-import java.util.Calendar;
-import java.util.Date;
-import java.util.Map;
-import java.util.UUID;
+import java.lang.reflect.*;
+import java.math.*;
+import java.time.*;
+import java.util.*;
+import java.util.logging.*;
 
 public class BinaryTypes {
   public final static byte TYPE_NULL              = 0;
@@ -168,8 +164,12 @@ public class BinaryTypes {
         }
       }
       type = t;
-    } else
-      throw new IllegalArgumentException("Cannot serialize value '" + value + "' of type " + value.getClass());
+    } else {
+      LogManager.instance()
+          .log(BinaryTypes.class, Level.WARNING, "Cannot serialize value '%s' of type %s. The value will be ignored", value,
+              value.getClass());
+      type = -1; // UNKNOWN TYPE
+    }
 
     return type;
   }

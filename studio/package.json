@@ -23,7 +23,7 @@
     "bootstrap": "^5.3.3",
     "clipboard": "^2.0.11",
     "codemirror": "^5.65.18",
-    "cytoscape": "^3.28.1",
+    "cytoscape": "^3.32.1",
     "cytoscape-cola": "^2.5.1",
     "cytoscape-cxtmenu": "^3.5.0",
     "cytoscape-graphml": "^1.0.6",
@@ -48,7 +48,7 @@
     "html-webpack-plugin": "^5.5.4",
     "style-loader": "^4.0.0",
     "url-loader": "^4.1.1",
-    "webpack": "^5.89.0",
+    "webpack": "^5.100.1",
     "webpack-cli": "^5.1.4"
   },
   "engines": {

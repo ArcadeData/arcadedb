@@ -296,24 +296,18 @@ public class TransactionIndexContext {
     }
 
     if (index.isUnique() &&
-        (v.operation == IndexKey.IndexKeyOperation.ADD ||
-            v.operation == IndexKey.IndexKeyOperation.REPLACE)) {
+        (v.operation == IndexKey.IndexKeyOperation.ADD || v.operation == IndexKey.IndexKeyOperation.REPLACE)) {
       // CHECK FOR UNIQUE ON OTHER SUB-INDEXES
       final TypeIndex typeIndex = index.getTypeIndex();
       if (typeIndex != null) {
         for (final Index idx : typeIndex.getIndexesByKeys(keysValues)) {
-          if (index.equals(idx))
-            // ALREADY CHECKED ABOVE
-            continue;
-
           final TreeMap<ComparableKey, Map<IndexKey, IndexKey>> entries = indexEntries.get(idx.getName());
           if (entries != null) {
             final Map<IndexKey, IndexKey> otherIndexValues = entries.get(k);
             if (otherIndexValues != null)
               for (final IndexKey e : otherIndexValues.values()) {
-                if (e.operation == IndexKey.IndexKeyOperation.ADD)
+                if (e.operation == IndexKey.IndexKeyOperation.ADD && !e.rid.equals(rid))
                   throw new DuplicatedKeyException(indexName, Arrays.toString(keysValues), e.rid);
-
                 // REPLACE EXISTENT WITH THIS
                 v.operation = IndexKey.IndexKeyOperation.REPLACE;
               }

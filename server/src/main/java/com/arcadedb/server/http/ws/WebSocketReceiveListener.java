@@ -50,7 +50,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
   protected void onFullTextMessage(final WebSocketChannel channel, final BufferedTextMessage textMessage) throws IOException {
     try {
       final var message = new JSONObject(textMessage.getData());
-      final var rawAction = message.optString("action", "");
+      final var rawAction = message.getString("action", "");
       var action = ACTION.UNKNOWN;
       try {
         action = ACTION.valueOf(rawAction.toUpperCase(Locale.ENGLISH));
@@ -63,7 +63,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
         final var changeTypes = jsonChangeTypes == null ?
             null :
             jsonChangeTypes.toList().stream().map(t -> ChangeEvent.TYPE.valueOf(t.toString().toUpperCase(Locale.ENGLISH))).collect(Collectors.toSet());
-        this.webSocketEventBus.subscribe(message.getString("database"), message.optString("type", null), changeTypes, channel);
+        this.webSocketEventBus.subscribe(message.getString("database"), message.getString("type", null), changeTypes, channel);
         this.sendAck(channel, action);
         break;
       case UNSUBSCRIBE:

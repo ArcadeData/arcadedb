@@ -32,9 +32,12 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.Vertex.DIRECTION;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.server.BaseGraphServerTest;
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,6 +45,7 @@ import org.junit.jupiter.api.Test;
 import java.util.*;
 import java.util.concurrent.atomic.*;
 
+import static com.arcadedb.graph.Vertex.DIRECTION.*;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
@@ -252,32 +256,32 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
 
       kimbal.toJSON();
 
-      final Iterator<Vertex> connected = kimbal.getVertices(Vertex.DIRECTION.IN).iterator();
+      final Iterator<Vertex> connected = kimbal.getVertices(IN).iterator();
       assertThat(connected.hasNext()).isTrue();
       final Vertex albert = connected.next();
       assertThat(albert.getString("lastName")).isEqualTo("Red");
 
-      assertThat(kimbal.countEdges(Vertex.DIRECTION.IN, null)).isEqualTo(1L);
-      assertThat(kimbal.countEdges(Vertex.DIRECTION.IN, EDGE1_TYPE_NAME)).isEqualTo(1L);
-      assertThat(kimbal.countEdges(Vertex.DIRECTION.IN, EDGE2_TYPE_NAME)).isEqualTo(0L);
-      assertThat(kimbal.countEdges(Vertex.DIRECTION.OUT, null)).isEqualTo(0);
-      assertThat(kimbal.countEdges(Vertex.DIRECTION.OUT, EDGE1_TYPE_NAME)).isEqualTo(0);
-      assertThat(kimbal.countEdges(Vertex.DIRECTION.OUT, EDGE2_TYPE_NAME)).isEqualTo(0L);
+      assertThat(kimbal.countEdges(IN, null)).isEqualTo(1L);
+      assertThat(kimbal.countEdges(IN, EDGE1_TYPE_NAME)).isEqualTo(1L);
+      assertThat(kimbal.countEdges(IN, EDGE2_TYPE_NAME)).isEqualTo(0L);
+      assertThat(kimbal.countEdges(OUT, null)).isEqualTo(0);
+      assertThat(kimbal.countEdges(OUT, EDGE1_TYPE_NAME)).isEqualTo(0);
+      assertThat(kimbal.countEdges(OUT, EDGE2_TYPE_NAME)).isEqualTo(0L);
 
-      assertThat(albert.countEdges(Vertex.DIRECTION.OUT, null)).isEqualTo(1L);
-      assertThat(albert.countEdges(Vertex.DIRECTION.OUT, EDGE1_TYPE_NAME)).isEqualTo(1L);
-      assertThat(albert.countEdges(Vertex.DIRECTION.OUT, EDGE2_TYPE_NAME)).isEqualTo(0L);
-      assertThat(albert.countEdges(Vertex.DIRECTION.IN, null)).isEqualTo(0);
-      assertThat(albert.countEdges(Vertex.DIRECTION.IN, EDGE1_TYPE_NAME)).isEqualTo(0);
-      assertThat(albert.countEdges(Vertex.DIRECTION.IN, EDGE2_TYPE_NAME)).isEqualTo(0);
+      assertThat(albert.countEdges(OUT, null)).isEqualTo(1L);
+      assertThat(albert.countEdges(OUT, EDGE1_TYPE_NAME)).isEqualTo(1L);
+      assertThat(albert.countEdges(OUT, EDGE2_TYPE_NAME)).isEqualTo(0L);
+      assertThat(albert.countEdges(IN, null)).isEqualTo(0);
+      assertThat(albert.countEdges(IN, EDGE1_TYPE_NAME)).isEqualTo(0);
+      assertThat(albert.countEdges(IN, EDGE2_TYPE_NAME)).isEqualTo(0);
 
       assertThat(kimbal.isConnectedTo(albert.getIdentity())).isTrue();
-      assertThat(kimbal.isConnectedTo(albert.getIdentity(), Vertex.DIRECTION.IN)).isTrue();
-      assertThat(kimbal.isConnectedTo(albert.getIdentity(), Vertex.DIRECTION.OUT)).isFalse();
+      assertThat(kimbal.isConnectedTo(albert.getIdentity(), IN)).isTrue();
+      assertThat(kimbal.isConnectedTo(albert.getIdentity(), OUT)).isFalse();
 
       assertThat(albert.isConnectedTo(kimbal.getIdentity())).isTrue();
-      assertThat(albert.isConnectedTo(kimbal.getIdentity(), Vertex.DIRECTION.OUT)).isTrue();
-      assertThat(albert.isConnectedTo(kimbal.getIdentity(), Vertex.DIRECTION.IN)).isFalse();
+      assertThat(albert.isConnectedTo(kimbal.getIdentity(), OUT)).isTrue();
+      assertThat(albert.isConnectedTo(kimbal.getIdentity(), IN)).isFalse();
 
       final MutableEdge newEdge = albert.newEdge(EDGE2_TYPE_NAME, kimbal, "since", "today");
       assertThat(albert.getIdentity()).isEqualTo(newEdge.getOut());
@@ -296,7 +300,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       assertThat(kimbal).isEqualTo(newEdge2.getInVertex());
       newEdge2.delete();
 
-      final Edge edge = albert.getEdges(Vertex.DIRECTION.OUT, EDGE2_TYPE_NAME).iterator().next();
+      final Edge edge = albert.getEdges(OUT, EDGE2_TYPE_NAME).iterator().next();
       assertThat(albert.getIdentity()).isEqualTo(edge.getOut());
       assertThat(albert).isEqualTo(edge.getOutVertex());
       assertThat(kimbal.getIdentity()).isEqualTo(edge.getIn());
@@ -305,7 +309,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
 
       // DELETE THE EDGE
       edge.delete();
-      assertThat(albert.getEdges(Vertex.DIRECTION.OUT, EDGE2_TYPE_NAME).iterator().hasNext()).isFalse();
+      assertThat(albert.getEdges(OUT, EDGE2_TYPE_NAME).iterator().hasNext()).isFalse();
 
       // DELETE ONE VERTEX
       albert.delete();
@@ -432,8 +436,6 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
-      //
-      //
       database.command("sqlscript", """
           CREATE VERTEX TYPE AVtx;
           CREATE VERTEX TYPE BVtx EXTENDS AVtx;
@@ -541,6 +543,97 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       }
     });
   }
+
+  @Test
+  public void testDatabaseUniqueIndex() throws Exception {
+    testEachServer((serverIndex) -> {
+      try (RemoteDatabase tx = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);) {
+        tx.getSchema().createVertexType("SimpleVertexEx").createProperty("svuuid", String.class)
+            .createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+
+        tx.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+
+        MutableVertex svt1 = tx.newVertex("SimpleVertexEx");
+        String uuid1 = UUID.randomUUID().toString();
+        svt1.set("svex", uuid1);
+        svt1.set("svuuid", uuid1);
+        svt1.save();
+        tx.commit();
+
+        tx.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+        MutableVertex svt2 = tx.newVertex("SimpleVertexEx");
+        String uuid2 = UUID.randomUUID().toString();
+        svt2.set("svex", uuid2);
+        svt2.set("svuuid", uuid2);
+        svt2.save();
+        tx.commit();
+
+        tx.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+        svt2.set("svuuid", uuid1);
+        svt2.save();
+        tx.commit();
+      }
+    });
+  }
+
+  @Test
+  public void testDatabaseMVCC() throws Exception {
+    testEachServer((serverIndex) -> {
+      try (RemoteDatabase t1 = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+        t1.getSchema().createVertexType("SimpleVertex");
+
+        try (RemoteDatabase t2 = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+            BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+
+          t1.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+          t2.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+
+          t1.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+          MutableVertex mvSVt1 = t1.newVertex("SimpleVertex");
+          mvSVt1.set("s", "init concurrent test");
+          mvSVt1.save();
+
+          RID rid = mvSVt1.getIdentity();
+          System.out.println("RID: " + rid);
+          t1.commit();
+//        t1.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+          Vertex vSVt1 = t1.lookupByRID(rid).asVertex();
+
+          t2.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+          Vertex vSVt2 = t2.lookupByRID(rid).asVertex();
+
+          t1.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+          mvSVt1 = vSVt1.modify();
+          System.out.println("mvSVt1: " + vSVt1);
+          mvSVt1.set("s", "concurrent t1");
+          mvSVt1.save();
+          t1.commit();
+
+          vSVt1 = t1.lookupByRID(rid).asVertex();
+          System.out.println("vt1: " + vSVt1.propertiesAsMap());
+
+          System.out.println("s from t1: " + vSVt1.getString("s"));
+          System.out.println("s from t2: " + vSVt2.getString("s"));
+
+          MutableVertex mvSVt2 = vSVt2.modify();
+          mvSVt2.set("s", "concurrent t2");
+          mvSVt2.save();
+
+          try {
+            t2.commit();
+            Assertions.fail();
+          } catch (ConcurrentModificationException e) {
+            // EXPECTED
+          }
+        }
+      }
+    });
+  }
+
+
+
 
   @BeforeEach
   public void beginTest() {

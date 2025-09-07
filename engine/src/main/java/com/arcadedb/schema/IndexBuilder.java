@@ -43,7 +43,7 @@ public abstract class IndexBuilder<T extends Index> {
   String                             filePath       = null;
   Type[]                             keyTypes;
   int                                batchSize      = BUILD_BATCH_SIZE;
-  int                                maxAttempts    = 3;
+  int                                maxAttempts    = 1;
 
   protected IndexBuilder(final DatabaseInternal database, final Class<? extends Index> indexImplementation) {
     this.database = database;

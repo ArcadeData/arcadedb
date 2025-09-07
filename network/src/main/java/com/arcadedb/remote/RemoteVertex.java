@@ -18,6 +18,7 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
@@ -26,6 +27,7 @@ import com.arcadedb.graph.IterableGraph;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 
 import java.util.*;
@@ -63,15 +65,25 @@ public class RemoteVertex {
 
   public IterableGraph<Edge> getEdges(final Vertex.DIRECTION direction, final String... edgeTypes) {
     final ResultSet resultSet = fetch("E", direction, edgeTypes);
-    return () -> new Iterator<>() {
+    return new IterableGraph<>() {
       @Override
-      public boolean hasNext() {
-        return resultSet.hasNext();
+      public Iterator<Edge> iterator() {
+        return new Iterator<>() {
+          @Override
+          public boolean hasNext() {
+            return resultSet.hasNext();
+          }
+
+          @Override
+          public Edge next() {
+            return resultSet.next().getEdge().get();
+          }
+        };
       }
 
       @Override
-      public Edge next() {
-        return resultSet.next().getEdge().get();
+      public Class<? extends Document> getEntryType() {
+        return Edge.class;
       }
     };
   }
@@ -82,15 +94,25 @@ public class RemoteVertex {
 
   public IterableGraph<Vertex> getVertices(final Vertex.DIRECTION direction, final String... edgeTypes) {
     final ResultSet resultSet = fetch("", direction, edgeTypes);
-    return () -> new Iterator<>() {
+    return new IterableGraph<>() {
       @Override
-      public boolean hasNext() {
-        return resultSet.hasNext();
+      public Iterator<Vertex> iterator() {
+        return new Iterator<>() {
+          @Override
+          public boolean hasNext() {
+            return resultSet.hasNext();
+          }
+
+          @Override
+          public Vertex next() {
+            return resultSet.next().getVertex().get();
+          }
+        };
       }
 
       @Override
-      public Vertex next() {
-        return resultSet.next().getVertex().get();
+      public Class<? extends Document> getEntryType() {
+        return Vertex.class;
       }
     };
   }
@@ -140,9 +162,27 @@ public class RemoteVertex {
     return newEdge(edgeType, toVertex, properties);
   }
 
-  public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, Object... properties) {
-    StringBuilder query = new StringBuilder(
-        "create edge `" + edgeType + "` from " + vertex.getIdentity() + " to " + toVertex.getIdentity());
+  public MutableEdge newEdge(String edgeType, final Identifiable toVertex, Object... properties) {
+
+    final String bucketName;
+    if (edgeType.startsWith("bucket:")) {
+      bucketName = edgeType.substring("bucket:".length());
+      final DocumentType type = remoteDatabase.getSchema().getTypeByBucketName(bucketName);
+      if (type == null)
+        edgeType = null;
+      else
+        edgeType = type.getName();
+    } else
+      bucketName = null;
+
+    StringBuilder query = new StringBuilder("create edge" + (edgeType != null ? " `" + edgeType + "`" : ""));
+
+    if (bucketName != null) {
+      query.append(" bucket `");
+      query.append(bucketName);
+      query.append("`");
+    }
+    query.append(" from " + vertex.getIdentity() + " to " + toVertex.getIdentity());
 
     if (properties != null && properties.length > 0) {
       query.append(" set ");

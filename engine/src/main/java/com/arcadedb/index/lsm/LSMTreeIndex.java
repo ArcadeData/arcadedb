@@ -557,7 +557,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         final MutablePage rootPage = newMutableIndex.createNewPage();
         modifiedPages.add(database.getPageManager().updatePageVersion(rootPage, true));
 
-        newMutableIndex.setPageCount(1);
+        newMutableIndex.updatePageCount(1);
 
         for (int i = 0; i < mutable.getTotalPages() - startingFromPage; ++i) {
           final BasePage currentPage = database.getTransaction()
@@ -571,14 +571,14 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
           newPage.getContent().put(pageContent);
 
           modifiedPages.add(database.getPageManager().updatePageVersion(newPage, true));
-          newMutableIndex.setPageCount(i + 2);
+          newMutableIndex.updatePageCount(i + 2);
         }
 
         database.getPageManager().writePages(modifiedPages, false);
 
         newMutableIndex.setCurrentMutablePages(newMutableIndex.getTotalPages() - 1);
         if (compactedIndex.getTotalPages() < 1)
-          compactedIndex.setPageCount(1);
+          compactedIndex.updatePageCount(1);
 
         // SWAP OLD WITH NEW INDEX IN EXCLUSIVE LOCK (NO READ/WRITE ARE POSSIBLE IN THE MEANTIME)
         newMutableIndex.removeTempSuffix();

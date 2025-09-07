@@ -21,6 +21,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.polyglot.JavascriptFunctionDefinition;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -136,25 +137,7 @@ public class PolyglotQueryEngine implements QueryEngine {
 
           final InternalResultSet resultSet = new InternalResultSet();
 
-          final Object value;
-          if (result.isString())
-            value = result.asString();
-          else if (result.isBoolean())
-            value = result.asBoolean();
-          else if (result.isNumber()) {
-            if (result.fitsInInt())
-              value = result.asInt();
-            else if (result.fitsInLong())
-              value = result.asLong();
-            else if (result.fitsInFloat())
-              value = result.asFloat();
-            else
-              value = result.asFloat();
-          } else if (result.isNull())
-            value = null;
-          else
-            // UNKNOWN OR NOT SUPPORTED
-            value = null;
+          final Object value = JavascriptFunctionDefinition.jsValueToJava(result);
 
           resultSet.add(new ResultInternal(database).setProperty("value", value));
           return resultSet;

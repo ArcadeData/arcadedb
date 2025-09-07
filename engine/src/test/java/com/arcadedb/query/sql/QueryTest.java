@@ -25,15 +25,15 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.JsonGraphSerializer;
+import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.CollectionUtils;
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -506,8 +506,7 @@ public class QueryTest extends TestHelper {
         final Result record = rs.next();
         assertThat(record).isNotNull();
 
-        final Set<String> prop = new HashSet<>();
-        prop.addAll(record.getPropertyNames());
+        final Set<String> prop = new HashSet<>(record.getPropertyNames());
 
         assertThat(record.getPropertyNames()).hasSize(2);
         assertThat(prop.contains(RID_PROPERTY)).isTrue();
@@ -566,4 +565,50 @@ public class QueryTest extends TestHelper {
     }
   }
 
+  @Test
+  public void testGraphElementSize() {
+    database.transaction(() -> {
+      database.command("sqlscript",
+          """
+              CREATE VERTEX TYPE News;
+              CREATE VERTEX TYPE Author;
+              CREATE VERTEX TYPE User;
+              CREATE EDGE TYPE Published;
+              CREATE EDGE TYPE HasRead;
+              INSERT INTO News CONTENT { "id": "1", "title": "News 1", "content": "Content 1" };
+              INSERT INTO News CONTENT { "id": "2", "title": "News 2", "content": "Content 2" };
+              INSERT INTO Author CONTENT { "id": "1", "name": "Author 1" };
+              INSERT INTO User CONTENT { "id": "1", "name": "User 1" };
+              CREATE EDGE Published FROM (SELECT FROM Author WHERE id = 1) TO (SELECT FROM News WHERE id = 1);
+              CREATE EDGE Published FROM (SELECT FROM Author WHERE id = 1) TO (SELECT FROM News WHERE id = 2);
+              """);
+    });
+
+    ResultSet resultSet = database.query("sql", "SELECT out(\"Published\").in(\"HasRead\") as output FROM Author");
+    Assertions.assertThat(resultSet.hasNext()).isTrue();
+    Result result = resultSet.next();
+    Assertions.assertThat((List<?>) result.getProperty("output")).hasSize(0);
+
+    resultSet = database.query("sql", "SELECT out(\"Published\").in(\"HasRead\").size() as output FROM Author");
+    Assertions.assertThat(resultSet.hasNext()).isTrue();
+    result = resultSet.next();
+    Assertions.assertThat((Integer) result.getProperty("output")).isEqualTo(0);
+
+    resultSet = database.query("sql",
+        "SELECT bothE(\"Published\") as bothE, inE(\"Published\") as inE, outE(\"Published\") as outE FROM News");
+    Assertions.assertThat(resultSet.hasNext()).isTrue();
+    result = resultSet.next();
+    Assertions.assertThat(CollectionUtils.countEntries(((Iterable<?>) result.getProperty("bothE")).iterator())).isEqualTo(1L);
+    Assertions.assertThat(CollectionUtils.countEntries(((Iterable<?>) result.getProperty("inE")).iterator())).isEqualTo(1L);
+    Assertions.assertThat(CollectionUtils.countEntries(((Iterable<?>) result.getProperty("outE")).iterator())).isEqualTo(0);
+
+    final JsonGraphSerializer serializerImpl = JsonGraphSerializer.createJsonGraphSerializer()
+        .setExpandVertexEdges(false);
+    serializerImpl.setUseCollectionSize(false).setUseCollectionSizeForEdges(true);
+    final JSONObject json = serializerImpl.serializeResult(database, result);
+
+    Assertions.assertThat(json.getInt("bothE")).isEqualTo(1L);
+    Assertions.assertThat(json.getInt("inE")).isEqualTo(1L);
+    Assertions.assertThat(json.getInt("outE")).isEqualTo(0L);
+  }
 }

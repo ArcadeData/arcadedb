@@ -111,12 +111,7 @@ public class FileContentResponse extends HAAbstractCommand {
         final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(file.getFileId());
         if (component != null) {
           final int lastPageNumber = pageFromInclusive + totalPages;
-          if (lastPageNumber > component.getTotalPages()) {
-            component.setPageCount(lastPageNumber);
-            database.getFileManager().setVirtualFileSize(file.getFileId(),
-                (long) component.getTotalPages() * ((PaginatedComponentFile) database.getFileManager()
-                    .getFile(file.getFileId())).getPageSize());
-          }
+          component.updatePageCount(lastPageNumber);
 
           if (component instanceof LocalBucket bucket)
             // RESET CACHED RECORD COUNT

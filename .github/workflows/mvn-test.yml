@@ -41,7 +41,7 @@ jobs:
         run: echo "version=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)" >> $GITHUB_OUTPUT
 
       - name: Build and package with Maven Docker profile
-        run: ./mvnw clean install -Pdocker -DskipTests --batch-mode --errors --fail-never --show-version
+        run: ./mvnw clean install -Pdocker -DskipTests --batch-mode --errors  --show-version
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -49,13 +49,13 @@ jobs:
         run: docker save arcadedata/arcadedb:latest > /tmp/arcadedb-image.tar
 
       - name: Cache Docker image
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: /tmp/arcadedb-image.tar
           key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Cache Maven artifacts
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ~/.m2/repository
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
@@ -74,7 +74,7 @@ jobs:
           cache: "maven"
 
       - name: Restore Maven artifacts
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ~/.m2/repository
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
@@ -86,7 +86,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Unit Tests Reporter
-        uses: dorny/test-reporter@890a17cecf52a379fc869ab770a71657660be727 # v2.1.0
+        uses: dorny/test-reporter@dc3a92680fcc15842eef52e8c4606ea7ce6bd3f3 # v2.1.1
         if: success() || failure()
         with:
           name: Unit Tests Report
@@ -118,7 +118,7 @@ jobs:
           cache: "maven"
 
       - name: Restore Maven artifacts
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ~/.m2/repository
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
@@ -129,7 +129,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: IT Tests Reporter
-        uses: dorny/test-reporter@890a17cecf52a379fc869ab770a71657660be727 # v2.1.0
+        uses: dorny/test-reporter@dc3a92680fcc15842eef52e8c4606ea7ce6bd3f3 # v2.1.1
         if: success() || failure()
         with:
           name: IT Tests Report
@@ -161,13 +161,13 @@ jobs:
           cache: "maven"
 
       - name: Restore Maven artifacts
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ~/.m2/repository
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Restore Docker image
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: /tmp/arcadedb-image.tar
           key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
@@ -182,7 +182,7 @@ jobs:
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
 
       - name: E2E Tests Reporter
-        uses: dorny/test-reporter@890a17cecf52a379fc869ab770a71657660be727 # v2.1.0
+        uses: dorny/test-reporter@dc3a92680fcc15842eef52e8c4606ea7ce6bd3f3 # v2.1.1
         if: success() || failure()
         with:
           name: Java E2E Tests Report
@@ -205,13 +205,13 @@ jobs:
           cache: "maven"
 
       - name: Restore Maven artifacts
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ~/.m2/repository
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Restore Docker image
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: /tmp/arcadedb-image.tar
           key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
@@ -226,7 +226,7 @@ jobs:
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
 
       - name: E2E Perf Tests Reporter
-        uses: dorny/test-reporter@890a17cecf52a379fc869ab770a71657660be727 # v2.1.0
+        uses: dorny/test-reporter@dc3a92680fcc15842eef52e8c4606ea7ce6bd3f3 # v2.1.1
         if: success() || failure()
         with:
           name: Java E2E Perf Tests Report
@@ -249,7 +249,7 @@ jobs:
           cache-dependency-path: "e2e-js/package-lock.json"
 
       - name: Restore Docker image
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: /tmp/arcadedb-image.tar
           key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
@@ -282,7 +282,7 @@ jobs:
           cache-dependency-path: "e2e-studio/package-lock.json"
 
       - name: Restore Docker image
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: /tmp/arcadedb-image.tar
           key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
@@ -299,17 +299,17 @@ jobs:
       - name: E2E Studio Tests
         working-directory: e2e-studio
         run: |
-          npm run test --headless
+          npm run test
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
 
       - name: Studio E2E Tests Reporter
-        uses: dorny/test-reporter@890a17cecf52a379fc869ab770a71657660be727 # v2.1.0
+        uses: dorny/test-reporter@dc3a92680fcc15842eef52e8c4606ea7ce6bd3f3 # v2.1.1
         if: success() || failure()
         with:
           name: Studio E2E Tests Report
-          path: "e2e-studio/test-results/junit-report.xml"
+          path: "e2e-studio/reports/playwright-junit.xml"
           list-suites: "failed"
           list-tests: "failed"
           reporter: java-junit
@@ -343,7 +343,7 @@ jobs:
           uv --version
 
       - name: Restore Docker image
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: /tmp/arcadedb-image.tar
           key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
@@ -367,13 +367,13 @@ jobs:
     if: success() || failure()
     steps:
       - name: Download unit test coverage reports
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: unit-coverage-reports
           path: unit-coverage
 
       - name: Download integration test coverage reports
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: integration-coverage-reports
           path: integration-coverage

@@ -39,6 +39,8 @@ import com.arcadedb.server.ha.ReplicationException;
 import java.util.*;
 import java.util.logging.*;
 
+import static com.arcadedb.serializer.BinaryTypes.TYPE_NULL;
+
 /**
  * Forward a transaction to the Leader server to be executed. Apart from the TX content (like with TxRequest), unique keys list is
  * needed to assure the index unique constraint.
@@ -133,9 +135,21 @@ public class TxForwardRequest extends TxRequestAbstract {
 
         uniqueKeysBuffer.putUnsignedNumber(entryKey.values.length);
         for (int k = 0; k < entryKey.values.length; ++k) {
-          final byte keyType = BinaryTypes.getTypeFromValue(entryKey.values[k], null);
+          Object entryValue = entryKey.values[k];
+          byte keyType = BinaryTypes.getTypeFromValue(entryValue, null);
+          if (keyType == -1) {
+            // INVALID: SKIP IT
+            LogManager.instance()
+                .log(BinaryTypes.class, Level.WARNING,
+                    "Cannot serialize property '%s' of type %s, value %s. The property will be ignored",
+                    entryKey, entryValue.getClass(), entryValue);
+
+            keyType = TYPE_NULL;
+            entryValue = null;
+          }
+
           uniqueKeysBuffer.putByte(keyType);
-          serializer.serializeValue(database, uniqueKeysBuffer, keyType, entryKey.values[k]);
+          serializer.serializeValue(database, uniqueKeysBuffer, keyType, entryValue);
         }
 
         final Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey> entryValue = keyChange.getValue();

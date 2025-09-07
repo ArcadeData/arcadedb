@@ -75,7 +75,7 @@ public class JSONArray implements Iterable<Object> {
   public List<Object> toList() {
     final List<JsonElement> list = array.asList();
     final List<Object> result = new ArrayList<>(list.size());
-    for (JsonElement e : array.asList()) {
+    for (JsonElement e : list) {
       Object value = JSONObject.elementToObject(e);
 
       if (value instanceof JSONObject object)
@@ -166,7 +166,9 @@ public class JSONArray implements Iterable<Object> {
     return this;
   }
 
-  public JSONArray put(final Number object) {
+  public JSONArray put(Number object) {
+    if (Double.isNaN(object.doubleValue()) || Double.isInfinite(object.doubleValue()))
+      object = 0;
     array.add(object);
     return this;
   }
@@ -208,8 +210,7 @@ public class JSONArray implements Iterable<Object> {
   }
 
   public String toString() {
-    final Gson gson = new GsonBuilder().create();
-    return gson.toJson(array);
+    return JSONFactory.INSTANCE.getGson().toJson(array);
   }
 
   public JsonArray getInternal() {

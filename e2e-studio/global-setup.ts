@@ -1,51 +1,56 @@
 import { chromium, FullConfig } from '@playwright/test';
+import { GenericContainer, StartedTestContainer, Wait } from 'testcontainers';
+
+let arcadedbContainer: StartedTestContainer | null = null;
 
 async function globalSetup(config: FullConfig) {
-  console.log('🔍 Checking if ArcadeDB server is available...');
-
-  const browser = await chromium.launch();
-  const page = await browser.newPage();
+  console.log('🚀 Starting ArcadeDB container for e2e tests...');
 
   try {
-    // Try to connect to the server with retries
-    const maxRetries = 30; // 30 retries = 60 seconds max wait
-    let retries = 0;
+    arcadedbContainer = await new GenericContainer('arcadedata/arcadedb:latest')
+      .withExposedPorts(2480)
+      .withEnvironment({
+        JAVA_OPTS: '-Darcadedb.server.rootPassword=playwithdata -Darcadedb.server.defaultDatabases=Beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}'
+      })
+      .withStartupTimeout(180000)
+      .withWaitStrategy(Wait.forHttp("/api/v1/ready", 2480).forStatusCodeMatching((statusCode) => statusCode === 204))
+      .start();
 
-    while (retries < maxRetries) {
-      try {
-        console.log(`⏳ Attempt ${retries + 1}/${maxRetries} - Checking server connectivity...`);
+    const host = arcadedbContainer.getHost();
+    const port = arcadedbContainer.getMappedPort(2480);
+    const baseURL = `http://${host}:${port}`;
 
-        // Try to reach the health endpoint first
-        const response = await page.request.get('http://localhost:2480/api/v1/ready', {
-          timeout: 2000
-        });
+    console.log(`✅ ArcadeDB container started at ${baseURL}`);
 
-        if (response.status() === 204) {
-          console.log('✅ Server health check passed');
+    // Store container info for tests and teardown
+    global.arcadedbContainer = arcadedbContainer;
+    global.arcadedbBaseURL = baseURL;
 
-          // Now try to load the Studio interface
-          await page.goto('http://localhost:2480', { timeout: 5000 });
-          console.log('✅ ArcadeDB Studio is accessible');
-          break;
-        }
-      } catch (error) {
-        retries++;
-        if (retries >= maxRetries) {
-          console.error('❌ Failed to connect to ArcadeDB server after maximum retries');
-          console.error('🔧 Make sure ArcadeDB server is running on http://localhost:2480');
-          console.error('💡 Original error:', error.message);
-          throw new Error('ArcadeDB server is not accessible');
-        }
+    // Set environment variable for Playwright baseURL
+    process.env.ARCADEDB_BASE_URL = baseURL;
 
-        console.log(`⏱️  Server not ready, waiting 2 seconds before retry...`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      }
+    // Verify Studio is accessible
+    const browser = await chromium.launch();
+    const page = await browser.newPage();
+
+    try {
+      await page.goto(baseURL, { timeout: 10000 });
+      console.log('✅ ArcadeDB Studio is accessible');
+    } catch (error) {
+      console.error('❌ Failed to access ArcadeDB Studio:', error);
+      throw error;
+    } finally {
+      await browser.close();
     }
-  } finally {
-    await browser.close();
-  }
 
-  console.log('🚀 Global setup completed successfully');
+    console.log('🚀 Global setup completed successfully');
+  } catch (error) {
+    console.error('❌ Failed to start ArcadeDB container:', error);
+    if (arcadedbContainer) {
+      await arcadedbContainer.stop();
+    }
+    throw error;
+  }
 }
 
 export default globalSetup;

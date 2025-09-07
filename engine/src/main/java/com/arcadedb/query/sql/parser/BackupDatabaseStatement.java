@@ -24,16 +24,18 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.io.*;
-import java.lang.reflect.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.File;
+import java.lang.reflect.InvocationTargetException;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.logging.Level;
 
 public class BackupDatabaseStatement extends SimpleExecStatement {
   protected       Url                         url;
@@ -97,11 +99,9 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
         LogManager.instance().log(this, Level.SEVERE,
             String.format("Error on backup database '%s' to directory '%s'",
                 context.getDatabase().getName(), backupDirectory), e);
-        result.setProperty("result", "ERROR");
-        result.setProperty("error", e.getMessage());
-        final InternalResultSet rs = new InternalResultSet();
-        rs.add(result);
-        return rs;
+        throw new CommandParsingException(
+            String.format("Backup failed for database '%s' to directory '%s'",
+                context.getDatabase().getName(), backupDirectory), e);
       }
 
     } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {

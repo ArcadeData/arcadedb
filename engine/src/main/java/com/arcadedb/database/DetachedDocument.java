@@ -21,7 +21,11 @@ package com.arcadedb.database;
 import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 
@@ -30,18 +34,11 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class DetachedDocument extends ImmutableDocument {
-  private Map<String, Object> map;
-  private boolean             filterHiddenProperties = false;
+public class DetachedDocument extends BaseDocument {
+  protected Map<String, Object> map;
 
-  protected DetachedDocument(final BaseDocument source) {
-    super(null, source.type, source.rid, null);
-    init(source);
-  }
-
-  protected DetachedDocument(final BaseDocument source, boolean filterHiddenProperties) {
-    super(null, source.type, source.rid, null);
-    this.filterHiddenProperties = filterHiddenProperties;
+  protected DetachedDocument(final Document source) {
+    super(null, source.getType(), source.getIdentity(), null);
     init(source);
   }
 
@@ -50,11 +47,6 @@ public class DetachedDocument extends ImmutableDocument {
     final Map<String, Object> sourceMap = sourceDocument.propertiesAsMap();
     for (final Map.Entry<String, Object> entry : sourceMap.entrySet()) {
 
-      if (filterHiddenProperties) {
-        Property property = sourceDocument.getType().getPropertyIfExists(entry.getKey());
-        if (property != null && property.isHidden())
-          continue;
-      }
       Object value = entry.getValue();
 
       if (value instanceof List list) {
@@ -95,6 +87,14 @@ public class DetachedDocument extends ImmutableDocument {
         result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
+  }
+
+  /**
+   * @return
+   */
+  @Override
+  public Map<String, Object> propertiesAsMap() {
+    return Map.of();
   }
 
   @Override
