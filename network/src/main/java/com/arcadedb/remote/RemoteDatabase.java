@@ -106,6 +106,33 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   public void close() {
     setSessionId(null);
     open = false;
+
+    // HttpClient.close() is not available in Java 17. Use reflection to shutdown SelectorManager if possible.
+    try {
+      // Get the underlying HttpClientImpl if httpClient is a facade
+      Object client = httpClient;
+      Class<?> clazz = client.getClass();
+      if (!clazz.getName().equals("jdk.internal.net.http.HttpClientImpl") && clazz.getSimpleName().equals("HttpClientFacade")) {
+        // For facades, get the delegate
+        var delegateField = clazz.getDeclaredField("impl");
+        delegateField.setAccessible(true);
+        client = delegateField.get(client);
+        clazz = client.getClass();
+      }
+      if (clazz.getName().equals("jdk.internal.net.http.HttpClientImpl")) {
+        // Access SelectorManager
+        var selectorManagerField = clazz.getDeclaredField("selmgr");
+        selectorManagerField.setAccessible(true);
+        Object selectorManager = selectorManagerField.get(client);
+        if (selectorManager != null)
+          // Shutdown the SelectorManager thread
+          ((Thread) selectorManager).interrupt();
+      }
+    } catch (
+        Exception e) {
+      // Log or ignore, as this is a best-effort cleanup
+      LogManager.instance().log(this, Level.WARNING, "Error during HttpClient cleanup: %s", e.getMessage());
+    }
   }
 
   @Override
