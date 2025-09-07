@@ -53,7 +53,6 @@ import com.arcadedb.server.grpc.DeleteRecordResponse;
 import com.arcadedb.server.grpc.ExecuteCommandRequest;
 import com.arcadedb.server.grpc.ExecuteCommandResponse;
 import com.arcadedb.server.grpc.ExecuteQueryRequest;
-import com.arcadedb.server.grpc.ExecuteQueryRequest.ProjectionEncoding;
 import com.arcadedb.server.grpc.ExecuteQueryResponse;
 import com.arcadedb.server.grpc.GrpcRecord;
 import com.arcadedb.server.grpc.GrpcValue;
@@ -64,6 +63,8 @@ import com.arcadedb.server.grpc.InsertResponse;
 import com.arcadedb.server.grpc.InsertSummary;
 import com.arcadedb.server.grpc.LookupByRidRequest;
 import com.arcadedb.server.grpc.LookupByRidResponse;
+import com.arcadedb.server.grpc.ProjectionSettings;
+import com.arcadedb.server.grpc.ProjectionSettings.ProjectionEncoding;
 import com.arcadedb.server.grpc.PropertiesUpdate;
 import com.arcadedb.server.grpc.QueryResult;
 import com.arcadedb.server.grpc.RollbackTransactionRequest;
@@ -429,7 +430,36 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	}
 	
 	@Override
+	public ResultSet query(final String language, final String query, final Object... args) {
+		checkDatabaseIsOpen();
+		stats.queries.incrementAndGet();
+
+		final Map<String, Object> params = mapArgs(args);
+
+		RemoteGrpcConfig remoteGrpcConfig = new RemoteGrpcConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);
+		
+		return query(language, query, remoteGrpcConfig, params);
+	}
+
+	
+	@Override
 	public ResultSet query(final String language, final String query, final Map<String, Object> params) {
+		
+		RemoteGrpcConfig remoteGrpcConfig = new RemoteGrpcConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);
+		
+		return query(language, query, remoteGrpcConfig, params);
+	}
+
+	
+	public ResultSet query(final String language, final String query, RemoteGrpcConfig remoteGrpcConfig, final Object... args) {
+		
+		final Map<String, Object> params = mapArgs(args);
+
+		return query(language, query, remoteGrpcConfig, params);
+	}
+	
+	public ResultSet query(final String language, final String query, RemoteGrpcConfig remoteGrpcConfig, final Map<String, Object> params) {
+		
 		checkDatabaseIsOpen();
 		stats.queries.incrementAndGet();
 
@@ -444,9 +474,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			requestBuilder.putAllParameters(convertParamsToGrpcValue(params));
 		}
 		
-		requestBuilder.setIncludeProjections(true);		
-		requestBuilder.setProjectionEncoding(ProjectionEncoding.PROJECTION_AS_JSON);
-		requestBuilder.setProjectionSoftLimitBytes(Int32Value.newBuilder().setValue(0).build());
+		ProjectionSettings projectionSettings = ProjectionSettings.newBuilder()
+				.setIncludeProjections(remoteGrpcConfig.isIncludeProjections())
+                .setProjectionEncoding(remoteGrpcConfig.getProjectionEncoding())
+                .setSoftLimitBytes(Int32Value.newBuilder().setValue(remoteGrpcConfig.getSoftLimitBytes()).build())
+                    .build();
+
+		requestBuilder.setProjectionSettings(projectionSettings);
 
 		try {
 
@@ -474,18 +508,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			return new InternalResultSet();
 		}
 	}
-
-	@Override
-	public ResultSet query(final String language, final String query, final Object... args) {
-		checkDatabaseIsOpen();
-		stats.queries.incrementAndGet();
-
-		final Map<String, Object> params = mapArgs(args);
-
-		return query(language, query, params);
-	}
-
-
+		
+	
 	public ExecuteCommandResponse execSql(String db, String sql, Map<String, Object> params, long timeoutMs) {
 		return executeCommand(db, "sql", sql, params, /* returnRows */ false, /* maxRows */ 0, txBeginCommit(), timeoutMs);
 	}
@@ -603,73 +627,43 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		}
 	}
 
+	private RemoteGrpcConfig getDefaultRemoteGrpcConfig() {
+	
+		return new RemoteGrpcConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);		
+	}
+	
 	// Convenience: default batch size stays 100, default mode = CURSOR
+
 	public Iterator<Record> queryStream(final String language, final String query) {
-		return queryStream(language, query, /* batchSize */100, StreamQueryRequest.RetrievalMode.CURSOR);
+		return queryStream(language, query,  getDefaultRemoteGrpcConfig(), /* batchSize */100, StreamQueryRequest.RetrievalMode.CURSOR);
 	}
 
+	public Iterator<Record> queryStream(final String language, final String query, final RemoteGrpcConfig config) {
+		return queryStream(language, query, config, /* batchSize */100, StreamQueryRequest.RetrievalMode.CURSOR);
+	}
+		
 	public Iterator<Record> queryStream(final String language, final String query, final int batchSize) {
-		return queryStream(language, query, batchSize, StreamQueryRequest.RetrievalMode.CURSOR);
+		return queryStream(language, query, getDefaultRemoteGrpcConfig(), batchSize, StreamQueryRequest.RetrievalMode.CURSOR);
+	}
+
+	public Iterator<Record> queryStream(final String language, final String query, RemoteGrpcConfig config, final int batchSize) {
+		return queryStream(language, query, config, batchSize, StreamQueryRequest.RetrievalMode.CURSOR);
+	}
+
+	public Iterator<Record> queryStream(final String language, final String query, final int batchSize, final StreamQueryRequest.RetrievalMode mode) {
+		return queryStream(language, query, getDefaultRemoteGrpcConfig(), batchSize, mode);	
 	}
 
 	// NEW: choose retrieval mode
-	public Iterator<Record> queryStream(final String language, final String query, final int batchSize,
-			final StreamQueryRequest.RetrievalMode mode) {
-		checkDatabaseIsOpen();
-		stats.queries.incrementAndGet();
 
-		StreamQueryRequest request = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(query).setCredentials(buildCredentials())
-				.setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode) // <--- NEW
-				.build();
-
-		final BlockingClientCall<?, QueryResult> responseIterator = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
-				.streamQuery(request);
-
-		return new Iterator<Record>() {
-			private Iterator<GrpcRecord> currentBatch = Collections.emptyIterator();
-
-			@Override
-			public boolean hasNext() {
-				if (currentBatch.hasNext())
-					return true;
-
-				try {
-					while (responseIterator.hasNext()) {
-						QueryResult result = responseIterator.read();
-
-						// Defensive: skip any empty batches the server might send
-						if (result.getRecordsCount() == 0) {
-							if (result.getIsLastBatch())
-								return false;
-							continue;
-						}
-
-						currentBatch = result.getRecordsList().iterator();
-						return true;
-					}
-				}
-				catch (InterruptedException e) {
-					throw new RuntimeException("Interrupted while waiting for stream", e);
-				}
-				catch (StatusException e) {
-					handleGrpcException(e);
-				}
-
-				return false;
-			}
-
-			@Override
-			public Record next() {
-				if (!hasNext())
-					throw new NoSuchElementException();
-				return grpcRecordToDBRecord(currentBatch.next());
-			}
-		};
+	public Iterator<Record> queryStream(final String language, final String query, final RemoteGrpcConfig config, final int batchSize, final StreamQueryRequest.RetrievalMode mode) {
+	
+		return queryStream(language, query, config, Map.of(), batchSize, mode);	
 	}
 
 	// PARAMETERIZED variant with retrieval mode
-	public Iterator<Record> queryStream(final String language, final String query, final Map<String, Object> params, final int batchSize,
-			final StreamQueryRequest.RetrievalMode mode) {
+	public Iterator<Record> queryStream(final String language, final String query, final RemoteGrpcConfig config, final Map<String, Object> params, final int batchSize, final StreamQueryRequest.RetrievalMode mode) {
+		
 		checkDatabaseIsOpen();
 		stats.queries.incrementAndGet();
 
@@ -726,10 +720,17 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 	// Keep the old signature working (defaults to CURSOR)
 	public Iterator<Record> queryStream(final String language, final String query, final Map<String, Object> params, final int batchSize) {
-		return queryStream(language, query, params, batchSize, StreamQueryRequest.RetrievalMode.CURSOR);
+	
+		return queryStream(language, query, getDefaultRemoteGrpcConfig(), params, batchSize, StreamQueryRequest.RetrievalMode.CURSOR);
 	}
 
+	public Iterator<Record> queryStream(final String language, final String query, final RemoteGrpcConfig config, final Map<String, Object> params, final int batchSize) {
+		
+		return queryStream(language, query, config, params, batchSize, StreamQueryRequest.RetrievalMode.CURSOR);
+	}
+	
 	public static final class QueryBatch {
+		
 		private final List<Record> records;
 		private final int totalInBatch;
 		private final long runningTotal;
