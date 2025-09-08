@@ -7,8 +7,13 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+
+import javax.annotation.Nullable;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -79,7 +84,6 @@ import com.google.protobuf.Int32Value;
 
 import io.grpc.CallCredentials;
 import io.grpc.Metadata;
-import io.grpc.Status;
 import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.BlockingClientCall;
@@ -110,19 +114,19 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	private final String userPassword;
 	private String databaseName;
 	private RemoteTransactionExplicitLock explicitLock;
-	
+
 	protected RemoteGrpcServer remoteGrpcServer;
 
-	public RemoteGrpcDatabase(final RemoteGrpcServer remoteGrpcServer, final String server, final int grpcPort, final int httpPort, final String databaseName, final String userName,
-			final String userPassword) {
+	public RemoteGrpcDatabase(final RemoteGrpcServer remoteGrpcServer, final String server, final int grpcPort, final int httpPort,
+			final String databaseName, final String userName, final String userPassword) {
 		this(remoteGrpcServer, server, grpcPort, httpPort, databaseName, userName, userPassword, new ContextConfiguration());
 	}
 
-	public RemoteGrpcDatabase(final RemoteGrpcServer remoteGrpcServer, final String host, final int grpcPort, final int httpPort, final String databaseName, final String userName,
-			final String userPassword, final ContextConfiguration configuration) {
+	public RemoteGrpcDatabase(final RemoteGrpcServer remoteGrpcServer, final String host, final int grpcPort, final int httpPort,
+			final String databaseName, final String userName, final String userPassword, final ContextConfiguration configuration) {
 
 		super(host, httpPort, databaseName, userName, userPassword, configuration);
-		
+
 		this.remoteGrpcServer = remoteGrpcServer;
 
 		this.userName = userName;
@@ -187,7 +191,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 	@Override
 	public void close() {
-		
+
 		if (transactionId != null) {
 			rollback();
 		}
@@ -203,18 +207,37 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		BeginTransactionRequest request = BeginTransactionRequest.newBuilder().setDatabase(getName()).setCredentials(buildCredentials())
 				.setIsolation(mapIsolationLevel(isolationLevel)).build();
 
-		try {
-			BeginTransactionResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).beginTransaction(request);
-			transactionId = response.getTransactionId();
-			// Store transaction ID in parent class session management
-			setSessionId(transactionId);
-		}
-		catch (StatusRuntimeException e) {
-			throw new TransactionException("Error on transaction begin", e);
-		}
-		catch (StatusException e) {
-			throw new TransactionException("Error on transaction begin", e);
-		}
+		callUnaryVoid("BeginTransaction", () -> {
+
+			try {
+				BeginTransactionResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+						.beginTransaction(request);
+				transactionId = response.getTransactionId();
+				// Store transaction ID in parent class session management
+				setSessionId(transactionId);
+			}
+			catch (StatusRuntimeException e) {
+				throw new TransactionException("Error on transaction begin", e);
+			}
+			catch (StatusException e) {
+				throw new TransactionException("Error on transaction begin", e);
+			}
+
+			debugTx = new TxDebug(this.getName(), /* label set by TM */ null);
+			logTx("BEGIN(local)", null);
+			try {
+				checkCrossThreadUse("before BeginTransaction");
+				// send BeginTransaction RPC ...
+				debugTx.beginRpcSent = true;
+				debugTx.rpcSeq.incrementAndGet();
+				logTx("BEGIN sent", "BeginTransaction");
+			}
+			catch (RuntimeException e) {
+				logTx("BEGIN failed", "BeginTransaction");
+				debugTx = null;
+				throw e;
+			}
+		});
 	}
 
 	@Override
@@ -225,57 +248,97 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		if (transactionId == null)
 			throw new TransactionException("Transaction not begun");
 
-		CommitTransactionRequest request = CommitTransactionRequest.newBuilder()
-				.setTransaction(TransactionContext.newBuilder().setTransactionId(transactionId).setDatabase(getName()).build())
-				.setCredentials(buildCredentials()).build();
+		logTx("COMMIT(local)", null);
+		checkCrossThreadUse("before CommitTransaction");
 
-		try {
-			CommitTransactionResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).commitTransaction(request);
-			if (!response.getSuccess()) {
-				throw new TransactionException("Failed to commit transaction: " + response.getMessage());
+		callUnaryVoid("CommitTransaction", () -> {
+
+			try {
+
+				CommitTransactionRequest request = CommitTransactionRequest.newBuilder()
+						.setTransaction(TransactionContext.newBuilder().setTransactionId(transactionId).setDatabase(getName()).build())
+						.setCredentials(buildCredentials()).build();
+
+				try {
+					CommitTransactionResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+							.commitTransaction(request);
+					if (!response.getSuccess()) {
+						throw new TransactionException("Failed to commit transaction: " + response.getMessage());
+					}
+				}
+				catch (StatusRuntimeException e) {
+					handleGrpcException(e);
+				}
+				catch (StatusException e) {
+					handleGrpcException(e);
+				}
+				finally {
+					transactionId = null;
+					setSessionId(null);
+				}
+
+				if (debugTx != null) {
+					debugTx.committed = true;
+					debugTx.rpcSeq.incrementAndGet();
+				}
+				logTx("COMMIT sent", "CommitTransaction");
 			}
-		}
-		catch (StatusRuntimeException e) {
-			handleGrpcException(e);
-		}
-		catch (StatusException e) {
-			handleGrpcException(e);
-		}
-		finally {
-			transactionId = null;
-			setSessionId(null);
-		}
+			finally {
+				debugTx = null;
+			}
+
+		});
 	}
 
 	@Override
 	public void rollback() {
+
 		checkDatabaseIsOpen();
 		stats.txRollbacks.incrementAndGet();
 
 		if (transactionId == null)
 			throw new TransactionException("Transaction not begun");
 
-		RollbackTransactionRequest request = RollbackTransactionRequest.newBuilder()
-				.setTransaction(TransactionContext.newBuilder().setTransactionId(transactionId).setDatabase(getName()).build())
-				.setCredentials(buildCredentials()).build();
+		logTx("ROLLBACK(local)", null);
+		checkCrossThreadUse("before RollbackTransaction");
 
-		try {
-			RollbackTransactionResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
-					.rollbackTransaction(request);
-			if (!response.getSuccess()) {
-				throw new TransactionException("Failed to rollback transaction: " + response.getMessage());
+		callUnaryVoid("RollbackTransaction", () -> {
+
+			try {
+
+				RollbackTransactionRequest request = RollbackTransactionRequest.newBuilder()
+						.setTransaction(TransactionContext.newBuilder().setTransactionId(transactionId).setDatabase(getName()).build())
+						.setCredentials(buildCredentials()).build();
+
+				try {
+					RollbackTransactionResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
+							.rollbackTransaction(request);
+					if (!response.getSuccess()) {
+						throw new TransactionException("Failed to rollback transaction: " + response.getMessage());
+					}
+				}
+				catch (StatusRuntimeException e) {
+					throw new TransactionException("Error on transaction rollback", e);
+				}
+				catch (StatusException e) {
+					throw new TransactionException("Error on transaction rollback", e);
+				}
+				finally {
+					transactionId = null;
+					setSessionId(null);
+				}
+
+				if (debugTx != null) {
+					debugTx.rolledBack = true;
+					debugTx.rpcSeq.incrementAndGet();
+				}
+				logTx("ROLLBACK sent", "RollbackTransaction");
 			}
-		}
-		catch (StatusRuntimeException e) {
-			throw new TransactionException("Error on transaction rollback", e);
-		}
-		catch (StatusException e) {
-			throw new TransactionException("Error on transaction rollback", e);
-		}
-		finally {
-			transactionId = null;
-			setSessionId(null);
-		}
+			finally {
+				debugTx = null;
+			}
+
+		});
 	}
 
 	@Override
@@ -286,20 +349,51 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		if (record.getIdentity() == null)
 			throw new IllegalArgumentException("Cannot delete a non persistent record");
 
-		DeleteRecordRequest request = DeleteRecordRequest.newBuilder().setDatabase(getName()).setRid(record.getIdentity().toString())
+		final DeleteRecordRequest req = DeleteRecordRequest.newBuilder().setDatabase(getName()).setRid(record.getIdentity().toString())
 				.setCredentials(buildCredentials()).build();
 
 		try {
-			DeleteRecordResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).deleteRecord(request);
-			if (!response.getSuccess()) {
-				throw new DatabaseOperationException("Failed to delete record: " + response.getMessage());
+			if (logger.isDebugEnabled()) {
+				logger.debug("CLIENT deleteRecord: db={}, tx={}, rid={}", getName(), (transactionId != null), record.getIdentity());
 			}
+
+			final DeleteRecordResponse resp = callUnary("DeleteRecord",
+					() -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).deleteRecord(req));
+
+			// Prefer the proto's 'deleted' flag (your other overload uses it)
+			if (!resp.getDeleted()) {
+				throw new DatabaseOperationException(
+						"Failed to delete record: " + (resp.getMessage().isEmpty() ? "unknown error" : resp.getMessage()));
+			}
+
 		}
-		catch (StatusRuntimeException e) {
-			handleGrpcException(e);
+		catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+			handleGrpcException(e); // rethrows mapped domain exception
+			throw new IllegalStateException("unreachable");
 		}
-		catch (StatusException e) {
-			handleGrpcException(e);
+	}
+
+	public boolean deleteRecord(final String rid, final long timeoutMs) {
+		checkDatabaseIsOpen();
+		stats.deleteRecord.incrementAndGet();
+
+		final DeleteRecordRequest req = DeleteRecordRequest.newBuilder().setDatabase(getName()).setRid(rid).setCredentials(buildCredentials())
+				.build();
+
+		try {
+			if (logger.isDebugEnabled()) {
+				logger.debug("CLIENT deleteRecord: db={}, tx={}, rid={}, timeoutMs={}", getName(), (transactionId != null), rid, timeoutMs);
+			}
+
+			final DeleteRecordResponse res = callUnary("DeleteRecord",
+					() -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).deleteRecord(req));
+
+			return res.getDeleted();
+
+		}
+		catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+			handleGrpcException(e); // rethrows mapped domain exception
+			throw new IllegalStateException("unreachable");
 		}
 	}
 
@@ -315,21 +409,10 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	public Iterator<Record> iterateBucket(final String bucketName) {
 		return streamQuery("select from bucket:`" + bucketName + "`");
 	}
-	
-//	@Override
-//	public ResultSet command(final String language, final String command) {
-//		checkDatabaseIsOpen();
-//		stats.commands.incrementAndGet();
-//
-//		final Map<String, Object> params = new HashMap<String, Object>();
-//		
-//		return commandInternal(language, command, params);
-//	}
-//	
 
 	@Override
 	public ResultSet command(final String language, final String command, final ContextConfiguration configuration, final Object... args) {
-		
+
 		checkDatabaseIsOpen();
 		stats.commands.incrementAndGet();
 
@@ -343,7 +426,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			final Map<String, Object> params) {
 		checkDatabaseIsOpen();
 		stats.commands.incrementAndGet();
-		
+
 		return commandInternal(language, command, params);
 	}
 
@@ -353,10 +436,10 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		stats.commands.incrementAndGet();
 
 		final Map<String, Object> params = mapArgs(args);
-		
+
 		return commandInternal(language, command, params);
 	}
-	
+
 	@Override
 	public ResultSet command(final String language, final String command, final Map<String, Object> params) {
 		checkDatabaseIsOpen();
@@ -366,7 +449,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	}
 
 	private ResultSet commandInternal(final String language, final String command, final Map<String, Object> params) {
-		
+
 		ExecuteCommandRequest.Builder requestBuilder = ExecuteCommandRequest.newBuilder().setDatabase(getName()).setCommand(command)
 				.setLanguage(language).setCredentials(buildCredentials());
 
@@ -377,19 +460,19 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		if (params != null && !params.isEmpty()) {
 			requestBuilder.putAllParameters(convertParamsToGrpcValue(params));
 		}
-		
+
 		boolean returnRows = true;
-		
+
 		requestBuilder.setReturnRows(returnRows);
-		
+
 		try {
 
 			if (logger.isDebugEnabled())
 				logger.debug("CLIENT executeCommand: db={}, tx={}, cmdLen={}, params={}", getName(), (transactionId != null),
 						requestBuilder.getCommand().length(), requestBuilder.getParametersCount());
 
-			ExecuteCommandResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
-					.executeCommand(requestBuilder.build());
+			final ExecuteCommandResponse response = callUnary("ExecuteCommand",
+					() -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).executeCommand(requestBuilder.build()));
 
 			if (logger.isDebugEnabled())
 				logger.debug("CLIENT executeCommand: success = {}", response.getSuccess());
@@ -399,24 +482,24 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			}
 
 			ResultSet resultSet;
-			
-			if (returnRows) {				
+
+			if (returnRows) {
 				resultSet = createGrpcResultSet(response);
 			}
 			else {
-				
+
 				resultSet = new InternalResultSet();
 
 				if (response.getAffectedRecords() > 0) {
-					
+
 					Map<String, Object> result = new HashMap<>();
 					result.put("affected", response.getAffectedRecords());
 					result.put("executionTime", response.getExecutionTimeMs());
-					
-					((InternalResultSet)resultSet).add(new ResultInternal(result));
+
+					((InternalResultSet) resultSet).add(new ResultInternal(result));
 				}
 			}
-			
+
 			return resultSet;
 		}
 		catch (StatusRuntimeException e) {
@@ -428,7 +511,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			return new InternalResultSet();
 		}
 	}
-	
+
 	@Override
 	public ResultSet query(final String language, final String query, final Object... args) {
 		checkDatabaseIsOpen();
@@ -437,29 +520,27 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		final Map<String, Object> params = mapArgs(args);
 
 		RemoteGrpcConfig remoteGrpcConfig = new RemoteGrpcConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);
-		
+
 		return query(language, query, remoteGrpcConfig, params);
 	}
 
-	
 	@Override
 	public ResultSet query(final String language, final String query, final Map<String, Object> params) {
-		
+
 		RemoteGrpcConfig remoteGrpcConfig = new RemoteGrpcConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);
-		
+
 		return query(language, query, remoteGrpcConfig, params);
 	}
 
-	
 	public ResultSet query(final String language, final String query, RemoteGrpcConfig remoteGrpcConfig, final Object... args) {
-		
+
 		final Map<String, Object> params = mapArgs(args);
 
 		return query(language, query, remoteGrpcConfig, params);
 	}
-	
+
 	public ResultSet query(final String language, final String query, RemoteGrpcConfig remoteGrpcConfig, final Map<String, Object> params) {
-		
+
 		checkDatabaseIsOpen();
 		stats.queries.incrementAndGet();
 
@@ -473,23 +554,25 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		if (params != null && !params.isEmpty()) {
 			requestBuilder.putAllParameters(convertParamsToGrpcValue(params));
 		}
-		
-		ProjectionSettings projectionSettings = ProjectionSettings.newBuilder()
-				.setIncludeProjections(remoteGrpcConfig.isIncludeProjections())
-                .setProjectionEncoding(remoteGrpcConfig.getProjectionEncoding())
-                .setSoftLimitBytes(Int32Value.newBuilder().setValue(remoteGrpcConfig.getSoftLimitBytes()).build())
-                    .build();
+
+		ProjectionSettings projectionSettings = ProjectionSettings.newBuilder().setIncludeProjections(remoteGrpcConfig.isIncludeProjections())
+				.setProjectionEncoding(remoteGrpcConfig.getProjectionEncoding())
+				.setSoftLimitBytes(Int32Value.newBuilder().setValue(remoteGrpcConfig.getSoftLimitBytes()).build()).build();
 
 		requestBuilder.setProjectionSettings(projectionSettings);
 
 		try {
 
-			if (logger.isDebugEnabled())
+			if (logger.isDebugEnabled()) {
 				logger.debug("CLIENT executeQuery: db={}, tx={}, queryLen={}, params={}", getName(), (transactionId != null),
 						requestBuilder.getQuery().length(), requestBuilder.getParametersCount());
+			}
 
-			ExecuteQueryResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
-					.executeQuery(requestBuilder.build());
+			final ExecuteQueryRequest req = requestBuilder.build();
+
+			final ExecuteQueryResponse response = callUnary("ExecuteQuery",
+					() -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS) // or getTimeout(MODE_QUERY)
+							.executeQuery(req));
 
 			if (logger.isDebugEnabled()) {
 				int _r = 0;
@@ -499,17 +582,12 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			}
 			return createGrpcResultSet(response);
 		}
-		catch (StatusRuntimeException e) {
-			handleGrpcException(e);
-			return new InternalResultSet();
-		}
-		catch (StatusException e) {
+		catch (io.grpc.StatusException | io.grpc.StatusRuntimeException e) {
 			handleGrpcException(e);
 			return new InternalResultSet();
 		}
 	}
-		
-	
+
 	public ExecuteCommandResponse execSql(String db, String sql, Map<String, Object> params, long timeoutMs) {
 		return executeCommand(db, "sql", sql, params, /* returnRows */ false, /* maxRows */ 0, txBeginCommit(), timeoutMs);
 	}
@@ -527,14 +605,15 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 		if (tx != null)
 			reqB.setTransaction(tx);
-		// credentials: if your stub builds creds implicitly, set here if required
 		reqB.setCredentials(buildCredentials());
 
 		try {
-			return blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).executeCommand(reqB.build());
+			return callUnary("ExecuteCommand",
+					() -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).executeCommand(reqB.build()));
 		}
-		catch (StatusException e) {
-			throw new RuntimeException("Failed to execute command: " + e.getMessage(), e);
+		catch (StatusException | StatusRuntimeException e) {
+			// handleGrpcException already called in callUnary, this is unreachable
+			throw new IllegalStateException("unreachable");
 		}
 	}
 
@@ -547,14 +626,15 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 		if (tx != null)
 			reqB.setTransaction(tx);
-		// credentials: if your stub builds creds implicitly, set here if required
 		reqB.setCredentials(buildCredentials());
 
 		try {
-			return blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).executeCommand(reqB.build());
+			return callUnary("ExecuteCommand",
+					() -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).executeCommand(reqB.build()));
 		}
-		catch (StatusException e) {
-			throw new RuntimeException("Failed to execute command: " + e.getMessage(), e);
+		catch (StatusException | StatusRuntimeException e) {
+			// handleGrpcException already called in callUnary, this is unreachable
+			throw new IllegalStateException("unreachable");
 		}
 	}
 
@@ -628,20 +708,20 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 	}
 
 	private RemoteGrpcConfig getDefaultRemoteGrpcConfig() {
-	
-		return new RemoteGrpcConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);		
+
+		return new RemoteGrpcConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);
 	}
-	
+
 	// Convenience: default batch size stays 100, default mode = CURSOR
 
 	public Iterator<Record> queryStream(final String language, final String query) {
-		return queryStream(language, query,  getDefaultRemoteGrpcConfig(), /* batchSize */100, StreamQueryRequest.RetrievalMode.CURSOR);
+		return queryStream(language, query, getDefaultRemoteGrpcConfig(), /* batchSize */100, StreamQueryRequest.RetrievalMode.CURSOR);
 	}
 
 	public Iterator<Record> queryStream(final String language, final String query, final RemoteGrpcConfig config) {
 		return queryStream(language, query, config, /* batchSize */100, StreamQueryRequest.RetrievalMode.CURSOR);
 	}
-		
+
 	public Iterator<Record> queryStream(final String language, final String query, final int batchSize) {
 		return queryStream(language, query, getDefaultRemoteGrpcConfig(), batchSize, StreamQueryRequest.RetrievalMode.CURSOR);
 	}
@@ -650,20 +730,23 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		return queryStream(language, query, config, batchSize, StreamQueryRequest.RetrievalMode.CURSOR);
 	}
 
-	public Iterator<Record> queryStream(final String language, final String query, final int batchSize, final StreamQueryRequest.RetrievalMode mode) {
-		return queryStream(language, query, getDefaultRemoteGrpcConfig(), batchSize, mode);	
+	public Iterator<Record> queryStream(final String language, final String query, final int batchSize,
+			final StreamQueryRequest.RetrievalMode mode) {
+		return queryStream(language, query, getDefaultRemoteGrpcConfig(), batchSize, mode);
 	}
 
 	// NEW: choose retrieval mode
 
-	public Iterator<Record> queryStream(final String language, final String query, final RemoteGrpcConfig config, final int batchSize, final StreamQueryRequest.RetrievalMode mode) {
-	
-		return queryStream(language, query, config, Map.of(), batchSize, mode);	
+	public Iterator<Record> queryStream(final String language, final String query, final RemoteGrpcConfig config, final int batchSize,
+			final StreamQueryRequest.RetrievalMode mode) {
+
+		return queryStream(language, query, config, Map.of(), batchSize, mode);
 	}
 
 	// PARAMETERIZED variant with retrieval mode
-	public Iterator<Record> queryStream(final String language, final String query, final RemoteGrpcConfig config, final Map<String, Object> params, final int batchSize, final StreamQueryRequest.RetrievalMode mode) {
-		
+	public Iterator<Record> queryStream(final String language, final String query, final RemoteGrpcConfig config,
+			final Map<String, Object> params, final int batchSize, final StreamQueryRequest.RetrievalMode mode) {
+
 		checkDatabaseIsOpen();
 		stats.queries.incrementAndGet();
 
@@ -674,8 +757,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			b.putAllParameters(convertParamsToGrpcValue(params));
 		}
 
-		final BlockingClientCall<?, QueryResult> responseIterator = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
-				.streamQuery(b.build());
+		// Open the stream with deadline via helper
+		final BlockingClientCall<?, QueryResult> responseIterator = callServerStreaming("StreamQuery",
+				() -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).streamQuery(b.build()));
 
 		return new Iterator<Record>() {
 			private Iterator<GrpcRecord> currentBatch = Collections.emptyIterator();
@@ -685,27 +769,34 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 				if (currentBatch.hasNext())
 					return true;
 
+				if (debugTx != null) {
+					checkCrossThreadUse("streamQuery.hasNext");
+				}
+
 				try {
-
 					while (responseIterator.hasNext()) {
-
-						QueryResult result = responseIterator.read();
+						final QueryResult result = responseIterator.read();
 
 						if (result.getRecordsCount() == 0) {
 							if (result.getIsLastBatch())
 								return false;
-							continue;
+							continue; // empty non-terminal batch
 						}
 
 						currentBatch = result.getRecordsList().iterator();
 						return true;
 					}
-
-					return false;
+					return false; // stream exhausted
+				}
+				catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+					handleGrpcException(e); // rethrows mapped runtime exception
+					throw new IllegalStateException("unreachable");
+				}
+				catch (RuntimeException re) {
+					throw re;
 				}
 				catch (Exception e) {
-
-					throw new RuntimeException("Interrupted while waiting for stream", e);
+					throw new RuntimeException("Stream failed", e);
 				}
 			}
 
@@ -713,6 +804,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			public Record next() {
 				if (!hasNext())
 					throw new NoSuchElementException();
+				if (debugTx != null) {
+					checkCrossThreadUse("streamQuery.next");
+				}
 				return grpcRecordToDBRecord(currentBatch.next());
 			}
 		};
@@ -720,17 +814,18 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 	// Keep the old signature working (defaults to CURSOR)
 	public Iterator<Record> queryStream(final String language, final String query, final Map<String, Object> params, final int batchSize) {
-	
+
 		return queryStream(language, query, getDefaultRemoteGrpcConfig(), params, batchSize, StreamQueryRequest.RetrievalMode.CURSOR);
 	}
 
-	public Iterator<Record> queryStream(final String language, final String query, final RemoteGrpcConfig config, final Map<String, Object> params, final int batchSize) {
-		
+	public Iterator<Record> queryStream(final String language, final String query, final RemoteGrpcConfig config,
+			final Map<String, Object> params, final int batchSize) {
+
 		return queryStream(language, query, config, params, batchSize, StreamQueryRequest.RetrievalMode.CURSOR);
 	}
-	
+
 	public static final class QueryBatch {
-		
+
 		private final List<Record> records;
 		private final int totalInBatch;
 		private final long runningTotal;
@@ -765,15 +860,15 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		checkDatabaseIsOpen();
 		stats.queries.incrementAndGet();
 
-		StreamQueryRequest.Builder b = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(query).setCredentials(buildCredentials())
-				.setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode);
+		final StreamQueryRequest.Builder b = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(query)
+				.setCredentials(buildCredentials()).setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode);
 
 		if (params != null && !params.isEmpty()) {
 			b.putAllParameters(convertParamsToGrpcValue(params));
 		}
 
-		final BlockingClientCall<?, QueryResult> responseIterator = blockingStub.withWaitForReady() // optional, improves robustness
-				.withDeadlineAfter(/* e.g. */ 10, TimeUnit.MINUTES).streamQuery(b.build());
+		final BlockingClientCall<?, QueryResult> responseIterator = callServerStreaming("StreamQuery",
+				() -> blockingStub.withWaitForReady().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).streamQuery(b.build()));
 
 		return new Iterator<QueryBatch>() {
 			private QueryBatch nextBatch = null;
@@ -786,41 +881,50 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 				if (drained)
 					return false;
 
+				if (debugTx != null) {
+					checkCrossThreadUse("streamQueryBatches.hasNext");
+				}
+
 				try {
-
 					while (responseIterator.hasNext()) {
+						final QueryResult qr = responseIterator.read();
 
-						QueryResult qr = responseIterator.read();
-
-						int n = qr.getTotalRecordsInBatch(); // server-populated
-						// Guard: some servers could omit this; fallback to list size.
-						if (n == 0)
-							n = qr.getRecordsCount();
+						int totalInBatch = qr.getTotalRecordsInBatch();
+						if (totalInBatch == 0)
+							totalInBatch = qr.getRecordsCount();
 
 						if (qr.getRecordsCount() == 0 && !qr.getIsLastBatch()) {
-							// skip empty non-terminal batch
-							continue;
+							continue; // empty non-terminal batch
 						}
 
-						List<Record> converted = new ArrayList<>(qr.getRecordsCount());
+						final List<Record> converted = new ArrayList<>(qr.getRecordsCount());
 						for (GrpcRecord gr : qr.getRecordsList()) {
 							converted.add(grpcRecordToDBRecord(gr));
 						}
 
-						nextBatch = new QueryBatch(converted, n, qr.getRunningTotalEmitted(), qr.getIsLastBatch());
+						nextBatch = new QueryBatch(converted, totalInBatch, qr.getRunningTotalEmitted(), qr.getIsLastBatch());
 
-						if (qr.getIsLastBatch()) {
-							drained = true; // no more after this (even if server sent empty terminal)
-						}
+						if (qr.getIsLastBatch())
+							drained = true;
 						return true;
 					}
 
 					drained = true;
 					return false;
 				}
+				catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+					handleGrpcException(e); // rethrows mapped exception
+					throw new IllegalStateException("unreachable");
+				}
+				catch (InterruptedException ie) {
+					Thread.currentThread().interrupt();
+					throw new RuntimeException("Stream interrupted", ie);
+				}
+				catch (RuntimeException re) {
+					throw re;
+				}
 				catch (Exception e) {
-
-					throw new RuntimeException("Interrupted while waiting for stream", e);
+					throw new RuntimeException("Stream failed", e);
 				}
 			}
 
@@ -828,133 +932,186 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			public QueryBatch next() {
 				if (!hasNext())
 					throw new NoSuchElementException();
-				QueryBatch out = nextBatch;
+				final QueryBatch out = nextBatch;
 				nextBatch = null;
 				return out;
 			}
 		};
 	}
 
-	public Iterator<GrpcRecord> queryStream(String database, String sql, Map<String, Object> params, int batchSize,
-			StreamQueryRequest.RetrievalMode mode, TransactionContext tx, long timeoutMs) {
-
-		var reqB = StreamQueryRequest.newBuilder().setDatabase(database).setQuery(sql).putAllParameters(convertParamsToGrpcValue(params))
-				.setCredentials(buildCredentials()).setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode);
+	public Iterator<GrpcRecord> queryStream(final String database, final String sql, final Map<String, Object> params, final int batchSize,
+			final StreamQueryRequest.RetrievalMode mode, final TransactionContext tx, final long timeoutMs) {
+		final StreamQueryRequest.Builder reqB = StreamQueryRequest.newBuilder().setDatabase(database).setQuery(sql)
+				.putAllParameters(convertParamsToGrpcValue(params)).setCredentials(buildCredentials())
+				.setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode);
 
 		if (tx != null)
 			reqB.setTransaction(tx);
 
-		final BlockingClientCall<?, QueryResult> it = blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).streamQuery(reqB.build());
+		final BlockingClientCall<?, QueryResult> it = callServerStreaming("StreamQuery",
+				() -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).streamQuery(reqB.build()));
 
-		return new Iterator<>() {
-
+		return new Iterator<GrpcRecord>() {
 			private Iterator<GrpcRecord> curr = Collections.emptyIterator();
 
+			@Override
 			public boolean hasNext() {
-
 				if (curr.hasNext())
 					return true;
 
+				if (debugTx != null) {
+					checkCrossThreadUse("streamQuery.hasNext");
+				}
+
 				try {
-
-					if (it.hasNext()) {
-
-						curr = it.read().getRecordsList().iterator();
-						return hasNext();
+					while (it.hasNext()) {
+						final QueryResult qr = it.read();
+						curr = qr.getRecordsList().iterator();
+						if (curr.hasNext())
+							return true;
+						// else loop to fetch next batch (handles empty batches)
 					}
+					return false;
 				}
-				catch (InterruptedException e) {
-					throw new RuntimeException("Interrupted while waiting for stream", e);
+				catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+					handleGrpcException(e);
+					throw new IllegalStateException("unreachable");
 				}
-				catch (StatusException e) {
-					throw new RuntimeException("Stream query failed: " + e.getStatus().getDescription());
+				catch (InterruptedException ie) {
+					Thread.currentThread().interrupt();
+					throw new RuntimeException("Stream interrupted", ie);
 				}
-
-				return false;
+				catch (RuntimeException re) {
+					throw re;
+				}
+				catch (Exception e) {
+					throw new RuntimeException("Stream failed", e);
+				}
 			}
 
+			@Override
 			public GrpcRecord next() {
 				if (!hasNext())
 					throw new NoSuchElementException();
+				if (debugTx != null) {
+					checkCrossThreadUse("streamQuery.next");
+				}
 				return curr.next();
 			}
 		};
 	}
 
-	public Iterator<QueryBatch> queryStreamBatches(String passLabel, String sql, Map<String, Object> params, int batchSize,
-			StreamQueryRequest.RetrievalMode mode, TransactionContext tx, long timeoutMs) {
-
-		var reqB = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(sql).putAllParameters(convertParamsToGrpcValue(params))
-				.setCredentials(buildCredentials()).setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode);
+	public Iterator<QueryBatch> queryStreamBatches(final String passLabel, final String sql, final Map<String, Object> params,
+			final int batchSize, final StreamQueryRequest.RetrievalMode mode, final TransactionContext tx, final long timeoutMs) {
+		final StreamQueryRequest.Builder reqB = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(sql)
+				.putAllParameters(convertParamsToGrpcValue(params)).setCredentials(buildCredentials())
+				.setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode);
 
 		if (tx != null)
 			reqB.setTransaction(tx);
 
-		final BlockingClientCall<?, QueryResult> respIter = blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
-				.streamQuery(reqB.build());
+		final BlockingClientCall<?, QueryResult> respIter = callServerStreaming("StreamQuery[" + passLabel + "]",
+				() -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).streamQuery(reqB.build()));
 
-		return new Iterator<>() {
-
+		return new Iterator<QueryBatch>() {
+			@Override
 			public boolean hasNext() {
-
+				if (debugTx != null) {
+					checkCrossThreadUse("streamQueryBatches(" + passLabel + ").hasNext");
+				}
 				try {
 					return respIter.hasNext();
 				}
-				catch (InterruptedException e) {
-					throw new RuntimeException(e);
+				catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+					handleGrpcException(e);
+					throw new IllegalStateException("unreachable");
 				}
-				catch (StatusException e) {
-					throw new RuntimeException(e);
+				catch (InterruptedException ie) {
+					Thread.currentThread().interrupt();
+					throw new RuntimeException("Stream interrupted", ie);
 				}
 			}
 
+			@Override
 			public QueryBatch next() {
-
-				QueryResult qr;
-
+				if (debugTx != null) {
+					checkCrossThreadUse("streamQueryBatches(" + passLabel + ").next");
+				}
 				try {
-					qr = respIter.read();
-					List<Record> converted = new ArrayList<>(qr.getRecordsCount());
+					final QueryResult qr = respIter.read();
 
+					int totalInBatch = qr.getTotalRecordsInBatch();
+					if (totalInBatch == 0)
+						totalInBatch = qr.getRecordsCount();
+
+					final List<Record> converted = new ArrayList<>(qr.getRecordsCount());
 					for (GrpcRecord gr : qr.getRecordsList()) {
 						converted.add(grpcRecordToDBRecord(gr));
 					}
 
-					return new QueryBatch(converted, qr.getTotalRecordsInBatch(), // int totalInBatch
-							qr.getRunningTotalEmitted(), // long runningTotal
-							qr.getIsLastBatch() // boolean lastBatch
-					);
+					return new QueryBatch(converted, totalInBatch, qr.getRunningTotalEmitted(), qr.getIsLastBatch());
 				}
-				catch (InterruptedException e) {
-					throw new RuntimeException(e);
+				catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+					handleGrpcException(e);
+					throw new IllegalStateException("unreachable");
 				}
-				catch (StatusException e) {
-					throw new RuntimeException(e);
+				catch (InterruptedException ie) {
+					Thread.currentThread().interrupt();
+					throw new RuntimeException("Stream interrupted", ie);
 				}
 			}
 		};
 	}
 
-	public String createVertex(String cls, Map<String, Object> props, long timeoutMs) {
-		// Build the nested proto GrpcRecord payload
-		GrpcRecord recMsg = GrpcRecord.newBuilder().putAllProperties(convertParamsToGrpcValue(props)).build();
+	public String createRecord(final String cls, final Map<String, Object> props, final long timeoutMs) {
+		checkDatabaseIsOpen();
 
-		// Build the Create request
-		CreateRecordRequest req = CreateRecordRequest.newBuilder().setDatabase(getName()).setType(cls).setRecord(recMsg) // <<<< NESTED RECORD
-																															// (not top-level
-																															// properties)
+		if (cls == null || cls.isBlank())
+			throw new IllegalArgumentException("cls must be non-empty");
+		if (props == null)
+			throw new IllegalArgumentException("props must be non-null");
+
+		// Build payload
+		final GrpcRecord recMsg = GrpcRecord.newBuilder().putAllProperties(convertParamsToGrpcValue(props)).build();
+
+		final CreateRecordRequest req = CreateRecordRequest.newBuilder().setDatabase(getName()).setType(cls).setRecord(recMsg)
 				.setCredentials(buildCredentials()).build();
 
-		// Call RPC
-		CreateRecordResponse res;
+		try {
+			if (logger.isDebugEnabled()) {
+				logger.debug("CLIENT createRecord: db={}, txOpen={}, type={}, propCount={}, timeoutMs={}", getName(), (transactionId != null),
+						cls, props.size(), timeoutMs);
+			}
+
+			final CreateRecordResponse res = callUnary("CreateRecord",
+					() -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).createRecord(req));
+
+			return res.getRid(); // e.g. "#12:0"
+
+		}
+		catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+			handleGrpcException(e); // rethrows mapped domain exception
+			throw new IllegalStateException("unreachable");
+		}
+	}
+
+	public String createRecordTx(final String cls, final Map<String, Object> props, final long timeoutMs) {
+		checkDatabaseIsOpen();
+
+		final GrpcRecord recMsg = GrpcRecord.newBuilder().putAllProperties(convertParamsToGrpcValue(props)).build();
+
+		final CreateRecordRequest req = CreateRecordRequest.newBuilder().setDatabase(getName()).setType(cls).setRecord(recMsg)
+				.setTransaction(TransactionContext.newBuilder().setBegin(true).setCommit(true)).setCredentials(buildCredentials()).build();
 
 		try {
-			res = blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).createRecord(req);
-			// Response carries new RID string
-			return res.getRid(); // e.g., "#12:0"
+			final CreateRecordResponse res = callUnary("CreateRecord",
+					() -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).createRecord(req));
+			return res.getRid();
+
 		}
-		catch (StatusException e) {
-			throw new RuntimeException("Failed to create vertex", e);
+		catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+			handleGrpcException(e);
+			throw new IllegalStateException("unreachable");
 		}
 	}
 
@@ -969,51 +1126,64 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		return updateRecordFull(rid, record, timeoutMs);
 	}
 
-	private boolean updateRecord(String rid, PropertiesUpdate partial, long timeoutMs) {
-		// Build the Update request using setPartial for partial update
-		UpdateRecordRequest req = UpdateRecordRequest.newBuilder().setDatabase(getName()).setRid(rid).setPartial(partial)
+	private boolean updateRecord(final String rid, final PropertiesUpdate partial, final long timeoutMs) {
+		checkDatabaseIsOpen();
+
+		if (rid == null || rid.isBlank())
+			throw new IllegalArgumentException("rid must be non-empty");
+		if (partial == null)
+			throw new IllegalArgumentException("partial must be non-null");
+
+		final UpdateRecordRequest req = UpdateRecordRequest.newBuilder().setDatabase(getName()).setRid(rid).setPartial(partial)
+				// Per-call tx: begin+commit. If you have an outer tx, pass it instead.
 				.setTransaction(TransactionContext.newBuilder().setBegin(true).setCommit(true)).setCredentials(buildCredentials()).build();
 
-		// Call RPC
-		UpdateRecordResponse res;
-
 		try {
-			res = blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).updateRecord(req);
-			// Choose the flag your proto defines. Most builds expose getSuccess().
+			if (logger.isDebugEnabled()) {
+				logger.debug("CLIENT updateRecord(partial): db={}, txOpen={}, rid={}, timeoutMs={}", getName(), (transactionId != null), rid,
+						timeoutMs);
+			}
+
+			final UpdateRecordResponse res = callUnary("UpdateRecord",
+					() -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).updateRecord(req));
+
+			// Most builds expose getSuccess(); if your proto has getUpdated(), swap here.
 			return res.getSuccess();
+
 		}
-		catch (StatusException e) {
-			throw new RuntimeException("Failed to update record", e);
+		catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+			handleGrpcException(e); // rethrows mapped domain exception
+			throw new IllegalStateException("unreachable");
 		}
 	}
 
-	private boolean updateRecordFull(String rid, GrpcRecord record, long timeoutMs) {
-		// Build the Update request using setRecord for full replacement
-		UpdateRecordRequest req = UpdateRecordRequest.newBuilder().setDatabase(getName()).setRid(rid).setRecord(record)
+	private boolean updateRecordFull(final String rid, final GrpcRecord record, final long timeoutMs) {
+		checkDatabaseIsOpen();
+
+		if (rid == null || rid.isBlank())
+			throw new IllegalArgumentException("rid must be non-empty");
+		if (record == null)
+			throw new IllegalArgumentException("record must be non-null");
+
+		final UpdateRecordRequest req = UpdateRecordRequest.newBuilder().setDatabase(getName()).setRid(rid).setRecord(record)
+				// Per-call tx: begin+commit. If you have an outer tx, pass it instead.
 				.setTransaction(TransactionContext.newBuilder().setBegin(true).setCommit(true)).setCredentials(buildCredentials()).build();
 
-		// Call RPC
-		UpdateRecordResponse res;
-
 		try {
-			res = blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).updateRecord(req);
+			if (logger.isDebugEnabled()) {
+				logger.debug("CLIENT updateRecord(full): db={}, txOpen={}, rid={}, timeoutMs={}", getName(), (transactionId != null), rid,
+						timeoutMs);
+			}
+
+			final UpdateRecordResponse res = callUnary("UpdateRecord",
+					() -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).updateRecord(req));
+
 			return res.getSuccess();
-		}
-		catch (StatusException e) {
-			throw new RuntimeException("Failed to update record", e);
-		}
-	}
 
-	public boolean deleteRecord(String rid, long timeoutMs) {
-		var req = DeleteRecordRequest.newBuilder().setDatabase(getName()).setRid(rid).setCredentials(buildCredentials()).build();
-		DeleteRecordResponse res;
-
-		try {
-			res = blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).deleteRecord(req);
-			return res.getDeleted();
 		}
-		catch (StatusException e) {
-			throw new RuntimeException("Failed to delete record", e);
+		catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+			handleGrpcException(e); // rethrows mapped domain exception
+			throw new IllegalStateException("unreachable");
 		}
 	}
 
@@ -1064,24 +1234,29 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		if (rid == null)
 			throw new IllegalArgumentException("Record is null");
 
-		LookupByRidRequest request = LookupByRidRequest.newBuilder().setDatabase(getName()).setRid(rid.toString())
+		final LookupByRidRequest req = LookupByRidRequest.newBuilder().setDatabase(getName()).setRid(rid.toString())
 				.setCredentials(buildCredentials()).build();
 
 		try {
-			LookupByRidResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).lookupByRid(request);
-
-			if (!response.getFound()) {
-				throw new RecordNotFoundException("Record " + rid + " not found", rid);
+			if (logger.isDebugEnabled()) {
+				logger.debug("CLIENT lookupByRID: db={}, txOpen={}, rid={}, loadContent={}, timeoutMs={}", getName(), (transactionId != null),
+						rid, loadContent, getTimeout());
 			}
-			return grpcRecordToDBRecord(response.getRecord());
+
+			final LookupByRidResponse resp = callUnary("LookupByRid",
+					() -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).lookupByRid(req));
+
+			if (!resp.getFound())
+				throw new RecordNotFoundException("Record " + rid + " not found", rid);
+
+			// Note: loadContent is currently a no-op for gRPC; response already carries the
+			// record.
+			return grpcRecordToDBRecord(resp.getRecord());
+
 		}
-		catch (StatusRuntimeException e) {
-			handleGrpcException(e);
-			return null;
-		}
-		catch (StatusException e) {
-			handleGrpcException(e);
-			return null;
+		catch (io.grpc.StatusException | io.grpc.StatusRuntimeException e) {
+			handleGrpcException(e); // maps & rethrows proper domain exception
+			throw new IllegalStateException("unreachable");
 		}
 	}
 
@@ -1098,34 +1273,6 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		}
 	}
 
-	public InsertSummary insertBulk(final InsertOptions options, final List<GrpcRecord> protoRows, final long timeoutMs) {
-
-		// Ensure options carry DB + credentials as the server expects
-		InsertOptions.Builder ob = options.toBuilder();
-
-		if (options.getDatabase() == null || options.getDatabase().isEmpty()) {
-			ob.setDatabase(getName()); // your wrapper's DB name
-		}
-
-		boolean missingCreds = !options.hasCredentials() || options.getCredentials().getUsername().isEmpty();
-		if (missingCreds) {
-			ob.setCredentials(buildCredentials()); // your existing helper used by queries
-		}
-
-		InsertOptions newOptions = ob.build();
-
-		BulkInsertRequest req = BulkInsertRequest.newBuilder().setOptions(newOptions).addAllRows(protoRows).build();
-
-		try {
-			if (logger.isDebugEnabled())
-				logger.debug("CLIENT insertBulk: rows={}, timeoutMs={}", req.getRowsCount(), timeoutMs);
-			return blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).bulkInsert(req);
-		}
-		catch (StatusException e) {
-			throw new RuntimeException("insertBulk() -> failed: " + e.getStatus());
-		}
-	}
-
 	// Convenience overload that accepts domain rows (convert first)
 	public InsertSummary insertBulkAsListOfMaps(final InsertOptions options, final List<Map<String, Object>> rows, final long timeoutMs) {
 
@@ -1135,67 +1282,38 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		return insertBulk(options, protoRows, timeoutMs);
 	}
 
-	public InsertSummary ingestStream(final InsertOptions options, final List<GrpcRecord> protoRows, final int chunkSize, final long timeoutMs)
-			throws InterruptedException {
-
-		final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-		final java.util.concurrent.atomic.AtomicReference<InsertSummary> summaryRef = new java.util.concurrent.atomic.AtomicReference<>();
+	public InsertSummary insertBulk(final InsertOptions options, final List<GrpcRecord> protoRows, final long timeoutMs) {
 
 		// Ensure options carry DB + credentials as the server expects
-		InsertOptions.Builder ob = options.toBuilder();
+		final InsertOptions.Builder ob = options.toBuilder();
 
-		if (options.getDatabase() == null || options.getDatabase().isEmpty()) {
-			ob.setDatabase(getName()); // your wrapper's DB name
+		final String dbInOpts = options.getDatabase();
+		if (dbInOpts == null || dbInOpts.isEmpty()) {
+			ob.setDatabase(getName());
 		}
 
-		boolean missingCreds = !options.hasCredentials() || options.getCredentials().getUsername().isEmpty();
-
+		final boolean missingCreds = !options.hasCredentials() || options.getCredentials().getUsername().isEmpty();
 		if (missingCreds) {
-			ob.setCredentials(buildCredentials()); // your existing helper used by queries
+			ob.setCredentials(buildCredentials());
 		}
 
-		StreamObserver<InsertSummary> resp = new StreamObserver<>() {
-			@Override
-			public void onNext(InsertSummary value) {
-				summaryRef.set(value);
+		final InsertOptions newOptions = ob.build();
+
+		final BulkInsertRequest req = BulkInsertRequest.newBuilder().setOptions(newOptions).addAllRows(protoRows).build();
+
+		try {
+			if (logger.isDebugEnabled()) {
+				logger.debug("CLIENT insertBulk: rows={}, timeoutMs={}, tx={}", req.getRowsCount(), timeoutMs, (transactionId != null));
 			}
 
-			@Override
-			public void onError(Throwable t) {
-				done.countDown();
-			}
+			// use callUnary so tx cross-thread checks + rpcSeq happen in one place
+			return callUnary("BulkInsert", () -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).bulkInsert(req));
 
-			@Override
-			public void onCompleted() {
-				done.countDown();
-			}
-		};
-
-		// Use the write service async stub, per-call deadline
-		var stub = this.asyncStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS);
-
-		final StreamObserver<InsertChunk> req = stub.insertStream(resp);
-
-		// Stream chunks
-		final String sessionId = "sess-" + System.nanoTime();
-
-		long seq = 1;
-
-		for (int i = 0; i < protoRows.size(); i += chunkSize) {
-			final int end = Math.min(i + chunkSize, protoRows.size());
-
-			final InsertChunk chunk = InsertChunk.newBuilder().setSessionId(sessionId).setOptions(ob.build()).setChunkSeq(seq++)
-					.addAllRows(protoRows.subList(i, end)).build();
-
-			req.onNext(chunk);
 		}
-
-		req.onCompleted();
-
-		done.await(timeoutMs + 5_000, TimeUnit.MILLISECONDS);
-
-		final InsertSummary s = summaryRef.get();
-		return (s != null) ? s : InsertSummary.newBuilder().setReceived(protoRows.size()).build();
+		catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+			handleGrpcException(e); // maps to your domain exceptions and rethrows
+			throw new IllegalStateException("unreachable"); // keep compiler happy
+		}
 	}
 
 	// Convenience overload
@@ -1207,226 +1325,104 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		return ingestStream(options, protoRows, chunkSize, timeoutMs);
 	}
 
-	/**
-	 * Core implementation of InsertBidirectional ingest
-	 */
-	private <T> InsertSummary ingestBidiCore(final List<T> rows, final InsertOptions options, final int chunkSize, final int maxInflight,
-			final long timeoutMs, final java.util.function.Function<? super T, GrpcRecord> mapper) throws InterruptedException {
+	public InsertSummary ingestStream(final InsertOptions options, final List<GrpcRecord> protoRows, final int chunkSize, final long timeoutMs)
+			throws InterruptedException {
 
-		// 1) Ensure options carry DB + credentials the server expects
+		checkDatabaseIsOpen();
+
+		if (protoRows == null || protoRows.isEmpty())
+			return InsertSummary.newBuilder().setReceived(0).build();
+
+		if (chunkSize <= 0)
+			throw new IllegalArgumentException("chunkSize must be > 0");
+
+		// Ensure options carry DB + credentials
 		final InsertOptions.Builder ob = options.toBuilder();
-
-		if (options.getDatabase() == null || options.getDatabase().isEmpty()) {
+		if (options.getDatabase() == null || options.getDatabase().isEmpty())
 			ob.setDatabase(getName());
-		}
-
-		final boolean missingCreds = !options.hasCredentials() || options.getCredentials().getUsername().isEmpty();
-
-		if (missingCreds) {
+		if (!options.hasCredentials() || options.getCredentials().getUsername().isEmpty())
 			ob.setCredentials(buildCredentials());
-		}
+		final InsertOptions effOptions = ob.build();
 
-		final InsertOptions effectiveOpts = ob.build();
+		final CountDownLatch done = new CountDownLatch(1);
+		final AtomicReference<InsertSummary> summaryRef = new AtomicReference<>();
+		final AtomicReference<Throwable> errorRef = new AtomicReference<>();
 
-		// 2) Pre-map rows → proto once (outside the observer)
-		final List<GrpcRecord> protoRows = rows.stream().map(mapper).collect(java.util.stream.Collectors.toList());
-
-		if (logger.isDebugEnabled())
-			logger.debug("CLIENT ingestBidi start: rows={}, chunkSize={}, maxInflight={}, timeoutMs={}", protoRows.size(), chunkSize,
-					maxInflight, timeoutMs);
-// 3) Streaming state
-		final String sessionId = "sess-" + System.nanoTime();
-		final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-		final java.util.concurrent.atomic.AtomicLong seq = new java.util.concurrent.atomic.AtomicLong(1);
-		final java.util.concurrent.atomic.AtomicInteger cursor = new java.util.concurrent.atomic.AtomicInteger(0);
-		final java.util.concurrent.atomic.AtomicInteger sent = new java.util.concurrent.atomic.AtomicInteger(0);
-		final java.util.concurrent.atomic.AtomicInteger acked = new java.util.concurrent.atomic.AtomicInteger(0);
-		final java.util.concurrent.atomic.AtomicReference<InsertSummary> committed = new java.util.concurrent.atomic.AtomicReference<>();
-		final List<BatchAck> acks = java.util.Collections.synchronizedList(new ArrayList<>());
-
-		// small holder to access req inside helpers
-		final java.util.concurrent.atomic.AtomicReference<ClientCallStreamObserver<InsertRequest>> observerRef = new java.util.concurrent.atomic.AtomicReference<>();
-
-		final java.util.concurrent.atomic.AtomicBoolean commitSent = new java.util.concurrent.atomic.AtomicBoolean(false);
-		final java.util.concurrent.ScheduledExecutorService scheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
-			Thread t = new Thread(r, "grpc-ack-grace-timer");
-			t.setDaemon(true);
-			return t;
-		});
-		final long ackGraceMillis = Math.min(Math.max(timeoutMs / 10, 1_000L), 10_000L); // e.g., 1s..10s window
-		final Object timerLock = new Object();
-		final java.util.concurrent.atomic.AtomicReference<java.util.concurrent.ScheduledFuture<?>> ackGraceFuture = new java.util.concurrent.atomic.AtomicReference<>();
-
-		// helper: schedule COMMIT if still waiting
-		final Runnable sendCommitIfNeeded = () -> {
-			if (commitSent.compareAndSet(false, true)) {
-				try {
-					if (observerRef.get() != null) {
-						observerRef.get().onNext(InsertRequest.newBuilder().setCommit(Commit.newBuilder().setSessionId(sessionId)).build());
-						observerRef.get().onCompleted();
-					}
-				}
-				catch (Throwable ignore) {
-					/* best effort */ }
-			}
-		};
-
-		// helper: (re)arm the grace timer
-		final Runnable armAckGraceTimer = () -> {
-			synchronized (timerLock) {
-				var prev = ackGraceFuture.getAndSet(null);
-				if (prev != null)
-					prev.cancel(false);
-				// only arm if we've sent all chunks but acks are still pending
-				if (cursor.get() >= protoRows.size() && acked.get() < sent.get() && !commitSent.get()) {
-					var fut = scheduler.schedule(sendCommitIfNeeded, ackGraceMillis, TimeUnit.MILLISECONDS);
-					ackGraceFuture.set(fut);
-				}
-			}
-		};
-
-		// helper: cancel timer (e.g., once all ACKed or after COMMIT observed)
-		final Runnable cancelAckGraceTimer = () -> {
-			synchronized (timerLock) {
-				var prev = ackGraceFuture.getAndSet(null);
-				if (prev != null)
-					prev.cancel(false);
-			}
-		};
-
-		final ClientResponseObserver<InsertRequest, InsertResponse> observer = new ClientResponseObserver<>() {
-
-			ClientCallStreamObserver<InsertRequest> req;
-			volatile boolean started = false;
-
+		final StreamObserver<InsertSummary> resp = new StreamObserver<>() {
 			@Override
-			public void beforeStart(ClientCallStreamObserver<InsertRequest> r) {
-				this.req = r;
-				observerRef.set(r); // <-- make req visible to helper
-				r.disableAutoInboundFlowControl();
-				r.setOnReadyHandler(this::drain);
-			}
-
-			private void drain() {
-				if (!req.isReady())
-					return;
-
-				if (!started) {
-					req.onNext(InsertRequest.newBuilder().setStart(Start.newBuilder().setOptions(effectiveOpts)).build());
-
-					started = true;
-
-					// Now that the call is started, it's safe to pull the first response
-					req.request(1);
-				}
-
-				while (req.isReady() && (sent.get() - acked.get()) < maxInflight) {
-					final int start = cursor.get();
-					if (start >= protoRows.size())
-						break;
-
-					final int end = Math.min(start + chunkSize, protoRows.size());
-					final var slice = protoRows.subList(start, end);
-
-					final var chunk = InsertChunk.newBuilder().setSessionId(sessionId).setChunkSeq(seq.getAndIncrement()).addAllRows(slice)
-							.build();
-
-					req.onNext(InsertRequest.newBuilder().setChunk(chunk).build());
-					cursor.set(end);
-					sent.incrementAndGet();
-				}
-
-				// If all chunks sent:
-				if (cursor.get() >= protoRows.size()) {
-					if (acked.get() >= sent.get()) {
-						// all acked → commit immediately
-						sendCommitIfNeeded.run();
-					}
-					else {
-						// not all acked → (re)arm grace timer; if last ACK never arrives, timer will
-						// COMMIT
-						armAckGraceTimer.run();
-					}
-				}
-			}
-
-			@Override
-			public void onNext(InsertResponse v) {
-				switch (v.getMsgCase()) {
-				case STARTED -> {
-					/* ok */ }
-				case BATCH_ACK -> {
-					acks.add(v.getBatchAck());
-					acked.incrementAndGet();
-					// Each ACK may free capacity: push more & manage timer
-					drain();
-					if (cursor.get() >= protoRows.size()) {
-						if (acked.get() >= sent.get()) {
-							cancelAckGraceTimer.run();
-							sendCommitIfNeeded.run();
-						}
-						else {
-							armAckGraceTimer.run();
-						}
-					}
-				}
-				case COMMITTED -> {
-					committed.set(v.getCommitted().getSummary());
-					cancelAckGraceTimer.run();
-				}
-				case MSG_NOT_SET -> {
-					/* ignore */
-				}
-				case ERROR -> {
-					/* TBD */
-				}
-				}
-
-				req.request(1); // continue pulling responses
+			public void onNext(InsertSummary value) {
+				summaryRef.set(value);
 			}
 
 			@Override
 			public void onError(Throwable t) {
-				cancelAckGraceTimer.run();
+				errorRef.set(t);
 				done.countDown();
 			}
 
 			@Override
 			public void onCompleted() {
-				cancelAckGraceTimer.run();
 				done.countDown();
 			}
 		};
-		// 4) Kick off the bidi call with deadline
+
+		if (logger.isDebugEnabled()) {
+			logger.debug("CLIENT ingestStream: db={}, rows={}, chunkSize={}, timeoutMs={}", getName(), protoRows.size(), chunkSize, timeoutMs);
+		}
+
+		// Open the client stream via wrapper (adds deadline, tx checks, unified error
+		// mapping)
+		final StreamObserver<InsertChunk> req = callAsyncDuplex("InsertStream", timeoutMs,
+				(stub, responseObserver) -> stub.insertStream(responseObserver), wrapObserver("InsertStream", resp));
+
+		final String sessionId = "sess-" + System.nanoTime();
+		long seq = 1;
+		int sent = 0;
 
 		try {
-			if (logger.isDebugEnabled())
-				logger.debug("CLIENT ingestBidi opening stream: timeoutMs={}", timeoutMs);
-			asyncStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).insertBidirectional(observer);
-			@SuppressWarnings("unused")
-			boolean finished = done.await(timeoutMs + 5_000, TimeUnit.MILLISECONDS);
-			if (logger.isDebugEnabled())
-				try {
-					logger.debug("CLIENT ingestBidi finished: finished={}, sent={}, acked={}", finished, sent.get(), acked.get());
-				}
-				catch (Throwable ignore) {
-				}
+			for (int i = 0; i < protoRows.size(); i += chunkSize) {
+				final int end = Math.min(i + chunkSize, protoRows.size());
+
+				// (Sending options on every chunk is safe; if you prefer first-chunk-only, gate
+				// on seq == 1.)
+				final InsertChunk chunk = InsertChunk.newBuilder().setSessionId(sessionId).setOptions(effOptions).setChunkSeq(seq++)
+						.addAllRows(protoRows.subList(i, end)).build();
+
+				req.onNext(chunk);
+				sent += (end - i);
+			}
+			req.onCompleted();
 		}
-		finally {
-			scheduler.shutdownNow();
+		catch (RuntimeException sendErr) {
+			// Client-side failure during onNext/onCompleted: propagate
+			throw sendErr;
 		}
 
-		// 6) Prefer COMMITTED summary if present; otherwise aggregate ACKs
-		final InsertSummary finalSummary = committed.get();
-		if (finalSummary != null)
-			return finalSummary;
+		// Wait for server final summary or error (tiny grace after deadline)
+		final boolean finished = done.await(Math.max(1, timeoutMs) + 1_000, TimeUnit.MILLISECONDS);
+		if (!finished) {
+			throw new TimeoutException("ingestStream timed out waiting for server completion");
+		}
 
-		final long ins = acks.stream().mapToLong(BatchAck::getInserted).sum();
-		final long upd = acks.stream().mapToLong(BatchAck::getUpdated).sum();
-		final long ign = acks.stream().mapToLong(BatchAck::getIgnored).sum();
-		final long fail = acks.stream().mapToLong(BatchAck::getFailed).sum();
+		// If wrapObserver mapped an error, rethrow it directly
+		final Throwable streamErr = errorRef.get();
+		if (streamErr != null) {
+			if (streamErr instanceof RuntimeException re)
+				throw re;
+			throw new RemoteException("gRPC stream failed: " + streamErr.getMessage(), streamErr);
+		}
 
-		return InsertSummary.newBuilder().setReceived(protoRows.size()).setInserted(ins).setUpdated(upd).setIgnored(ign).setFailed(fail).build();
+		InsertSummary s = summaryRef.get();
+		if (s == null) {
+			// Fallback if server completed without emitting a final summary
+			s = InsertSummary.newBuilder().setReceived(sent).build();
+		}
+
+		if (logger.isDebugEnabled()) {
+			logger.debug("CLIENT ingestStream: completed; received={}", s.getReceived());
+		}
+
+		return s;
 	}
 
 	/**
@@ -1460,6 +1456,251 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			final int maxInflight, final long timeoutMs) throws InterruptedException {
 
 		return ingestBidiCore(rows, options, chunkSize, maxInflight, timeoutMs, this::toProtoRecordFromMap);
+	}
+
+	/**
+	 * Core implementation of InsertBidirectional ingest
+	 */
+
+	private <T> InsertSummary ingestBidiCore(final List<T> rows, final InsertOptions options, final int chunkSize, final int maxInflight,
+			final long timeoutMs, final java.util.function.Function<? super T, GrpcRecord> mapper) throws InterruptedException {
+
+		// Fast-path & guards
+		if (rows == null || rows.isEmpty())
+			return InsertSummary.newBuilder().setReceived(0).build();
+		if (chunkSize <= 0)
+			throw new IllegalArgumentException("chunkSize must be > 0");
+		if (maxInflight <= 0)
+			throw new IllegalArgumentException("maxInflight must be > 0");
+
+		// Options with DB + creds
+		final InsertOptions.Builder ob = options.toBuilder();
+		if (options.getDatabase() == null || options.getDatabase().isEmpty())
+			ob.setDatabase(getName());
+		if (!options.hasCredentials() || options.getCredentials().getUsername().isEmpty())
+			ob.setCredentials(buildCredentials());
+		final InsertOptions effectiveOpts = ob.build();
+
+		// Pre-map rows → proto
+		final List<GrpcRecord> protoRows = rows.stream().map(mapper).collect(java.util.stream.Collectors.toList());
+
+		if (logger.isDebugEnabled()) {
+			logger.debug("CLIENT ingestBidi start: rows={}, chunkSize={}, maxInflight={}, timeoutMs={}", protoRows.size(), chunkSize,
+					maxInflight, timeoutMs);
+		}
+
+		// --- streaming state
+		final String sessionId = "sess-" + System.nanoTime();
+		final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+		final java.util.concurrent.atomic.AtomicReference<Throwable> errRef = new java.util.concurrent.atomic.AtomicReference<>();
+		final java.util.concurrent.atomic.AtomicLong seq = new java.util.concurrent.atomic.AtomicLong(1);
+		final java.util.concurrent.atomic.AtomicInteger cursor = new java.util.concurrent.atomic.AtomicInteger(0);
+		final java.util.concurrent.atomic.AtomicInteger sent = new java.util.concurrent.atomic.AtomicInteger(0);
+		final java.util.concurrent.atomic.AtomicInteger acked = new java.util.concurrent.atomic.AtomicInteger(0);
+		final java.util.concurrent.atomic.AtomicReference<InsertSummary> committed = new java.util.concurrent.atomic.AtomicReference<>();
+		final List<BatchAck> acks = java.util.Collections.synchronizedList(new ArrayList<>());
+
+		final java.util.concurrent.atomic.AtomicReference<ClientCallStreamObserver<InsertRequest>> observerRef = new java.util.concurrent.atomic.AtomicReference<>();
+
+		final java.util.concurrent.atomic.AtomicBoolean commitSent = new java.util.concurrent.atomic.AtomicBoolean(false);
+		final java.util.concurrent.ScheduledExecutorService scheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+			Thread t = new Thread(r, "grpc-ack-grace-timer");
+			t.setDaemon(true);
+			return t;
+		});
+		final long ackGraceMillis = Math.min(Math.max(timeoutMs / 10, 1_000L), 10_000L);
+		final Object timerLock = new Object();
+		final java.util.concurrent.atomic.AtomicReference<java.util.concurrent.ScheduledFuture<?>> ackGraceFuture = new java.util.concurrent.atomic.AtomicReference<>();
+
+		final Runnable sendCommitIfNeeded = () -> {
+			if (commitSent.compareAndSet(false, true)) {
+				try {
+					final ClientCallStreamObserver<InsertRequest> r = observerRef.get();
+					if (r != null) {
+						r.onNext(InsertRequest.newBuilder().setCommit(Commit.newBuilder().setSessionId(sessionId)).build());
+						r.onCompleted();
+					}
+				}
+				catch (Throwable ignore) {
+					/* best effort */ }
+			}
+		};
+
+		final Runnable armAckGraceTimer = () -> {
+			synchronized (timerLock) {
+				var prev = ackGraceFuture.getAndSet(null);
+				if (prev != null)
+					prev.cancel(false);
+				if (cursor.get() >= protoRows.size() && acked.get() < sent.get() && !commitSent.get()) {
+					var fut = scheduler.schedule(sendCommitIfNeeded, ackGraceMillis, TimeUnit.MILLISECONDS);
+					ackGraceFuture.set(fut);
+				}
+			}
+		};
+
+		final Runnable cancelAckGraceTimer = () -> {
+			synchronized (timerLock) {
+				var prev = ackGraceFuture.getAndSet(null);
+				if (prev != null)
+					prev.cancel(false);
+			}
+		};
+
+		// --- response observer (keeps backpressure via beforeStart)
+		final ClientResponseObserver<InsertRequest, InsertResponse> respObserver = new ClientResponseObserver<>() {
+			ClientCallStreamObserver<InsertRequest> req;
+			volatile boolean started = false;
+
+			@Override
+			public void beforeStart(ClientCallStreamObserver<InsertRequest> r) {
+				this.req = r;
+				observerRef.set(r);
+				r.disableAutoInboundFlowControl();
+				r.setOnReadyHandler(this::drain);
+			}
+
+			private void drain() {
+				if (!req.isReady())
+					return;
+
+				if (!started) {
+					req.onNext(InsertRequest.newBuilder().setStart(Start.newBuilder().setOptions(effectiveOpts)).build());
+					started = true;
+					req.request(1); // pull first server response
+				}
+
+				while (req.isReady() && (sent.get() - acked.get()) < maxInflight) {
+					final int start = cursor.get();
+					if (start >= protoRows.size())
+						break;
+
+					final int end = Math.min(start + chunkSize, protoRows.size());
+					final var slice = protoRows.subList(start, end);
+
+					final var chunk = InsertChunk.newBuilder().setSessionId(sessionId).setChunkSeq(seq.getAndIncrement()).addAllRows(slice)
+							.build();
+
+					req.onNext(InsertRequest.newBuilder().setChunk(chunk).build());
+					cursor.set(end);
+					sent.incrementAndGet();
+				}
+
+				if (cursor.get() >= protoRows.size()) {
+					if (acked.get() >= sent.get())
+						sendCommitIfNeeded.run();
+					else
+						armAckGraceTimer.run();
+				}
+			}
+
+			@Override
+			public void onNext(InsertResponse v) {
+				switch (v.getMsgCase()) {
+				case STARTED -> {
+					/* ok */ }
+				case BATCH_ACK -> {
+					acks.add(v.getBatchAck());
+					acked.incrementAndGet();
+					// free capacity & manage timers
+					drain();
+					if (cursor.get() >= protoRows.size()) {
+						if (acked.get() >= sent.get()) {
+							cancelAckGraceTimer.run();
+							sendCommitIfNeeded.run();
+						}
+						else {
+							armAckGraceTimer.run();
+						}
+					}
+				}
+				case COMMITTED -> {
+					committed.set(v.getCommitted().getSummary());
+					cancelAckGraceTimer.run();
+				}
+				case ERROR -> {
+					// surface as error; caller will map/throw after await
+					errRef.set(new StatusRuntimeException(io.grpc.Status.INTERNAL.withDescription(v.getError().getMessage())));
+					cancelAckGraceTimer.run();
+					try {
+						req.cancel("server ERROR", null);
+					}
+					catch (Throwable ignore) {
+					}
+				}
+				case MSG_NOT_SET -> {
+					/* ignore */ }
+				}
+				req.request(1); // keep pulling
+			}
+
+			@Override
+			public void onError(Throwable t) {
+				cancelAckGraceTimer.run();
+				errRef.set(t);
+				done.countDown();
+			}
+
+			@Override
+			public void onCompleted() {
+				cancelAckGraceTimer.run();
+				done.countDown();
+			}
+		};
+
+		// --- open bidi via wrapper (deadline, tx checks, unified logging)
+		@SuppressWarnings("unused")
+		final StreamObserver<InsertRequest> _req = callAsyncDuplex("InsertBidirectional", timeoutMs,
+				(stub, responseObs) -> stub.insertBidirectional(responseObs), wrapClientResponseObserver("InsertBidirectional", respObserver) // preserves
+																																				// beforeStart
+		);
+
+		try {
+			// wait for completion (tiny grace after deadline)
+			final boolean finished = done.await(Math.max(1, timeoutMs) + 1_000, TimeUnit.MILLISECONDS);
+			if (!finished) {
+				final ClientCallStreamObserver<InsertRequest> r = observerRef.get();
+				if (r != null) {
+					try {
+						r.cancel("client timeout waiting for completion", null);
+					}
+					catch (Throwable ignore) {
+					}
+				}
+				throw new TimeoutException("ingestBidirectional timed out waiting for server completion");
+			}
+
+			final Throwable err = errRef.get();
+			if (err != null) {
+				// wrapClientResponseObserver already runs through handleGrpcException();
+				// if it was a non-gRPC Throwable, surface it uniformly here.
+				if (err instanceof RuntimeException re)
+					throw re;
+				throw new RemoteException("gRPC bidi stream failed: " + err.getMessage(), err);
+			}
+
+			if (logger.isDebugEnabled()) {
+				try {
+					logger.debug("CLIENT ingestBidi finished: sent={}, acked={}", sent.get(), acked.get());
+				}
+				catch (Throwable ignore) {
+				}
+			}
+		}
+		finally {
+			scheduler.shutdownNow();
+		}
+
+		// Prefer COMMITTED summary; else aggregate ACKs
+		final InsertSummary finalSummary = committed.get();
+		if (finalSummary != null)
+			return finalSummary;
+
+		final long ins = acks.stream().mapToLong(BatchAck::getInserted).sum();
+		final long upd = acks.stream().mapToLong(BatchAck::getUpdated).sum();
+		final long ign = acks.stream().mapToLong(BatchAck::getIgnored).sum();
+		final long fail = acks.stream().mapToLong(BatchAck::getFailed).sum();
+
+		return InsertSummary.newBuilder().setReceived(protoRows.size()).setInserted(ins).setUpdated(upd).setIgnored(ign).setFailed(fail).build();
 	}
 
 	// Map -> GrpcRecord
@@ -1523,8 +1764,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		StreamQueryRequest request = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(query).setCredentials(buildCredentials())
 				.setBatchSize(100).build();
 
-		final BlockingClientCall<?, QueryResult> responseIterator = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
-				.streamQuery(request);
+		final BlockingClientCall<?, QueryResult> responseIterator = callServerStreaming("StreamQuery",
+				() -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).streamQuery(request));
 
 		return new Iterator<Record>() {
 			private Iterator<GrpcRecord> currentBatch = Collections.emptyIterator();
@@ -1575,14 +1816,14 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		return resultSet;
 	}
 
-	private ResultSet createGrpcResultSet(ExecuteCommandResponse response) {		
-		InternalResultSet resultSet = new InternalResultSet();		
+	private ResultSet createGrpcResultSet(ExecuteCommandResponse response) {
+		InternalResultSet resultSet = new InternalResultSet();
 		for (GrpcRecord record : response.getRecordsList()) {
 			resultSet.add(grpcRecordToResult(record));
 		}
 		return resultSet;
 	}
-	
+
 	private Result grpcRecordToResult(GrpcRecord grpcRecord) {
 
 		Record record = grpcRecordToDBRecord(grpcRecord);
@@ -1707,43 +1948,26 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		return out;
 	}
 
-	private void handleGrpcException(StatusRuntimeException e) {
-		Status status = e.getStatus();
-		switch (status.getCode()) {
-		case NOT_FOUND:
-			throw new RecordNotFoundException(status.getDescription(), null);
-		case ALREADY_EXISTS:
-			throw new DuplicatedKeyException("", "", null);
-		case ABORTED:
-			throw new ConcurrentModificationException(status.getDescription());
-		case DEADLINE_EXCEEDED:
-			throw new TimeoutException(status.getDescription());
-		case PERMISSION_DENIED:
-			throw new SecurityException(status.getDescription());
-		case UNAVAILABLE:
-			throw new NeedRetryException(status.getDescription());
-		default:
-			throw new RemoteException("gRPC error: " + status.getDescription(), e);
-		}
-	}
+	private void handleGrpcException(Throwable e) {
+		// Works for StatusException, StatusRuntimeException, and anything else
+		io.grpc.Status status = io.grpc.Status.fromThrowable(e);
+		String msg = status.getDescription() != null ? status.getDescription() : status.getCode().name();
 
-	private void handleGrpcException(StatusException e) {
-		Status status = e.getStatus();
 		switch (status.getCode()) {
 		case NOT_FOUND:
-			throw new RecordNotFoundException(status.getDescription(), null);
+			throw new RecordNotFoundException(msg, null);
 		case ALREADY_EXISTS:
 			throw new DuplicatedKeyException("", "", null);
 		case ABORTED:
-			throw new ConcurrentModificationException(status.getDescription());
+			throw new ConcurrentModificationException(msg);
 		case DEADLINE_EXCEEDED:
-			throw new TimeoutException(status.getDescription());
+			throw new TimeoutException(msg);
 		case PERMISSION_DENIED:
-			throw new SecurityException(status.getDescription());
+			throw new SecurityException(msg);
 		case UNAVAILABLE:
-			throw new NeedRetryException(status.getDescription());
+			throw new NeedRetryException(msg);
 		default:
-			throw new RemoteException("gRPC error: " + status.getDescription(), e);
+			throw new RemoteException("gRPC error: " + msg, e);
 		}
 	}
 
@@ -1753,7 +1977,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			super(database);
 		}
 	}
-	
+
 	// --- Debug helpers (client) ---
 	private static String summarize(Object o) {
 		if (o == null)
@@ -1802,5 +2026,268 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		String ty = r.getType();
 		int props = r.getPropertiesCount();
 		return "GrpcRecord{rid=" + rid + ", type=" + ty + ", props=" + props + "}";
-	}	
+	}
+
+	// RemoteGrpcDatabase.java
+
+	// ---- fields ----
+	private volatile TxDebug debugTx;
+
+	private static final class TxDebug {
+		final long id = System.nanoTime(); // local correlation id
+		final Thread ownerThread = Thread.currentThread();
+		final String dbName;
+		volatile String txLabel; // optional
+		final Exception beginSite = new Exception("begin site"); // capture stack
+		final java.util.concurrent.atomic.AtomicLong rpcSeq = new java.util.concurrent.atomic.AtomicLong();
+		volatile boolean beginRpcSent, committed, rolledBack;
+
+		@SuppressWarnings("unused")
+		TxDebug(String db, String label) {
+			this.dbName = db;
+			this.txLabel = label;
+		}
+	}
+
+	// one place to handle JDK 17/21 differences
+	private static String tidName(Thread t) {
+		try {
+			// Java 19+: threadId()
+			long tid = (long) Thread.class.getMethod("threadId").invoke(t);
+			return tid + ":" + t.getName();
+		}
+		catch (ReflectiveOperationException ignore) {
+			return legacyTidName(t);
+		}
+	}
+
+	private static String legacyTidName(Thread t) {
+		return t.threadId() + ":" + t.getName();
+	}
+
+	// Optional knobs you can toggle from the TM for a single run
+	private volatile boolean txDebugEnabled = true;
+
+	public void enableTxDebug(boolean on) {
+		this.txDebugEnabled = on;
+	}
+
+	public boolean isLocalTxActive() {
+		return debugTx != null;
+	}
+
+	public @Nullable String currentLocalTxId() {
+		return (debugTx != null ? Long.toString(debugTx.id) : null);
+	}
+
+	public void setCurrentTxLabel(String label) {
+		if (debugTx != null)
+			debugTx.txLabel = label;
+	}
+
+	private void logTx(String phase, String rpcOp) {
+		if (debugTx == null || !logger.isDebugEnabled())
+			return;
+		TxDebug d = debugTx;
+		logger.debug("TXDBG {} db={} tx#{} label={} owner={} now={} rpcOp={} rpcSeq={} beginSent={} committed={} rolledBack={}", phase, d.dbName,
+				d.id, d.txLabel, tidName(d.ownerThread), tidName(Thread.currentThread()), rpcOp, d.rpcSeq.get(), d.beginRpcSent, d.committed,
+				d.rolledBack);
+	}
+
+	private void checkCrossThreadUse(String where) {
+		TxDebug d = debugTx;
+		if (d == null)
+			return;
+		Thread now = Thread.currentThread();
+		if (now != d.ownerThread) {
+			logger.warn("TXDBG CROSS-THREAD {} db={} tx#{} owner={} now={} label={} (begin site follows)", where, d.dbName, d.id,
+					tidName(d.ownerThread), tidName(now), d.txLabel, d.beginSite);
+		}
+	}
+
+	@FunctionalInterface
+	private interface Rpc<T> {
+		T run() throws io.grpc.StatusException; // V2 throws this; v1 lambdas compile fine too
+	}
+
+	private <Resp> Resp callUnary(String opName, Rpc<Resp> rpc) throws io.grpc.StatusException {
+		if (debugTx != null) {
+			checkCrossThreadUse("RPC " + opName);
+			logTx("RPC(local)", opName);
+		}
+		try {
+			return rpc.run();
+		}
+		finally {
+			if (debugTx != null) {
+				debugTx.rpcSeq.incrementAndGet();
+			}
+		}
+	}
+
+	// unary that returns void
+	private void callUnaryVoid(String opName, Runnable rpc) {
+		if (debugTx != null) {
+			checkCrossThreadUse("RPC " + opName);
+			logTx("RPC(unary)", opName);
+		}
+		rpc.run();
+		if (debugTx != null) {
+			debugTx.rpcSeq.incrementAndGet();
+		}
+	}
+
+	// Helper for server-streaming RPCs (mirrors callUnary)
+	private <Resp> BlockingClientCall<?, Resp> callServerStreaming(String opName, Supplier<BlockingClientCall<?, Resp>> rpc) {
+		if (debugTx != null) {
+			checkCrossThreadUse("RPC " + opName);
+			logTx("RPC(open-stream)", opName);
+		}
+		try {
+			final BlockingClientCall<?, Resp> it = rpc.get();
+			if (debugTx != null) {
+				debugTx.rpcSeq.incrementAndGet();
+			}
+			return it;
+		}
+		catch (io.grpc.StatusRuntimeException e) {
+			handleGrpcException(e); // rethrows mapped runtime exception
+			throw new IllegalStateException("unreachable");
+		}
+	}
+
+	// For async "client-streaming" and "bidirectional" calls that RETURN a request
+	// StreamObserver
+	private <Req, Resp> StreamObserver<Req> callAsyncDuplex(String opName, long timeoutMs,
+			java.util.function.BiFunction<ArcadeDbServiceGrpc.ArcadeDbServiceStub, StreamObserver<Resp>, StreamObserver<Req>> starter,
+			StreamObserver<Resp> responseObserver) {
+		if (debugTx != null) {
+			checkCrossThreadUse("STREAM " + opName);
+			logTx("STREAM(local)", opName);
+		}
+		final var stub = asyncStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+		StreamObserver<Req> reqObs = starter.apply(stub, wrapObserver(opName, responseObserver));
+		if (debugTx != null) {
+			debugTx.rpcSeq.incrementAndGet();
+		}
+		return reqObs;
+	}
+
+	// For async "server-streaming" calls that take (request, responseObserver) and
+	// return void
+	private <Req, Resp> void callAsyncServerStreaming(String opName, long timeoutMs, Req request,
+			java.util.function.BiConsumer<ArcadeDbServiceGrpc.ArcadeDbServiceStub, StreamObserver<Resp>> invoker,
+			StreamObserver<Resp> responseObserver) {
+		if (debugTx != null) {
+			checkCrossThreadUse("STREAM " + opName);
+			logTx("STREAM(local)", opName);
+		}
+		final var stub = asyncStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+		invoker.accept(stub, wrapObserver(opName, responseObserver));
+		if (debugTx != null) {
+			debugTx.rpcSeq.incrementAndGet();
+		}
+	}
+
+	// Wrap a plain StreamObserver to translate gRPC Status into your domain
+	// exceptions
+	private <T> StreamObserver<T> wrapObserver(String opName, StreamObserver<T> delegate) {
+		return new StreamObserver<>() {
+			@Override
+			public void onNext(T value) {
+				delegate.onNext(value);
+			}
+
+			@Override
+			public void onError(Throwable t) {
+				try {
+					handleGrpcException(t);
+				}
+				catch (RuntimeException mapped) {
+					delegate.onError(mapped);
+					return;
+				}
+				delegate.onError(t);
+			}
+
+			@Override
+			public void onCompleted() {
+				delegate.onCompleted();
+			}
+		};
+	}
+
+	// Same idea, but preserves ClientResponseObserver features (beforeStart, flow
+	// control)
+	private <Req, Resp> ClientResponseObserver<Req, Resp> wrapObserver(String opName, ClientResponseObserver<Req, Resp> delegate) {
+		return new ClientResponseObserver<>() {
+			@Override
+			public void beforeStart(io.grpc.stub.ClientCallStreamObserver<Req> r) {
+				// pass through; your delegate may set onReady handler, request(n), etc.
+				delegate.beforeStart(r);
+			}
+
+			@Override
+			public void onNext(Resp value) {
+				delegate.onNext(value);
+			}
+
+			@Override
+			public void onError(Throwable t) {
+				try {
+					handleGrpcException(t);
+				}
+				catch (RuntimeException mapped) {
+					delegate.onError(mapped);
+					return;
+				}
+				delegate.onError(t);
+			}
+
+			@Override
+			public void onCompleted() {
+				delegate.onCompleted();
+			}
+		};
+	}
+
+	private <ReqT, RespT> ClientResponseObserver<ReqT, RespT> wrapClientResponseObserver(String opName,
+			ClientResponseObserver<ReqT, RespT> delegate) {
+		return new ClientResponseObserver<>() {
+			@Override
+			public void beforeStart(ClientCallStreamObserver<ReqT> requestStream) {
+				// Preserve delegate’s backpressure hooks
+				delegate.beforeStart(requestStream);
+			}
+
+			@Override
+			public void onNext(RespT value) {
+				delegate.onNext(value);
+			}
+
+			@Override
+			public void onError(Throwable t) {
+				// Normalize gRPC errors through your handler, then pass the mapped exception
+				try {
+					if (t instanceof io.grpc.StatusRuntimeException sre) {
+						handleGrpcException(sre); // throws
+					}
+					else if (t instanceof io.grpc.StatusException se) {
+						handleGrpcException(se); // throws
+					}
+					// Non-gRPC error: forward as-is
+					delegate.onError(t);
+				}
+				catch (RuntimeException mapped) {
+					// forward the mapped exception to delegate
+					delegate.onError(mapped);
+				}
+			}
+
+			@Override
+			public void onCompleted() {
+				delegate.onCompleted();
+			}
+		};
+	}
 }

@@ -754,6 +754,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	public void commitTransaction(CommitTransactionRequest request, StreamObserver<CommitTransactionResponse> responseObserver) {
 		try {
 			Database database = activeTransactions.remove(request.getTransaction().getTransactionId());
+			
 			if (database == null) {
 				throw new IllegalArgumentException("Invalid transaction ID");
 			}
