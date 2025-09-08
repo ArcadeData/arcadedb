@@ -28,7 +28,8 @@ import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.UpdateItem;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Created by luigidellaquila on 08/08/16.
@@ -56,7 +57,7 @@ public class InsertExecutionPlanner {
 
   public InsertExecutionPlan createExecutionPlan(final CommandContext context) {
 
-    if (targetType.getStringValue().startsWith("$")) {
+    if (targetType != null && targetType.getStringValue().startsWith("$")) {
       String variable = (String) context.getVariable(targetType.getStringValue());
       targetType = new Identifier(variable);
     }
