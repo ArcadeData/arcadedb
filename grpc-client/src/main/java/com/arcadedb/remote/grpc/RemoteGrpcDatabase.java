@@ -242,11 +242,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 	@Override
 	public void commit() {
+		
 		checkDatabaseIsOpen();
 		stats.txCommits.incrementAndGet();
 
-		if (transactionId == null)
+		if (transactionId == null) {
 			throw new TransactionException("Transaction not begun");
+		}
 
 		logTx("COMMIT(local)", null);
 		checkCrossThreadUse("before CommitTransaction");
@@ -260,27 +262,36 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 						.setCredentials(buildCredentials()).build();
 
 				try {
+					
 					CommitTransactionResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
 							.commitTransaction(request);
+
+					logger.debug("[After commit] Success: {} Committed: {}", response.getSuccess(), response.getCommitted());
+					
 					if (!response.getSuccess()) {
 						throw new TransactionException("Failed to commit transaction: " + response.getMessage());
 					}
 				}
 				catch (StatusRuntimeException e) {
+					
 					handleGrpcException(e);
 				}
 				catch (StatusException e) {
+					
 					handleGrpcException(e);
 				}
 				finally {
+					
 					transactionId = null;
 					setSessionId(null);
 				}
 
 				if (debugTx != null) {
+					
 					debugTx.committed = true;
 					debugTx.rpcSeq.incrementAndGet();
 				}
+
 				logTx("COMMIT sent", "CommitTransaction");
 			}
 			finally {
@@ -311,8 +322,12 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 						.setCredentials(buildCredentials()).build();
 
 				try {
+					
 					RollbackTransactionResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
 							.rollbackTransaction(request);
+					
+					logger.debug("[After rollback] Success: {} Committed: {}", response.getSuccess(), response.getRolledBack());
+
 					if (!response.getSuccess()) {
 						throw new TransactionException("Failed to rollback transaction: " + response.getMessage());
 					}

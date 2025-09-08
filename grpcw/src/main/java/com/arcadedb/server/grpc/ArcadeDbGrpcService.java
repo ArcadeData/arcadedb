@@ -229,7 +229,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 					db.rollback();
 				}
 				else if (tx.getCommit()) {
-					logger.debug("executeCommand(): after - committing [tx.getCommit() == true] db={} tid={}", db.getName(), tx.getTransactionId());
+					logger.debug("executeCommand(): after - committing [tx.getCommit() == true] db={} tid={}", db.getName(),
+							tx.getTransactionId());
 					db.commit();
 				}
 				else if (beganHere) {
@@ -670,7 +671,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 					com.arcadedb.database.Record dbRecord = result.getElement().get();
 
-					logger.debug("executeQuery(): dbRecord -> @rid = {}", dbRecord.asDocument().get("@rid"));
+					logger.debug("executeQuery(): dbRecord -> @rid = {}", dbRecord.getIdentity().toString());
 
 					GrpcRecord grpcRecord = convertToGrpcRecord(dbRecord, database);
 
@@ -725,85 +726,154 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 	@Override
 	public void beginTransaction(BeginTransactionRequest request, StreamObserver<BeginTransactionResponse> responseObserver) {
+		final String reqDb = request.getDatabase();
+		final String user = (request.hasCredentials() ? request.getCredentials().getUsername() : null);
+
+		if (logger.isDebugEnabled()) {
+			logger.debug("beginTransaction(): received request db={} user={} activeTxCount(before)={}", reqDb, (user != null ? user : "<none>"),
+					activeTransactions.size());
+		}
+
 		try {
-			Database database = getDatabase(request.getDatabase(), request.getCredentials());
+			final Database database = getDatabase(reqDb, request.getCredentials());
+
+			if (logger.isDebugEnabled()) {
+				logger.debug("beginTransaction(): resolved database instance dbName={} class={} hash={}",
+						(database != null ? database.getName() : "<null>"), (database != null ? database.getClass().getSimpleName() : "<null>"),
+						(database != null ? System.identityHashCode(database) : 0));
+				logger.debug("beginTransaction(): calling database.begin()");
+			}
 
 			// Begin transaction
 			database.begin();
 
-			// Generate transaction ID
-			String transactionId = generateTransactionId();
+			// Generate transaction ID and register
+			final String transactionId = generateTransactionId();
 			activeTransactions.put(transactionId, database);
 
-			BeginTransactionResponse response = BeginTransactionResponse.newBuilder().setTransactionId(transactionId)
+			if (logger.isDebugEnabled()) {
+				logger.debug("beginTransaction(): started txId={} for db={} activeTxCount(after)={}", transactionId,
+						(database != null ? database.getName() : "<null>"), activeTransactions.size());
+			}
+
+			final BeginTransactionResponse response = BeginTransactionResponse.newBuilder().setTransactionId(transactionId)
 					.setTimestamp(System.currentTimeMillis()).build();
 
 			responseObserver.onNext(response);
 			responseObserver.onCompleted();
-
 		}
-		catch (Exception e) {
-			logger.error("Error beginning transaction: {}", e.getMessage(), e);
-			responseObserver.onError(Status.INTERNAL.withDescription("Failed to begin transaction: " + e.getMessage()).asException());
+		catch (Throwable t) {
+			if (logger.isDebugEnabled()) {
+				logger.debug("beginTransaction(): FAILED db={} user={} err={}", reqDb, (user != null ? user : "<none>"), t.toString(), t);
+			}
+			logger.error("Error beginning transaction: {}", t.getMessage(), t);
+			responseObserver.onError(Status.INTERNAL.withDescription("Failed to begin transaction: " + t.getMessage()).asException());
 		}
 	}
 
 	@Override
 	public void commitTransaction(CommitTransactionRequest req, StreamObserver<CommitTransactionResponse> rsp) {
-
 		final String txId = req.getTransaction().getTransactionId();
 
+		if (logger.isDebugEnabled()) {
+			logger.debug("commitTransaction(): received request txId={}", txId);
+		}
+
 		if (txId == null || txId.isBlank()) {
+			if (logger.isDebugEnabled()) {
+				logger.debug("commitTransaction(): missing/blank txId");
+			}
 			rsp.onError(Status.INVALID_ARGUMENT.withDescription("Missing transaction id").asException());
 			return;
 		}
 
-		// remove atomically to avoid double commit races
+		// remove atomically to avoid double-commit races
 		final Database db = activeTransactions.remove(txId);
 
+		if (logger.isDebugEnabled()) {
+			logger.debug("commitTransaction(): removed txId={}, presentPreviously={}, remainingActiveTx={}", txId, db != null,
+					activeTransactions.size());
+		}
+
 		if (db == null) {
-			// Idempotent no-op: OK but not committed because nothing was open.
-			rsp.onNext(CommitTransactionResponse.newBuilder().setCommitted(false)
+			// Idempotent no-op
+			if (logger.isDebugEnabled()) {
+				logger.debug("commitTransaction(): no active tx for id={}, responding committed=false", txId);
+			}
+			rsp.onNext(CommitTransactionResponse.newBuilder().setSuccess(true).setCommitted(false)
 					.setMessage("No active transaction for id=" + txId + " (already committed/rolled back?)").build());
 			rsp.onCompleted();
 			return;
 		}
 
 		try {
+			if (logger.isDebugEnabled()) {
+				logger.debug("commitTransaction(): committing txId={} on db={}", txId, db.getName());
+			}
 			db.commit();
-			rsp.onNext(CommitTransactionResponse.newBuilder().setCommitted(true).build());
+			if (logger.isDebugEnabled()) {
+				logger.debug("commitTransaction(): commit OK txId={}", txId);
+			}
+			rsp.onNext(CommitTransactionResponse.newBuilder().setSuccess(true).setCommitted(true).build());
 			rsp.onCompleted();
 		}
 		catch (Throwable t) {
-			// Put nothing back in the map. The tx is unusable now.
+			if (logger.isDebugEnabled()) {
+				logger.debug("commitTransaction(): commit FAILED txId={} err={}", txId, t.toString(), t);
+			}
+			// tx is unusable; do not reinsert into the map
 			rsp.onError(Status.ABORTED.withDescription("Commit failed: " + t.getMessage()).asException());
 		}
 	}
 
 	@Override
 	public void rollbackTransaction(RollbackTransactionRequest req, StreamObserver<RollbackTransactionResponse> rsp) {
-
 		final String txId = req.getTransaction().getTransactionId();
+
+		if (logger.isDebugEnabled()) {
+			logger.debug("rollbackTransaction(): received request txId={}", txId);
+		}
+
 		if (txId == null || txId.isBlank()) {
+			if (logger.isDebugEnabled()) {
+				logger.debug("rollbackTransaction(): missing/blank txId");
+			}
 			rsp.onError(Status.INVALID_ARGUMENT.withDescription("Missing transaction id").asException());
 			return;
 		}
 
 		final Database db = activeTransactions.remove(txId);
 
+		if (logger.isDebugEnabled()) {
+			logger.debug("rollbackTransaction(): removed txId={}, presentPreviously={}, remainingActiveTx={}", txId, db != null,
+					activeTransactions.size());
+		}
+
 		if (db == null) {
-			rsp.onNext(RollbackTransactionResponse.newBuilder().setRolledBack(false)
+			if (logger.isDebugEnabled()) {
+				logger.debug("rollbackTransaction(): no active tx for id={}, responding rolledBack=false", txId);
+			}
+			rsp.onNext(RollbackTransactionResponse.newBuilder().setSuccess(true).setRolledBack(false)
 					.setMessage("No active transaction for id=" + txId + " (already committed/rolled back?)").build());
 			rsp.onCompleted();
 			return;
 		}
 
 		try {
+			if (logger.isDebugEnabled()) {
+				logger.debug("rollbackTransaction(): rolling back txId={} on db={}", txId, db.getName());
+			}
 			db.rollback();
-			rsp.onNext(RollbackTransactionResponse.newBuilder().setRolledBack(true).build());
+			if (logger.isDebugEnabled()) {
+				logger.debug("rollbackTransaction(): rollback OK txId={}", txId);
+			}
+			rsp.onNext(RollbackTransactionResponse.newBuilder().setSuccess(true).setRolledBack(true).build());
 			rsp.onCompleted();
 		}
 		catch (Throwable t) {
+			if (logger.isDebugEnabled()) {
+				logger.debug("rollbackTransaction(): rollback FAILED txId={} err={}", txId, t.toString(), t);
+			}
 			rsp.onError(Status.ABORTED.withDescription("Rollback failed: " + t.getMessage()).asException());
 		}
 	}
@@ -2220,7 +2290,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	}
 
 	// Helper methods
-	
+
 	private Database getDatabase(String databaseName, DatabaseCredentials credentials) {
 
 		// Validate credentials
