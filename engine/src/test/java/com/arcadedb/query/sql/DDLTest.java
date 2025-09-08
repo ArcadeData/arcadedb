@@ -49,12 +49,12 @@ public class DDLTest extends TestHelper {
 
         LET eTypes = ['E1', 'E2', 'E3'];
         FOREACH ($eType IN $eTypes) {
-          CREATE EDGE TYPE  $eType ;
+          CREATE EDGE TYPE  $eType EXTENDS E;
         }
 
         LET dTypes = ['D1', 'D2', 'D3'];
         FOREACH ($dType IN $dTypes) {
-          CREATE DOCUMENT TYPE  $dType ;
+          CREATE DOCUMENT TYPE $dType ;
         }
 
         LET types = ['V1', 'V2', 'V3','E1', 'E2', 'E3','D1', 'D2', 'D3'];
