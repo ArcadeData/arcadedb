@@ -61,6 +61,12 @@ public class CreatePropertyStatement extends DDLStatement {
 
   private void executeInternal(final CommandContext context, final ResultInternal result) {
     final Database db = context.getDatabase();
+    Identifier prevType= typeName;
+    if (typeName.getStringValue().startsWith("$")) {
+      String variable = (String) context.getVariable(typeName.getStringValue());
+      typeName = new Identifier(variable);
+    }
+
     final DocumentType typez = db.getSchema().getType(typeName.getStringValue());
     if (typez == null)
       throw new CommandExecutionException("Type '" + typeName.getStringValue() + "' not found");
@@ -81,6 +87,7 @@ public class CreatePropertyStatement extends DDLStatement {
       final Object val = attr.setOnProperty(internalProp, context);
       result.setProperty(attr.settingName.getStringValue(), val);
     }
+    typeName = prevType;
   }
 
   @Override

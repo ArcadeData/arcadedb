@@ -52,20 +52,31 @@ public class CreateIndexStatement extends DDLStatement {
 
   @Override
   public void validate() throws CommandSQLParsingException {
-    final String typeAsString = type.getStringValue();
-    if (typeAsString.equalsIgnoreCase("FULL_TEXT"))
+    final String typeAsString = type.getStringValue().toUpperCase();
+    switch (typeAsString) {
+    case "FULL_TEXT" -> {
       ;
-    else if (typeAsString.equalsIgnoreCase("UNIQUE"))
+    }
+    case "UNIQUE" -> {
       ;
-    else if (typeAsString.equalsIgnoreCase("NOTUNIQUE"))
+    }
+    case "NOTUNIQUE" -> {
       ;
-    else
-      throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
+    }
+    default -> throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
+    }
   }
 
   @Override
   public ResultSet executeDDL(final CommandContext context) {
     final Database database = context.getDatabase();
+
+    Identifier prevName= typeName;
+    if (typeName.getStringValue().startsWith("$")) {
+      String variable = (String) context.getVariable(typeName.getStringValue());
+      typeName = new Identifier(variable);
+      name = null;
+    }
 
     if (name == null)
       // GENERATE THE NAME AUTOMATICALLY
@@ -113,6 +124,8 @@ public class CreateIndexStatement extends DDLStatement {
             System.out.flush();
           }
         }).create();
+
+    typeName = prevName;
 
     final InternalResultSet rs = new InternalResultSet();
     final ResultInternal result = new ResultInternal(context.getDatabase());
