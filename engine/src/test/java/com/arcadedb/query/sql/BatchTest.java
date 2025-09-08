@@ -288,7 +288,9 @@ public class BatchTest extends TestHelper {
   }
   @Test
   public void testDynamicGraphTypesNames() {
-    database.command("sql", "CREATE DOCUMENT TYPE TheDoc");
+    database.command("sql", "CREATE VERTEX TYPE V1");
+    database.command("sql", "CREATE VERTEX TYPE V2");
+    database.command("sql", "CREATE EDGE TYPE HasSource");
 
     database.transaction(() -> {
       database.command("sqlscript", """
