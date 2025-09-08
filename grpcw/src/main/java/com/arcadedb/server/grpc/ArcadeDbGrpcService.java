@@ -25,6 +25,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
 import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
@@ -46,17 +47,21 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 	private static final Logger logger = LoggerFactory.getLogger(ArcadeDbGrpcService.class);
 
-	private static final java.util.Base64.Encoder B64 = java.util.Base64.getEncoder();
+	
+	// Pick serializer once
+	private static final JsonSerializer FAST =
+	    JsonSerializer.createJsonSerializer()
+	        .setIncludeVertexEdges(false)
+	        .setUseVertexEdgeSize(true)
+	        .setUseCollectionSizeForEdges(true)
+	        .setUseCollectionSize(false);
 
-	private static final com.google.gson.Gson GSON = new com.google.gson.GsonBuilder().disableHtmlEscaping().serializeNulls()
-			.registerTypeHierarchyAdapter(java.nio.ByteBuffer.class,
-					(com.google.gson.JsonSerializer<java.nio.ByteBuffer>) (src, t,
-							ctx) -> new com.google.gson.JsonPrimitive(B64.encodeToString(toBytes(src))))
-			// Optional: make byte[] consistent too
-			.registerTypeHierarchyAdapter(byte[].class,
-					(com.google.gson.JsonSerializer<byte[]>) (src, t, ctx) -> new com.google.gson.JsonPrimitive(B64.encodeToString(src)))
-			
-			.create();
+	private static final JsonSerializer SAFE =
+	    JsonSerializer.createJsonSerializer()
+	        .setIncludeVertexEdges(false)
+	        .setUseVertexEdgeSize(true)
+	        .setUseCollectionSizeForEdges(false)
+	        .setUseCollectionSize(false);
 
 	// Transaction management
 	private final Map<String, Database> activeTransactions = new ConcurrentHashMap<>();
@@ -619,6 +624,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				projectionConfig = new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);
 			}
 
+			logger.debug("executeQuery(): projectionConfig.include = {} projectionConfig.mode = {}", projectionConfig.isInclude(),
+					projectionConfig.getEnc());
+
 			// Force compression for streaming (usually beneficial)
 			CompressionAwareService.setResponseCompression(responseObserver, "gzip");
 
@@ -894,9 +902,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 		int inBatch = 0;
 
 		try (ResultSet rs = db.query("sql", request.getQuery(), convertParameters(request.getParametersMap()))) {
-			
+
 			while (rs.hasNext()) {
-				
+
 				if (cancelled.get())
 					return;
 				waitUntilReady(scso, cancelled);
@@ -906,9 +914,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				if (r.isElement()) {
 
 					com.arcadedb.database.Record rec = r.getElement().get();
-					
+
 					batch.addRecords(convertToGrpcRecord(rec, db));
-					
+
 					inBatch++;
 					running++;
 
@@ -922,21 +930,21 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				else {
 
 					GrpcRecord.Builder rb = GrpcRecord.newBuilder();
-					
+
 					for (String p : r.getPropertyNames()) {
 						rb.putProperties(p, convertPropToGrpcValue(p, r, projectionConfig)); // overload below
 					}
 
 					batch.addRecords(rb.build());
-					
+
 					inBatch++;
 					running++;
 
 					if (inBatch >= batchSize) {
-						
+
 						safeOnNext(scso, cancelled,
 								batch.setTotalRecordsInBatch(inBatch).setRunningTotalEmitted(running).setIsLastBatch(false).build());
-						
+
 						batch = QueryResult.newBuilder();
 						inBatch = 0;
 					}
@@ -968,17 +976,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				Result r = rs.next();
 
 				if (r.isElement()) {
-					
+
 					all.add(convertToGrpcRecord(r.getElement().get(), db));
 				}
 				else {
-					
+
 					GrpcRecord.Builder rb = GrpcRecord.newBuilder();
-					
+
 					for (String p : r.getPropertyNames()) {
 						rb.putProperties(p, convertPropToGrpcValue(p, r, projectionConfig)); // overload below
 					}
-					
+
 					all.add(rb.build());
 				}
 			}
@@ -1029,22 +1037,22 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				while (rs.hasNext()) {
 					if (cancelled.get())
 						return;
-										
+
 					Result r = rs.next();
-					
+
 					if (r.isElement()) {
-						
+
 						b.addRecords(convertToGrpcRecord(r.getElement().get(), db));
 						count++;
 					}
 					else {
-						
+
 						GrpcRecord.Builder rb = GrpcRecord.newBuilder();
-						
+
 						for (String p : r.getPropertyNames()) {
 							rb.putProperties(p, convertPropToGrpcValue(p, r, projectionConfig)); // overload below
 						}
-						
+
 						b.addRecords(rb.build());
 						count++;
 					}
@@ -1965,51 +1973,71 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 			// 3.3 JSON mode
 			if (enc == ProjectionEncoding.PROJECTION_AS_JSON) {
-
 				if (logger.isDebugEnabled()) {
 					logger.debug("GRPC-ENC [toGrpcValue] PROJECTION -> JSON rid={} type={}",
 							(doc.getIdentity() != null ? doc.getIdentity() : "null"), (doc.getType() != null ? doc.getTypeName() : "null"));
 				}
 
-				// Build a simple Map and serialize via your existing Gson
-				java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
-
-				if (doc.getIdentity() != null && doc.getIdentity().isValid())
-					m.put("@rid", doc.getIdentity().toString());
-
-				if (doc.getType() != null)
-					m.put("@type", doc.getTypeName());
-
-				for (String k : doc.getPropertyNames())
-					m.put(k, doc.get(k));
-
-				Object sanitized = sanitizeForJson(m);
-				byte[] jsonBytes = GSON.toJson(sanitized).getBytes(java.nio.charset.StandardCharsets.UTF_8);
-
-				if (pc.softLimitBytes > 0 && jsonBytes.length > pc.softLimitBytes) {
-
-					pc.truncated = true;
-
-					if (logger.isDebugEnabled()) {
-						logger.debug("GRPC-ENC [toGrpcValue] PROJECTION JSON soft-limit hit; size={} limit={}", jsonBytes.length,
-								pc.softLimitBytes);
+				try {
+					
+					// Let ArcadeDB serialize the document/result properly
+					
+					boolean hasEmptyCollection = false;
+					for (String k : doc.getPropertyNames()) {
+					  Object v = doc.get(k);
+					  if (v instanceof java.util.Collection<?> c && c.isEmpty()) {
+					    hasEmptyCollection = true; break;
+					  }
 					}
 
-					// Choose your policy: truncate, or fall back to LINK if possible
-					if (doc.getIdentity() != null && doc.getIdentity().isValid()) {
-						return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build())
-								.setLogicalType("rid").build();
+					var json = (hasEmptyCollection ? SAFE : FAST).serializeDocument(doc);
+
+					byte[] jsonBytes = json.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+					// Soft limit handling
+					if (pc.softLimitBytes > 0 && jsonBytes.length > pc.softLimitBytes) {
+						pc.truncated = true;
+						if (logger.isDebugEnabled()) {
+							logger.debug("GRPC-ENC [toGrpcValue] PROJECTION JSON soft-limit hit; size={} limit={}", jsonBytes.length,
+									pc.softLimitBytes);
+						}
+						// Prefer a RID fallback if we have one
+						if (doc.getIdentity() != null && doc.getIdentity().isValid()) {
+							return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build())
+									.setLogicalType("rid").build();
+						}
+						else {
+							jsonBytes = "{\"__truncated\":true}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+						}
 					}
 					else {
-						// Send a tiny marker instead of giant JSON
-						jsonBytes = "{\"__truncated\":true}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+						pc.used.addAndGet(jsonBytes.length);
 					}
-				}
-				else {
-					pc.used.addAndGet(jsonBytes.length);
-				}
 
-				return GrpcValue.newBuilder().setBytesValue(com.google.protobuf.ByteString.copyFrom(jsonBytes)).setLogicalType("json").build();
+					return GrpcValue.newBuilder().setBytesValue(com.google.protobuf.ByteString.copyFrom(jsonBytes)).setLogicalType("json")
+							.build();
+				}
+				catch (Throwable t) {
+					// Safe fallback: send as MAP (typed GrpcValue tree)
+					logger.warn("GRPC-ENC [toGrpcValue] PROJECTION_AS_JSON failed for rid={} type={}, falling back to MAP; err={}",
+							(doc.getIdentity() != null ? doc.getIdentity() : "null"), (doc.getType() != null ? doc.getTypeName() : "null"),
+							t.toString());
+
+					GrpcMap.Builder mb = GrpcMap.newBuilder();
+
+					if (doc.getIdentity() != null && doc.getIdentity().isValid()) {
+						mb.putEntries("@rid", GrpcValue.newBuilder()
+								.setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build()).setLogicalType("rid").build());
+					}
+					if (doc.getType() != null) {
+						mb.putEntries("@type", GrpcValue.newBuilder().setStringValue(doc.getTypeName()).build());
+					}
+					for (String k : doc.getPropertyNames()) {
+						mb.putEntries(k, toGrpcValue(doc.get(k)));
+					}
+
+					return GrpcValue.newBuilder().setMapValue(mb.build()).build();
+				}
 			}
 
 			// Shouldn’t get here, but fall back
@@ -2831,98 +2859,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 		return b.setStringValue(n.toString()).build();
 	}
 
-	private static byte[] toBytes(java.nio.ByteBuffer buf) {
-		java.nio.ByteBuffer dup = buf.asReadOnlyBuffer();
-		byte[] out = new byte[dup.remaining()];
-		dup.get(out);
-		return out;
-	}
-
-	/**
-	 * Deep-scrub arbitrary objects into a JSON-safe graph
-	 * (Map/List/primitive/String).
-	 */
-	private Object sanitizeForJson(Object x) {
-		if (x == null)
-			return null;
-
-		// Primitives & simple types
-		if (x instanceof String || x instanceof Number || x instanceof Boolean)
-			return x;
-
-		// Common binary holders -> base64 string
-		if (x instanceof byte[] arr)
-			return B64.encodeToString(arr);
-		if (x instanceof java.nio.ByteBuffer bb)
-			return B64.encodeToString(toBytes(bb));
-
-		// Arcade IDs/links/dates
-		if (x instanceof com.arcadedb.database.RID rid)
-			return rid.toString();
-		if (x instanceof com.arcadedb.database.Identifiable id)
-			return id.getIdentity() != null ? id.getIdentity().toString() : null;
-		if (x instanceof java.util.Date d)
-			return java.time.Instant.ofEpochMilli(d.getTime()).toString();
-
-		// Arcade Result -> Map projection
-		if (x instanceof com.arcadedb.query.sql.executor.Result res) {
-			var m = new java.util.LinkedHashMap<String, Object>();
-			try {
-				for (String k : res.getPropertyNames()) {
-					m.put(k, sanitizeForJson(res.getProperty(k)));
-				}
-			}
-			catch (Throwable ignore) {
-			}
-			return m;
-		}
-
-		// Embedded / Document
-		if (x instanceof com.arcadedb.database.Document doc) {
-			var m = new java.util.LinkedHashMap<String, Object>();
-			if (doc.getIdentity() != null && doc.getIdentity().isValid())
-				m.put("@rid", doc.getIdentity().toString());
-			if (doc.getType() != null)
-				m.put("@type", doc.getTypeName());
-			for (String k : doc.getPropertyNames()) {
-				m.put(k, sanitizeForJson(doc.get(k)));
-			}
-			return m;
-		}
-
-		// Collections/arrays
-		if (x instanceof java.util.Map<?, ?> in) {
-			var m = new java.util.LinkedHashMap<String, Object>();
-			in.forEach((k, v) -> m.put(String.valueOf(k), sanitizeForJson(v)));
-			return m;
-		}
-		if (x instanceof java.util.Collection<?> c) {
-			var out = new java.util.ArrayList<>();
-			for (Object e : c)
-				out.add(sanitizeForJson(e));
-			return out;
-		}
-		if (x.getClass().isArray()) {
-			int n = java.lang.reflect.Array.getLength(x);
-			var out = new java.util.ArrayList<>(n);
-			for (int i = 0; i < n; i++)
-				out.add(sanitizeForJson(java.lang.reflect.Array.get(x, i)));
-			return out;
-		}
-
-		// FINAL GUARD: any JDK “handle-ish” or unknown classes -> describe as String
-		String pkg = x.getClass().getPackageName();
-		if (pkg.startsWith("java.io") || pkg.startsWith("java.nio") || pkg.startsWith("sun.") || pkg.startsWith("jdk.")) {
-			if (logger.isDebugEnabled()) {
-				logger.debug("GRPC-ENC [toGrpcValue] JSON scrubbed {} via toString()", x.getClass().getName());
-			}
-			return String.valueOf(x);
-		}
-
-		// Default safe fallback
-		return String.valueOf(x);
-	}
-
 	static final class ProjectionConfig {
 		final boolean include;
 		final ProjectionEncoding enc;
@@ -2946,6 +2882,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				truncated = true;
 			}
 			return after > softLimitBytes;
+		}
+
+		public boolean isInclude() {
+			return include;
+		}
+
+		public ProjectionEncoding getEnc() {
+			return enc;
 		}
 	}
 }
