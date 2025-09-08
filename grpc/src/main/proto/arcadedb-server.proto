@@ -191,8 +191,9 @@ message CommitTransactionRequest {
 
 message CommitTransactionResponse {
   bool success = 1;
-  string message = 2;
-  int64 timestamp = 3;
+  bool committed = 2;
+  string message = 3;
+  int64 timestamp = 4;
 }
 
 message RollbackTransactionRequest {
@@ -202,7 +203,8 @@ message RollbackTransactionRequest {
 
 message RollbackTransactionResponse {
   bool success = 1;
-  string message = 2;
+  bool rolled_back = 2;
+  string message = 3;
 }
 
 // -----------------------------------------------------------------------------

@@ -5,6 +5,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import javax.annotation.Nullable;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -47,21 +49,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
 	private static final Logger logger = LoggerFactory.getLogger(ArcadeDbGrpcService.class);
 
-	
 	// Pick serializer once
-	private static final JsonSerializer FAST =
-	    JsonSerializer.createJsonSerializer()
-	        .setIncludeVertexEdges(false)
-	        .setUseVertexEdgeSize(true)
-	        .setUseCollectionSizeForEdges(true)
-	        .setUseCollectionSize(false);
+	private static final JsonSerializer FAST = JsonSerializer.createJsonSerializer().setIncludeVertexEdges(false).setUseVertexEdgeSize(true)
+			.setUseCollectionSizeForEdges(true).setUseCollectionSize(false);
 
-	private static final JsonSerializer SAFE =
-	    JsonSerializer.createJsonSerializer()
-	        .setIncludeVertexEdges(false)
-	        .setUseVertexEdgeSize(true)
-	        .setUseCollectionSizeForEdges(false)
-	        .setUseCollectionSize(false);
+	private static final JsonSerializer SAFE = JsonSerializer.createJsonSerializer().setIncludeVertexEdges(false).setUseVertexEdgeSize(true)
+			.setUseCollectionSizeForEdges(false).setUseCollectionSize(false);
 
 	// Transaction management
 	private final Map<String, Database> activeTransactions = new ConcurrentHashMap<>();
@@ -225,18 +218,23 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				}
 			}
 
-			logger.debug("executeCommand(): after - hasTx = {} tx ={}", hasTx, tx);
+			logger.debug("executeCommand(): after - hasTx = {} tx = {}", hasTx, tx);
 
 			// Transaction end — precedence: rollback > commit > begin-only⇒commit
 			if (hasTx) {
+
 				if (tx.getRollback()) {
+
+					logger.debug("executeCommand(): after - rolling back db={} tid={}", db.getName(), tx.getTransactionId());
 					db.rollback();
 				}
 				else if (tx.getCommit()) {
+					logger.debug("executeCommand(): after - committing [tx.getCommit() == true] db={} tid={}", db.getName(), tx.getTransactionId());
 					db.commit();
 				}
 				else if (beganHere) {
 					// Began but no explicit commit/rollback flag — default to commit (HTTP parity)
+					logger.debug("executeCommand(): after - committing [beganHere == true] db={} tid={}", db.getName(), tx.getTransactionId());
 					db.commit();
 				}
 			}
@@ -751,51 +749,62 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	}
 
 	@Override
-	public void commitTransaction(CommitTransactionRequest request, StreamObserver<CommitTransactionResponse> responseObserver) {
-		try {
-			Database database = activeTransactions.remove(request.getTransaction().getTransactionId());
-			
-			if (database == null) {
-				throw new IllegalArgumentException("Invalid transaction ID");
-			}
+	public void commitTransaction(CommitTransactionRequest req, StreamObserver<CommitTransactionResponse> rsp) {
 
-			// Commit transaction
-			database.commit();
+		final String txId = req.getTransaction().getTransactionId();
 
-			CommitTransactionResponse response = CommitTransactionResponse.newBuilder().setSuccess(true)
-					.setMessage("Transaction committed successfully").setTimestamp(System.currentTimeMillis()).build();
-
-			responseObserver.onNext(response);
-			responseObserver.onCompleted();
-
+		if (txId == null || txId.isBlank()) {
+			rsp.onError(Status.INVALID_ARGUMENT.withDescription("Missing transaction id").asException());
+			return;
 		}
-		catch (Exception e) {
-			logger.error("Error committing transaction: {}", e.getMessage(), e);
-			responseObserver.onError(Status.INTERNAL.withDescription("Failed to commit transaction: " + e.getMessage()).asException());
+
+		// remove atomically to avoid double commit races
+		final Database db = activeTransactions.remove(txId);
+
+		if (db == null) {
+			// Idempotent no-op: OK but not committed because nothing was open.
+			rsp.onNext(CommitTransactionResponse.newBuilder().setCommitted(false)
+					.setMessage("No active transaction for id=" + txId + " (already committed/rolled back?)").build());
+			rsp.onCompleted();
+			return;
+		}
+
+		try {
+			db.commit();
+			rsp.onNext(CommitTransactionResponse.newBuilder().setCommitted(true).build());
+			rsp.onCompleted();
+		}
+		catch (Throwable t) {
+			// Put nothing back in the map. The tx is unusable now.
+			rsp.onError(Status.ABORTED.withDescription("Commit failed: " + t.getMessage()).asException());
 		}
 	}
 
 	@Override
-	public void rollbackTransaction(RollbackTransactionRequest request, StreamObserver<RollbackTransactionResponse> responseObserver) {
-		try {
-			Database database = activeTransactions.remove(request.getTransaction().getTransactionId());
-			if (database == null) {
-				throw new IllegalArgumentException("Invalid transaction ID");
-			}
+	public void rollbackTransaction(RollbackTransactionRequest req, StreamObserver<RollbackTransactionResponse> rsp) {
 
-			// Rollback transaction
-			database.rollback();
-
-			RollbackTransactionResponse response = RollbackTransactionResponse.newBuilder().setSuccess(true)
-					.setMessage("Transaction rolled back successfully").build();
-
-			responseObserver.onNext(response);
-			responseObserver.onCompleted();
-
+		final String txId = req.getTransaction().getTransactionId();
+		if (txId == null || txId.isBlank()) {
+			rsp.onError(Status.INVALID_ARGUMENT.withDescription("Missing transaction id").asException());
+			return;
 		}
-		catch (Exception e) {
-			logger.error("Error rolling back transaction: {}", e.getMessage(), e);
-			responseObserver.onError(Status.INTERNAL.withDescription("Failed to rollback transaction: " + e.getMessage()).asException());
+
+		final Database db = activeTransactions.remove(txId);
+
+		if (db == null) {
+			rsp.onNext(RollbackTransactionResponse.newBuilder().setRolledBack(false)
+					.setMessage("No active transaction for id=" + txId + " (already committed/rolled back?)").build());
+			rsp.onCompleted();
+			return;
+		}
+
+		try {
+			db.rollback();
+			rsp.onNext(RollbackTransactionResponse.newBuilder().setRolledBack(true).build());
+			rsp.onCompleted();
+		}
+		catch (Throwable t) {
+			rsp.onError(Status.ABORTED.withDescription("Rollback failed: " + t.getMessage()).asException());
 		}
 	}
 
@@ -1980,15 +1989,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 				}
 
 				try {
-					
+
 					// Let ArcadeDB serialize the document/result properly
-					
+
 					boolean hasEmptyCollection = false;
 					for (String k : doc.getPropertyNames()) {
-					  Object v = doc.get(k);
-					  if (v instanceof java.util.Collection<?> c && c.isEmpty()) {
-					    hasEmptyCollection = true; break;
-					  }
+						Object v = doc.get(k);
+						if (v instanceof java.util.Collection<?> c && c.isEmpty()) {
+							hasEmptyCollection = true;
+							break;
+						}
 					}
 
 					var json = (hasEmptyCollection ? SAFE : FAST).serializeDocument(doc);
@@ -2210,7 +2220,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 	}
 
 	// Helper methods
-
+	
 	private Database getDatabase(String databaseName, DatabaseCredentials credentials) {
 
 		// Validate credentials
