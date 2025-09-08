@@ -70,6 +70,86 @@ a.nav-link.active.show {
   max-height: 400px;
 }
 
+/* CodeMirror v6 Syntax Highlighting */
+.cm-editor {
+  font-size: 1.2em;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+.cm-focused {
+  outline: none;
+  border-color: #00aeee;
+}
+
+.cm-content {
+  padding: 8px;
+  min-height: 30px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+/* SQL Syntax Highlighting */
+.cm-editor .cm-keyword {
+  color: #0000ff;
+  font-weight: bold;
+}
+
+.cm-editor .cm-string {
+  color: #008000;
+}
+
+.cm-editor .cm-comment {
+  color: #808080;
+  font-style: italic;
+}
+
+.cm-editor .cm-number {
+  color: #ff0000;
+}
+
+.cm-editor .cm-operator {
+  color: #000080;
+}
+
+.cm-editor .cm-punctuation {
+  color: #000000;
+}
+
+.cm-editor .cm-variableName {
+  color: #000000;
+}
+
+.cm-editor .cm-typeName {
+  color: #008080;
+}
+
+/* Line numbers */
+.cm-editor .cm-lineNumbers {
+  color: #999;
+  background-color: #f5f5f5;
+  border-right: 1px solid #ddd;
+  padding-right: 8px;
+}
+
+.cm-editor .cm-activeLineGutter {
+  background-color: #e6f3ff;
+}
+
+.cm-editor .cm-activeLine {
+  background-color: #f5f9ff;
+}
+
+/* Selection */
+.cm-editor .cm-selectionBackground {
+  background-color: #d9edff;
+}
+
+.cm-editor .cm-focused .cm-selectionBackground {
+  background-color: #316ac5;
+  color: white;
+}
+
 div.dt-buttons {
   float: left;
 }
@@ -138,4 +218,14 @@ div.dt-search {
   min-width: auto;
   width: auto;
   display: inline-block;
+}
+
+/* Ensure CodeMirror v6 works within existing layout */
+.cm-editor.CodeMirror {
+  padding: 0;
+  border: none;
+}
+
+.cm-editor.CodeMirror .cm-content {
+  padding: 8px;
 }

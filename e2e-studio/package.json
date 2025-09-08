@@ -7,7 +7,13 @@
     "test:headed": "playwright test --headed",
     "test:debug": "playwright test --debug",
     "test:report": "playwright show-report",
-    "install-browsers": "npx playwright install"
+    "install-browsers": "npx playwright install",
+    "test:codemirror": "./run-codemirror-tests.sh",
+    "test:codemirror:basic": "playwright test tests/codemirror-basic-functionality.spec.ts",
+    "test:codemirror:language": "playwright test tests/codemirror-language-support.spec.ts",
+    "test:codemirror:advanced": "playwright test tests/codemirror-advanced-features.spec.ts",
+    "test:codemirror:integration": "playwright test tests/codemirror-integration-tests.spec.ts",
+    "test:codemirror:compatibility": "playwright test tests/codemirror-compatibility-validation.spec.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.40.0",
