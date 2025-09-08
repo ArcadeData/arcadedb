@@ -55,6 +55,12 @@ public class InsertExecutionPlanner {
   }
 
   public InsertExecutionPlan createExecutionPlan(final CommandContext context) {
+
+    if (targetType.getStringValue().startsWith("$")) {
+      String variable = (String) context.getVariable(targetType.getStringValue());
+      targetType = new Identifier(variable);
+    }
+
     final InsertExecutionPlan result = new InsertExecutionPlan(context);
 
     if (selectStatement != null) {
@@ -62,7 +68,7 @@ public class InsertExecutionPlanner {
     } else {
       handleCreateRecord(result, this.insertBody, context);
     }
-    handleTargetClass(result, targetType, context);
+    handleTargetType(result, targetType, context);
     handleSetFields(result, insertBody, context);
     if (targetBucket != null) {
       String name = targetBucket.getBucketName();
@@ -113,9 +119,9 @@ public class InsertExecutionPlanner {
     }
   }
 
-  private void handleTargetClass(final InsertExecutionPlan result, final Identifier targetClass, final CommandContext context) {
-    if (targetClass != null)
-      result.chain(new SetDocumentStepStep(targetClass, context));
+  private void handleTargetType(final InsertExecutionPlan result, final Identifier targetType, final CommandContext context) {
+    if (targetType != null)
+      result.chain(new SetDocumentStepStep(targetType, context));
   }
 
   private void handleCreateRecord(final InsertExecutionPlan result, final InsertBody body, final CommandContext context) {

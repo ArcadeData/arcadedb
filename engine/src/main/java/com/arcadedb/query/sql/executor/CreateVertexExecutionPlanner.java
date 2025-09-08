@@ -43,10 +43,6 @@ public class CreateVertexExecutionPlanner extends InsertExecutionPlanner {
 
   @Override
   public InsertExecutionPlan createExecutionPlan(final CommandContext context) {
-    if (targetType.getStringValue().startsWith("$")) {
-      String variable = (String) context.getVariable(targetType.getStringValue());
-      targetType = new Identifier(variable);
-    }
 
     final InsertExecutionPlan prev = super.createExecutionPlan(context);
     final List<ExecutionStep> steps = new ArrayList<>(prev.getSteps());

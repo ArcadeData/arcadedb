@@ -274,23 +274,43 @@ public class BatchTest extends TestHelper {
   }
 
   @Test
-  public void testReadTypeFromVariable() {
-    database.command("sql", "CREATE VERTEX TYPE V1");
-    database.command("sql", "CREATE VERTEX TYPE V2");
-    database.command("sql", "CREATE EDGE TYPE HasSource");
+  public void testDynamicDocumentTypeName() {
+    database.command("sql", "CREATE DOCUMENT TYPE TheDoc");
+
     database.transaction(() -> {
-      for (int i = 0; i < 10; i++) {
-        database.command("sql", "INSERT INTO V1 set id = ? , vType = ? ", i, "V2");
-        database.command("sql", "INSERT INTO V2 set id = ? ", i);
-      }
+      database.command("sqlscript", """
+          LET docType = 'TheDoc';
+          LET d =INSERT INTO $docType SET id = 1;
+          """);
     });
+
+    assertThat(database.query("sql", "SELECT count() AS value FROM TheDoc").next().<Long>getProperty("value")).isEqualTo(1);
+  }
+  @Test
+  public void testDynamicGraphTypesNames() {
+    database.command("sql", "CREATE DOCUMENT TYPE TheDoc");
+
+    database.transaction(() -> {
+      database.command("sqlscript", """
+          LET numbers = [1, 2, 3];
+          LET vTypes = ['V1', 'V2'];
+          FOREACH ($i IN $numbers) {
+            FOREACH ($vType IN $vTypes) {
+                 CREATE VERTEX $vType SET id = $i, vType = 'V2';
+            }
+          }
+          """);
+    });
+
+    assertThat(database.query("sql", "SELECT count() AS value FROM V1").next().<Long>getProperty("value")).isEqualTo(3);
+    assertThat(database.query("sql", "SELECT count() AS value FROM V2").next().<Long>getProperty("value")).isEqualTo(3);
 
     final ResultSet resultSet = database.command("sqlscript", """
         BEGIN;
         LET sources = SELECT FROM V1 WHERE id = '1';
         LET source = $sources[0];
         LET type = $source.vType;
-        LET target = SELECT FROM $type WHERE id = '9';
+        LET target = SELECT FROM $type WHERE id = '3';
         LET edgeType = 'HasSource';
         LET e = CREATE EDGE $edgeType FROM $target TO $source IF NOT EXISTS ;
         COMMIT;
@@ -300,7 +320,7 @@ public class BatchTest extends TestHelper {
     assertThat(resultSet.hasNext()).isTrue();
     Edge edge = resultSet.next().getEdge().get();
     assertThat(edge.getInVertex().getInteger("id")).isEqualTo(1);
-    assertThat(edge.getOutVertex().getInteger("id")).isEqualTo(9);
+    assertThat(edge.getOutVertex().getInteger("id")).isEqualTo(3);
 
   }
 
