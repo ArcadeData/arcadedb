@@ -67,6 +67,12 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
   @Override
   public ResultSet executeDDL(final CommandContext context) {
 
+    Identifier prevName= name;
+    if (name.getStringValue().startsWith("$")) {
+      String variable = (String) context.getVariable(name.getStringValue());
+      name = new Identifier(variable);
+    }
+
     final Schema schema = context.getDatabase().getSchema();
     if (schema.existsType(name.getStringValue())) {
       if (ifNotExists) {
@@ -88,6 +94,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     for (final DocumentType c : superclasses)
       type.addSuperType(c);
 
+    name = prevName;
     return new InternalResultSet(result);
   }
 
