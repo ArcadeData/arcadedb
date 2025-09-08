@@ -310,6 +310,8 @@ public class ProtoUtils {
 			if ("json".equalsIgnoreCase(v.getLogicalType())) {
 				String json = v.getBytesValue().toStringUtf8();
 				
+				//System.out.println("JSON: " + json);
+				
 				@SuppressWarnings("unchecked")
 				java.util.Map<String, Object> map = GSON.fromJson(json, java.util.Map.class);
 				
