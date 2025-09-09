@@ -35,6 +35,7 @@ import java.util.*;
 public class BaseExpression extends MathExpression {
   protected PNumber        number;
   protected BaseIdentifier identifier;
+  protected Expression     expression;
   protected InputParameter inputParam;
   protected String         string;
   protected Modifier       modifier;
@@ -78,20 +79,19 @@ public class BaseExpression extends MathExpression {
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (isNull)
       builder.append("NULL");
-    else if (number != null) {
+    else if (number != null)
       number.toString(params, builder);
-    } else if (identifier != null) {
+    else if (identifier != null)
       identifier.toString(params, builder);
-    } else if (string != null) {
+    else if (expression != null)
+      expression.toString(params, builder);
+    else if (string != null)
       builder.append(string);
-    } else if (inputParam != null) {
+    else if (inputParam != null)
       inputParam.toString(params, builder);
-    }
 
-    if (modifier != null) {
+    if (modifier != null)
       modifier.toString(params, builder);
-    }
-
   }
 
   public Object execute(final Identifiable currentRecord, final CommandContext context) {
@@ -102,6 +102,8 @@ public class BaseExpression extends MathExpression {
       result = number.getValue();
     else if (identifier != null)
       result = identifier.execute(currentRecord != null ? currentRecord.getRecord() : null, context);
+    else if (expression != null)
+      result = expression.execute(currentRecord != null ? currentRecord.getRecord() : null, context);
     else if (string != null && string.length() > 1)
       result = decode(string.substring(1, string.length() - 1));
     else if (inputParam != null)
@@ -119,6 +121,8 @@ public class BaseExpression extends MathExpression {
       result = null;
     if (number != null) {
       result = number.getValue();
+    } else if (expression != null) {
+      result = expression.execute(currentRecord, context);
     } else {
       final Map<String, Object> params = context != null ? context.getInputParameters() : null;
 
@@ -149,9 +153,10 @@ public class BaseExpression extends MathExpression {
         result = inputParam.getValue(params);
       }
     }
-    if (modifier != null) {
+
+    if (modifier != null)
       result = modifier.execute(currentRecord, result, context);
-    }
+
     return result;
   }
 
@@ -159,19 +164,22 @@ public class BaseExpression extends MathExpression {
   public boolean isIndexedFunctionCall(final CommandContext context) {
     if (this.identifier == null)
       return false;
-
     return identifier.isIndexedFunctionCall(context);
   }
 
-  public long estimateIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
+  public long estimateIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
+    if (expression != null)
+      return expression.estimateIndexedFunction(target, context, operator, right);
     if (this.identifier == null)
       return -1;
-
     return identifier.estimateIndexedFunction(target, context, operator, right);
   }
 
-  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
-      final Object right) {
+  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context,
+      final BinaryCompareOperator operator, final Object right) {
+    if (expression != null)
+      return expression.executeIndexedFunction(target, context, operator, right);
     if (this.identifier == null)
       return null;
     return identifier.executeIndexedFunction(target, context, operator, right);
@@ -188,8 +196,11 @@ public class BaseExpression extends MathExpression {
    * @return true if current expression is an indexed function AND that function can also be executed without using the index, false
    * otherwise
    */
-  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
-      final Object right) {
+  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context,
+      final BinaryCompareOperator operator, final Object right) {
+    if (expression != null)
+      expression.canExecuteIndexedFunctionWithoutIndex(target, context, operator, right);
+
     if (this.identifier == null)
       return false;
     return identifier.canExecuteIndexedFunctionWithoutIndex(target, context, operator, right);
@@ -205,11 +216,13 @@ public class BaseExpression extends MathExpression {
    *
    * @return true if current expression is an indexed function AND that function can be used on this target, false otherwise
    */
-  public boolean allowsIndexedFunctionExecutionOnTarget(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
-      final Object right) {
+  public boolean allowsIndexedFunctionExecutionOnTarget(final FromClause target, final CommandContext context,
+      final BinaryCompareOperator operator, final Object right) {
+    if (expression != null)
+      return expression.allowsIndexedFunctionExecutionOnTarget(target, context, operator, right);
+
     if (this.identifier == null)
       return false;
-
     return identifier.allowsIndexedFunctionExecutionOnTarget(target, context, operator, right);
   }
 
@@ -223,11 +236,13 @@ public class BaseExpression extends MathExpression {
    *
    * @return true if current expression is an indexed function AND the function has also to be executed after the index search.
    */
-  public boolean executeIndexedFunctionAfterIndexSearch(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
-      final Object right) {
+  public boolean executeIndexedFunctionAfterIndexSearch(final FromClause target, final CommandContext context,
+      final BinaryCompareOperator operator, final Object right) {
+    if (expression != null)
+      return expression.executeIndexedFunctionAfterIndexSearch(target, context, operator, right);
+
     if (this.identifier == null)
       return false;
-
     return identifier.executeIndexedFunctionAfterIndexSearch(target, context, operator, right);
   }
 
@@ -240,6 +255,9 @@ public class BaseExpression extends MathExpression {
     if (number != null || inputParam != null || string != null)
       return true;
 
+    if (expression != null)
+      return expression.isEarlyCalculated(context);
+
     return identifier != null && identifier.isEarlyCalculated(context);
   }
 
@@ -247,33 +265,42 @@ public class BaseExpression extends MathExpression {
   public boolean isExpand() {
     if (identifier != null)
       return identifier.isExpand();
+    else if (expression != null)
+      return expression.isExpand();
     return false;
   }
 
   @Override
   public Expression getExpandContent() {
-    return this.identifier.getExpandContent();
+    return expression != null ? expression : this.identifier.getExpandContent();
   }
 
   @Override
   public boolean isAggregate(final CommandContext context) {
-    return identifier != null && identifier.isAggregate(context);
+    return identifier != null && identifier.isAggregate(context) || expression != null && expression.isAggregate(context);
   }
 
   @Override
   public boolean isCount() {
-    return identifier != null && identifier.isCount();
+    return identifier != null && identifier.isCount() || expression != null && expression.isCount();
   }
 
   public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
     if (isAggregate(context)) {
+      final BaseExpression result = new BaseExpression(-1);
+
       final SimpleNode splitResult = identifier.splitForAggregation(aggregateProj, context);
       if (splitResult instanceof BaseIdentifier baseIdentifier) {
-        final BaseExpression result = new BaseExpression(-1);
         result.identifier = baseIdentifier;
-        return result;
+      } else if (splitResult instanceof Expression expr) {
+        result.expression = expr;
       }
-      return splitResult;
+
+      if (this.modifier != null)
+        result.modifier = this.modifier.copy();
+
+      return result;
+
     } else {
       return this;
     }
@@ -293,6 +320,7 @@ public class BaseExpression extends MathExpression {
     result.isNull = isNull;
     result.number = number == null ? null : number.copy();
     result.identifier = identifier == null ? null : identifier.copy();
+    result.expression = expression == null ? null : expression.copy();
     result.inputParam = inputParam == null ? null : inputParam.copy();
     result.string = string;
     result.setModifier(modifier == null ? null : modifier.copy());
@@ -303,7 +331,8 @@ public class BaseExpression extends MathExpression {
   public boolean refersToParent() {
     if (identifier != null && identifier.refersToParent())
       return true;
-
+    if (expression != null && expression.refersToParent())
+      return true;
     return modifier != null && modifier.refersToParent();
   }
 
@@ -342,21 +371,15 @@ public class BaseExpression extends MathExpression {
 
   @Override
   public boolean isDefinedFor(final Result currentRecord) {
-    if (this.identifier != null) {
-      if (modifier == null) {
-        return identifier.isDefinedFor(currentRecord);
-      }
-    }
+    if (this.identifier != null && modifier == null)
+      return identifier.isDefinedFor(currentRecord);
     return true;
   }
 
   @Override
   public boolean isDefinedFor(final Record currentRecord) {
-    if (this.identifier != null) {
-      if (modifier == null) {
-        return identifier.isDefinedFor(currentRecord);
-      }
-    }
+    if (this.identifier != null && modifier == null)
+      return identifier.isDefinedFor(currentRecord);
     return true;
   }
 

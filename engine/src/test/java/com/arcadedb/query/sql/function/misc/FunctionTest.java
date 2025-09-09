@@ -25,11 +25,11 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.InstanceOfAssertFactories.LIST;
 
 public class FunctionTest extends TestHelper {
   private static final int TOT = 10000;
@@ -173,4 +173,35 @@ public class FunctionTest extends TestHelper {
       assertThat(sqlEngine.getFunction(name).getSyntax()).isNotNull();
     }
   }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/1037
+   */
+  @Test
+  public void testTypeOnAggregations() {
+    database.transaction(() -> {
+      final Map<String, Object> params = new HashMap<>();
+      database.command("sqlscript",
+          """
+              CREATE DOCUMENT TYPE doc;
+              INSERT INTO doc (num) VALUES (1), (2), (3), (4);
+              """);
+
+      ResultSet rs = database.query("SQL", "SELECT num.type() as type FROM doc");
+      assertThat((String) rs.nextIfAvailable().getProperty("type")).isEqualTo("INTEGER");
+
+      rs = database.query("SQL", "SELECT unionall(num) as type FROM doc");
+      assertThat((Object) rs.nextIfAvailable().getProperty("type")).isInstanceOf(ArrayList.class);
+
+      rs = database.query("SQL", "SELECT unionall(num).type() as type FROM doc");
+      assertThat((String) rs.nextIfAvailable().getProperty("type")).isEqualTo("LIST");
+
+      rs = database.query("SQL", "SELECT unionall(num)[0] as type FROM doc");
+      assertThat((Integer) rs.nextIfAvailable().getProperty("type")).isEqualTo(1);
+
+      rs = database.query("SQL", "SELECT max(num).type() as type FROM doc");
+      assertThat((String) rs.nextIfAvailable().getProperty("type")).isEqualTo("INTEGER");
+    });
+  }
+
 }

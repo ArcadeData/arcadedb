@@ -234,7 +234,8 @@ public class ProjectionItem extends SimpleNode {
     if (o == null || getClass() != o.getClass())
       return false;
     final ProjectionItem that = (ProjectionItem) o;
-    return exclude == that.exclude && all == that.all && Objects.equals(alias, that.alias) && Objects.equals(expression, that.expression) && Objects.equals(
+    return exclude == that.exclude && all == that.all && Objects.equals(alias, that.alias) && Objects.equals(expression,
+        that.expression) && Objects.equals(
         aggregate, that.aggregate) && Objects.equals(nestedProjection, that.nestedProjection);
   }
 

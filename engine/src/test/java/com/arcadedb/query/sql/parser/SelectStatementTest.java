@@ -160,7 +160,6 @@ public class SelectStatementTest {
   @Test
   public void testIn() {
     final SimpleNode result = checkRightSyntax("select count(*) from OFunction where name in [\"a\"]");
-    // result.dump("    ");
     assertThat(result instanceof SelectStatement).isTrue();
 
   }
@@ -168,7 +167,6 @@ public class SelectStatementTest {
   @Test
   public void testNotIn() {
     final SimpleNode result = checkRightSyntax("select count(*) from OFunction where name not in [\"a\"]");
-    // result.dump("    ");
     assertThat(result instanceof Statement).isTrue();
 
   }
@@ -176,7 +174,6 @@ public class SelectStatementTest {
   @Test
   public void testMath1() {
     final SimpleNode result = checkRightSyntax("" + "select * from sqlSelectIndexReuseTestClass where prop1 = 1 + 1");
-    // result.dump("    ");
     assertThat(result instanceof SelectStatement).isTrue();
 
   }
@@ -184,7 +181,6 @@ public class SelectStatementTest {
   @Test
   public void testMath2() {
     final SimpleNode result = checkRightSyntax("" + "select * from sqlSelectIndexReuseTestClass where prop1 = foo + 1");
-    // result.dump("    ");
     assertThat(result instanceof SelectStatement).isTrue();
 
   }
@@ -216,7 +212,6 @@ public class SelectStatementTest {
   @Test
   public void testBoolean() {
     final SimpleNode result = checkRightSyntax("select from Foo where bar = true");
-    // result.dump("    ");
     assertThat(result instanceof SelectStatement).isTrue();
 
   }
@@ -224,7 +219,6 @@ public class SelectStatementTest {
   @Test
   public void testDottedAtField() {
     final SimpleNode result = checkRightSyntax("select from City where country.@type = 'Country'");
-    // result.dump("    ");
     assertThat(result instanceof SelectStatement).isTrue();
 
   }
@@ -252,7 +246,6 @@ public class SelectStatementTest {
   @Test
   public void testLongDotted() {
     final SimpleNode result = checkRightSyntax("select from Profile where location.city.country.name = 'Spain'");
-    // result.dump("    ");
     assertThat(result instanceof SelectStatement).isTrue();
 
   }
@@ -260,7 +253,6 @@ public class SelectStatementTest {
   @Test
   public void testInIsNotAReservedWord() {
     final SimpleNode result = checkRightSyntax("select count(*) from TRVertex where in.type() not in [\"LINKSET\"] ");
-    // result.dump("    ");
     assertThat(result instanceof SelectStatement).isTrue();
 
   }
@@ -268,7 +260,6 @@ public class SelectStatementTest {
   @Test
   public void testSelectFunction() {
     final SimpleNode result = checkRightSyntax("select max(1,2,7,0,-2,3), 'pluto'");
-    // result.dump("    ");
     assertThat(result instanceof SelectWithoutTargetStatement).isTrue();
   }
 
@@ -388,9 +379,7 @@ public class SelectStatementTest {
 
   @Test
   public void testInputParams() {
-
     checkRightSyntax("select from foo where name like  '%'+ :param1 + '%'");
-
     checkRightSyntax("select from foo where name like  'aaa'+ :param1 + 'a'");
   }
 
@@ -550,8 +539,10 @@ public class SelectStatementTest {
     final List<AndBlock> flattened = stm.whereClause.flatten();
     assertThat(((BinaryCondition) flattened.getFirst().subBlocks.getFirst()).left.isBaseIdentifier()).isTrue();
     assertThat(((BinaryCondition) flattened.getFirst().subBlocks.getFirst()).right.isBaseIdentifier()).isFalse();
-    assertThat(((BinaryCondition) flattened.getFirst().subBlocks.getFirst()).left.isEarlyCalculated(new BasicCommandContext())).isFalse();
-    assertThat(((BinaryCondition) flattened.getFirst().subBlocks.getFirst()).right.isEarlyCalculated(new BasicCommandContext())).isTrue();
+    assertThat(
+        ((BinaryCondition) flattened.getFirst().subBlocks.getFirst()).left.isEarlyCalculated(new BasicCommandContext())).isFalse();
+    assertThat(
+        ((BinaryCondition) flattened.getFirst().subBlocks.getFirst()).right.isEarlyCalculated(new BasicCommandContext())).isTrue();
   }
 
   @Test
