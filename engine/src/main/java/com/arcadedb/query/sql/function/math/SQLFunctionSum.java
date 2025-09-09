@@ -64,11 +64,6 @@ public class SQLFunctionSum extends SQLFunctionMathAbstract {
     }
   }
 
-  @Override
-  public boolean aggregateResults() {
-    return configuredParameters.length == 1;
-  }
-
   public String getSyntax() {
     return "sum(<field> [,<field>*])";
   }
