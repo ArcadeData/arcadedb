@@ -180,7 +180,6 @@ public class FunctionTest extends TestHelper {
   @Test
   public void testTypeOnAggregations() {
     database.transaction(() -> {
-      final Map<String, Object> params = new HashMap<>();
       database.command("sqlscript",
           """
               CREATE DOCUMENT TYPE doc;
@@ -204,4 +203,23 @@ public class FunctionTest extends TestHelper {
     });
   }
 
+  @Test
+  public void testFunctionDate() {
+    database.transaction(() -> {
+      ResultSet rs = database.query("SQL", "SELECT date(\"2023-03-04\",\"yyyy-MM-dd\") as date");
+      assertThat((Object) rs.nextIfAvailable().getProperty("date")).isNotNull();
+
+      rs = database.query("SQL", "SELECT date(\"2023-03-04\",\"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'\") as date");
+      assertThat((Object) rs.nextIfAvailable().getProperty("date")).isNull();
+
+      rs = database.query("SQL", "SELECT date(\"2023-03-04\",\"yyyy-MM-dd HH:mm:ss\") as date");
+      assertThat((Object) rs.nextIfAvailable().getProperty("date")).isNull();
+
+      rs = database.query("SQL", "SELECT date(\"2023-03-04\",\"yyyy-MM-dd'T'HH:mm:ss\") as date");
+      assertThat((Object) rs.nextIfAvailable().getProperty("date")).isNull();
+
+      rs = database.query("SQL", "select date(\"2023-03-04 12:12:12\",\"yyyy-MM-dd HH:mm:ss\") as date");
+      assertThat((Object) rs.nextIfAvailable().getProperty("date")).isNotNull();
+    });
+  }
 }
