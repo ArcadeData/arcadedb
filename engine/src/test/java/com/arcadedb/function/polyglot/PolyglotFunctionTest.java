@@ -1,7 +1,9 @@
 package com.arcadedb.function.polyglot;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionExecutionException;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.InvocationTargetException;
@@ -36,21 +38,25 @@ public class PolyglotFunctionTest extends TestHelper {
     assertThat(result).isEqualTo(150);
 
     try {
-      database.getSchema().getFunctionLibrary("math").registerFunction(new JavascriptFunctionDefinition("sum", "return a - b;", "a", "b"));
+      database.getSchema().getFunctionLibrary("math")
+          .registerFunction(new JavascriptFunctionDefinition("sum", "return a - b;", "a", "b"));
       fail("");
     } catch (final IllegalArgumentException e) {
       // EXPECTED
     }
 
     database.getSchema().getFunctionLibrary("math").unregisterFunction("sum");
-    database.getSchema().getFunctionLibrary("math").registerFunction(new JavascriptFunctionDefinition("sum", "return a - b;", "a", "b"));
+    database.getSchema().getFunctionLibrary("math")
+        .registerFunction(new JavascriptFunctionDefinition("sum", "return a - b;", "a", "b"));
 
     result = (Integer) database.getSchema().getFunction("math", "sum").execute(50, 100);
     assertThat(result).isEqualTo(-50);
   }
 
   @Test
-  public void testNotFound() throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
+  public void testNotFound()
+      throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException,
+      IllegalAccessException {
     registerFunctions();
     try {
       database.getSchema().getFunction("math", "NOT_found").execute(3, 5);
@@ -72,6 +78,50 @@ public class PolyglotFunctionTest extends TestHelper {
     } catch (FunctionExecutionException e) {
       // EXPECTED
     }
+  }
+
+  @Test
+  void testJsonObjectAsInput() {
+
+    database.command("sql", """
+        DEFINE FUNCTION Test.objectComparison "return a.foo == 'bar'" PARAMETERS [a] LANGUAGE js;
+        """);
+
+    FunctionDefinition function = database.getSchema().getFunction("Test", "objectComparison");
+
+    Boolean execute = (Boolean) function.execute("{\"foo\":\"bar\"}");
+
+    assertThat(execute).isTrue();
+
+    ResultSet resultSet = database.query("sql", """
+        SELECT `Test.objectComparison`('{"foo":"bar"}') as matchRating;
+        """);
+
+    assertThat(resultSet.next().<Boolean>getProperty("matchRating")).isTrue();
+
+  }
+
+  @Test
+  void testStringObjectAsInput() {
+
+    database.command("sql", """
+        DEFINE FUNCTION Test.lowercase "return a.toLowerCase()" PARAMETERS [a] LANGUAGE js;
+        """);
+
+    FunctionDefinition function = database.getSchema().getFunction("Test", "lowercase");
+
+    //enclose in single quote
+    String execute = (String) function.execute("'UPPERCASE'");
+
+    assertThat(execute).isEqualTo("uppercase");
+
+    // doubel quotes for SQL parser, then single quotes for JS
+    ResultSet resultSet = database.query("sql", """
+        SELECT `Test.lowercase`("'UPPERCASE'") as lowercase;
+        """);
+
+    assertThat(resultSet.next().<String>getProperty("lowercase")).isEqualTo("uppercase");
+
   }
 
   private void registerFunctions() {
