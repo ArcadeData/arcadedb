@@ -26,19 +26,17 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
-
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class DropIndexTest extends TestHelper {
   private static final int    TOT        = 10;
   private static final String TYPE_NAME  = "V";
   private static final String TYPE_NAME2 = "V2";
-  private static final String TYPE_NAME3 = "V3";
   private static final int    PAGE_SIZE  = 20000;
 
   @Test
@@ -52,11 +50,19 @@ public class DropIndexTest extends TestHelper {
     type.createProperty("id", Integer.class);
     type.createProperty("name", String.class);
 
-    final Index typeIndex = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+    final TypeIndex typeIndex = database.getSchema()
+        .buildTypeIndex(TYPE_NAME, new String[] { "id" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withPageSize(PAGE_SIZE)
+        .withUnique(true)
+        .create();
     final Index typeIndex2 = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE,
-            LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
+        .buildTypeIndex(TYPE_NAME, new String[] { "name" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withPageSize(PAGE_SIZE)
+        .withUnique(false)
+        .withNullStrategy(LSMTreeIndexAbstract.NULL_STRATEGY.SKIP)
+        .create();
 
     database.transaction(() -> {
       for (int i = 0; i < TOT; ++i) {
@@ -73,37 +79,39 @@ public class DropIndexTest extends TestHelper {
 
       database.commit();
 
-      Assertions.assertThat(database.countType(TYPE_NAME, true)).isEqualTo(TOT + 1);
-      Assertions.assertThat(database.countType(TYPE_NAME2, false)).isEqualTo(TOT);
-      Assertions.assertThat(database.countType(TYPE_NAME, false)).isEqualTo(1);
+      assertThat(database.countType(TYPE_NAME, true)).isEqualTo(TOT + 1);
+      assertThat(database.countType(TYPE_NAME2, false)).isEqualTo(TOT);
+      assertThat(database.countType(TYPE_NAME, false)).isEqualTo(1);
 
       database.begin();
 
-      final Index[] subIndexes = ((TypeIndex) typeIndex).getIndexesOnBuckets();
+      final Index[] subIndexes = typeIndex.getIndexesOnBuckets();
 
       database.getSchema().dropIndex(typeIndex.getName());
 
-      for (final Index idx : subIndexes)
-        try {
-          database.getSchema().getIndexByName(idx.getName());
-          Assertions.fail("Found removed index " + idx.getName());
-        } catch (final SchemaException e) {
-        }
+      for (final Index idx : subIndexes) {
+        assertThatThrownBy(() -> database.getSchema().getIndexByName(idx.getName()))
+            .isInstanceOf(SchemaException.class);
+      }
 
-      for (final Index subIndex : subIndexes)
-        try {
-          database.getSchema().getFileById(subIndex.getAssociatedBucketId());
-          database.getSchema().getFileById(((IndexInternal) subIndex).getFileId());
-          Assertions.fail("Found removed file " + ((IndexInternal) subIndex).getFileId());
-        } catch (final SchemaException e) {
-        }
+      for (final Index subIndex : subIndexes) {
+        assertThatThrownBy(() -> {
+              database.getSchema().getFileById(subIndex.getAssociatedBucketId());
+              database.getSchema().getFileById(((IndexInternal) subIndex).getFileId());
+            }
+        ).isInstanceOf(SchemaException.class);
+      }
 
-      final Index typeIndex3 = database.getSchema()
-          .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+      final TypeIndex typeIndex3 = (TypeIndex) database.getSchema()
+          .buildTypeIndex(TYPE_NAME, new String[] { "id" })
+          .withType(Schema.INDEX_TYPE.LSM_TREE)
+          .withPageSize(PAGE_SIZE)
+          .withUnique(true)
+          .create();
 
-      Assertions.assertThat(database.countType(TYPE_NAME, true)).isEqualTo(TOT + 1);
-      Assertions.assertThat(database.countType(TYPE_NAME2, false)).isEqualTo(TOT);
-      Assertions.assertThat(database.countType(TYPE_NAME, false)).isEqualTo(1);
+      assertThat(database.countType(TYPE_NAME, true)).isEqualTo(TOT + 1);
+      assertThat(database.countType(TYPE_NAME2, false)).isEqualTo(TOT);
+      assertThat(database.countType(TYPE_NAME, false)).isEqualTo(1);
 
       for (int i = 0; i < TOT; ++i) {
         final MutableDocument v2 = database.newDocument(TYPE_NAME2);
@@ -117,9 +125,9 @@ public class DropIndexTest extends TestHelper {
       v3.set("id", TOT * 3 + 1);
       v3.save();
 
-      Assertions.assertThat(database.countType(TYPE_NAME, true)).isEqualTo(TOT * 2 + 2);
-      Assertions.assertThat(database.countType(TYPE_NAME2, true)).isEqualTo(TOT * 2);
-      Assertions.assertThat(database.countType(TYPE_NAME, false)).isEqualTo(2);
+      assertThat(database.countType(TYPE_NAME, true)).isEqualTo(TOT * 2 + 2);
+      assertThat(database.countType(TYPE_NAME2, true)).isEqualTo(TOT * 2);
+      assertThat(database.countType(TYPE_NAME, false)).isEqualTo(2);
     }, false, 0);
   }
 
@@ -133,19 +141,22 @@ public class DropIndexTest extends TestHelper {
 
     assertThat(type2.getSuperTypes().getFirst().getName()).isEqualTo(type.getName());
 
-    final DocumentType type3 = database.getSchema().buildDocumentType().withName(TYPE_NAME3).withTotalBuckets(3)
-        .withSuperType(type2.getName()).create();
-
-    assertThat(type2.getSuperTypes().getFirst().getName()).isEqualTo(type.getName());
-
     type.createProperty("id", Integer.class);
     type.createProperty("name", String.class);
 
-    final Index typeIndex = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema()
+        .buildTypeIndex(TYPE_NAME, new String[] { "id" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withPageSize(PAGE_SIZE)
+        .withUnique(true)
+        .create();
     final Index typeIndex2 = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE,
-            LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
+        .buildTypeIndex(TYPE_NAME, new String[] { "name" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withPageSize(PAGE_SIZE)
+        .withUnique(false)
+        .withNullStrategy(LSMTreeIndexAbstract.NULL_STRATEGY.SKIP)
+        .create();
 
     type.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
     type2.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
@@ -171,26 +182,12 @@ public class DropIndexTest extends TestHelper {
 
       // CHECK ALL THE BUCKETS ARE REMOVED
       for (final Bucket b : buckets) {
-        try {
-          database.getSchema().getBucketById(b.getFileId());
-          Assertions.fail();
-        } catch (final SchemaException e) {
-          // EXPECTED
-        }
-
-        try {
-          database.getSchema().getBucketByName(b.getName());
-          Assertions.fail();
-        } catch (final SchemaException e) {
-          // EXPECTED
-        }
-
-        try {
-          database.getSchema().getFileById(b.getFileId());
-          Assertions.fail();
-        } catch (final SchemaException e) {
-          // EXPECTED
-        }
+        assertThatThrownBy(() -> database.getSchema().getBucketById(b.getFileId()))
+            .isInstanceOf(SchemaException.class);
+        assertThatThrownBy(() -> database.getSchema().getBucketByName(b.getName()))
+            .isInstanceOf(SchemaException.class);
+        assertThatThrownBy(() -> database.getSchema().getFileById(b.getFileId()))
+            .isInstanceOf(SchemaException.class);
       }
 
       // CHECK ALL THE INDEXES ARE NOT REMOVED
@@ -199,39 +196,43 @@ public class DropIndexTest extends TestHelper {
 
       // CHECK TYPE HAS BEEN REMOVED FROM INHERITANCE
       for (final DocumentType parent : type2.getSuperTypes())
-        Assertions.assertThat(parent.getSubTypes().contains(type2)).isFalse();
+        assertThat(parent.getSubTypes().contains(type2)).isFalse();
 
       for (final DocumentType sub : type2.getSubTypes())
-        Assertions.assertThat(sub.getSuperTypes().contains(type2)).isFalse();
+        assertThat(sub.getSuperTypes().contains(type2)).isFalse();
 
       // CHECK INHERITANCE CHAIN IS CONSISTENT
       for (final DocumentType parent : type2.getSuperTypes())
-        Assertions.assertThat(parent.getSubTypes().contains(type2.getSubTypes().getFirst())).isTrue();
+        assertThat(parent.getSubTypes().contains(type2.getSubTypes().getFirst())).isTrue();
 
-      Assertions.assertThat(database.countType(TYPE_NAME, true)).isEqualTo(1);
+      assertThat(database.countType(TYPE_NAME, true)).isEqualTo(1);
 
       final DocumentType newType = database.getSchema().getOrCreateDocumentType(TYPE_NAME2);
 
-      Assertions.assertThat(database.countType(TYPE_NAME, true)).isEqualTo(1);
-      Assertions.assertThat(database.countType(TYPE_NAME2, true)).isEqualTo(0);
+      assertThat(database.countType(TYPE_NAME, true)).isEqualTo(1);
+      assertThat(database.countType(TYPE_NAME2, true)).isEqualTo(0);
 
       newType.addSuperType(TYPE_NAME);
 
       // CHECK INHERITANCE CHAIN IS CONSISTENT AGAIN
       for (final DocumentType parent : newType.getSuperTypes())
-        Assertions.assertThat(parent.getSubTypes().contains(newType)).isTrue();
+        assertThat(parent.getSubTypes().contains(newType)).isTrue();
 
       for (final DocumentType sub : newType.getSubTypes())
-        Assertions.assertThat(sub.getSuperTypes().contains(newType)).isTrue();
+        assertThat(sub.getSuperTypes().contains(newType)).isTrue();
 
-      Assertions.assertThat(database.countType(TYPE_NAME, true)).isEqualTo(1);
-      Assertions.assertThat(database.countType(TYPE_NAME2, true)).isEqualTo(0);
+      assertThat(database.countType(TYPE_NAME, true)).isEqualTo(1);
+      assertThat(database.countType(TYPE_NAME2, true)).isEqualTo(0);
 
       database.begin();
 
       database.getSchema().dropIndex(typeIndex.getName());
-      final Index typeIndex3 = database.getSchema()
-          .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+      final TypeIndex typeIndex3 = (TypeIndex) database.getSchema()
+          .buildTypeIndex(TYPE_NAME, new String[] { "id" })
+          .withType(Schema.INDEX_TYPE.LSM_TREE)
+          .withPageSize(PAGE_SIZE)
+          .withUnique(true)
+          .create();
 
       for (int i = 0; i < TOT; ++i) {
         final MutableDocument v2 = database.newDocument(TYPE_NAME2);
@@ -245,9 +246,9 @@ public class DropIndexTest extends TestHelper {
       v3.set("id", TOT);
       v3.save();
 
-      Assertions.assertThat(database.countType(TYPE_NAME, true)).isEqualTo(TOT + 2);
-      Assertions.assertThat(database.countType(TYPE_NAME2, false)).isEqualTo(TOT);
-      Assertions.assertThat(database.countType(TYPE_NAME, false)).isEqualTo(2);
+      assertThat(database.countType(TYPE_NAME, true)).isEqualTo(TOT + 2);
+      assertThat(database.countType(TYPE_NAME2, false)).isEqualTo(TOT);
+      assertThat(database.countType(TYPE_NAME, false)).isEqualTo(2);
 
       type.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
 
