@@ -102,7 +102,7 @@ public class DropIndexTest extends TestHelper {
         ).isInstanceOf(SchemaException.class);
       }
 
-      final TypeIndex typeIndex3 = (TypeIndex) database.getSchema()
+      final TypeIndex typeIndex3 = database.getSchema()
           .buildTypeIndex(TYPE_NAME, new String[] { "id" })
           .withType(Schema.INDEX_TYPE.LSM_TREE)
           .withPageSize(PAGE_SIZE)
@@ -144,7 +144,7 @@ public class DropIndexTest extends TestHelper {
     type.createProperty("id", Integer.class);
     type.createProperty("name", String.class);
 
-    final TypeIndex typeIndex = (TypeIndex) database.getSchema()
+    final TypeIndex typeIndex = database.getSchema()
         .buildTypeIndex(TYPE_NAME, new String[] { "id" })
         .withType(Schema.INDEX_TYPE.LSM_TREE)
         .withPageSize(PAGE_SIZE)
