@@ -10,6 +10,7 @@ import java.util.NoSuchElementException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -242,7 +243,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 	@Override
 	public void commit() {
-		
+
 		checkDatabaseIsOpen();
 		stats.txCommits.incrementAndGet();
 
@@ -262,32 +263,32 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 						.setCredentials(buildCredentials()).build();
 
 				try {
-					
+
 					CommitTransactionResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
 							.commitTransaction(request);
 
 					logger.debug("[After commit] Success: {} Committed: {}", response.getSuccess(), response.getCommitted());
-					
+
 					if (!response.getSuccess()) {
 						throw new TransactionException("Failed to commit transaction: " + response.getMessage());
 					}
 				}
 				catch (StatusRuntimeException e) {
-					
+
 					handleGrpcException(e);
 				}
 				catch (StatusException e) {
-					
+
 					handleGrpcException(e);
 				}
 				finally {
-					
+
 					transactionId = null;
 					setSessionId(null);
 				}
 
 				if (debugTx != null) {
-					
+
 					debugTx.committed = true;
 					debugTx.rpcSeq.incrementAndGet();
 				}
@@ -322,10 +323,10 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 						.setCredentials(buildCredentials()).build();
 
 				try {
-					
+
 					RollbackTransactionResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
 							.rollbackTransaction(request);
-					
+
 					logger.debug("[After rollback] Success: {} Committed: {}", response.getSuccess(), response.getRolledBack());
 
 					if (!response.getSuccess()) {
@@ -410,19 +411,6 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 			handleGrpcException(e); // rethrows mapped domain exception
 			throw new IllegalStateException("unreachable");
 		}
-	}
-
-	@Override
-	public Iterator<Record> iterateType(final String typeName, final boolean polymorphic) {
-		String query = "select from `" + typeName + "`";
-		if (!polymorphic)
-			query += " where @type = '" + typeName + "'";
-		return streamQuery(query);
-	}
-
-	@Override
-	public Iterator<Record> iterateBucket(final String bucketName) {
-		return streamQuery("select from bucket:`" + bucketName + "`");
 	}
 
 	@Override
@@ -729,149 +717,283 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
 	// Convenience: default batch size stays 100, default mode = CURSOR
 
-	public Iterator<Record> queryStream(final String language, final String query) {
+	public ResultSet queryStream(final String language, final String query) {
 		return queryStream(language, query, getDefaultRemoteGrpcConfig(), /* batchSize */100, StreamQueryRequest.RetrievalMode.CURSOR);
 	}
 
-	public Iterator<Record> queryStream(final String language, final String query, final RemoteGrpcConfig config) {
+	public ResultSet queryStream(final String language, final String query, final RemoteGrpcConfig config) {
 		return queryStream(language, query, config, /* batchSize */100, StreamQueryRequest.RetrievalMode.CURSOR);
 	}
 
-	public Iterator<Record> queryStream(final String language, final String query, final int batchSize) {
+	public ResultSet queryStream(final String language, final String query, final int batchSize) {
 		return queryStream(language, query, getDefaultRemoteGrpcConfig(), batchSize, StreamQueryRequest.RetrievalMode.CURSOR);
 	}
 
-	public Iterator<Record> queryStream(final String language, final String query, RemoteGrpcConfig config, final int batchSize) {
+	public ResultSet queryStream(final String language, final String query, RemoteGrpcConfig config, final int batchSize) {
 		return queryStream(language, query, config, batchSize, StreamQueryRequest.RetrievalMode.CURSOR);
 	}
 
-	public Iterator<Record> queryStream(final String language, final String query, final int batchSize,
-			final StreamQueryRequest.RetrievalMode mode) {
+	public ResultSet queryStream(final String language, final String query, final int batchSize, final StreamQueryRequest.RetrievalMode mode) {
 		return queryStream(language, query, getDefaultRemoteGrpcConfig(), batchSize, mode);
 	}
 
 	// NEW: choose retrieval mode
 
-	public Iterator<Record> queryStream(final String language, final String query, final RemoteGrpcConfig config, final int batchSize,
+	public ResultSet queryStream(final String language, final String query, final RemoteGrpcConfig config, final int batchSize,
 			final StreamQueryRequest.RetrievalMode mode) {
 
 		return queryStream(language, query, config, Map.of(), batchSize, mode);
 	}
 
-	// PARAMETERIZED variant with retrieval mode
-	public Iterator<Record> queryStream(final String language, final String query, final RemoteGrpcConfig config,
-			final Map<String, Object> params, final int batchSize, final StreamQueryRequest.RetrievalMode mode) {
+	/**
+	 * Stream query results as a ResultSet that fetches data lazily in batches. This
+	 * provides consistency with non-streaming query methods and supports non-Record
+	 * results like projections and aggregations.
+	 */
+	public ResultSet queryStream(final String language, final String query, final RemoteGrpcConfig config, final Map<String, Object> params,
+			final int batchSize, final StreamQueryRequest.RetrievalMode mode) {
 
 		checkDatabaseIsOpen();
 		stats.queries.incrementAndGet();
 
 		StreamQueryRequest.Builder b = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(query).setCredentials(buildCredentials())
-				.setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode); // <--- NEW
+				.setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode);
 
 		if (params != null && !params.isEmpty()) {
 			b.putAllParameters(convertParamsToGrpcValue(params));
 		}
 
-		// Open the stream with deadline via helper
 		final BlockingClientCall<?, QueryResult> responseIterator = callServerStreaming("StreamQuery",
 				() -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).streamQuery(b.build()));
 
-		return new Iterator<Record>() {
-			private Iterator<GrpcRecord> currentBatch = Collections.emptyIterator();
-
-			@Override
-			public boolean hasNext() {
-				if (currentBatch.hasNext())
-					return true;
-
-				if (debugTx != null) {
-					checkCrossThreadUse("streamQuery.hasNext");
-				}
-
-				try {
-					while (responseIterator.hasNext()) {
-						final QueryResult result = responseIterator.read();
-
-						if (result.getRecordsCount() == 0) {
-							if (result.getIsLastBatch())
-								return false;
-							continue; // empty non-terminal batch
-						}
-
-						currentBatch = result.getRecordsList().iterator();
-						return true;
-					}
-					return false; // stream exhausted
-				}
-				catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
-					handleGrpcException(e); // rethrows mapped runtime exception
-					throw new IllegalStateException("unreachable");
-				}
-				catch (RuntimeException re) {
-					throw re;
-				}
-				catch (Exception e) {
-					throw new RuntimeException("Stream failed", e);
-				}
-			}
-
-			@Override
-			public Record next() {
-				if (!hasNext())
-					throw new NoSuchElementException();
-				if (debugTx != null) {
-					checkCrossThreadUse("streamQuery.next");
-				}
-				return grpcRecordToDBRecord(currentBatch.next());
-			}
-		};
+		// Return a streaming ResultSet implementation
+		return new StreamingResultSet(responseIterator, this);
 	}
 
 	// Keep the old signature working (defaults to CURSOR)
-	public Iterator<Record> queryStream(final String language, final String query, final Map<String, Object> params, final int batchSize) {
+	public ResultSet queryStream(final String language, final String query, final Map<String, Object> params, final int batchSize) {
 
 		return queryStream(language, query, getDefaultRemoteGrpcConfig(), params, batchSize, StreamQueryRequest.RetrievalMode.CURSOR);
 	}
 
-	public Iterator<Record> queryStream(final String language, final String query, final RemoteGrpcConfig config,
-			final Map<String, Object> params, final int batchSize) {
+	public ResultSet queryStream(final String language, final String query, final RemoteGrpcConfig config, final Map<String, Object> params,
+			final int batchSize) {
 
 		return queryStream(language, query, config, params, batchSize, StreamQueryRequest.RetrievalMode.CURSOR);
 	}
 
-	public static final class QueryBatch {
+	/**
+	 * A ResultSet implementation that lazily fetches results from a gRPC stream.
+	 * Supports both Record results and projection/aggregation results.
+	 */
+	private static class StreamingResultSet implements ResultSet {
+		private static final Logger logger = LoggerFactory.getLogger(StreamingResultSet.class);
 
-		private final List<Record> records;
-		private final int totalInBatch;
-		private final long runningTotal;
-		private final boolean lastBatch;
+		private final BlockingClientCall<?, QueryResult> stream;
+		private final RemoteGrpcDatabase db;
+		protected Iterator<Result> currentBatch = Collections.emptyIterator();
+		private boolean streamExhausted = false;
+		private Result nextResult = null;
+		private final AtomicLong totalProcessed = new AtomicLong(0);
 
-		public QueryBatch(List<Record> list, int totalInBatch, long runningTotal, boolean lastBatch) {
-			this.records = list;
-			this.totalInBatch = totalInBatch;
-			this.runningTotal = runningTotal;
-			this.lastBatch = lastBatch;
+		StreamingResultSet(BlockingClientCall<?, QueryResult> stream, RemoteGrpcDatabase db) {
+			this.stream = stream;
+			this.db = db;
 		}
 
-		public List<Record> records() {
-			return records;
+		@Override
+		public boolean hasNext() {
+			if (nextResult != null) {
+				return true;
+			}
+
+			// Try to get next from current batch
+			if (currentBatch.hasNext()) {
+				nextResult = currentBatch.next();
+				return true;
+			}
+
+			// Current batch exhausted, try to fetch next batch
+			if (streamExhausted) {
+				return false;
+			}
+
+			if (db.debugTx != null) {
+				db.checkCrossThreadUse("streamQuery.hasNext");
+			}
+
+			try {
+				while (stream.hasNext()) {
+					final QueryResult queryResult = stream.read();
+
+					if (logger.isDebugEnabled()) {
+						logger.debug("Received batch with {} records, isLastBatch={}", queryResult.getRecordsCount(),
+								queryResult.getIsLastBatch());
+					}
+
+					if (queryResult.getRecordsCount() == 0) {
+						if (queryResult.getIsLastBatch()) {
+							streamExhausted = true;
+							return false;
+						}
+						continue; // empty non-terminal batch
+					}
+
+					// Convert GrpcRecords to Results
+					currentBatch = convertBatchToResults(queryResult);
+
+					if (currentBatch.hasNext()) {
+						nextResult = currentBatch.next();
+						return true;
+					}
+				}
+
+				streamExhausted = true;
+				return false;
+
+			}
+			catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+				db.handleGrpcException(e);
+				throw new IllegalStateException("unreachable");
+			}
+			catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				throw new RuntimeException("Stream interrupted", e);
+			}
+			catch (RuntimeException re) {
+				throw re;
+			}
+			catch (Exception e) {
+				throw new RuntimeException("Stream failed", e);
+			}
 		}
 
-		public int totalInBatch() {
-			return totalInBatch;
+		/**
+		 * Convert a QueryResult batch to an Iterator of Result objects
+		 */
+		protected Iterator<Result> convertBatchToResults(QueryResult queryResult) {
+			List<Result> results = new ArrayList<>(queryResult.getRecordsCount());
+
+			for (GrpcRecord grpcRecord : queryResult.getRecordsList()) {
+				// Use the existing grpcRecordToResult method from RemoteGrpcDatabase
+				Result result = db.grpcRecordToResult(grpcRecord);
+				results.add(result);
+			}
+
+			return results.iterator();
 		}
 
-		public long runningTotal() {
-			return runningTotal;
+		@Override
+		public Result next() {
+			if (!hasNext()) {
+				throw new NoSuchElementException();
+			}
+
+			if (db.debugTx != null) {
+				db.checkCrossThreadUse("streamQuery.next");
+			}
+
+			Result result = nextResult;
+			nextResult = null;
+			totalProcessed.incrementAndGet();
+			return result;
 		}
 
-		public boolean isLastBatch() {
-			return lastBatch;
+		@Override
+		public void close() {
+			
+			try {
+				// Drain any remaining results
+				while (stream.hasNext()) {
+					stream.read();
+				}
+			}
+			catch (Exception e) {
+				logger.debug("Exception while draining stream during close", e);
+			}
+
+			// BlockingClientCall doesn't implement AutoCloseable
+			// No need to cast or check instanceof
 		}
 	}
 
-	public Iterator<QueryBatch> queryStreamBatches(final String language, final String query, final Map<String, Object> params,
+	/**
+	 * Enhanced streaming with batch-aware ResultSet for better memory control and
+	 * performance monitoring.
+	 */
+	public ResultSet queryStreamBatched(final String language, final String query, final Map<String, Object> params, final int batchSize,
+			final StreamQueryRequest.RetrievalMode mode) {
+
+		checkDatabaseIsOpen();
+		stats.queries.incrementAndGet();
+
+		final StreamQueryRequest.Builder b = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(query)
+				.setCredentials(buildCredentials()).setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode);
+
+		if (params != null && !params.isEmpty()) {
+			b.putAllParameters(convertParamsToGrpcValue(params));
+		}
+
+		final BlockingClientCall<?, QueryResult> responseIterator = callServerStreaming("StreamQuery",
+				() -> blockingStub.withWaitForReady().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).streamQuery(b.build()));
+
+		return new BatchedStreamingResultSet(responseIterator, this);
+	}
+
+	/**
+	 * A ResultSet that exposes batch boundaries for advanced use cases while
+	 * maintaining the standard ResultSet interface.
+	 */
+	private static class BatchedStreamingResultSet extends StreamingResultSet {
+
+		private int currentBatchSize = 0;
+		private boolean isLastBatch = false;
+		private long runningTotal = 0;
+
+		BatchedStreamingResultSet(BlockingClientCall<?, QueryResult> stream, RemoteGrpcDatabase db) {
+			super(stream, db);
+		}
+
+		@Override
+		public boolean hasNext() {
+			boolean hasMore = super.hasNext();
+
+			// Update batch info when we fetch a new batch
+			if (hasMore && currentBatch != null) {
+				// Track batch metadata here if needed
+			}
+
+			return hasMore;
+		}
+
+	    @Override
+	    protected Iterator<Result> convertBatchToResults(QueryResult queryResult) {
+	        // Capture batch metadata
+	        this.currentBatchSize = queryResult.getRecordsCount();
+	        this.isLastBatch = queryResult.getIsLastBatch();
+	        this.runningTotal = queryResult.getRunningTotalEmitted();
+	        
+	        // Call parent implementation
+	        return super.convertBatchToResults(queryResult);
+	    }
+	    
+		// Additional methods for batch-aware processing
+		public long getRunningTotal() {
+			return runningTotal;
+		}
+
+		public int getCurrentBatchSize() {
+			return currentBatchSize;
+		}
+
+		public boolean isLastBatch() {
+			return isLastBatch;
+		}
+	}
+
+	public Iterator<QueryBatch> queryStreamBatchesIterator(final String language, final String query, final Map<String, Object> params,
 			final int batchSize, final StreamQueryRequest.RetrievalMode mode) {
+
 		checkDatabaseIsOpen();
 		stats.queries.incrementAndGet();
 
@@ -901,26 +1023,32 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 				}
 
 				try {
+
 					while (responseIterator.hasNext()) {
 						final QueryResult qr = responseIterator.read();
 
 						int totalInBatch = qr.getTotalRecordsInBatch();
-						if (totalInBatch == 0)
+						if (totalInBatch == 0) {
 							totalInBatch = qr.getRecordsCount();
+						}
 
 						if (qr.getRecordsCount() == 0 && !qr.getIsLastBatch()) {
 							continue; // empty non-terminal batch
 						}
 
-						final List<Record> converted = new ArrayList<>(qr.getRecordsCount());
+						// Convert GrpcRecords to Results (not Records)
+						final List<Result> convertedResults = new ArrayList<>(qr.getRecordsCount());
 						for (GrpcRecord gr : qr.getRecordsList()) {
-							converted.add(grpcRecordToDBRecord(gr));
+							Result result = grpcRecordToResult(gr);
+							convertedResults.add(result);
 						}
 
-						nextBatch = new QueryBatch(converted, totalInBatch, qr.getRunningTotalEmitted(), qr.getIsLastBatch());
+						// Create QueryBatch with Results instead of Records
+						nextBatch = new QueryBatch(convertedResults, totalInBatch, qr.getRunningTotalEmitted(), qr.getIsLastBatch());
 
-						if (qr.getIsLastBatch())
+						if (qr.getIsLastBatch()) {
 							drained = true;
+						}
 						return true;
 					}
 
@@ -928,7 +1056,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 					return false;
 				}
 				catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
-					handleGrpcException(e); // rethrows mapped exception
+					handleGrpcException(e);
 					throw new IllegalStateException("unreachable");
 				}
 				catch (InterruptedException ie) {
@@ -952,6 +1080,49 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 				return out;
 			}
 		};
+	}
+
+	public static final class QueryBatch {
+		private final List<Result> results; // Changed from List<Record>
+		private final int totalInBatch;
+		private final long runningTotal;
+		private final boolean lastBatch;
+
+		public QueryBatch(List<Result> results, int totalInBatch, long runningTotal, boolean lastBatch) {
+			this.results = results;
+			this.totalInBatch = totalInBatch;
+			this.runningTotal = runningTotal;
+			this.lastBatch = lastBatch;
+		}
+
+		public List<Result> results() {
+			return results;
+		}
+
+		// Backward compatibility: provide records() method that extracts Records from
+		// Results
+		@Deprecated
+		public List<Record> records() {
+			List<Record> records = new ArrayList<>(results.size());
+			for (Result result : results) {
+				if (result.isElement()) {
+					result.getRecord().ifPresent(records::add);
+				}
+			}
+			return records;
+		}
+
+		public int totalInBatch() {
+			return totalInBatch;
+		}
+
+		public long runningTotal() {
+			return runningTotal;
+		}
+
+		public boolean isLastBatch() {
+			return lastBatch;
+		}
 	}
 
 	public Iterator<GrpcRecord> queryStream(final String database, final String sql, final Map<String, Object> params, final int batchSize,
@@ -1016,66 +1187,42 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 		};
 	}
 
-	public Iterator<QueryBatch> queryStreamBatches(final String passLabel, final String sql, final Map<String, Object> params,
-			final int batchSize, final StreamQueryRequest.RetrievalMode mode, final TransactionContext tx, final long timeoutMs) {
-		final StreamQueryRequest.Builder reqB = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(sql)
-				.putAllParameters(convertParamsToGrpcValue(params)).setCredentials(buildCredentials())
-				.setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode);
+	@Deprecated
+	public Iterator<Record> queryStreamAsRecordIterator(final String language, final String query, final Map<String, Object> params,
+			final int batchSize) {
+		ResultSet rs = queryStream(language, query, params, batchSize);
 
-		if (tx != null)
-			reqB.setTransaction(tx);
-
-		final BlockingClientCall<?, QueryResult> respIter = callServerStreaming("StreamQuery[" + passLabel + "]",
-				() -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).streamQuery(reqB.build()));
-
-		return new Iterator<QueryBatch>() {
+		// Convert ResultSet to Iterator<Record>
+		return new Iterator<Record>() {
 			@Override
 			public boolean hasNext() {
-				if (debugTx != null) {
-					checkCrossThreadUse("streamQueryBatches(" + passLabel + ").hasNext");
-				}
-				try {
-					return respIter.hasNext();
-				}
-				catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
-					handleGrpcException(e);
-					throw new IllegalStateException("unreachable");
-				}
-				catch (InterruptedException ie) {
-					Thread.currentThread().interrupt();
-					throw new RuntimeException("Stream interrupted", ie);
-				}
+				return rs.hasNext();
 			}
 
 			@Override
-			public QueryBatch next() {
-				if (debugTx != null) {
-					checkCrossThreadUse("streamQueryBatches(" + passLabel + ").next");
+			public Record next() {
+				Result result = rs.next();
+				// Try to get Record from Result
+				if (result.isElement()) {
+					return result.getRecord().orElseThrow(() -> new IllegalStateException("Result claims to be element but has no Record"));
 				}
-				try {
-					final QueryResult qr = respIter.read();
-
-					int totalInBatch = qr.getTotalRecordsInBatch();
-					if (totalInBatch == 0)
-						totalInBatch = qr.getRecordsCount();
-
-					final List<Record> converted = new ArrayList<>(qr.getRecordsCount());
-					for (GrpcRecord gr : qr.getRecordsList()) {
-						converted.add(grpcRecordToDBRecord(gr));
-					}
-
-					return new QueryBatch(converted, totalInBatch, qr.getRunningTotalEmitted(), qr.getIsLastBatch());
-				}
-				catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
-					handleGrpcException(e);
-					throw new IllegalStateException("unreachable");
-				}
-				catch (InterruptedException ie) {
-					Thread.currentThread().interrupt();
-					throw new RuntimeException("Stream interrupted", ie);
-				}
+				// For non-Record results, throw or skip
+				throw new IllegalStateException("Result is not a Record: " + result);
 			}
 		};
+	}
+
+	@Override
+	public Iterator<Record> iterateType(final String typeName, final boolean polymorphic) {
+		String query = "select from `" + typeName + "`";
+		if (!polymorphic)
+			query += " where @type = '" + typeName + "'";
+		return streamQuery(query);
+	}
+
+	@Override
+	public Iterator<Record> iterateBucket(final String bucketName) {
+		return streamQuery("select from bucket:`" + bucketName + "`");
 	}
 
 	public String createRecord(final String cls, final Map<String, Object> props, final long timeoutMs) {
