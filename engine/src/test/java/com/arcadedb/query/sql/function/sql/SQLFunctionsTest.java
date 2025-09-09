@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.function.sql;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
@@ -41,21 +40,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.io.UnsupportedEncodingException;
-import java.security.NoSuchAlgorithmException;
-import java.text.SimpleDateFormat;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Date;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
+import java.io.*;
+import java.security.*;
+import java.time.*;
+import java.time.format.*;
+import java.util.*;
+import java.util.stream.*;
 
 import static com.arcadedb.TestHelper.checkActiveDatabases;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -98,7 +88,6 @@ public class SQLFunctionsTest {
     checkActiveDatabases();
     FileUtils.deleteRecursively(new File("./target/databases/SQLFunctionsTest"));
   }
-
 
   @Test
   public void queryMax() {
@@ -458,10 +447,11 @@ public class SQLFunctionsTest {
     LocalDateTime now = LocalDateTime.now();
     String formattedDate = now.format(timeFormatter);
 //    System.out.println("formattedDate = " + formattedDate);
-    String query = "select count() as tot from Account where created < date('" +formattedDate + "', \"" + pattern + "\")";
+    String query = "select count() as tot from Account where created <= date('" + formattedDate + "', \"" + pattern + "\")";
     result = database.command("sql", query);
 
-    assertThat(result.next().<Long>getProperty("tot")).isEqualTo(tot);
+    assertThat(result.next().<Long>getProperty("tot")).isEqualTo(tot)
+        .withFailMessage("Failed on querying by date with formattedDate=%s pattern=%s", formattedDate, pattern);
 
   }
 
@@ -484,8 +474,8 @@ public class SQLFunctionsTest {
       }
 
       @Override
-      public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult,
-          final Object[] params, final CommandContext context) {
+      public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+          final CommandContext context) {
         if (params[0] == null || params[1] == null)
           // CHECK BOTH EXPECTED PARAMETERS
           return null;
