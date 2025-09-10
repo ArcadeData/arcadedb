@@ -38,6 +38,11 @@ public class SQLFunctionPow extends SQLFunctionMathAbstract {
 
   public Object execute(final Object self, final Identifiable record, final Object currentResult, final Object[] params,
       final CommandContext context) {
+    if (params.length != 2)
+      throw new IllegalArgumentException("Syntax error: " + getSyntax());
+    if (params[1] == null)
+      throw new IllegalArgumentException("Syntax error: " + getSyntax());
+
     final Object inputValue = params[0];
     final int powerValue = ((Number) params[1]).intValue();
 
