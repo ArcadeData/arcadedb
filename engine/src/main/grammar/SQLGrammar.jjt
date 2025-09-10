@@ -1723,7 +1723,7 @@ Expression Expression():
     LOOKAHEAD( Rid() )
     jjtThis.rid = Rid() { jjtThis.value = jjtThis.rid; }
     |
-    LOOKAHEAD( 5 )
+    LOOKAHEAD( <LPAREN> WhereClause() <RPAREN> )
     <LPAREN>
       jjtThis.whereCondition = WhereClause() {jjtThis.value = jjtThis.whereCondition; }
     <RPAREN>
@@ -1821,10 +1821,9 @@ MathExpression FirstLevelExpression():
 { MathExpression expr;}
 {
   (
-    LOOKAHEAD( ParenthesisExpression() )
+    LOOKAHEAD( <LPAREN> )
     expr = ParenthesisExpression()
     |
-    LOOKAHEAD( BaseExpression() )
     expr = BaseExpression()
   )
   {return expr;}
@@ -1835,12 +1834,14 @@ MathExpression ParenthesisExpression():
 {
   <LPAREN>
   (
-    LOOKAHEAD(2)
-    jjtThis.statement = QueryStatement()
+    LOOKAHEAD( <SELECT> | <TRAVERSE> | <MATCH> | <INSERT> )
+    (
+      jjtThis.statement = QueryStatement()
+      |
+      jjtThis.statement = InsertStatement()
+    )
     |
     jjtThis.expression = Expression()
-    |
-    jjtThis.statement = InsertStatement()
 )
   <RPAREN>
   {return jjtThis;}
