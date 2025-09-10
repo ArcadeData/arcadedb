@@ -213,8 +213,9 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
           throw new CommandSQLParsingException("Found COMMIT statement without a BEGIN");
       }
 
-      if (stm instanceof LetStatement letStatement)
+      if (stm instanceof LetStatement letStatement) {
         scriptContext.declareScriptVariable(letStatement.getVariableName().getStringValue());
+      }
     }
 
     return new LocalResultSet(plan);

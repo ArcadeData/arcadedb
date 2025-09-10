@@ -168,10 +168,12 @@ public class DeleteExecutionPlanner {
       plan.chain(new LimitExecutionStep(limit, context));
   }
 
-  private void handleTarget(final UpdateExecutionPlan result, final CommandContext context, final FromClause target,
+  private void handleTarget(final UpdateExecutionPlan result,
+      final CommandContext context,
+      final FromClause fromClause,
       final WhereClause whereClause) {
     final SelectStatement sourceStatement = new SelectStatement(-1);
-    sourceStatement.setTarget(target);
+    sourceStatement.setTarget(fromClause);
     sourceStatement.setWhereClause(whereClause);
     final SelectExecutionPlanner planner = new SelectExecutionPlanner(sourceStatement);
     result.chain(

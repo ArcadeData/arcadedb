@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
 import java.util.stream.IntStream;
@@ -33,6 +34,56 @@ public class DDLTest extends TestHelper {
       database.command("sql", "CREATE VERTEX TYPE V");
       database.command("sql", "CREATE EDGE TYPE E");
     });
+
+  }
+
+  @Test
+  void testDynamicSchemaCreation() {
+    database.command("sqlscript", """
+        BEGIN;
+
+        LET vTypes = ['V1', 'V2', 'V3'];
+        FOREACH ($vType IN $vTypes) {
+          CREATE VERTEX TYPE $vType EXTENDS V;
+        }
+
+        LET eTypes = ['E1', 'E2', 'E3'];
+        FOREACH ($eType IN $eTypes) {
+          CREATE EDGE TYPE  $eType EXTENDS E;
+        }
+
+        LET dTypes = ['D1', 'D2', 'D3'];
+        FOREACH ($dType IN $dTypes) {
+          CREATE DOCUMENT TYPE $dType ;
+        }
+
+        LET types = ['V1', 'V2', 'V3','E1', 'E2', 'E3','D1', 'D2', 'D3'];
+        FOREACH ($type IN $types) {
+          CREATE PROPERTY $type.id  STRING;
+          CREATE INDEX ON $type (id) UNIQUE NULL_STRATEGY SKIP;
+        }
+        COMMIT;
+        """);
+
+    Schema schema = database.getSchema();
+    assertThat(schema.existsType("V1")).isTrue();
+    assertThat(schema.existsIndex("V1[id]")).isTrue();
+    assertThat(schema.existsType("V2")).isTrue();
+    assertThat(schema.existsIndex("V2[id]")).isTrue();
+    assertThat(schema.existsType("V3")).isTrue();
+    assertThat(schema.existsIndex("V3[id]")).isTrue();
+    assertThat(schema.existsType("D1")).isTrue();
+    assertThat(schema.existsIndex("D1[id]")).isTrue();
+    assertThat(schema.existsType("D2")).isTrue();
+    assertThat(schema.existsIndex("D2[id]")).isTrue();
+    assertThat(schema.existsType("D3")).isTrue();
+    assertThat(schema.existsIndex("D3[id]")).isTrue();
+    assertThat(schema.existsType("E1")).isTrue();
+    assertThat(schema.existsIndex("E1[id]")).isTrue();
+    assertThat(schema.existsType("E2")).isTrue();
+    assertThat(schema.existsIndex("E2[id]")).isTrue();
+    assertThat(schema.existsType("E3")).isTrue();
+    assertThat(schema.existsIndex("E3[id]")).isTrue();
 
   }
 

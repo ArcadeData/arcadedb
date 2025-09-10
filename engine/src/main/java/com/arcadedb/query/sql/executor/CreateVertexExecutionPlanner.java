@@ -20,13 +20,16 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.parser.CreateVertexStatement;
+import com.arcadedb.query.sql.parser.Identifier;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class CreateVertexExecutionPlanner extends InsertExecutionPlanner {
+
   public CreateVertexExecutionPlanner(final CreateVertexStatement statement) {
     this.targetType = statement.getTargetType() == null ? null : statement.getTargetType().copy();
     this.targetBucketName = statement.getTargetBucketName() == null ? null : statement.getTargetBucketName().copy();
@@ -40,6 +43,7 @@ public class CreateVertexExecutionPlanner extends InsertExecutionPlanner {
 
   @Override
   public InsertExecutionPlan createExecutionPlan(final CommandContext context) {
+
     final InsertExecutionPlan prev = super.createExecutionPlan(context);
     final List<ExecutionStep> steps = new ArrayList<>(prev.getSteps());
     final InsertExecutionPlan result = new InsertExecutionPlan(context);
