@@ -45,6 +45,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class LSMTreeIndexTest extends TestHelper {
   private static final int    TOT       = 100000;
@@ -598,13 +599,10 @@ public class LSMTreeIndexTest extends TestHelper {
 
           final IndexCursor value = index.get(key);
           if (value.hasNext()) {
-            try {
+            assertThatThrownBy(() -> {
               index.put(key, new RID[] { new RID(database, 10, 10) });
               database.commit();
-              Assertions.fail();
-            } catch (final DuplicatedKeyException e) {
-              // OK
-            }
+            }).isInstanceOf(DuplicatedKeyException.class);
             database.begin();
             found++;
             total++;
@@ -1156,8 +1154,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
       final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
       type.createProperty("id", Integer.class);
-      final TypeIndex typeIndex = database.getSchema()
-          .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+      final TypeIndex typeIndex = database.getSchema().buildTypeIndex(TYPE_NAME, new String[] { "id" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).withPageSize(PAGE_SIZE).create();
 
       for (int i = 0; i < TOT; ++i) {
         final MutableDocument v = database.newDocument(TYPE_NAME);

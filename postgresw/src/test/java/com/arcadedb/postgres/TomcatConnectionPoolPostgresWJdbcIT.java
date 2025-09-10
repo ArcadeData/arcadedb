@@ -23,25 +23,38 @@ import com.arcadedb.server.BaseGraphServerTest;
 import org.apache.tomcat.jdbc.pool.DataSource;
 import org.apache.tomcat.jdbc.pool.PoolProperties;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.postgresql.util.PSQLException;
 
-import java.sql.*;
-import java.util.Properties;
+import java.sql.SQLException;
 
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThat;
 
-public class TomcatConnectionPoolPostgresWJdbcTest extends BaseGraphServerTest {
+class TomcatConnectionPoolPostgresWJdbcIT extends BaseGraphServerTest {
+  private DataSource datasource;
+
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue(
         "Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin");
+
+  }
+  @AfterEach
+  @Override
+  public void endTest() {
+    GlobalConfiguration.SERVER_PLUGINS.setValue("");
+    super.endTest();
   }
 
-  @Test
-  public void testConnection() throws SQLException {
+  @Override
+  protected String getDatabaseName() {
+    return "postgresdb";
+  }
+
+
+  @BeforeEach
+  void setUp() {
     PoolProperties p = new PoolProperties();
     p.setUrl("jdbc:postgresql://localhost/" + getDatabaseName());
     p.setDriverClassName("org.postgresql.Driver");
@@ -64,70 +77,36 @@ public class TomcatConnectionPoolPostgresWJdbcTest extends BaseGraphServerTest {
     p.setRemoveAbandoned(true);
     p.setJdbcInterceptors(
         """
-        org.apache.tomcat.jdbc.pool.interceptor.ConnectionState;\
-        org.apache.tomcat.jdbc.pool.interceptor.StatementFinalizer""");
-    DataSource datasource = new DataSource();
+            org.apache.tomcat.jdbc.pool.interceptor.ConnectionState;
+            org.apache.tomcat.jdbc.pool.interceptor.StatementFinalizer""");
+    datasource = new DataSource();
     datasource.setPoolProperties(p);
 
-    Connection con = null;
-    try {
-      con = datasource.getConnection();
-      Statement st = con.createStatement();
-      ResultSet rs = st.executeQuery("select from schema:database");
-      int cnt = 1;
-      while (rs.next()) {
-        System.out.println((cnt++) + ". name:" + rs.getString("name"));
-      }
-      rs.close();
-      st.close();
-    } finally {
-      if (con != null)
-        try {
-          con.close();
-        } catch (Exception ignore) {
-        }
-    }
-  }
-
-  @AfterEach
-  @Override
-  public void endTest() {
-    GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    super.endTest();
   }
 
   @Test
-  public void testTypeNotExistsErrorManagement() throws Exception {
-    try (final Connection conn = getConnection()) {
-      try (final Statement st = conn.createStatement()) {
-        try {
-          st.executeQuery("SELECT * FROM V");
-          fail("The query should go in error");
-        } catch (final PSQLException e) {
+  public void testConnectionFromPool() throws SQLException {
+
+    try (var conn = datasource.getConnection()) {
+      conn.setAutoCommit(false);
+
+      assertThat(datasource.getActive()).isEqualTo(1) ;
+
+      try (var st = conn.createStatement()) {
+        st.execute("create vertex type V");
+        for (int i = 0; i < 11; i++) {
+          st.execute("create vertex V set id = " + i + ", name = 'Jay', lastName = 'Miner'");
         }
+
+        var rs = st.executeQuery("SELECT FROM V order by id");
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getInt("id")).isEqualTo(0);
+        assertThat(rs.getString("name")).isEqualTo("Jay");
+        assertThat(rs.getString("lastName")).isEqualTo("Miner");
       }
     }
+
+    assertThat(datasource.getActive()).isEqualTo(0);
   }
 
-  @Test
-  @Disabled
-  public void testWaitForConnectionFromExternal() throws InterruptedException {
-    Thread.sleep(1000000);
-  }
-
-  private Connection getConnection() throws ClassNotFoundException, SQLException {
-    Class.forName("org.postgresql.Driver");
-
-    final String url = "jdbc:postgresql://localhost/" + getDatabaseName();
-    final Properties props = new Properties();
-    props.setProperty("user", "root");
-    props.setProperty("password", DEFAULT_PASSWORD_FOR_TESTS);
-    props.setProperty("ssl", "false");
-    final Connection conn = DriverManager.getConnection(url, props);
-    return conn;
-  }
-
-  protected String getDatabaseName() {
-    return "postgresdb";
-  }
 }
