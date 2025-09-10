@@ -690,6 +690,26 @@ public class SelectStatementTest {
     checkRightSyntax("select from index:foo WHERE key BETWEEN 'bar' AND 'foo'");
   }
 
+  @Test
+  public void testSelectExpressionParsingBug() {
+    // These work correctly - SELECT with space before parentheses
+    checkRightSyntax("SELECT (1+1)");
+    checkRightSyntax("SELECT (1+2)");
+
+    // This is the core issue: SELECT(expression) without space should work but fails
+    // Expected ParseException: "Encountered <INTEGER_LITERAL> "1" at line 1, column 8."
+    checkRightSyntax("SELECT (1+1+1)");
+
+    // Additional cases that should fail for the same reason
+    checkRightSyntax("SELECT(1+2+3)");
+    checkRightSyntax("SELECT (1+2*3)");
+    checkRightSyntax("SELECT 10-5+2");
+
+    // These should also fail but with FROM clauses
+    checkRightSyntax("SELECT(1+1+1) FROM V");
+    checkRightSyntax("SELECT(1+2*3) FROM V");
+  }
+
   protected SqlParser getParserFor(final String string) {
     final InputStream is = new ByteArrayInputStream(string.getBytes(DatabaseFactory.getDefaultCharset()));
     return new SqlParser(null, is);
