@@ -69,7 +69,7 @@ public class SQLFunctionDistance extends SQLFunctionAbstract {
         // NAUTICAL MILES
         distance *= 0.539956803;
       else
-        throw new IllegalArgumentException("Unsupported unit '" + unit + "'. Use km, mi and nmi. Default is km.");
+        throw new IllegalArgumentException("Unsupported unit '" + unit + "'. Use km, mi and nmi. Default is km");
     }
 
     return distance;

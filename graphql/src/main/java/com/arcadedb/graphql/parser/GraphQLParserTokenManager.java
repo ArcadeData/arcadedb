@@ -1073,7 +1073,7 @@ private void jjCheckNAddStates(int start, int end)
   public void SwitchTo(int lexState)
   {
     if (lexState >= 1 || lexState < 0)
-      throw new TokenMgrException("Error: Ignoring invalid lexical state : " + lexState + ". State unchanged.", TokenMgrException.INVALID_LEXICAL_STATE);
+      throw new TokenMgrException("Error: Ignoring invalid lexical state : " + lexState + ". State unchanged", TokenMgrException.INVALID_LEXICAL_STATE);
     else
       curLexState = lexState;
   }

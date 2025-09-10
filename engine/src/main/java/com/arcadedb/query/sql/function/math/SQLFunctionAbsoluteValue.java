@@ -69,7 +69,7 @@ public class SQLFunctionAbsoluteValue extends SQLFunctionMathAbstract {
         result = Duration.ofSeconds(Math.abs(seconds), Math.abs(nanos));
       }
     } else {
-      throw new IllegalArgumentException("Argument to absolute value must be a number.");
+      throw new IllegalArgumentException("Argument to absolute value must be a number");
     }
 
     return getResult();

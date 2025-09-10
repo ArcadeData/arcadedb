@@ -20,8 +20,6 @@ package com.arcadedb.query.sql.function.math;
 
 import com.arcadedb.query.sql.function.SQLFunctionConfigurableAbstract;
 
-import java.math.*;
-
 /**
  * Abstract class for math function.
  *
@@ -31,36 +29,6 @@ public abstract class SQLFunctionMathAbstract extends SQLFunctionConfigurableAbs
 
   protected SQLFunctionMathAbstract(final String iName) {
     super(iName);
-  }
-
-  protected Number getContextValue(Object context, final Class<? extends Number> iClass) {
-    if (iClass != context.getClass()) {
-      // CHANGE TYPE
-      if (iClass == Long.class)
-        context = Long.valueOf(((Number) context).longValue());
-      else if (iClass == Short.class)
-        context = Short.valueOf(((Number) context).shortValue());
-      else if (iClass == Float.class)
-        context = Float.valueOf(((Number) context).floatValue());
-      else if (iClass == Double.class)
-        context = Double.valueOf(((Number) context).doubleValue());
-    }
-
-    return (Number) context;
-  }
-
-  protected Class<? extends Number> getClassWithMorePrecision(final Class<? extends Number> iClass1, final Class<? extends Number> iClass2) {
-    if (iClass1 == iClass2)
-      return iClass1;
-
-    if (iClass1 == Integer.class && (iClass2 == Long.class || iClass2 == Float.class || iClass2 == Double.class || iClass2 == BigDecimal.class))
-      return iClass2;
-    else if (iClass1 == Long.class && (iClass2 == Float.class || iClass2 == Double.class || iClass2 == BigDecimal.class))
-      return iClass2;
-    else if (iClass1 == Float.class && (iClass2 == Double.class || iClass2 == BigDecimal.class))
-      return iClass2;
-
-    return iClass1;
   }
 
   @Override

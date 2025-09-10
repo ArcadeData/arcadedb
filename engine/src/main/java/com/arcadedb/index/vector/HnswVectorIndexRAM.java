@@ -217,7 +217,7 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
       }
 
       if (nodeCount >= this.maxItemCount) {
-        throw new SizeLimitExceededException("The number of elements exceeds the specified limit.");
+        throw new SizeLimitExceededException("The number of elements exceeds the specified limit");
       }
 
       int newNodeId = nodeCount++;
@@ -779,7 +779,7 @@ public class HnswVectorIndexRAM<TId, TVector, TItem extends Item<TId, TVector>, 
     try (ObjectInputStream ois = new ClassLoaderObjectInputStream(classLoader, inputStream)) {
       return (HnswVectorIndexRAM<TId, TVector, TItem, TDistance>) ois.readObject();
     } catch (ClassNotFoundException e) {
-      throw new IllegalArgumentException("Could not read input file.", e);
+      throw new IllegalArgumentException("Could not read input file", e);
     }
   }
 
