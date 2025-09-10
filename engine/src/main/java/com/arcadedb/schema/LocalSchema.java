@@ -976,12 +976,15 @@ public class LocalSchema implements Schema {
         final LocalDocumentType type;
 
         final String kind = (String) schemaType.get("type");
-        type = switch (kind) {
-          case "v" -> new LocalVertexType(this, typeName);
-          case "e" -> new LocalEdgeType(this, typeName, !schemaType.has("bidirectional") || schemaType.getBoolean("bidirectional"));
-          case "d" -> new LocalDocumentType(this, typeName);
-          case null, default -> throw new ConfigurationException("Type '" + kind + "' is not supported");
-        };
+        if ("v".equals(kind)) {
+          type = new LocalVertexType(this, typeName);
+        } else if ("e".equals(kind)) {
+          type = new LocalEdgeType(this, typeName,
+              schemaType.has("bidirectional") ? schemaType.getBoolean("bidirectional") : true);
+        } else if ("d".equals(kind)) {
+          type = new LocalDocumentType(this, typeName);
+        } else
+          throw new ConfigurationException("Type '" + kind + "' is not supported");
 
         this.types.put(typeName, type);
 

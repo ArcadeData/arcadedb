@@ -139,7 +139,7 @@ public class DropIndexTest extends TestHelper {
     final DocumentType type2 = database.getSchema().buildDocumentType().withName(TYPE_NAME2).withTotalBuckets(3)
         .withSuperType(type.getName()).create();
 
-    assertThat(type2.getSuperTypes().getFirst().getName()).isEqualTo(type.getName());
+    assertThat(type2.getSuperTypes().get(0).getName()).isEqualTo(type.getName());
 
     type.createProperty("id", Integer.class);
     type.createProperty("name", String.class);
@@ -203,7 +203,7 @@ public class DropIndexTest extends TestHelper {
 
       // CHECK INHERITANCE CHAIN IS CONSISTENT
       for (final DocumentType parent : type2.getSuperTypes())
-        assertThat(parent.getSubTypes().contains(type2.getSubTypes().getFirst())).isTrue();
+        assertThat(parent.getSubTypes().contains(type2.getSubTypes().get(0))).isTrue();
 
       assertThat(database.countType(TYPE_NAME, true)).isEqualTo(1);
 
