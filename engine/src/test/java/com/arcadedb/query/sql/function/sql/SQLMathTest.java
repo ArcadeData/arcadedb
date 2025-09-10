@@ -38,6 +38,10 @@ public class SQLMathTest {
       try (final ResultSet rs = graph.query("sql", "select (2+5*5) as math")) {
         assertThat(rs.next().<Integer>getProperty("math")).isEqualTo(27);
       }
+
+      try (final ResultSet rs = graph.query("sql", "select ((2+5*5-3)/2 + pow(3,2)) as math")) {
+        assertThat(rs.next().<Integer>getProperty("math")).isEqualTo(21);
+      }
     });
   }
 }

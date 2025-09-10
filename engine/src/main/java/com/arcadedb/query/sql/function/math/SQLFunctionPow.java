@@ -22,31 +22,36 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.math.*;
-import java.time.*;
 
-public class SQLFunctionSquareRoot extends SQLFunctionMathAbstract {
-  public static final String NAME = "sqrt";
+/**
+ * Math pow() function.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class SQLFunctionPow extends SQLFunctionMathAbstract {
+  public static final String NAME = "pow";
   private             Object result;
 
-  public SQLFunctionSquareRoot() {
+  public SQLFunctionPow() {
     super(NAME);
   }
 
   public Object execute(final Object self, final Identifiable record, final Object currentResult, final Object[] params,
       final CommandContext context) {
     final Object inputValue = params[0];
+    final int powerValue = ((Number) params[1]).intValue();
 
     switch (inputValue) {
     case null -> result = null;
     case Number number when number.doubleValue() < 0.0 -> result = null;
-    case BigDecimal decimal -> result = decimal.sqrt(new MathContext(10));
-    case BigInteger integer -> result = integer.sqrt();
-    case Integer integer -> result = Double.valueOf(Math.sqrt(integer)).intValue();
-    case Long long1 -> result = Double.valueOf(Math.sqrt(long1)).longValue();
-    case Short short1 -> result = Double.valueOf(Math.sqrt(short1)).shortValue();
-    case Double double1 -> result = Math.sqrt(double1);
-    case Float float1 -> result = Double.valueOf(Math.sqrt(float1)).floatValue();
-    default -> throw new IllegalArgumentException("Argument to square root must be a number.");
+    case BigDecimal decimal -> result = decimal.pow(powerValue);
+    case BigInteger integer -> result = integer.pow(powerValue);
+    case Integer integer -> result = Double.valueOf(Math.pow(integer, powerValue)).intValue();
+    case Long long1 -> result = Double.valueOf(Math.pow(long1, powerValue)).longValue();
+    case Short short1 -> result = Double.valueOf(Math.pow(short1, powerValue)).shortValue();
+    case Double double1 -> result = Math.pow(double1, powerValue);
+    case Float float1 -> result = Double.valueOf(Math.pow(float1, powerValue)).floatValue();
+    default -> throw new IllegalArgumentException("Argument to power must be a number.");
     }
 
     return getResult();
@@ -57,7 +62,7 @@ public class SQLFunctionSquareRoot extends SQLFunctionMathAbstract {
   }
 
   public String getSyntax() {
-    return "sqrt(<number>)";
+    return "pow(<number>, <power>)";
   }
 
   @Override
