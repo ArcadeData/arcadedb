@@ -51,7 +51,7 @@ public class SQLFunctionPow extends SQLFunctionMathAbstract {
     case Short short1 -> result = Double.valueOf(Math.pow(short1, powerValue)).shortValue();
     case Double double1 -> result = Math.pow(double1, powerValue);
     case Float float1 -> result = Double.valueOf(Math.pow(float1, powerValue)).floatValue();
-    default -> throw new IllegalArgumentException("Argument to power must be a number.");
+    default -> throw new IllegalArgumentException("Argument to power must be a number");
     }
 
     return getResult();

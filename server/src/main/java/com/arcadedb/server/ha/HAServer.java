@@ -147,7 +147,7 @@ public class HAServer implements ServerPlugin {
 
   public HAServer(final ArcadeDBServer server, final ContextConfiguration configuration) {
     if (!configuration.getValueAsBoolean(GlobalConfiguration.TX_WAL))
-      throw new ConfigurationException("Cannot start HA service without using WAL. Please enable the TX_WAL setting.");
+      throw new ConfigurationException("Cannot start HA service without using WAL. Please enable the TX_WAL setting");
 
     this.server = server;
     this.messageFactory = new HAMessageFactory(server);

@@ -46,7 +46,7 @@ public class SQLFunctionSquareRoot extends SQLFunctionMathAbstract {
     case Short short1 -> result = Double.valueOf(Math.sqrt(short1)).shortValue();
     case Double double1 -> result = Math.sqrt(double1);
     case Float float1 -> result = Double.valueOf(Math.sqrt(float1)).floatValue();
-    default -> throw new IllegalArgumentException("Argument to square root must be a number.");
+    default -> throw new IllegalArgumentException("Argument to square root must be a number");
     }
 
     return getResult();
