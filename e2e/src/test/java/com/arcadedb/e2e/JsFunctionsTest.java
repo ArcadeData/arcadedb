@@ -1,5 +1,6 @@
 package com.arcadedb.e2e;
 
+import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import org.junit.jupiter.api.AfterEach;
@@ -30,6 +31,35 @@ public class JsFunctionsTest extends ArcadeContainerTemplate {
   void jsMathSum() {
     final ResultSet result = database.command("sql", "select `math.sum`(?,?) as result", 3, 5);
     assertThat(result.next().<Integer>getProperty("result")).isEqualTo(8);
+
+  }
+
+  @Test
+  void jsObjectComparison() {
+    database.command("sql", """
+        DEFINE FUNCTION Test.objectComparison "return a.foo == 'bar'" PARAMETERS [a] LANGUAGE js;
+        """);
+
+    ResultSet resultSet = database.query("sql", """
+        SELECT `Test.objectComparison`('{"foo":"bar"}') as matchRating;
+        """);
+
+    assertThat(resultSet.next().<Boolean>getProperty("matchRating")).isTrue();
+  }
+
+  @Test
+  void testStringObjectAsInput() {
+
+    database.command("sql", """
+        DEFINE FUNCTION Test.lowercase "return a.toLowerCase()" PARAMETERS [a] LANGUAGE js;
+        """);
+
+    // doubel quotes for SQL parser, then single quotes for JS
+    ResultSet resultSet = database.query("sql", """
+        SELECT `Test.lowercase`("'UPPERCASE'") as lowercase;
+        """);
+
+    assertThat(resultSet.next().<String>getProperty("lowercase")).isEqualTo("uppercase");
 
   }
 
