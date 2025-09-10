@@ -24,6 +24,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -136,9 +137,11 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
 
     database.command("sqlscript",
         """
-            BEGIN;LET photo = CREATE VERTEX Photos SET id = "p5555", name = "download3.jpg";
+            BEGIN;
+            LET photo = CREATE VERTEX Photos SET id = "p5555", name = "download3.jpg";
             LET user = SELECT FROM Users WHERE id = "u1111";
-            LET userEdge = CREATE EDGE HasUploaded FROM $user TO $photo SET kind = "User_Photos";
+            LET edgeType = 'HasUploaded';
+            LET userEdge = CREATE EDGE $edgeType FROM $user TO $photo SET kind = "User_Photos";
             COMMIT RETRY 30;
             RETURN $photo;""");
 
@@ -162,6 +165,47 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
     result = database.query("sql", "select * from Birra limit 10");
     assertThat(result.stream().count()).isEqualTo(10);
 
+  }
+
+  @Test
+  void createSchemaWithDynamicSqlScript() {
+    database.command("sqlscript", """
+        BEGIN;
+
+        LET vTypes = ['V1', 'V2', 'V3'];
+        FOREACH ($vType IN $vTypes) {
+          CREATE VERTEX TYPE $vType;
+        }
+
+        LET eTypes = ['E1', 'E2', 'E3'];
+        FOREACH ($eType IN $eTypes) {
+          CREATE EDGE TYPE  $eType;
+        }
+
+        LET dTypes = ['D1', 'D2', 'D3'];
+        FOREACH ($dType IN $dTypes) {
+          CREATE DOCUMENT TYPE $dType ;
+        }
+
+        LET types = ['V1', 'V2', 'V3','E1', 'E2', 'E3','D1', 'D2', 'D3'];
+        FOREACH ($type IN $types) {
+          CREATE PROPERTY $type.id  STRING;
+          CREATE INDEX ON $type (id) UNIQUE NULL_STRATEGY SKIP;
+        }
+        COMMIT;
+        """);
+
+    Schema schema = database.getSchema();
+    System.out.println("schema.toString() = " + schema.toString());
+    assertThat(schema.existsType("V1")).isTrue();
+    assertThat(schema.existsType("V2")).isTrue();
+    assertThat(schema.existsType("V3")).isTrue();
+    assertThat(schema.existsType("D1")).isTrue();
+    assertThat(schema.existsType("D2")).isTrue();
+    assertThat(schema.existsType("D3")).isTrue();
+    assertThat(schema.existsType("E1")).isTrue();
+    assertThat(schema.existsType("E2")).isTrue();
+    assertThat(schema.existsType("E3")).isTrue();
   }
 
   @Test

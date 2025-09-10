@@ -35,11 +35,11 @@ public interface CommandContext {
 
   Object getVariablePath(String name, Object iDefault);
 
-  Object getVariable(String iName);
+  Object getVariable(String name);
 
-  Object getVariable(String iName, Object iDefaultValue);
+  Object getVariable(String name, Object iDefaultValue);
 
-  CommandContext setVariable(String iName, Object iValue);
+  CommandContext setVariable(String name, Object iValue);
 
   CommandContext incrementVariable(String getNeighbors);
 
@@ -47,7 +47,7 @@ public interface CommandContext {
 
   CommandContext getParent();
 
-  CommandContext setParent(CommandContext iParentContext);
+  CommandContext setParent(CommandContext parentContext);
 
   CommandContext setChild(CommandContext context);
 
