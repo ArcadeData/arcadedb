@@ -51,17 +51,7 @@ public class SQLFunctionRandomInt extends SQLFunctionAbstract {
     return RANDOM.nextInt(bound);
   }
 
-  @Override
-  public boolean aggregateResults() {
-    return false;
-  }
-
   public String getSyntax() {
     return "randomInt(<maximum>)";
-  }
-
-  @Override
-  public Object getResult() {
-    return null;
   }
 }

@@ -56,6 +56,7 @@ import com.arcadedb.query.sql.function.math.SQLFunctionMedian;
 import com.arcadedb.query.sql.function.math.SQLFunctionMin;
 import com.arcadedb.query.sql.function.math.SQLFunctionMode;
 import com.arcadedb.query.sql.function.math.SQLFunctionPercentile;
+import com.arcadedb.query.sql.function.math.SQLFunctionPow;
 import com.arcadedb.query.sql.function.math.SQLFunctionRandomInt;
 import com.arcadedb.query.sql.function.math.SQLFunctionSquareRoot;
 import com.arcadedb.query.sql.function.math.SQLFunctionStandardDeviation;
@@ -129,6 +130,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionMin.NAME, SQLFunctionMin.class);
     register(SQLFunctionMode.NAME, SQLFunctionMode.class);
     register(SQLFunctionPercentile.NAME, SQLFunctionPercentile.class);
+    register(SQLFunctionPow.NAME, SQLFunctionPow.class);
     register(SQLFunctionRandomInt.NAME, SQLFunctionRandomInt.class);
     register(SQLFunctionSquareRoot.NAME, SQLFunctionSquareRoot.class);
     register(SQLFunctionStandardDeviation.NAME, SQLFunctionStandardDeviation.class);
