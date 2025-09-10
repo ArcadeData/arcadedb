@@ -20,11 +20,16 @@ import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyArray;
 import org.graalvm.polyglot.proxy.ProxyObject;
 
-import java.io.*;
-import java.util.*;
-import java.util.function.*;
-import java.util.logging.*;
-import java.util.stream.*;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 /**
  * Javascript implementation of a function. To define the function, pass the function name, code and optional parameters in the constructor.
@@ -56,17 +61,16 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
     library.execute((polyglotEngine) -> {
       try {
         // DECLARE THE FUNCTION
-        String declaration = "function " + functionName + "( ";
+        StringBuilder declaration = new StringBuilder("function " + functionName + "( ");
         for (int i = 0; i < parameters.length; i++) {
           if (i > 0)
-            declaration += ", ";
-          declaration += parameters[i];
+            declaration.append(", ");
+          declaration.append(parameters[i]);
         }
-        declaration += " ) { ";
-        declaration += implementation;
-        declaration += " }";
-
-        return polyglotEngine.eval(declaration);
+        declaration.append(" ) { ");
+        declaration.append(implementation);
+        declaration.append(" }");
+        return polyglotEngine.eval(declaration.toString());
       } catch (final Exception e) {
         throw new FunctionExecutionException("Error on definition of function '" + functionName + "'");
       }
@@ -87,17 +91,10 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
           if (i > 0)
             declaration += ", ";
 
-          final boolean isString = parameters[i] instanceof String;
-          if (isString)
-            declaration += "'";
-
           declaration += parameters[i];
 
-          if (isString)
-            declaration += "'";
         }
         declaration += ")";
-
         final Value result = polyglotEngine.eval(declaration);
 
         return jsValueToJava(result);
