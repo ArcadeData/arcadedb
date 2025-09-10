@@ -135,7 +135,7 @@ public class JsonSerializer {
   private Object serializeCollection(final Database database, final Collection<?> value, Class<? extends Document> entryType) {
     Object result = value;
     if (useCollectionSize) {
-        result = value.size();
+      result = value.size();
     } else {
       if (useCollectionSizeForEdges && //
           ((entryType != null && entryType.isAssignableFrom(Edge.class)) || //
