@@ -31,10 +31,18 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.logging.Level;
 
+/**
+ * @deprecated use the new CompactionOrchestrator instead
+ */
+@Deprecated
 public class LSMTreeIndexCompactor {
   private boolean debug = false;
 

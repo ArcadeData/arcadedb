@@ -18,12 +18,13 @@ import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.lifecycle.Startables;
 import org.testcontainers.utility.MountableFile;
 
-import java.io.*;
-import java.nio.file.*;
-import java.time.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.function.*;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 public abstract class ContainersTestTemplate {
   public static final String                    IMAGE      = "arcadedata/arcadedb:latest";
@@ -35,6 +36,7 @@ public abstract class ContainersTestTemplate {
   protected           ToxiproxyContainer        toxiproxy;
   protected           ToxiproxyClient           toxiproxyClient;
   protected           List<GenericContainer<?>> containers = new ArrayList<>();
+  protected           TextSupplier              textSupplier;
 
   /**
    * Supplier to generate unique IDs.
@@ -51,6 +53,8 @@ public abstract class ContainersTestTemplate {
 
   @BeforeEach
   void setUp() throws IOException, InterruptedException {
+    textSupplier = new TextSupplier(20);
+
     deleteContainersDirectories();
 
     // METRICS
@@ -98,18 +102,21 @@ public abstract class ContainersTestTemplate {
   private void deleteContainersDirectories() {
     logger.info("Deleting containers directories");
     FileUtils.deleteRecursively(Path.of("./target/databases").toFile());
+    FileUtils.deleteRecursively(Path.of("./target/backups").toFile());
     FileUtils.deleteRecursively(Path.of("./target/replication").toFile());
-    FileUtils.deleteRecursively(Path.of("./target/logs").toFile());
+    FileUtils.deleteRecursively(Path.of("./target/log").toFile());
   }
 
   private void makeContainersDirectories(String name) {
     logger.info("Creating containers directories");
-    Path.of("./target/databases/" + name).toFile().mkdirs();
-    Path.of("./target/databases/" + name).toFile().setWritable(true, false);
-    Path.of("./target/replication/" + name).toFile().mkdirs();
-    Path.of("./target/replication/" + name).toFile().setWritable(true, false);
-    Path.of("./target/logs/" + name).toFile().mkdirs();
-    Path.of("./target/logs/" + name).toFile().setWritable(true, false);
+    Path.of("./target/databases", name).toFile().mkdirs();
+    Path.of("./target/databases", name).toFile().setWritable(true, false);
+    Path.of("./target/backups", name).toFile().mkdirs();
+    Path.of("./target/backups", name).toFile().setWritable(true, false);
+    Path.of("./target/replication", name).toFile().mkdirs();
+    Path.of("./target/replication", name).toFile().setWritable(true, false);
+    Path.of("./target/log", name).toFile().mkdirs();
+    Path.of("./target/log", name).toFile().setWritable(true, false);
   }
 
   /**
@@ -178,9 +185,10 @@ public abstract class ContainersTestTemplate {
         .withNetwork(network)
         .withNetworkAliases(name)
         .withStartupTimeout(Duration.ofSeconds(90))
-        .withCopyToContainer(MountableFile.forHostPath("./target/databases/" + name, 0777), "/home/arcadedb/databases")
-        .withCopyToContainer(MountableFile.forHostPath("./target/replication/" + name, 0777), "/home/arcadedb/replication")
-        .withCopyToContainer(MountableFile.forHostPath("./target/logs/" + name, 0777), "/home/arcadedb/logs")
+        .withCopyToContainer(MountableFile.forHostPath(Path.of("./target/databases", name), 0777), "/home/arcadedb/databases")
+        .withCopyToContainer(MountableFile.forHostPath(Path.of("./target/backups", name), 0777), "/home/arcadedb/backups")
+        .withCopyToContainer(MountableFile.forHostPath(Path.of("./target/replication", name), 0777), "/home/arcadedb/replication")
+        .withCopyToContainer(MountableFile.forHostPath(Path.of("./target/log", name), 0777), "/home/arcadedb/log")
 
         .withEnv("JAVA_OPTS", String.format("""
             -Darcadedb.server.rootPassword=playwithdata
@@ -194,6 +202,7 @@ public abstract class ContainersTestTemplate {
             -Darcadedb.ha.quorum=%s
             -Darcadedb.ha.serverRole=%s
             -Darcadedb.ha.serverList=%s
+            -Darcadedb.commitLockTimeout=10000
             -Darcadedb.ha.replicationQueueSize=1024
             """, name, ha, quorum, role, serverList))
         .withEnv("ARCADEDB_OPTS_MEMORY", "-Xms8G -Xmx8G")
