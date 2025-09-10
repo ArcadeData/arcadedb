@@ -47,9 +47,10 @@ import static com.arcadedb.schema.Property.CAT_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
-public class PostgresWJdbcTest extends BaseGraphServerTest {
+public class PostgresWJdbcIT extends BaseGraphServerTest {
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
@@ -69,15 +70,15 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
 
   @Test
   void testBackupDatabase() throws Exception {
-    try (final Connection conn = getConnection()) {
-      try (final Statement st = conn.createStatement()) {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
         ResultSet backupDatabase = st.executeQuery("{sql}BACKUP DATABASE");
         while (backupDatabase.next()) {
           assertThat(backupDatabase.getString("result")).isEqualTo("OK");
           assertThat(backupDatabase.getString("backupFile")).startsWith("postgresdb-backup-");
         }
       }
-      try (final Statement st = conn.createStatement()) {
+      try (var st = conn.createStatement()) {
         ResultSet backupDatabase = st.executeQuery("{sqlscript}BACKUP DATABASE");
         while (backupDatabase.next()) {
           assertThat(backupDatabase.getString("result")).isEqualTo("OK");
@@ -89,42 +90,36 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
 
   @Test
   public void testTypeNotExistsErrorManagement() throws Exception {
-    try (final Connection conn = getConnection()) {
-      try (final Statement st = conn.createStatement()) {
-        try {
-          st.executeQuery("SELECT * FROM V");
-          fail("The query should go in error");
-        } catch (final PSQLException e) {
-        }
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        assertThatThrownBy(() -> st.executeQuery("SELECT * FROM V"))
+            .isInstanceOf(PSQLException.class);
       }
     }
   }
 
   @Test
   public void testParsingErrorMgmt() throws Exception {
-    try (final Connection conn = getConnection()) {
-      try (final Statement st = conn.createStatement()) {
-        try {
-          st.executeQuery("SELECT 'abc \\u30 def';");
-          fail("The query should go in error");
-        } catch (final PSQLException e) {
-          assertThat(e.toString().contains("Syntax error")).isTrue();
-        }
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        assertThatThrownBy(() -> st.executeQuery("SELECT 'abc \\u30 def';"))
+            .isInstanceOf(PSQLException.class)
+            .hasMessageContaining("Syntax error");
       }
     }
   }
 
   @Test
   void testGremlinQuery() throws Exception {
-    try (final Connection conn = getConnection()) {
+    try (var conn = getConnection()) {
       conn.setAutoCommit(false);
-      try (final Statement st = conn.createStatement()) {
+      try (var st = conn.createStatement()) {
         st.execute("create vertex type V");
         for (int i = 0; i < 11; i++) {
           st.execute("create vertex V set id = " + i + ", name = 'Jay', lastName = 'Miner'");
         }
 
-        final ResultSet rs = st.executeQuery("{gremlin}g.V().hasLabel('V').order().by('id').limit(10)");
+        var rs = st.executeQuery("{gremlin}g.V().hasLabel('V').order().by('id').limit(10)");
         assertThat(rs.next()).isTrue();
         assertThat(rs.getInt("id")).isEqualTo(0);
         assertThat(rs.getString("name")).isEqualTo("Jay");
@@ -135,10 +130,10 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
 
   @Test
   void testSelectSchemaTypes() throws SQLException, ClassNotFoundException {
-    try (final Connection conn = getConnection()) {
-      try (final Statement st = conn.createStatement()) {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
 
-        final ResultSet rs = st.executeQuery("{sql}select from schema:types");
+        var rs = st.executeQuery("{sql}select from schema:types");
         while (rs.next()) {
           if (rs.getArray("properties").getResultSet().next()) {
             ResultSet props = rs.getArray("properties").getResultSet();
@@ -153,9 +148,9 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
 
   @Test
   void testScript() throws Exception {
-    try (final Connection conn = getConnection()) {
+    try (var conn = getConnection()) {
       conn.setAutoCommit(false);
-      try (final Statement st = conn.createStatement()) {
+      try (var st = conn.createStatement()) {
         st.execute("""
             {sqlscript}create vertex type V IF NOT EXISTS;
             create vertex V set id = 0, name = 'Jay', lastName = 'Miner';
@@ -171,7 +166,7 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
             create vertex V set id = 10, name = 'Jay', lastName = 'Miner';
             """);
 
-        final ResultSet rs = st.executeQuery("{gremlin}g.V().hasLabel('V').order().by('id').limit(10)");
+        var rs = st.executeQuery("{gremlin}g.V().hasLabel('V').order().by('id').limit(10)");
         assertThat(rs.next()).isTrue();
         assertThat(rs.getInt("id")).isEqualTo(0);
         assertThat(rs.getString("name")).isEqualTo("Jay");
@@ -186,14 +181,25 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
     final long now = System.currentTimeMillis();
 
     try (final Connection conn = getConnection()) {
-      try (final Statement st = conn.createStatement()) {
+      try (var st = conn.createStatement()) {
         st.execute("create vertex type V");
         for (int i = 0; i < TOTAL; i++) {
           st.execute("create vertex V set id = " + i + ", name = 'Jay', lastName = 'Miner'");
         }
 
-        final PreparedStatement pst = conn.prepareStatement(
-            "create vertex V set name = ?, lastName = ?, short = ?, int = ?, long = ?, float = ?, double = ?, boolean = ?, date = ?, timestamp = ?");
+        var pst = conn.prepareStatement(
+            """
+                create vertex V set name = ?,
+                lastName = ?,
+                short = ?,
+                int = ?,
+                long = ?,
+                float = ?,
+                double = ?,
+                boolean = ?,
+                date = ?,
+                timestamp = ?
+                """);
         pst.setString(1, "Rocky");
         pst.setString(2, "Balboa");
         pst.setShort(3, (short) 3);
@@ -204,6 +210,7 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
         pst.setBoolean(8, false);
         pst.setDate(9, new java.sql.Date(now));
         pst.setTimestamp(10, new java.sql.Timestamp(now));
+
         pst.execute();
         pst.close();
 
@@ -264,7 +271,7 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
   public void queryTransaction() throws Exception {
     try (final Connection conn = getConnection()) {
       conn.setAutoCommit(false);
-      try (final Statement st = conn.createStatement()) {
+      try (var st = conn.createStatement()) {
         st.execute("begin");
         st.execute("create vertex type V");
         st.execute("create vertex V set name = 'Jay', lastName = 'Miner'");
@@ -275,7 +282,7 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
         pst.execute();
         pst.close();
 
-        final ResultSet rs = st.executeQuery("SELECT * FROM V");
+        var rs = st.executeQuery("SELECT * FROM V");
 
         assertThat(rs.isAfterLast()).isFalse();
 
@@ -307,7 +314,7 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
     try (final Connection conn = getConnection()) {
       conn.setAutoCommit(false);
 
-      try (final Statement st = conn.createStatement()) {
+      try (var st = conn.createStatement()) {
         st.execute("CREATE VERTEX TYPE PersonVertex;");
 
         for (int i = 0; i < 100; i++) {
@@ -315,7 +322,7 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
           st.execute("{cypher} CREATE (james:PersonVertex {name: \"James\", height: 1.9});");
           st.execute("{cypher} CREATE (henry:PersonVertex {name: \"Henry\"});");
 
-          final ResultSet rs = st.executeQuery("{cypher} MATCH (person:PersonVertex) RETURN person.name, person.height;");
+          var rs = st.executeQuery("{cypher} MATCH (person:PersonVertex) RETURN person.name, person.height;");
 
           int numberOfPeople = 0;
           while (rs.next()) {
@@ -346,8 +353,8 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
   @Test
   public void showTxIsolationLevel() throws Exception {
     try (final Connection conn = getConnection()) {
-      try (final Statement st = conn.createStatement()) {
-        try (final ResultSet rs = st.executeQuery("SHOW TRANSACTION ISOLATION LEVEL")) {
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SHOW TRANSACTION ISOLATION LEVEL")) {
           assertThat(rs.next()).isTrue();
         }
       }
@@ -357,7 +364,7 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
   @Test
   public void testISODateFormat() throws Exception {
     try (final Connection conn = getConnection()) {
-      try (final Statement st = conn.createStatement()) {
+      try (var st = conn.createStatement()) {
         st.execute("SET datestyle TO 'ISO'");
       }
     }
@@ -372,13 +379,12 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
   private Connection getConnection() throws ClassNotFoundException, SQLException {
     Class.forName("org.postgresql.Driver");
 
-    final String url = "jdbc:postgresql://localhost/" + getDatabaseName();
-    final Properties props = new Properties();
+    var url = "jdbc:postgresql://localhost/" + getDatabaseName();
+    var props = new Properties();
     props.setProperty("user", "root");
     props.setProperty("password", DEFAULT_PASSWORD_FOR_TESTS);
     props.setProperty("ssl", "false");
-    final Connection conn = DriverManager.getConnection(url, props);
-    return conn;
+    return DriverManager.getConnection(url, props);
   }
 
   protected String getDatabaseName() {
@@ -387,8 +393,8 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
 
   @Test
   void createSchemaWithSqlScript() throws SQLException, ClassNotFoundException {
-    try (final Connection conn = getConnection()) {
-      try (final Statement st = conn.createStatement()) {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
 
         st.execute("""
             {sqlscript}
@@ -461,8 +467,8 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
                     };
             """);
       }
-      try (final Statement st = conn.createStatement()) {
-        try (final ResultSet rs = st.executeQuery("SELECT * FROM article")) {
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SELECT * FROM article")) {
           assertThat(rs.next()).isTrue();
           assertThat(rs.getString("title")).isEqualTo("My first article");
           //comments is an array of embedded docs on first row
@@ -490,19 +496,19 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
 
   private static List<?> randomValues(Class<?> type) {
     if (type == Boolean.class) {
-      return IntStream.range(0, PostgresWJdbcTest.DEFAULT_SIZE)
+      return IntStream.range(0, PostgresWJdbcIT.DEFAULT_SIZE)
           .mapToObj(i -> RANDOM.nextBoolean())
           .collect(Collectors.toList());
     } else if (type == Double.class) {
-      return IntStream.range(0, PostgresWJdbcTest.DEFAULT_SIZE)
+      return IntStream.range(0, PostgresWJdbcIT.DEFAULT_SIZE)
           .mapToObj(i -> RANDOM.nextDouble() * 200 - 100)
           .collect(Collectors.toList());
     } else if (type == Integer.class) {
-      return IntStream.range(0, PostgresWJdbcTest.DEFAULT_SIZE)
+      return IntStream.range(0, PostgresWJdbcIT.DEFAULT_SIZE)
           .mapToObj(i -> RANDOM.nextInt(201) - 100)
           .collect(Collectors.toList());
     } else if (type == String.class) {
-      return IntStream.range(0, PostgresWJdbcTest.DEFAULT_SIZE)
+      return IntStream.range(0, PostgresWJdbcIT.DEFAULT_SIZE)
           .mapToObj(i -> {
             int length = RANDOM.nextInt(11) + 5; // 5 to 15
             return generateRandomString(length);
@@ -527,13 +533,13 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
 //  @ValueSource(classes = { Boolean.class, Double.class, Integer.class, String.class })
   @ValueSource(classes = { String.class })
   public void testReturnArray(Class<?> typeToTest) throws Exception {
-    try (Connection conn = getConnection()) {
+    try (var conn = getConnection()) {
       conn.setAutoCommit(true);
 
       String typeName = typeToTest.getSimpleName();
       String arcadeName = "TEXT_" + typeName;
 
-      try (Statement st = conn.createStatement()) {
+      try (var st = conn.createStatement()) {
         st.execute("CREATE VERTEX TYPE `" + arcadeName + "` IF NOT EXISTS");
         st.execute("CREATE PROPERTY " + arcadeName + ".str IF NOT EXISTS STRING");
         st.execute("CREATE PROPERTY " + arcadeName + ".data IF NOT EXISTS LIST");
@@ -588,8 +594,8 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
 
   @Test
   void testNullValuesMapping() throws SQLException, ClassNotFoundException {
-    try (Connection conn = getConnection()) {
-      Statement stmt = conn.createStatement();
+    try (var conn = getConnection()) {
+      var stmt = conn.createStatement();
 
       stmt.execute("""
           {sqlscript}
@@ -624,25 +630,25 @@ public class PostgresWJdbcTest extends BaseGraphServerTest {
 
   @Test
   void createVertexCypherQueryParams() throws Exception {
-    try (Connection conn = getConnection()) {
-      try (final Statement st = conn.createStatement()) {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
         st.execute("create vertex type City");
       }
 
-      try (final PreparedStatement pst = conn.prepareStatement("create vertex City set id = ? ;")) {
+      try (var pst = conn.prepareStatement("create vertex City set id = ? ;")) {
         pst.setString(1, "C1");
         pst.execute();
       }
 
-      try (final PreparedStatement st = conn.prepareStatement("{cypher} CREATE (n:City {id: ? }) RETURN n")) {
+      try (var st = conn.prepareStatement("{cypher} CREATE (n:City {id: ? }) RETURN n")) {
         st.setString(1, "C2");
         boolean execute = st.execute();
         assertThat(execute).isTrue();
 
       }
-      try (final PreparedStatement st = conn.prepareStatement("{cypher} MATCH (n:City) WHERE n.id = ? RETURN n")) {
+      try (var st = conn.prepareStatement("{cypher} MATCH (n:City) WHERE n.id = ? RETURN n")) {
         st.setString(1, "C2");
-        try (final ResultSet rs = st.executeQuery()) {
+        try (var rs = st.executeQuery()) {
           assertThat(rs.next()).isTrue();
           assertThat(rs.getString("id")).isEqualTo("C2");
           assertThat(rs.next()).isFalse();

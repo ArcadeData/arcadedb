@@ -24,10 +24,9 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
-
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -69,7 +68,7 @@ public class LSMTreeIndexCompositeTest extends TestHelper {
       final TypeIndex index = database.getSchema().getType("File").getIndexesByProperties("directoryId", "fileId").get(0);
       for (int i = 0; i < TOT; ++i) {
         final IndexCursor value = index.get(new Object[] { i, null });
-        assertThat(value.hasNext()).withFailMessage( "id[" + i + "]").isTrue();
+        assertThat(value.hasNext()).withFailMessage("id[" + i + "]").isTrue();
 
         final Vertex v = value.next().asVertex();
         assertThat(v.get("directoryId")).isEqualTo(i);
@@ -85,14 +84,17 @@ public class LSMTreeIndexCompositeTest extends TestHelper {
       file.createProperty("absoluteId", Integer.class);
       file.createProperty("directoryId", Integer.class);
       file.createProperty("fileId", Integer.class);
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "File", "absoluteId");
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "File", "directoryId", "fileId");
+      database.getSchema().buildTypeIndex("File", new String[] { "absoluteId" }).withType(Schema.INDEX_TYPE.LSM_TREE)
+          .withUnique(true).create();
+      database.getSchema().buildTypeIndex("File", new String[] { "directoryId", "fileId" })
+          .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).create();
 
       file.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
 
       assertThat(database.getSchema().existsType("HasChildren")).isFalse();
       database.getSchema().createEdgeType("HasChildren");
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "HasChildren", "@out", "@in");
+      database.getSchema().buildTypeIndex("HasChildren", new String[] { "@out", "@in" }).withType(Schema.INDEX_TYPE.LSM_TREE)
+          .withUnique(true).create();
 
       int fileId = 0;
       for (int i = 0; i < TOT; ++i) {

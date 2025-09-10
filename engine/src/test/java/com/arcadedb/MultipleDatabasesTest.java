@@ -24,9 +24,7 @@ import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.utility.FileUtils;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
-
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -37,7 +35,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class MultipleDatabasesTest extends TestHelper {
   @Test
@@ -56,12 +54,8 @@ public class MultipleDatabasesTest extends TestHelper {
     // CREATE VERTEX AND DOCUMENT AS EMBEDDED
     database.transaction(() -> {
       final MutableVertex v = database.newVertex("V1").set("db", 1).save();
-      try {
-        v.newEmbeddedDocument("V1", "embedded").set("db", 1).set("embedded", true).save();
-        fail();
-      } catch (final IllegalArgumentException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> v.newEmbeddedDocument("V1", "embedded").set("db", 1).set("embedded", true).save())
+          .isInstanceOf(IllegalArgumentException.class);
       v.newEmbeddedDocument("Embedded", "embedded").set("db", 1).set("embedded", true).save();
     });
 
@@ -99,8 +93,11 @@ public class MultipleDatabasesTest extends TestHelper {
 
     // CHECK COPIED RECORDS TOO
     assertThat(database3.iterateType("V1", true).next().asVertex().getEmbedded("embedded1").get("db")).isEqualTo(1);
-    assertThat(((List<EmbeddedDocument>) database3.iterateType("V1", true).next().asVertex().get("list2")).get(0).get("db")).isEqualTo(2);
-    assertThat(((Map<String, EmbeddedDocument>) database3.iterateType("V1", true).next().asVertex().get("map2")).get("copied2").get("db")).isEqualTo(2);
+    assertThat(
+        ((List<EmbeddedDocument>) database3.iterateType("V1", true).next().asVertex().get("list2")).getFirst().get("db")).isEqualTo(
+        2);
+    assertThat(((Map<String, EmbeddedDocument>) database3.iterateType("V1", true).next().asVertex().get("map2")).get("copied2")
+        .get("db")).isEqualTo(2);
 
     database.close();
     database2.close();
@@ -111,12 +108,8 @@ public class MultipleDatabasesTest extends TestHelper {
 
   @Test
   public void testErrorMultipleDatabaseInstancesSamePath() {
-    try {
-      new DatabaseFactory(getDatabasePath()).open();
-      fail("");
-    } catch (final DatabaseOperationException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> new DatabaseFactory(getDatabasePath()).open())
+        .isInstanceOf(DatabaseOperationException.class);
   }
 
   @AfterEach

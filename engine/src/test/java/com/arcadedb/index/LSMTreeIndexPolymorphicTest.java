@@ -26,15 +26,13 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.Map;
 
-import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
 public class LSMTreeIndexPolymorphicTest extends TestHelper {
@@ -46,19 +44,14 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
   public void testPolymorphic() {
     populate(Schema.INDEX_TYPE.LSM_TREE);
 
-    try {
+    assertThatThrownBy(() -> {
       final MutableDocument docChildDuplicated = database.newDocument("TestChild");
       database.transaction(() -> {
         docChildDuplicated.set("name", "Root");
         assertThat(docChildDuplicated.get("name")).isEqualTo("Root");
         docChildDuplicated.save();
       }, true, 0);
-
-      fail("Duplicated shouldn't be allowed by unique index on sub type");
-
-    } catch (final DuplicatedKeyException e) {
-      // EXPECTED
-    }
+    }).isInstanceOf(DuplicatedKeyException.class);
 
     checkQueries();
   }

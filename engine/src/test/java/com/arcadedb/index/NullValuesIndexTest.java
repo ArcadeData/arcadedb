@@ -26,12 +26,10 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
-
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class NullValuesIndexTest extends TestHelper {
   private static final int    TOT       = 10;
@@ -45,52 +43,69 @@ public class NullValuesIndexTest extends TestHelper {
     final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
     type.createProperty("id", Integer.class);
     type.createProperty("name", String.class);
-    final Index indexes = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
-    final Index indexes2 = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE,
-            LSMTreeIndexAbstract.NULL_STRATEGY.ERROR, null);
+    final TypeIndex indexes = database.getSchema()
+        .buildTypeIndex(TYPE_NAME, new String[] { "id" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(true)
+        .withPageSize(PAGE_SIZE)
+        .create();
+    database.getSchema()
+        .buildTypeIndex(TYPE_NAME, new String[] { "name" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(false)
+        .withPageSize(PAGE_SIZE)
+        .withNullStrategy(LSMTreeIndexAbstract.NULL_STRATEGY.ERROR)
+        .create();
 
-    try {
-      database.transaction(() -> {
-        for (int i = 0; i < TOT; ++i) {
-          final MutableDocument v = database.newDocument(TYPE_NAME);
-          v.set("id", i);
-          v.set("name", "Jay");
-          v.set("surname", "Miner");
-          v.save();
-        }
-
+    assertThatThrownBy(() -> database.transaction(() -> {
+      for (int i = 0; i < TOT; ++i) {
         final MutableDocument v = database.newDocument(TYPE_NAME);
-        v.set("id", TOT);
+        v.set("id", i);
+        v.set("name", "Jay");
+        v.set("surname", "Miner");
         v.save();
+      }
 
-        database.commit();
-        database.begin();
+      final MutableDocument v = database.newDocument(TYPE_NAME);
+      v.set("id", TOT);
+      v.save();
 
-        for (final Index index : ((TypeIndex) indexes).getIndexesOnBuckets()) {
-          assertThat(((IndexInternal) index).getStats().get("pages") > 1).isTrue();
-        }
-      });
-      fail("");
-    } catch (final TransactionException e) {
-      assertThat(e.getCause() instanceof IllegalArgumentException).isTrue();
-      assertThat(e.getCause().getMessage().startsWith("Indexed key V[name] cannot be NULL")).isTrue();
-    }
+      database.commit();
+      database.begin();
+
+      for (final IndexInternal index : indexes.getIndexesOnBuckets()) {
+        assertThat(index.getStats().get("pages")).isGreaterThan(1);
+      }
+    })).isInstanceOf(TransactionException.class)
+        .cause()
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageStartingWith("Indexed key V[name] cannot be NULL");
   }
 
   @Test
   public void testNullStrategySkip() {
     assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 
-    final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
+    final DocumentType type = database.getSchema()
+        .buildDocumentType()
+        .withName(TYPE_NAME)
+        .withTotalBuckets(3)
+        .create();
     type.createProperty("id", Integer.class);
     type.createProperty("name", String.class);
-    final Index indexes = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
-    final Index indexes2 = database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE,
-            LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
+    database.getSchema()
+        .buildTypeIndex(TYPE_NAME, new String[] { "id" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(true)
+        .withPageSize(PAGE_SIZE)
+        .create();
+    database.getSchema()
+        .buildTypeIndex(TYPE_NAME, new String[] { "name" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(false)
+        .withPageSize(PAGE_SIZE)
+        .withNullStrategy(LSMTreeIndexAbstract.NULL_STRATEGY.SKIP)
+        .create();
 
     database.transaction(() -> {
       for (int i = 0; i < TOT; ++i) {
@@ -147,10 +162,19 @@ public class NullValuesIndexTest extends TestHelper {
     final VertexType type = database.getSchema().buildVertexType().withName(TYPE_NAME).withTotalBuckets(3).create();
     type.createProperty("id", Integer.class);
     type.createProperty("absent", String.class);
-    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
     database.getSchema()
-        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "absent" }, PAGE_SIZE,
-            LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
+        .buildTypeIndex(TYPE_NAME, new String[] { "id" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(true)
+        .withPageSize(PAGE_SIZE)
+        .create();
+    database.getSchema()
+        .buildTypeIndex(TYPE_NAME, new String[] { "absent" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(true)
+        .withPageSize(PAGE_SIZE)
+        .withNullStrategy(LSMTreeIndexAbstract.NULL_STRATEGY.SKIP)
+        .create();
 
     database.transaction(() -> {
       for (int i = 0; i < TOT; ++i) {

@@ -41,12 +41,10 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
 
 public class TypeLSMTreeIndexTest extends TestHelper {
   private static final int    TOT       = 100000;
@@ -71,7 +69,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
         total++;
         assertThat(results).hasSize(1);
-        assertThat((int) results.get(0)).isEqualTo(i);
+        assertThat((int) results.getFirst()).isEqualTo(i);
       }
 
       assertThat(total).isEqualTo(TOT);
@@ -91,10 +89,10 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       for (int i = 0; i < TOT - 1; ++i) {
         int total = 0;
 
-        for (final Index index : indexes) {
+        for (final RangeIndex index : indexes) {
           assertThat(index).isNotNull();
 
-          final IndexCursor iterator = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i + 1 }, true);
+          final IndexCursor iterator = index.range(true, new Object[] { i }, true, new Object[] { i + 1 }, true);
           assertThat((Iterator<? extends Identifiable>) iterator).isNotNull();
 
           while (iterator.hasNext()) {
@@ -158,26 +156,19 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       for (int i = 0; i < TOT - 1; ++i) {
         int total = 0;
 
-        try {
-          ResultSet iterator = database.command("sql",
-              "select from " + TYPE_NAME + " where id >= " + i + " and id <= " + (i + 1));
+        ResultSet iterator = database.command("sql", "select from " + TYPE_NAME + " where id >= " + i + " and id <= " + (i + 1));
 
-          assertThat((Iterator<? extends Result>) iterator).isNotNull();
+        assertThat((Iterator<? extends Result>) iterator).isNotNull();
 
-          while (iterator.hasNext()) {
-            Result value = iterator.next();
+        while (iterator.hasNext()) {
+          Result value = iterator.next();
 
-            assertThat(value).isNotNull();
+          assertThat(value).isNotNull();
 
-            int id = value.<Integer>getProperty("id");
+          int id = value.<Integer>getProperty("id");
 
-            assertThat(id)
-                .isGreaterThanOrEqualTo(i)
-                .isLessThanOrEqualTo(i + 1);
-            total++;
-          }
-        } catch (final Exception e) {
-          fail(e);
+          assertThat(id).isGreaterThanOrEqualTo(i).isLessThanOrEqualTo(i + 1);
+          total++;
         }
         assertThat(total).isEqualTo(2).withFailMessage("For ids >= " + i + " and <= " + (i + 1));
       }
@@ -192,7 +183,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
         // WAIT FOR THE INDEX TO BE COMPACTED
         Thread.sleep(1000);
       } catch (final InterruptedException e) {
-        e.printStackTrace();
+        //noop
       }
 
       int total = 0;
@@ -202,29 +193,19 @@ public class TypeLSMTreeIndexTest extends TestHelper {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        try {
-          iterator = ((RangeIndex) index).iterator(true);
+        iterator = ((RangeIndex) index).iterator(true);
 
-//            LogManager.instance()
-//                .log(this, Level.INFO, "*****************************************************************************\nCURSOR BEGIN%s", iterator.dumpStats());
+        assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
-          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
+        while (iterator.hasNext()) {
+          assertThat(iterator.next()).isNotNull();
 
-          while (iterator.hasNext()) {
-            assertThat(iterator.next()).isNotNull();
+          assertThat(iterator.getKeys()).isNotNull();
+          assertThat(iterator.getKeys().length).isEqualTo(1);
 
-            assertThat(iterator.getKeys()).isNotNull();
-            assertThat(iterator.getKeys().length).isEqualTo(1);
-
-            total++;
-          }
-
-//            LogManager.instance().log(this, Level.INFO, "*****************************************************************************\nCURSOR END total=%d %s", total,
-//                iterator.dumpStats());
-
-        } catch (final Exception e) {
-          fail(e);
+          total++;
         }
+
       }
 
       assertThat(total).isEqualTo(TOT);
@@ -245,26 +226,20 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (final Index index : indexes) {
+      for (final RangeIndex index : indexes) {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        try {
-          iterator = ((RangeIndex) index).iterator(false);
-          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
+        iterator = index.iterator(false);
+        assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
-          while (iterator.hasNext()) {
-            assertThat(iterator.next()).isNotNull();
+        while (iterator.hasNext()) {
+          assertThat(iterator.next()).isNotNull();
 
-            assertThat(iterator.getKeys()).isNotNull();
-            assertThat(iterator.getKeys().length).isEqualTo(1);
+          assertThat(iterator.getKeys()).isNotNull();
+          assertThat(iterator.getKeys().length).isEqualTo(1);
 
-            //LogManager.instance().log(this, Level.INFO, "Index %s Key %s", null, index, Arrays.toString(iterator.getKeys()));
-
-            total++;
-          }
-        } catch (final Exception e) {
-          fail(e);
+          total++;
         }
       }
 
@@ -279,25 +254,21 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (final Index index : indexes) {
+      for (final RangeIndex index : indexes) {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        try {
-          iterator = ((RangeIndex) index).iterator(true, new Object[] { 10 }, true);
+        iterator = index.iterator(true, new Object[] { 10 }, true);
 
-          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
+        assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
-          while (iterator.hasNext()) {
-            assertThat(iterator.next()).isNotNull();
+        while (iterator.hasNext()) {
+          assertThat(iterator.next()).isNotNull();
 
-            assertThat(iterator.getKeys()).isNotNull();
-            assertThat(iterator.getKeys().length).isEqualTo(1);
+          assertThat(iterator.getKeys()).isNotNull();
+          assertThat(iterator.getKeys().length).isEqualTo(1);
 
-            total++;
-          }
-        } catch (final Exception e) {
-          fail(e);
+          total++;
         }
       }
 
@@ -312,25 +283,21 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (final Index index : indexes) {
+      for (final RangeIndex index : indexes) {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        try {
-          iterator = ((RangeIndex) index).iterator(true, new Object[] { 10 }, false);
+        iterator = index.iterator(true, new Object[] { 10 }, false);
 
-          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
+        assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
-          while (iterator.hasNext()) {
-            assertThat(iterator.next()).isNotNull();
+        while (iterator.hasNext()) {
+          assertThat(iterator.next()).isNotNull();
 
-            assertThat(iterator.getKeys()).isNotNull();
-            assertThat(iterator.getKeys().length).isEqualTo(1);
+          assertThat(iterator.getKeys()).isNotNull();
+          assertThat(iterator.getKeys().length).isEqualTo(1);
 
-            total++;
-          }
-        } catch (final Exception e) {
-          fail(e);
+          total++;
         }
       }
 
@@ -345,24 +312,20 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (final Index index : indexes) {
+      for (final RangeIndex index : indexes) {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        try {
-          iterator = ((RangeIndex) index).iterator(false, new Object[] { 9 }, true);
-          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
+        iterator = index.iterator(false, new Object[] { 9 }, true);
+        assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
-          while (iterator.hasNext()) {
-            assertThat(iterator.next()).isNotNull();
+        while (iterator.hasNext()) {
+          assertThat(iterator.next()).isNotNull();
 
-            assertThat(iterator.getKeys()).isNotNull();
-            assertThat(iterator.getKeys().length).isEqualTo(1);
+          assertThat(iterator.getKeys()).isNotNull();
+          assertThat(iterator.getKeys().length).isEqualTo(1);
 
-            total++;
-          }
-        } catch (final Exception e) {
-          fail(e);
+          total++;
         }
       }
 
@@ -377,24 +340,20 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (final Index index : indexes) {
+      for (final RangeIndex index : indexes) {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        try {
-          iterator = ((RangeIndex) index).iterator(false, new Object[] { 9 }, false);
-          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
+        iterator = index.iterator(false, new Object[] { 9 }, false);
+        assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
-          while (iterator.hasNext()) {
-            assertThat(iterator.next()).isNotNull();
+        while (iterator.hasNext()) {
+          assertThat(iterator.next()).isNotNull();
 
-            assertThat(iterator.getKeys()).isNotNull();
-            assertThat(iterator.getKeys().length).isEqualTo(1);
+          assertThat(iterator.getKeys()).isNotNull();
+          assertThat(iterator.getKeys().length).isEqualTo(1);
 
-            total++;
-          }
-        } catch (final Exception e) {
-          fail(e);
+          total++;
         }
       }
 
@@ -409,29 +368,25 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (final Index index : indexes) {
+      for (final RangeIndex index : indexes) {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        try {
-          iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, true, new Object[] { 19 }, true);
-          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
+        iterator = index.range(true, new Object[] { 10 }, true, new Object[] { 19 }, true);
+        assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
-          while (iterator.hasNext()) {
-            final Identifiable value = iterator.next();
+        while (iterator.hasNext()) {
+          final Identifiable value = iterator.next();
 
-            assertThat(value).isNotNull();
+          assertThat(value).isNotNull();
 
-            final int fieldValue = (int) value.asDocument().get("id");
-            assertThat(fieldValue >= 10 && fieldValue <= 19).isTrue();
+          final int fieldValue = (int) value.asDocument().get("id");
+          assertThat(fieldValue >= 10 && fieldValue <= 19).isTrue();
 
-            assertThat(iterator.getKeys()).isNotNull();
-            assertThat(iterator.getKeys().length).isEqualTo(1);
+          assertThat(iterator.getKeys()).isNotNull();
+          assertThat(iterator.getKeys().length).isEqualTo(1);
 
-            total++;
-          }
-        } catch (final Exception e) {
-          fail(e);
+          total++;
         }
       }
 
@@ -446,29 +401,25 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (final Index index : indexes) {
+      for (final RangeIndex index : indexes) {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        try {
-          iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, true, new Object[] { 19 }, false);
-          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
+        iterator = index.range(true, new Object[] { 10 }, true, new Object[] { 19 }, false);
+        assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
-          while (iterator.hasNext()) {
-            final Identifiable value = iterator.next();
+        while (iterator.hasNext()) {
+          final Identifiable value = iterator.next();
 
-            assertThat(value).isNotNull();
+          assertThat(value).isNotNull();
 
-            final int fieldValue = (int) value.asDocument().get("id");
-            assertThat(fieldValue >= 10 && fieldValue < 19).isTrue();
+          final int fieldValue = (int) value.asDocument().get("id");
+          assertThat(fieldValue >= 10 && fieldValue < 19).isTrue();
 
-            assertThat(iterator.getKeys()).isNotNull();
-            assertThat(iterator.getKeys().length).isEqualTo(1);
+          assertThat(iterator.getKeys()).isNotNull();
+          assertThat(iterator.getKeys().length).isEqualTo(1);
 
-            total++;
-          }
-        } catch (final Exception e) {
-          fail(e);
+          total++;
         }
       }
 
@@ -483,29 +434,25 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (final Index index : indexes) {
+      for (final RangeIndex index : indexes) {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        try {
-          iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, false, new Object[] { 19 }, true);
-          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
+        iterator = index.range(true, new Object[] { 10 }, false, new Object[] { 19 }, true);
+        assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
-          while (iterator.hasNext()) {
-            final Identifiable value = iterator.next();
+        while (iterator.hasNext()) {
+          final Identifiable value = iterator.next();
 
-            assertThat(value).isNotNull();
+          assertThat(value).isNotNull();
 
-            final int fieldValue = (int) value.asDocument().get("id");
-            assertThat(fieldValue > 10 && fieldValue <= 19).isTrue();
+          final int fieldValue = (int) value.asDocument().get("id");
+          assertThat(fieldValue > 10 && fieldValue <= 19).isTrue();
 
-            assertThat(iterator.getKeys()).isNotNull();
-            assertThat(iterator.getKeys().length).isEqualTo(1);
+          assertThat(iterator.getKeys()).isNotNull();
+          assertThat(iterator.getKeys().length).isEqualTo(1);
 
-            total++;
-          }
-        } catch (final Exception e) {
-          fail(e);
+          total++;
         }
       }
 
@@ -520,29 +467,25 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (final Index index : indexes) {
+      for (final RangeIndex index : indexes) {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        try {
-          iterator = ((RangeIndex) index).range(false, new Object[] { 19 }, false, new Object[] { 10 }, true);
-          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
+        iterator = index.range(false, new Object[] { 19 }, false, new Object[] { 10 }, true);
+        assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
-          while (iterator.hasNext()) {
-            final Identifiable value = iterator.next();
+        while (iterator.hasNext()) {
+          final Identifiable value = iterator.next();
 
-            assertThat(value).isNotNull();
+          assertThat(value).isNotNull();
 
-            final int fieldValue = (int) value.asDocument().get("id");
-            assertThat(fieldValue >= 10 && fieldValue < 19).isTrue();
+          final int fieldValue = (int) value.asDocument().get("id");
+          assertThat(fieldValue >= 10 && fieldValue < 19).isTrue();
 
-            assertThat(iterator.getKeys()).isNotNull();
-            assertThat(iterator.getKeys().length).isEqualTo(1);
+          assertThat(iterator.getKeys()).isNotNull();
+          assertThat(iterator.getKeys().length).isEqualTo(1);
 
-            total++;
-          }
-        } catch (final Exception e) {
-          fail(e);
+          total++;
         }
       }
 
@@ -557,29 +500,25 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (final Index index : indexes) {
+      for (final RangeIndex index : indexes) {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        try {
-          iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, false, new Object[] { 19 }, false);
-          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
+        iterator = index.range(true, new Object[] { 10 }, false, new Object[] { 19 }, false);
+        assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
-          while (iterator.hasNext()) {
-            final Identifiable value = iterator.next();
+        while (iterator.hasNext()) {
+          final Identifiable value = iterator.next();
 
-            assertThat(value).isNotNull();
+          assertThat(value).isNotNull();
 
-            final int fieldValue = (int) value.asDocument().get("id");
-            assertThat(fieldValue > 10 && fieldValue < 19).isTrue();
+          final int fieldValue = (int) value.asDocument().get("id");
+          assertThat(fieldValue > 10 && fieldValue < 19).isTrue();
 
-            assertThat(iterator.getKeys()).isNotNull();
-            assertThat(iterator.getKeys().length).isEqualTo(1);
+          assertThat(iterator.getKeys()).isNotNull();
+          assertThat(iterator.getKeys().length).isEqualTo(1);
 
-            total++;
-          }
-        } catch (final Exception e) {
-          fail(e);
+          total++;
         }
       }
 
@@ -594,29 +533,25 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (final Index index : indexes) {
+      for (final RangeIndex index : indexes) {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        try {
-          iterator = ((RangeIndex) index).range(false, new Object[] { 19 }, false, new Object[] { 10 }, false);
-          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
+        iterator = index.range(false, new Object[] { 19 }, false, new Object[] { 10 }, false);
+        assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
-          while (iterator.hasNext()) {
-            final Identifiable value = iterator.next();
+        while (iterator.hasNext()) {
+          final Identifiable value = iterator.next();
 
-            assertThat(value).isNotNull();
+          assertThat(value).isNotNull();
 
-            final int fieldValue = (int) value.asDocument().get("id");
-            assertThat(fieldValue > 10 && fieldValue < 19).isTrue();
+          final int fieldValue = (int) value.asDocument().get("id");
+          assertThat(fieldValue > 10 && fieldValue < 19).isTrue();
 
-            assertThat(iterator.getKeys()).isNotNull();
-            assertThat(iterator.getKeys().length).isEqualTo(1);
+          assertThat(iterator.getKeys()).isNotNull();
+          assertThat(iterator.getKeys().length).isEqualTo(1);
 
-            total++;
-          }
-        } catch (final Exception e) {
-          fail(e);
+          total++;
         }
       }
 
@@ -643,86 +578,81 @@ public class TypeLSMTreeIndexTest extends TestHelper {
     LogManager.instance().log(this, Level.FINE, "%s Started with %d threads", null, getClass(), threads.length);
 
     for (int i = 0; i < threads.length; ++i) {
-      threads[i] = new Thread(new Runnable() {
-        @Override
-        public void run() {
-          try {
-            int threadInserted = 0;
-            for (int i = TOT; i < TOT + total; ++i) {
-              boolean keyPresent = false;
-              for (int retry = 0; retry < maxRetries && !keyPresent; ++retry) {
+      threads[i] = new Thread(() -> {
+        try {
+          int threadInserted = 0;
+          for (int i1 = TOT; i1 < TOT + total; ++i1) {
+            boolean keyPresent = false;
+            for (int retry = 0; retry < maxRetries && !keyPresent; ++retry) {
 
-                try {
-                  Thread.sleep(new Random().nextInt(10));
-                } catch (final InterruptedException e) {
-                  e.printStackTrace();
-                  Thread.currentThread().interrupt();
-                  return;
-                }
-
-                database.begin();
-                try {
-                  final MutableDocument v = database.newDocument(TYPE_NAME);
-                  v.set("id", i);
-                  v.set("name", "Jay");
-                  v.set("surname", "Miner");
-                  v.save();
-
-                  database.commit();
-
-                  threadInserted++;
-                  crossThreadsInserted.incrementAndGet();
-
-                  if (threadInserted % 1000 == 0)
-                    LogManager.instance()
-                        .log(this, Level.FINE, "%s Thread %d inserted %d records with key %d (total=%d)", null, getClass(),
-                            Thread.currentThread().getId(), i, threadInserted, crossThreadsInserted.get());
-
-                  keyPresent = true;
-
-                } catch (final NeedRetryException e) {
-                  needRetryExceptions.incrementAndGet();
-                  assertThat(database.isTransactionActive()).isFalse();
-                  continue;
-                } catch (final DuplicatedKeyException e) {
-                  duplicatedExceptions.incrementAndGet();
-                  keyPresent = true;
-                  assertThat(database.isTransactionActive()).isFalse();
-                } catch (final Exception e) {
-                  LogManager.instance()
-                      .log(this, Level.SEVERE, "%s Thread %d Generic Exception", e, getClass(), Thread.currentThread().getId());
-                  assertThat(database.isTransactionActive()).isFalse();
-                  return;
-                }
+              try {
+                Thread.sleep(new Random().nextInt(10));
+              } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
               }
 
-              if (!keyPresent)
-                LogManager.instance()
-                    .log(this, Level.WARNING, "%s Thread %d Cannot create key %d after %d retries! (total=%d)", null, getClass(),
-                        Thread.currentThread().getId(), i, maxRetries, crossThreadsInserted.get());
+              database.begin();
+              try {
+                final MutableDocument v = database.newDocument(TYPE_NAME);
+                v.set("id", i1);
+                v.set("name", "Jay");
+                v.set("surname", "Miner");
+                v.save();
 
+                database.commit();
+
+                threadInserted++;
+                crossThreadsInserted.incrementAndGet();
+
+                if (threadInserted % 1000 == 0)
+                  LogManager.instance()
+                      .log(this, Level.FINE, "%s Thread %d inserted %d records with key %d (total=%d)", null, getClass(),
+                          Thread.currentThread().threadId(), i1, threadInserted, crossThreadsInserted.get());
+
+                keyPresent = true;
+
+              } catch (final NeedRetryException e) {
+                needRetryExceptions.incrementAndGet();
+                assertThat(database.isTransactionActive()).isFalse();
+
+              } catch (final DuplicatedKeyException e) {
+                duplicatedExceptions.incrementAndGet();
+                keyPresent = true;
+                assertThat(database.isTransactionActive()).isFalse();
+              } catch (final Exception e) {
+                LogManager.instance()
+                    .log(this, Level.SEVERE, "%s Thread %d Generic Exception", e, getClass(), Thread.currentThread().threadId());
+                assertThat(database.isTransactionActive()).isFalse();
+                return;
+              }
             }
 
-            LogManager.instance()
-                .log(this, Level.FINE, "%s Thread %d completed (inserted=%d)", null, getClass(), Thread.currentThread().getId(),
-                    threadInserted);
+            if (!keyPresent)
+              LogManager.instance()
+                  .log(this, Level.WARNING, "%s Thread %d Cannot create key %d after %d retries! (total=%d)", null, getClass(),
+                      Thread.currentThread().threadId(), i1, maxRetries, crossThreadsInserted.get());
 
-          } catch (final Exception e) {
-            LogManager.instance().log(this, Level.SEVERE, "%s Thread %d Error", e, getClass(), Thread.currentThread().getId());
           }
-        }
 
+          LogManager.instance()
+              .log(this, Level.FINE, "%s Thread %d completed (inserted=%d)", null, getClass(), Thread.currentThread().threadId(),
+                  threadInserted);
+
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "%s Thread %d Error", e, getClass(), Thread.currentThread().threadId());
+        }
       });
     }
 
-    for (int i = 0; i < threads.length; ++i)
-      threads[i].start();
+    for (Thread thread : threads)
+      thread.start();
 
-    for (int i = 0; i < threads.length; ++i) {
+    for (Thread thread : threads) {
       try {
-        threads[i].join();
+        thread.join();
       } catch (final InterruptedException e) {
-        e.printStackTrace();
+        //noop
       }
     }
 
@@ -741,26 +671,20 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       final Map<Integer, Integer> result = new HashMap<>();
       database.scanType(TYPE_NAME, true, record -> {
         final int id = (int) record.get("id");
-        final Integer key = result.get(id);
-        if (key == null)
-          result.put(id, 1);
-        else
-          result.put(id, key + 1);
+        result.merge(id, 1, Integer::sum);
         return true;
       });
 
       LogManager.instance().log(this, Level.FINE, "FOUND %d ENTRIES", null, result.size());
 
-      final Iterator<Map.Entry<Integer, Integer>> it = result.entrySet().iterator();
-      while (it.hasNext()) {
-        final Map.Entry<Integer, Integer> next = it.next();
+      for (Map.Entry<Integer, Integer> next : result.entrySet()) {
         if (next.getValue() > 1)
           LogManager.instance().log(this, Level.FINE, "- %d = %d", null, next.getKey(), next.getValue());
       }
     }
 
     assertThat(crossThreadsInserted.get()).isEqualTo(total);
-//    Assertions.assertThat(needRetryExceptions.get() > 0).isTrue();
+    //    Assertions.assertThat(needRetryExceptions.get() > 0).isTrue();
     assertThat(duplicatedExceptions.get() > 0).isTrue();
 
     assertThat(database.countType(TYPE_NAME, true)).isEqualTo(startingWith + total);
@@ -841,8 +765,9 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
       type.createProperty("id", Integer.class);
-      final Index typeIndex = database.getSchema()
-          .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+      final TypeIndex typeIndex = database.getSchema()
+          .buildTypeIndex(TYPE_NAME, new String[] { "id" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true)
+          .withPageSize(PAGE_SIZE).create();
 
       for (int i = 0; i < TOT; ++i) {
         final MutableDocument v = database.newDocument(TYPE_NAME);
@@ -856,7 +781,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       database.commit();
       database.begin();
 
-      for (final IndexInternal index : ((TypeIndex) typeIndex).getIndexesOnBuckets()) {
+      for (final IndexInternal index : typeIndex.getIndexesOnBuckets()) {
 
         assertThat(index.getStats().get("pages")).isGreaterThan(1);
       }
@@ -869,29 +794,25 @@ public class TypeLSMTreeIndexTest extends TestHelper {
     for (int i = 0; i < TOT; ++i) {
       int total = 0;
 
-      for (final Index index : indexes) {
+      for (final RangeIndex index : indexes) {
         assertThat(index).isNotNull();
 
-        try {
-          final IndexCursor iterator;
-          iterator = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i }, true);
-          assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
+        final IndexCursor iterator;
+        iterator = index.range(true, new Object[] { i }, true, new Object[] { i }, true);
+        assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
-          while (iterator.hasNext()) {
-            final Identifiable value = iterator.next();
+        while (iterator.hasNext()) {
+          final Identifiable value = iterator.next();
 
-            assertThat(value).isNotNull();
+          assertThat(value).isNotNull();
 
-            final int fieldValue = (int) value.asDocument().get("id");
-            assertThat(fieldValue).isEqualTo(i);
+          final int fieldValue = (int) value.asDocument().get("id");
+          assertThat(fieldValue).isEqualTo(i);
 
-            assertThat(iterator.getKeys()).isNotNull();
-            assertThat(iterator.getKeys().length).isEqualTo(1);
+          assertThat(iterator.getKeys()).isNotNull();
+          assertThat(iterator.getKeys().length).isEqualTo(1);
 
-            total++;
-          }
-        } catch (final Exception e) {
-          fail(e);
+          total++;
         }
       }
 

@@ -25,13 +25,12 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
-
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class MultipleTypesIndexTest extends TestHelper {
   private static final int    TOT       = 100000;
@@ -84,7 +83,7 @@ public class MultipleTypesIndexTest extends TestHelper {
       final Index index = database.getSchema().getIndexByName(TYPE_NAME + "[keywords]");
 
       MutableVertex v = database.newVertex(TYPE_NAME);
-      v.set("id", TOT+1);
+      v.set("id", TOT + 1);
       v.set("firstName", "Jake");
       v.set("lastName", "White");
 
@@ -125,12 +124,15 @@ public class MultipleTypesIndexTest extends TestHelper {
 
       final DocumentType type = database.getSchema().buildVertexType().withName(TYPE_NAME).withTotalBuckets(3).create();
       type.createProperty("id", Integer.class);
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" });
+      database.getSchema().buildTypeIndex(TYPE_NAME, new String[] { "id" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true)
+          .create();
       type.createProperty("firstName", String.class);
       type.createProperty("lastName", String.class);
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "firstName", "lastName" });
+      database.getSchema().buildTypeIndex(TYPE_NAME, new String[] { "firstName", "lastName" })
+          .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false).create();
       type.createProperty("keywords", List.class);
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "keywords" });
+      database.getSchema().buildTypeIndex(TYPE_NAME, new String[] { "keywords" }).withType(Schema.INDEX_TYPE.LSM_TREE)
+          .withUnique(false).create();
 
       MutableVertex v = database.newVertex(TYPE_NAME);
       v.set("id", 0);
