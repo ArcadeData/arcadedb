@@ -174,6 +174,18 @@
         </dependency>
         <dependency>
             <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-grpcw</artifactId>
+            <version>${project.parent.version}</version>
+            <classifier>shaded</classifier>
+            <exclusions>
+                <exclusion>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-graphql</artifactId>
             <version>${project.parent.version}</version>
             <exclusions>

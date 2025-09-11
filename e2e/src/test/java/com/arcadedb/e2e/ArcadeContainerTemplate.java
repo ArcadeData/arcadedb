@@ -25,17 +25,21 @@ import java.time.Duration;
 
 public abstract class ArcadeContainerTemplate {
   static final GenericContainer<?> ARCADE;
-  static final String              VERSION = "latest"; // Use "latest" to always get the latest version
 
   static {
-    ARCADE = new GenericContainer<>("arcadedata/arcadedb:" + VERSION)
-        .withExposedPorts(2480, 6379, 5432, 8182)
+    ARCADE = new GenericContainer<>("arcadedata/arcadedb:latest")
+        .withExposedPorts(2480, 6379, 5432, 8182, 50051)
         .withStartupTimeout(Duration.ofSeconds(90))
         .withEnv("JAVA_OPTS", """
             -Darcadedb.server.rootPassword=playwithdata
             -Darcadedb.postgres.debug=true
+            -Darcadedb.grpc.enabled=true
+            -Darcadedb.grpc.port=50051
+            -Darcadedb.grpc.mode=standard
+            -Darcadedb.grpc.reflection.enabled=true
+            -Darcadedb.grpc.health.enabled=true
             -Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}
-            -Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin
+            -Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin,GRPC:com.arcadedb.server.grpc.GrpcServerPlugin
             """)
         .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
     ARCADE.start();
@@ -46,4 +50,5 @@ public abstract class ArcadeContainerTemplate {
   protected int    redisPort   = ARCADE.getMappedPort(6379);
   protected int    pgsqlPort   = ARCADE.getMappedPort(5432);
   protected int    gremlinPort = ARCADE.getMappedPort(8182);
+  protected int    grpcPort    = ARCADE.getMappedPort(50051);
 }

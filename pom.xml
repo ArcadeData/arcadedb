@@ -88,6 +88,16 @@
         <license-maven-plugin.version>5.0.0</license-maven-plugin.version>
         <mockito-core.version>5.19.0</mockito-core.version>
         <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
+
+        <!-- Oleg Cohen - gRPC support -->
+
+        <protobuf-maven-plugin.version>3.8.0</protobuf-maven-plugin.version>
+        <grpc.version>1.75.0</grpc.version>
+        <protoc.version>4.32.0</protoc.version>
+        <protobuf-java.version>4.32.0</protobuf-java.version>
+        <com.google.api.grpc.version>2.26.0</com.google.api.grpc.version>
+        <javax.annotation-api.version>1.3.2</javax.annotation-api.version>
+
     </properties>
 
     <developers>
@@ -126,6 +136,7 @@
     <modules>
         <module>engine</module>
         <module>network</module>
+    	<module>grpc</module>
         <module>server</module>
         <module>metrics</module>
         <module>integration</module>
@@ -135,6 +146,8 @@
         <module>mongodbw</module>
         <module>redisw</module>
         <module>postgresw</module>
+    	<module>grpcw</module>
+    	<module>grpc-client</module>
         <module>coverage</module>
         <module>studio</module>
         <module>package</module>
@@ -361,6 +374,47 @@
                         </filters>
                     </configuration>
                 </plugin>
+
+	            <!-- gRPC Protobuf Plugin -->
+	            <plugin>
+	                <groupId>io.github.ascopes</groupId>
+	                <artifactId>protobuf-maven-plugin</artifactId>
+	                <version>${protobuf-maven-plugin.version}</version>
+	                <configuration>
+	                    <protocVersion>${protoc.version}</protocVersion>
+	                    <embedSourcesInClassOutputs>true</embedSourcesInClassOutputs>
+	                    <binaryMavenPlugins>
+	                        <binaryMavenPlugin>
+	                            <groupId>io.grpc</groupId>
+	                            <artifactId>protoc-gen-grpc-java</artifactId>
+	                            <version>${grpc.version}</version>
+	                        </binaryMavenPlugin>
+	                    </binaryMavenPlugins>
+	                    <sourceDirectories>
+	                        <sourceDirectory>${project.basedir}/src/main/proto</sourceDirectory>
+	                        <sourceDirectory>${project.basedir}/src/generated/proto</sourceDirectory>
+	                    </sourceDirectories>
+	                    <outputDirectory>src/generated/protobuf/java</outputDirectory>
+	                    <includes>
+	                        <include>*.proto</include>
+	                        <include>**/*.proto</include>
+	                    </includes>
+	                </configuration>
+	                <executions>
+	                    <execution>
+	                        <goals>
+	                            <goal>generate</goal>
+	                        </goals>
+	                        <configuration>
+	                            <sourceDirectories>
+	                                <sourceDirectory>${project.basedir}/src/generated/proto</sourceDirectory>
+	                                <sourceDirectory>${project.basedir}/src/main/proto</sourceDirectory>
+	                            </sourceDirectories>
+	                        </configuration>
+	                    </execution>
+	                </executions>
+	            </plugin>
+
             </plugins>
         </pluginManagement>
     </build>

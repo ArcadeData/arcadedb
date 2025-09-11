@@ -72,6 +72,9 @@ EXPOSE 6379
 # MongoDB Protocol
 EXPOSE 27017
 
+# gRPC service
+EXPOSE 50051
+
 # JMX for monitoring
 EXPOSE 9999
 EXPOSE 9998
