@@ -63,12 +63,6 @@
         </dependency>
         <dependency>
             <groupId>com.arcadedb</groupId>
-            <artifactId>arcadedb-grpc</artifactId>
-            <version>${project.parent.version}</version>
-            <scope>compile</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-integration</artifactId>
             <version>${project.parent.version}</version>
             <scope>compile</scope>
