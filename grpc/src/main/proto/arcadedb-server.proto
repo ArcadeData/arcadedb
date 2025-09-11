@@ -159,7 +159,7 @@ service ArcadeDbService {
   // Transaction operations
   rpc BeginTransaction(BeginTransactionRequest) returns (BeginTransactionResponse);
   rpc CommitTransaction(CommitTransactionRequest) returns (CommitTransactionResponse);
-  rpc RollbackTransaction(RollbackTransactionRequest) returns (RollbackTransactionResponse);  
+  rpc RollbackTransaction(RollbackTransactionRequest) returns (RollbackTransactionResponse);
 }
 
 // -----------------------------------------------------------------------------
@@ -353,7 +353,7 @@ message InsertSummary {
 }
 
 message InsertOptions {
-  
+
   string target_class = 1;       // required
   repeated string key_columns = 2;
 
@@ -363,7 +363,7 @@ message InsertOptions {
     CONFLICT_IGNORE = 2; // drop dup
     CONFLICT_ABORT  = 3;
   }
-  
+
   ConflictMode conflict_mode = 3;
 
   repeated string update_columns_on_conflict = 4;

@@ -24,10 +24,10 @@ LET
                 WHILE $depth <= 4),        -- adjust depth as needed
   $vertices  = (SELECT FROM $walk WHERE @type = 'd' AND class() IN ['SalesInsight','SalesObjectiveInstance','SalesShakeInstance','SalesRep','SalesShakeAssist','Hospital','Physician']),
   $edges     = (SELECT FROM $walk WHERE @type = 'e');
-  
-  
-  
-RID = #1137:5  
+
+
+
+RID = #1137:5
 
 
 SELECT
@@ -41,14 +41,14 @@ LET
   $vertices  = (SELECT FROM $walk WHERE @type = 'd' AND class() IN ['SalesInsight','SalesObjectiveInstance','SalesShakeInstance','SalesRep','SalesShakeAssist','Hospital','Physician']),
   $edges     = (SELECT FROM $walk WHERE @type = 'e');
 
-  
-  
-The following is about 7700 records 
-  
-TRAVERSE out(), in() FROM (SELECT FROM SalesShakeInstance) WHILE $depth <= 7 STRATEGY BREADTH_FIRST  
-  
-root/oY9uU2uJ8nD8iY7t  
-  
+
+
+The following is about 7700 records
+
+TRAVERSE out(), in() FROM (SELECT FROM SalesShakeInstance) WHILE $depth <= 7 STRATEGY BREADTH_FIRST
+
+root/oY9uU2uJ8nD8iY7t
+
 HTTP:
 =====
 
@@ -56,8 +56,8 @@ HTTP:
 POST
 
 http://localhost:2480/api/v1/query/local_shakeiq_curonix_poc-app
-       
-       
+
+
 {
     "language": "sql",
     "command": "TRAVERSE out(), in() FROM (SELECT FROM SalesShakeInstance) WHILE $depth <= 7 STRATEGY BREADTH_FIRST",
@@ -120,20 +120,20 @@ grpcurl -plaintext -max-msg-sz 33554432 \
     "timeout_ms":30000
   }' \
   localhost:50051 com.arcadedb.grpc.ArcadeDbService/ExecuteQuery
-  
-  
-  
-  
+
+
+
+
 grpcurl -plaintext -max-msg-sz 33554432 \
   -H "grpc-accept-encoding: gzip" \
   -H "x-arcade-user: root" \
   -H "x-arcade-password: oY9uU2uJ8nD8iY7t" \
   -H "x-arcade-database: local_shakeiq_curonix_poc-app" \
   -d '{"database":"local_shakeiq_curonix_poc-app","query":"TRAVERSE out(), in() FROM (SELECT FROM SalesShakeInstance) WHILE $depth <= 7 STRATEGY BREADTH_FIRST","parameters":{},"credentials":{"username":"root","password":"oY9uU2uJ8nD8iY7t"},"limit":10000,"timeout_ms":30000}' \
-  localhost:50051 com.arcadedb.grpc.ArcadeDbService/ExecuteQuery  
-  
-  
-  
+  localhost:50051 com.arcadedb.grpc.ArcadeDbService/ExecuteQuery
+
+
+
 date +%s%3N; grpcurl -plaintext -max-msg-sz 33554432 \
   -H "grpc-accept-encoding: gzip" \
   -H "x-arcade-user: root" \
@@ -141,9 +141,9 @@ date +%s%3N; grpcurl -plaintext -max-msg-sz 33554432 \
   -H "x-arcade-database: local_shakeiq_curonix_poc-app" \
   -d '{"database":"local_shakeiq_curonix_poc-app","query":"TRAVERSE out(), in() FROM (SELECT FROM SalesShakeInstance) WHILE $depth <= 7 STRATEGY BREADTH_FIRST","parameters":{},"credentials":{"username":"root","password":"oY9uU2uJ8nD8iY7t"},"limit":10000,"timeout_ms":30000}' \
   localhost:50051 com.arcadedb.grpc.ArcadeDbService/ExecuteQuery \
-  >/dev/null; date +%s%3N  
-  
-  
+  >/dev/null; date +%s%3N
+
+
 start=$(date +%s%3N)
 grpcurl -plaintext -max-msg-sz 33554432 \
   -H "grpc-accept-encoding: gzip" \
@@ -164,8 +164,8 @@ gtime -f "\nElapsed time: %E (%e seconds)" grpcurl -proto arcadedb-server.proto 
 
 grpcurl -proto arcadedb-server.proto -plaintext -max-msg-sz 33554432 -H "grpc-accept-encoding: gzip" -H "x-arcade-user: root" -H "x-arcade-password: oY9uU2uJ8nD8iY7t" -H "x-arcade-database: local_shakeiq_curonix_poc-app" -d '{"database":"local_shakeiq_curonix_poc-app","query":"TRAVERSE out(), in() FROM (SELECT FROM SalesShakeInstance) WHILE $depth <= 7 STRATEGY BREADTH_FIRST","parameters":{},"credentials":{"username":"root","password":"oY9uU2uJ8nD8iY7t"},"limit":10000,"timeout_ms":30000}' localhost:50051 com.arcadedb.grpc.ArcadeDbService/ExecuteQuery | wc -c
 
-8,229,923  
-  
+8,229,923
+
 ghz --enable-compression --insecure \
   --proto arcadedb-server.proto \
   --call com.arcadedb.grpc.ArcadeDbService.ExecuteQuery \
@@ -175,5 +175,3 @@ ghz --enable-compression --insecure \
   --concurrency 5 \
   --total 1 \
   localhost:50051
-  
-  

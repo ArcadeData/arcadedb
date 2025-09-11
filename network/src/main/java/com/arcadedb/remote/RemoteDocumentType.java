@@ -64,21 +64,21 @@ public class RemoteDocumentType implements DocumentType {
   }
 
   void reload(final Result record) {
-	  
+
 	  Object recordsAsObject = record.getProperty("records");
-	  
+
 	  if (recordsAsObject != null) {
-		  
+
 		  if (recordsAsObject instanceof Integer recordsAsInt) {
 			  count = recordsAsInt;
 		  }
 		  else if (recordsAsObject instanceof Long recordsAsLong) {
 			  count = recordsAsLong.intValue();
-		  }	  
+		  }
 	  }
-	  
+
     // count = record.getProperty("records");
-    
+
 	buckets = record.getProperty("buckets");
     bucketSelectionStrategy = record.getProperty("bucketSelectionStrategy");
     parentTypes = record.getProperty("parentTypes");

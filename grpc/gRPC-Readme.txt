@@ -228,9 +228,9 @@ spec:
     port: 50052
     protocol: TCP
 
-    
-    
-    
+
+
+
 # Development
 mvn exec:java -Dexec.mainClass="com.arcadedb.server.grpc.GrpcStandaloneLauncher"
 
@@ -260,8 +260,8 @@ grpcurl -H "x-arcade-user: admin" \
 grpcurl -H "authorization: Bearer <token>" \
         -plaintext localhost:50051 \
         com.arcadedb.grpc.ArcadeDbService/Ping
-        
-        
+
+
 server.registerPlugin(new GrpcServerPlugin());
 
 grpc.enabled=true
@@ -269,9 +269,9 @@ grpc.port=50051
 grpc.mode=standard
 grpc.reflection.enabled=true
 grpc.health.enabled=true
-            
-            
-            
+
+
+
 # Check health
 grpcurl -plaintext localhost:50051 grpc.health.v1.Health/Check
 
@@ -283,11 +283,11 @@ grpcurl -H "x-arcade-user: admin" \
         -H "x-arcade-password: admin" \
         -H "x-arcade-database: mydb" \
         -plaintext localhost:50051 \
-        com.arcadedb.grpc.ArcadeDbService/Ping        
-        
-        
-        
-        
+        com.arcadedb.grpc.ArcadeDbService/Ping
+
+
+
+
 arcadedb.grpc.enabled=true
 arcadedb.grpc.port=50051
 arcadedb.grpc.host=0.0.0.0
@@ -302,12 +302,12 @@ java -Darcadedb.grpc.enabled=true \
      -Darcadedb.grpc.port=50051 \
      -Darcadedb.grpc.mode=standard \
      -jar arcadedb-server.jar
-     
+
 # Check if gRPC is running
 grpcurl -plaintext localhost:50051 list
 
 # Check health
-grpcurl -plaintext localhost:50051 grpc.health.v1.Health/Check     
+grpcurl -plaintext localhost:50051 grpc.health.v1.Health/Check
 
 
 
@@ -358,7 +358,7 @@ grpcurl -plaintext localhost:50051 grpc.health.v1.Health/Check
 
 # Stop and remove container
 docker stop arcadedb-test
-docker rm arcadedb-test	
+docker rm arcadedb-test
 
 
 
@@ -396,7 +396,7 @@ services:
     container_name: grpcui
     ports:
       - "8080:8080"
-    command: 
+    command:
       - -plaintext
       - -port
       - "8080"
@@ -409,14 +409,14 @@ services:
 networks:
   arcadedb-network:
     driver: bridge
-    
-    
-    
-    
-Docker: 
+
+
+
+
+Docker:
 
 
 
 grpcui -plaintext -bind 0.0.0.0 -port 8080 localhost:50051
 
-mvn clean package -Pdocker    
+mvn clean package -Pdocker

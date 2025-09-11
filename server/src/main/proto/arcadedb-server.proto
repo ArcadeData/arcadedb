@@ -16,26 +16,26 @@ service ArcadeDbService {
   rpc DropDatabase(DropDatabaseRequest) returns (DropDatabaseResponse);
   rpc ListDatabases(ListDatabasesRequest) returns (ListDatabasesResponse);
   rpc GetDatabaseInfo(GetDatabaseInfoRequest) returns (GetDatabaseInfoResponse);
-  
+
   // Query operations
   rpc ExecuteQuery(ExecuteQueryRequest) returns (ExecuteQueryResponse);
   rpc ExecuteCommand(ExecuteCommandRequest) returns (ExecuteCommandResponse);
-  
+
   // Transaction operations
   rpc BeginTransaction(BeginTransactionRequest) returns (BeginTransactionResponse);
   rpc CommitTransaction(CommitTransactionRequest) returns (CommitTransactionResponse);
   rpc RollbackTransaction(RollbackTransactionRequest) returns (RollbackTransactionResponse);
-  
+
   // Record operations
   rpc CreateRecord(CreateRecordRequest) returns (CreateRecordResponse);
   rpc GetRecord(GetRecordRequest) returns (GetRecordResponse);
   rpc UpdateRecord(UpdateRecordRequest) returns (UpdateRecordResponse);
   rpc DeleteRecord(DeleteRecordRequest) returns (DeleteRecordResponse);
-  
+
   // Streaming operations
   rpc StreamQuery(StreamQueryRequest) returns (stream QueryResult);
   rpc BulkInsert(stream BulkInsertRequest) returns (BulkInsertResponse);
-  
+
   // Server operations
   rpc GetServerStatus(google.protobuf.Empty) returns (ServerStatusResponse);
   rpc Ping(google.protobuf.Empty) returns (PingResponse);
