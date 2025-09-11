@@ -64,8 +64,22 @@ public class RemoteDocumentType implements DocumentType {
   }
 
   void reload(final Result record) {
-    count = record.getProperty("records");
-    buckets = record.getProperty("buckets");
+
+	  Object recordsAsObject = record.getProperty("records");
+
+	  if (recordsAsObject != null) {
+
+		  if (recordsAsObject instanceof Integer recordsAsInt) {
+			  count = recordsAsInt;
+		  }
+		  else if (recordsAsObject instanceof Long recordsAsLong) {
+			  count = recordsAsLong.intValue();
+		  }
+	  }
+
+    // count = record.getProperty("records");
+
+	buckets = record.getProperty("buckets");
     bucketSelectionStrategy = record.getProperty("bucketSelectionStrategy");
     parentTypes = record.getProperty("parentTypes");
 
@@ -122,7 +136,7 @@ public class RemoteDocumentType implements DocumentType {
     return name;
   }
 
-  @Override
+//  @Override
   public void rename(final String newName) {
     remoteDatabase.command("sql", "alter type `" + name + "` name `" + newName + "`");
     remoteDatabase.getSchema().reload();
@@ -254,12 +268,12 @@ public class RemoteDocumentType implements DocumentType {
     return this;
   }
 
-  @Override
+//  @Override
   public Set<String> getAliases() {
     return aliases;
   }
 
-  @Override
+//  @Override
   public DocumentType setAliases(final Set<String> aliases) {
     final String aliasesAsString = aliases.stream().map(a -> "`" + a + "`").collect(Collectors.joining(","));
     remoteDatabase.command("sql", "alter type `" + name + "` aliases " + aliasesAsString);

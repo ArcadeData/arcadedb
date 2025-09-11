@@ -546,3 +546,4 @@ dist
 # Python egg metadata
 *.egg-info/
 /backups/
+/claude/

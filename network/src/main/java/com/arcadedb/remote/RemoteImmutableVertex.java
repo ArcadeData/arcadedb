@@ -37,7 +37,7 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
 public class RemoteImmutableVertex extends RemoteImmutableDocument implements Vertex {
   private final RemoteVertex internal;
 
-  protected RemoteImmutableVertex(final RemoteDatabase database, final Map<String, Object> properties) {
+  public RemoteImmutableVertex(final RemoteDatabase database, final Map<String, Object> properties) {
     super(database, properties);
     this.internal = new RemoteVertex(this, database);
   }

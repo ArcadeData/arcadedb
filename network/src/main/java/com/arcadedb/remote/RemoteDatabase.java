@@ -506,7 +506,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     return sessionId;
   }
 
-  void setSessionId(String sessionId) {
+  protected void setSessionId(String sessionId) {
     this.sessionId = sessionId;
   }
 
@@ -557,7 +557,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     return null;
   }
 
-  RID saveRecord(final MutableDocument record) {
+  protected RID saveRecord(final MutableDocument record) {
     stats.createRecord.incrementAndGet();
 
     RID rid = record.getIdentity();
@@ -570,7 +570,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     return rid;
   }
 
-  RID saveRecord(final MutableDocument record, final String bucketName) {
+  protected RID saveRecord(final MutableDocument record, final String bucketName) {
     stats.createRecord.incrementAndGet();
 
     RID rid = record.getIdentity();
