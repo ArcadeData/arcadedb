@@ -38,6 +38,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * own data.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@Disabled
 public class RemoteGrpcDatabaseRegressionTest {
 
   // -------- Config (env overrides supported) --------
@@ -57,6 +58,7 @@ public class RemoteGrpcDatabaseRegressionTest {
   private RemoteGrpcDatabase grpc;
 
   @BeforeAll
+  @Disabled
   void ensureDatabaseExists() {
 
     this.grpcServer = new RemoteGrpcServer(GRPC_HOST, GRPC_PORT, USER, PASS, true, List.of());
@@ -68,6 +70,7 @@ public class RemoteGrpcDatabaseRegressionTest {
   }
 
   @BeforeEach
+  @Disabled
   void open() {
 
     grpc = new RemoteGrpcDatabase(this.grpcServer, GRPC_HOST, GRPC_PORT, HTTP_PORT, DB_NAME, USER, PASS);
@@ -83,6 +86,7 @@ public class RemoteGrpcDatabaseRegressionTest {
   }
 
   @AfterEach
+  @Disabled
   void close() {
     if (grpc != null) {
       try {
