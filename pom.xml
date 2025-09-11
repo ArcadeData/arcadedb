@@ -88,19 +88,16 @@
         <license-maven-plugin.version>5.0.0</license-maven-plugin.version>
         <mockito-core.version>5.19.0</mockito-core.version>
         <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
-        
-        <!-- Oleg Cohen - gRPC support -->
-        
-        <protobuf-maven-plugin.version>3.8.0</protobuf-maven-plugin.version>
-		
-        <grpc.version>1.75.0</grpc.version>
 
+        <!-- Oleg Cohen - gRPC support -->
+
+        <protobuf-maven-plugin.version>3.8.0</protobuf-maven-plugin.version>
+        <grpc.version>1.75.0</grpc.version>
         <protoc.version>4.32.0</protoc.version>
         <protobuf-java.version>4.32.0</protobuf-java.version>
-		
-        <com.google.api.grpc.version>2.26.0</com.google.api.grpc.version>  
-        <javax.annotation-api.version>1.3.2</javax.annotation-api.version>      
-        
+        <com.google.api.grpc.version>2.26.0</com.google.api.grpc.version>
+        <javax.annotation-api.version>1.3.2</javax.annotation-api.version>
+
     </properties>
 
     <developers>
@@ -124,9 +121,9 @@
     </scm>
 
     <modules>
-    	<module>grpc</module>
         <module>engine</module>
         <module>network</module>
+    	<module>grpc</module>
         <module>server</module>
         <module>metrics</module>
         <module>integration</module>
@@ -137,12 +134,12 @@
         <module>redisw</module>
         <module>postgresw</module>
     	<module>grpcw</module>
+    	<module>grpc-client</module>
         <module>coverage</module>
         <module>studio</module>
         <module>package</module>
         <module>e2e</module>
         <module>e2e-perf</module>
-    	<module>grpc-client</module>
     </modules>
 
     <build>
@@ -366,7 +363,7 @@
                         </filters>
                     </configuration>
                 </plugin>
-	                
+
 	            <!-- gRPC Protobuf Plugin -->
 	            <plugin>
 	                <groupId>io.github.ascopes</groupId>
@@ -406,7 +403,7 @@
 	                    </execution>
 	                </executions>
 	            </plugin>
-                
+
             </plugins>
         </pluginManagement>
     </build>

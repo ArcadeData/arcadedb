@@ -90,6 +90,12 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-grpc-client</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <version>${postgresql.version}</version>

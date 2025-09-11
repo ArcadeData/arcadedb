@@ -25,20 +25,20 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>25.8.1-SNAPSHOT</version>
+        <version>25.9.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
     <artifactId>arcadedb-grpc-client</artifactId>
     <packaging>jar</packaging>
     <name>ArcadeDB gRPC Client</name>
-    
+
     <properties>
         <mockito.version>5.15.2</mockito.version>
     </properties>
-    
+
     <dependencies>
-       
+
         <dependency>
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-engine</artifactId>
@@ -87,7 +87,7 @@
             <artifactId>grpc-services</artifactId>
             <version>${grpc.version}</version>
         </dependency>
-        
+
         <!-- Protobuf -->
         <dependency>
             <groupId>com.google.protobuf</groupId>
@@ -99,21 +99,21 @@
             <artifactId>protobuf-java-util</artifactId>
             <version>${protobuf-java.version}</version>
         </dependency>
-        
+
         <!-- Google API gRPC (optional, if you need Google's common protos) -->
         <dependency>
             <groupId>com.google.api.grpc</groupId>
             <artifactId>proto-google-common-protos</artifactId>
             <version>${com.google.api.grpc.version}</version>
         </dependency>
-        
+
         <!-- Required for generated code -->
         <dependency>
             <groupId>javax.annotation</groupId>
             <artifactId>javax.annotation-api</artifactId>
             <version>${javax.annotation-api.version}</version>
         </dependency>
-        
+
         <!-- gRPC Testing (optional) -->
         <dependency>
             <groupId>io.grpc</groupId>
@@ -128,16 +128,16 @@
 			<version>2.0.17</version>
 			<scope>provided</scope>
 		</dependency>
-		        
+
 		<dependency>
 			<groupId>com.fasterxml.jackson.core</groupId>
 			<artifactId>jackson-databind</artifactId>
 			<version>2.19.2</version>
 			<scope>provided</scope>
-		</dependency>      
-		  
+		</dependency>
+
     </dependencies>
-    
+
 <!--    <build>-->
 <!--        <plugins>-->
 <!--            <plugin>-->

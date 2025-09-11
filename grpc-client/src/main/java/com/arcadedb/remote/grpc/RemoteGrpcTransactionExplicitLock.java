@@ -23,7 +23,8 @@ package com.arcadedb.remote.grpc;
 import com.arcadedb.database.TransactionExplicitLock;
 import com.arcadedb.remote.RemoteTransactionExplicitLock;
 
-import java.util.*;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Explicit lock on a transaction to lock buckets and types in pessimistic way.
@@ -32,43 +33,43 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class RemoteGrpcTransactionExplicitLock extends RemoteTransactionExplicitLock implements TransactionExplicitLock {
-	private final RemoteGrpcDatabase database;
-	private final Set<String> lockedTypeNames = new HashSet<>();
-	private final Set<String> lockedBucketNames = new HashSet<>();
+  private final RemoteGrpcDatabase database;
+  private final Set<String>        lockedTypeNames   = new HashSet<>();
+  private final Set<String>        lockedBucketNames = new HashSet<>();
 
-	public RemoteGrpcTransactionExplicitLock(final RemoteGrpcDatabase database) {
-	  super(database);
-	  this.database = database;
+  public RemoteGrpcTransactionExplicitLock(final RemoteGrpcDatabase database) {
+    super(database);
+    this.database = database;
   }
 
-	@Override
-	public RemoteGrpcTransactionExplicitLock bucket(final String bucketName) {
-		lockedBucketNames.add(bucketName);
-		return this;
-	}
+  @Override
+  public RemoteGrpcTransactionExplicitLock bucket(final String bucketName) {
+    lockedBucketNames.add(bucketName);
+    return this;
+  }
 
-	@Override
-	public RemoteGrpcTransactionExplicitLock type(final String typeName) {
-		lockedTypeNames.add(typeName);
-		return this;
-	}
+  @Override
+  public RemoteGrpcTransactionExplicitLock type(final String typeName) {
+    lockedTypeNames.add(typeName);
+    return this;
+  }
 
-	@Override
-	public void lock() {
-		final StringBuilder command = new StringBuilder();
-		command.append("LOCK");
-		if (!lockedTypeNames.isEmpty()) {
-			command.append(" TYPE ");
-			command.append(String.join(", ", lockedTypeNames));
-		}
-		if (!lockedBucketNames.isEmpty()) {
-			command.append(" BUCKET ");
-			command.append(String.join(", ", lockedBucketNames));
-		}
+  @Override
+  public void lock() {
+    final StringBuilder command = new StringBuilder();
+    command.append("LOCK");
+    if (!lockedTypeNames.isEmpty()) {
+      command.append(" TYPE ");
+      command.append(String.join(", ", lockedTypeNames));
+    }
+    if (!lockedBucketNames.isEmpty()) {
+      command.append(" BUCKET ");
+      command.append(String.join(", ", lockedBucketNames));
+    }
 
-		lockedBucketNames.clear();
-		lockedTypeNames.clear();
+    lockedBucketNames.clear();
+    lockedTypeNames.clear();
 
-		database.command("sql", command.toString());
-	}
+    database.command("sql", command.toString());
+  }
 }

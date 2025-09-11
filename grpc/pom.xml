@@ -4,22 +4,26 @@
 	<parent>
 		<groupId>com.arcadedb</groupId>
 		<artifactId>arcadedb-parent</artifactId>
-		<version>25.8.1-SNAPSHOT</version>
+		<version>25.9.1-SNAPSHOT</version>
+		<relativePath>../pom.xml</relativePath>
 	</parent>
 
 	<artifactId>arcadedb-grpc</artifactId>
 	<name>ArcadeDB gRPC Stubs</name>
+	<properties>
+		<build-helper-maven-plugin.version>3.6.0</build-helper-maven-plugin.version>
+	</properties>
 	<packaging>jar</packaging>
 
 	<dependencies>
-	
+
         <dependency>
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-engine</artifactId>
             <version>${project.parent.version}</version>
             <scope>provided</scope>
         </dependency>
-	
+
 		<!-- gRPC Dependencies -->
 		<dependency>
 			<groupId>io.grpc</groupId>
@@ -117,18 +121,18 @@
 						<configuration></configuration>
 					</execution>
                 </executions>
-            </plugin>   
-                     
+            </plugin>
+
 			<plugin>
 				<groupId>io.github.ascopes</groupId>
 				<artifactId>protobuf-maven-plugin</artifactId>
-			</plugin>	  
-			          
+			</plugin>
+
             <!-- Build Helper Plugin to add generated sources -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>build-helper-maven-plugin</artifactId>
-                <version>3.6.0</version>
+                <version>${build-helper-maven-plugin.version}</version>
                 <executions>
                     <execution>
                         <id>add-source</id>
@@ -148,7 +152,6 @@
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-clean-plugin</artifactId>
-				<version>3.3.1</version>
 				<configuration>
 					<filesets>
 						<fileset>
@@ -157,7 +160,7 @@
 					</filesets>
 				</configuration>
 			</plugin>
-            
+
         </plugins>
     </build>
 </project>

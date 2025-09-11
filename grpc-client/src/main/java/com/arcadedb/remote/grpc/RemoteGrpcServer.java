@@ -1,12 +1,5 @@
 package com.arcadedb.remote.grpc;
 
-import java.util.List;
-import java.util.Objects;
-import java.util.concurrent.Executor;
-import java.util.concurrent.TimeUnit;
-
-import javax.annotation.PreDestroy;
-
 import com.arcadedb.server.grpc.ArcadeDbAdminServiceGrpc;
 import com.arcadedb.server.grpc.ArcadeDbServiceGrpc;
 import com.arcadedb.server.grpc.CreateDatabaseRequest;
@@ -14,7 +7,6 @@ import com.arcadedb.server.grpc.DatabaseCredentials;
 import com.arcadedb.server.grpc.DropDatabaseRequest;
 import com.arcadedb.server.grpc.ListDatabasesRequest;
 import com.arcadedb.server.grpc.ListDatabasesResponse;
-
 import io.grpc.CallCredentials;
 import io.grpc.Channel;
 import io.grpc.ClientInterceptor;
@@ -22,7 +14,6 @@ import io.grpc.ClientInterceptors;
 import io.grpc.CompressorRegistry;
 import io.grpc.DecompressorRegistry;
 import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
 import io.grpc.StatusException;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
@@ -31,259 +22,274 @@ import io.grpc.netty.shaded.io.netty.channel.nio.NioEventLoopGroup;
 import io.grpc.netty.shaded.io.netty.channel.socket.nio.NioSocketChannel;
 import io.grpc.stub.AbstractStub;
 
+import javax.annotation.PreDestroy;
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+
 /**
  * Minimal server-scope gRPC wrapper (HTTP RemoteServer equivalent), implemented
  * ONLY with RPCs present in your current proto.
- *
+ * <p>
  * Features: - listDatabases() - existsDatabase(name) via listDatabases() -
  * createDatabase(name, type) - createDatabaseIfMissing(name, type) -
  * dropDatabase(name, force?) // 'force' only if defined in your proto;
  * otherwise ignored
- *
+ * <p>
  * Add more methods later when you extend the proto (ping, serverInfo, user
  * mgmt, etc.).
  */
 public class RemoteGrpcServer implements AutoCloseable {
 
-	private final String host;
-	private final int port;
-	private final String userName;
-	private final String userPassword;
+  private final String host;
+  private final int    port;
+  private final String userName;
+  private final String userPassword;
 
-	private final long defaultTimeoutMs;
-	
-	private final List<ClientInterceptor> interceptors;
-	private final boolean plaintext;
+  private final long defaultTimeoutMs;
 
-	private ManagedChannel channel;
-	
-	private ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub adminServiceBlockingV2Stub;
+  private final List<ClientInterceptor> interceptors;
+  private final boolean                 plaintext;
 
-	public RemoteGrpcServer(final String host, final int port, final String user, final String pass, boolean plaintext, List<ClientInterceptor> interceptors) {
-		this(host, port, user, pass, plaintext, interceptors, 30_000);
-	}
+  private ManagedChannel channel;
 
-	public RemoteGrpcServer(final String host, final int port, final String user, final String pass, boolean plaintext, List<ClientInterceptor> interceptors, final long defaultTimeoutMs) {
+  private ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub adminServiceBlockingV2Stub;
 
-		this.host = Objects.requireNonNull(host, "host");
+  public RemoteGrpcServer(final String host, final int port, final String user, final String pass, boolean plaintext,
+      List<ClientInterceptor> interceptors) {
+    this(host, port, user, pass, plaintext, interceptors, 30_000);
+  }
 
-		this.port = port;
+  public RemoteGrpcServer(final String host, final int port, final String user, final String pass, boolean plaintext,
+      List<ClientInterceptor> interceptors, final long defaultTimeoutMs) {
 
-		this.plaintext = plaintext;
-	    this.interceptors = interceptors == null ? List.of() : List.copyOf(interceptors);
-	    
-		this.userName = Objects.requireNonNull(user, "user");
+    this.host = Objects.requireNonNull(host, "host");
 
-		this.userPassword = Objects.requireNonNull(pass, "pass");
+    this.port = port;
 
-		this.defaultTimeoutMs = defaultTimeoutMs > 0 ? defaultTimeoutMs : 30_000;
-	}
+    this.plaintext = plaintext;
+    this.interceptors = interceptors == null ? List.of() : List.copyOf(interceptors);
 
-	
-	public synchronized void start() {
-	    
-		if (channel != null) return;
-		
+    this.userName = Objects.requireNonNull(user, "user");
+
+    this.userPassword = Objects.requireNonNull(pass, "pass");
+
+    this.defaultTimeoutMs = defaultTimeoutMs > 0 ? defaultTimeoutMs : 30_000;
+  }
+
+  public synchronized void start() {
+
+    if (channel != null)
+      return;
+
 //		NettyChannelBuilder b = NettyChannelBuilder.forAddress(host, port)
 //				.maxInboundMessageSize(100 * 1024 * 1024) // 100MB max message size
 //				.keepAliveTime(30, TimeUnit.SECONDS) // Keep-alive configuration
 //				.keepAliveTimeout(10, TimeUnit.SECONDS)
-//				.keepAliveWithoutCalls(true)				
+//				.keepAliveWithoutCalls(true)
 //				.decompressorRegistry(DecompressorRegistry.getDefaultInstance())
 //				.compressorRegistry(CompressorRegistry.getDefaultInstance());
-		
-		
-		EventLoopGroup elg = new NioEventLoopGroup();
-		
-		NettyChannelBuilder chBuilder = NettyChannelBuilder.forAddress(host, port)
-			    .eventLoopGroup(elg)                           // share across clients
-			    .channelType(NioSocketChannel.class)
-			    .maxInboundMessageSize(150 * 1024 * 1024)
-			    .maxInboundMetadataSize(32 * 1024 * 1024)
-			    .keepAliveTime(30, TimeUnit.SECONDS)
-			    .keepAliveTimeout(10, TimeUnit.SECONDS)
-			    .keepAliveWithoutCalls(true)
-			    .decompressorRegistry(DecompressorRegistry.getDefaultInstance())
-			    .compressorRegistry(CompressorRegistry.getDefaultInstance())
-			    .flowControlWindow(8 * 1024 * 1024);
-		
-			    // .proxyDetector(myProxyDetector)
-	    
-		if (plaintext) chBuilder.usePlaintext();
-	    
-		channel = chBuilder.build();
-	}
-	
-	/** Returns a Channel (wrapped with interceptors if provided). */
-	public Channel channel() {
-		
-		if (channel == null) {
-			start();
-		}
-		
-		return interceptors.isEmpty() ? channel : ClientInterceptors.intercept(channel, interceptors);
-	}
 
-	public ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub newBlockingStub(int timeout) {
-				
-		return ArcadeDbServiceGrpc.newBlockingV2Stub(channel())
-				.withCallCredentials(createCredentials())
-				.withDeadlineAfter(timeout, TimeUnit.MILLISECONDS)
-				.withCompression("gzip");
-	}
+    EventLoopGroup elg = new NioEventLoopGroup();
 
-	public ArcadeDbServiceGrpc.ArcadeDbServiceStub newAsyncStub(int timeout) {
-		
-		return ArcadeDbServiceGrpc.newStub(channel())
-				.withCallCredentials(createCredentials())
-				.withDeadlineAfter(timeout, TimeUnit.MILLISECONDS)
-				.withCompression("gzip");
-	}
+    NettyChannelBuilder chBuilder = NettyChannelBuilder.forAddress(host, port)
+        .eventLoopGroup(elg)                           // share across clients
+        .channelType(NioSocketChannel.class)
+        .maxInboundMessageSize(150 * 1024 * 1024)
+        .maxInboundMetadataSize(32 * 1024 * 1024)
+        .keepAliveTime(30, TimeUnit.SECONDS)
+        .keepAliveTimeout(10, TimeUnit.SECONDS)
+        .keepAliveWithoutCalls(true)
+        .decompressorRegistry(DecompressorRegistry.getDefaultInstance())
+        .compressorRegistry(CompressorRegistry.getDefaultInstance())
+        .flowControlWindow(8 * 1024 * 1024);
 
-	private ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub adminServiceBlockingV2Stub() {
-		
-		if (this.adminServiceBlockingV2Stub == null) {
-			
-			this.adminServiceBlockingV2Stub =  ArcadeDbAdminServiceGrpc.newBlockingV2Stub(channel())
-					.withCallCredentials(createCallCredentials(userName, userPassword));
-		}
-		
-		return this.adminServiceBlockingV2Stub;		
-	}
-	
-	@PreDestroy
-	@Override
-	public void close() {
-		if (channel == null)
-			return;
-		try {
-			channel.shutdown();
-			if (!channel.awaitTermination(5, TimeUnit.SECONDS)) {
-				channel.shutdownNow();
-				channel.awaitTermination(2, TimeUnit.SECONDS);
-			}
-		}
-		catch (InterruptedException ie) {
-			Thread.currentThread().interrupt();
-			channel.shutdownNow();
-		}
-		finally {
-			// log.info("gRPC channel to {}:{} closed.", host, port);
-		}
-	}
+    // .proxyDetector(myProxyDetector)
 
-	private <S extends AbstractStub<S>> S withDeadline(S stub, long timeoutMs) {
-		long t = (timeoutMs > 0) ? timeoutMs : defaultTimeoutMs;
-		return stub.withDeadlineAfter(t, TimeUnit.MILLISECONDS);
-	}
+    if (plaintext)
+      chBuilder.usePlaintext();
 
-	public DatabaseCredentials buildCredentials() {
-		return DatabaseCredentials.newBuilder().setUsername(userName == null ? "" : userName)
-				.setPassword(userPassword == null ? "" : userPassword).build();
-	}
+    channel = chBuilder.build();
+  }
 
-	/** Returns the list of database names from the server. */
-	public List<String> listDatabases() {
+  /**
+   * Returns a Channel (wrapped with interceptors if provided).
+   */
+  public Channel channel() {
 
-		ListDatabasesResponse resp = null;
+    if (channel == null) {
+      start();
+    }
 
-		try {
+    return interceptors.isEmpty() ? channel : ClientInterceptors.intercept(channel, interceptors);
+  }
 
-			resp = withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs)
-					.listDatabases(ListDatabasesRequest.newBuilder().setCredentials(buildCredentials()).build());
-			return resp.getDatabasesList();
-		}
-		catch (StatusException e) {
+  public ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub newBlockingStub(int timeout) {
 
-			throw new RuntimeException("Failed to list databases: " + e.getMessage(), e);
-		}
-	}
+    return ArcadeDbServiceGrpc.newBlockingV2Stub(channel())
+        .withCallCredentials(createCredentials())
+        .withDeadlineAfter(timeout, TimeUnit.MILLISECONDS)
+        .withCompression("gzip");
+  }
 
-	/** Checks existence by listing (no ExistsDatabaseRequest needed). */
-	public boolean existsDatabase(final String database) {
-		return listDatabases().stream().anyMatch(n -> n.equalsIgnoreCase(database));
-	}
+  public ArcadeDbServiceGrpc.ArcadeDbServiceStub newAsyncStub(int timeout) {
 
-	/** Creates a database with type "graph" or "document". */
-	public void createDatabase(final String database) {
+    return ArcadeDbServiceGrpc.newStub(channel())
+        .withCallCredentials(createCredentials())
+        .withDeadlineAfter(timeout, TimeUnit.MILLISECONDS)
+        .withCompression("gzip");
+  }
 
-		try {
-			withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs)
-					.createDatabase(CreateDatabaseRequest.newBuilder().setName(database).setCredentials(buildCredentials()).build());
-		}
-		catch (StatusException e) {
-			throw new RuntimeException("Failed to create database: " + e.getMessage(), e);
-		}
-	}
+  private ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub adminServiceBlockingV2Stub() {
 
-	/** No-op if already present; creates otherwise. */
-	public void createDatabaseIfMissing(final String database) {
-		if (!existsDatabase(database)) {
-			createDatabase(database);
-		}
-	}
+    if (this.adminServiceBlockingV2Stub == null) {
 
-	/** Drops a database. If your proto supports 'force', add it here. */
-	public void dropDatabase(final String database) {
+      this.adminServiceBlockingV2Stub = ArcadeDbAdminServiceGrpc.newBlockingV2Stub(channel())
+          .withCallCredentials(createCallCredentials(userName, userPassword));
+    }
 
-		try {
-			withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs)
-					.dropDatabase(DropDatabaseRequest.newBuilder().setName(database).setCredentials(buildCredentials()).build());
-		}
-		catch (StatusException e) {
-			throw new RuntimeException("Failed to drop database: " + e.getMessage(), e);
-		}
-	}
+    return this.adminServiceBlockingV2Stub;
+  }
 
-	public String endpoint() {
-		return host + ":" + port;
-	}
+  @PreDestroy
+  @Override
+  public void close() {
+    if (channel == null)
+      return;
+    try {
+      channel.shutdown();
+      if (!channel.awaitTermination(5, TimeUnit.SECONDS)) {
+        channel.shutdownNow();
+        channel.awaitTermination(2, TimeUnit.SECONDS);
+      }
+    } catch (InterruptedException ie) {
+      Thread.currentThread().interrupt();
+      channel.shutdownNow();
+    } finally {
+      // log.info("gRPC channel to {}:{} closed.", host, port);
+    }
+  }
 
-	@Override
-	public String toString() {
-		return "RemoteGrpcServer{endpoint=" + endpoint() + ", userName='" + userName + "'}";
-	}
+  private <S extends AbstractStub<S>> S withDeadline(S stub, long timeoutMs) {
+    long t = (timeoutMs > 0) ? timeoutMs : defaultTimeoutMs;
+    return stub.withDeadlineAfter(t, TimeUnit.MILLISECONDS);
+  }
 
-	/**
-	 * Creates call credentials for authentication
-	 */
-	protected CallCredentials createCallCredentials(String userName, String userPassword) {
-		return new CallCredentials() {
-			@Override
-			public void applyRequestMetadata(RequestInfo requestInfo, Executor appExecutor, MetadataApplier applier) {
-				Metadata headers = new Metadata();
-				headers.put(Metadata.Key.of("username", Metadata.ASCII_STRING_MARSHALLER), userName);
-				headers.put(Metadata.Key.of("password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
-				headers.put(Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER), userName);
-				headers.put(Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
-				applier.apply(headers);
-			}
+  public DatabaseCredentials buildCredentials() {
+    return DatabaseCredentials.newBuilder().setUsername(userName == null ? "" : userName)
+        .setPassword(userPassword == null ? "" : userPassword).build();
+  }
 
-			@Override
-			public void thisUsesUnstableApi() {
-				// Required by the interface
-			}
-		};
-	}
+  /**
+   * Returns the list of database names from the server.
+   */
+  public List<String> listDatabases() {
 
-	protected CallCredentials createCredentials() {
-		return new CallCredentials() {
-			@Override
-			public void applyRequestMetadata(RequestInfo requestInfo, Executor appExecutor, MetadataApplier applier) {
-				Metadata headers = new Metadata();
-				headers.put(Metadata.Key.of("username", Metadata.ASCII_STRING_MARSHALLER), userName);
-				headers.put(Metadata.Key.of("password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
-				headers.put(Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER), userName);
-				headers.put(Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
-				applier.apply(headers);
-			}
+    ListDatabasesResponse resp = null;
 
-			// x-arcade-user: root" -H "x-arcade-password: oY9uU2uJ8nD8iY7t" -H
-			// "x-arcade-database: local_shakeiq_curonix_poc-app"
-			@Override
-			public void thisUsesUnstableApi() {
-				// Required by the interface
-			}
-		};
-	}
+    try {
+
+      resp = withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs)
+          .listDatabases(ListDatabasesRequest.newBuilder().setCredentials(buildCredentials()).build());
+      return resp.getDatabasesList();
+    } catch (StatusException e) {
+
+      throw new RuntimeException("Failed to list databases: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Checks existence by listing (no ExistsDatabaseRequest needed).
+   */
+  public boolean existsDatabase(final String database) {
+    return listDatabases().stream().anyMatch(n -> n.equalsIgnoreCase(database));
+  }
+
+  /**
+   * Creates a database with type "graph" or "document".
+   */
+  public void createDatabase(final String database) {
+
+    try {
+      withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs)
+          .createDatabase(CreateDatabaseRequest.newBuilder().setName(database).setCredentials(buildCredentials()).build());
+    } catch (StatusException e) {
+      throw new RuntimeException("Failed to create database: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * No-op if already present; creates otherwise.
+   */
+  public void createDatabaseIfMissing(final String database) {
+    if (!existsDatabase(database)) {
+      createDatabase(database);
+    }
+  }
+
+  /**
+   * Drops a database. If your proto supports 'force', add it here.
+   */
+  public void dropDatabase(final String database) {
+
+    try {
+      withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs)
+          .dropDatabase(DropDatabaseRequest.newBuilder().setName(database).setCredentials(buildCredentials()).build());
+    } catch (StatusException e) {
+      throw new RuntimeException("Failed to drop database: " + e.getMessage(), e);
+    }
+  }
+
+  public String endpoint() {
+    return host + ":" + port;
+  }
+
+  @Override
+  public String toString() {
+    return "RemoteGrpcServer{endpoint=" + endpoint() + ", userName='" + userName + "'}";
+  }
+
+  /**
+   * Creates call credentials for authentication
+   */
+  protected CallCredentials createCallCredentials(String userName, String userPassword) {
+    return new CallCredentials() {
+      @Override
+      public void applyRequestMetadata(RequestInfo requestInfo, Executor appExecutor, MetadataApplier applier) {
+        Metadata headers = new Metadata();
+        headers.put(Metadata.Key.of("username", Metadata.ASCII_STRING_MARSHALLER), userName);
+        headers.put(Metadata.Key.of("password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
+        headers.put(Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER), userName);
+        headers.put(Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
+        applier.apply(headers);
+      }
+
+      @Override
+      public void thisUsesUnstableApi() {
+        // Required by the interface
+      }
+    };
+  }
+
+  protected CallCredentials createCredentials() {
+    return new CallCredentials() {
+      @Override
+      public void applyRequestMetadata(RequestInfo requestInfo, Executor appExecutor, MetadataApplier applier) {
+        Metadata headers = new Metadata();
+        headers.put(Metadata.Key.of("username", Metadata.ASCII_STRING_MARSHALLER), userName);
+        headers.put(Metadata.Key.of("password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
+        headers.put(Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER), userName);
+        headers.put(Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
+        applier.apply(headers);
+      }
+
+      // x-arcade-user: root" -H "x-arcade-password: oY9uU2uJ8nD8iY7t" -H
+      // "x-arcade-database: local_shakeiq_curonix_poc-app"
+      @Override
+      public void thisUsesUnstableApi() {
+        // Required by the interface
+      }
+    };
+  }
 }
