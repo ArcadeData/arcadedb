@@ -25,12 +25,12 @@ public class ArcadeDbHTTPTvsGRPCBench {
   // ---- Config (edit or pass via env/args) ----
   static String DB_NAME   = System.getenv().getOrDefault("ARCADE_DB", "ArcadeDB");
   static String HTTP_HOST = System.getenv().getOrDefault("ARCADE_HTTP_HOST", "127.0.0.1");
-  static int    HTTP_PORT = Integer.parseInt(System.getenv().getOrDefault("ARCADE_HTTP_PORT", "2489"));
+  static int    HTTP_PORT = Integer.parseInt(System.getenv().getOrDefault("ARCADE_HTTP_PORT", "2480"));
   static String GRPC_HOST = System.getenv().getOrDefault("ARCADE_GRPC_HOST", "127.0.0.1");
-  static int    GRPC_PORT = Integer.parseInt(System.getenv().getOrDefault("ARCADE_GRPC_PORT", "50059"));
+  static int    GRPC_PORT = Integer.parseInt(System.getenv().getOrDefault("ARCADE_GRPC_PORT", "50051"));
 
   static String USER = System.getenv().getOrDefault("ARCADE_USER", "root");
-  static String PASS = System.getenv().getOrDefault("ARCADE_PASS", "root1234");
+  static String PASS = System.getenv().getOrDefault("ARCADE_PASS", "playwithdata");
 
   static ObjectMapper objectMapper = new ObjectMapper();
 

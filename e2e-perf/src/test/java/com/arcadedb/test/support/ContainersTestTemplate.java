@@ -18,12 +18,13 @@ import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.lifecycle.Startables;
 import org.testcontainers.utility.MountableFile;
 
-import java.io.*;
-import java.nio.file.*;
-import java.time.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.function.*;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 public abstract class ContainersTestTemplate {
   public static final String                    IMAGE      = "arcadedata/arcadedb:latest";
@@ -127,11 +128,14 @@ public abstract class ContainersTestTemplate {
   /**
    * Starts all containers that are not already running.
    */
-  protected void startContainers() {
+  protected List<ServerWrapper> startContainers() {
     logger.info("Starting all containers");
     containers.stream()
         .filter(container -> !container.isRunning())
         .forEach(container -> Startables.deepStart(container).join());
+    return containers.stream()
+        .map(ServerWrapper::new)
+        .toList();
   }
 
   /**
@@ -144,7 +148,8 @@ public abstract class ContainersTestTemplate {
    *
    * @return A GenericContainer instance representing the ArcadeDB container.
    */
-  protected GenericContainer<?> createArcadeContainer(String name,
+  protected GenericContainer createArcadeContainer(
+      String name,
       String serverList,
       String quorum,
       String role,
@@ -174,7 +179,7 @@ public abstract class ContainersTestTemplate {
     makeContainersDirectories(name);
 
     GenericContainer<?> container = new GenericContainer<>(IMAGE)
-        .withExposedPorts(2480, 5432)
+        .withExposedPorts(2480, 5432, 50051)
         .withNetwork(network)
         .withNetworkAliases(name)
         .withStartupTimeout(Duration.ofSeconds(90))
@@ -184,7 +189,7 @@ public abstract class ContainersTestTemplate {
 
         .withEnv("JAVA_OPTS", String.format("""
             -Darcadedb.server.rootPassword=playwithdata
-            -Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin
+            -Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GRPC:com.arcadedb.server.grpc.GrpcServerPlugin
             -Darcadedb.server.httpsIoThreads=30
             -Darcadedb.bucketReuseSpaceMode=low
             -Darcadedb.server.name=%s
