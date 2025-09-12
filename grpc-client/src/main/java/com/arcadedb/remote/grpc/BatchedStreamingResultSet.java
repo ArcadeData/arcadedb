@@ -21,18 +21,6 @@ class BatchedStreamingResultSet extends StreamingResultSet {
   }
 
   @Override
-  public boolean hasNext() {
-    boolean hasMore = super.hasNext();
-
-    // Update batch info when we fetch a new batch
-    if (hasMore && currentBatch != null) {
-      // Track batch metadata here if needed
-    }
-
-    return hasMore;
-  }
-
-  @Override
   protected Iterator<Result> convertBatchToResults(QueryResult queryResult) {
     // Capture batch metadata
     this.currentBatchSize = queryResult.getRecordsCount();
