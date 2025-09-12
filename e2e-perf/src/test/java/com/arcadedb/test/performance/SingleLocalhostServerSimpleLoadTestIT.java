@@ -1,6 +1,7 @@
 package com.arcadedb.test.performance;
 
 import com.arcadedb.test.support.DatabaseWrapper;
+import com.arcadedb.test.support.ServerWrapper;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.logging.LoggingMeterRegistry;
 import io.micrometer.core.instrument.logging.LoggingRegistryConfig;
@@ -84,9 +85,8 @@ public class SingleLocalhostServerSimpleLoadTestIT {
   @DisplayName("Single server load test")
   void singleServerLoadTest() throws InterruptedException, IOException {
 
-    String host = "localhost"; // Assuming localhost for the database connection
-    int port = 2480; // Default ArcadeDB port
-    DatabaseWrapper db = new DatabaseWrapper(host, port, idSupplier);
+    ServerWrapper server = new ServerWrapper("localhost", 2480, 50051);
+    DatabaseWrapper db = new DatabaseWrapper(server, idSupplier);
     db.createDatabase();
     db.createSchema();
 
@@ -111,7 +111,7 @@ public class SingleLocalhostServerSimpleLoadTestIT {
     for (int i = 0; i < numOfThreads; i++) {
       // Each thread will create users and photos
       executor.submit(() -> {
-        DatabaseWrapper db1 = new DatabaseWrapper(host, port, idSupplier);
+        DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier);
         db1.addUserAndPhotos(numOfUsers, numOfPhotos);
         db1.close();
       });
@@ -120,7 +120,7 @@ public class SingleLocalhostServerSimpleLoadTestIT {
     if (numOfFriendship > 0) {
       // Each thread will create friendships
       executor.submit(() -> {
-        DatabaseWrapper db1 = new DatabaseWrapper(host, port, idSupplier);
+        DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier);
         db1.createFriendships(numOfFriendship);
         db1.close();
       });
@@ -129,7 +129,7 @@ public class SingleLocalhostServerSimpleLoadTestIT {
     if (numOfLike > 0) {
       // Each thread will create friendships
       executor.submit(() -> {
-        DatabaseWrapper db1 = new DatabaseWrapper(host, port, idSupplier);
+        DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier);
         ;
         db1.createLike(numOfLike);
         db1.close();

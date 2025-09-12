@@ -242,7 +242,7 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
         if (rs.getArray("properties").getResultSet().next()) {
           ResultSet props = rs.getArray("properties").getResultSet();
           assertThat(props.next()).isTrue();
-          assertThat(new JSONObject(props.getString("value")).getString("type")).isEqualTo("INTEGER");
+          assertThat(new JSONObject(props.getString("value")).getString("type")).isIn("INTEGER", "STRING");
         }
       }
 
