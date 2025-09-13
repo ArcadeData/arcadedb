@@ -5,8 +5,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.grpc.GrpcRecord;
 import com.arcadedb.server.grpc.QueryResult;
 import io.grpc.stub.BlockingClientCall;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.arcadedb.log.LogManager;
+import java.util.logging.Level;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -20,7 +20,6 @@ import java.util.concurrent.atomic.AtomicLong;
  * Supports both Record results and projection/aggregation results.
  */
 class StreamingResultSet implements ResultSet {
-  private static final Logger logger = LoggerFactory.getLogger(StreamingResultSet.class);
 
   private final BlockingClientCall<?, QueryResult> stream;
   private final RemoteGrpcDatabase                 db;
@@ -57,8 +56,8 @@ class StreamingResultSet implements ResultSet {
       while (stream.hasNext()) {
         final QueryResult queryResult = stream.read();
 
-        if (logger.isDebugEnabled()) {
-          logger.debug("Received batch with {} records, isLastBatch={}", queryResult.getRecordsCount(),
+        if (LogManager.instance().isDebugEnabled()) {
+          LogManager.instance().log(this, Level.FINE, "Received batch with %d records, isLastBatch=%s", queryResult.getRecordsCount(),
               queryResult.getIsLastBatch());
         }
 
@@ -133,7 +132,7 @@ class StreamingResultSet implements ResultSet {
         stream.read();
       }
     } catch (Exception e) {
-      logger.debug("Exception while draining stream during close", e);
+      LogManager.instance().log(this, Level.FINE, "Exception while draining stream during close: %s", e.getMessage());
     }
 
     // BlockingClientCall doesn't implement AutoCloseable
