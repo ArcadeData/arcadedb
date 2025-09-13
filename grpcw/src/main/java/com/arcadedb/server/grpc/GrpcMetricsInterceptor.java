@@ -11,15 +11,11 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Metrics interceptor for gRPC requests using Micrometer
  */
 class GrpcMetricsInterceptor implements ServerInterceptor {
-
-  private static final Logger logger = LoggerFactory.getLogger(GrpcMetricsInterceptor.class);
 
   private final MeterRegistry meterRegistry;
   private final Counter       requestCounter;

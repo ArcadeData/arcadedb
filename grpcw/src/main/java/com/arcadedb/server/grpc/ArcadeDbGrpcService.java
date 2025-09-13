@@ -11,6 +11,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -30,20 +31,17 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
 
 /**
  * gRPC Service implementation for ArcadeDB
  */
 public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImplBase {
-
-  private static final Logger logger = LoggerFactory.getLogger(ArcadeDbGrpcService.class);
 
   // Pick serializer once
   private static final JsonSerializer FAST = JsonSerializer.createJsonSerializer().setIncludeVertexEdges(false)
@@ -84,7 +82,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           db.close();
         }
       } catch (Exception e) {
-        logger.error("Error closing database", e);
+        LogManager.instance().log(this, Level.SEVERE, "Error closing database", e);
       }
     }
     databasePool.clear();
@@ -97,7 +95,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           db.close();
         }
       } catch (Exception e) {
-        logger.error("Error closing transaction database", e);
+        LogManager.instance().log(this, Level.SEVERE, "Error closing transaction database", e);
       }
     }
     activeTransactions.clear();
@@ -125,7 +123,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       final var tx = hasTx ? req.getTransaction() : null;
 
-      logger.debug("executeCommand(): hasTx = {} tx ={}", hasTx, tx);
+      LogManager.instance().log(this, Level.FINE, "executeCommand(): hasTx = %s tx = %s", hasTx, tx);
 
       if (hasTx && tx.getBegin()) {
         db.begin();
@@ -141,17 +139,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       // Execute the command
 
-      logger.debug("executeCommand(): command = {}", req.getCommand());
+      LogManager.instance().log(this, Level.FINE, "executeCommand(): command = %s", req.getCommand());
 
       try (ResultSet rs = db.command(language, req.getCommand(), params)) {
 
         if (rs != null) {
 
-          logger.debug("executeCommand(): rs = {}", rs);
+          LogManager.instance().log(this, Level.FINE, "executeCommand(): rs = %s", rs);
 
           if (returnRows) {
 
-            logger.debug("executeCommand(): returning rows ...");
+            LogManager.instance().log(this, Level.FINE, "executeCommand(): returning rows ...");
 
             int emitted = 0;
 
@@ -192,7 +190,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             }
           } else {
 
-            logger.debug("executeCommand(): not returning rows ... rs = {}", rs);
+            LogManager.instance().log(this, Level.FINE, "executeCommand(): not returning rows ... rs = %s", rs);
 
             // Not returning rows: still consume to compute 'affected'
             while (rs.hasNext()) {
@@ -211,23 +209,26 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         }
       }
 
-      logger.debug("executeCommand(): after - hasTx = {} tx = {}", hasTx, tx);
+      LogManager.instance().log(this, Level.FINE, "executeCommand(): after - hasTx = %s tx = %s", hasTx, tx);
 
       // Transaction end — precedence: rollback > commit > begin-only⇒commit
       if (hasTx) {
 
         if (tx.getRollback()) {
 
-          logger.debug("executeCommand(): after - rolling back db={} tid={}", db.getName(), tx.getTransactionId());
+          LogManager.instance()
+              .log(this, Level.FINE, "executeCommand(): after - rolling back db=%s tid=%s", db.getName(), tx.getTransactionId());
           db.rollback();
         } else if (tx.getCommit()) {
-          logger.debug("executeCommand(): after - committing [tx.getCommit() == true] db={} tid={}", db.getName(),
-              tx.getTransactionId());
+          LogManager.instance()
+              .log(this, Level.FINE, "executeCommand(): after - committing [tx.getCommit() == true] db=%s tid=%s", db.getName(),
+                  tx.getTransactionId());
           db.commit();
         } else if (beganHere) {
           // Began but no explicit commit/rollback flag — default to commit (HTTP parity)
-          logger.debug("executeCommand(): after - committing [beganHere == true] db={} tid={}", db.getName(),
-              tx.getTransactionId());
+          LogManager.instance()
+              .log(this, Level.FINE, "executeCommand(): after - committing [beganHere == true] db=%s tid=%s", db.getName(),
+                  tx.getTransactionId());
           db.commit();
         }
       }
@@ -240,7 +241,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     } catch (Exception e) {
 
-      logger.error("ERROR", e);
+      LogManager.instance().log(this, Level.SEVERE, "ERROR", e);
 
       // Best-effort rollback if we began here and failed
       try {
@@ -428,11 +429,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       final var dbRef = db;
 
-      logger.debug("updateRecord(): el = {}; type = {}", el, el.getRecordType());
+      LogManager.instance().log(this, Level.FINE, "updateRecord(): el = %s; type = %s", el, el.getRecordType());
 
       if (el instanceof Vertex elAsVertex) {
 
-        logger.debug("updateRecord(): Processing Vertex ...");
+        LogManager.instance().log(this, Level.FINE, "updateRecord(): Processing Vertex ...");
 
         // Get mutable view for updates (works for docs, vertices, edges)
         MutableVertex mvertex = elAsVertex.modify();
@@ -450,7 +451,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           String key = k.trim().toLowerCase();
           if (key.equals("@rid") || key.equals("@type") || key.equals("@cat")) {
             // Skip internal fields to prevent accidental overwrites
-            logger.debug("Skipping internal field during update: {}", k);
+            LogManager.instance().log(this, Level.FINE, "Skipping internal field during update: %s", k);
             return;
           }
           // Perform the update for user-defined fields
@@ -460,7 +461,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         mvertex.save();
       } else if (el instanceof Document elAsDocument) {
 
-        logger.debug("updateRecord(): Processing Document ...");
+        LogManager.instance().log(this, Level.FINE, "updateRecord(): Processing Document ...");
 
         MutableDocument mdoc = elAsDocument.modify();
 
@@ -477,7 +478,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           String key = k.trim().toLowerCase();
           if (key.equals("@rid") || key.equals("@type") || key.equals("@cat")) {
             // Skip internal fields to prevent accidental overwrites
-            logger.debug("Skipping internal field during update: {}", k);
+            LogManager.instance().log(this, Level.FINE, "Skipping internal field during update: %s", k);
             return;
           }
           // Perform the update for user-defined fields
@@ -504,7 +505,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       resp.onCompleted();
     } catch (Exception e) {
 
-      logger.error("ERROR in updateRecord", e);
+      LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord", e);
 
       try {
         if (beganHere && db != null)
@@ -606,7 +607,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         projectionConfig = new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);
       }
 
-      logger.debug("executeQuery(): projectionConfig.include = {} projectionConfig.mode = {}", projectionConfig.isInclude(),
+      LogManager.instance().log(this, Level.FINE, "executeQuery(): projectionConfig.include = %s projectionConfig.mode = %s",
+          projectionConfig.isInclude(),
           projectionConfig.getEnc());
 
       // Force compression for streaming (usually beneficial)
@@ -617,7 +619,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // Check if this is part of a transaction
       if (request.hasTransaction()) {
 
-        logger.debug("executeQuery(): has Tx {}", request.getTransaction().getTransactionId());
+        LogManager.instance().log(this, Level.FINE, "executeQuery(): has Tx %s", request.getTransaction().getTransactionId());
 
         database = activeTransactions.get(request.getTransaction().getTransactionId());
         if (database == null) {
@@ -628,11 +630,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // Execute the query
       long startTime = System.currentTimeMillis();
 
-      logger.debug("executeQuery(): query = {}", request.getQuery());
+      LogManager.instance().log(this, Level.FINE, "executeQuery(): query = %s", request.getQuery());
 
       ResultSet resultSet = database.query("sql", request.getQuery(), convertParameters(request.getParametersMap()));
 
-      logger.debug("executeQuery(): to get resultSet = {}", (System.currentTimeMillis() - startTime));
+      LogManager.instance()
+          .log(this, Level.FINE, "executeQuery(): to get resultSet = %s", (System.currentTimeMillis() - startTime));
 
       // Build response
       QueryResult.Builder resultBuilder = QueryResult.newBuilder();
@@ -640,25 +643,25 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // Process results
       int count = 0;
 
-      logger.debug("executeQuery(): resultSet.size = {}", resultSet.getExactSizeIfKnown());
+      LogManager.instance().log(this, Level.FINE, "executeQuery(): resultSet.size = %s", resultSet.getExactSizeIfKnown());
 
       while (resultSet.hasNext()) {
 
         Result result = resultSet.next();
 
-        logger.debug("executeQuery(): result = {}", result);
+        LogManager.instance().log(this, Level.FINE, "executeQuery(): result = %s", result);
 
         if (result.isElement()) {
 
-          logger.debug("executeQuery(): isElement");
+          LogManager.instance().log(this, Level.FINE, "executeQuery(): isElement");
 
           com.arcadedb.database.Record dbRecord = result.getElement().get();
 
-          logger.debug("executeQuery(): dbRecord -> @rid = {}", dbRecord.getIdentity().toString());
+          LogManager.instance().log(this, Level.FINE, "executeQuery(): dbRecord -> @rid = %s", dbRecord.getIdentity().toString());
 
           GrpcRecord grpcRecord = convertToGrpcRecord(dbRecord, database);
 
-          logger.debug("executeQuery(): grpcRecord -> @rid = {}", grpcRecord.getRid());
+          LogManager.instance().log(this, Level.FINE, "executeQuery(): grpcRecord -> @rid = %s", grpcRecord.getRid());
 
           resultBuilder.addRecords(grpcRecord);
 
@@ -670,7 +673,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           }
         } else {
 
-          logger.debug("executeQuery(): NOT isElement");
+          LogManager.instance().log(this, Level.FINE, "executeQuery(): NOT isElement");
 
           // Scalar / projection row (e.g., RETURN COUNT)
 
@@ -685,7 +688,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         }
       }
 
-      logger.debug("executeQuery(): count = {}", count);
+      LogManager.instance().log(this, Level.FINE, "executeQuery(): count = %s", count);
 
       resultBuilder.setTotalRecordsInBatch(count);
 
@@ -695,13 +698,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           .setExecutionTimeMs(executionTime)
           .build();
 
-      logger.debug("executeQuery(): executionTime + response generation = {}", executionTime);
+      LogManager.instance().log(this, Level.FINE, "executeQuery(): executionTime + response generation = %s", executionTime);
 
       responseObserver.onNext(response);
       responseObserver.onCompleted();
 
     } catch (Exception e) {
-      logger.error("Error executing query: {}", e.getMessage(), e);
+      LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", e, e.getMessage());
       responseObserver.onError(Status.INTERNAL.withDescription("Query execution failed: " + e.getMessage()).asException());
     }
   }
@@ -711,20 +714,21 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final String reqDb = request.getDatabase();
     final String user = (request.hasCredentials() ? request.getCredentials().getUsername() : null);
 
-    if (logger.isDebugEnabled()) {
-      logger.debug("beginTransaction(): received request db={} user={} activeTxCount(before)={}", reqDb,
-          (user != null ? user : "<none>"),
-          activeTransactions.size());
+    if (true) {
+      LogManager.instance()
+          .log(this, Level.FINE, "beginTransaction(): received request db=%s user=%s activeTxCount(before)=%s", reqDb,
+              (user != null ? user : "<none>"),
+              activeTransactions.size());
     }
 
     try {
       final Database database = getDatabase(reqDb, request.getCredentials());
 
-      if (logger.isDebugEnabled()) {
-        logger.debug("beginTransaction(): resolved database instance dbName={} class={} hash={}",
+      if (true) {
+        LogManager.instance().log(this, Level.FINE, "beginTransaction(): resolved database instance dbName=%s class=%s hash=%s",
             (database != null ? database.getName() : "<null>"), (database != null ? database.getClass().getSimpleName() : "<null>"),
             (database != null ? System.identityHashCode(database) : 0));
-        logger.debug("beginTransaction(): calling database.begin()");
+        LogManager.instance().log(this, Level.FINE, "beginTransaction(): calling database.begin()");
       }
 
       // Begin transaction
@@ -734,9 +738,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final String transactionId = generateTransactionId();
       activeTransactions.put(transactionId, database);
 
-      if (logger.isDebugEnabled()) {
-        logger.debug("beginTransaction(): started txId={} for db={} activeTxCount(after)={}", transactionId,
-            (database != null ? database.getName() : "<null>"), activeTransactions.size());
+      if (true) {
+        LogManager.instance()
+            .log(this, Level.FINE, "beginTransaction(): started txId=%s for db=%s activeTxCount(after)=%s", transactionId,
+                (database != null ? database.getName() : "<null>"), activeTransactions.size());
       }
 
       final BeginTransactionResponse response = BeginTransactionResponse.newBuilder().setTransactionId(transactionId)
@@ -745,10 +750,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       responseObserver.onNext(response);
       responseObserver.onCompleted();
     } catch (Throwable t) {
-      if (logger.isDebugEnabled()) {
-        logger.debug("beginTransaction(): FAILED db={} user={} err={}", reqDb, (user != null ? user : "<none>"), t.toString(), t);
+      if (true) {
+        LogManager.instance()
+            .log(this, Level.FINE, "beginTransaction(): FAILED db=%s user=%s err=%s", reqDb, (user != null ? user : "<none>"),
+                t.toString(), t);
       }
-      logger.error("Error beginning transaction: {}", t.getMessage(), t);
+      LogManager.instance().log(this, Level.SEVERE, "Error beginning transaction: %s", t, t.getMessage());
       responseObserver.onError(Status.INTERNAL.withDescription("Failed to begin transaction: " + t.getMessage()).asException());
     }
   }
@@ -757,13 +764,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   public void commitTransaction(CommitTransactionRequest req, StreamObserver<CommitTransactionResponse> rsp) {
     final String txId = req.getTransaction().getTransactionId();
 
-    if (logger.isDebugEnabled()) {
-      logger.debug("commitTransaction(): received request txId={}", txId);
+    if (true) {
+      LogManager.instance().log(this, Level.FINE, "commitTransaction(): received request txId=%s", txId);
     }
 
     if (txId == null || txId.isBlank()) {
-      if (logger.isDebugEnabled()) {
-        logger.debug("commitTransaction(): missing/blank txId");
+      if (true) {
+        LogManager.instance().log(this, Level.FINE, "commitTransaction(): missing/blank txId");
       }
       rsp.onError(Status.INVALID_ARGUMENT.withDescription("Missing transaction id").asException());
       return;
@@ -772,15 +779,18 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // remove atomically to avoid double-commit races
     final Database db = activeTransactions.remove(txId);
 
-    if (logger.isDebugEnabled()) {
-      logger.debug("commitTransaction(): removed txId={}, presentPreviously={}, remainingActiveTx={}", txId, db != null,
-          activeTransactions.size());
+    if (true) {
+      LogManager.instance()
+          .log(this, Level.FINE, "commitTransaction(): removed txId=%s, presentPreviously=%s, remainingActiveTx=%s", txId,
+              db != null,
+              activeTransactions.size());
     }
 
     if (db == null) {
       // Idempotent no-op
-      if (logger.isDebugEnabled()) {
-        logger.debug("commitTransaction(): no active tx for id={}, responding committed=false", txId);
+      if (true) {
+        LogManager.instance()
+            .log(this, Level.FINE, "commitTransaction(): no active tx for id=%s, responding committed=false", txId);
       }
       rsp.onNext(CommitTransactionResponse.newBuilder().setSuccess(true).setCommitted(false)
           .setMessage("No active transaction for id=" + txId + " (already committed/rolled back?)").build());
@@ -789,18 +799,18 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     try {
-      if (logger.isDebugEnabled()) {
-        logger.debug("commitTransaction(): committing txId={} on db={}", txId, db.getName());
+      if (true) {
+        LogManager.instance().log(this, Level.FINE, "commitTransaction(): committing txId=%s on db=%s", txId, db.getName());
       }
       db.commit();
-      if (logger.isDebugEnabled()) {
-        logger.debug("commitTransaction(): commit OK txId={}", txId);
+      if (true) {
+        LogManager.instance().log(this, Level.FINE, "commitTransaction(): commit OK txId=%s", txId);
       }
       rsp.onNext(CommitTransactionResponse.newBuilder().setSuccess(true).setCommitted(true).build());
       rsp.onCompleted();
     } catch (Throwable t) {
-      if (logger.isDebugEnabled()) {
-        logger.debug("commitTransaction(): commit FAILED txId={} err={}", txId, t.toString(), t);
+      if (true) {
+        LogManager.instance().log(this, Level.FINE, "commitTransaction(): commit FAILED txId=%s err=%s", txId, t.toString(), t);
       }
       // tx is unusable; do not reinsert into the map
       rsp.onError(Status.ABORTED.withDescription("Commit failed: " + t.getMessage()).asException());
@@ -811,13 +821,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   public void rollbackTransaction(RollbackTransactionRequest req, StreamObserver<RollbackTransactionResponse> rsp) {
     final String txId = req.getTransaction().getTransactionId();
 
-    if (logger.isDebugEnabled()) {
-      logger.debug("rollbackTransaction(): received request txId={}", txId);
+    if (true) {
+      LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): received request txId=%s", txId);
     }
 
     if (txId == null || txId.isBlank()) {
-      if (logger.isDebugEnabled()) {
-        logger.debug("rollbackTransaction(): missing/blank txId");
+      if (true) {
+        LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): missing/blank txId");
       }
       rsp.onError(Status.INVALID_ARGUMENT.withDescription("Missing transaction id").asException());
       return;
@@ -825,14 +835,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     final Database db = activeTransactions.remove(txId);
 
-    if (logger.isDebugEnabled()) {
-      logger.debug("rollbackTransaction(): removed txId={}, presentPreviously={}, remainingActiveTx={}", txId, db != null,
-          activeTransactions.size());
+    if (true) {
+      LogManager.instance()
+          .log(this, Level.FINE, "rollbackTransaction(): removed txId=%s, presentPreviously=%s, remainingActiveTx=%s", txId,
+              db != null,
+              activeTransactions.size());
     }
 
     if (db == null) {
-      if (logger.isDebugEnabled()) {
-        logger.debug("rollbackTransaction(): no active tx for id={}, responding rolledBack=false", txId);
+      if (true) {
+        LogManager.instance()
+            .log(this, Level.FINE, "rollbackTransaction(): no active tx for id=%s, responding rolledBack=false", txId);
       }
       rsp.onNext(RollbackTransactionResponse.newBuilder().setSuccess(true).setRolledBack(false)
           .setMessage("No active transaction for id=" + txId + " (already committed/rolled back?)").build());
@@ -841,18 +854,18 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     try {
-      if (logger.isDebugEnabled()) {
-        logger.debug("rollbackTransaction(): rolling back txId={} on db={}", txId, db.getName());
+      if (true) {
+        LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): rolling back txId=%s on db=%s", txId, db.getName());
       }
       db.rollback();
-      if (logger.isDebugEnabled()) {
-        logger.debug("rollbackTransaction(): rollback OK txId={}", txId);
+      if (true) {
+        LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): rollback OK txId=%s", txId);
       }
       rsp.onNext(RollbackTransactionResponse.newBuilder().setSuccess(true).setRolledBack(true).build());
       rsp.onCompleted();
     } catch (Throwable t) {
-      if (logger.isDebugEnabled()) {
-        logger.debug("rollbackTransaction(): rollback FAILED txId={} err={}", txId, t.toString(), t);
+      if (true) {
+        LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): rollback FAILED txId=%s err=%s", txId, t.toString(), t);
       }
       rsp.onError(Status.ABORTED.withDescription("Rollback failed: " + t.getMessage()).asException());
     }
@@ -1273,8 +1286,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
             firstOptsRef.set(effective);
 
-            if (logger.isDebugEnabled())
-              logger.debug("insertStream: initialized context with options:\n{}", effective);
+            if (true)
+              LogManager.instance().log(this, Level.FINE, "insertStream: initialized context with options:\n%s", effective);
           } else {
 
             // -------- Subsequent chunks: optionally validate option consistency --------
@@ -1750,8 +1763,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (k.startsWith("@"))
         return;
       Object javaVal = fromGrpcValue(grpcVal);
-      if (logger.isDebugEnabled())
-        logger.debug("APPLY-DOC {} <= {} -> {}", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
+      if (true)
+        LogManager.instance().log(this, Level.FINE, "APPLY-DOC %s <= %s -> %s", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
       doc.set(k, javaVal);
     });
   }
@@ -1762,8 +1775,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (k.startsWith("@"))
         return;
       Object javaVal = fromGrpcValue(grpcVal);
-      if (logger.isDebugEnabled())
-        logger.debug("APPLY-VERTEX {} <= {} -> {}", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
+      if (true)
+        LogManager.instance()
+            .log(this, Level.FINE, "APPLY-VERTEX %s <= %s -> %s", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
       vertex.set(k, javaVal);
     });
   }
@@ -1774,8 +1788,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (k.startsWith("@"))
         return;
       Object javaVal = fromGrpcValue(grpcVal);
-      if (logger.isDebugEnabled())
-        logger.debug("APPLY-EDGE {} <= {} -> {}", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
+      if (true)
+        LogManager.instance().log(this, Level.FINE, "APPLY-EDGE %s <= %s -> %s", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
       edge.set(k, javaVal);
     });
   }
@@ -1851,8 +1865,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   private GrpcValue toGrpcValue(Object o, ProjectionConfig pc) {
 
-    if (logger.isDebugEnabled()) {
-      logger.debug("toGrpcValue(): Converting\n   value = {}\n   class = {}", o, (o == null ? "null" : o.getClass().getName()));
+    if (true) {
+      LogManager.instance().log(this, Level.FINE, "toGrpcValue(): Converting\n   value = %s\n   class = %s", o,
+          (o == null ? "null" : o.getClass().getName()));
     }
 
     if (o instanceof JsonElement je) {
@@ -1922,15 +1937,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (!inProjection) {
         // Not a projection row: send as LINK if possible, else fall back
         if (doc.getIdentity() != null && doc.getIdentity().isValid()) {
-          if (logger.isDebugEnabled()) {
-            logger.debug("GRPC-ENC [toGrpcValue] DOC-NON-PROJECTION -> LINK rid={}", doc.getIdentity());
+          if (true) {
+            LogManager.instance()
+                .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] DOC-NON-PROJECTION -> LINK rid=%s", doc.getIdentity());
           }
           return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build())
               .setLogicalType("rid").build();
         }
         // No identity → treat as EMBEDDED-like MAP
-        if (logger.isDebugEnabled()) {
-          logger.debug("GRPC-ENC [toGrpcValue] DOC-NON-PROJECTION (no rid) -> MAP");
+        if (true) {
+          LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] DOC-NON-PROJECTION (no rid) -> MAP");
         }
         GrpcMap.Builder mb = GrpcMap.newBuilder();
         if (doc.getType() != null)
@@ -1947,23 +1963,23 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // 3.1 LINK mode
       if (enc == ProjectionEncoding.PROJECTION_AS_LINK) {
         if (doc.getIdentity() != null && doc.getIdentity().isValid()) {
-          if (logger.isDebugEnabled()) {
-            logger.debug("GRPC-ENC [toGrpcValue] PROJECTION -> LINK rid={}", doc.getIdentity());
+          if (true) {
+            LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION -> LINK rid=%s", doc.getIdentity());
           }
           return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build())
               .setLogicalType("rid").build();
         }
         // No rid: fall back to MAP
-        if (logger.isDebugEnabled()) {
-          logger.debug("GRPC-ENC [toGrpcValue] PROJECTION LINK fallback -> MAP (no rid)");
+        if (true) {
+          LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION LINK fallback -> MAP (no rid)");
         }
         enc = ProjectionEncoding.PROJECTION_AS_MAP;
       }
 
       // 3.2 MAP mode
       if (enc == ProjectionEncoding.PROJECTION_AS_MAP) {
-        if (logger.isDebugEnabled()) {
-          logger.debug("GRPC-ENC [toGrpcValue] PROJECTION -> MAP rid={} type={}",
+        if (true) {
+          LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION -> MAP rid=%s type=%s",
               (doc.getIdentity() != null ? doc.getIdentity() : "null"), (doc.getType() != null ? doc.getTypeName() : "null"));
         }
         GrpcMap.Builder mb = GrpcMap.newBuilder();
@@ -1992,9 +2008,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           GrpcValue child = toGrpcValue(doc.get(k), pc); // recurse with config
           int add = bytesOf(k) + child.getSerializedSize();
           if (pc.wouldExceed(add)) {
-            if (logger.isDebugEnabled()) {
-              logger.debug("GRPC-ENC [toGrpcValue] PROJECTION MAP soft-limit hit; skipping '{}' (limit={}, used~{})", k,
-                  pc.softLimitBytes, pc.used.get());
+            if (true) {
+              LogManager.instance()
+                  .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION MAP soft-limit hit; skipping '%s' (limit=%s, used~%s)",
+                      k,
+                      pc.softLimitBytes, pc.used.get());
             }
             pc.truncated = true;
             break;
@@ -2007,8 +2025,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       // 3.3 JSON mode
       if (enc == ProjectionEncoding.PROJECTION_AS_JSON) {
-        if (logger.isDebugEnabled()) {
-          logger.debug("GRPC-ENC [toGrpcValue] PROJECTION -> JSON rid={} type={}",
+        if (true) {
+          LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION -> JSON rid=%s type=%s",
               (doc.getIdentity() != null ? doc.getIdentity() : "null"), (doc.getType() != null ? doc.getTypeName() : "null"));
         }
 
@@ -2032,8 +2050,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // Soft limit handling
           if (pc.softLimitBytes > 0 && jsonBytes.length > pc.softLimitBytes) {
             pc.truncated = true;
-            if (logger.isDebugEnabled()) {
-              logger.debug("GRPC-ENC [toGrpcValue] PROJECTION JSON soft-limit hit; size={} limit={}", jsonBytes.length,
+            if (true) {
+              LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION JSON soft-limit hit; size=%s limit=%s",
+                  jsonBytes.length,
                   pc.softLimitBytes);
             }
             // Prefer a RID fallback if we have one
@@ -2051,7 +2070,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               .build();
         } catch (Throwable t) {
           // Safe fallback: send as MAP (typed GrpcValue tree)
-          logger.warn("GRPC-ENC [toGrpcValue] PROJECTION_AS_JSON failed for rid={} type={}, falling back to MAP; err={}",
+          LogManager.instance().log(this, Level.WARNING,
+              "GRPC-ENC [toGrpcValue] PROJECTION_AS_JSON failed for rid=%s type=%s, falling back to MAP; err=%s",
               (doc.getIdentity() != null ? doc.getIdentity() : "null"), (doc.getType() != null ? doc.getTypeName() : "null"),
               t.toString());
 
@@ -2073,8 +2093,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
 
       // Shouldn’t get here, but fall back
-      if (logger.isDebugEnabled()) {
-        logger.debug("GRPC-ENC [toGrpcValue] PROJECTION unknown encoding {}; falling back to LINK/STRING", enc.name());
+      if (true) {
+        LogManager.instance()
+            .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION unknown encoding %s; falling back to LINK/STRING",
+                enc.name());
       }
       if (doc.getIdentity() != null && doc.getIdentity().isValid()) {
         return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build())
@@ -2131,8 +2153,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     // Fallback
-    if (logger.isDebugEnabled()) {
-      logger.debug("GRPC-ENC [toGrpcValue] FALLBACK-TO-STRING for class={} value={}", o.getClass().getName(), String.valueOf(o));
+    if (true) {
+      LogManager.instance()
+          .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] FALLBACK-TO-STRING for class=%s value=%s", o.getClass().getName(),
+              String.valueOf(o));
     }
 
     return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setStringValue(String.valueOf(o)).build(), null);
@@ -2251,7 +2275,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // This is how other plugins do it - get the already-open database
       Database db = arcadeServer.getDatabase(databaseName);
 
-      logger.debug("getDatabase(): db = {} isOpen = {}", db, db.isOpen());
+      LogManager.instance().log(this, Level.FINE, "getDatabase(): db = %s isOpen = %s", db, db.isOpen());
 
       if (db != null) {
         return db;
@@ -2286,7 +2310,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             database = dbFactory.open(ComponentFile.MODE.READ_ONLY);
           } catch (Exception e) {
             // If READ_ONLY fails, try READ_WRITE
-            logger.debug("Opening database in READ_WRITE mode: {}", databaseName);
+            LogManager.instance().log(this, Level.FINE, "Opening database in READ_WRITE mode: %s", databaseName);
             database = dbFactory.open(ComponentFile.MODE.READ_WRITE);
           }
         } else {
@@ -2299,7 +2323,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return database;
 
       } catch (Exception e) {
-        logger.error("Failed to open database: {}", databaseName, e);
+        LogManager.instance().log(this, Level.SEVERE, "Failed to open database: %s", e, databaseName);
         throw new RuntimeException("Cannot open database: " + databaseName + " - " + e.getMessage(), e);
       }
     }
@@ -2346,14 +2370,18 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         if (value != null) {
 
-          if (logger.isDebugEnabled()) {
-            logger.debug("convertToGrpcRecord(): Converting {}\n  value = {}\n  class = {}", propertyName, value, value.getClass());
+          if (true) {
+            LogManager.instance()
+                .log(this, Level.FINE, "convertToGrpcRecord(): Converting %s\n  value = %s\n  class = %s", propertyName, value,
+                    value.getClass());
           }
 
           GrpcValue gv = toGrpcValue(value);
 
-          if (logger.isDebugEnabled())
-            logger.debug("ENC-REC {}.{}: {} -> {}", builder.getRid(), propertyName, summarizeJava(value), summarizeGrpc(gv));
+          if (true)
+            LogManager.instance()
+                .log(this, Level.FINE, "ENC-REC %s.%s: %s -> %s", builder.getRid(), propertyName, summarizeJava(value),
+                    summarizeGrpc(gv));
 
           builder.putProperties(propertyName, gv);
         }
@@ -2372,8 +2400,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
     }
 
-    if (logger.isDebugEnabled())
-      logger.debug("ENC-REC DONE rid={} type={} props={}", builder.getRid(), builder.getType(), builder.getPropertiesCount());
+    if (true)
+      LogManager.instance().log(this, Level.FINE, "ENC-REC DONE rid=%s type=%s props=%s", builder.getRid(), builder.getType(),
+          builder.getPropertiesCount());
 
     return builder.build();
   }
@@ -2382,9 +2411,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     Object propValue = result.getProperty(propName);
 
-    if (logger.isDebugEnabled()) {
-      logger.debug("convertPropToGrpcValue(): Converting {}\n  value = {}\n  class = {}", propName, propValue,
-          propValue.getClass());
+    if (true) {
+      LogManager.instance()
+          .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName, propValue,
+              propValue.getClass());
     }
 
     return toGrpcValue(propValue, pc);
@@ -2394,9 +2424,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     Object propValue = result.getProperty(propName);
 
-    if (logger.isDebugEnabled()) {
-      logger.debug("convertPropToGrpcValue(): Converting {}\n  value = {}\n  class = {}", propName, propValue,
-          propValue.getClass());
+    if (true) {
+      LogManager.instance()
+          .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName, propValue,
+              propValue.getClass());
     }
 
     return toGrpcValue(propValue);
@@ -2536,8 +2567,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     case EMBEDDED: {
 
       // Use schema ofType if present; otherwise use embedded.type from the payload
-      if (logger.isDebugEnabled()) {
-        logger.debug("EMBEDDED: prop='{}', incoming kind={}, schema ofType='{}'", propName, v.getKindCase(), prop.getOfType());
+      if (true) {
+        LogManager.instance()
+            .log(this, Level.FINE, "EMBEDDED: prop='%s', incoming kind=%s, schema ofType='%s'", propName, v.getKindCase(),
+                prop.getOfType());
       }
 
       String embeddedTypeName = (v.getKindCase() == GrpcValue.KindCase.EMBEDDED_VALUE && !v.getEmbeddedValue().getType().isEmpty())
@@ -2551,8 +2584,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         GrpcValue tv = entries.getOrDefault("type", entries.getOrDefault("@type", entries.get("empowerType")));
         if (tv != null && tv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) {
           embeddedTypeName = tv.getStringValue();
-          if (logger.isDebugEnabled()) {
-            logger.debug("EMBEDDED: discovered embeddedTypeName='{}' from MAP payload", embeddedTypeName);
+          if (true) {
+            LogManager.instance()
+                .log(this, Level.FINE, "EMBEDDED: discovered embeddedTypeName='%s' from MAP payload", embeddedTypeName);
           }
         }
       }
@@ -2560,20 +2594,24 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // If we still don't know the type and payload isn't EMBEDDED, fall back to Map
       if ((embeddedTypeName == null || embeddedTypeName.isEmpty()) && v.getKindCase() != GrpcValue.KindCase.EMBEDDED_VALUE) {
 
-        if (logger.isDebugEnabled()) {
-          logger.debug("EMBEDDED: fallback to Map for prop='{}' (kind={}, embeddedTypeName='{}')", propName, v.getKindCase(),
-              embeddedTypeName);
+        if (true) {
+          LogManager.instance()
+              .log(this, Level.FINE, "EMBEDDED: fallback to Map for prop='%s' (kind=%s, embeddedTypeName='%s')", propName,
+                  v.getKindCase(),
+                  embeddedTypeName);
         }
         return fromGrpcValue(v);
       }
 
-      if (logger.isDebugEnabled()) {
+      if (true) {
         final String source = (v.getKindCase() == GrpcValue.KindCase.EMBEDDED_VALUE && !v.getEmbeddedValue().getType().isEmpty())
             ? "payload"
             : "schema/discovered";
         int fields = (v.getKindCase() == GrpcValue.KindCase.EMBEDDED_VALUE) ? v.getEmbeddedValue().getFieldsCount()
             : (v.getKindCase() == GrpcValue.KindCase.MAP_VALUE) ? v.getMapValue().getEntriesCount() : 0;
-        logger.debug("EMBEDDED: resolved embeddedTypeName='{}' (source={}), fields={}", embeddedTypeName, source, fields);
+        LogManager.instance()
+            .log(this, Level.FINE, "EMBEDDED: resolved embeddedTypeName='%s' (source=%s), fields=%s", embeddedTypeName, source,
+                fields);
       }
 
       // Build typed embedded document
@@ -2581,12 +2619,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       DocumentType embeddedType = null;
       try {
         embeddedType = db.getSchema().getType(embeddedTypeName);
-        if (logger.isDebugEnabled()) {
-          logger.debug("EMBEDDED: schema type lookup '{}' -> {}", embeddedTypeName, (embeddedType != null ? "FOUND" : "NOT FOUND"));
+        if (true) {
+          LogManager.instance().log(this, Level.FINE, "EMBEDDED: schema type lookup '%s' -> %s", embeddedTypeName,
+              (embeddedType != null ? "FOUND" : "NOT FOUND"));
         }
       } catch (Exception e) {
-        if (logger.isDebugEnabled()) {
-          logger.debug("EMBEDDED: schema type lookup failed for '{}': {}", embeddedTypeName, e.toString());
+        if (true) {
+          LogManager.instance()
+              .log(this, Level.FINE, "EMBEDDED: schema type lookup failed for '%s': %s", embeddedTypeName, e.toString());
         }
       }
       final DocumentType embeddedTypeFinal = embeddedType;
@@ -2595,36 +2635,40 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       switch (v.getKindCase()) {
       case EMBEDDED_VALUE:
         v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> {
-          if (logger.isDebugEnabled())
-            logger.debug("EMBEDDED: field '{}' raw kind={}", k, vv.getKindCase());
+          if (true)
+            LogManager.instance().log(this, Level.FINE, "EMBEDDED: field '%s' raw kind=%s", k, vv.getKindCase());
           Object j = (embeddedTypeFinal != null) ? toJavaForProperty(db, ed, embeddedTypeFinal, k, vv) : fromGrpcValue(vv);
-          if (logger.isDebugEnabled())
-            logger.debug("EMBEDDED: field '{}' converted -> {}", k, (j == null ? "null" : j.getClass().getSimpleName()));
+          if (true)
+            LogManager.instance().log(this, Level.FINE, "EMBEDDED: field '%s' converted -> %s", k,
+                (j == null ? "null" : j.getClass().getSimpleName()));
           ed.set(k, j);
         });
         break;
 
       case MAP_VALUE:
         v.getMapValue().getEntriesMap().forEach((k, vv) -> {
-          if (logger.isDebugEnabled())
-            logger.debug("EMBEDDED: field '{}' raw kind={}", k, vv.getKindCase());
+          if (true)
+            LogManager.instance().log(this, Level.FINE, "EMBEDDED: field '%s' raw kind=%s", k, vv.getKindCase());
           Object j = (embeddedTypeFinal != null) ? toJavaForProperty(db, ed, embeddedTypeFinal, k, vv) : fromGrpcValue(vv);
-          if (logger.isDebugEnabled())
-            logger.debug("EMBEDDED: field '{}' converted -> {}", k, (j == null ? "null" : j.getClass().getSimpleName()));
+          if (true)
+            LogManager.instance().log(this, Level.FINE, "EMBEDDED: field '%s' converted -> %s", k,
+                (j == null ? "null" : j.getClass().getSimpleName()));
           ed.set(k, j);
         });
         break;
 
       default:
         // Shouldn't happen; be safe
-        if (logger.isDebugEnabled()) {
-          logger.debug("EMBEDDED: unexpected kind={}, falling back to Map for prop='{}'", v.getKindCase(), propName);
+        if (true) {
+          LogManager.instance()
+              .log(this, Level.FINE, "EMBEDDED: unexpected kind=%s, falling back to Map for prop='%s'", v.getKindCase(), propName);
         }
         return fromGrpcValue(v);
       }
 
-      if (logger.isDebugEnabled()) {
-        logger.debug("EMBEDDED: built embedded doc type='{}' for prop='{}'", embeddedTypeName, propName);
+      if (true) {
+        LogManager.instance()
+            .log(this, Level.FINE, "EMBEDDED: built embedded doc type='%s' for prop='%s'", embeddedTypeName, propName);
       }
       return ed;
     }
@@ -2800,14 +2844,18 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   private GrpcValue dbgEnc(String where, Object in, GrpcValue out, String ctx) {
-    if (logger.isDebugEnabled())
-      logger.debug("GRPC-ENC [{}]{} in={} -> out={}", where, (ctx == null ? "" : " " + ctx), summarizeJava(in), summarizeGrpc(out));
+    if (true)
+      LogManager.instance()
+          .log(this, Level.FINE, "GRPC-ENC [%s]%s in=%s -> out=%s", where, (ctx == null ? "" : " " + ctx), summarizeJava(in),
+              summarizeGrpc(out));
     return out;
   }
 
   private Object dbgDec(String where, GrpcValue in, Object out, String ctx) {
-    if (logger.isDebugEnabled())
-      logger.debug("GRPC-DEC [{}]{} in={} -> out={}", where, (ctx == null ? "" : " " + ctx), summarizeGrpc(in), summarizeJava(out));
+    if (true)
+      LogManager.instance()
+          .log(this, Level.FINE, "GRPC-DEC [%s]%s in=%s -> out=%s", where, (ctx == null ? "" : " " + ctx), summarizeGrpc(in),
+              summarizeJava(out));
     return out;
   }
 
