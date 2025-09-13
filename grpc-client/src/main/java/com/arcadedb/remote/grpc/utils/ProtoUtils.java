@@ -10,15 +10,14 @@ import com.arcadedb.server.grpc.GrpcValue;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.ToNumberPolicy;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.arcadedb.log.LogManager;
+import java.util.logging.Level;
 
 import java.util.Collection;
 import java.util.Map;
 
 public class ProtoUtils {
 
-  private static final Logger logger = LoggerFactory.getLogger(ProtoUtils.class);
 
   private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().serializeNulls().
       setObjectToNumberStrategy(ToNumberPolicy.LONG_OR_DOUBLE).create();
@@ -46,7 +45,7 @@ public class ProtoUtils {
       return "null";
     try {
       if (o instanceof CharSequence s) {
-        if (logger.isTraceEnabled() || LOG_SHOW_STR_AT_DEBUG) {
+        if (LogManager.instance().isDebugEnabled() || LOG_SHOW_STR_AT_DEBUG) {
           String txt = s.toString();
           return "String(" + s.length() + ")=\"" + (txt.length() > LOG_STR_PREVIEW ? txt.substring(0, LOG_STR_PREVIEW) + "…" : txt)
               + "\"";
@@ -81,7 +80,7 @@ public class ProtoUtils {
       return "DOUBLE(" + v.getDoubleValue() + ")";
     case STRING_VALUE: {
       String s = v.getStringValue();
-      if (logger.isTraceEnabled() || LOG_SHOW_STR_AT_DEBUG) {
+      if (LogManager.instance().isDebugEnabled() || LOG_SHOW_STR_AT_DEBUG) {
         String txt = s;
         return "STRING(" + s.length() + ")=\"" + (txt.length() > LOG_STR_PREVIEW ? txt.substring(0, LOG_STR_PREVIEW) + "…" : txt)
             + "\"";
@@ -109,14 +108,14 @@ public class ProtoUtils {
   }
 
   private static GrpcValue dbgEnc(String where, Object in, GrpcValue out) {
-    if (logger.isDebugEnabled())
-      logger.debug("CLIENT GRPC-ENC [{}]{} in={} -> out={}", where, ctx(), summarizeJava(in), summarizeGrpc(out));
+    if (LogManager.instance().isDebugEnabled())
+      LogManager.instance().log(ProtoUtils.class, Level.FINE, "CLIENT GRPC-ENC [%s]%s in=%s -> out=%s", where, ctx(), summarizeJava(in), summarizeGrpc(out));
     return out;
   }
 
   private static Object dbgDec(String where, GrpcValue in, Object out) {
-    if (logger.isDebugEnabled())
-      logger.debug("CLIENT GRPC-DEC [{}]{} in={} -> out={}", where, ctx(), summarizeGrpc(in), summarizeJava(out));
+    if (LogManager.instance().isDebugEnabled())
+      LogManager.instance().log(ProtoUtils.class, Level.FINE, "CLIENT GRPC-DEC [%s]%s in=%s -> out=%s", where, ctx(), summarizeGrpc(in), summarizeJava(out));
     return out;
   }
 
