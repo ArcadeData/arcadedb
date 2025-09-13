@@ -2,14 +2,13 @@ package com.arcadedb.server.grpc;
 
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.arcadedb.log.LogManager;
+import java.util.logging.Level;
 
 /**
  * Enhanced compression-aware service wrapper
  */
 class CompressionAwareService {
-  private static final Logger logger = LoggerFactory.getLogger(CompressionAwareService.class);
 
   /**
    * Force compression for a specific response
@@ -18,7 +17,7 @@ class CompressionAwareService {
     if (responseObserver instanceof ServerCallStreamObserver) {
       ServerCallStreamObserver<T> serverObserver = (ServerCallStreamObserver<T>) responseObserver;
       serverObserver.setCompression(compression);
-      logger.debug("Set response compression to: {}", compression);
+      LogManager.instance().log(CompressionAwareService.class, Level.FINE, "Set response compression to: %s", compression);
     }
   }
 

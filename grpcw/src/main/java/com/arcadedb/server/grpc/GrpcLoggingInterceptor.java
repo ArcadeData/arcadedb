@@ -1,19 +1,19 @@
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.log.LogManager;
 import io.grpc.ForwardingServerCall;
 import io.grpc.Metadata;
 import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.Status;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
+import java.util.logging.Level;
 
 /**
  * Logging interceptor for gRPC requests with compression detection
  */
 class GrpcLoggingInterceptor implements ServerInterceptor {
-  private static final Logger logger = LoggerFactory.getLogger(GrpcLoggingInterceptor.class);
 
   private static final Metadata.Key<String> GRPC_ENCODING_KEY        =
       Metadata.Key.of("grpc-encoding", Metadata.ASCII_STRING_MARSHALLER);
@@ -35,7 +35,7 @@ class GrpcLoggingInterceptor implements ServerInterceptor {
     boolean requestCompressed = requestEncoding != null && !requestEncoding.equals("identity");
     boolean clientAcceptsCompression = acceptEncoding != null && acceptEncoding.contains("gzip");
 
-    logger.debug("gRPC call started: {} (request compression: {}, client accepts: {})",
+    LogManager.instance().log(this, Level.FINE, "gRPC call started: %s (request compression: %s, client accepts: %s)",
         methodName,
         requestCompressed ? requestEncoding : "none",
         clientAcceptsCompression ? acceptEncoding : "none");
@@ -64,12 +64,14 @@ class GrpcLoggingInterceptor implements ServerInterceptor {
             String.valueOf(requestCompressed));
 
         if (status.isOk()) {
-          logger.debug("gRPC call completed: {} ({}ms, req-compression: {}, resp-compression: {})",
+          LogManager.instance().log(GrpcLoggingInterceptor.this, Level.FINE,
+              "gRPC call completed: %s (%sms, req-compression: %s, resp-compression: %s)",
               methodName, duration,
               requestCompressed ? requestEncoding : "none",
               responseCompression);
         } else {
-          logger.warn("gRPC call failed: {} - {} ({}ms)", methodName, status, duration);
+          LogManager.instance()
+              .log(GrpcLoggingInterceptor.this, Level.WARNING, "gRPC call failed: %s - %s (%sms)", methodName, status, duration);
         }
         super.close(status, trailers);
       }
