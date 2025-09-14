@@ -29,7 +29,7 @@
 	<artifactId>arcadedb-grpc</artifactId>
 	<name>ArcadeDB gRPC Stubs</name>
 	<properties>
-		<build-helper-maven-plugin.version>3.6.0</build-helper-maven-plugin.version>
+		<build-helper-maven-plugin.version>3.6.1</build-helper-maven-plugin.version>
 	</properties>
 	<packaging>jar</packaging>
 
