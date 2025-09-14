@@ -36,7 +36,7 @@
     <properties>
         <mockito.version>5.15.2</mockito.version>
         <slf4j-simple.version>2.0.17</slf4j-simple.version>
-        <jackson-databind.version>2.19.2</jackson-databind.version>
+        <jackson-databind.version>2.20.0</jackson-databind.version>
     </properties>
 
     <dependencies>
