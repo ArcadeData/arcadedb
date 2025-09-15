@@ -141,7 +141,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (!allowedDatabases.contains("*"))
       installedDatabases.retainAll(allowedDatabases);
 
-    final JSONObject response = createResult(user, null).put("result", new JSONArray(installedDatabases));
+    final JSONObject response = (new JSONObject()).put("result", new JSONArray(installedDatabases));
 
     return new ExecutionResponse(200, response.toString());
   }

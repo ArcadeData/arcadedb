@@ -215,17 +215,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       throw new ServerSecurityException("Only root user is authorized to execute server commands");
   }
 
-  protected JSONObject createResult(final SecurityUser user, final Database database) {
-    final JSONObject json = new JSONObject();
-    if (database != null)
-      json.setDateFormat(database.getSchema().getDateFormat())
-          .setDateTimeFormat(database.getSchema().getDateTimeFormat());
-
-    json.put("user", user.getName()).put("version", Constants.getVersion())
-        .put("serverName", httpServer.getServer().getServerName());
-    return json;
-  }
-
   protected String decode(final String command) {
     return command.replace("&amp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#039;", "'");
   }
