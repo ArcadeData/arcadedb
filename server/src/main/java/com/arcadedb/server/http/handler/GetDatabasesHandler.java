@@ -42,7 +42,7 @@ public class GetDatabasesHandler extends AbstractServerHttpHandler {
     if (!allowedDatabases.contains("*"))
       installedDatabases.retainAll(allowedDatabases);
 
-    final JSONObject response = (new JSONObject()).put("result", new JSONArray(installedDatabases));
+    final JSONObject response = new JSONObject().put("result", new JSONArray(installedDatabases));
 
     Metrics.counter("http.list-databases").increment();
 
