@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
@@ -213,17 +212,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   protected void checkRootUser(ServerSecurityUser user) {
     if (!"root".equals(user.getName()))
       throw new ServerSecurityException("Only root user is authorized to execute server commands");
-  }
-
-  protected JSONObject createResult(final SecurityUser user, final Database database) {
-    final JSONObject json = new JSONObject();
-    if (database != null)
-      json.setDateFormat(database.getSchema().getDateFormat())
-          .setDateTimeFormat(database.getSchema().getDateTimeFormat());
-
-    json.put("user", user.getName()).put("version", Constants.getVersion())
-        .put("serverName", httpServer.getServer().getServerName());
-    return json;
   }
 
   protected String decode(final String command) {
