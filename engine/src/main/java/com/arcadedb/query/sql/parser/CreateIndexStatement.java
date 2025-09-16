@@ -29,6 +29,8 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -58,9 +60,21 @@ public class CreateIndexStatement extends DDLStatement {
   public void validate() throws CommandSQLParsingException {
     final String typeAsString = type.getStringValue().toUpperCase();
     switch (typeAsString) {
-    case "FULL_TEXT" -> {}
-    case "UNIQUE" -> {}
-    case "NOTUNIQUE" -> {}
+    case "FULL_TEXT" -> {
+      ;
+    }
+    case "UNIQUE" -> {
+      ;
+    }
+    case "NOTUNIQUE" -> {
+      ;
+    }
+    case "HNSW" -> {
+      ;
+    }
+    case "JVECTOR" -> {
+      ;
+    }
     default -> throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
     }
   }
@@ -93,36 +107,86 @@ public class CreateIndexStatement extends DDLStatement {
     final Schema.INDEX_TYPE indexType;
     boolean unique = false;
 
-    final String typeAsString = type.getStringValue();
-    if (typeAsString.equalsIgnoreCase("FULL_TEXT"))
-      indexType = Schema.INDEX_TYPE.FULL_TEXT;
-    else if (typeAsString.equalsIgnoreCase("UNIQUE")) {
+    final String typeAsString = type.getStringValue().toUpperCase();
+    switch (typeAsString) {
+    case "FULL_TEXT" -> indexType = Schema.INDEX_TYPE.FULL_TEXT;
+    case "UNIQUE" -> {
       indexType = Schema.INDEX_TYPE.LSM_TREE;
       unique = true;
-    } else if (typeAsString.equalsIgnoreCase("NOTUNIQUE")) {
-      indexType = Schema.INDEX_TYPE.LSM_TREE;
-    } else if (typeAsString.equalsIgnoreCase("HNSW")) {
+    }
+    case "NOTUNIQUE" -> indexType = Schema.INDEX_TYPE.LSM_TREE;
+    case "HNSW" -> {
       indexType = Schema.INDEX_TYPE.HNSW;
       unique = true;
-    } else
-      throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
+    }
+    case "JVECTOR" -> {
+      indexType = Schema.INDEX_TYPE.JVECTOR;
+      unique = true;
+    }
+    default -> throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
+    }
 
     final AtomicLong total = new AtomicLong();
 
-    database.getSchema().buildTypeIndex(typeName.getStringValue(), fields)
-        .withType(indexType)
-        .withUnique(unique)
-        .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE)
-        .withNullStrategy(nullStrategy)
-        .withCallback((document, totalIndexed) -> {
-          total.incrementAndGet();
+    if (indexType.equals(Schema.INDEX_TYPE.JVECTOR)) {
+      // Extract configuration from metadata if provided, otherwise use defaults
+      int dimensions = 128;
+      VectorSimilarityFunction similarityFunction = VectorSimilarityFunction.EUCLIDEAN;
+      int maxConnections = 16;
+      int beamWidth = 100;
 
-          if (totalIndexed % 100000 == 0) {
-            System.out.print(".");
-            System.out.flush();
-          }
-        }).create();
+      if (metadata != null && metadata.getValue() instanceof Map) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> metadataMap = (Map<String, Object>) metadata.getValue();
 
+        if (metadataMap.containsKey("dimensions")) {
+          dimensions = (Integer) metadataMap.get("dimensions");
+        }
+        if (metadataMap.containsKey("similarity")) {
+          String similarity = (String) metadataMap.get("similarity");
+          similarityFunction = VectorSimilarityFunction.valueOf(similarity.toUpperCase());
+        }
+        if (metadataMap.containsKey("maxConnections")) {
+          maxConnections = (Integer) metadataMap.get("maxConnections");
+        }
+        if (metadataMap.containsKey("beamWidth")) {
+          beamWidth = (Integer) metadataMap.get("beamWidth");
+        }
+      }
+
+      database.getSchema().getEmbedded().buildJVectorIndex()
+          .withIndexName(name.getValue())
+          .withDimensions(dimensions)
+          .withVertexType(typeName.getStringValue())
+          .withIdProperty(fields[0])
+          .withVectorProperty(fields[1], Type.ARRAY_OF_FLOATS)
+          .withSimilarityFunction(similarityFunction)
+          .withMaxConnections(maxConnections)
+          .withBeamWidth(beamWidth)
+          .withCallback((document, totalIndexed) -> {
+            total.incrementAndGet();
+            if (totalIndexed % 1000 == 0) {
+              System.out.print(".");
+              System.out.flush();
+            }
+          })
+          .create();
+
+    } else {
+      database.getSchema().buildTypeIndex(typeName.getStringValue(), fields)
+          .withType(indexType)
+          .withUnique(unique)
+          .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE)
+          .withNullStrategy(nullStrategy)
+          .withCallback((document, totalIndexed) -> {
+            total.incrementAndGet();
+
+            if (totalIndexed % 100000 == 0) {
+              System.out.print(".");
+              System.out.flush();
+            }
+          }).create();
+    }
     typeName = prevName;
 
     final InternalResultSet rs = new InternalResultSet();
