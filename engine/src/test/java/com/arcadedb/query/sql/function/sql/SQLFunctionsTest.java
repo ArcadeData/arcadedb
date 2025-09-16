@@ -437,8 +437,10 @@ public class SQLFunctionsTest {
 
     database.transaction(() -> {
       final ResultSet result2 = database.command("sql", "update Account set created = date()");
-      assertThat(result2.next().<Long>getProperty("count")).isEqualTo(tot);
     });
+    result = database.command("sql", "select count(*) as tot from Account where created is not null");
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<Long>getProperty("tot")).isEqualTo(tot);
 
     final String pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
 //    final String pattern = GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
