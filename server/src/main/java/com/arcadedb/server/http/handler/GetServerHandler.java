@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.Constants;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.Profiler;
@@ -45,12 +46,13 @@ public class GetServerHandler extends AbstractServerHttpHandler {
 
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
-    final JSONObject response = createResult(user, null);
+    final JSONObject response = new JSONObject().put("version", Constants.getVersion())
+                                                .put("serverName", httpServer.getServer().getServerName());
 
     final String mode = getQueryParameter(exchange, "mode", "default");
 
     if ("basic".equals(mode)) {
-      // JUST RETURN BASIC SERVER DATA
+      // JUST RETURN BASIC SERVER DATA (name and version)
     } else if ("default".equals(mode)) {
       exportMetrics(response);
       exportSettings(response);
