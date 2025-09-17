@@ -22,6 +22,8 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteServer;
+
+import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -144,9 +146,6 @@ public class JVectorSqlE2ETest extends ArcadeContainerTemplate {
     database.transaction(() -> {
       setupVectorSchemaWithData();
 
-      // TODO: This test will be enabled once vector search SQL syntax is implemented
-      // For now, we test the basic infrastructure and verify the index exists
-
       // Test 1: Verify JVector index is queryable
       ResultSet indexCheck = database.query("SQL",
           "SELECT * FROM schema:indexes WHERE indexType = 'JVECTOR'");
@@ -165,9 +164,48 @@ public class JVectorSqlE2ETest extends ArcadeContainerTemplate {
       }
       assertThat(count).isEqualTo(3);
 
-      // TODO: Add vector similarity search tests when SQL syntax is available:
-      // - SELECT * FROM VectorDocument ORDER BY vectorDistance(embedding, [0.1, 0.2, 0.3, 0.4, 0.5]) LIMIT 3
-      // - SELECT vectorNeighbors('VectorDocument', [0.1, 0.2, 0.3, 0.4, 0.5], 5)
+    }, false, 30);
+  }
+
+  @Test
+  void testVectorNeighborsFunction() {
+    database.transaction(() -> {
+      setupVectorSchemaWithData();
+
+      // Test the vectorNeighbors SQL function with our JVector index fix
+      try {
+        ResultSet vectorNeighborsResult = database.query("SQL",
+            "SELECT vectorNeighbors('VectorDocument[id,embedding]', [0.1, 0.2, 0.3, 0.4, 0.5], 3) as neighbors");
+
+        assertThat(vectorNeighborsResult.hasNext()).isTrue();
+        Result result = vectorNeighborsResult.next();
+        System.out.println("result.toJSON() = " + result.toJSON());
+        // The result should be a list of maps with 'vertex' and 'distance' keys
+        Object vectorNeighborsOutput = result.getProperty("neighbors");
+        assertThat(vectorNeighborsOutput).isNotNull();
+
+        if (vectorNeighborsOutput instanceof List<?> neighbors) {
+          assertThat(neighbors.size()).isGreaterThan(0);
+          assertThat(neighbors.size()).isLessThanOrEqualTo(3);
+
+          // Verify the structure of the results
+          for (Object neighbor : neighbors) {
+            if (neighbor instanceof Map<?, ?> neighborMap) {
+              assertThat(neighborMap.get("vertex")).isNotNull();
+              assertThat(neighborMap.get("distance")).isNotNull();
+              assertThat(neighborMap.get("distance")).isInstanceOf(Number.class);
+            }
+          }
+        }
+
+        // Log successful test for visibility
+        System.out.println("✓ vectorNeighbors function test passed - JVector index registration fix is working!");
+
+      } catch (Exception e) {
+        // If this fails, it means our fix didn't work completely
+        System.err.println("✗ vectorNeighbors function test failed: " + e.getMessage());
+        throw new AssertionError("vectorNeighbors function should work after JVector registration fix", e);
+      }
 
     }, false, 30);
   }

@@ -80,9 +80,9 @@ public class JVectorIndexBuilder extends IndexBuilder<JVectorIndex> {
       }
     }
 
-    final VertexType vType = database.getSchema().getOrCreateVertexType(vertexType);
-    vType.getOrCreateProperty(idPropertyName, Type.STRING);
-    vType.getOrCreateProperty(vectorPropertyName, vectorPropertyType);
+//    final VertexType vType = database.getSchema().getOrCreateVertexType(vertexType);
+//    vType.getOrCreateProperty(idPropertyName, Type.STRING);
+//    vType.getOrCreateProperty(vectorPropertyName, vectorPropertyType);
 
     final JVectorIndex index = (JVectorIndex) schema.indexFactory.createIndex(this);
 
