@@ -47,24 +47,30 @@ public class GloVeImporterIT {
     final Database db = databaseFactory.create();
     try {
       db.command("sql", "import database file://src/test/resources/importer-glove.txt "//
-          + "with distanceFunction = cosine, m = 16, ef = 128, efConstruction = 128, " //
+          + "with similarityFunction = COSINE, maxConnections = 16, beamWidth = 128, " //
           + "vertexType = Word, edgeType = Proximity, vectorProperty = vector, idProperty = name" //
       );
 
       assertThat(db.countType("Word", true)).isEqualTo(10);
 
-      final float[] key = new float[100];
+      // Week 3: Test SQL vectorNeighbors function integration
 
-      ResultSet resultSet = db.query("sql", "select vectorNeighbors('Word[name,vector]', ?,?) as neighbors", key, 10);
-      assertThat(resultSet.hasNext()).isTrue();
-      final List<Pair<Identifiable, Float>> approximateResults = new ArrayList<>();
-      while (resultSet.hasNext()) {
-        final Result row = resultSet.next();
-        final List<Map<String, Object>> neighbors = row.getProperty("neighbors");
+      // Get a vector from an existing word to use as search key
+      ResultSet vectorQuery = db.query("sql", "select vector from Word limit 1");
+      assertThat(vectorQuery.hasNext()).isTrue();
+      final float[] searchVector = vectorQuery.next().getProperty("vector");
+      assertThat(searchVector).isNotNull();
+      assertThat(searchVector.length).isEqualTo(100);
 
-        for (Map<String, Object> neighbor : neighbors)
-          approximateResults.add(new Pair<>((Identifiable) neighbor.get("vertex"), ((Number) neighbor.get("distance")).floatValue()));
-      }
+      // Test the vectorNeighbors SQL function
+      ResultSet neighborsResult = db.query("sql", "select vectorNeighbors('Word[name,vector]', ?, 5) as neighbors", searchVector);
+      assertThat(neighborsResult.hasNext()).isTrue();
+      final Result result = neighborsResult.next();
+      final List<Map<String, Object>> neighbors = result.getProperty("neighbors");
+      assertThat(neighbors).isNotNull();
+      System.out.println("SQL vectorNeighbors returned " + neighbors.size() + " results");
+
+      // Week 3 validation: SQL integration working correctly
 
     } finally {
       db.drop();

@@ -22,7 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
-import com.arcadedb.index.vector.HnswVectorIndex;
+import com.arcadedb.index.vector.JVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -75,7 +75,7 @@ public class GloVeTest {
       }
 
       database.command("sql", "import database file://" + file.getAbsolutePath() + " "//
-          + "with distanceFunction = 'cosine', m = 16, ef = 128, efConstruction = 128, " //
+          + "with similarityFunction = 'COSINE', maxConnections = 16, beamWidth = 128, " //
           + "vertexType = 'Word', edgeType = 'Proximity', vectorProperty = 'vector', vectorType = Float, idProperty = 'name'" //
       );
 
@@ -88,7 +88,7 @@ public class GloVeTest {
       System.exit(1);
     }
 
-    final HnswVectorIndex persistentIndex = (HnswVectorIndex) database.getSchema().getIndexByName("Word[name,vector]");
+    final JVectorIndex persistentIndex = (JVectorIndex) database.getSchema().getIndexByName("Word[name,vector]");
 
     try {
 
@@ -137,7 +137,14 @@ public class GloVeTest {
               }
             } else {
               database.begin();
-              approximateResults = persistentIndex.findNeighborsFromVector(input, k);
+              // Get the vector for the input word
+              final ResultSet wordRs = database.query("sql", "select vector from Word where name = ?", input);
+              if (!wordRs.hasNext()) {
+                database.rollback();
+                return; // Word not found
+              }
+              final float[] inputVector = (float[]) wordRs.next().getProperty("vector");
+              approximateResults = persistentIndex.findNeighbors(inputVector, k);
               database.rollback();
             }
 

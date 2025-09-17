@@ -42,7 +42,7 @@ public class Word2VecImporterIT {
     final Database db = databaseFactory.create();
     try {
       db.command("sql", "import database file://src/test/resources/importer-word2vec.txt "  //
-          + "with distanceFunction = cosine, m = 16, ef = 128, efConstruction = 128, " //
+          + "with similarityFunction = COSINE, maxConnections = 16, beamWidth = 128, " //
           + "vertexType = Word, edgeType = Proximity, vectorProperty = vector, idProperty = name" //
       );
       assertThat(db.countType("Word", true)).isEqualTo(10);
