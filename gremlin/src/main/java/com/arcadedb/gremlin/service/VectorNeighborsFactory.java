@@ -20,7 +20,7 @@ package com.arcadedb.gremlin.service;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.gremlin.ArcadeGraph;
-import com.arcadedb.index.vector.HnswVectorIndex;
+import com.arcadedb.index.vector.JVectorIndex;
 import com.arcadedb.utility.Pair;
 import org.apache.tinkerpop.gremlin.process.traversal.Traverser;
 import org.apache.tinkerpop.gremlin.process.traversal.traverser.util.TraverserSet;
@@ -78,8 +78,36 @@ public class VectorNeighborsFactory extends ArcadeServiceRegistry.ArcadeServiceF
     if (limit == null)
       limit = -1;
 
-    final HnswVectorIndex persistentIndex = (HnswVectorIndex) graph.getDatabase().getSchema().getIndexByName(indexName);
-    final List<Pair<Identifiable, ? extends Number>> neighbors = persistentIndex.findNeighborsFromVector(vector, limit);
+    final JVectorIndex persistentIndex = (JVectorIndex) graph.getDatabase().getSchema().getIndexByName(indexName);
+
+    // Convert vector to float array
+    float[] queryVector;
+    if (vector instanceof List<?> list) {
+      queryVector = new float[list.size()];
+      for (int i = 0; i < list.size(); i++) {
+        Object value = list.get(i);
+        if (value instanceof Number number) {
+          queryVector[i] = number.floatValue();
+        } else {
+          throw new IllegalArgumentException("Vector element must be numeric, found: " + value.getClass().getSimpleName());
+        }
+      }
+    } else if (vector instanceof Object[] array) {
+      queryVector = new float[array.length];
+      for (int i = 0; i < array.length; i++) {
+        if (array[i] instanceof Number number) {
+          queryVector[i] = number.floatValue();
+        } else {
+          throw new IllegalArgumentException("Vector element must be numeric, found: " + array[i].getClass().getSimpleName());
+        }
+      }
+    } else if (vector instanceof float[] floatArray) {
+      queryVector = floatArray;
+    } else {
+      throw new IllegalArgumentException("Vector must be a List, array, or float[], found: " + vector.getClass().getSimpleName());
+    }
+
+    final List<Pair<Identifiable, Float>> neighbors = persistentIndex.findNeighbors(queryVector, limit > 0 ? limit : 10);
 
     final List<Map> result = new ArrayList<>(neighbors.size());
     for (Pair<Identifiable, ? extends Number> n : neighbors)

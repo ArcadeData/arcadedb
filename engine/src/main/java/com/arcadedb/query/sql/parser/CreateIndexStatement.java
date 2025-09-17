@@ -69,9 +69,6 @@ public class CreateIndexStatement extends DDLStatement {
     case "NOTUNIQUE" -> {
       ;
     }
-    case "HNSW" -> {
-      ;
-    }
     case "JVECTOR" -> {
       ;
     }
@@ -115,10 +112,6 @@ public class CreateIndexStatement extends DDLStatement {
       unique = true;
     }
     case "NOTUNIQUE" -> indexType = Schema.INDEX_TYPE.LSM_TREE;
-    case "HNSW" -> {
-      indexType = Schema.INDEX_TYPE.HNSW;
-      unique = true;
-    }
     case "JVECTOR" -> {
       indexType = Schema.INDEX_TYPE.JVECTOR;
       unique = true;

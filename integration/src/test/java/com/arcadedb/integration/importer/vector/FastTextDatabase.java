@@ -20,11 +20,13 @@ package com.arcadedb.integration.importer.vector;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.index.vector.HnswVectorIndex;
+import com.arcadedb.index.vector.JVectorIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 
@@ -81,7 +83,7 @@ public class FastTextDatabase {
       }
 
       database.command("sql", "import database file://" + file.toAbsolutePath() + " "//
-          + "with distanceFunction = cosine, m = 16, ef = 128, efConstruction = 128," //
+          + "with similarityFunction = COSINE, maxConnections = 16, beamWidth = 128," //
           + "vertexType = Word, edgeType = Proximity, vectorProperty = vector, vectorType = Float, idProperty = name" //
       );
 
@@ -89,7 +91,7 @@ public class FastTextDatabase {
           MILLISECONDS.toMinutes(System.currentTimeMillis() - start));
     }
 
-    final HnswVectorIndex persistentIndex = (HnswVectorIndex) database.getSchema().getIndexByName("Word[name,vector]");
+    final JVectorIndex persistentIndex = (JVectorIndex) database.getSchema().getIndexByName("Word[name,vector]");
 
     try {
       int k = 10;
@@ -122,7 +124,15 @@ public class FastTextDatabase {
 
             database.begin();
 
-            List<Pair<Vertex, Float>> approximateResults = persistentIndex.findNeighborsFromId(input, k);
+            // Get the vector for the input word
+            final ResultSet rs = database.query("sql", "select vector from Word where name = ?", input);
+            if (!rs.hasNext()) {
+              database.rollback();
+              return; // Word not found
+            }
+            final float[] inputVector = (float[]) rs.next().getProperty("vector");
+
+            List<Pair<Identifiable, Float>> approximateResults = persistentIndex.findNeighbors(inputVector, k);
 
             final long delta = System.currentTimeMillis() - startWord;
 
@@ -130,8 +140,8 @@ public class FastTextDatabase {
             totalSearchTime.addAndGet(delta);
 
             final Map<String, Float> results = new LinkedHashMap<>();
-            for (Pair<Vertex, Float> result : approximateResults)
-              results.put(result.getFirst().getString("name"), result.getSecond());
+            for (Pair<Identifiable, Float> result : approximateResults)
+              results.put(result.getFirst().asVertex().getString("name"), result.getSecond());
 
             //LogManager.instance().log(this, Level.SEVERE, "%d Found similar words for '%s' in %dms: %s", currentCycle, input, delta, results);
 

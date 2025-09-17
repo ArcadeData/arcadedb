@@ -227,7 +227,9 @@ class JVectorIndexTest extends TestHelper {
       vectorType.createProperty("id", Type.STRING);
       vectorType.createProperty("embedding", Type.ARRAY_OF_FLOATS);
 
-      final JVectorIndexBuilder builder = database.getSchema().getEmbedded().buildJVectorIndex()
+      final JVectorIndexBuilder builder = database.getSchema()
+          .getEmbedded()
+          .buildJVectorIndex()
           .withDimensions(4)
           .withVertexType("VectorTest")
           .withIdProperty("id")
@@ -259,11 +261,15 @@ class JVectorIndexTest extends TestHelper {
       List<Pair<com.arcadedb.database.Identifiable, Float>> neighbors =
           index.findNeighbors(new float[] { 1.0f, 0.0f, 0.0f, 0.0f }, 2);
 
+      System.out.println("neighbors.size() = " + neighbors.size());
       // The search should return some results (even if empty for now)
       assertThat(neighbors).isNotNull();
 
+
+
       // Test that index can handle deletion (will be improved with full vector integration)
       long beforeDelete = index.countEntries();
+
       v1.delete();
 
       // The underlying index count should change

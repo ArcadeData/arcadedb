@@ -20,7 +20,7 @@ package com.arcadedb.engine;
 
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
-import com.arcadedb.index.vector.HnswVectorIndex;
+import com.arcadedb.index.vector.JVectorIndex;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
@@ -45,7 +45,7 @@ public class FileManagerTest {
 
     public static final Set<String> FILE_EXT = Set.of(Dictionary.DICT_EXT,
             LocalBucket.BUCKET_EXT, LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT, LSMTreeIndexMutable.UNIQUE_INDEX_EXT,
-            LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT, LSMTreeIndexCompacted.UNIQUE_INDEX_EXT, HnswVectorIndex.FILE_EXT);
+            LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT, LSMTreeIndexCompacted.UNIQUE_INDEX_EXT, JVectorIndex.FILE_EXT);
 
     @Test
     void construtor_failure_noPermissionsDirectory(@TempDir Path dir) throws IOException {

@@ -22,7 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
-import com.arcadedb.index.vector.HnswVectorIndex;
+import com.arcadedb.index.vector.JVectorIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 import com.arcadedb.utility.Pair;
@@ -37,7 +37,7 @@ import java.util.*;
 public class SQLFunctionVectorNeighbors extends SQLFunctionAbstract {
   public static final String NAME = "vectorNeighbors";
 
-  /**
+  /**\
    * Get the date at construction to have the same date for all the iteration.
    */
   public SQLFunctionVectorNeighbors() {
@@ -50,24 +50,53 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionAbstract {
       throw new CommandSQLParsingException(getSyntax());
 
     final Index index = context.getDatabase().getSchema().getIndexByName(params[0].toString());
-    if (!(index instanceof HnswVectorIndex))
+    if (index == null)
+      throw new CommandSQLParsingException("Index '" + params[0].toString() + "' not found");
+
+    if (!(index instanceof JVectorIndex))
       throw new CommandSQLParsingException("Index '" + index.getName() + "' is not a vector index (found: " + index.getClass().getSimpleName() + ")");
 
-    final HnswVectorIndex vIndex = (HnswVectorIndex) index;
+    final JVectorIndex vIndex = (JVectorIndex) index;
 
     Object key = params[1];
     if (key == null)
       throw new CommandSQLParsingException("key is null");
 
-    if( key instanceof List<?> list)
-      key = list.toArray();
+    // Convert key to float array for JVector search
+    float[] queryVector;
+    switch (key) {
+    case List<?> list -> {
+      queryVector = new float[list.size()];
+      for (int i = 0; i < list.size(); i++) {
+        Object value = list.get(i);
+        if (value instanceof Number number) {
+          queryVector[i] = number.floatValue();
+        } else {
+          throw new CommandSQLParsingException("Vector element must be numeric, found: " + value.getClass().getSimpleName());
+        }
+      }
+    }
+    case Object[] array -> {
+      queryVector = new float[array.length];
+      for (int i = 0; i < array.length; i++) {
+        if (array[i] instanceof Number number) {
+          queryVector[i] = number.floatValue();
+        } else {
+          throw new CommandSQLParsingException("Vector element must be numeric, found: " + array[i].getClass().getSimpleName());
+        }
+      }
+    }
+    case float[] floatArray -> queryVector = floatArray;
+    default -> throw new CommandSQLParsingException(
+        "Key must be a vector (List, array, or float[]), found: " + key.getClass().getSimpleName());
+    }
 
     final int limit = params[2] instanceof Number n ? n.intValue() : Integer.parseInt(params[2].toString());
 
-    final List<Pair<Vertex, ? extends Number>> neighbors = vIndex.findNeighborsFromId(key, limit, null);
+    final List<Pair<Identifiable, Float>> neighbors = vIndex.findNeighbors(queryVector, limit);
 
     final ArrayList<Object> result = new ArrayList<>(neighbors.size());
-    for (Pair<Vertex, ? extends Number> n : neighbors)
+    for (Pair<Identifiable, Float> n : neighbors)
       result.add(Map.of("vertex", n.getFirst(), "distance", n.getSecond()));
     return result;
   }

@@ -33,7 +33,6 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.JVectorIndexBuilder;
-import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
@@ -108,23 +107,29 @@ import java.util.logging.Level;
  * @author Claude Code AI Assistant
  */
 public class JVectorIndex extends Component implements com.arcadedb.index.Index, IndexInternal {
+  // Configuration for vector index building
+  private static final int REBUILD_THRESHOLD = 1000;
+  private static final int BATCH_SIZE        = 10000;
+
+  // File extensions for persistent storage
+  private static final String VECTOR_DATA_EXT  = "jvector";
+  private static final String MAPPING_DATA_EXT = "jvmapping";
 
   public static final String FILE_EXT        = "jvectoridx";
   public static final int    CURRENT_VERSION = 0;
 
-  private final VectorSimilarityFunction similarityFunction;
-  private final int                      dimensions;
-  private final int                      maxConnections;
-  private final int                      beamWidth;
-  private final String                   vertexType;
-  private final String                   vectorPropertyName;
-  private final String                   idPropertyName;
-  private final String                   indexName;
-  private       TypeIndex                underlyingIndex;
-
-  private volatile GraphIndex             graphIndex;
-  private volatile GraphSearcher          graphSearcher;
-  private final    ReentrantReadWriteLock indexLock = new ReentrantReadWriteLock();
+  private final    VectorSimilarityFunction similarityFunction;
+  private final    int                      dimensions;
+  private final    int                      maxConnections;
+  private final    int                      beamWidth;
+  private final    String                   vertexType;
+  private final    String                   vectorPropertyName;
+  private final    String                   idPropertyName;
+  private final    String                   indexName;
+  private volatile GraphIndex               graphIndex;
+  private volatile GraphSearcher            graphSearcher;
+  private          TypeIndex                underlyingIndex;
+  private final    ReentrantReadWriteLock   indexLock = new ReentrantReadWriteLock();
 
   // Bidirectional mapping between JVector node IDs and ArcadeDB RIDs
   private final Map<Integer, RID> nodeIdToRid = new ConcurrentHashMap<>();
@@ -134,14 +139,6 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
   // Vector storage for RandomAccessVectorValues implementation
   private final Map<Integer, float[]> vectorStorage     = new ConcurrentHashMap<>();
   private final AtomicBoolean         indexNeedsRebuild = new AtomicBoolean(false);
-
-  // Configuration for vector index building
-  private static final int REBUILD_THRESHOLD = 1000;
-  private static final int BATCH_SIZE        = 10000;
-
-  // File extensions for persistent storage
-  private static final String VECTOR_DATA_EXT  = "jvector";
-  private static final String MAPPING_DATA_EXT = "jvmapping";
 
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override
@@ -162,8 +159,15 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
   }
 
   protected JVectorIndex(final JVectorIndexBuilder builder) {
-    super(builder.getDatabase(), builder.getFilePath(), builder.getDatabase().getFileManager().newFileId(), CURRENT_VERSION,
-        builder.getFilePath());
+    super(builder.getDatabase(),
+        builder.getIndexName() != null ?
+            builder.getIndexName() :
+            builder.getVertexType() + "[" + builder.getIdPropertyName() + "," + builder.getVectorPropertyName() + "]",
+        builder.getDatabase().getFileManager().newFileId(), CURRENT_VERSION,
+        builder.getDatabase().getDatabasePath() + File.separator +
+            (builder.getIndexName() != null ?
+                builder.getIndexName() :
+                builder.getVertexType() + "[" + builder.getIdPropertyName() + "," + builder.getVectorPropertyName() + "]"));
 
     this.dimensions = builder.getDimensions();
     this.maxConnections = builder.getMaxConnections();
@@ -172,12 +176,16 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
     this.vertexType = builder.getVertexType();
     this.vectorPropertyName = builder.getVectorPropertyName();
     this.idPropertyName = builder.getIdPropertyName();
+    // Use the computed index name consistently
     this.indexName = builder.getIndexName() != null ?
         builder.getIndexName() :
-        vertexType + "[" + idPropertyName + "," + vectorPropertyName + "]";
+        builder.getVertexType() + "[" + builder.getIdPropertyName() + "," + builder.getVectorPropertyName() + "]";
 
-    this.underlyingIndex = builder.getDatabase().getSchema()
-        .buildTypeIndex(builder.getVertexType(), new String[] { idPropertyName }).withUnique(true).withIgnoreIfExists(true)
+    this.underlyingIndex = builder.getDatabase()
+        .getSchema()
+        .buildTypeIndex(builder.getVertexType(), new String[] { idPropertyName })
+        .withUnique(true)
+        .withIgnoreIfExists(true)
         .withType(Schema.INDEX_TYPE.LSM_TREE).create();
 
     this.underlyingIndex.setAssociatedIndex(this);
@@ -197,7 +205,8 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
     this.vertexType = json.getString("vertexType");
     this.vectorPropertyName = json.getString("vectorPropertyName");
     this.idPropertyName = json.getString("idPropertyName");
-    this.indexName = json.getString("indexName");
+    // Use the componentName for index name consistency
+    this.indexName = this.componentName;
   }
 
   @Override
@@ -211,19 +220,47 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
       // Load persisted vector index and mapping data
       loadVectorIndex();
 
-      // Re-register this JVectorIndex in the schema's indexMap
-      try {
-        LocalSchema localSchema = database.getSchema().getEmbedded();
-        java.lang.reflect.Field indexMapField = LocalSchema.class.getDeclaredField("indexMap");
-        indexMapField.setAccessible(true);
-        @SuppressWarnings("unchecked")
-        java.util.Map<String, IndexInternal> indexMap = (java.util.Map<String, IndexInternal>) indexMapField.get(localSchema);
-        indexMap.put(indexName, this);
-      } catch (Exception reflectionException) {
-        LogManager.instance().log(this, Level.WARNING, "Could not re-register JVector index in schema", reflectionException);
-      }
+      // Verify this JVectorIndex is properly registered and accessible in the schema
+      LogManager.instance().log(this, Level.INFO, "JVector index loaded: name='%s', componentName='%s', dimensions=%d",
+          indexName, componentName, dimensions);
+      ensureIndexRegistration();
+
     } catch (Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Error on loading of JVector index '" + indexName + "'", e);
+    }
+  }
+
+  /**
+   * Ensures this JVectorIndex is properly registered and accessible in the schema.
+   * With the naming consistency fix, the component should be automatically registered
+   * during normal loading. This method provides verification and logging.
+   */
+  private void ensureIndexRegistration() {
+    try {
+      // Log all available indexes for debugging
+      LogManager.instance().log(this, Level.FINE, "Available indexes in schema:");
+      for (com.arcadedb.index.Index idx : database.getSchema().getIndexes()) {
+        LogManager.instance().log(this, Level.FINE, "  - Index: '%s' (type: %s)", idx.getName(), idx.getClass().getSimpleName());
+      }
+
+      // Verify that the index is properly registered and accessible
+      IndexInternal registered = (IndexInternal) database.getSchema().getIndexByName(indexName);
+      if (registered == this) {
+        LogManager.instance()
+            .log(this, Level.INFO, "✓ JVector index '%s' is properly registered and accessible via getIndexByName()", indexName);
+        return;
+      } else if (registered != null) {
+        LogManager.instance().log(this, Level.WARNING,
+            "⚠ Different index registered with name '%s': %s (expected: %s)",
+            indexName, registered.getClass().getSimpleName(), this.getClass().getSimpleName());
+      } else {
+        LogManager.instance().log(this, Level.WARNING,
+            "✗ JVector index '%s' not found in schema registry - vectorNeighbors SQL function will fail!", indexName);
+      }
+
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not verify registration of JVector index '%s': %s", indexName, e.getMessage());
     }
   }
 
@@ -284,12 +321,13 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
         int effectiveK = Math.min(k, vectorStorage.size());
         SearchResult searchResult = graphSearcher.search(scoreProvider, effectiveK, Bits.ALL);
         List<Pair<Identifiable, Float>> results = new ArrayList<>();
-
+        System.out.println("results = " + results);
         // Convert JVector results to ArcadeDB results
         for (SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
           int nodeId = nodeScore.node;
           float score = nodeScore.score;
 
+          System.out.println("Node ID: " + nodeId + ", Score: " + score);
           RID rid = nodeIdToRid.get(nodeId);
           if (rid != null) {
             try {
