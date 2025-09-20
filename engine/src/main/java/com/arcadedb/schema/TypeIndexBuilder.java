@@ -135,8 +135,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
                 nullStrategy, callback, propertyNames, null, batchSize);
 
           }, false, maxAttempts, null, (error) -> {
-            for (int j = 0; j < indexes.length; j++) {
-              final IndexInternal indexToRemove = (IndexInternal) indexes[j];
+            for (Index value : indexes) {
+              final IndexInternal indexToRemove = (IndexInternal) value;
               if (indexToRemove != null)
                 indexToRemove.drop();
             }
@@ -154,8 +154,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       throw e;
     } catch (final Throwable e) {
       schema.dropIndex(typeName + Arrays.toString(propertyNames));
-      throw new IndexException("Error on creating index on type '" + typeName + "', properties " + Arrays.toString(propertyNames),
-          e);
+      throw new IndexException("Error on creating index on type '" + typeName + "', properties " + Arrays.toString(propertyNames), e);
     }
   }
 

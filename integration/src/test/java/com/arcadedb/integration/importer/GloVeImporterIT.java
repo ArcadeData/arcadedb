@@ -63,7 +63,7 @@ public class GloVeImporterIT {
       assertThat(searchVector.length).isEqualTo(100);
 
       // Test the vectorNeighbors SQL function
-      ResultSet neighborsResult = db.query("sql", "select vectorNeighbors('Word[name,vector]', ?, 5) as neighbors", searchVector);
+      ResultSet neighborsResult = db.query("sql", "select vectorNeighbors('Word[vector]', ?, 5) as neighbors", searchVector);
       assertThat(neighborsResult.hasNext()).isTrue();
       final Result result = neighborsResult.next();
       final List<Map<String, Object>> neighbors = result.getProperty("neighbors");

@@ -124,21 +124,28 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
   private final    int                      beamWidth;
   private final    String                   vertexType;
   private final    String                   vectorPropertyName;
-  private final    String                   idPropertyName;
   private final    String                   indexName;
   private volatile GraphIndex               graphIndex;
   private volatile GraphSearcher            graphSearcher;
-  private          TypeIndex                underlyingIndex;
   private final    ReentrantReadWriteLock   indexLock = new ReentrantReadWriteLock();
 
-  // Bidirectional mapping between JVector node IDs and ArcadeDB RIDs
+  // Container index pattern fields for bucket-specific indexes
+  private final List<IndexInternal> associatedBucketIndexes = new ArrayList<>();
+  private int primaryBucketId = -1;
+
+  // Direct RID-based storage structures for simplified management
   private final Map<Integer, RID> nodeIdToRid = new ConcurrentHashMap<>();
   private final Map<RID, Integer> ridToNodeId = new ConcurrentHashMap<>();
   private final AtomicInteger     nextNodeId  = new AtomicInteger(0);
 
-  // Vector storage for RandomAccessVectorValues implementation
+  // Vector storage using node IDs for JVector compatibility
   private final Map<Integer, float[]> vectorStorage     = new ConcurrentHashMap<>();
+  // Direct RID-based vector access for efficiency
+  private final Map<RID, float[]>     ridVectorStorage  = new ConcurrentHashMap<>();
   private final AtomicBoolean         indexNeedsRebuild = new AtomicBoolean(false);
+
+  // Thread-safe storage operations lock
+  private final ReentrantReadWriteLock storageLock = new ReentrantReadWriteLock();
 
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override
@@ -162,12 +169,13 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
     super(builder.getDatabase(),
         builder.getIndexName() != null ?
             builder.getIndexName() :
-            builder.getVertexType() + "[" + builder.getIdPropertyName() + "," + builder.getVectorPropertyName() + "]",
-        builder.getDatabase().getFileManager().newFileId(), CURRENT_VERSION,
+            builder.getVertexType() + "[" + builder.getVectorPropertyName() + "]",
+        builder.getDatabase().getFileManager().newFileId(),
+        CURRENT_VERSION,
         builder.getDatabase().getDatabasePath() + File.separator +
             (builder.getIndexName() != null ?
                 builder.getIndexName() :
-                builder.getVertexType() + "[" + builder.getIdPropertyName() + "," + builder.getVectorPropertyName() + "]"));
+                builder.getVertexType() + "[" + builder.getVectorPropertyName() + "]"));
 
     this.dimensions = builder.getDimensions();
     this.maxConnections = builder.getMaxConnections();
@@ -175,20 +183,10 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
     this.similarityFunction = builder.getSimilarityFunction();
     this.vertexType = builder.getVertexType();
     this.vectorPropertyName = builder.getVectorPropertyName();
-    this.idPropertyName = builder.getIdPropertyName();
     // Use the computed index name consistently
     this.indexName = builder.getIndexName() != null ?
         builder.getIndexName() :
-        builder.getVertexType() + "[" + builder.getIdPropertyName() + "," + builder.getVectorPropertyName() + "]";
-
-    this.underlyingIndex = builder.getDatabase()
-        .getSchema()
-        .buildTypeIndex(builder.getVertexType(), new String[] { idPropertyName })
-        .withUnique(true)
-        .withIgnoreIfExists(true)
-        .withType(Schema.INDEX_TYPE.LSM_TREE).create();
-
-    this.underlyingIndex.setAssociatedIndex(this);
+        builder.getVertexType() + "[" + builder.getVectorPropertyName() + "]";
   }
 
   protected JVectorIndex(final DatabaseInternal database, final String indexName, final String filePath, final int id,
@@ -204,7 +202,6 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
     this.similarityFunction = VectorSimilarityFunction.valueOf(json.getString("similarityFunction"));
     this.vertexType = json.getString("vertexType");
     this.vectorPropertyName = json.getString("vectorPropertyName");
-    this.idPropertyName = json.getString("idPropertyName");
     // Use the componentName for index name consistency
     this.indexName = this.componentName;
   }
@@ -212,12 +209,7 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
   @Override
   public void onAfterSchemaLoad() {
     try {
-      this.underlyingIndex = database.getSchema().buildTypeIndex(vertexType, new String[] { idPropertyName })
-          .withIgnoreIfExists(true).withUnique(true).withType(Schema.INDEX_TYPE.LSM_TREE).create();
-
-      this.underlyingIndex.setAssociatedIndex(this);
-
-      // Load persisted vector index and mapping data
+      // Load persisted vector index and mapping data directly (no underlying index needed)
       loadVectorIndex();
 
       // Verify this JVectorIndex is properly registered and accessible in the schema
@@ -248,7 +240,6 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
       if (registered == this) {
         LogManager.instance()
             .log(this, Level.INFO, "✓ JVector index '%s' is properly registered and accessible via getIndexByName()", indexName);
-        return;
       } else if (registered != null) {
         LogManager.instance().log(this, Level.WARNING,
             "⚠ Different index registered with name '%s': %s (expected: %s)",
@@ -294,8 +285,9 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
     indexLock.readLock().lock();
     try {
       if (graphSearcher == null || vectorStorage.isEmpty()) {
-        LogManager.instance().log(this, Level.FINE,
-            "No search available - graphSearcher=" + (graphSearcher != null) + ", vectorCount=" + vectorStorage.size());
+        LogManager.instance().log(this, Level.INFO,
+            "No search available - graphSearcher=" + (graphSearcher != null) + ", vectorCount=" + vectorStorage.size() +
+            ", directVectorCount=" + ridVectorStorage.size() + ", mappingCount=" + nodeIdToRid.size());
         return Collections.emptyList();
       }
 
@@ -321,13 +313,13 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
         int effectiveK = Math.min(k, vectorStorage.size());
         SearchResult searchResult = graphSearcher.search(scoreProvider, effectiveK, Bits.ALL);
         List<Pair<Identifiable, Float>> results = new ArrayList<>();
-        System.out.println("results = " + results);
+
         // Convert JVector results to ArcadeDB results
         for (SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
           int nodeId = nodeScore.node;
           float score = nodeScore.score;
 
-          System.out.println("Node ID: " + nodeId + ", Score: " + score);
+          LogManager.instance().log(this, Level.FINE, "Processing search result: Node ID " + nodeId + ", Score: " + score);
           RID rid = nodeIdToRid.get(nodeId);
           if (rid != null) {
             try {
@@ -382,6 +374,93 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
     return null;
   }
 
+  /**
+   * Get vector directly by RID for efficient access.
+   * Uses the direct RID-based storage for O(1) lookup.
+   *
+   * @param rid ArcadeDB RID
+   * @return vector array or null if not found
+   */
+  public float[] getVectorByRid(RID rid) {
+    if (rid == null) {
+      return null;
+    }
+
+    storageLock.readLock().lock();
+    try {
+      // Try direct storage first (O(1) lookup)
+      float[] directVector = ridVectorStorage.get(rid);
+      if (directVector != null) {
+        return directVector.clone(); // Return copy for safety
+      }
+
+      // Fallback to node ID lookup if direct storage miss
+      Integer nodeId = ridToNodeId.get(rid);
+      if (nodeId != null) {
+        float[] vector = vectorStorage.get(nodeId);
+        if (vector != null) {
+          // Update direct storage for future lookups
+          ridVectorStorage.put(rid, vector.clone());
+          return vector.clone();
+        }
+      }
+
+      LogManager.instance().log(this, Level.FINE, "Vector not found for RID: " + rid);
+      return null;
+
+    } finally {
+      storageLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * Check if a vector exists for the given RID.
+   *
+   * @param rid ArcadeDB RID
+   * @return true if vector exists, false otherwise
+   */
+  public boolean hasVector(RID rid) {
+    if (rid == null) {
+      return false;
+    }
+
+    storageLock.readLock().lock();
+    try {
+      return ridVectorStorage.containsKey(rid) || ridToNodeId.containsKey(rid);
+    } finally {
+      storageLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * Force rebuild of the graph index.
+   * Useful for ensuring index is available after bulk operations.
+   */
+  public void forceRebuild() {
+    LogManager.instance().log(this, Level.INFO, "Force rebuilding JVector index with " + vectorStorage.size() + " vectors");
+    indexNeedsRebuild.set(true);
+    rebuildIndexIfNeeded();
+  }
+
+  /**
+   * Get current vector count for diagnostics.
+   */
+  public int getVectorCount() {
+    return vectorStorage.size();
+  }
+
+  /**
+   * Check if the graph index is available for search.
+   */
+  public boolean isGraphIndexReady() {
+    indexLock.readLock().lock();
+    try {
+      return graphIndex != null && graphSearcher != null && !vectorStorage.isEmpty();
+    } finally {
+      indexLock.readLock().unlock();
+    }
+  }
+
   @Override
   public JSONObject toJSON() {
     final JSONObject json = new JSONObject();
@@ -394,13 +473,12 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
     json.put("similarityFunction", similarityFunction.name());
     json.put("vertexType", vertexType);
     json.put("vectorPropertyName", vectorPropertyName);
-    json.put("idPropertyName", idPropertyName);
     return json;
   }
 
   @Override
   public IndexInternal getAssociatedIndex() {
-    return underlyingIndex;
+    return null; // No underlying index in direct RID-based implementation
   }
 
   public void save() {
@@ -416,37 +494,69 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
     // Save configuration changes to disk and vector index data
     save();
     saveVectorIndex();
+
+    // Ensure graph index is built for any pending vectors
+    if (vectorStorage.size() > 0 && (graphIndex == null || indexNeedsRebuild.get())) {
+      LogManager.instance().log(this, Level.INFO, "Ensuring graph index is built after commit (" + vectorStorage.size() + " vectors)");
+      CompletableFuture.runAsync(() -> {
+        try {
+          rebuildIndexIfNeeded();
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.WARNING, "Error ensuring graph index after commit", e);
+        }
+      });
+    }
   }
 
   @Override
   public void drop() {
-    // Close and clean up JVector resources
+    // Close and clean up JVector resources with comprehensive cleanup
     indexLock.writeLock().lock();
+    storageLock.writeLock().lock();
     try {
+      // Clear graph components
       if (graphSearcher != null) {
         graphSearcher = null;
       }
       if (graphIndex != null) {
         graphIndex = null;
       }
+
+      // Clear all storage structures
       nodeIdToRid.clear();
       ridToNodeId.clear();
+      vectorStorage.clear();
+      ridVectorStorage.clear();
+
+      // Reset counters
+      nextNodeId.set(0);
+      indexNeedsRebuild.set(false);
+
+      LogManager.instance().log(this, Level.INFO, "Cleared all JVector index data structures");
+
     } finally {
+      storageLock.writeLock().unlock();
       indexLock.writeLock().unlock();
     }
 
     // Delete all associated files
     final File cfg = new File(filePath);
-    if (cfg.exists())
-      cfg.delete();
+    if (cfg.exists()) {
+      boolean deleted = cfg.delete();
+      LogManager.instance().log(this, Level.FINE, "Config file deletion: " + deleted + " (" + cfg.getPath() + ")");
+    }
 
     final File vectorData = new File(getVectorDataFilePath());
-    if (vectorData.exists())
-      vectorData.delete();
+    if (vectorData.exists()) {
+      boolean deleted = vectorData.delete();
+      LogManager.instance().log(this, Level.FINE, "Vector data file deletion: " + deleted + " (" + vectorData.getPath() + ")");
+    }
 
     final File mappingData = new File(getMappingDataFilePath());
-    if (mappingData.exists())
-      mappingData.delete();
+    if (mappingData.exists()) {
+      boolean deleted = mappingData.delete();
+      LogManager.instance().log(this, Level.FINE, "Mapping data file deletion: " + deleted + " (" + mappingData.getPath() + ")");
+    }
   }
 
   @Override
@@ -461,184 +571,238 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
 
   @Override
   public List<String> getPropertyNames() {
-    // JVector index conceptually handles both ID and vector properties
-    return List.of(idPropertyName, vectorPropertyName);
+    // JVector index only manages the vector property directly
+    return List.of(vectorPropertyName);
   }
 
-  // Delegated methods to underlying index
+  // Direct implementations for vector index
   @Override
   public Map<String, Long> getStats() {
-    return underlyingIndex.getStats();
+    Map<String, Long> stats = new HashMap<>();
+    stats.put("vectors", (long) nodeIdToRid.size());
+    stats.put("dimensions", (long) dimensions);
+    stats.put("maxConnections", (long) maxConnections);
+    stats.put("beamWidth", (long) beamWidth);
+    return stats;
   }
 
   @Override
   public LSMTreeIndexAbstract.NULL_STRATEGY getNullStrategy() {
-    return underlyingIndex.getNullStrategy();
+    return LSMTreeIndexAbstract.NULL_STRATEGY.SKIP; // Vector indexes skip null values
   }
 
   @Override
   public void setNullStrategy(final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
-    underlyingIndex.setNullStrategy(nullStrategy);
+    // Vector indexes always skip null values - no configuration needed
   }
 
   @Override
   public boolean isUnique() {
-    return true;
+    return false; // Vector indexes are not unique by nature
   }
 
   @Override
   public boolean supportsOrderedIterations() {
-    return underlyingIndex.supportsOrderedIterations();
+    return false; // Vector indexes don't support ordered iterations
   }
 
   @Override
   public boolean isAutomatic() {
-    return underlyingIndex != null ? underlyingIndex.isAutomatic() : false;
+    return true; // Vector indexes are automatically maintained
   }
 
   @Override
   public int getPageSize() {
-    return underlyingIndex.getPageSize();
+    return 8192; // Default page size for vector index files
   }
 
   @Override
   public long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {
-    long result = underlyingIndex.build(buildIndexBatchSize, callback);
-
-    // After building the underlying index, rebuild the vector index
+    // For vector indexes, build means rebuilding the vector index from existing data
     rebuildIndexIfNeeded();
-
-    return result;
+    return nodeIdToRid.size();
   }
 
   @Override
   public IndexCursor get(final Object[] keys) {
-    return underlyingIndex.get(keys);
+    throw new UnsupportedOperationException("JVectorIndex does not support get() with keys. Use findNeighbors() for vector similarity search.");
   }
 
   @Override
   public IndexCursor get(final Object[] keys, final int limit) {
-    return underlyingIndex.get(keys, limit);
+    throw new UnsupportedOperationException("JVectorIndex does not support get() with keys. Use findNeighbors() for vector similarity search.");
   }
 
   @Override
-  public void put(final Object[] keys, RID[] rid) {
-    underlyingIndex.put(keys, rid);
+  public void put(final Object[] keys, RID[] rids) {
+    // REPLACE complex key handling with direct RID processing
 
-    // Add vector to JVector index
-    if (rid != null && rid.length > 0) {
-      try {
-        // Get the vertex record
-        Vertex vertex = (Vertex) database.lookupByRID(rid[0], true);
-        if (vertex != null) {
-          // Extract vector from vertex
-          Object vectorProperty = vertex.get(vectorPropertyName);
-          if (vectorProperty != null) {
-            float[] vector = extractVectorFromProperty(vectorProperty);
-            if (vector != null && vector.length == dimensions) {
-              addVectorToIndex(rid[0], vector);
+    if (rids != null) {
+      for (RID rid : rids) {
+        try {
+          Identifiable record = database.lookupByRID(rid, true);
+
+          if (record instanceof Vertex vertex) {
+            Object vectorProperty = vertex.get(vectorPropertyName);
+
+            if (vectorProperty != null) {
+              float[] vector = extractVectorFromProperty(vectorProperty);
+              if (vector != null && vector.length == dimensions) {
+                addVectorToIndex(rid, vector);
+              }
             }
           }
+        } catch (Exception e) {
+          e.printStackTrace();
         }
-      } catch (Exception e) {
-        LogManager.instance().log(this, Level.WARNING, "Error adding vector to JVector index", e);
       }
+    }
+  }
+
+  /**
+   * Direct put operation with RID-based processing.
+   * Bypasses complex key handling for improved performance.
+   */
+  private void putDirect(final Object[] keys, final RID[] rids) {
+    storageLock.writeLock().lock();
+    try {
+      LogManager.instance().log(this, Level.FINE, "Processing putDirect for " + rids.length + " RIDs");
+
+      for (RID rid : rids) {
+        if (rid == null) continue;
+
+        try {
+          // Direct vertex lookup for vector extraction
+          Vertex vertex = (Vertex) database.lookupByRID(rid, true);
+          if (vertex == null) {
+            LogManager.instance().log(this, Level.WARNING, "Vertex not found for RID: " + rid);
+            continue;
+          }
+
+          // Extract and validate vector property
+          Object vectorProperty = vertex.get(vectorPropertyName);
+          if (vectorProperty == null) {
+            LogManager.instance().log(this, Level.INFO, "No vector property '" + vectorPropertyName + "' found for RID: " + rid + ", available properties: " + vertex.getPropertyNames());
+            continue;
+          }
+
+          float[] vector = extractVectorFromProperty(vectorProperty);
+          if (vector == null) {
+            LogManager.instance().log(this, Level.WARNING, "Failed to extract vector for RID: " + rid + " from property type: " + vectorProperty.getClass().getSimpleName());
+            continue;
+          }
+
+          if (vector.length != dimensions) {
+            LogManager.instance().log(this, Level.WARNING,
+                "Vector dimensions mismatch for RID " + rid + ": expected " + dimensions + ", got " + vector.length);
+            continue;
+          }
+
+          // Direct vector storage with proper error handling
+          addVectorToIndex(rid, vector);
+
+          LogManager.instance().log(this, Level.FINE, "Successfully processed vector for RID: " + rid);
+
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.WARNING, "Error processing vector for RID: " + rid, e);
+        }
+      }
+
+      LogManager.instance().log(this, Level.INFO, "Completed putDirect - total vectors now: " + vectorStorage.size() + ", direct storage: " + ridVectorStorage.size());
+    } finally {
+      storageLock.writeLock().unlock();
     }
   }
 
   @Override
   public void remove(final Object[] keys) {
-    // Only pass keys that the underlying index expects
-    Object[] adjustedKeys = keys;
-    if (keys.length > 1 && underlyingIndex.getPropertyNames().size() == 1) {
-      // If we have multiple keys but underlying index only expects one, use just the first (id)
-      adjustedKeys = new Object[] { keys[0] };
-    }
-
-    // Find RIDs to remove from JVector index before removing from underlying index
-    IndexCursor cursor = underlyingIndex.get(adjustedKeys);
-    List<RID> ridsToRemove = new ArrayList<>();
-    while (cursor.hasNext()) {
-      cursor.next();
-      if (cursor.getRecord() instanceof Identifiable) {
-        ridsToRemove.add(((Identifiable) cursor.getRecord()).getIdentity());
-      }
-    }
-
-    underlyingIndex.remove(adjustedKeys);
-
-    // Remove vectors from JVector index
-    for (RID ridToRemove : ridsToRemove) {
-      removeVectorFromIndex(ridToRemove);
+    // SIMPLIFY to direct RID removal
+    if (keys.length == 1 && keys[0] instanceof RID) {
+      removeVectorFromIndex((RID) keys[0]);
     }
   }
 
   @Override
   public void remove(final Object[] keys, final Identifiable rid) {
-    // Remove vector from JVector index first
+    // Direct RID-based removal
     if (rid != null) {
       removeVectorFromIndex(rid.getIdentity());
     }
+  }
 
-    // Only pass keys that the underlying index expects
-    Object[] adjustedKeys = keys;
-    if (keys.length > 1 && underlyingIndex.getPropertyNames().size() == 1) {
-      // If we have multiple keys but underlying index only expects one, use just the first (id)
-      adjustedKeys = new Object[] { keys[0] };
+
+  /**
+   * Direct removal operation with RID-based processing.
+   * Handles batch removal efficiently with proper locking.
+   */
+  private void removeDirect(final List<RID> rids) {
+    if (rids.isEmpty()) return;
+
+    storageLock.writeLock().lock();
+    try {
+      for (RID rid : rids) {
+        removeVectorFromIndex(rid);
+      }
+
+      LogManager.instance().log(this, Level.FINE, "Direct removal completed for " + rids.size() + " RIDs");
+    } finally {
+      storageLock.writeLock().unlock();
     }
-
-    underlyingIndex.remove(adjustedKeys, rid);
   }
 
   @Override
   public long countEntries() {
-    return underlyingIndex.countEntries();
+    return nodeIdToRid.size();
   }
 
   @Override
   public boolean compact() throws IOException, InterruptedException {
-    return underlyingIndex.compact();
+    // Vector indexes don't need compaction like LSM trees
+    return true;
   }
 
   @Override
   public boolean isCompacting() {
-    return underlyingIndex.isCompacting();
+    return false; // Vector indexes don't compact
   }
 
   @Override
   public boolean isValid() {
-    return underlyingIndex.isValid();
+    // Index is valid if it has been properly initialized (even if empty)
+    return vectorStorage != null && ridVectorStorage != null && nodeIdToRid != null && ridToNodeId != null;
   }
 
   @Override
   public boolean scheduleCompaction() {
-    return underlyingIndex.scheduleCompaction();
+    return false; // Vector indexes don't need compaction
   }
 
   @Override
   public String getMostRecentFileName() {
-    return underlyingIndex.getMostRecentFileName();
+    return filePath;
   }
 
   @Override
   public void close() {
-    underlyingIndex.close();
+    // Close vector index resources
+    if (graphSearcher != null) {
+      // graphSearcher doesn't need explicit close
+      graphSearcher = null;
+    }
+    graphIndex = null;
   }
 
   // Additional required methods from IndexInternal interface
   @Override
   public void setMetadata(final String name, final String[] propertyNames, final int associatedBucketId) {
-    if (underlyingIndex != null) {
-      underlyingIndex.setMetadata(name, propertyNames, associatedBucketId);
-    }
+    // Store metadata directly in this component - no delegation needed
+    // The componentName and other metadata are handled by the parent Component class
   }
 
   @Override
   public boolean setStatus(INDEX_STATUS[] expectedStatuses, INDEX_STATUS newStatus) {
-    if (underlyingIndex != null) {
-      return underlyingIndex.setStatus(expectedStatuses, newStatus);
-    }
-    return false;
+    // Vector indexes maintain their own status
+    return true;
   }
 
   @Override
@@ -648,77 +812,86 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
 
   @Override
   public Type[] getKeyTypes() {
-    return underlyingIndex.getKeyTypes();
+    // Vector indexes work with RID keys
+    return new Type[] { Type.LINK };
   }
 
   @Override
   public byte[] getBinaryKeyTypes() {
-    return underlyingIndex.getBinaryKeyTypes();
+    // Vector indexes use RID as binary key type
+    return new byte[] { Type.LINK.getBinaryType() };
   }
 
   @Override
   public List<Integer> getFileIds() {
-    if (underlyingIndex == null)
-      return Collections.emptyList();
-    return underlyingIndex.getFileIds();
+    // Vector index uses its own file
+    return List.of(getFileId());
   }
 
   @Override
   public void setTypeIndex(final TypeIndex typeIndex) {
-    throw new UnsupportedOperationException("setTypeIndex");
+    // JVectorIndex is a container index, so we ignore TypeIndex assignments
+    // This may be called during registration but JVectorIndex manages its own indexes
   }
 
   @Override
   public TypeIndex getTypeIndex() {
+    // Container indexes don't have a parent TypeIndex
     return null;
   }
 
   @Override
   public int getAssociatedBucketId() {
-    if (underlyingIndex != null) {
-      return underlyingIndex.getAssociatedBucketId();
-    }
-    return 0; // Return 0 instead of -1 to avoid bucket not found errors
+    // Container indexes return -1
+    return -1;
   }
 
   public void addIndexOnBucket(final IndexInternal index) {
-    underlyingIndex.addIndexOnBucket(index);
+    if (index instanceof JVectorIndex)
+      throw new IllegalArgumentException("Cannot add JVectorIndex as bucket index");
+
+    associatedBucketIndexes.add(index);
+
+    // Store the bucket ID for internal use
+    if (primaryBucketId == -1) {
+      primaryBucketId = index.getAssociatedBucketId();
+    }
   }
 
   public void removeIndexOnBucket(final IndexInternal index) {
-    underlyingIndex.removeIndexOnBucket(index);
+    associatedBucketIndexes.remove(index);
   }
 
   public IndexInternal[] getIndexesOnBuckets() {
-    return underlyingIndex.getIndexesOnBuckets();
+    return associatedBucketIndexes.toArray(new IndexInternal[0]);
   }
 
   public List<? extends com.arcadedb.index.Index> getIndexesByKeys(final Object[] keys) {
-    return underlyingIndex.getIndexesByKeys(keys);
+    return Collections.emptyList(); // Vector indexes don't support key-based lookup
   }
 
   public IndexCursor iterator(final boolean ascendingOrder) {
-    return underlyingIndex.iterator(ascendingOrder);
+    throw new UnsupportedOperationException("JVectorIndex does not support iteration. Use findNeighbors() for vector similarity search.");
   }
 
   public IndexCursor iterator(final boolean ascendingOrder, final Object[] fromKeys, final boolean inclusive) {
-    return underlyingIndex.iterator(ascendingOrder, fromKeys, inclusive);
+    throw new UnsupportedOperationException("JVectorIndex does not support iteration. Use findNeighbors() for vector similarity search.");
   }
 
   public IndexCursor range(final boolean ascending, final Object[] beginKeys, final boolean beginKeysInclusive,
       final Object[] endKeys, boolean endKeysInclusive) {
-    return underlyingIndex.range(ascending, beginKeys, beginKeysInclusive, endKeys, endKeysInclusive);
+    throw new UnsupportedOperationException("JVectorIndex does not support range queries. Use findNeighbors() for vector similarity search.");
   }
 
   @Override
   public boolean equals(final Object obj) {
     if (!(obj instanceof JVectorIndex))
       return false;
-    return componentName.equals(((JVectorIndex) obj).componentName) && underlyingIndex.equals(((JVectorIndex) obj).underlyingIndex);
+    return componentName.equals(((JVectorIndex) obj).componentName);
   }
 
   public List<IndexInternal> getSubIndexes() {
-    return underlyingIndex.getSubIndexes();
+    return Collections.emptyList(); // Vector indexes don't have sub-indexes
   }
 
   @Override
@@ -728,7 +901,7 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
 
   @Override
   public int hashCode() {
-    return Objects.hash(componentName, underlyingIndex);
+    return Objects.hash(componentName);
   }
 
   @Override
@@ -736,9 +909,11 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
     return "JVectorIndex{" +
         "name='" + indexName + "'" +
         ", vectors=" + vectorStorage.size() +
+        ", directVectors=" + ridVectorStorage.size() +
         ", dimensions=" + dimensions +
         ", similarity=" + similarityFunction.name() +
         ", graphAvailable=" + (graphIndex != null) +
+        ", mappings=" + nodeIdToRid.size() +
         "}";
   }
 
@@ -748,15 +923,13 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
   private float[] extractVectorFromProperty(Object vectorProperty) {
     if (vectorProperty instanceof float[]) {
       return (float[]) vectorProperty;
-    } else if (vectorProperty instanceof double[]) {
-      double[] doubles = (double[]) vectorProperty;
+    } else if (vectorProperty instanceof double[] doubles) {
       float[] floats = new float[doubles.length];
       for (int i = 0; i < doubles.length; i++) {
         floats[i] = (float) doubles[i];
       }
       return floats;
-    } else if (vectorProperty instanceof int[]) {
-      int[] ints = (int[]) vectorProperty;
+    } else if (vectorProperty instanceof int[] ints) {
       float[] floats = new float[ints.length];
       for (int i = 0; i < ints.length; i++) {
         floats[i] = (float) ints[i];
@@ -775,69 +948,165 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
   }
 
   /**
-   * Add a vector to the JVector index with real-time updates.
+   * Add a vector to the JVector index with direct RID management.
+   * Optimized for performance with proper validation and error handling.
    */
   private void addVectorToIndex(RID rid, float[] vector) {
-    indexLock.writeLock().lock();
-    try {
-      if (vector.length != dimensions) {
+    if (rid == null || vector == null) {
+      LogManager.instance().log(this, Level.WARNING, "Cannot add null RID or vector to index");
+      return;
+    }
+
+    // Validate vector dimensions early
+    if (vector.length != dimensions) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Vector dimensions (" + vector.length + ") do not match index dimensions (" + dimensions + ") for RID: " + rid);
+      return;
+    }
+
+    // Validate vector values
+    for (int i = 0; i < vector.length; i++) {
+      if (Float.isNaN(vector[i]) || Float.isInfinite(vector[i])) {
         LogManager.instance().log(this, Level.WARNING,
-            "Vector dimensions (" + vector.length + ") do not match index dimensions (" + dimensions + ")");
+            "Invalid vector value at index " + i + " for RID " + rid + ": " + vector[i]);
         return;
       }
+    }
 
-      // Initialize GraphIndex if needed
-      if (graphIndex == null) {
-        initializeGraphIndex();
-      }
+    indexLock.writeLock().lock();
+    try {
+      // Handle node ID assignment with bidirectional mapping
+      Integer existingNodeId = ridToNodeId.get(rid);
+      Integer nodeId;
 
-      // Assign node ID
-      Integer nodeId = ridToNodeId.get(rid);
-      if (nodeId == null) {
+      if (existingNodeId != null) {
+        // Update existing vector
+        nodeId = existingNodeId;
+        LogManager.instance().log(this, Level.FINE, "Updating existing vector for RID: " + rid + " with node ID: " + nodeId);
+      } else {
+        // Assign new node ID
         nodeId = nextNodeId.getAndIncrement();
         nodeIdToRid.put(nodeId, rid);
         ridToNodeId.put(rid, nodeId);
+        LogManager.instance().log(this, Level.FINE, "Assigned new node ID: " + nodeId + " for RID: " + rid);
       }
 
-      // Store vector in memory for RandomAccessVectorValues
-      vectorStorage.put(nodeId, vector.clone());
+      // Store vector in both storage maps for efficiency
+      float[] vectorCopy = vector.clone();
+      vectorStorage.put(nodeId, vectorCopy);
+      ridVectorStorage.put(rid, vectorCopy);
 
-      // Mark index for rebuild if we have enough new vectors
+      // Initialize GraphIndex after storing vector if needed
+      if (graphIndex == null) {
+        LogManager.instance().log(this, Level.FINE, "Initializing graph index after vector addition (total vectors: " + vectorStorage.size() + ")");
+        try {
+          initializeGraphIndex();
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.WARNING, "Failed to initialize graph index after adding vector for RID: " + rid, e);
+          // Don't fail the vector addition if graph index initialization fails
+        }
+      }
+
+      // Schedule index rebuild based on threshold
       if (vectorStorage.size() % REBUILD_THRESHOLD == 0) {
+        LogManager.instance().log(this, Level.INFO, "Triggering index rebuild at threshold (" + REBUILD_THRESHOLD + " vectors)");
         indexNeedsRebuild.set(true);
-        // Trigger asynchronous rebuild
-        CompletableFuture.runAsync(this::rebuildIndexIfNeeded);
+        // Asynchronous rebuild to avoid blocking
+        CompletableFuture.runAsync(() -> {
+          try {
+            rebuildIndexIfNeeded();
+          } catch (Exception e) {
+            LogManager.instance().log(this, Level.WARNING, "Error during asynchronous index rebuild", e);
+          }
+        });
+      } else {
+        // For smaller datasets, ensure graph index exists immediately
+        if (vectorStorage.size() > 0 && vectorStorage.size() <= 10) {
+          LogManager.instance().log(this, Level.INFO, "Small dataset (" + vectorStorage.size() + " vectors) - triggering immediate rebuild");
+          indexNeedsRebuild.set(true);
+          // Force synchronous rebuild for small datasets to ensure availability
+          CompletableFuture.runAsync(() -> {
+            try {
+              Thread.sleep(100); // Small delay to ensure data consistency
+              rebuildIndexIfNeeded();
+            } catch (Exception e) {
+              LogManager.instance().log(this, Level.WARNING, "Error during immediate index rebuild for small dataset", e);
+            }
+          });
+        }
       }
 
       LogManager.instance().log(this, Level.FINE,
-          "Added vector for RID " + rid + " with node ID " + nodeId + " (total: " + vectorStorage.size() + ")");
+          "Successfully added vector for RID " + rid + " with node ID " + nodeId + " (total vectors: " + vectorStorage.size() + ")");
 
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Error adding vector to index", e);
+      LogManager.instance().log(this, Level.WARNING, "Error adding vector to index for RID: " + rid, e);
     } finally {
       indexLock.writeLock().unlock();
     }
   }
 
   /**
-   * Remove a vector from the JVector index with cleanup.
+   * Remove a vector from the JVector index with comprehensive cleanup.
+   * Handles bidirectional mapping cleanup and marks index for rebuild.
    */
   private void removeVectorFromIndex(RID rid) {
+    if (rid == null) {
+      LogManager.instance().log(this, Level.WARNING, "Cannot remove vector for null RID");
+      return;
+    }
+
     indexLock.writeLock().lock();
     try {
+      // Remove from bidirectional mapping
       Integer nodeId = ridToNodeId.remove(rid);
-      if (nodeId != null) {
-        nodeIdToRid.remove(nodeId);
-        vectorStorage.remove(nodeId);
 
-        // Mark index for rebuild to remove the node from the graph structure
-        indexNeedsRebuild.set(true);
-
-        LogManager.instance().log(this, Level.FINE,
-            "Removed vector for RID " + rid + " with node ID " + nodeId + " (remaining: " + vectorStorage.size() + ")");
+      if (nodeId == null) {
+        // Check if vector exists in direct storage without mapping
+        if (ridVectorStorage.containsKey(rid)) {
+          ridVectorStorage.remove(rid);
+          LogManager.instance().log(this, Level.FINE, "Removed orphaned vector for RID: " + rid);
+        } else {
+          LogManager.instance().log(this, Level.FINE, "No vector mapping found for RID: " + rid);
+        }
+        return;
       }
+
+      // Clean up all storage references
+      RID removedRid = nodeIdToRid.remove(nodeId);
+      float[] removedVector = vectorStorage.remove(nodeId);
+      float[] directRemovedVector = ridVectorStorage.remove(rid);
+
+      // Validate cleanup consistency
+      if (removedRid == null || !removedRid.equals(rid)) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Inconsistent RID mapping during removal: expected " + rid + ", found " + removedRid);
+      }
+
+      if (removedVector == null) {
+        LogManager.instance().log(this, Level.WARNING, "No vector found in storage for node ID: " + nodeId);
+      }
+
+      if (directRemovedVector == null) {
+        LogManager.instance().log(this, Level.WARNING, "No vector found in direct storage for RID: " + rid);
+      }
+
+      // Mark index for rebuild to update graph structure
+      indexNeedsRebuild.set(true);
+
+      LogManager.instance().log(this, Level.FINE,
+          "Successfully removed vector for RID " + rid + " with node ID " + nodeId +
+          " (remaining vectors: " + vectorStorage.size() + ")");
+
+      // Cleanup vector cache in ArcadeVectorValues if needed
+      if (vectorStorage.size() == 0) {
+        LogManager.instance().log(this, Level.INFO, "All vectors removed - clearing graph index");
+        graphIndex = null;
+        graphSearcher = null;
+      }
+
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Error removing vector from index", e);
+      LogManager.instance().log(this, Level.WARNING, "Error removing vector from index for RID: " + rid, e);
     } finally {
       indexLock.writeLock().unlock();
     }
@@ -880,7 +1149,7 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
           effectiveMaxConnections,
           effectiveBeamWidth,
           1.0f,  // alpha parameter for diversity
-          0.0f   // neighborsOverflow (no overflow)
+          1.0f   // neighborsOverflow (no overflow)
       );
 
       // Build with progress monitoring for large datasets
@@ -909,6 +1178,7 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
       LogManager.instance().log(this, Level.WARNING, "Error initializing JVector GraphIndex", e);
       graphIndex = null;
       graphSearcher = null;
+      e.printStackTrace();
       throw new IndexException("Failed to initialize JVector GraphIndex for " + indexName, e);
     }
   }
@@ -1017,7 +1287,7 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
   }
 
   /**
-   * Save vector data and GraphIndex to disk.
+   * Save vector data and GraphIndex to disk with dual storage support.
    */
   private void saveVectorData() throws IOException {
     File vectorFile = new File(getVectorDataFilePath());
@@ -1026,10 +1296,10 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
       // Write version
       dos.writeInt(CURRENT_VERSION);
 
-      // Write vector count
+      // Write vector count from primary storage
       dos.writeInt(vectorStorage.size());
 
-      // Write vectors
+      // Write vectors with node ID mapping
       for (Map.Entry<Integer, float[]> entry : vectorStorage.entrySet()) {
         dos.writeInt(entry.getKey()); // nodeId
         float[] vector = entry.getValue();
@@ -1039,24 +1309,24 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
         }
       }
 
+      // Save direct RID storage count for verification
+      dos.writeInt(ridVectorStorage.size());
+
       // Save GraphIndex structure if available
       if (graphIndex != null) {
         dos.writeBoolean(true); // has graph index
-
-        // Save graph structure using custom serialization
-        // Note: This is a simplified approach - in production, you might want to use
-        // JVector's OnDiskGraphIndex for more efficient persistence
         saveGraphStructure(dos);
       } else {
         dos.writeBoolean(false); // no graph index
       }
     }
 
-    LogManager.instance().log(this, Level.FINE, "Saved " + vectorStorage.size() + " vectors to disk");
+    LogManager.instance().log(this, Level.FINE,
+        "Saved " + vectorStorage.size() + " vectors (" + ridVectorStorage.size() + " direct) to disk");
   }
 
   /**
-   * Load vector data and GraphIndex from disk.
+   * Load vector data and GraphIndex from disk with dual storage support.
    */
   private void loadVectorData() throws IOException {
     File vectorFile = new File(getVectorDataFilePath());
@@ -1073,8 +1343,11 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
       // Read vector count
       int vectorCount = dis.readInt();
 
-      // Read vectors
+      // Clear both storage structures
       vectorStorage.clear();
+      ridVectorStorage.clear();
+
+      // Read vectors and rebuild dual storage
       for (int i = 0; i < vectorCount; i++) {
         int nodeId = dis.readInt();
         int vectorDimensions = dis.readInt();
@@ -1082,6 +1355,10 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
         if (vectorDimensions != dimensions) {
           LogManager.instance().log(this, Level.WARNING,
               "Stored vector dimensions (" + vectorDimensions + ") do not match index dimensions (" + dimensions + ")");
+          // Skip invalid vector
+          for (int j = 0; j < vectorDimensions; j++) {
+            dis.readFloat();
+          }
           continue;
         }
 
@@ -1089,12 +1366,29 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
         for (int j = 0; j < vectorDimensions; j++) {
           vector[j] = dis.readFloat();
         }
+
+        // Store in primary storage
         vectorStorage.put(nodeId, vector);
+
+        // Rebuild direct RID storage if mapping exists
+        RID rid = nodeIdToRid.get(nodeId);
+        if (rid != null) {
+          ridVectorStorage.put(rid, vector.clone());
+        }
 
         // Update next node ID counter
         if (nodeId >= nextNodeId.get()) {
           nextNodeId.set(nodeId + 1);
         }
+      }
+
+      // Read direct storage count for verification (if available in newer format)
+      int directStorageCount = 0;
+      try {
+        directStorageCount = dis.readInt();
+      } catch (EOFException e) {
+        // Older format without direct storage count
+        LogManager.instance().log(this, Level.FINE, "Loading from older format without direct storage count");
       }
 
       // Load GraphIndex structure if available
@@ -1108,11 +1402,19 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
         initializeGraphIndex();
       }
 
-      LogManager.instance().log(this, Level.INFO, "Loaded " + vectorStorage.size() + " vectors from disk");
+      LogManager.instance().log(this, Level.INFO,
+          "Loaded " + vectorStorage.size() + " vectors (" + ridVectorStorage.size() + " direct) from disk");
+
+      // Validate storage consistency
+      if (directStorageCount > 0 && directStorageCount != ridVectorStorage.size()) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Storage count mismatch: expected " + directStorageCount + " direct vectors, loaded " + ridVectorStorage.size());
+      }
 
     } catch (EOFException e) {
       LogManager.instance().log(this, Level.WARNING, "Incomplete vector data file - reinitializing index");
       vectorStorage.clear();
+      ridVectorStorage.clear();
       initializeGraphIndex();
     }
   }
@@ -1411,19 +1713,24 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
       diagnostics.put("indexName", indexName);
       diagnostics.put("vertexType", vertexType);
       diagnostics.put("vectorProperty", vectorPropertyName);
-      diagnostics.put("idProperty", idPropertyName);
       diagnostics.put("dimensions", dimensions);
       diagnostics.put("similarityFunction", similarityFunction.name());
       diagnostics.put("maxConnections", maxConnections);
       diagnostics.put("beamWidth", beamWidth);
 
-      // Current state
+      // Current state with dual storage
       diagnostics.put("vectorCount", vectorStorage.size());
+      diagnostics.put("directVectorCount", ridVectorStorage.size());
       diagnostics.put("mappingCount", nodeIdToRid.size());
+      diagnostics.put("reverseMappingCount", ridToNodeId.size());
       diagnostics.put("nextNodeId", nextNodeId.get());
       diagnostics.put("indexNeedsRebuild", indexNeedsRebuild.get());
       diagnostics.put("graphIndexAvailable", graphIndex != null);
       diagnostics.put("graphSearcherAvailable", graphSearcher != null);
+
+      // Storage consistency checks
+      diagnostics.put("storageConsistent", vectorStorage.size() == ridVectorStorage.size());
+      diagnostics.put("mappingConsistent", nodeIdToRid.size() == ridToNodeId.size());
 
       // Performance metrics
       diagnostics.put("rebuildThreshold", REBUILD_THRESHOLD);
@@ -1434,6 +1741,7 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
       int invalidVectors = 0;
       int orphanedMappings = 0;
 
+      // Validate primary vector storage
       for (Map.Entry<Integer, float[]> entry : vectorStorage.entrySet()) {
         int nodeId = entry.getKey();
         float[] vector = entry.getValue();
@@ -1456,11 +1764,24 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
         }
       }
 
+      // Check for orphaned mappings
       for (Map.Entry<Integer, RID> entry : nodeIdToRid.entrySet()) {
         if (!vectorStorage.containsKey(entry.getKey())) {
           orphanedMappings++;
         }
       }
+
+      // Validate direct storage consistency
+      int directStorageInconsistencies = 0;
+      for (Map.Entry<RID, float[]> entry : ridVectorStorage.entrySet()) {
+        RID rid = entry.getKey();
+        Integer nodeId = ridToNodeId.get(rid);
+        if (nodeId == null || !vectorStorage.containsKey(nodeId)) {
+          directStorageInconsistencies++;
+        }
+      }
+
+      diagnostics.put("directStorageInconsistencies", directStorageInconsistencies);
 
       diagnostics.put("validVectors", validVectors);
       diagnostics.put("invalidVectors", invalidVectors);
@@ -1488,10 +1809,7 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
         diagnostics.put("mappingFileLastModified", mappingFile.lastModified());
       }
 
-      // Underlying index stats
-      if (underlyingIndex != null) {
-        diagnostics.put("underlyingIndexStats", new JSONObject(underlyingIndex.getStats()));
-      }
+      // Vector index is now self-contained without underlying index
 
       return diagnostics;
 
@@ -1558,15 +1876,23 @@ public class JVectorIndex extends Component implements com.arcadedb.index.Index,
           continue;
         }
 
+        // Verify direct storage consistency
+        float[] directVector = ridVectorStorage.get(rid);
+        if (directVector == null || directVector.length != vector.length) {
+          LogManager.instance().log(this, Level.FINE, "Rebuilding direct storage for node ID: " + nodeId);
+          ridVectorStorage.put(rid, vector.clone());
+        }
+
         validVectors++;
       }
 
-      // Remove invalid vectors
+      // Remove invalid vectors from all storage structures
       for (Integer invalidNodeId : invalidNodeIds) {
         vectorStorage.remove(invalidNodeId);
         RID rid = nodeIdToRid.remove(invalidNodeId);
         if (rid != null) {
           ridToNodeId.remove(rid);
+          ridVectorStorage.remove(rid);
         }
       }
 

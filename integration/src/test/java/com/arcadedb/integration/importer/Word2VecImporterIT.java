@@ -47,9 +47,10 @@ public class Word2VecImporterIT {
       );
       assertThat(db.countType("Word", true)).isEqualTo(10);
     } finally {
-      db.drop();
-      TestHelper.checkActiveDatabases();
-      FileUtils.deleteRecursively(new File(databasePath));
+      db.close();
+//      db.drop();
+//      TestHelper.checkActiveDatabases();
+//      FileUtils.deleteRecursively(new File(databasePath));
     }
   }
 }

@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONObject;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 import java.util.ArrayList;
@@ -52,6 +53,8 @@ public class CreateIndexStatement extends DDLStatement {
   protected LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP;
   protected List<Identifier>                   keyTypes     = new ArrayList<Identifier>();
 
+  private final List<String> allowed = List.of("FULL_TEXT", "UNIQUE", "NOTUNIQUE", "JVECTOR");
+
   public CreateIndexStatement(final int id) {
     super(id);
   }
@@ -59,21 +62,10 @@ public class CreateIndexStatement extends DDLStatement {
   @Override
   public void validate() throws CommandSQLParsingException {
     final String typeAsString = type.getStringValue().toUpperCase();
-    switch (typeAsString) {
-    case "FULL_TEXT" -> {
-      ;
-    }
-    case "UNIQUE" -> {
-      ;
-    }
-    case "NOTUNIQUE" -> {
-      ;
-    }
-    case "JVECTOR" -> {
-      ;
-    }
-    default -> throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
-    }
+
+    if (!allowed.contains(typeAsString))
+      throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
+
   }
 
   @Override
@@ -103,7 +95,6 @@ public class CreateIndexStatement extends DDLStatement {
 
     final Schema.INDEX_TYPE indexType;
     boolean unique = false;
-
     final String typeAsString = type.getStringValue().toUpperCase();
     switch (typeAsString) {
     case "FULL_TEXT" -> indexType = Schema.INDEX_TYPE.FULL_TEXT;
@@ -112,10 +103,7 @@ public class CreateIndexStatement extends DDLStatement {
       unique = true;
     }
     case "NOTUNIQUE" -> indexType = Schema.INDEX_TYPE.LSM_TREE;
-    case "JVECTOR" -> {
-      indexType = Schema.INDEX_TYPE.JVECTOR;
-      unique = true;
-    }
+    case "JVECTOR" -> indexType = Schema.INDEX_TYPE.JVECTOR;
     default -> throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
     }
 
@@ -128,37 +116,25 @@ public class CreateIndexStatement extends DDLStatement {
       int maxConnections = 16;
       int beamWidth = 100;
 
-      if (metadata != null && metadata.getValue() instanceof Map) {
-        @SuppressWarnings("unchecked")
-        Map<String, Object> metadataMap = (Map<String, Object>) metadata.getValue();
-
-        if (metadataMap.containsKey("dimensions")) {
-          dimensions = (Integer) metadataMap.get("dimensions");
-        }
-        if (metadataMap.containsKey("similarity")) {
-          String similarity = (String) metadataMap.get("similarity");
-          similarityFunction = VectorSimilarityFunction.valueOf(similarity.toUpperCase());
-        }
-        if (metadataMap.containsKey("maxConnections")) {
-          maxConnections = (Integer) metadataMap.get("maxConnections");
-        }
-        if (metadataMap.containsKey("beamWidth")) {
-          beamWidth = (Integer) metadataMap.get("beamWidth");
-        }
+      if (metadata != null) {
+        JSONObject meta = new JSONObject(metadata.toString());
+        dimensions = meta.getInt("dimensions", dimensions);
+        similarityFunction = VectorSimilarityFunction.valueOf(meta.getString("similarity", "EUCLIDEAN").toUpperCase());
+        maxConnections = meta.getInt("maxConnections", maxConnections);
+        beamWidth = meta.getInt("beamWidth", beamWidth);
       }
 
-      database.getSchema().getEmbedded().buildJVectorIndex()
+      database.getSchema().getEmbedded().buildVectorIndex()
           .withIndexName(name.getValue())
-          .withDimensions(dimensions)
           .withVertexType(typeName.getStringValue())
-          .withIdProperty(fields[0])
-          .withVectorProperty(fields[1], Type.ARRAY_OF_FLOATS)
+          .withVectorProperty(fields[0], Type.ARRAY_OF_FLOATS)
+          .withDimensions(dimensions)
           .withSimilarityFunction(similarityFunction)
           .withMaxConnections(maxConnections)
           .withBeamWidth(beamWidth)
           .withCallback((document, totalIndexed) -> {
             total.incrementAndGet();
-            if (totalIndexed % 1000 == 0) {
+            if (totalIndexed % 100000 == 0) {
               System.out.print(".");
               System.out.flush();
             }
@@ -173,7 +149,6 @@ public class CreateIndexStatement extends DDLStatement {
           .withNullStrategy(nullStrategy)
           .withCallback((document, totalIndexed) -> {
             total.incrementAndGet();
-
             if (totalIndexed % 100000 == 0) {
               System.out.print(".");
               System.out.flush();

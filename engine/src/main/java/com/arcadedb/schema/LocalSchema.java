@@ -533,11 +533,6 @@ public class LocalSchema implements Schema {
     return new JVectorIndexBuilder(database);
   }
 
-  public JVectorIndexBuilder buildJVectorIndex() {
-    return buildVectorIndex();
-  }
-
-
   @Override
   public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
       final String... propertyNames) {
@@ -1382,9 +1377,18 @@ public class LocalSchema implements Schema {
     }
   }
 
-  protected Index createBucketIndex(final LocalDocumentType type, final Type[] keyTypes, final Bucket bucket, final String typeName,
-      final INDEX_TYPE indexType, final boolean unique, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
-      final Index.BuildIndexCallback callback, final String[] propertyNames, final TypeIndex propIndex, final int batchSize) {
+  protected Index createBucketIndex(final LocalDocumentType type,
+      final Type[] keyTypes,
+      final Bucket bucket,
+      final String typeName,
+      final INDEX_TYPE indexType,
+      final boolean unique,
+      final int pageSize,
+      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
+      final Index.BuildIndexCallback callback,
+      final String[] propertyNames,
+      final TypeIndex propIndex,
+      final int batchSize) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     if (bucket == null)
@@ -1396,9 +1400,15 @@ public class LocalSchema implements Schema {
       throw new DatabaseMetadataException(
           "Cannot create index '" + indexName + "' on type '" + typeName + "' because it already exists");
 
-    final IndexBuilder<Index> builder = buildBucketIndex(typeName, bucket.getName(), propertyNames).withUnique(unique)
-        .withType(indexType).withFilePath(databasePath + File.separator + indexName).withKeyTypes(keyTypes).withPageSize(pageSize)
-        .withNullStrategy(nullStrategy).withCallback(callback).withIndexName(indexName);
+    final IndexBuilder<Index> builder = buildBucketIndex(typeName, bucket.getName(), propertyNames)
+        .withUnique(unique)
+        .withType(indexType)
+        .withFilePath(databasePath + File.separator + indexName)
+        .withKeyTypes(keyTypes)
+        .withPageSize(pageSize)
+        .withNullStrategy(nullStrategy)
+        .withCallback(callback)
+        .withIndexName(indexName);
 
     final IndexInternal index = indexFactory.createIndex(builder);
 
