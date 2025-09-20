@@ -31,8 +31,14 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.io.*;
-import java.util.*;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * It represent an index on a type. It's backed by one or multiple underlying indexes, one per bucket. By using multiple buckets, the read/write operation can
@@ -41,9 +47,9 @@ import java.util.*;
  * @author Luca Garulli
  */
 public class TypeIndex implements RangeIndex, IndexInternal {
-  private       String              logicName;
   private final List<IndexInternal> indexesOnBuckets = new ArrayList<>();
   private final DocumentType        type;
+  private       String              logicName;
   private       boolean             valid            = true;
   private       IndexInternal       associatedIndex;
 

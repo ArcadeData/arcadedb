@@ -88,7 +88,7 @@ public class GloVeTest {
       System.exit(1);
     }
 
-    final JVectorIndex persistentIndex = (JVectorIndex) database.getSchema().getIndexByName("Word[name,vector]");
+    final JVectorIndex persistentIndex = (JVectorIndex) database.getSchema().getIndexByName("Word[vector]");
 
     try {
 
@@ -120,7 +120,7 @@ public class GloVeTest {
 
             final List<Pair<Identifiable, Float>> approximateResults;
             if (USE_SQL) {
-              final ResultSet resultSet = database.query("sql", "select vectorNeighbors('Word[name,vector]', ?,?) as neighbors", input, k);
+              final ResultSet resultSet = database.query("sql", "select vectorNeighbors('Word[vector]', ?,?) as neighbors", input, k);
               if (resultSet.hasNext()) {
                 approximateResults = new ArrayList<>();
                 while (resultSet.hasNext()) {

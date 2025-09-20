@@ -19,13 +19,18 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.vector.JVectorIndex;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import java.io.File;
 
@@ -46,7 +51,6 @@ public class JVectorIndexBuilder extends IndexBuilder<JVectorIndex> {
   private String                   vertexType;
   private String                   vectorPropertyName;
   private Type                     vectorPropertyType = Type.ARRAY_OF_FLOATS;
-  private String                   idPropertyName;
 
   JVectorIndexBuilder(final DatabaseInternal database) {
     super(database, JVectorIndex.class);
@@ -61,8 +65,6 @@ public class JVectorIndexBuilder extends IndexBuilder<JVectorIndex> {
 
     if (vertexType == null)
       throw new IndexException("Vertex type is missing from vector index declaration");
-    if (idPropertyName == null)
-      throw new IndexException("Vertex id property name is missing from vector index declaration");
     if (vectorPropertyName == null)
       throw new IndexException("Vertex vector property name is missing from vector index declaration");
 
@@ -80,14 +82,21 @@ public class JVectorIndexBuilder extends IndexBuilder<JVectorIndex> {
       }
     }
 
-//    final VertexType vType = database.getSchema().getOrCreateVertexType(vertexType);
-//    vType.getOrCreateProperty(idPropertyName, Type.STRING);
-//    vType.getOrCreateProperty(vectorPropertyName, vectorPropertyType);
 
     final JVectorIndex index = (JVectorIndex) schema.indexFactory.createIndex(this);
 
     schema.registerFile(index.getComponent());
     schema.indexMap.put(index.getName(), index);
+
+    // JVectorIndex works as a container index. Register it with all buckets for automatic indexing.
+    final LocalDocumentType type = schema.getType(vertexType);
+    if (type != null) {
+      // Add to bucket indexes for automatic indexing discovery by DocumentIndexer
+      for (final Bucket bucket : type.getBuckets(false)) {
+        final List<IndexInternal> bucketIndexes = type.bucketIndexesByBucket.computeIfAbsent(bucket.getFileId(), k -> new ArrayList<>());
+        bucketIndexes.add(index);
+      }
+    }
 
     index.build(LocalSchema.BUILD_TX_BATCH_SIZE, callback);
 
@@ -133,10 +142,6 @@ public class JVectorIndexBuilder extends IndexBuilder<JVectorIndex> {
     return this;
   }
 
-  public JVectorIndexBuilder withIdProperty(final String idPropertyName) {
-    this.idPropertyName = idPropertyName;
-    return this;
-  }
 
   // Getters
   public int getDimensions() {
@@ -159,9 +164,6 @@ public class JVectorIndexBuilder extends IndexBuilder<JVectorIndex> {
     return vertexType;
   }
 
-  public String getIdPropertyName() {
-    return idPropertyName;
-  }
 
   public String getVectorPropertyName() {
     return vectorPropertyName;
