@@ -74,7 +74,7 @@ public class FastTextVectorImportTest extends com.arcadedb.TestHelper
                 vectorStr.append(withVector[i]);
             }
             final ResultSet vectorNeighborsResult = database.command("SQL",
-                "SELECT vectorNeighbors('Word[name,vector]', [" + vectorStr + "], 5)");
+                "SELECT vectorNeighbors('Word[vector]', [" + vectorStr + "], 5)");
 
             assertThat(vectorNeighborsResult.hasNext()).isTrue();
             System.out.println("✓ vectorNeighbors function working correctly after JVector registration fix");

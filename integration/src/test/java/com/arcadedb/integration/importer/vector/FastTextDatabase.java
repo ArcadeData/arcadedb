@@ -91,7 +91,7 @@ public class FastTextDatabase {
           MILLISECONDS.toMinutes(System.currentTimeMillis() - start));
     }
 
-    final JVectorIndex persistentIndex = (JVectorIndex) database.getSchema().getIndexByName("Word[name,vector]");
+    final JVectorIndex persistentIndex = (JVectorIndex) database.getSchema().getIndexByName("Word[vector]");
 
     try {
       int k = 10;

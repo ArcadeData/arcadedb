@@ -22,13 +22,12 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteServer;
-
-import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -81,7 +80,7 @@ public class JVectorSqlE2ETest extends ArcadeContainerTemplate {
 
       // Step 4: Verify index creation
       ResultSet indexResult = database.query("SQL",
-          "SELECT FROM schema:indexes WHERE name = 'VectorDocument[id,embedding]'");
+          "SELECT FROM schema:indexes WHERE name = 'VectorDocument[embedding]'");
       assertThat(indexResult.hasNext()).isTrue();
 
       Result indexInfo = indexResult.next();
@@ -169,45 +168,31 @@ public class JVectorSqlE2ETest extends ArcadeContainerTemplate {
 
   @Test
   void testVectorNeighborsFunction() {
-    database.transaction(() -> {
-      setupVectorSchemaWithData();
+    database.transaction(this::setupVectorSchemaWithData, false, 30);
+    // Test the vectorNeighbors SQL function with our JVector index fix
+    ResultSet vectorNeighborsResult = database.query("SQL",
+        "SELECT vectorNeighbors('VectorDocument[embedding]', [0.1, 0.2, 0.3, 0.4, 0.5], 2) as neighbors");
 
-      // Test the vectorNeighbors SQL function with our JVector index fix
-      try {
-        ResultSet vectorNeighborsResult = database.query("SQL",
-            "SELECT vectorNeighbors('VectorDocument[id,embedding]', [0.1, 0.2, 0.3, 0.4, 0.5], 3) as neighbors");
+    assertThat(vectorNeighborsResult.hasNext()).isTrue();
+    Result result = vectorNeighborsResult.next();
+    // The result should be a list of maps with 'vertex' and 'distance' keys
+    Object vectorNeighborsOutput = result.getProperty("neighbors");
+    assertThat(vectorNeighborsOutput).isNotNull();
 
-        assertThat(vectorNeighborsResult.hasNext()).isTrue();
-        Result result = vectorNeighborsResult.next();
-        System.out.println("result.toJSON() = " + result.toJSON());
-        // The result should be a list of maps with 'vertex' and 'distance' keys
-        Object vectorNeighborsOutput = result.getProperty("neighbors");
-        assertThat(vectorNeighborsOutput).isNotNull();
+    if (vectorNeighborsOutput instanceof List<?> neighbors) {
+      assertThat(neighbors.size()).isGreaterThan(0);
+      assertThat(neighbors.size()).isLessThanOrEqualTo(3);
 
-        if (vectorNeighborsOutput instanceof List<?> neighbors) {
-          assertThat(neighbors.size()).isGreaterThan(0);
-          assertThat(neighbors.size()).isLessThanOrEqualTo(3);
-
-          // Verify the structure of the results
-          for (Object neighbor : neighbors) {
-            if (neighbor instanceof Map<?, ?> neighborMap) {
-              assertThat(neighborMap.get("vertex")).isNotNull();
-              assertThat(neighborMap.get("distance")).isNotNull();
-              assertThat(neighborMap.get("distance")).isInstanceOf(Number.class);
-            }
-          }
+      // Verify the structure of the results
+      for (Object neighbor : neighbors) {
+        if (neighbor instanceof Map<?, ?> neighborMap) {
+          assertThat(neighborMap.get("vertex")).isNotNull();
+          assertThat(neighborMap.get("distance")).isNotNull();
+          assertThat(neighborMap.get("distance")).isInstanceOf(Number.class);
         }
-
-        // Log successful test for visibility
-        System.out.println("✓ vectorNeighbors function test passed - JVector index registration fix is working!");
-
-      } catch (Exception e) {
-        // If this fails, it means our fix didn't work completely
-        System.err.println("✗ vectorNeighbors function test failed: " + e.getMessage());
-        throw new AssertionError("vectorNeighbors function should work after JVector registration fix", e);
       }
+    }
 
-    }, false, 30);
   }
 
   @Test
@@ -239,7 +224,7 @@ public class JVectorSqlE2ETest extends ArcadeContainerTemplate {
 
       // Verify vector index handles large dataset
       ResultSet indexStats = database.query("SQL",
-          "SELECT * FROM schema:indexes WHERE name = 'VectorDocument[id,embedding]'");
+          "SELECT * FROM schema:indexes WHERE name = 'VectorDocument[embedding]'");
       assertThat(indexStats.hasNext()).isTrue();
 
     }, true, 60);
@@ -251,7 +236,7 @@ public class JVectorSqlE2ETest extends ArcadeContainerTemplate {
       setupVectorSchemaWithData();
 
       // Test index exists
-      assertThat(indexExists("VectorDocument[id,embedding]")).isTrue();
+      assertThat(indexExists("VectorDocument[embedding]")).isTrue();
 
       // Test index functionality after data insertion
       ResultSet vectorResult = database.query("SQL",
@@ -259,13 +244,13 @@ public class JVectorSqlE2ETest extends ArcadeContainerTemplate {
       assertThat(vectorResult.next().<Integer>getProperty("total")).isGreaterThan(0);
 
       // Test index drop - use quoted index name
-      database.command("SQL", "DROP INDEX `VectorDocument[id,embedding]`");
-      assertThat(indexExists("VectorDocument[id,embedding]")).isFalse();
+      database.command("SQL", "DROP INDEX `VectorDocument[embedding]`");
+      assertThat(indexExists("VectorDocument[embedding]")).isFalse();
 
       // Recreate index for cleanup - use IF NOT EXISTS to avoid conflicts
       database.command("SQL",
-          "CREATE INDEX IF NOT EXISTS ON VectorDocument (id, embedding) JVECTOR");
-      assertThat(indexExists("VectorDocument[id,embedding]")).isTrue();
+          "CREATE INDEX IF NOT EXISTS ON VectorDocument (embedding) JVECTOR");
+      assertThat(indexExists("VectorDocument[embedding]")).isTrue();
 
     }, true, 30);
   }
@@ -347,7 +332,7 @@ public class JVectorSqlE2ETest extends ArcadeContainerTemplate {
       assertThat(checkDeleted.hasNext()).isFalse();
 
       // Verify index still works after deletion
-      assertThat(indexExists("VectorDocument[id,embedding]")).isTrue();
+      assertThat(indexExists("VectorDocument[embedding]")).isTrue();
 
     }, true, 15);
   }
@@ -361,7 +346,13 @@ public class JVectorSqlE2ETest extends ArcadeContainerTemplate {
         CREATE PROPERTY VectorDocument.title IF NOT EXISTS STRING;
         CREATE PROPERTY VectorDocument.embedding IF NOT EXISTS ARRAY_OF_FLOATS;
         CREATE PROPERTY VectorDocument.category IF NOT EXISTS STRING;
-        CREATE INDEX IF NOT EXISTS ON VectorDocument (id, embedding) JVECTOR;
+          CREATE INDEX IF NOT EXISTS ON VectorDocument (embedding) JVECTOR
+            METADATA {
+              "dimensions" : 5,
+              "similarity" : "COSINE",
+              "maxConnections" : 16,
+              "beamWidth" : 100
+              };
         """);
   }
 
