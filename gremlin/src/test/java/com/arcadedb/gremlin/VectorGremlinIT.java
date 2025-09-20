@@ -56,7 +56,7 @@ public class VectorGremlinIT {
 
       final float[] vector = new float[100];
 
-      ResultSet resultSet = db.query("sql", "select vectorNeighbors('Word[name,vector]', ?,?) as neighbors", vector, 10);
+      ResultSet resultSet = db.query("sql", "select vectorNeighbors('Word[vector]', ?,?) as neighbors", vector, 10);
       assertThat(resultSet.hasNext()).isTrue();
       final List<RID> approximateResults = new ArrayList<>();
       while (resultSet.hasNext()) {
@@ -73,7 +73,7 @@ public class VectorGremlinIT {
       assertThat(approximateResults).hasSize(10);
 
       resultSet = db.query("gremlin",
-          "g.call('arcadedb#vectorNeighbors', [ 'indexName': 'Word[name,vector]', 'vector': vector, 'limit': 10 ] )", "vector",
+          "g.call('arcadedb#vectorNeighbors', [ 'indexName': 'Word[vector]', 'vector': vector, 'limit': 10 ] )", "vector",
           vector);
       assertThat(resultSet.hasNext()).isTrue();
       final List<RID> approximateResultsFromGremlin = new ArrayList<>();

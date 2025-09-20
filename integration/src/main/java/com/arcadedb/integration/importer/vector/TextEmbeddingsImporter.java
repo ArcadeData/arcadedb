@@ -150,15 +150,14 @@ public class TextEmbeddingsImporter {
 
       // Create JVector index
       database.transaction(() -> {
-        database.getSchema().getEmbedded().buildJVectorIndex()
+        database.getSchema().getEmbedded().buildVectorIndex()
             .withVertexType(settings.vertexTypeName)
             .withVectorProperty(vectorPropertyName, vectorPropertyType)
-            .withIdProperty(idPropertyName)
             .withDimensions(dimensions)
             .withSimilarityFunction(similarityFunction)
             .withMaxConnections(maxConnections)
             .withBeamWidth(beamWidth)
-            .withIndexName(settings.vertexTypeName + "[" + idPropertyName + "," + vectorPropertyName + "]")
+            .withIndexName(settings.vertexTypeName + "[" + vectorPropertyName + "]")
             .withCallback((record, total) -> ++verticesConnected)
             .create();
       });

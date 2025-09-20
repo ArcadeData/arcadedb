@@ -28,8 +28,11 @@ import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.TraverseExecutionPlanner;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 public class TraverseStatement extends Statement {
   public enum Strategy {
@@ -48,14 +51,6 @@ public class TraverseStatement extends Statement {
   }
 
   public void validate() throws CommandSQLParsingException {
-//    for(OTraverseProjectionItem projection:projections) {
-//
-//        projection. validate();
-//        if (projection.isExpand() && groupBy != null) {
-//          throw new OCommandSQLParsingException("expand() cannot be used together with GROUP BY");
-//        }
-//
-//    }
     if (target.getItem().getStatement() != null) {
       target.getItem().getStatement().validate();
     }
