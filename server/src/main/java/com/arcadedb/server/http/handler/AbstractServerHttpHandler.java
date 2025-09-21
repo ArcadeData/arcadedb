@@ -215,7 +215,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   protected String decode(final String command) {
-    return command.replace("&amp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#039;", "'");
+    return command.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#039;", "'");
   }
 
   protected String error2json(final String error, final String detail, final Throwable exception, final String exceptionArgs,
