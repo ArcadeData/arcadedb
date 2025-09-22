@@ -32,6 +32,11 @@ public class CommandSQLParsingException extends CommandParsingException {
     super(message, cause);
   }
 
+  public CommandSQLParsingException(final String message, final Throwable cause, final String command) {
+    super(message, cause);
+    this.command = command;
+  }
+
   public CommandSQLParsingException setCommand(final String command) {
     this.command = command;
     return this;

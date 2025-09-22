@@ -2062,7 +2062,20 @@ OrBlock OrBlock():
 { AndBlock lastAnd = null; }
 {
   lastAnd = AndBlock() { jjtThis.getSubBlocks().add(lastAnd); }
-  ( <OR> lastAnd = AndBlock() { jjtThis.getSubBlocks().add(lastAnd); } )*
+  (
+    <OR>
+    {
+      // Validate that we have a proper condition after OR
+      if (getToken(1).kind == AND || getToken(1).kind == OR ||
+          getToken(1).kind == EOF || getToken(1).kind == RPAREN ||
+          getToken(1).kind == RBRACE || getToken(1).kind == SEMICOLON) {
+        throw new ParseException("Syntax error: OR operator at line " + token.beginLine +
+          ", column " + token.beginColumn + " must be followed by a condition, not '" +
+          getToken(1).image + "'");
+      }
+    }
+    lastAnd = AndBlock() { jjtThis.getSubBlocks().add(lastAnd); }
+  )*
   { return jjtThis; }
 }
 
@@ -2070,7 +2083,20 @@ AndBlock AndBlock():
 {NotBlock lastNot = null; }
 {
   lastNot = NotBlock() { jjtThis.getSubBlocks().add(lastNot); }
-  ( <AND> lastNot = NotBlock() { jjtThis.getSubBlocks().add(lastNot); } )*
+  (
+    <AND>
+    {
+      // Validate that we have a proper condition after AND
+      if (getToken(1).kind == AND || getToken(1).kind == OR ||
+          getToken(1).kind == EOF || getToken(1).kind == RPAREN ||
+          getToken(1).kind == RBRACE || getToken(1).kind == SEMICOLON) {
+        throw new ParseException("Syntax error: AND operator at line " + token.beginLine +
+          ", column " + token.beginColumn + " must be followed by a condition, not '" +
+          getToken(1).image + "'");
+      }
+    }
+    lastNot = NotBlock() { jjtThis.getSubBlocks().add(lastNot); }
+  )*
   { return jjtThis; }
 }
 
