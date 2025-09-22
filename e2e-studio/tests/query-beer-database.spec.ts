@@ -35,11 +35,11 @@ test.describe('ArcadeDB Studio Beer Database Query', () => {
     // Wait for the main interface to load
     await expect(page.getByText('Connected as').first()).toBeVisible();
 
-    // Select the Beer database from the dropdown
-    await page.getByLabel('root').selectOption('Beer');
+    // Select the Beer database from the dropdown - use specific query tab selector
+    await page.locator('#queryInputDatabase').selectOption('Beer');
 
     // Verify Beer database is selected
-    await expect(page.getByLabel('root')).toHaveValue('Beer');
+    await expect(page.locator('#queryInputDatabase')).toHaveValue('Beer');
 
     // Make sure we're on the Query tab (first tab should be selected by default)
     // Wait for the query interface to be visible
@@ -92,11 +92,11 @@ test.describe('ArcadeDB Studio Beer Database Query', () => {
     // Wait for the main interface to load with increased timeout
     await expect(page.getByText('Connected as').first()).toBeVisible({ timeout: 10000 });
 
-    // Select the Beer database from the dropdown
-    await page.getByLabel('root').selectOption('Beer');
+    // Select the Beer database from the dropdown - use specific query tab selector
+    await page.locator('#queryInputDatabase').selectOption('Beer');
 
     // Verify Beer database is selected
-    await expect(page.getByLabel('root')).toHaveValue('Beer');
+    await expect(page.locator('#queryInputDatabase')).toHaveValue('Beer');
 
     // Make sure we're on the Query tab
     await expect(page.getByText('Auto Limit')).toBeVisible();

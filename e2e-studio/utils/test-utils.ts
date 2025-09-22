@@ -75,8 +75,10 @@ export class ArcadeStudioTestHelper {
     // Click sign in button using actual onclick handler
     await this.page.click('button[onclick="login()"]');
 
-    // Wait for login spinner to appear (indicates login started)
-    await expect(this.page.locator('#loginSpinner')).toBeVisible();
+    // Wait for login spinner to appear (indicates login started) - with short timeout for fast logins
+    await expect(this.page.locator('#loginSpinner')).toBeVisible({ timeout: 2000 }).catch(() => {
+      // If spinner doesn't appear, login might be very fast - continue
+    });
 
     // Wait for login to complete - check multiple conditions
     await Promise.all([
