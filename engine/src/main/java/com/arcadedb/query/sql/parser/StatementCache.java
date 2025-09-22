@@ -124,11 +124,11 @@ public class StatementCache {
   }
 
   protected static void throwParsingException(final Throwable e, final String statement) {
-    throw new CommandSQLParsingException(statement, e);
+    throw new CommandSQLParsingException(e.getMessage(), e, statement);
   }
 
   protected static void throwParsingException(final TokenMgrError e, final String statement) {
-    throw new CommandSQLParsingException(statement, e);
+    throw new CommandSQLParsingException(e.getMessage(), e, statement);
   }
 
   public boolean contains(final String statement) {
