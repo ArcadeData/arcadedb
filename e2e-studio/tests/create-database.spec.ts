@@ -23,17 +23,27 @@ test.describe('ArcadeDB Studio Database Creation', () => {
     await page.goto('/');
 
     // Wait for login dialog to appear
-    await expect(page.getByRole('dialog', { name: 'Login to the server' })).toBeVisible();
+    await expect(page.locator('#loginPopup')).toBeVisible();
 
-    // Fill in login credentials
-    await page.getByRole('textbox', { name: 'User Name' }).fill('root');
-    await page.getByRole('textbox', { name: 'Password' }).fill('playwithdata');
+    // Fill in login credentials using actual HTML IDs
+    await page.fill('#inputUserName', 'root');
+    await page.fill('#inputUserPassword', 'playwithdata');
 
-    // Click sign in button
-    await page.getByRole('button', { name: 'Sign in' }).click();
+    // Click sign in button using actual onclick handler
+    await page.click('button[onclick="login()"]');
 
-    // Wait for the main interface to load
-    await expect(page.getByText('Connected as').first()).toBeVisible();
+    // Wait for login spinner to appear (indicates login started)
+    await expect(page.locator('#loginSpinner')).toBeVisible();
+
+    // Wait for login to complete - check multiple conditions
+    await Promise.all([
+      expect(page.locator('#loginSpinner')).toBeHidden({ timeout: 30000 }),
+      expect(page.locator('#studioPanel')).toBeVisible({ timeout: 30000 }),
+      expect(page.locator('#loginPopup')).toBeHidden({ timeout: 30000 })
+    ]);
+
+    // Verify username is populated in the query tab
+    await expect(page.locator('#queryUser')).not.toBeEmpty();
 
     // Navigate to Database tab (second tab with database icon)
     await page.getByRole('tab').nth(1).click();

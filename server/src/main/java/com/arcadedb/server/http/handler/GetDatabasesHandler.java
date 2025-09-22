@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.Constants;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -42,7 +43,10 @@ public class GetDatabasesHandler extends AbstractServerHttpHandler {
     if (!allowedDatabases.contains("*"))
       installedDatabases.retainAll(allowedDatabases);
 
-    final JSONObject response = new JSONObject().put("result", new JSONArray(installedDatabases));
+    final JSONObject response = new JSONObject()
+        .put("version", Constants.getVersion())
+        .put("user", user.getName())
+        .put("result", new JSONArray(installedDatabases));
 
     Metrics.counter("http.list-databases").increment();
 
