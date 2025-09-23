@@ -29,14 +29,18 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.text.*;
-import java.util.*;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class DocumentValidationTest extends TestHelper {
 
@@ -279,12 +283,8 @@ public class DocumentValidationTest extends TestHelper {
     database.transaction(() -> {
       final MutableVertex v1 = database.newVertex("V").save();
       final MutableVertex v2 = database.newVertex("V").save();
-      try {
-        v1.newEdge("E", v2);
-        Assertions.fail();
-      } catch (ValidationException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> v1.newEdge("E", v2))
+          .isInstanceOf(ValidationException.class);
 
       final MutableEdge e = v1.newEdge("E", v2, "id", "12345");
       assertThat(e.getString("id")).isEqualTo("12345");
@@ -303,26 +303,14 @@ public class DocumentValidationTest extends TestHelper {
     database.transaction(() -> {
       final MutableVertex v1 = database.newVertex("V").save();
       final MutableVertex v2 = database.newVertex("V").save();
-      try {
-        database.command("sql", "create edge E from ? to ?", v1, v2);
-        Assertions.fail();
-      } catch (ValidationException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> database.command("sql", "create edge E from ? to ?", v1, v2))
+          .isInstanceOf(ValidationException.class);
 
-      try {
-        database.command("sql", "create edge E from ? to ? set a = '12345'", v1, v2);
-        Assertions.fail();
-      } catch (ValidationException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> database.command("sql", "create edge E from ? to ? set a = '12345'", v1, v2))
+          .isInstanceOf(ValidationException.class);
 
-      try {
-        database.command("sql", "create edge E from ? to ? set a = '12345', b = '4444'", v1, v2);
-        Assertions.fail();
-      } catch (ValidationException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> database.command("sql", "create edge E from ? to ? set a = '12345', b = '4444'", v1, v2))
+          .isInstanceOf(ValidationException.class);
 
       final Edge e = database.command("sql", "create edge E from ? to ? set a = '12345', b = '4444', c = '2222'", v1, v2)
           .nextIfAvailable().getEdge().get();
@@ -348,12 +336,9 @@ public class DocumentValidationTest extends TestHelper {
 
     final MutableDocument embedded = d.newEmbeddedDocument("EmbeddedValidation", "embedded");
     embedded.set("test", "test");
-    try {
-      d.validate();
-      fail("Validation doesn't throw exception");
-    } catch (final ValidationException e) {
-      assertThat(e.toString().contains("int")).isTrue();
-    }
+    assertThatThrownBy(() -> d.validate())
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("int");
   }
 
   @Test
@@ -381,12 +366,9 @@ public class DocumentValidationTest extends TestHelper {
     final MutableDocument embeddedInList2 = d.newEmbeddedDocument("EmbeddedValidation", "embeddedList");
     embeddedInList2.set("int", 30);
 
-    try {
-      d.validate();
-      fail("Validation doesn't throw exception");
-    } catch (final ValidationException e) {
-      assertThat(e.toString().contains("long")).isTrue();
-    }
+    assertThatThrownBy(() -> d.validate())
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("long");
   }
 
   @Test
@@ -415,12 +397,9 @@ public class DocumentValidationTest extends TestHelper {
     embeddedInMap2.set("int", 30);
     embeddedMap.put("2", embeddedInMap2);
 
-    try {
-      d.validate();
-      fail("Validation doesn't throw exception");
-    } catch (final ValidationException e) {
-      assertThat(e.toString().contains("long")).isTrue();
-    }
+    assertThatThrownBy(() -> d.validate())
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("long");
   }
 
   @Test
@@ -736,19 +715,11 @@ public class DocumentValidationTest extends TestHelper {
   @Test
   public void testMinMaxNotApplicable() {
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType("Validation");
-    try {
-      clazz.createProperty("invString", Type.STRING).setMin("-1");
-      fail("");
-    } catch (IllegalArgumentException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> clazz.createProperty("invString", Type.STRING).setMin("-1"))
+        .isInstanceOf(IllegalArgumentException.class);
 
-    try {
-      clazz.createProperty("invBinary", Type.LIST).setMax("-1");
-      fail("");
-    } catch (IllegalArgumentException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> clazz.createProperty("invBinary", Type.LIST).setMax("-1"))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
@@ -762,31 +733,25 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   private void checkFieldValue(final Document toCheck, final String field, final Object newValue) {
-    try {
+    assertThatThrownBy(() -> {
       final MutableDocument newD = database.newDocument(toCheck.getTypeName()).fromMap(toCheck.toMap());
       newD.set(field, newValue);
       newD.validate();
-      fail("");
-    } catch (final ValidationException v) {
-    }
+    }).isInstanceOf(ValidationException.class);
   }
 
   private void checkRequireField(final MutableDocument toCheck, final String fieldName) {
-    try {
+    assertThatThrownBy(() -> {
       final MutableDocument newD = database.newDocument(toCheck.getTypeName()).fromMap(toCheck.toMap());
       newD.remove(fieldName);
       newD.validate();
-      fail("");
-    } catch (final ValidationException v) {
-    }
+    }).isInstanceOf(ValidationException.class);
   }
 
   private void checkReadOnlyField(final MutableDocument toCheck, final String fieldName) {
-    try {
+    assertThatThrownBy(() -> {
       toCheck.remove(fieldName);
       toCheck.validate();
-      fail("");
-    } catch (final ValidationException v) {
-    }
+    }).isInstanceOf(ValidationException.class);
   }
 }

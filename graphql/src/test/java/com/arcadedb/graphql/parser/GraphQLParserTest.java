@@ -30,16 +30,17 @@ public class GraphQLParserTest {
 
   @Test
   public void testLookup() throws ParseException {
-    final Document ast = GraphQLParser.parse("{ bookById(id: \"book-1\"){" +//
-        "  id" +//
-        "      name" +//
-        "  pageCount" +//
-        "  author {" +//
-        "    firstName" +//
-        "        lastName" +//
-        "  }" +//
-        "}" +//
-        "}");
+    final Document ast = GraphQLParser.parse("""
+        { bookById(id: "book-1"){\
+          id\
+              name\
+          pageCount\
+          author {\
+            firstName\
+                lastName\
+          }\
+        }\
+        }""");
 
     assertThat(ast.children.length > 0).isTrue();
 
