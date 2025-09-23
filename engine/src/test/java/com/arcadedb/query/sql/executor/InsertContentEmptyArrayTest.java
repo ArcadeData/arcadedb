@@ -103,7 +103,7 @@ public class InsertContentEmptyArrayTest extends TestHelper {
 
       // Verify non-empty array
       assertThat(item.<Object>getProperty("data")).isInstanceOf(List.class);
-      List<?> dataList = item.<List<?>>getProperty("data");
+      List<Integer> dataList = item.getProperty("data");
       assertThat(dataList).containsExactly(1, 2, 3);
 
       result.close();
@@ -220,7 +220,7 @@ public class InsertContentEmptyArrayTest extends TestHelper {
 
       // First array: [1,2]
       assertThat(matrix.get(0)).isInstanceOf(List.class);
-      List<?> first = (List<?>) matrix.get(0);
+      List<Integer> first = (List<Integer>) matrix.get(0);
       assertThat(first).containsExactly(1, 2);
 
       // Second array: empty
@@ -230,7 +230,7 @@ public class InsertContentEmptyArrayTest extends TestHelper {
 
       // Third array: [3,4]
       assertThat(matrix.get(2)).isInstanceOf(List.class);
-      List<?> third = (List<?>) matrix.get(2);
+      List<Integer> third = (List<Integer>) matrix.get(2);
       assertThat(third).containsExactly(3, 4);
 
       // Fourth array: empty
