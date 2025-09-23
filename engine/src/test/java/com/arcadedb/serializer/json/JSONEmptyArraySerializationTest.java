@@ -21,14 +21,24 @@ package com.arcadedb.serializer.json;
 import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Stack;
+import java.util.TreeSet;
+import java.util.Vector;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Test JSON serialization bug with empty arrays from issue #2497.
- *
+ * <p>
  * This test reproduces the NoSuchElementException that occurs when serializing
  * documents containing empty arrays via JSON.
  *
@@ -158,7 +168,7 @@ public class JSONEmptyArraySerializationTest extends TestHelper {
 
     // All should create empty arrays
     for (String key : List.of("arrayList", "linkedList", "hashSet", "treeSet",
-                                   "linkedHashSet", "vector", "stack")) {
+        "linkedHashSet", "vector", "stack")) {
       assertThat(json.has(key)).isTrue();
       assertThat(json.getJSONArray(key).length()).isEqualTo(0);
     }
