@@ -21,10 +21,10 @@ public class JSONObjectArrayFixTest {
         String jsonString = json.toString();
 
         // Should contain proper JSON array syntax
-        assertTrue(jsonString.contains("\"emptyArray\":[]"),
-                  "Empty Object[] array should serialize as empty JSON array []");
-        assertFalse(jsonString.contains("[Ljava.lang.Object;"),
-                   "Should not contain Java object string representation");
+        assertThat(jsonString)
+                .as("Empty Object[] array should serialize as [] and not as a Java object string")
+                .contains("\"emptyArray\":[]")
+                .doesNotContain("[Ljava.lang.Object;");
     }
 
     @Test
