@@ -221,9 +221,7 @@ public class InsertContentEmptyArrayTest extends TestHelper {
       // First array: [1,2]
       assertThat(matrix.get(0)).isInstanceOf(List.class);
       List<?> first = (List<?>) matrix.get(0);
-      assertThat(first.size()).isEqualTo(2);
-      assertThat(first.get(0)).isEqualTo(1);
-      assertThat(first.get(1)).isEqualTo(2);
+      assertThat(first).containsExactly(1, 2);
 
       // Second array: empty
       assertThat(matrix.get(1)).isInstanceOf(List.class);
