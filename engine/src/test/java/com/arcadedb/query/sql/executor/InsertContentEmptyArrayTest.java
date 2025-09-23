@@ -104,11 +104,7 @@ public class InsertContentEmptyArrayTest extends TestHelper {
       // Verify non-empty array
       assertThat(item.<Object>getProperty("data")).isInstanceOf(List.class);
       List<?> dataList = item.<List<?>>getProperty("data");
-      assertThat(dataList).hasSize(3);
-      assertThat(dataList.size()).isEqualTo(3);
-      assertThat(dataList.get(0)).isEqualTo(1);
-      assertThat(dataList.get(1)).isEqualTo(2);
-      assertThat(dataList.get(2)).isEqualTo(3);
+      assertThat(dataList).containsExactly(1, 2, 3);
 
       result.close();
     });
