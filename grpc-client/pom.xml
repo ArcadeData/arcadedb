@@ -35,7 +35,6 @@
 
     <properties>
         <mockito.version>5.15.2</mockito.version>
-        <slf4j-simple.version>2.0.17</slf4j-simple.version>
         <jackson-databind.version>2.20.0</jackson-databind.version>
     </properties>
 
@@ -122,13 +121,6 @@
             <artifactId>grpc-testing</artifactId>
             <version>${grpc.version}</version>
             <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-simple</artifactId>
-            <version>${slf4j-simple.version}</version>
-            <scope>provided</scope>
         </dependency>
 
         <dependency>
