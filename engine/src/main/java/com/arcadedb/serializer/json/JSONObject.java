@@ -124,6 +124,7 @@ public class JSONObject implements Map<String, Object> {
     case JSONArray array -> put(name, array.getInternal());
     case Document doc -> object.add(name, doc.toJSON(false).getInternal());
     case String[] string1s -> object.add(name, new JSONArray(string1s).getInternal());
+    case Object[] objects -> object.add(name, new JSONArray(objects).getInternal());
     case Iterable<?> iterable -> {
       // RETRY UP TO 10 TIMES IN CASE OF CONCURRENT UPDATE
       for (int i = 0; i < 10; i++) {
@@ -548,6 +549,7 @@ public class JSONObject implements Map<String, Object> {
       case JSONObject nObject -> nObject.getInternal();
       case JSONArray array -> array.getInternal();
       case Collection collection -> new JSONArray(collection).getInternal();
+      case Object[] objects -> new JSONArray(objects).getInternal();
       case Map map -> new JSONObject(map).getInternal();
       case Document document -> document.toJSON(false).getInternal();
       case Identifiable identifiable -> new JsonPrimitive(identifiable.getIdentity().toString());

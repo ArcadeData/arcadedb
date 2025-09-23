@@ -137,7 +137,7 @@ public class JsonSerializer {
     } else {
       if (useCollectionSizeForEdges && //
           ((entryType != null && entryType.isAssignableFrom(Edge.class)) || //
-              value.iterator().next() instanceof Edge))
+              (!value.isEmpty() && value.iterator().next() instanceof Edge)))
         result = value.size();
       else {
         final JSONArray list = new JSONArray();
