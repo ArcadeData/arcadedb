@@ -112,30 +112,21 @@ public class JSONObject implements Map<String, Object> {
     if (name == null)
       throw new IllegalArgumentException("Property name is null");
 
-    // GENERIC CASE: TRANSFORM IT TO STRING
-    if (value == null) {
-      object.add(name, NULL);
-    } else if (value instanceof JsonNull) {
-      object.add(name, NULL);
-    } else if (value instanceof JsonElement jsonElement) {
-      object.add(name, jsonElement);
-    } else if (value instanceof String string) {
-      put(name, string);
-    } else if (value instanceof Number number) {
-      put(name, number); // HANDLE CONVERSION OF NaN/INF
-    } else if (value instanceof Boolean bool) {
-      put(name, bool);
-    } else if (value instanceof Character character) {
-      put(name, character);
-    } else if (value instanceof JSONObject nObject) {
-      object.add(name, nObject.getInternal());
-    } else if (value instanceof JSONArray array) {
-      put(name, array.getInternal());
-    } else if (value instanceof Document doc) {
-      object.add(name, doc.toJSON(false).getInternal());
-    } else if (value instanceof String[] string1s) {
-      object.add(name, new JSONArray(string1s).getInternal());
-    } else if (value instanceof Iterable<?> iterable) {// RETRY UP TO 10 TIMES IN CASE OF CONCURRENT UPDATE
+    switch (value) {
+    case null -> object.add(name, NULL);
+    case JsonNull jsonNull -> object.add(name, NULL);
+    case JsonElement jsonElement -> object.add(name, jsonElement);
+    case String string -> put(name, string);
+    case Number number -> put(name, number); // HANDLE CONVERSION OF NaN/INF
+    case Boolean bool -> put(name, bool);
+    case Character character -> put(name, character);
+    case JSONObject nObject -> object.add(name, nObject.getInternal());
+    case JSONArray array -> put(name, array.getInternal());
+    case Document doc -> object.add(name, doc.toJSON(false).getInternal());
+    case String[] string1s -> object.add(name, new JSONArray(string1s).getInternal());
+    case Object[] objects -> object.add(name, new JSONArray(objects).getInternal());
+    case Iterable<?> iterable -> {
+      // RETRY UP TO 10 TIMES IN CASE OF CONCURRENT UPDATE
       for (int i = 0; i < 10; i++) {
         final JSONArray array = new JSONArray();
         try {
@@ -151,16 +142,17 @@ public class JSONObject implements Map<String, Object> {
           // RETRY
         }
       }
-    } else if (value instanceof Enum<?> enumValue) {
-      object.addProperty(name, enumValue.name());
-    } else if (value instanceof Date date) {
+    }
+    case Enum<?> enumValue -> object.addProperty(name, enumValue.name());
+    case Date date -> {
       if (dateFormatAsString == null)
         // SAVE AS TIMESTAMP
         object.addProperty(name, date.getTime());
       else
         // SAVE AS STRING
         object.addProperty(name, dateFormat.format(date.toInstant().atZone(ZoneId.systemDefault())));
-    } else if (value instanceof LocalDate localDate) {
+    }
+    case LocalDate localDate -> {
       if (dateFormatAsString == null)
         // SAVE AS TIMESTAMP
         object.addProperty(name,
@@ -169,7 +161,8 @@ public class JSONObject implements Map<String, Object> {
       else
         // SAVE AS STRING
         object.addProperty(name, dateFormat.format(localDate.atStartOfDay()));
-    } else if (value instanceof TemporalAccessor temporalAccessor) {
+    }
+    case TemporalAccessor temporalAccessor -> {
       if (dateFormatAsString == null)
         // SAVE AS TIMESTAMP
         object.addProperty(name,
@@ -177,17 +170,15 @@ public class JSONObject implements Map<String, Object> {
       else
         // SAVE AS STRING
         object.addProperty(name, dateTimeFormat.format(temporalAccessor));
-    } else if (value instanceof Duration duration) {
-      object.addProperty(name,
-          Double.valueOf("%d.%d".formatted(duration.toSeconds(), duration.toNanosPart())));
-    } else if (value instanceof Identifiable identifiable) {
-      object.addProperty(name, identifiable.getIdentity().toString());
-    } else if (value instanceof Map map) {
-      object.add(name, new JSONObject(map).getInternal());
-    } else if (value instanceof Class<?> clazz) {
-      object.addProperty(name, clazz.getName());
-    } else {
-      object.addProperty(name, value.toString());
+    }
+    case Duration duration -> object.addProperty(name,
+        Double.valueOf("%d.%d".formatted(duration.toSeconds(), duration.toNanosPart())));
+    case Identifiable identifiable -> object.addProperty(name, identifiable.getIdentity().toString());
+    case Map map -> object.add(name, new JSONObject(map).getInternal());
+    case Class<?> clazz -> object.addProperty(name, clazz.getName());
+    default ->
+      // GENERIC CASE: TRANSFORM IT TO STRING
+        object.addProperty(name, value.toString());
     }
     return this;
   }
@@ -548,34 +539,22 @@ public class JSONObject implements Map<String, Object> {
   }
 
   protected static JsonElement objectToElement(final Object object) {
-    if (object == null) {
-      return JsonNull.INSTANCE;
-    } else if (object instanceof JsonElement jsonElement) {
-      return jsonElement;
-    } else if (object instanceof String string) {
-      return new JsonPrimitive(string);
-    } else if (object instanceof Number number) {
-      return new JsonPrimitive(number);
-    } else if (object instanceof Boolean boolean1) {
-      return new JsonPrimitive(boolean1);
-    } else if (object instanceof Character character) {
-      return new JsonPrimitive(character);
-    } else if (object instanceof JSONObject nObject) {
-      return nObject.getInternal();
-    } else if (object instanceof JSONArray array) {
-      return array.getInternal();
-    } else if (object instanceof Collection collection) {
-      return new JSONArray(collection).getInternal();
-    } else if (object instanceof Map map) {
-      return new JSONObject(map).getInternal();
-    } else if (object instanceof Document document) {
-      return document.toJSON(false).getInternal();
-    } else if (object instanceof Identifiable identifiable) {
-      return new JsonPrimitive(identifiable.getIdentity().toString());
-    } else {
-      throw new IllegalArgumentException("Object of type " + object.getClass() + " not supported");
-    }
-
+    return switch (object) {
+      case null -> JsonNull.INSTANCE;
+      case JsonElement jsonElement -> jsonElement;
+      case String string -> new JsonPrimitive(string);
+      case Number number -> new JsonPrimitive(number);
+      case Boolean boolean1 -> new JsonPrimitive(boolean1);
+      case Character character -> new JsonPrimitive(character);
+      case JSONObject nObject -> nObject.getInternal();
+      case JSONArray array -> array.getInternal();
+      case Collection collection -> new JSONArray(collection).getInternal();
+      case Object[] objects -> new JSONArray(objects).getInternal();
+      case Map map -> new JSONObject(map).getInternal();
+      case Document document -> document.toJSON(false).getInternal();
+      case Identifiable identifiable -> new JsonPrimitive(identifiable.getIdentity().toString());
+      default -> throw new IllegalArgumentException("Object of type " + object.getClass() + " not supported");
+    };
   }
 
   private JsonElement getElement(final String name) {
