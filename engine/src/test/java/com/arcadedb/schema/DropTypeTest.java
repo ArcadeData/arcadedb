@@ -23,7 +23,6 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -72,23 +71,14 @@ public class DropTypeTest extends TestHelper {
 
       // CHECK ALL THE BUCKETS ARE REMOVED
       for (final Bucket b : buckets) {
-        try {
-          database.getSchema().getBucketById(b.getFileId());
-          fail();
-        } catch (final SchemaException e) {
-        }
+        assertThatThrownBy(() -> database.getSchema().getBucketById(b.getFileId()))
+            .isInstanceOf(SchemaException.class);
 
-        try {
-          database.getSchema().getBucketByName(b.getName());
-          fail();
-        } catch (final SchemaException e) {
-        }
+        assertThatThrownBy(() -> database.getSchema().getBucketByName(b.getName()))
+            .isInstanceOf(SchemaException.class);
 
-        try {
-          database.getSchema().getFileById(b.getFileId());
-          fail();
-        } catch (final SchemaException e) {
-        }
+        assertThatThrownBy(() -> database.getSchema().getFileById(b.getFileId()))
+            .isInstanceOf(SchemaException.class);
       }
 
       // CHECK TYPE HAS BEEN REMOVED FROM INHERITANCE

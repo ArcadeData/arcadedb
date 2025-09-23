@@ -29,9 +29,10 @@ public class GraphQLCypherDirectivesTest extends AbstractGraphQLNativeLanguageDi
   @Override
   protected void defineTypes(final Database database) {
     super.defineTypes(database);
-    database.command("graphql", "type Query {\n" +//
-        "  bookById(id: String): Book\n" +//
-        "  bookByName(bookNameParameter: String): Book @cypher(statement: \"MATCH (b:Book {name: $bookNameParameter}) RETURN b\")\n" +//
-        "}");
+    database.command("graphql", """
+        type Query {
+          bookById(id: String): Book
+          bookByName(bookNameParameter: String): Book @cypher(statement: "MATCH (b:Book {name: $bookNameParameter}) RETURN b")
+        }""");
   }
 }

@@ -35,7 +35,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.server.BaseGraphServerTest;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -45,7 +44,7 @@ import java.util.concurrent.atomic.*;
 
 import static com.arcadedb.graph.Vertex.DIRECTION.*;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class RemoteDatabaseIT extends BaseGraphServerTest {
   private static final String DATABASE_NAME = "remote-database";
@@ -77,12 +76,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
 
         // TEST DELETION AND LOOKUP
         jay.delete();
-        try {
-          jay.reload();
-          fail();
-        } catch (RecordNotFoundException e) {
-          // EXPECTED
-        }
+        assertThatThrownBy(() -> jay.reload())
+            .isInstanceOf(RecordNotFoundException.class);
 
         // CREATE DOCUMENT VIA SQL
         ResultSet result = database.command("SQL", "insert into Person set name = 'John'");
@@ -172,12 +167,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
 
         // TEST DELETION AND LOOKUP
         jay.delete();
-        try {
-          jay.reload();
-          fail();
-        } catch (RecordNotFoundException e) {
-          // EXPECTED
-        }
+        assertThatThrownBy(() -> jay.reload())
+            .isInstanceOf(RecordNotFoundException.class);
 
         // CREATE VERTEX 1
         result = database.command("SQL", "insert into Character set name = 'John'");
@@ -311,12 +302,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
 
       // DELETE ONE VERTEX
       albert.delete();
-      try {
-        database.lookupByRID(albert.getIdentity());
-        fail();
-      } catch (final RecordNotFoundException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> database.lookupByRID(albert.getIdentity()))
+          .isInstanceOf(RecordNotFoundException.class);
     });
   }
 
@@ -467,12 +454,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       final String sessionId = database1.getSessionId();
       database1.setSessionId(sessionId + "1");
 
-      try {
-        final MutableDocument albert = database1.newDocument("Person").set("name", "John").save();
-        fail();
-      } catch (TransactionException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> database1.newDocument("Person").set("name", "John").save())
+          .isInstanceOf(TransactionException.class);
 
       database1.setSessionId(sessionId);
 
@@ -516,12 +499,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
 
       svt1.set("s", "concurrent t1 - 2");
       svt1.save();
-      try {
-        t1.commit();
-        fail("Expected ConcurrentModificationException due to concurrent update, but commit succeeded");
-      } catch (ConcurrentModificationException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> t1.commit())
+          .isInstanceOf(ConcurrentModificationException.class);
     });
   }
 
@@ -533,12 +512,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       assertThat(database.isOpen()).isTrue();
       database.close();
       assertThat(database.isOpen()).isFalse();
-      try {
-        database.countType("aaa", true);
-        fail();
-      } catch (DatabaseIsClosedException e) {
-        //EXPECTED
-      }
+      assertThatThrownBy(() -> database.countType("aaa", true))
+          .isInstanceOf(DatabaseIsClosedException.class);
     });
   }
 
@@ -619,12 +594,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
           mvSVt2.set("s", "concurrent t2");
           mvSVt2.save();
 
-          try {
-            t2.commit();
-            Assertions.fail();
-          } catch (ConcurrentModificationException e) {
-            // EXPECTED
-          }
+          assertThatThrownBy(() -> t2.commit())
+              .isInstanceOf(ConcurrentModificationException.class);
         }
       }
     });
