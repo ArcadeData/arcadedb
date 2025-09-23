@@ -157,7 +157,7 @@ public class JSONEmptyArraySerializationTest extends TestHelper {
     json.put("stack", new Stack<>());
 
     // All should create empty arrays
-    for (String key : Arrays.asList("arrayList", "linkedList", "hashSet", "treeSet",
+    for (String key : List.of("arrayList", "linkedList", "hashSet", "treeSet",
                                    "linkedHashSet", "vector", "stack")) {
       assertThat(json.has(key)).isTrue();
       assertThat(json.getJSONArray(key).length()).isEqualTo(0);
