@@ -29,12 +29,12 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
-import org.assertj.core.api.Assertions;
-import org.junit.jupiter.api.Test;
+  import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdatabase.com)
@@ -352,7 +352,7 @@ public class ScriptExecutionTest extends TestHelper {
           SELECT throwCME(#-1:-1, 1, 1, 1);
           COMMIT RETRY 10;
           """.formatted(typeName);
-      ;
+
       try {
         database.command("sqlscript", script);
       } catch (ConcurrentModificationException x) {
@@ -440,11 +440,8 @@ public class ScriptExecutionTest extends TestHelper {
               } AND FAIL;
           """.formatted(typeName, typeName);
 
-      try {
-        database.command("sqlscript", script);
-        Assertions.fail();
-      } catch (ConcurrentModificationException e) {
-      }
+      assertThatThrownBy(() -> database.command("sqlscript", script))
+          .isInstanceOf(ConcurrentModificationException.class);
     });
 
     ResultSet result = database.query("sql", "select from " + typeName);
@@ -472,12 +469,8 @@ public class ScriptExecutionTest extends TestHelper {
               }
           """.formatted(typeName, typeName);
 
-      try {
-        database.command("sqlscript", script);
-        Assertions.fail();
-      } catch (ConcurrentModificationException e) {
-
-      }
+      assertThatThrownBy(() -> database.command("sqlscript", script))
+          .isInstanceOf(ConcurrentModificationException.class);
 
       ResultSet result = database.query("sql", "select from " + typeName);
       Result item = result.next();
@@ -489,14 +482,10 @@ public class ScriptExecutionTest extends TestHelper {
   @Test
   public void testFunctionAsStatement() {
     database.transaction(() -> {
-      String script = "";
-      script += "sqrt(64);";
+      String script = "sqrt(64);";
 
-      try {
-        database.command("sql", script);
-        Assertions.fail();
-      } catch (CommandSQLParsingException e) {
-      }
+      assertThatThrownBy(() -> database.command("sql", script))
+          .isInstanceOf(CommandSQLParsingException.class);
 
       ResultSet rs = database.command("sqlscript", script);
       Result item = rs.next();

@@ -21,7 +21,6 @@ package com.arcadedb.server;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -33,6 +32,7 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.server.http.HttpSessionManager.ARCADEDB_SESSION_ID;
 import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class HTTPTransactionIT extends BaseGraphServerTest {
 
@@ -91,12 +91,8 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       }
 
       // CANNOT RETRIEVE DOCUMENT OUTSIDE A TX
-      try {
-        checkDocumentWasCreated(DATABASE_NAME, serverIndex, payload, rid, null);
-        fail();
-      } catch (final Exception e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> checkDocumentWasCreated(DATABASE_NAME, serverIndex, payload, rid, null))
+          .isInstanceOf(Exception.class);
 
       // RETRIEVE DOCUMENT
       checkDocumentWasCreated(DATABASE_NAME, serverIndex, payload, rid, sessionId);
@@ -216,16 +212,13 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       pw.write(payload.toString());
       pw.close();
 
-      String response = null;
-      try {
-        response = readResponse(connection);
-        fail();
-      } catch (final IOException e) {
-        response = readError(connection);
-        assertThat(connection.getResponseCode()).isEqualTo(503);
-        connection.disconnect();
-        assertThat(response.contains("DuplicatedKeyException")).isTrue();
-      }
+      assertThatThrownBy(() -> readResponse(connection))
+          .isInstanceOf(IOException.class);
+
+      String response = readError(connection);
+      assertThat(connection.getResponseCode()).isEqualTo(503);
+      connection.disconnect();
+      assertThat(response.contains("DuplicatedKeyException")).isTrue();
     });
   }
 
@@ -274,12 +267,9 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       connection.connect();
 
       try {
-        readResponse(connection);
-
-        fail();
-
-      } catch (Exception e) {
-        assertThat(e.getMessage().contains("400")).isTrue();
+        assertThatThrownBy(() -> readResponse(connection))
+            .isInstanceOf(Exception.class)
+            .hasMessageContaining("400");
       } finally {
         connection.disconnect();
       }

@@ -24,9 +24,10 @@ public class GraphQLSQLSelectDirectivesTest extends AbstractGraphQLNativeLanguag
   @Override
   protected void defineTypes(final Database database) {
     super.defineTypes(database);
-    database.command("graphql", "type Query {\n" +//
-        "  bookById(id: String): Book\n" +//
-        "  bookByName(bookNameParameter: String): Book @sql(statement: \"select from Book where name = :bookNameParameter\")\n" +//
-        "}");
+    database.command("graphql", """
+        type Query {
+          bookById(id: String): Book
+          bookByName(bookNameParameter: String): Book @sql(statement: "select from Book where name = :bookNameParameter")
+        }""");
   }
 }
