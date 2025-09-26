@@ -45,11 +45,11 @@ public class RemoteGrpcDatabaseRegressionTest {
 
   static final String DB_NAME   = System.getenv().getOrDefault("ARCADE_DB", "test");
   static final String GRPC_HOST = System.getenv().getOrDefault("ARCADE_GRPC_HOST", "127.0.0.1");
-  static final int    GRPC_PORT = Integer.parseInt(System.getenv().getOrDefault("ARCADE_GRPC_PORT", "50051"));
+  static final int    GRPC_PORT = Integer.parseInt(System.getenv().getOrDefault("ARCADE_GRPC_PORT", "50058"));
   static final String HTTP_HOST = System.getenv().getOrDefault("ARCADE_HTTP_HOST", "127.0.0.1");
-  static final int    HTTP_PORT = Integer.parseInt(System.getenv().getOrDefault("ARCADE_HTTP_PORT", "2480"));
+  static final int    HTTP_PORT = Integer.parseInt(System.getenv().getOrDefault("ARCADE_HTTP_PORT", "2481"));
   static final String USER      = System.getenv().getOrDefault("ARCADE_USER", "root");
-  static final String PASS      = System.getenv().getOrDefault("ARCADE_PASS", "oY9uU2uJ8nD8iY7t");
+  static final String PASS      = System.getenv().getOrDefault("ARCADE_PASS", "l0JvKXnVXpLw4iayOLLU54V");
 
   // Test type & props
   static final String TYPE = "RG_Feedback";
