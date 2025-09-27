@@ -44,6 +44,7 @@
         <jvector.version>3.0.6</jvector.version>
         <spatial4j.version>0.8</spatial4j.version>
         <jts-core.version>1.20.0</jts-core.version>
+        <slf4j-jdk14.version>2.0.17</slf4j-jdk14.version>
     </properties>
 
     <build>
@@ -138,14 +139,14 @@
             <version>${gson.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.github.jelmerk</groupId>
-            <artifactId>hnswlib-core</artifactId>
-            <version>${hnswlib.version}</version>
-        </dependency>
-        <dependency>
             <groupId>io.github.jbellis</groupId>
             <artifactId>jvector</artifactId>
             <version>${jvector.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-jdk14</artifactId>
+            <version>${slf4j-jdk14.version}</version>
         </dependency>
         <dependency>
             <groupId>org.graalvm.sdk</groupId>

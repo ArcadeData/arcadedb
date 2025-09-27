@@ -26,6 +26,8 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
@@ -242,8 +244,21 @@ public class TypeIndex implements RangeIndex, IndexInternal {
             "Cannot drop index '" + getName() + "' because one or more underlying files are not available");
       }
 
-    for (final Index index : new ArrayList<>(indexesOnBuckets))
-      type.getSchema().dropIndex(index.getName());
+    // FIXED: Avoid infinite recursion by directly cleaning up bucket indexes
+    // instead of calling schema.dropIndex() which creates a recursive loop
+    final LocalSchema schema = (LocalSchema) type.getSchema();
+    final LocalDocumentType localType = (LocalDocumentType) type;
+
+    for (final IndexInternal index : new ArrayList<>(indexesOnBuckets)) {
+      // Remove the index from the bucket mapping first to clean up type relationships
+      localType.removeBucketIndexInternal(index);
+
+      // Drop the underlying index directly without going through schema.dropIndex()
+      index.drop();
+
+      // Remove from schema's index map directly to complete cleanup
+      schema.removeIndexFromMap(index.getName());
+    }
 
     indexesOnBuckets.clear();
 
