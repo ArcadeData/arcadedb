@@ -892,7 +892,7 @@ public class LocalDocumentType implements DocumentType {
         // CREATE THE TYPE-INDEX FOR THE 1ST TIME
         propIndex = new TypeIndex(name + Arrays.toString(propertyNames).replace(" ", ""), this);
 
-        schema.indexMap.put(propIndex.getName(), propIndex);
+        schema.addIndex( propIndex);
         indexesByProperties.put(propertyList, propIndex);
       }
     }
