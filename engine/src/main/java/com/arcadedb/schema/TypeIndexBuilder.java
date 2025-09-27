@@ -28,10 +28,10 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.security.SecurityDatabaseUser;
 
-import java.util.*;
+import java.util.Arrays;
+import java.util.List;
 
 /**
  * Builder class for type indexes.
@@ -113,8 +113,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
                 nullStrategy, callback, propertyNames, null, batchSize);
 
           }, false, maxAttempts, null, (error) -> {
-            for (int j = 0; j < indexes.length; j++) {
-              final IndexInternal indexToRemove = (IndexInternal) indexes[j];
+            for (Index value : indexes) {
+              final IndexInternal indexToRemove = (IndexInternal) value;
               if (indexToRemove != null)
                 indexToRemove.drop();
             }
@@ -132,8 +132,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       throw e;
     } catch (final Throwable e) {
       schema.dropIndex(typeName + Arrays.toString(propertyNames));
-      throw new IndexException("Error on creating index on type '" + typeName + "', properties " + Arrays.toString(propertyNames),
-          e);
+      throw new IndexException("Error on creating index on type '" + typeName + "', properties " + Arrays.toString(propertyNames), e);
     }
   }
 

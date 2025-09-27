@@ -39,7 +39,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.TypeBuilder;
 import com.arcadedb.schema.TypeIndexBuilder;
-import com.arcadedb.schema.VectorIndexBuilder;
+import com.arcadedb.schema.JVectorIndexBuilder;
 import com.arcadedb.schema.VertexType;
 
 import java.time.*;
@@ -264,7 +264,7 @@ public class RemoteSchema implements Schema {
 
   @Deprecated
   @Override
-  public VectorIndexBuilder buildVectorIndex() {
+  public JVectorIndexBuilder buildVectorIndex() {
     throw new UnsupportedOperationException();
   }
 
