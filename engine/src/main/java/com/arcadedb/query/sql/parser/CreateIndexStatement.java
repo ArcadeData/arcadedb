@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.function.graph.SQLFunctionOutV;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
@@ -110,6 +111,7 @@ public class CreateIndexStatement extends DDLStatement {
     final AtomicLong total = new AtomicLong();
 
     if (indexType.equals(Schema.INDEX_TYPE.JVECTOR)) {
+      System.out.println("building Jvector index for " + typeName.getStringValue());
       // Extract configuration from metadata if provided, otherwise use defaults
       int dimensions = 128;
       VectorSimilarityFunction similarityFunction = VectorSimilarityFunction.EUCLIDEAN;
@@ -142,6 +144,7 @@ public class CreateIndexStatement extends DDLStatement {
           .create();
 
     } else {
+      System.out.println("building LSM index for " + typeName.getStringValue());
       database.getSchema().buildTypeIndex(typeName.getStringValue(), fields)
           .withType(indexType)
           .withUnique(unique)

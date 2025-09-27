@@ -22,7 +22,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.vector.VectorUtils;
-import com.arcadedb.schema.JVectorIndexBuilder;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
@@ -32,10 +31,15 @@ import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DateUtils;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.stream.*;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Imports Embeddings in arbitrary dimensions.
@@ -43,31 +47,31 @@ import java.util.stream.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class TextEmbeddingsImporter {
-  private final    InputStream      inputStream;
-  private final    ImporterSettings settings;
-  private final    ConsoleLogger    logger;
+  private final    InputStream              inputStream;
+  private final    ImporterSettings         settings;
+  private final    ConsoleLogger            logger;
   private          int                      maxConnections;
   private          int                      beamWidth;
   private          VectorSimilarityFunction similarityFunction;
-  private          boolean          normalizeVectors    = false;
-  private          String           databasePath;
-  private          boolean          overwriteDatabase   = false;
-  private          long             errors              = 0L;
-  private          long             warnings            = 0L;
-  private          DatabaseFactory  factory;
-  private          Database         database;
-  private          long             beginTime;
-  private          boolean          error               = false;
-  private          ImporterContext  context             = new ImporterContext();
-  private          String           vectorTypeName;
-  private          String           similarityFunctionName;
-  private          String           vectorPropertyName;
-  private          String           idPropertyName      = "name";
-  private          String           deletedPropertyName = "deleted";
-  private volatile long             embeddingsParsed    = 0L;
-  private volatile long             indexedEmbedding    = 0L;
-  private volatile long             verticesCreated     = 0L;
-  private volatile long             verticesConnected   = 0L;
+  private          boolean                  normalizeVectors    = false;
+  private          String                   databasePath;
+  private          boolean                  overwriteDatabase   = false;
+  private          long                     errors              = 0L;
+  private          long                     warnings            = 0L;
+  private          DatabaseFactory          factory;
+  private          Database                 database;
+  private          long                     beginTime;
+  private          boolean                  error               = false;
+  private          ImporterContext          context             = new ImporterContext();
+  private          String                   vectorTypeName;
+  private          String                   similarityFunctionName;
+  private          String                   vectorPropertyName;
+  private          String                   idPropertyName      = "name";
+  private          String                   deletedPropertyName = "deleted";
+  private volatile long                     embeddingsParsed    = 0L;
+  private volatile long                     indexedEmbedding    = 0L;
+  private volatile long                     verticesCreated     = 0L;
+  private volatile long                     verticesConnected   = 0L;
 
   public TextEmbeddingsImporter(final DatabaseInternal database, final InputStream inputStream, final ImporterSettings settings)
       throws ClassNotFoundException {
@@ -98,7 +102,8 @@ public class TextEmbeddingsImporter {
     try {
       this.similarityFunction = VectorSimilarityFunction.valueOf(similarityFunctionName);
     } catch (IllegalArgumentException e) {
-      throw new IllegalArgumentException("Invalid similarity function: " + similarityFunctionName + ". Valid options: EUCLIDEAN, DOT_PRODUCT, COSINE", e);
+      throw new IllegalArgumentException(
+          "Invalid similarity function: " + similarityFunctionName + ". Valid options: EUCLIDEAN, DOT_PRODUCT, COSINE", e);
     }
 
     if (settings.options.containsKey("normalizeVectors"))

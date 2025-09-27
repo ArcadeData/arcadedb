@@ -52,7 +52,12 @@ public class JVectorIndexBuilder extends IndexBuilder<JVectorIndex> {
   private String                   vectorPropertyName;
   private Type                     vectorPropertyType = Type.ARRAY_OF_FLOATS;
 
-  JVectorIndexBuilder(final DatabaseInternal database) {
+  // Hybrid persistence configuration
+  private Integer                  diskPersistenceThreshold;
+  private Long                     memoryLimitMB;
+  private Boolean                  enableDiskPersistence;
+
+  public JVectorIndexBuilder(final DatabaseInternal database) {
     super(database, JVectorIndex.class);
     this.indexType = Schema.INDEX_TYPE.JVECTOR;
   }
@@ -86,15 +91,18 @@ public class JVectorIndexBuilder extends IndexBuilder<JVectorIndex> {
     final JVectorIndex index = (JVectorIndex) schema.indexFactory.createIndex(this);
 
     schema.registerFile(index.getComponent());
-    schema.indexMap.put(index.getName(), index);
+    schema.addIndex(index);
 
     // JVectorIndex works as a container index. Register it with all buckets for automatic indexing.
     final LocalDocumentType type = schema.getType(vertexType);
     if (type != null) {
-      // Add to bucket indexes for automatic indexing discovery by DocumentIndexer
+      // Use direct bucket registration for automatic indexing discovery
       for (final Bucket bucket : type.getBuckets(false)) {
         final List<IndexInternal> bucketIndexes = type.bucketIndexesByBucket.computeIfAbsent(bucket.getFileId(), k -> new ArrayList<>());
         bucketIndexes.add(index);
+
+        // CRITICAL: Register index with type for proper persistence
+//        type.addIndexInternal(index, bucket.getFileId(), new String[]{vectorPropertyName}, null);
       }
     }
 
@@ -142,6 +150,29 @@ public class JVectorIndexBuilder extends IndexBuilder<JVectorIndex> {
     return this;
   }
 
+  /**
+   * Configure the threshold for transitioning to disk persistence.
+   */
+  public JVectorIndexBuilder withDiskPersistenceThreshold(final int threshold) {
+    this.diskPersistenceThreshold = threshold;
+    return this;
+  }
+
+  /**
+   * Configure the memory limit in MB before transitioning to native persistence.
+   */
+  public JVectorIndexBuilder withMemoryLimitMB(final long memoryLimitMB) {
+    this.memoryLimitMB = memoryLimitMB;
+    return this;
+  }
+
+  /**
+   * Enable or disable disk persistence for large datasets.
+   */
+  public JVectorIndexBuilder withDiskPersistence(final boolean enableDiskPersistence) {
+    this.enableDiskPersistence = enableDiskPersistence;
+    return this;
+  }
 
   // Getters
   public int getDimensions() {
@@ -171,6 +202,18 @@ public class JVectorIndexBuilder extends IndexBuilder<JVectorIndex> {
 
   public Type getVectorPropertyType() {
     return vectorPropertyType;
+  }
+
+  public Integer getDiskPersistenceThreshold() {
+    return diskPersistenceThreshold;
+  }
+
+  public Long getMemoryLimitMB() {
+    return memoryLimitMB;
+  }
+
+  public Boolean getEnableDiskPersistence() {
+    return enableDiskPersistence;
   }
 
   // Override parent methods to return correct type for method chaining

@@ -101,7 +101,7 @@ public class LocalSchema implements Schema {
   final               Map<String, LocalBucket>               bucketMap                     = new HashMap<>();
   private             Map<Integer, LocalDocumentType>        bucketId2TypeMap              = new HashMap<>();
   private             Map<Integer, LocalDocumentType>        bucketId2InvolvedTypeMap      = new HashMap<>();
-  protected final     Map<String, IndexInternal>             indexMap                      = new HashMap<>();
+  private final       Map<String, IndexInternal>             indexMap                      = new HashMap<>();
   private final       String                                 databasePath;
   private final       File                                   configurationFile;
   private final       ComponentFactory                       componentFactory;
@@ -511,6 +511,12 @@ public class LocalSchema implements Schema {
     if (p == null)
       throw new SchemaException("Index with name '" + indexName + "' was not found");
     return p;
+  }
+
+  public void addIndex(IndexInternal index) {
+    if (indexMap.containsKey(index.getName()))
+      System.out.println("index is present, will be overridden = " + index.getName());
+    indexMap.put(index.getName(), index);
   }
 
   @Override
@@ -1458,5 +1464,14 @@ public class LocalSchema implements Schema {
         newBucketId2InvolvedTypeMap.put(b.getFileId(), t);
     }
     bucketId2InvolvedTypeMap = newBucketId2InvolvedTypeMap;
+  }
+
+  /**
+   * Public method to safely remove an index from the schema's index map
+   * without triggering the full dropIndex workflow. This is used internally
+   * by TypeIndex.drop() to avoid infinite recursion.
+   */
+  public IndexInternal removeIndexFromMap(final String indexName) {
+    return indexMap.remove(indexName);
   }
 }

@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.in;
 
 /**
  * Tests for JVector index functionality.
@@ -60,8 +61,8 @@ class JVectorIndexSQLTest extends TestHelper {
           """);
     });
 
-    index = database.getSchema().getIndexByName("VectorDocument[embedding]");
-
+    index = database.getSchema().getEmbedded().getIndexByName("VectorDocument[embedding]");
+assertThat(index).isInstanceOf(JVectorIndex.class);
     indexName = index.getName();
   }
 

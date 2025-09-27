@@ -26,8 +26,8 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.security.SecurityDatabaseUser;
 
-import java.io.*;
-import java.util.concurrent.atomic.*;
+import java.io.File;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Builder class for manual indexes.
@@ -50,7 +50,7 @@ public class ManualIndexBuilder extends IndexBuilder<Index> {
     final LocalSchema schema = database.getSchema().getEmbedded();
 
     if (ignoreIfExists) {
-      final IndexInternal index = schema.indexMap.get(indexName);
+      final IndexInternal index = (IndexInternal) schema.getIndexByName(indexName);
       if (index != null) {
         if (index.getNullStrategy() != null && index.getNullStrategy() == null ||//
             index.isUnique() != unique) {
@@ -59,7 +59,7 @@ public class ManualIndexBuilder extends IndexBuilder<Index> {
         } else
           return index;
       }
-    } else if (schema.indexMap.containsKey(indexName))
+    } else if (schema.getIndexByName(indexName) != null)
       throw new SchemaException("Cannot create index '" + indexName + "' because already exists");
 
     return schema.recordFileChanges(() -> {
@@ -75,7 +75,7 @@ public class ManualIndexBuilder extends IndexBuilder<Index> {
         if (index instanceof PaginatedComponent component)
           schema.registerFile(component);
 
-        schema.indexMap.put(indexName, index);
+        schema.addIndex(index);
 
       }, false, 1, null, (error) -> {
         final IndexInternal indexToRemove = result.get();
