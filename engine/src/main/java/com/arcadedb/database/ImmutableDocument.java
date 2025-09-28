@@ -61,8 +61,8 @@ public class ImmutableDocument extends BaseDocument {
     if (propertyName == null)
       return null;
 
+    checkForLazyLoading();
     try {
-      checkForLazyLoading();
       return database.getSerializer()
           .deserializeProperty(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName, rid);
     } catch (Exception e) {
