@@ -21,7 +21,7 @@ package com.arcadedb.remote;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.ImmutableDocument;
-import com.arcadedb.database.JSONSerializer;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
@@ -117,7 +117,7 @@ public class RemoteImmutableDocument extends ImmutableDocument {
 
   @Override
   public synchronized JSONObject toJSON(final boolean includeMetadata) {
-    final JSONObject result = new JSONSerializer(database).map2json(map, type, includeMetadata);
+    final JSONObject result = new JsonSerializer(database).map2json(map, type, includeMetadata);
     if (includeMetadata) {
       result.put(CAT_PROPERTY, "d");
       result.put(TYPE_PROPERTY, getTypeName());

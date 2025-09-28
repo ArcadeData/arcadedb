@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.schema.Property;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.HashMap;
@@ -99,7 +100,7 @@ public class DetachedDocument extends BaseDocument {
 
   @Override
   public synchronized JSONObject toJSON(final boolean includeMetadata) {
-    final JSONObject result = new JSONSerializer(database).map2json(map, type, includeMetadata);
+    final JSONObject result = new JsonSerializer(database).map2json(map, type, includeMetadata);
     if (includeMetadata) {
       result.put(Property.CAT_PROPERTY, "d");
       result.put(Property.TYPE_PROPERTY, type.getName());

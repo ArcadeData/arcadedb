@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.JavaBinarySerializer;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.Externalizable;
@@ -184,6 +185,6 @@ public abstract class BaseDocument extends BaseRecord implements Document, Seria
 
   @Override
   public JSONObject toJSON(final String... includeProperties) {
-    return new JSONSerializer(database).map2json(propertiesAsMap(), type, false, includeProperties);
+    return new JsonSerializer(database).map2json(propertiesAsMap(), type, false, includeProperties);
   }
 }

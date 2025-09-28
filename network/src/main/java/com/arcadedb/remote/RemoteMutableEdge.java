@@ -21,7 +21,7 @@ package com.arcadedb.remote;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
-import com.arcadedb.database.JSONSerializer;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
@@ -99,7 +99,7 @@ public class RemoteMutableEdge extends MutableEdge {
 
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
-    final JSONObject result = new JSONSerializer(database).map2json(map, type, includeMetadata);
+    final JSONObject result = new JsonSerializer(database).map2json(map, type, includeMetadata);
     if (includeMetadata) {
       result.put(Property.CAT_PROPERTY, "e");
       result.put(Property.TYPE_PROPERTY, getTypeName());
