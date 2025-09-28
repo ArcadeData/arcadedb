@@ -67,7 +67,7 @@
         <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
         <maven-clean-plugin.version>3.5.0</maven-clean-plugin.version>
         <license-maven-plugin.version>5.0.0</license-maven-plugin.version>
-        <maven-central-publishing-plugin.version>0.8.0</maven-central-publishing-plugin.version>
+        <maven-central-publishing-plugin.version>0.9.0</maven-central-publishing-plugin.version>
 
         <testcontainers.version>1.21.3</testcontainers.version>
         <logback-classic.version>1.5.18</logback-classic.version>
