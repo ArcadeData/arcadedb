@@ -40,7 +40,7 @@
         <netty.version>4.2.6.Final</netty.version>
         <commons-configuration2.version>2.12.0</commons-configuration2.version>
         <commons-beanutils.version>1.11.0</commons-beanutils.version>
-        <commons-lang3.version>3.18.0</commons-lang3.version>
+        <commons-lang3.version>3.19.0</commons-lang3.version>
         <groovy.version>4.0.28</groovy.version>
     </properties>
 
