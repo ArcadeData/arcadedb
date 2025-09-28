@@ -285,7 +285,22 @@ public class ArcadeDBServer {
           final String pluginName = pluginPair[0];
           final String pluginClass = pluginPair.length > 1 ? pluginPair[1] : pluginPair[0];
 
-          final Class<ServerPlugin> c = (Class<ServerPlugin>) Class.forName(pluginClass);
+          final Class<ServerPlugin> c;
+          if (WrapperPluginClassLoader.isWrapperPlugin(pluginClass)) {
+            // Load wrapper plugins with dedicated class loader
+            final String wrapperName = WrapperPluginClassLoader.getWrapperPluginName(pluginClass);
+            final WrapperPluginClassLoader wrapperClassLoader = WrapperPluginClassLoader.getOrCreateClassLoader(
+                wrapperName, 
+                new java.net.URL[0], // URLs will be resolved from classpath
+                Thread.currentThread().getContextClassLoader()
+            );
+            c = (Class<ServerPlugin>) Class.forName(pluginClass, true, wrapperClassLoader);
+            LogManager.instance().log(this, Level.INFO, "Loading wrapper plugin %s with dedicated class loader", pluginName);
+          } else {
+            // Load regular plugins with main class loader
+            c = (Class<ServerPlugin>) Class.forName(pluginClass);
+          }
+          
           final ServerPlugin pluginInstance = c.getConstructor().newInstance();
 
           if (pluginInstance.getInstallationPriority() != installationPriority)
@@ -325,6 +340,12 @@ public class ArcadeDBServer {
       CodeUtils.executeIgnoringExceptions(() -> pEntry.getValue().stopService(),
           "Error on halting '" + pEntry.getKey() + "' plugin", false);
     }
+
+    // Clean up wrapper plugin class loaders
+    CodeUtils.executeIgnoringExceptions(() -> {
+      LogManager.instance().log(this, Level.INFO, "- Closing wrapper plugin class loaders");
+      WrapperPluginClassLoader.closeAllClassLoaders();
+    }, "Error on closing wrapper plugin class loaders", false);
 
     if (haServer != null)
       CodeUtils.executeIgnoringExceptions(haServer::stopService, "Error on stopping HA service", false);
