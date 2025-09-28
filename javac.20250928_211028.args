@@ -1,0 +1,5 @@
+-cp
+engine/src/main/java:/tmp
+-d
+/tmp
+/tmp/test_serializer.java
