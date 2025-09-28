@@ -75,6 +75,10 @@ public class Issue1760ReproductionTest extends TestHelper {
     // This should return exactly 4 records (correct behavior)
     ResultSet correctResult = database.command("sql", "SELECT num FROM doc");
     assertThat(correctResult.stream().count()).isEqualTo(4); // Should always be 4
+
+    ResultSet resultSet = database.query("sql", "SELECT count(*) AS count FROM index:`doc[num]`");
+    assertThat(resultSet.next().<Long>getProperty("count")).isEqualTo(4); // Should always be 4
+
   }
 
   @Test
@@ -147,12 +151,14 @@ public class Issue1760ReproductionTest extends TestHelper {
 
     // Regression test: Should return exactly 5 records (no duplicates due to automatic deduplication)
 
+    List<Result> results = new ArrayList<>();
+    result.forEachRemaining(results::add);
+    result.close();
+    assertThat(results).hasSize(5);
+
     // Verify proper ordering
-    assertThat(result.next().<Integer>getProperty("publicationYear")).isEqualTo(2023);
-    assertThat(result.next().<Integer>getProperty("publicationYear")).isEqualTo(2024);
-    assertThat(result.next().<Integer>getProperty("publicationYear")).isEqualTo(2024);
-    assertThat(result.next().<Integer>getProperty("publicationYear")).isEqualTo(2024);
-    assertThat(result.next().<Integer>getProperty("publicationYear")).isEqualTo(2025);
+    assertThat(results.stream().map(r -> r.<Integer>getProperty("publicationYear")))
+        .containsExactly(2023, 2024, 2024, 2024, 2025);
   }
 
   @Test
@@ -394,16 +400,7 @@ public class Issue1760ReproductionTest extends TestHelper {
     assertThat(results).hasSize(9);
 
     // Verify correct ordering and values
-    for (int i = 0; i < 3; i++) {
-      assertThat(results.get(i).<Integer>getProperty("score")).isEqualTo(5);
-    }
-    for (int i = 3; i < 7; i++) {
-      assertThat(results.get(i).<Integer>getProperty("score")).isEqualTo(10);
-    }
-    for (int i = 7; i < 9; i++) {
-      assertThat(results.get(i).<Integer>getProperty("score")).isEqualTo(15);
-    }
-  }
+    assertThat(results.stream().map(r -> r.<Integer>getProperty("score"))).containsExactly(5, 5, 5, 10, 10, 10, 10, 15, 15);  }
 
   @Test
   public void testOrderByWithStringIndexDuplicates() {
@@ -472,5 +469,11 @@ public class Issue1760ReproductionTest extends TestHelper {
     assertThat(results.get(0).<String>getProperty("nonIndexedCol")).isEqualTo("First");
     assertThat(results.get(1).<Integer>getProperty("indexedCol")).isEqualTo(2);
     assertThat(results.get(2).<Integer>getProperty("indexedCol")).isEqualTo(2);
+    assertThat(List.of(results.get(1).<String>getProperty("nonIndexedCol"), results.get(2).<String>getProperty("nonIndexedCol")))
+        .containsExactlyInAnyOrder("Second", "Third");
+
   }
+
+
+
 }
