@@ -101,14 +101,20 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
     HttpResponse<String> response = executeServerCommand("CREATE DATABASE testdb");
     assertThat(response.statusCode()).isEqualTo(200);
 
+    HttpResponse<String> listDatabase = executeServerCommand("LIST DATABASES");
+    assertThat(listDatabase.body()).contains("testdb");
+
     response = executeServerCommand("drop database testdb");
     assertThat(response.statusCode()).isEqualTo(200);
 
     // Test with mixed case
-    response = executeServerCommand("Create Database testdb2");
+    response = executeServerCommand("Create Database TestDb2");
     assertThat(response.statusCode()).isEqualTo(200);
 
-    response = executeServerCommand("Drop Database testdb2");
+    listDatabase = executeServerCommand("LIST DATABASES");
+    assertThat(listDatabase.body()).contains("TestDb2");
+
+    response = executeServerCommand("Drop Database TestDb2");
     assertThat(response.statusCode()).isEqualTo(200);
   }
 
