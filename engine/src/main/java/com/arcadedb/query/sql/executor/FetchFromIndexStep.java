@@ -59,7 +59,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private         IndexCursor                                    cursor;
   private         MultiIterator<Map.Entry<Object, Identifiable>> customIterator;
   private         Iterator                                       nullKeyIterator;
-  private         Pair<Object, Identifiable>                     nextEntry   = null;
+  protected       Pair<Object, Identifiable>                     nextEntry   = null;
 
   public FetchFromIndexStep(final RangeIndex index, final BooleanExpression condition,
       final BinaryCondition additionalRangeCondition,
@@ -124,7 +124,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     };
   }
 
-  private void fetchNextEntry() {
+  protected void fetchNextEntry() {
     nextEntry = null;
     while (true) {
       if (cursor == null) {
@@ -187,7 +187,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     stats.pushIndexStats(indexName, size, range, additionalRangeCondition != null, count);
   }
 
-  private synchronized void init(final Database db) {
+  protected synchronized void init(final Database db) {
     if (inited) {
       return;
     }

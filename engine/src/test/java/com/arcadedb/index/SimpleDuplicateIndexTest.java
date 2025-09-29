@@ -67,6 +67,19 @@ public class SimpleDuplicateIndexTest extends TestHelper {
     });
 
     database.transaction(() -> {
+      // Test: Check if the same issue occurs without ORDER BY
+      List<String> namesWithoutOrderBy = new ArrayList<>();
+      try (ResultSet rs = database.query("sql", "SELECT name, year FROM metadata")) {
+        while (rs.hasNext()) {
+          Result result = rs.next();
+          String name = result.getProperty("name");
+          Integer year = result.getProperty("year");
+          System.out.println("No ORDER BY - Got: " + name + " -> " + year);
+          namesWithoutOrderBy.add(name);
+        }
+      }
+      System.out.println("Without ORDER BY - Total results: " + namesWithoutOrderBy.size());
+      
       // Test: This should return exactly 3 records
       List<String> names = new ArrayList<>();
       try (ResultSet rs = database.query("sql", "SELECT name, year FROM metadata ORDER BY year")) {
@@ -74,12 +87,12 @@ public class SimpleDuplicateIndexTest extends TestHelper {
           Result result = rs.next();
           String name = result.getProperty("name");
           Integer year = result.getProperty("year");
-          System.out.println("Got: " + name + " -> " + year);
+          System.out.println("With ORDER BY - Got: " + name + " -> " + year);
           names.add(name);
         }
       }
       
-      System.out.println("Total results: " + names.size());
+      System.out.println("With ORDER BY - Total results: " + names.size());
       System.out.println("Names: " + names);
       
       // This should pass - we expect exactly 3 records
