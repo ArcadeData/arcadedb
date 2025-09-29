@@ -88,32 +88,32 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       checkRootUser(user);
 
     if (command_lc.startsWith(SHUTDOWN))
-      shutdownServer(extractTarget(command_lc, SHUTDOWN));
+      shutdownServer(extractTarget(command, SHUTDOWN));
     else if (command_lc.startsWith(CREATE_DATABASE))
-      createDatabase(extractTarget(command_lc, CREATE_DATABASE));
+      createDatabase(extractTarget(command, CREATE_DATABASE));
     else if (command_lc.startsWith(DROP_DATABASE))
-      dropDatabase(extractTarget(command_lc, DROP_DATABASE));
+      dropDatabase(extractTarget(command, DROP_DATABASE));
     else if (command_lc.startsWith(CLOSE_DATABASE))
-      closeDatabase(extractTarget(command_lc, CLOSE_DATABASE));
+      closeDatabase(extractTarget(command, CLOSE_DATABASE));
     else if (command_lc.startsWith(OPEN_DATABASE))
-      openDatabase(extractTarget(command_lc, OPEN_DATABASE));
+      openDatabase(extractTarget(command, OPEN_DATABASE));
     else if (command_lc.startsWith(CREATE_USER))
-      createUser(extractTarget(command_lc, CREATE_USER));
+      createUser(extractTarget(command, CREATE_USER));
     else if (command_lc.startsWith(DROP_USER))
-      dropUser(extractTarget(command_lc, DROP_USER));
+      dropUser(extractTarget(command, DROP_USER));
     else if (command_lc.startsWith(CONNECT_CLUSTER)) {
-      if (!connectCluster(extractTarget(command_lc, CONNECT_CLUSTER), exchange))
+      if (!connectCluster(extractTarget(command, CONNECT_CLUSTER), exchange))
         return null;
     } else if (command_lc.equals(DISCONNECT_CLUSTER))
       disconnectCluster();
     else if (command_lc.startsWith(SET_DATABASE_SETTING))
-      setDatabaseSetting(extractTarget(command_lc, SET_DATABASE_SETTING));
+      setDatabaseSetting(extractTarget(command, SET_DATABASE_SETTING));
     else if (command_lc.startsWith(SET_SERVER_SETTING))
-      setServerSetting(extractTarget(command_lc, SET_SERVER_SETTING));
+      setServerSetting(extractTarget(command, SET_SERVER_SETTING));
     else if (command_lc.startsWith(GET_SERVER_EVENTS))
-      response.put("result", getServerEvents(extractTarget(command_lc, GET_SERVER_EVENTS)));
+      response.put("result", getServerEvents(extractTarget(command, GET_SERVER_EVENTS)));
     else if (command_lc.startsWith(ALIGN_DATABASE))
-      alignDatabase(extractTarget(command_lc, ALIGN_DATABASE));
+      alignDatabase(extractTarget(command, ALIGN_DATABASE));
     else {
       Metrics.counter("http.server-command.invalid").increment();
 
