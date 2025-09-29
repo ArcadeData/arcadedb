@@ -55,10 +55,6 @@ public class OpenApiSpecGenerator {
     this.httpServer = httpServer;
   }
 
-  public OpenApiSpecGenerator() {
-    this.httpServer = null;
-  }
-
   /**
    * Generates the complete OpenAPI specification for ArcadeDB HTTP API.
    *
