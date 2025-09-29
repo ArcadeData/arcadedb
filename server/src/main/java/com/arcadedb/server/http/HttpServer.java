@@ -28,6 +28,7 @@ import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.handler.GetDatabasesHandler;
 import com.arcadedb.server.http.handler.GetDynamicContentHandler;
 import com.arcadedb.server.http.handler.GetExistsDatabaseHandler;
+import com.arcadedb.server.http.handler.GetOpenApiHandler;
 import com.arcadedb.server.http.handler.GetQueryHandler;
 import com.arcadedb.server.http.handler.GetReadyHandler;
 import com.arcadedb.server.http.handler.GetServerHandler;
@@ -155,6 +156,7 @@ public class HttpServer implements ServerPlugin {
         .get("/server", new GetServerHandler(this))
         .post("/server", new PostServerCommandHandler(this))
         .get("/ready", new GetReadyHandler(this))
+        .get("/openapi.json", new GetOpenApiHandler(this))
     );
 
     if (!"production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())) {
