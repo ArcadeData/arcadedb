@@ -79,7 +79,7 @@ if (WrapperPluginClassLoader.isWrapperPlugin(pluginClass)) {
     // Load wrapper plugins with dedicated class loader
     final String wrapperName = WrapperPluginClassLoader.getWrapperPluginName(pluginClass);
     final WrapperPluginClassLoader wrapperClassLoader = WrapperPluginClassLoader.getOrCreateClassLoader(
-        wrapperName, 
+        wrapperName,
         new java.net.URL[0], // URLs will be resolved from classpath
         Thread.currentThread().getContextClassLoader()
     );

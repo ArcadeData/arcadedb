@@ -290,7 +290,7 @@ public class ArcadeDBServer {
             // Load wrapper plugins with dedicated class loader
             final String wrapperName = WrapperPluginClassLoader.getWrapperPluginName(pluginClass);
             final WrapperPluginClassLoader wrapperClassLoader = WrapperPluginClassLoader.getOrCreateClassLoader(
-                wrapperName, 
+                wrapperName,
                 new java.net.URL[0], // URLs will be resolved from classpath
                 Thread.currentThread().getContextClassLoader()
             );
@@ -300,7 +300,7 @@ public class ArcadeDBServer {
             // Load regular plugins with main class loader
             c = (Class<ServerPlugin>) Class.forName(pluginClass);
           }
-          
+
           final ServerPlugin pluginInstance = c.getConstructor().newInstance();
 
           if (pluginInstance.getInstallationPriority() != installationPriority)

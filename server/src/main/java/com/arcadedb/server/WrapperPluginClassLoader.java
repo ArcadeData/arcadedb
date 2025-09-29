@@ -33,7 +33,7 @@ import java.util.logging.Level;
  */
 public class WrapperPluginClassLoader extends URLClassLoader {
   private static final ConcurrentMap<String, WrapperPluginClassLoader> classLoaders = new ConcurrentHashMap<>();
-  
+
   private final String pluginName;
 
   private WrapperPluginClassLoader(final String pluginName, final URL[] urls, final ClassLoader parent) {
@@ -44,15 +44,15 @@ public class WrapperPluginClassLoader extends URLClassLoader {
 
   /**
    * Creates or returns a dedicated class loader for a wrapper plugin.
-   * 
+   *
    * @param pluginName the name of the plugin
    * @param urls the URLs from which to load classes and resources
    * @param parent the parent class loader
    * @return the dedicated class loader for the plugin
    */
   public static synchronized WrapperPluginClassLoader getOrCreateClassLoader(
-      final String pluginName, 
-      final URL[] urls, 
+      final String pluginName,
+      final URL[] urls,
       final ClassLoader parent) {
     return classLoaders.computeIfAbsent(pluginName, name -> new WrapperPluginClassLoader(name, urls, parent));
   }
@@ -60,7 +60,7 @@ public class WrapperPluginClassLoader extends URLClassLoader {
   /**
    * Checks if the given plugin class name represents a wrapper plugin that should be loaded
    * with a dedicated class loader.
-   * 
+   *
    * @param pluginClassName the class name of the plugin
    * @return true if this is a wrapper plugin, false otherwise
    */
@@ -75,19 +75,19 @@ public class WrapperPluginClassLoader extends URLClassLoader {
 
   /**
    * Extracts the wrapper plugin name from the plugin class name.
-   * 
+   *
    * @param pluginClassName the class name of the plugin
    * @return the wrapper plugin name or null if not a wrapper plugin
    */
   public static String getWrapperPluginName(final String pluginClassName) {
     if (pluginClassName == null) return null;
-    
+
     final String lowerClassName = pluginClassName.toLowerCase();
     if (lowerClassName.contains("mongo")) return "MongoDB";
     if (lowerClassName.contains("redis")) return "Redis";
     if (lowerClassName.contains("postgres")) return "PostgreSQL";
     if (lowerClassName.contains("gremlin")) return "Gremlin";
-    
+
     return null;
   }
 
@@ -106,7 +106,7 @@ public class WrapperPluginClassLoader extends URLClassLoader {
       try {
         classLoader.close();
       } catch (final IOException e) {
-        LogManager.instance().log(WrapperPluginClassLoader.class, Level.WARNING, 
+        LogManager.instance().log(WrapperPluginClassLoader.class, Level.WARNING,
             "Error closing class loader for plugin: %s", e, classLoader.pluginName);
       }
     }
