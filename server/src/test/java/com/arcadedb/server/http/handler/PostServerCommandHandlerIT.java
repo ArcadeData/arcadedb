@@ -35,23 +35,15 @@ import java.util.Base64;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class PostServerCommandHandlerIT extends BaseGraphServerTest {
+  private final HttpClient client = HttpClient.newHttpClient();
 
   @Test
   void testSetDatabaseSettingCommand() throws Exception {
 
-    HttpClient client = HttpClient.newHttpClient();
-    HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/server"))
-        .POST(HttpRequest.BodyPublishers.ofString(new JSONObject()
-            .put("command", """
-                set database setting graph `arcadedb.dateTimeFormat` "yyyy-MM-dd HH:mm:ss.SSS"
-                """)
-            .toString()))
-        .setHeader("Authorization",
-            "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
-        .build();
+    HttpResponse<String> response = executeServerCommand("""
+        set database setting graph `arcadedb.dateTimeFormat` "yyyy-MM-dd HH:mm:ss.SSS"
+        """);
 
-    HttpResponse<String> response = client.send(request, BodyHandlers.ofString());
     assertThat(response.statusCode()).isEqualTo(200);
 
   }
@@ -202,20 +194,15 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
   void testClusterCommandsCaseSensitivity() throws Exception {
     // ALIGN DATABASE command is only available if the database supports it
     // We'll test it but expect it might not be supported in all configurations
-    try {
-      HttpResponse<String> response = executeServerCommand("ALIGN DATABASE graph");
-      // Could be 200 (success) or 500 (not supported)
-      assertThat(response.statusCode()).isIn(200, 500);
+    HttpResponse<String> response = executeServerCommand("ALIGN DATABASE graph");
+    // Could be 200 (success) or 500 (not supported)
+    assertThat(response.statusCode()).isIn(200, 500);
 
-      response = executeServerCommand("align database graph");
-      assertThat(response.statusCode()).isIn(200, 500);
+    response = executeServerCommand("align database graph");
+    assertThat(response.statusCode()).isIn(200, 500);
 
-      response = executeServerCommand("Align Database graph");
-      assertThat(response.statusCode()).isIn(200, 500);
-    } catch (Exception e) {
-      // ALIGN DATABASE might not be supported in test environment
-      // This is acceptable for case sensitivity testing
-    }
+    response = executeServerCommand("Align Database graph");
+    assertThat(response.statusCode()).isIn(200, 500);
   }
 
   /**
@@ -319,7 +306,6 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
    * Helper method to execute server commands consistently
    */
   private HttpResponse<String> executeServerCommand(String command) throws Exception {
-    HttpClient client = HttpClient.newHttpClient();
     HttpRequest request = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/server"))
         .POST(HttpRequest.BodyPublishers.ofString(new JSONObject()
