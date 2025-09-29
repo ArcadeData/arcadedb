@@ -1033,9 +1033,11 @@ public class LocalDocumentType implements DocumentType {
 
   @Override
   public Object setCustomValue(final String key, final Object value) {
-    if (value == null)
-      return custom.remove(key);
-    return custom.put(key, value);
+    return recordFileChanges(() -> {
+      if (value == null)
+        return custom.remove(key);
+      return custom.put(key, value);
+    });
   }
 
   @Override
