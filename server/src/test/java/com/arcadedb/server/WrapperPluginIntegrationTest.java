@@ -34,7 +34,7 @@ public class WrapperPluginIntegrationTest {
     assertTrue(WrapperPluginClassLoader.isWrapperPlugin("com.arcadedb.redis.RedisProtocolPlugin"));
     assertTrue(WrapperPluginClassLoader.isWrapperPlugin("com.arcadedb.postgres.PostgresProtocolPlugin"));
     assertTrue(WrapperPluginClassLoader.isWrapperPlugin("com.arcadedb.server.gremlin.GremlinServerPlugin"));
-    
+
     // Test that non-wrapper plugins are not identified as wrappers
     assertFalse(WrapperPluginClassLoader.isWrapperPlugin("com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin"));
     assertFalse(WrapperPluginClassLoader.isWrapperPlugin("com.arcadedb.server.grpc.GrpcServerPlugin"));
@@ -46,7 +46,7 @@ public class WrapperPluginIntegrationTest {
     assertEquals("Redis", WrapperPluginClassLoader.getWrapperPluginName("com.arcadedb.redis.RedisProtocolPlugin"));
     assertEquals("PostgreSQL", WrapperPluginClassLoader.getWrapperPluginName("com.arcadedb.postgres.PostgresProtocolPlugin"));
     assertEquals("Gremlin", WrapperPluginClassLoader.getWrapperPluginName("com.arcadedb.server.gremlin.GremlinServerPlugin"));
-    
+
     assertNull(WrapperPluginClassLoader.getWrapperPluginName("com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin"));
   }
 
@@ -58,29 +58,29 @@ public class WrapperPluginIntegrationTest {
   public void testPluginClassLoaderIsolation() {
     // Test wrapper plugin class loader creation
     final WrapperPluginClassLoader mongoLoader = WrapperPluginClassLoader.getOrCreateClassLoader(
-        "MongoDB", 
-        new java.net.URL[0], 
+        "MongoDB",
+        new java.net.URL[0],
         Thread.currentThread().getContextClassLoader()
     );
-    
+
     final WrapperPluginClassLoader redisLoader = WrapperPluginClassLoader.getOrCreateClassLoader(
-        "Redis", 
-        new java.net.URL[0], 
+        "Redis",
+        new java.net.URL[0],
         Thread.currentThread().getContextClassLoader()
     );
 
     // Verify that different wrapper plugins get different class loaders
     assertNotSame(mongoLoader, redisLoader);
-    
+
     // Verify that the same plugin name returns the same class loader (singleton pattern)
     final WrapperPluginClassLoader mongoLoader2 = WrapperPluginClassLoader.getOrCreateClassLoader(
-        "MongoDB", 
-        new java.net.URL[0], 
+        "MongoDB",
+        new java.net.URL[0],
         Thread.currentThread().getContextClassLoader()
     );
-    
+
     assertSame(mongoLoader, mongoLoader2);
-    
+
     // Verify that wrapper class loaders are different from the main class loader
     assertNotSame(mongoLoader, Thread.currentThread().getContextClassLoader());
     assertNotSame(redisLoader, Thread.currentThread().getContextClassLoader());
@@ -90,14 +90,14 @@ public class WrapperPluginIntegrationTest {
   public void testClassLoaderCleanup() {
     // Create some class loaders
     WrapperPluginClassLoader.getOrCreateClassLoader(
-        "TestPlugin1", 
-        new java.net.URL[0], 
+        "TestPlugin1",
+        new java.net.URL[0],
         Thread.currentThread().getContextClassLoader()
     );
-    
+
     WrapperPluginClassLoader.getOrCreateClassLoader(
-        "TestPlugin2", 
-        new java.net.URL[0], 
+        "TestPlugin2",
+        new java.net.URL[0],
         Thread.currentThread().getContextClassLoader()
     );
 
