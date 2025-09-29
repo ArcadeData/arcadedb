@@ -20,7 +20,8 @@ package com.arcadedb.server;
 
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
  * Integration test for wrapper plugin loading mechanism.
@@ -30,24 +31,24 @@ public class WrapperPluginIntegrationTest {
   @Test
   public void testWrapperPluginDetection() {
     // Test that all wrapper plugin class names are correctly identified
-    assertTrue(WrapperPluginClassLoader.isWrapperPlugin("com.arcadedb.mongo.MongoDBProtocolPlugin"));
-    assertTrue(WrapperPluginClassLoader.isWrapperPlugin("com.arcadedb.redis.RedisProtocolPlugin"));
-    assertTrue(WrapperPluginClassLoader.isWrapperPlugin("com.arcadedb.postgres.PostgresProtocolPlugin"));
-    assertTrue(WrapperPluginClassLoader.isWrapperPlugin("com.arcadedb.server.gremlin.GremlinServerPlugin"));
+    assertThat(WrapperPluginClassLoader.isWrapperPlugin("com.arcadedb.mongo.MongoDBProtocolPlugin")).isTrue();
+    assertThat(WrapperPluginClassLoader.isWrapperPlugin("com.arcadedb.redis.RedisProtocolPlugin")).isTrue();
+    assertThat(WrapperPluginClassLoader.isWrapperPlugin("com.arcadedb.postgres.PostgresProtocolPlugin")).isTrue();
+    assertThat(WrapperPluginClassLoader.isWrapperPlugin("com.arcadedb.server.gremlin.GremlinServerPlugin")).isTrue();
 
     // Test that non-wrapper plugins are not identified as wrappers
-    assertFalse(WrapperPluginClassLoader.isWrapperPlugin("com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin"));
-    assertFalse(WrapperPluginClassLoader.isWrapperPlugin("com.arcadedb.server.grpc.GrpcServerPlugin"));
+    assertThat(WrapperPluginClassLoader.isWrapperPlugin("com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin")).isFalse();
+    assertThat(WrapperPluginClassLoader.isWrapperPlugin("com.arcadedb.server.grpc.GrpcServerPlugin")).isFalse();
   }
 
   @Test
   public void testWrapperPluginNameExtraction() {
-    assertEquals("MongoDB", WrapperPluginClassLoader.getWrapperPluginName("com.arcadedb.mongo.MongoDBProtocolPlugin"));
-    assertEquals("Redis", WrapperPluginClassLoader.getWrapperPluginName("com.arcadedb.redis.RedisProtocolPlugin"));
-    assertEquals("PostgreSQL", WrapperPluginClassLoader.getWrapperPluginName("com.arcadedb.postgres.PostgresProtocolPlugin"));
-    assertEquals("Gremlin", WrapperPluginClassLoader.getWrapperPluginName("com.arcadedb.server.gremlin.GremlinServerPlugin"));
+    assertThat(WrapperPluginClassLoader.getWrapperPluginName("com.arcadedb.mongo.MongoDBProtocolPlugin")).isEqualTo("MongoDB");
+    assertThat(WrapperPluginClassLoader.getWrapperPluginName("com.arcadedb.redis.RedisProtocolPlugin")).isEqualTo("Redis");
+    assertThat(WrapperPluginClassLoader.getWrapperPluginName("com.arcadedb.postgres.PostgresProtocolPlugin")).isEqualTo("PostgreSQL");
+    assertThat(WrapperPluginClassLoader.getWrapperPluginName("com.arcadedb.server.gremlin.GremlinServerPlugin")).isEqualTo("Gremlin");
 
-    assertNull(WrapperPluginClassLoader.getWrapperPluginName("com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin"));
+    assertThat(WrapperPluginClassLoader.getWrapperPluginName("com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin")).isNull();
   }
 
   /**
@@ -70,7 +71,7 @@ public class WrapperPluginIntegrationTest {
     );
 
     // Verify that different wrapper plugins get different class loaders
-    assertNotSame(mongoLoader, redisLoader);
+    assertThat(mongoLoader).isNotSameAs(redisLoader);
 
     // Verify that the same plugin name returns the same class loader (singleton pattern)
     final WrapperPluginClassLoader mongoLoader2 = WrapperPluginClassLoader.getOrCreateClassLoader(
@@ -79,11 +80,11 @@ public class WrapperPluginIntegrationTest {
         Thread.currentThread().getContextClassLoader()
     );
 
-    assertSame(mongoLoader, mongoLoader2);
+    assertThat(mongoLoader2).isSameAs(mongoLoader);
 
     // Verify that wrapper class loaders are different from the main class loader
-    assertNotSame(mongoLoader, Thread.currentThread().getContextClassLoader());
-    assertNotSame(redisLoader, Thread.currentThread().getContextClassLoader());
+    assertThat(mongoLoader).isNotSameAs(Thread.currentThread().getContextClassLoader());
+    assertThat(redisLoader).isNotSameAs(Thread.currentThread().getContextClassLoader());
   }
 
   @Test
@@ -102,6 +103,6 @@ public class WrapperPluginIntegrationTest {
     );
 
     // This should not throw an exception and should clean up all class loaders
-    assertDoesNotThrow(() -> WrapperPluginClassLoader.closeAllClassLoaders());
+    assertThatCode(() -> WrapperPluginClassLoader.closeAllClassLoaders()).doesNotThrowAnyException();
   }
 }
