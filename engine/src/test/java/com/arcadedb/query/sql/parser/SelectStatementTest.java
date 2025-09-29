@@ -546,6 +546,18 @@ public class SelectStatementTest {
   }
 
   @Test
+  public void testFlattenOrCondition() {
+    // Test OR condition flattening - the key is that OR should result in a single AndBlock
+    // not multiple AndBlocks (which would treat OR as AND)
+    final SelectStatement stm = (SelectStatement) checkRightSyntax("select from Chat where field1 = 'value1' OR field2 = 'value2'");
+    final List<AndBlock> flattened = stm.whereClause.flatten();
+
+    // The critical test: OR conditions should produce exactly ONE AndBlock
+    // Multiple AndBlocks would incorrectly treat OR as AND
+    assertThat(flattened.size()).isEqualTo(1);
+  }
+
+  @Test
   public void testParamWithMatches() {
     // issue #5229
     checkRightSyntax("select from Person where name matches :param1");
