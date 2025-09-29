@@ -523,4 +523,24 @@ public class ConsoleTest {
       assertThat(buffer.toString().contains("Miner")).isTrue();
     }
   }
+
+  /**
+   *
+   * Issue https://github.com/ArcadeData/arcadedb/issues/1760
+   */
+  @Test
+  public void testDuplicateEntries() throws IOException {
+    assertThat(console.parse("create database duptest")).isTrue();
+
+    assertThat(console.parse("CREATE DOCUMENT TYPE doc")).isTrue();
+    assertThat(console.parse("CREATE PROPERTY doc.num LONG")).isTrue();
+    assertThat(console.parse("CREATE INDEX ON doc (num) NOTUNIQUE")).isTrue();
+
+    assertThat(console.parse("INSERT INTO doc SET num = 1")).isTrue();
+    assertThat(console.parse("INSERT INTO doc SET num = 2")).isTrue();
+    assertThat(console.parse("INSERT INTO doc SET num = 2")).isTrue();
+
+    assertThat(console.getDatabase().query("sql", "SELECT count(*) AS count FROM index:`doc[num]`").next()
+        .<Long>getProperty("count")).isEqualTo(3);
+  }
 }
