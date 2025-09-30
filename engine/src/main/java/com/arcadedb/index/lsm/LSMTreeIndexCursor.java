@@ -216,9 +216,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
                 // HAS BEEN DELETED
                 break;
               }
-
-              validIterators++;
             }
+            validIterators++;
           }
         }
 

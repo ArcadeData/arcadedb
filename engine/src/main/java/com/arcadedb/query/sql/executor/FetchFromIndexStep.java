@@ -58,7 +58,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private         boolean                                        inited      = false;
   private         IndexCursor                                    cursor;
   private         MultiIterator<Map.Entry<Object, Identifiable>> customIterator;
-  private         Iterator                                       nullKeyIterator;
+  private         Iterator<?>                                    nullKeyIterator;
   private         Pair<Object, Identifiable>                     nextEntry   = null;
 
   public FetchFromIndexStep(final RangeIndex index, final BooleanExpression condition,
