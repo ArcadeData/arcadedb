@@ -36,6 +36,7 @@
     <properties>
         <metrics.version>4.2.19</metrics.version>
         <undertow-core.version>2.3.19.Final</undertow-core.version>
+        <slf4j.version>2.0.17</slf4j.version>
         <micrometer.version>1.15.4</micrometer.version>
     </properties>
 
@@ -70,6 +71,17 @@
             <groupId>io.undertow</groupId>
             <artifactId>undertow-core</artifactId>
             <version>${undertow-core.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>${slf4j.version}</version>
+            <scope>compile</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-jdk14</artifactId>
+            <version>${slf4j.version}</version>
         </dependency>
         <dependency>
             <groupId>io.micrometer</groupId>
