@@ -414,7 +414,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
         if (validRIDs.isEmpty())
           currentValues = null;
         else
-          validRIDs.toArray(currentValues);
+          currentValues = validRIDs.toArray(new RID[0]);
       }
 
       if (txCursor == null || !txCursor.hasNext())
