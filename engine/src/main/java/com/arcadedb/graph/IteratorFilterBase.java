@@ -27,11 +27,12 @@ import java.util.*;
 import java.util.logging.*;
 
 public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
-  private         int          lastElementPosition = currentPosition.get();
+  private         int          lastElementPosition   = currentPosition.get();
   protected       RID          nextEdge;
   protected       RID          nextVertex;
   protected       RID          next;
   protected final Set<Integer> validBuckets;
+  protected       int          fullStackTracePrinted = 0;
 
   protected IteratorFilterBase(final DatabaseInternal database, final EdgeSegment current, final String[] edgeTypes) {
     super(database, current);
@@ -107,7 +108,11 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
   }
 
   protected void handleCorruption(final Exception e, final RID edge, final RID nextVertex) {
-    LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s. Skip it.", e, edge);
+    if (fullStackTracePrinted < 10) {
+      ++fullStackTracePrinted;
+      LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s. Skip it.", e, edge);
+    } else
+      LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s. Skip it. Error: %s", edge, e.getMessage());
   }
 
   @Override
