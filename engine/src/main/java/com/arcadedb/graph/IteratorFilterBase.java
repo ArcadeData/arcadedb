@@ -59,10 +59,21 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
       if (currentPosition.get() < currentContainer.getUsed()) {
         lastElementPosition = currentPosition.get();
 
-        if (edge) {
-          nextEdge = next = currentContainer.getRID(currentPosition);
-          nextVertex = currentContainer.getRID(currentPosition); // SKIP VERTEX
+        nextEdge = currentContainer.getRID(currentPosition);
+        nextVertex = currentContainer.getRID(currentPosition);
 
+        if (!validBuckets.contains(nextEdge.getBucketId())) {
+          // FILTER IT OUT
+          nextEdge = null;
+          nextVertex = null;
+          next = null;
+          continue;
+        }
+
+        if (edge) {
+          next = nextEdge;
+
+          // VALIDATE RID
           if (nextEdge.getPosition() > -1)
             try {
               database.lookupByRID(nextEdge, false);
@@ -72,9 +83,9 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
             }
 
         } else {
-          nextEdge = currentContainer.getRID(currentPosition);
-          nextVertex = next = currentContainer.getRID(currentPosition);
+          next = nextVertex;
 
+          // VALIDATE RID
           try {
             database.lookupByRID(nextVertex, false);
           } catch (final Exception e) {
@@ -83,14 +94,7 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
           }
         }
 
-        if (validBuckets.contains(nextEdge.getBucketId()))
-          return true;
-        else {
-          // FILTER IT OUT
-          nextEdge = null;
-          nextVertex = null;
-          next = null;
-        }
+        return true;
 
       } else {
         // FETCH NEXT CHUNK
