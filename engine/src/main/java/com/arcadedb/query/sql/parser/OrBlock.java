@@ -115,13 +115,11 @@ public class OrBlock extends BooleanExpression {
   }
 
   public List<AndBlock> flatten() {
-    // OR blocks must NOT be split into separate AndBlocks
-    // Instead, preserve the OR as a single unit within one AndBlock
-    // This prevents OR conditions from being incorrectly treated as AND conditions
-    final List<AndBlock> result = new ArrayList<AndBlock>();
-    final AndBlock andBlock = new AndBlock(-1);
-    andBlock.subBlocks.add(this);
-    result.add(andBlock);
+    final List<AndBlock> result = new ArrayList<>();
+
+    for (final BooleanExpression sub : subBlocks)
+      result.addAll(sub.flatten());
+
     return result;
   }
 
