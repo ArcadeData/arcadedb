@@ -38,12 +38,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.DisabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 
-import java.io.File;
-import java.io.IOException;
-import java.text.SimpleDateFormat;
-import java.util.Arrays;
-import java.util.Iterator;
-import java.util.Map;
+import java.io.*;
+import java.text.*;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -522,5 +519,26 @@ public class ConsoleTest {
       assertThat(console.parse("select from Person where not ( name like 'Thom%' )")).isTrue();
       assertThat(buffer.toString().contains("Miner")).isTrue();
     }
+  }
+
+  /**
+   *
+   * Issue https://github.com/ArcadeData/arcadedb/issues/1760
+   */
+  @Test
+  public void testDuplicateEntries() throws IOException {
+    FileUtils.deleteRecursively(new File("./target/databases/duptest"));
+    assertThat(console.parse("create database duptest")).isTrue();
+
+    assertThat(console.parse("CREATE DOCUMENT TYPE doc")).isTrue();
+    assertThat(console.parse("CREATE PROPERTY doc.num LONG")).isTrue();
+    assertThat(console.parse("CREATE INDEX ON doc (num) NOTUNIQUE")).isTrue();
+
+    assertThat(console.parse("INSERT INTO doc SET num = 1")).isTrue();
+    assertThat(console.parse("INSERT INTO doc SET num = 2")).isTrue();
+    assertThat(console.parse("INSERT INTO doc SET num = 2")).isTrue();
+
+    assertThat(console.getDatabase().query("sql", "SELECT count(*) AS count FROM index:`doc[num]`").next()
+        .<Long>getProperty("count")).isEqualTo(3);
   }
 }
