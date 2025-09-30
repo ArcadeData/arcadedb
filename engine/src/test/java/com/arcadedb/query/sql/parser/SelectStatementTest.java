@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -533,15 +534,23 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testFlattenOrCondition() {
-    // Test OR condition flattening - the key is that OR should result in a single AndBlock
-    // not multiple AndBlocks (which would treat OR as AND)
-    final SelectStatement stm = (SelectStatement) checkRightSyntax("select from Chat where field1 = 'value1' OR field2 = 'value2'");
+  public void testFlatten() {
+    final SelectStatement stm = (SelectStatement) checkRightSyntax("select from ouser where name = 'foo'");
     final List<AndBlock> flattened = stm.whereClause.flatten();
+    assertThat(((BinaryCondition) flattened.getFirst().subBlocks.getFirst()).left.isBaseIdentifier()).isTrue();
+    assertThat(((BinaryCondition) flattened.getFirst().subBlocks.getFirst()).right.isBaseIdentifier()).isFalse();
+    assertThat(
+        ((BinaryCondition) flattened.getFirst().subBlocks.getFirst()).left.isEarlyCalculated(new BasicCommandContext())).isFalse();
+    assertThat(
+        ((BinaryCondition) flattened.getFirst().subBlocks.getFirst()).right.isEarlyCalculated(new BasicCommandContext())).isTrue();
+  }
 
-    // The critical test: OR conditions should produce exactly ONE AndBlock
-    // Multiple AndBlocks would incorrectly treat OR as AND
-    assertThat(flattened.size()).isEqualTo(1);
+  @Test
+  public void testFlattenOrCondition() {
+    SelectStatement stm = (SelectStatement) checkRightSyntax(
+        "select from Chat let users = in('HasChat'), brain = out('CreatedFromAssistant') where #22:1 IN $brain AND ( contextVariables['local:fin'] = '7:106514432' OR @rid = '#7:106514432')");
+    List<AndBlock> flattened = stm.whereClause.flatten();
+    assertThat(flattened.size()).isEqualTo(2);
   }
 
   @Test
