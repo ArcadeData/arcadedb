@@ -19,21 +19,30 @@
 package com.arcadedb.serializer;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DetachedDocument;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.IterableGraph;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.LocalVertexType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.DateUtils;
 
+import java.time.temporal.*;
 import java.util.*;
+import java.util.logging.*;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
 import static com.arcadedb.schema.Property.IN_PROPERTY;
@@ -46,8 +55,13 @@ public class JsonSerializer {
   private boolean includeVertexEdges        = true;
   private boolean useVertexEdgeSize         = true;
   private boolean useCollectionSizeForEdges = true;
+  private Database database;
 
   JsonSerializer() {
+  }
+
+  public JsonSerializer(final Database database) {
+    this.database = database;
   }
 
   public static JsonSerializer createJsonSerializer() {
@@ -128,6 +142,76 @@ public class JsonSerializer {
     }
 
     return object;
+  }
+
+  /**
+   * Converts a map to a JSON object with optional type information and property filtering.
+   * This method was moved from the deprecated JSONSerializer class.
+   */
+  public JSONObject map2json(final Map<String, Object> map, final DocumentType type, final boolean includeMetadata,
+      final String... includeProperties) {
+    final JSONObject json = new JSONObject();
+
+    final Set<String> includePropertiesSet;
+    if (includeProperties.length > 0)
+      includePropertiesSet = new HashSet<>(Arrays.asList(includeProperties));
+    else
+      includePropertiesSet = null;
+
+    final StringBuilder propertyTypes = includeMetadata ? new StringBuilder() : null;
+
+    for (final Map.Entry<String, Object> entry : map.entrySet()) {
+      final String propertyName = entry.getKey();
+
+      if (includePropertiesSet != null && !includePropertiesSet.contains(propertyName))
+        continue;
+
+      Object value = entry.getValue();
+
+      final Type propertyType;
+      if (type != null && type.existsProperty(propertyName))
+        propertyType = type.getProperty(propertyName).getType();
+      else if (value != null)
+        propertyType = Type.getTypeByClass(value.getClass());
+      else
+        propertyType = null;
+
+      if (includeMetadata && propertyType != null) {
+        if (propertyTypes.length() > 0)
+          propertyTypes.append(",");
+        propertyTypes.append(propertyName).append(":").append(propertyType.getId());
+      }
+
+      value = convertToJSONType(value, propertyType);
+
+      if (value instanceof Number number && !Float.isFinite(number.floatValue())) {
+        LogManager.instance()
+            .log(this, Level.SEVERE, "Found non finite number in map with key '%s', ignore this entry in the conversion",
+                propertyName);
+        continue;
+      }
+
+      json.put(propertyName, value);
+    }
+
+    if (propertyTypes != null && !propertyTypes.isEmpty())
+      json.put(Property.PROPERTY_TYPES_PROPERTY, propertyTypes);
+
+    return json;
+  }
+
+  /**
+   * Converts a JSON object to a map.
+   * This method was moved from the deprecated JSONSerializer class.
+   */
+  public Map<String, Object> json2map(final JSONObject json) {
+    final Map<String, Object> map = new HashMap<>();
+    for (final String k : json.keySet()) {
+      final Object value = convertFromJSONType(json.get(k));
+      map.put(k, value);
+    }
+
+    return map;
   }
 
   private Object serializeCollection(final Database database, final Collection<?> value, Class<? extends Document> entryType) {
@@ -258,6 +342,69 @@ public class JsonSerializer {
     case null, default -> object.put(CAT_PROPERTY, "d");
     }
 
+  }
+
+  /**
+   * Converts a value to JSON-compatible type, handling Documents, Collections, Dates, etc.
+   * This method was moved from the deprecated JSONSerializer class.
+   */
+  private Object convertToJSONType(Object value, final Type type) {
+    if (value instanceof Document document) {
+      value = document.toJSON(true);
+    } else if (value instanceof Collection c) {
+      final JSONArray array = new JSONArray();
+      for (final Iterator it = c.iterator(); it.hasNext(); )
+        array.put(convertToJSONType(it.next(), null));
+      value = array;
+    } else if (value instanceof Date date)
+      value = date.getTime();
+    else if (value instanceof Temporal)
+      value = DateUtils.dateTimeToTimestamp(value, type != null ? DateUtils.getPrecisionFromType(type) : ChronoUnit.MILLIS);
+    else if (value instanceof Map) {
+      final Map<String, Object> m = (Map<String, Object>) value;
+      final JSONObject map = new JSONObject();
+      for (final Map.Entry<String, Object> entry : m.entrySet())
+        map.put(entry.getKey(), convertToJSONType(entry.getValue(), null));
+      value = map;
+    }
+
+    return value;
+  }
+
+  /**
+   * Converts from JSON type back to Java objects, handling embedded documents and collections.
+   * This method was moved from the deprecated JSONSerializer class.
+   */
+  private Object convertFromJSONType(Object value) {
+    if (database == null) {
+      // If no database is available, return the value as-is
+      return value;
+    }
+
+    if (value instanceof JSONObject json) {
+      final String embeddedTypeName = json.has(Property.TYPE_PROPERTY) ? json.getString(Property.TYPE_PROPERTY) : null;
+
+      if (embeddedTypeName != null) {
+        final DocumentType type = database.getSchema().getType(embeddedTypeName);
+
+        if (type instanceof LocalVertexType) {
+          final MutableVertex v = database.newVertex(embeddedTypeName);
+          v.fromJSON((JSONObject) value);
+          value = v;
+        } else if (type != null) {
+          final MutableEmbeddedDocument embeddedDocument = ((DatabaseInternal) database).newEmbeddedDocument(null, embeddedTypeName);
+          embeddedDocument.fromJSON((JSONObject) value);
+          value = embeddedDocument;
+        }
+      }
+    } else if (value instanceof JSONArray array) {
+      final List<Object> list = new ArrayList<>();
+      for (int i = 0; i < array.length(); ++i)
+        list.add(convertFromJSONType(array.get(i)));
+      value = list;
+    }
+
+    return value;
   }
 
   private Object convertNonNumbers(Object value) {
