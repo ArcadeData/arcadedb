@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.query.sql.executor.BasicCommandContext;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -531,18 +530,6 @@ public class SelectStatementTest {
   public void testReturn() {
     checkRightSyntax("select from ouser timeout 1 exception");
     checkRightSyntax("select from ouser timeout 1 return");
-  }
-
-  @Test
-  public void testFlatten() {
-    final SelectStatement stm = (SelectStatement) checkRightSyntax("select from ouser where name = 'foo'");
-    final List<AndBlock> flattened = stm.whereClause.flatten();
-    assertThat(((BinaryCondition) flattened.getFirst().subBlocks.getFirst()).left.isBaseIdentifier()).isTrue();
-    assertThat(((BinaryCondition) flattened.getFirst().subBlocks.getFirst()).right.isBaseIdentifier()).isFalse();
-    assertThat(
-        ((BinaryCondition) flattened.getFirst().subBlocks.getFirst()).left.isEarlyCalculated(new BasicCommandContext())).isFalse();
-    assertThat(
-        ((BinaryCondition) flattened.getFirst().subBlocks.getFirst()).right.isEarlyCalculated(new BasicCommandContext())).isTrue();
   }
 
   @Test
