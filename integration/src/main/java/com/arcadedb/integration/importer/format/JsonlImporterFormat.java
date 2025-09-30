@@ -272,7 +272,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     return "JSONL";
   }
 
-  // utility methods from JSONSerializer
+  // utility methods from JsonSerializer
   private void loadProperties(DatabaseInternal database, MutableDocument imported, JSONObject properties) {
     Map<String, Object> json2map = json2map(database, properties);
     imported.fromMap(json2map);

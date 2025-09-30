@@ -23,6 +23,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalProperty;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.lang.reflect.*;
@@ -109,13 +110,13 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   public MutableDocument fromJSON(final JSONObject json) {
-    return fromMap(new JSONSerializer(database).json2map(json));
+    return fromMap(new JsonSerializer(database).json2map(json));
   }
 
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
     checkForLazyLoadingProperties();
-    final JSONObject result = new JSONSerializer(database).map2json(map, type, includeMetadata);
+    final JSONObject result = new JsonSerializer(database).map2json(map, type, includeMetadata);
     if (includeMetadata) {
       result.put(CAT_PROPERTY, "d");
       result.put(TYPE_PROPERTY, type.getName());

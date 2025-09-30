@@ -19,7 +19,7 @@
 package com.arcadedb.serializer.json;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.JSONSerializer;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.DocumentType;
@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class JSONSerializerTest extends TestHelper {
 
-  private JSONSerializer jsonSerializer;
+  private JsonSerializer jsonSerializer;
   private DocumentType   testType;
   private DocumentType   anotherType;
 
@@ -52,7 +52,7 @@ public class JSONSerializerTest extends TestHelper {
       anotherType.createProperty("map", Type.MAP, Type.STRING.name());
 
     });
-    jsonSerializer = new JSONSerializer(database);
+    jsonSerializer = new JsonSerializer(database);
   }
 
   @Test
