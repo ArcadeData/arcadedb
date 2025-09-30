@@ -204,6 +204,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
           final RID[] rids = pageCursors[i].getValue();
           if (rids != null) {
+            boolean validEntry = false;
             for (int j = rids.length - 1; j > -1; --j) {
               final RID r = rids[j];
 
@@ -212,12 +213,14 @@ public class LSMTreeIndexCursor implements IndexCursor {
                 break;
               }
 
-              if (removedKeys.contains(keys)) {
+              if (removedKeys.contains(keys))
                 // HAS BEEN DELETED
                 break;
-              }
+
+              validEntry = true;
             }
-            validIterators++;
+            if (validEntry)
+              validIterators++;
           }
         }
 
