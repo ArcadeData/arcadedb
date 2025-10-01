@@ -38,6 +38,8 @@
         <undertow-core.version>2.3.19.Final</undertow-core.version>
         <slf4j.version>2.0.17</slf4j.version>
         <micrometer.version>1.15.4</micrometer.version>
+        <swagger.version>2.2.37</swagger.version>
+        <swagger-parser.version>2.1.34</swagger-parser.version>
     </properties>
 
     <profiles>
@@ -87,6 +89,28 @@
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-core</artifactId>
             <version>${micrometer.version}</version>
+        </dependency>
+        <!-- OpenAPI dependencies -->
+        <dependency>
+            <groupId>io.swagger.core.v3</groupId>
+            <artifactId>swagger-core</artifactId>
+            <version>${swagger.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.swagger.core.v3</groupId>
+            <artifactId>swagger-annotations</artifactId>
+            <version>${swagger.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.swagger.core.v3</groupId>
+            <artifactId>swagger-models</artifactId>
+            <version>${swagger.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.swagger.parser.v3</groupId>
+            <artifactId>swagger-parser</artifactId>
+            <version>${swagger-parser.version}</version>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 </project>
