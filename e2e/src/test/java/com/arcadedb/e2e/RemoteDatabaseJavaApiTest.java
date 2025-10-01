@@ -18,6 +18,7 @@
  */
 package com.arcadedb.e2e;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -35,6 +36,7 @@ import java.io.IOException;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.UUID;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -196,7 +198,6 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
         """);
 
     Schema schema = database.getSchema();
-    System.out.println("schema.toString() = " + schema.toString());
     assertThat(schema.existsType("V1")).isTrue();
     assertThat(schema.existsType("V2")).isTrue();
     assertThat(schema.existsType("V3")).isTrue();
@@ -207,6 +208,7 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
     assertThat(schema.existsType("E2")).isTrue();
     assertThat(schema.existsType("E3")).isTrue();
   }
+
 
   @Test
   @Disabled
