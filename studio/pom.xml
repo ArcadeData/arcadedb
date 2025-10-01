@@ -83,6 +83,17 @@
                         </configuration>
                     </execution>
 
+<!--                    &lt;!&ndash; Build frontend assets &ndash;&gt;-->
+<!--                    <execution>-->
+<!--                        <id>prebuild</id>-->
+<!--                        <goals>-->
+<!--                            <goal>npm</goal>-->
+<!--                        </goals>-->
+<!--                        <phase>generate-resources</phase>-->
+<!--                        <configuration>-->
+<!--                            <arguments>run prebuild</arguments>-->
+<!--                        </configuration>-->
+<!--                    </execution>-->
                     <!-- Build frontend assets -->
                     <execution>
                         <id>webpack build</id>
