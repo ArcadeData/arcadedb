@@ -32,10 +32,9 @@ public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbst
   protected final Binary   buffer;
   protected final int      keyStartPosition;
   protected       int      currentEntryIndex;
-  protected       int      valuePosition           = -1;
+  protected       int      valuePosition = -1;
   protected       Object[] nextKeys;
   protected       RID[]    nextValue;
-  protected       boolean  lookForAdjacentSameKeys = false;
 
   public LSMTreeIndexUnderlyingPageCursor(final LSMTreeIndexAbstract index, final BasePage page, final int currentEntryInPage,
       final int keyStartPosition, final byte[] keyTypes, final int totalKeys, final boolean ascendingOrder) {
@@ -80,34 +79,34 @@ public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbst
     valuePosition = buffer.position();
     nextValue = index.readEntryValues(buffer);
 
-    if (lookForAdjacentSameKeys) {
-      for (int pos = currentEntryIndex + 1; pos < totalKeys; ++pos) {
-        contentPos = buffer.getInt(keyStartPosition + (pos * INT_SERIALIZED_SIZE));
-        buffer.position(contentPos);
+    for (int pos = currentEntryIndex + 1; pos < totalKeys; ++pos) {
+      contentPos = buffer.getInt(keyStartPosition + (pos * INT_SERIALIZED_SIZE));
+      buffer.position(contentPos);
 
-        final Object[] adjacentKeys = new Object[keyTypes.length];
-        for (int k = 0; k < keyTypes.length; ++k) {
-          final boolean notNull = index.getVersion() < 1 || buffer.getByte() == 1;
-          if (notNull)
-            adjacentKeys[k] = index.getDatabase().getSerializer().deserializeValue(index.getDatabase(), buffer, keyTypes[k], null);
-          else
-            adjacentKeys[k] = null;
-        }
+      final Object[] adjacentKeys = new Object[keyTypes.length];
+      for (int k = 0; k < keyTypes.length; ++k) {
+        final boolean notNull = index.getVersion() < 1 || buffer.getByte() == 1;
+        if (notNull)
+          adjacentKeys[k] = index.getDatabase().getSerializer().deserializeValue(index.getDatabase(), buffer, keyTypes[k], null);
+        else
+          adjacentKeys[k] = null;
+      }
 
-        final int compare = LSMTreeIndexMutable.compareKeys(index.comparator, keyTypes, nextKeys, adjacentKeys);
-        if (compare != 0)
-          break;
+      final int compare = LSMTreeIndexMutable.compareKeys(index.comparator, keyTypes, nextKeys, adjacentKeys);
+      if (compare != 0)
+        break;
 
-        // SAME KEY, MERGE VALUES
-        valuePosition = buffer.position();
-        final RID[] adjacentValue = index.readEntryValues(buffer);
+      currentEntryIndex = pos;
 
-        if (adjacentValue.length > 0) {
-          final RID[] newArray = Arrays.copyOf(nextValue, nextValue.length + adjacentValue.length);
-          for (int i = nextValue.length; i < newArray.length; ++i)
-            newArray[i] = adjacentValue[i - nextValue.length];
-          nextValue = newArray;
-        }
+      // SAME KEY, MERGE VALUES
+      valuePosition = buffer.position();
+      final RID[] adjacentValue = index.readEntryValues(buffer);
+
+      if (adjacentValue.length > 0) {
+        final RID[] newArray = Arrays.copyOf(nextValue, nextValue.length + adjacentValue.length);
+        for (int i = nextValue.length; i < newArray.length; ++i)
+          newArray[i] = adjacentValue[i - nextValue.length];
+        nextValue = newArray;
       }
     }
 
