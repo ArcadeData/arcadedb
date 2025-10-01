@@ -384,7 +384,7 @@ public class TransactionIndexContext {
           final Map<IndexKey, IndexKey> valuesPerKey = txEntriesPerKey.getValue();
 
           for (final IndexKey entry : valuesPerKey.values()) {
-            if (entry.operation == IndexKey.IndexKeyOperation.ADD) {
+            if (entry.operation == IndexKey.IndexKeyOperation.ADD || entry.operation == IndexKey.IndexKeyOperation.REPLACE) {
               final Map<ComparableKey, RID> deletedEntries = deletedKeys.get(typeIndex);
               final RID deleted = deletedEntries != null ? deletedEntries.get(new ComparableKey(entry.keyValues)) : null;
               checkUniqueIndexKeys(index, entry, deleted);
