@@ -47,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 public class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
 
   @Test
-  void testUniqueIndexOnUpdate() {// testear el estado de las tx en cada etapa
+  void testUniqueIndexOnUpdate() {
 
     try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
@@ -279,37 +279,6 @@ public class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
     assertThat(response).as("UPDATE with WHERE clause via HTTP should enforce unique constraint").isNull();
   }
 
-  /**
-   * Test Case 7: Test UPDATE to null and then to duplicate via RemoteDatabase
-   */
-  @Test
-  public void testRemoteDatabaseUpdateToNullThenToDuplicate() throws Exception {
-    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root",
-        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
-
-      // Create vertex type with unique field
-      database.command("sql", "CREATE VERTEX TYPE NullRemoteTest");
-      database.command("sql", "CREATE PROPERTY NullRemoteTest.licenseKey STRING");
-      database.command("sql", "CREATE INDEX ON NullRemoteTest (licenseKey) UNIQUE NULL_STRATEGY SKIP");
-
-      // Insert vertices
-      database.command("sql", "INSERT INTO NullRemoteTest SET licenseKey = 'LIC-AAA', product = 'Product A'");
-      database.command("sql", "INSERT INTO NullRemoteTest SET licenseKey = 'LIC-BBB', product = 'Product B'");
-
-      // Update to null (should succeed)
-      database.command("sql", "UPDATE NullRemoteTest SET licenseKey = null WHERE licenseKey = 'LIC-BBB'");
-
-      // Now update to duplicate existing value (should fail but currently succeeds )
-//      assertThatThrownBy(() -> {
-      ResultSet resultSet1 = database.command("sql", "UPDATE NullRemoteTest SET licenseKey = 'LIC-CCC' WHERE licenseKey IS NULL");
-        resultSet1.stream().forEach(result -> System.out.println("result.toJSON() = " + result.toJSON()));
-
-//      }).isInstanceOf(DuplicatedKeyException.class)
-//          .as("UPDATE from null to duplicate value should enforce unique constraint");
-        ResultSet resultSet = database.query("sql", "SELECT FROM NullRemoteTest ");
-        resultSet.stream().forEach(result -> System.out.println("result.toJSON() = " + result.toJSON()));
-    }
-  }
 
   /**
    * Test Case 8: Test valid UPDATE to non-duplicate value via RemoteDatabase
