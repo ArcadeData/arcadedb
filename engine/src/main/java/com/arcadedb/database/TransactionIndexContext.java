@@ -411,7 +411,12 @@ public class TransactionIndexContext {
                 entry.getValue().operation == IndexKey.IndexKeyOperation.REPLACE) {
               final TypeIndex typeIndex = index.getTypeIndex();
               final Map<ComparableKey, RID> entries = deletedKeys.computeIfAbsent(typeIndex, k -> new HashMap<>());
-              entries.put(new ComparableKey(entry.getValue().keyValues), entry.getKey().rid);
+
+              final ComparableKey key = new ComparableKey(entry.getValue().keyValues);
+              final RID existent = entries.get(key);
+              if (existent == null || entry.getValue().operation == IndexKey.IndexKeyOperation.REMOVE)
+                // MULTIPLE OPERATIONS ON THE SAME KEY (DIFFERENT BUCKETS), PREFER THE REMOVE ONE
+                entries.put(key, entry.getKey().rid);
             }
           }
         }

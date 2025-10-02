@@ -802,9 +802,8 @@ public class UpdateStatementExecutionTest extends TestHelper {
     }
     // update first record
     database.transaction(() -> {
-      Object[] parameters2 = { "ERROR", 1 };
       String sqlString = "UPDATE Order SET status = ? RETURN AFTER WHERE id = ?";
-      try (ResultSet resultSet1 = database.command("sql", sqlString, parameters2)) {
+      try (ResultSet resultSet1 = database.command("sql", sqlString, "ERROR", 1)) {
       }
     });
     // select records with status = 'PENDING'
@@ -822,15 +821,13 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
     // repeat select records with status = 'PENDING'
     database.transaction(() -> {
-      Object[] parameters2 = { "PENDING" };
       String sqlString = "SELECT id, processor, status FROM Order WHERE status = ?";
-      try (ResultSet resultSet1 = database.query("sql", sqlString, parameters2)) {
+      try (ResultSet resultSet1 = database.query("sql", sqlString, "PENDING")) {
         assertThat(resultSet1.next().<String>getProperty("status")).isEqualTo("PENDING");
       }
     });
 
     database.transaction(() -> {
-      Object[] parameters2 = { "PENDING" };
       try (ResultSet resultSet1 = database.query("sql",
           "SELECT id, status FROM Order WHERE status = 'PENDING' OR status = 'READY' ORDER BY id ASC LIMIT 1")) {
         assertThat(resultSet1.next().<String>getProperty("status")).isEqualTo("PENDING");

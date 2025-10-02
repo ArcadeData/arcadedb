@@ -165,14 +165,25 @@ public class LSMTreeIndexCursor implements IndexCursor {
       ++pageCounter;
     }
 
+    // COLLECT THE DELETED ENTRIES ACROSS BUCKETS. IT IS POSSIBLE THAT THE SAME KEY IS DELETED MORE THAN ONCE,
+    // SO WE NEED TO CHECK IT ALSO ACROSS BUCKETS/CURSORS
     final Set<TransactionIndexContext.ComparableKey> removedKeys = new HashSet<>();
-    boolean removedEntry = false;
 
     // CHECK THE VALIDITY OF CURSORS
     for (int i = 0; i < pageCursors.length; ++i) {
 
       LSMTreeIndexUnderlyingAbstractCursor pageCursor = pageCursors[i];
-      while (pageCursor != null && !removedEntry) {
+      while (pageCursor != null) {
+        final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(pageCursor.getKeys());
+        if (removedKeys.contains(keys)) {
+          if (pageCursor.hasNext()) {
+            pageCursor.next();
+            continue;
+          }
+          pageCursors[i] = null;
+          break;
+        }
+
         if (fromKeys != null && !beginKeysInclusive) {
           if (LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[i], fromKeys) == 0) {
             // SKIP THIS
@@ -200,26 +211,12 @@ public class LSMTreeIndexCursor implements IndexCursor {
         }
 
         if (pageCursors[i] != null) {
-          final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(pageCursors[i].getKeys());
-
           final RID[] rids = pageCursors[i].getValue();
           if (rids != null) {
-            boolean validEntry = false;
-            for (int j = rids.length - 1; j > -1; --j) {
-              final RID r = rids[j];
-
-              if (r.getBucketId() < 0) {
-                removedKeys.add(keys);
-                break;
-              }
-
-              if (removedKeys.contains(keys))
-                // HAS BEEN DELETED
-                break;
-
-              validEntry = true;
-            }
-            if (validEntry)
+            final RID r = rids[rids.length - 1];
+            if (r.getBucketId() < 0)
+              removedKeys.add(keys);
+            else
               validIterators++;
           }
         }
@@ -346,7 +343,6 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
       final Set<RID> validRIDs = new HashSet<>();
 
-      boolean removedEntry = false;
       for (int i = 0; i < minorKeyIndexes.size(); ++i) {
         final int minorKeyIndex = minorKeyIndexes.get(i);
 
@@ -365,22 +361,18 @@ public class LSMTreeIndexCursor implements IndexCursor {
         }
 
         // START FROM THE LAST ENTRY
+        final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(currentKeys);
         for (int k = currentValues.length - 1; k > -1; --k) {
           final RID rid = currentValues[k];
 
-          final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(currentKeys);
-
           if (rid.getBucketId() < 0) {
             removedKeys.add(keys);
-            removedEntry = true;
             continue;
           }
 
-          if (removedKeys.contains(keys)) {
+          if (removedKeys.contains(keys))
             // HAS BEEN DELETED
-            removedEntry = true;
             continue;
-          }
 
           validRIDs.add(rid);
         }
@@ -406,11 +398,6 @@ public class LSMTreeIndexCursor implements IndexCursor {
           pageCursors[minorKeyIndex] = null;
           cursorKeys[minorKeyIndex] = null;
           --validIterators;
-        }
-
-        if (removedEntry) {
-          currentValues = null;
-          break;
         }
 
         if (validRIDs.isEmpty())
