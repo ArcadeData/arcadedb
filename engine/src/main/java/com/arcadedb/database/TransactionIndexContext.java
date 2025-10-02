@@ -406,12 +406,12 @@ public class TransactionIndexContext {
         for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerKey : txEntriesPerIndex.entrySet()) {
           final Map<IndexKey, IndexKey> valuesPerKey = txEntriesPerKey.getValue();
 
-          for (final IndexKey entry : valuesPerKey.values()) {
-            if (entry.operation == IndexKey.IndexKeyOperation.REMOVE ||
-                entry.operation == IndexKey.IndexKeyOperation.REPLACE) {
+          for (final Map.Entry<IndexKey, IndexKey> entry : valuesPerKey.entrySet()) {
+            if (entry.getValue().operation == IndexKey.IndexKeyOperation.REMOVE ||
+                entry.getValue().operation == IndexKey.IndexKeyOperation.REPLACE) {
               final TypeIndex typeIndex = index.getTypeIndex();
               final Map<ComparableKey, RID> entries = deletedKeys.computeIfAbsent(typeIndex, k -> new HashMap<>());
-              entries.put(new ComparableKey(entry.keyValues), entry.rid);
+              entries.put(new ComparableKey(entry.getValue().keyValues), entry.getKey().rid);
             }
           }
         }
