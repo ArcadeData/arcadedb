@@ -23,7 +23,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 
 public interface HACommand {
-  HACommand execute(HAServer server, String remoteServerName, long messageNumber);
+  HACommand execute(HAServer server, HAServer.ServerInfo remoteServerName, long messageNumber);
 
   void toStream(Binary stream);
 
