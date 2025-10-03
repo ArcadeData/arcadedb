@@ -21,21 +21,25 @@ package com.arcadedb.integration.importer.vector;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.index.vector.HnswVectorIndexRAM;
 import com.arcadedb.index.vector.VectorUtils;
-import com.arcadedb.index.vector.distance.DistanceFunctionFactory;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DateUtils;
-import com.github.jelmerk.knn.DistanceFunction;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.stream.*;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Imports Embeddings in arbitrary dimensions.
@@ -43,31 +47,31 @@ import java.util.stream.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class TextEmbeddingsImporter {
-  private final    InputStream      inputStream;
-  private final    ImporterSettings settings;
-  private final    ConsoleLogger    logger;
-  private          int              m;
-  private          int              ef;
-  private          int              efConstruction;
-  private          boolean          normalizeVectors    = false;
-  private          String           databasePath;
-  private          boolean          overwriteDatabase   = false;
-  private          long             errors              = 0L;
-  private          long             warnings            = 0L;
-  private          DatabaseFactory  factory;
-  private          Database         database;
-  private          long             beginTime;
-  private          boolean          error               = false;
-  private          ImporterContext  context             = new ImporterContext();
-  private          String           vectorTypeName;
-  private          String           distanceFunctionName;
-  private          String           vectorPropertyName;
-  private          String           idPropertyName      = "name";
-  private          String           deletedPropertyName = "deleted";
-  private volatile long             embeddingsParsed    = 0L;
-  private volatile long             indexedEmbedding    = 0L;
-  private volatile long             verticesCreated     = 0L;
-  private volatile long             verticesConnected   = 0L;
+  private final    InputStream              inputStream;
+  private final    ImporterSettings         settings;
+  private final    ConsoleLogger            logger;
+  private          int                      maxConnections;
+  private          int                      beamWidth;
+  private          VectorSimilarityFunction similarityFunction;
+  private          boolean                  normalizeVectors    = false;
+  private          String                   databasePath;
+  private          boolean                  overwriteDatabase   = false;
+  private          long                     errors              = 0L;
+  private          long                     warnings            = 0L;
+  private          DatabaseFactory          factory;
+  private          Database                 database;
+  private          long                     beginTime;
+  private          boolean                  error               = false;
+  private          ImporterContext          context             = new ImporterContext();
+  private          String                   vectorTypeName;
+  private          String                   similarityFunctionName;
+  private          String                   vectorPropertyName;
+  private          String                   idPropertyName      = "name";
+  private          String                   deletedPropertyName = "deleted";
+  private volatile long                     embeddingsParsed    = 0L;
+  private volatile long                     indexedEmbedding    = 0L;
+  private volatile long                     verticesCreated     = 0L;
+  private volatile long                     verticesConnected   = 0L;
 
   public TextEmbeddingsImporter(final DatabaseInternal database, final InputStream inputStream, final ImporterSettings settings)
       throws ClassNotFoundException {
@@ -77,9 +81,8 @@ public class TextEmbeddingsImporter {
     this.inputStream = inputStream;
     this.logger = new ConsoleLogger(settings.verboseLevel);
 
-    distanceFunctionName = settings.getValue("distanceFunction", "InnerProduct");
-    distanceFunctionName =
-        Character.toUpperCase(distanceFunctionName.charAt(0)) + distanceFunctionName.substring(1).toLowerCase(Locale.ENGLISH);
+    similarityFunctionName = settings.getValue("similarityFunction", "EUCLIDEAN");
+    similarityFunctionName = similarityFunctionName.toUpperCase(Locale.ENGLISH);
 
     vectorTypeName = settings.getValue("vectorType", "Float");
     // USE CAMEL CASE FOR THE VECTOR TYPE
@@ -94,9 +97,14 @@ public class TextEmbeddingsImporter {
     if (settings.options.containsKey("deletedProperty"))
       this.deletedPropertyName = settings.getValue("deletedProperty", null);
 
-    this.m = settings.getIntValue("m", 16);
-    this.ef = settings.getIntValue("ef", 256);
-    this.efConstruction = settings.getIntValue("efConstruction", 256);
+    this.maxConnections = settings.getIntValue("maxConnections", 16);
+    this.beamWidth = settings.getIntValue("beamWidth", 100);
+    try {
+      this.similarityFunction = VectorSimilarityFunction.valueOf(similarityFunctionName);
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException(
+          "Invalid similarity function: " + similarityFunctionName + ". Valid options: EUCLIDEAN, DOT_PRODUCT, COSINE", e);
+    }
 
     if (settings.options.containsKey("normalizeVectors"))
       this.normalizeVectors = Boolean.parseBoolean(settings.getValue("normalizeVectors", null));
@@ -105,9 +113,6 @@ public class TextEmbeddingsImporter {
   public Database run() throws IOException, ClassNotFoundException, InterruptedException {
     if (!createDatabase())
       return null;
-
-    final DistanceFunction distanceFunction = DistanceFunctionFactory.getImplementationByName(
-        vectorTypeName + distanceFunctionName);
 
     beginTime = System.currentTimeMillis();
 
@@ -123,12 +128,6 @@ public class TextEmbeddingsImporter {
 
       logger.logLine(2, "- Parsed %,d embeddings with %,d dimensions in RAM", texts.size(), dimensions);
 
-      final HnswVectorIndexRAM<String, float[], TextFloatsEmbedding, Float> hnswIndex = HnswVectorIndexRAM.newBuilder(dimensions,
-          distanceFunction,
-          texts.size()).withM(m).withEf(ef).withEfConstruction(efConstruction).build();
-
-      hnswIndex.addAll(texts, Runtime.getRuntime().availableProcessors(), (workDone, max) -> ++indexedEmbedding, 1);
-
       Type vectorPropertyType = switch (vectorTypeName) {
         case "Short" -> Type.ARRAY_OF_SHORTS;
         case "Integer" -> Type.ARRAY_OF_INTEGERS;
@@ -138,14 +137,35 @@ public class TextEmbeddingsImporter {
         default -> throw new IllegalArgumentException("Type '" + vectorTypeName + "' not supported");
       };
 
-      hnswIndex.createPersistentIndex(database)//
-          .withVertexType(settings.vertexTypeName).withEdgeType(settings.edgeTypeName)
-          .withVectorProperty(vectorPropertyName, vectorPropertyType)
-          .withIdProperty(idPropertyName)//
-          .withDeletedProperty(deletedPropertyName)//
-          .withVertexCreationCallback((record, item, total) -> ++verticesCreated)//
-          .withCallback((record, total) -> ++verticesConnected)//
-          .withBatchSize(1000).create();
+      // Create vertex type and properties first
+      final VertexType vertexType = database.getSchema().getOrCreateVertexType(settings.vertexTypeName);
+      vertexType.getOrCreateProperty(idPropertyName, Type.STRING);
+      vertexType.getOrCreateProperty(vectorPropertyName, vectorPropertyType);
+
+      // Import embeddings as vertices first
+      database.transaction(() -> {
+        for (final TextFloatsEmbedding embedding : texts) {
+          database.newVertex(settings.vertexTypeName)
+              .set(idPropertyName, embedding.id())
+              .set(vectorPropertyName, embedding.vector())
+              .save();
+          ++verticesCreated;
+        }
+      });
+
+      // Create JVector index
+      database.transaction(() -> {
+        database.getSchema().getEmbedded().buildVectorIndex()
+            .withVertexType(settings.vertexTypeName)
+            .withVectorProperty(vectorPropertyName, vectorPropertyType)
+            .withDimensions(dimensions)
+            .withSimilarityFunction(similarityFunction)
+            .withMaxConnections(maxConnections)
+            .withBeamWidth(beamWidth)
+            .withIndexName(settings.vertexTypeName + "[" + vectorPropertyName + "]")
+            .withCallback((record, total) -> ++verticesConnected)
+            .create();
+      });
     }
 
     logger.logLine(1, "***************************************************************************************************");
