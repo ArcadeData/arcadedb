@@ -372,7 +372,7 @@ public class PageManager extends LockContext {
         totalPagesWrittenSize.addAndGet(written);
       });
 
-      final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileById(fileId);
+      final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(fileId);
       if (component != null)
         component.updatePageCount(page.pageId.getPageNumber() + 1);
 
