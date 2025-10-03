@@ -1,7 +1,8 @@
 package com.arcadedb.containers.resilience;
 
-import com.arcadedb.containers.support.ContainersTestTemplate;
-import com.arcadedb.containers.support.DatabaseWrapper;
+import com.arcadedb.test.support.ContainersTestTemplate;
+import com.arcadedb.test.support.DatabaseWrapper;
+import com.arcadedb.test.support.ServerWrapper;
 import eu.rekawek.toxiproxy.Proxy;
 import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
@@ -11,6 +12,7 @@ import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 @Testcontainers
@@ -29,16 +31,14 @@ public class SimpleHaScenarioIT extends ContainersTestTemplate {
     GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666", "none", "any", network);
 
     logger.info("Starting the containers in sequence: arcade1 will be the leader");
-    startContainers();
+    List<ServerWrapper> servers = startContainers();
 
     logger.info("Creating the database on the first arcade container");
-    DatabaseWrapper db1 = new DatabaseWrapper(arcade1, idSupplier);
+    DatabaseWrapper db1 = new DatabaseWrapper(servers.getFirst(), idSupplier);
     logger.info("Creating the database on arcade server 1");
     db1.createDatabase();
-
-    DatabaseWrapper db2 = new DatabaseWrapper(arcade2, idSupplier);
-    logger.info("Creating schema on database 1");
     db1.createSchema();
+    DatabaseWrapper db2 = new DatabaseWrapper(servers.get(1), idSupplier);
 
     logger.info("Checking that the database schema is replicated");
     db1.checkSchema();

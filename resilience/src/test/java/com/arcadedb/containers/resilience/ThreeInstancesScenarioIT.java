@@ -1,20 +1,16 @@
 package com.arcadedb.containers.resilience;
 
-import com.arcadedb.containers.support.ContainersTestTemplate;
-import com.arcadedb.containers.support.DatabaseWrapper;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseComparator;
-import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.test.support.ContainersTestTemplate;
+import com.arcadedb.test.support.DatabaseWrapper;
+import com.arcadedb.test.support.ServerWrapper;
 import eu.rekawek.toxiproxy.Proxy;
-import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 public class ThreeInstancesScenarioIT extends ContainersTestTemplate {
@@ -64,11 +60,11 @@ public class ThreeInstancesScenarioIT extends ContainersTestTemplate {
         network);
 
     logger.info("Starting the containers in sequence: arcade1 will be the leader");
-    startContainers();
+    List<ServerWrapper> servers = startContainers();
 
-    DatabaseWrapper db1 = new DatabaseWrapper(arcade1, idSupplier);
-    DatabaseWrapper db2 = new DatabaseWrapper(arcade2, idSupplier);
-    DatabaseWrapper db3 = new DatabaseWrapper(arcade3, idSupplier);
+    DatabaseWrapper db1 = new DatabaseWrapper(servers.getFirst(), idSupplier);
+    DatabaseWrapper db2 = new DatabaseWrapper(servers.get(1), idSupplier);
+    DatabaseWrapper db3 = new DatabaseWrapper(servers.get(2), idSupplier);
     logger.info("Creating the database on arcade server 1");
     db1.createDatabase();
 
@@ -124,12 +120,12 @@ public class ThreeInstancesScenarioIT extends ContainersTestTemplate {
         .pollInterval(1, TimeUnit.SECONDS)
         .until(() -> {
           try {
-            Integer users1 = db1.countUsers();
-            Integer photos1 = db1.countPhotos();
-            Integer users2 = db2.countUsers();
-            Integer photos2 = db2.countPhotos();
-            Integer users3 = db3.countUsers();
-            Integer photos3 = db3.countPhotos();
+            Long users1 = db1.countUsers();
+            Long photos1 = db1.countPhotos();
+            Long users2 = db2.countUsers();
+            Long photos2 = db2.countPhotos();
+            Long users3 = db3.countUsers();
+            Long photos3 = db3.countPhotos();
             logger.info("Users:: {} --> {} --> {} - Photos:: {} --> {} --> {}  ", users1, users2, users3, photos1, photos2,
                 photos3);
             return users2.equals(users1) && photos2.equals(photos1) && users3.equals(users1) && photos3.equals(photos1);
