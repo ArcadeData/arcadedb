@@ -8,7 +8,6 @@ import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.IOException;
@@ -27,8 +26,8 @@ public class SimpleHaScenarioIT extends ContainersTestTemplate {
     final Proxy arcade2Proxy = toxiproxyClient.createProxy("arcade2Proxy", "0.0.0.0:8667", "arcade2:2424");
 
     logger.info("Creating two arcade containers");
-    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}proxy:8667", "none", "any", network);
-    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666", "none", "any", network);
+    createArcadeContainer("arcade1", "{arcade2}proxy:8667", "none", "any", network);
+    createArcadeContainer("arcade2", "{arcade1}proxy:8666", "none", "any", network);
 
     logger.info("Starting the containers in sequence: arcade1 will be the leader");
     List<ServerWrapper> servers = startContainers();
@@ -39,7 +38,6 @@ public class SimpleHaScenarioIT extends ContainersTestTemplate {
     db1.createDatabase();
     db1.createSchema();
     DatabaseWrapper db2 = new DatabaseWrapper(servers.get(1), idSupplier);
-
     logger.info("Checking that the database schema is replicated");
     db1.checkSchema();
     db2.checkSchema();
@@ -62,26 +60,38 @@ public class SimpleHaScenarioIT extends ContainersTestTemplate {
 
     logger.info("Verifying still only 10 users on arcade 2");
     db2.assertThatUserCountIs(10);
+    logStatus(db1, db2);
 
     logger.info("Reconnecting instances");
     arcade1Proxy.toxics().get("CUT_CONNECTION_DOWNSTREAM").remove();
     arcade1Proxy.toxics().get("CUT_CONNECTION_UPSTREAM").remove();
 
     logger.info("Waiting for resync");
+
+    TimeUnit.SECONDS.sleep(10);
+    logStatus(db1, db2);
+    TimeUnit.SECONDS.sleep(10);
+    logStatus(db1, db2);
     Awaitility.await()
         .atMost(30, TimeUnit.SECONDS)
         .pollInterval(1, TimeUnit.SECONDS)
         .until(() -> {
-          try {
-            Long users1 = db1.countUsers();
-            Long photos1 = db1.countPhotos();
-            Long users2 = db2.countUsers();
-            Long photos2 = db2.countPhotos();
-            logger.info("Users:: {} --> {} - Photos:: {} --> {} ", users1, users2, photos1, photos2);
-            return users2.equals(users1) && photos2.equals(photos1);
-          } catch (Exception e) {
-            return false;
-          }
+          Long users1 = db1.countUsers();
+          Long photos1 = db1.countPhotos();
+          Long users2 = db2.countUsers();
+          Long photos2 = db2.countPhotos();
+          logger.info("Users:: {} --> {} - Photos:: {} --> {} ", users1, users2, photos1, photos2);
+          return users2.equals(users1) && photos2.equals(photos1);
         });
+
+  }
+
+  private void logStatus(DatabaseWrapper db1, DatabaseWrapper db2) {
+    logger.info("Maybe  resynced?");
+    Long users2 = db2.countUsers();
+    Long photos2 = db2.countPhotos();
+    Long users1 = db1.countUsers();
+    Long photos1 = db1.countPhotos();
+    logger.info("Users:: {} --> {} - Photos:: {} --> {} ", users1, users2, photos1, photos2);
   }
 }

@@ -4,6 +4,7 @@ import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
 import eu.rekawek.toxiproxy.Proxy;
+import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -91,9 +92,9 @@ public class ThreeInstancesScenarioIT extends ContainersTestTemplate {
     db2.assertThatPhotoCountIs(300);
     db3.assertThatPhotoCountIs(300);
 
-//    logger.info("Disconnecting arcade1 form others");
-//    arcade1Proxy.toxics().bandwidth("CUT_CONNECTION_DOWNSTREAM", ToxicDirection.DOWNSTREAM, 0);
-//    arcade1Proxy.toxics().bandwidth("CUT_CONNECTION_UPSTREAM", ToxicDirection.UPSTREAM, 0);
+    logger.info("Disconnecting arcade1 form others");
+    arcade1Proxy.toxics().bandwidth("CUT_CONNECTION_DOWNSTREAM", ToxicDirection.DOWNSTREAM, 0);
+    arcade1Proxy.toxics().bandwidth("CUT_CONNECTION_UPSTREAM", ToxicDirection.UPSTREAM, 0);
 
     logger.info("Adding data to arcade2");
     db2.addUserAndPhotos(100, 10);
@@ -103,9 +104,9 @@ public class ThreeInstancesScenarioIT extends ContainersTestTemplate {
     db2.assertThatUserCountIs(130);
     db3.assertThatUserCountIs(130);
 
-//    logger.info("Reconnecting arcade3 ");
-//    arcade1Proxy.toxics().get("CUT_CONNECTION_DOWNSTREAM").remove();
-//    arcade1Proxy.toxics().get("CUT_CONNECTION_UPSTREAM").remove();
+    logger.info("Reconnecting arcade3 ");
+    arcade1Proxy.toxics().get("CUT_CONNECTION_DOWNSTREAM").remove();
+    arcade1Proxy.toxics().get("CUT_CONNECTION_UPSTREAM").remove();
 
     logger.info("Adding data to database");
     db1.addUserAndPhotos(100, 10);
