@@ -656,4 +656,45 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
       }
     }
   }
+
+  @Disabled("Pending fix verification")
+  @Test
+  void testCypherWithArrayParameterInClause() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("create vertex type CHUNK");
+        // Create test vertices directly
+        st.execute("{cypher} CREATE (n:CHUNK {text: 'chunk1'})");
+        st.execute("{cypher} CREATE (n:CHUNK {text: 'chunk2'})");
+        st.execute("{cypher} CREATE (n:CHUNK {text: 'chunk3'})");
+      }
+
+      // Get all RIDs
+      String[] rids = new String[3];
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("{cypher} MATCH (n:CHUNK) RETURN ID(n) ORDER BY n.text")) {
+          int idx = 0;
+          while (rs.next() && idx < 3) {
+            rids[idx++] = rs.getString(1);
+          }
+        }
+      }
+
+      // Now query with IN clause using array parameter - this should reproduce the ClassCastException
+      try (var pst = conn.prepareStatement("{cypher} MATCH (n:CHUNK) WHERE ID(n) IN ? RETURN n.text as text ORDER BY n.text")) {
+        Array array = conn.createArrayOf("text", rids);
+        pst.setArray(1, array);
+
+        try (var rs = pst.executeQuery()) {
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getString("text")).isEqualTo("chunk1");
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getString("text")).isEqualTo("chunk2");
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getString("text")).isEqualTo("chunk3");
+          assertThat(rs.next()).isFalse();
+        }
+      }
+    }
+  }
 }
