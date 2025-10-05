@@ -445,12 +445,63 @@ public class PostgresNetworkExecutor extends Thread {
       Object[] parametersCypher = new Object[parameters.length * 2];
       for (int i = 0; i < parameters.length; i++) {
         parametersCypher[i] = "" + (i + 1);
-        parametersCypher[i + 1] = portal.parameterValues.get(i);
+        Object paramValue = portal.parameterValues.get(i);
+        
+        // Handle PostgreSQL array strings that weren't deserialized into Collections
+        // This happens when the type code is UNSPECIFIED (0) during parameter binding
+        if (paramValue instanceof String strValue && strValue.startsWith("{") && strValue.endsWith("}")) {
+          // Parse the PostgreSQL array string format into a List
+          paramValue = parsePostgresArrayString(strValue);
+        }
+        
+        parametersCypher[i + 1] = paramValue;
       }
       return parametersCypher;
     }
 
     return parameters;
+  }
+  
+  /**
+   * Parses a PostgreSQL array string format (e.g., "{val1,val2,val3}") into a List.
+   * This is needed when array parameters are sent with UNSPECIFIED type code.
+   */
+  private List<String> parsePostgresArrayString(String arrayStr) {
+    if (arrayStr == null || arrayStr.length() < 2) {
+      return new ArrayList<>();
+    }
+    
+    // Remove surrounding braces
+    String content = arrayStr.substring(1, arrayStr.length() - 1);
+    
+    if (content.isEmpty()) {
+      return new ArrayList<>();
+    }
+    
+    // Simple comma split - handles basic cases
+    // For more complex cases with nested arrays or quoted strings, PostgresType.parseArrayFromString could be used
+    List<String> result = new ArrayList<>();
+    StringBuilder current = new StringBuilder();
+    boolean inQuotes = false;
+    
+    for (int i = 0; i < content.length(); i++) {
+      char c = content.charAt(i);
+      
+      if (c == '"' && (i == 0 || content.charAt(i - 1) != '\\')) {
+        inQuotes = !inQuotes;
+      } else if (c == ',' && !inQuotes) {
+        result.add(current.toString().trim());
+        current = new StringBuilder();
+      } else {
+        current.append(c);
+      }
+    }
+    
+    if (current.length() > 0) {
+      result.add(current.toString().trim());
+    }
+    
+    return result;
   }
 
   private Map<String, PostgresType> getColumns(final List<Result> resultSet) {
