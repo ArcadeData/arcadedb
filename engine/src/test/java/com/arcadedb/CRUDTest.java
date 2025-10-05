@@ -28,6 +28,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.*;
@@ -77,6 +78,7 @@ public class CRUDTest extends TestHelper {
   }
 
   @Test
+  @Tag("slow")
   public void testMultiUpdatesOverlap() {
     final Database db = database;
 
@@ -177,6 +179,7 @@ public class CRUDTest extends TestHelper {
   }
 
   @Test
+  @Tag("slow")
   public void testMultiUpdatesAndDeleteOverlap() {
     final Database db = database;
     try {

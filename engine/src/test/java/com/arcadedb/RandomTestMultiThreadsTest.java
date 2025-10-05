@@ -32,6 +32,7 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Pair;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.math.*;
@@ -58,6 +59,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
   private final boolean                              debug                   = false;
 
   @Test
+  @Tag("slow")
   public void testRandom() {
     GlobalConfiguration.COMMIT_LOCK_TIMEOUT.setValue(10_000);
 

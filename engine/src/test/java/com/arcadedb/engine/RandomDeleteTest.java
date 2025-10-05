@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.MutableVertex;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -34,6 +35,7 @@ public class RandomDeleteTest {
   private static final int    CYCLES      = 3;
 
   @Test
+  @Tag("slow")
   public void testSmallRecords() {
     try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/randomDeleteTest")) {
       if (databaseFactory.exists())
