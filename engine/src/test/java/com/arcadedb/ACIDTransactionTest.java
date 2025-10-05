@@ -36,6 +36,8 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
+import jdk.jfr.Category;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -256,6 +258,7 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   @Test
+  @Tag("slow")
   public void testAsyncIOExceptionAfterWALIsWrittenManyRecords() {
     final Database db = database;
 
@@ -397,6 +400,7 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   @Test
+  @Tag("slow")
   public void testAsyncEdges() {
     final Database db = database;
 

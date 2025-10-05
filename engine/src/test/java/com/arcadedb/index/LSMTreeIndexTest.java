@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.assertj.core.api.Assertions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -1011,6 +1012,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
+  @Tag("slow")
   public void testUniqueConcurrentWithIndexesCompaction() throws InterruptedException {
     database.begin();
     final long startingWith = database.countType(TYPE_NAME, true);

@@ -22,15 +22,15 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
-import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.select.SelectIterator;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
+import java.io.File;
+import java.util.Collection;
 
 import static com.arcadedb.schema.LocalSchema.STATISTICS_FILE_NAME;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -43,6 +43,7 @@ public class RecordRecyclingTest {
   private final static int    TOT_VERTICES = 1000;
 
   @Test
+  @Tag("slow")
   public void testCreateAndDeleteGraph() {
     GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.setValue("high");
 

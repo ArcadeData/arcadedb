@@ -32,6 +32,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -560,6 +561,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
+  @Tag("slow")
   public void testUniqueConcurrentWithIndexesCompaction() {
     GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(0);
 
