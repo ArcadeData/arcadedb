@@ -265,10 +265,10 @@ def test_psycopg2_cypher_with_array_parameter_in_clause():
             rids_list = [rid1, rid2, rid3]
             query_params = {'ids': rids_list}
             cursor.execute('{cypher} MATCH (n:CHUNK) WHERE ID(n) IN %(ids)s RETURN n.text as text, ID(n) as id', query_params)
-            
+
             results = cursor.fetchall()
             assert len(results) == 3
-            
+
             # Verify we got all three chunks
             texts = [r[0] for r in results]
             assert 'chunk1' in texts
@@ -276,4 +276,3 @@ def test_psycopg2_cypher_with_array_parameter_in_clause():
             assert 'chunk3' in texts
     finally:
         conn.close()
-

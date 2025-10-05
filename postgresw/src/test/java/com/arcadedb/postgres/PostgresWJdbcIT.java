@@ -684,7 +684,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
       try (var pst = conn.prepareStatement("{cypher} MATCH (n:CHUNK) WHERE ID(n) IN ? RETURN n.text as text ORDER BY n.text")) {
         Array array = conn.createArrayOf("text", rids);
         pst.setArray(1, array);
-        
+
         try (var rs = pst.executeQuery()) {
           assertThat(rs.next()).isTrue();
           assertThat(rs.getString("text")).isEqualTo("chunk1");
