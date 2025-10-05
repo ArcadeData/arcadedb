@@ -148,7 +148,7 @@ jobs:
         if: success() || failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: unit-coverage-reports
+          name: slow-unit-coverage-reports
           path: |
             **/jacoco*.xml
           retention-days: 1
@@ -412,7 +412,7 @@ jobs:
 
   coverage-report:
     runs-on: ubuntu-latest
-    needs: [ unit-tests, integration-tests ]
+    needs: [ unit-tests, integration-tests, slow-unit-tests ]
     if: success() || failure()
     steps:
       - name: Download unit test coverage reports
@@ -420,6 +420,12 @@ jobs:
         with:
           name: unit-coverage-reports
           path: unit-coverage
+
+      - name: Download unit test coverage reports
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: slow-unit-coverage-reports
+          path: slow-unit-coverage
 
       - name: Download integration test coverage reports
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
