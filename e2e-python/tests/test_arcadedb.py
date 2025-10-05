@@ -243,3 +243,36 @@ def test_psycopg2_with_positional_parameterized_query():
             assert 'Stout' in beer
     finally:
         conn.close()
+
+
+def test_psycopg2_cypher_with_array_parameter_in_clause():
+    """Test Cypher query with array parameter using IN clause - reproduces the ClassCastException issue"""
+    params = get_connection_params(arcadedb)
+    conn = psycopg.connect(**params)
+    conn.autocommit = True
+
+    try:
+        with conn.cursor() as cursor:
+            # Create test vertices first
+            cursor.execute('{cypher} CREATE (n:CHUNK {text: "chunk1"}) RETURN ID(n)')
+            rid1 = cursor.fetchone()[0]
+            cursor.execute('{cypher} CREATE (n:CHUNK {text: "chunk2"}) RETURN ID(n)')
+            rid2 = cursor.fetchone()[0]
+            cursor.execute('{cypher} CREATE (n:CHUNK {text: "chunk3"}) RETURN ID(n)')
+            rid3 = cursor.fetchone()[0]
+
+            # Now query with IN clause using array parameter
+            rids_list = [rid1, rid2, rid3]
+            query_params = {'ids': rids_list}
+            cursor.execute('{cypher} MATCH (n:CHUNK) WHERE ID(n) IN %(ids)s RETURN n.text as text, ID(n) as id', query_params)
+
+            results = cursor.fetchall()
+            assert len(results) == 3
+
+            # Verify we got all three chunks
+            texts = [r[0] for r in results]
+            assert 'chunk1' in texts
+            assert 'chunk2' in texts
+            assert 'chunk3' in texts
+    finally:
+        conn.close()
