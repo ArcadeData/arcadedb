@@ -662,43 +662,36 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
     try (var conn = getConnection()) {
       try (var st = conn.createStatement()) {
         st.execute("create vertex type CHUNK");
+        // Create test vertices directly
+        st.execute("{cypher} CREATE (n:CHUNK {text: 'chunk1'})");
+        st.execute("{cypher} CREATE (n:CHUNK {text: 'chunk2'})");
+        st.execute("{cypher} CREATE (n:CHUNK {text: 'chunk3'})");
       }
 
-      // Create test vertices and collect their IDs
+      // Get all RIDs
       String[] rids = new String[3];
-      try (var pst = conn.prepareStatement("{cypher} CREATE (n:CHUNK {text: ?}) RETURN ID(n)")) {
-        pst.setString(1, "chunk1");
-        try (var rs = pst.executeQuery()) {
-          assertThat(rs.next()).isTrue();
-          rids[0] = rs.getString(1);
-        }
-
-        pst.setString(1, "chunk2");
-        try (var rs = pst.executeQuery()) {
-          assertThat(rs.next()).isTrue();
-          rids[1] = rs.getString(1);
-        }
-
-        pst.setString(1, "chunk3");
-        try (var rs = pst.executeQuery()) {
-          assertThat(rs.next()).isTrue();
-          rids[2] = rs.getString(1);
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("{cypher} MATCH (n:CHUNK) RETURN ID(n) ORDER BY n.text")) {
+          int idx = 0;
+          while (rs.next() && idx < 3) {
+            rids[idx++] = rs.getString(1);
+          }
         }
       }
 
       // Now query with IN clause using array parameter - this should reproduce the ClassCastException
-      try (var pst = conn.prepareStatement("{cypher} MATCH (n:CHUNK) WHERE ID(n) IN ? RETURN n.text as text, ID(n) as id")) {
+      try (var pst = conn.prepareStatement("{cypher} MATCH (n:CHUNK) WHERE ID(n) IN ? RETURN n.text as text ORDER BY n.text")) {
         Array array = conn.createArrayOf("text", rids);
         pst.setArray(1, array);
         
         try (var rs = pst.executeQuery()) {
-          int count = 0;
-          while (rs.next()) {
-            count++;
-            String text = rs.getString("text");
-            assertThat(text).isIn("chunk1", "chunk2", "chunk3");
-          }
-          assertThat(count).isEqualTo(3);
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getString("text")).isEqualTo("chunk1");
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getString("text")).isEqualTo("chunk2");
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getString("text")).isEqualTo("chunk3");
+          assertThat(rs.next()).isFalse();
         }
       }
     }
