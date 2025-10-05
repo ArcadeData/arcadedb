@@ -339,6 +339,11 @@ public enum PostgresType {
   private static Object deserializeText(final long code, final byte[] valueAsBytes) {
     String str = new String(valueAsBytes, DatabaseFactory.getDefaultCharset());
     if (code == 0) { // UNSPECIFIED
+      // Try to detect if this is a PostgreSQL array format
+      if (str.startsWith("{") && str.endsWith("}")) {
+        // Parse as an array using the TEXT array parser
+        return parseArrayFromString(str, s -> s);
+      }
       return str;
     }
 
