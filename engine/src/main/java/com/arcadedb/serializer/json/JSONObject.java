@@ -330,6 +330,12 @@ public class JSONObject implements Map<String, Object> {
     return new JSONArray(getElement(name).getAsJsonArray());
   }
 
+  public JSONArray getJSONArray(final String name, final JSONArray defaultValue) {
+    if (isNull(name))
+      return defaultValue;
+    return new JSONArray(getElement(name).getAsJsonArray());
+  }
+
   public Object get(final String name) {
     return elementToObject(getElement(name));
   }
