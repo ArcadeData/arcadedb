@@ -25,10 +25,11 @@ public class IndexSearchInfo {
   private final String         field;
   private final CommandContext context;
   private final boolean        indexByValue;
+  private final boolean        indexByItem;
   private final boolean        supportNull;
 
   public IndexSearchInfo(final String indexField, final boolean allowsRangeQueries, final boolean map, final boolean indexByKey,
-      final boolean indexByValue,
+      final boolean indexByValue, final boolean indexByItem,
       final boolean supportNull, final CommandContext context) {
     this.field = indexField;
     this.allowsRangeQueries = allowsRangeQueries;
@@ -36,6 +37,7 @@ public class IndexSearchInfo {
     this.indexByKey = indexByKey;
     this.context = context;
     this.indexByValue = indexByValue;
+    this.indexByItem = indexByItem;
     this.supportNull = supportNull;
   }
 
@@ -61,6 +63,10 @@ public class IndexSearchInfo {
 
   public boolean isIndexByValue() {
     return indexByValue;
+  }
+
+  public boolean isIndexByItem() {
+    return indexByItem;
   }
 
   public boolean isSupportNull() {

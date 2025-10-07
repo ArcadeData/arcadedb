@@ -36,6 +36,9 @@ public class CreateIndexStatementTestParserTest extends AbstractParserTest {
     checkRightSyntax("CREATE INDEX on Foo (bar, baz) UNIQUE");
     checkRightSyntax("CREATE INDEX on Foo (bar, baz) UNIQUE");
     checkRightSyntax("CREATE INDEX on Foo (bar by key, baz by value) UNIQUE");
+    checkRightSyntax("CREATE INDEX on Foo (tags by item) NOTUNIQUE");
+    checkRightSyntax("CREATE INDEX on Foo (identifiers[data] by item) NOTUNIQUE");
+    checkRightSyntax("CREATE INDEX on Foo (items by item, name by key) UNIQUE");
     checkRightSyntax("CREATE INDEX IF NOT EXISTS on Foo (bar) UNIQUE");
     checkRightSyntax("CREATE INDEX IF NOT EXISTS on Foo (bar) UNIQUE NULL_STRATEGY SKIP");
     checkRightSyntax("CREATE INDEX IF NOT EXISTS on Foo (bar) UNIQUE ENGINE LSM");

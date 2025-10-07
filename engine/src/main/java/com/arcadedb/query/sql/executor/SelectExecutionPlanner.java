@@ -2146,8 +2146,18 @@ public class SelectExecutionPlanner {
     BinaryCondition additionalRangeCondition = null;
 
     for (String indexField : indexFields) {
-      final IndexSearchInfo info = new IndexSearchInfo(indexField, allowsRangeQueries(index), isMap(clazz, indexField),
-          isIndexByKey(index, indexField), isIndexByValue(index, indexField), true, context);
+      // Strip modifiers to get base field name
+      String baseFieldName = indexField;
+      if (indexField.endsWith(" by key")) {
+        baseFieldName = indexField.substring(0, indexField.length() - 7);
+      } else if (indexField.endsWith(" by value")) {
+        baseFieldName = indexField.substring(0, indexField.length() - 9);
+      } else if (indexField.endsWith(" by item")) {
+        baseFieldName = indexField.substring(0, indexField.length() - 8);
+      }
+
+      final IndexSearchInfo info = new IndexSearchInfo(baseFieldName, allowsRangeQueries(index), isMap(clazz, baseFieldName),
+          isIndexByKey(index, baseFieldName), isIndexByValue(index, baseFieldName), isIndexByItem(index, baseFieldName), true, context);
       blockIterator = blockCopy.getSubBlocks().iterator();
       boolean indexFieldFound = false;
       boolean rangeOp = false;
@@ -2236,6 +2246,14 @@ public class SelectExecutionPlanner {
   private boolean isIndexByValue(final Index index, final String field) {
     for (String o : index.getPropertyNames()) {
       if (o.equalsIgnoreCase(field + " by value"))
+        return true;
+    }
+    return false;
+  }
+
+  private boolean isIndexByItem(final Index index, final String field) {
+    for (String o : index.getPropertyNames()) {
+      if (o.equalsIgnoreCase(field + " by item"))
         return true;
     }
     return false;

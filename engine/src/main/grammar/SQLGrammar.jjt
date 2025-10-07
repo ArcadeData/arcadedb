@@ -409,6 +409,7 @@ TOKEN :
   | <CONTAINSTEXT: ("C"|"c")("O"|"o")("N"|"n")("T"|"t")("A"|"a")("I"|"i")("N"|"n")("S"|"s")("T"|"t")("E"|"e")("X"|"x")("T"|"t") >
   | <MATCHES: ("M"|"m")("A"|"a")("T"|"t")("C"|"c")("H"|"h")("E"|"e")("S"|"s") >
   | <KEY: ("K"|"k")("E"|"e")("Y"|"y") >
+  | <ITEM: ("I"|"i")("T"|"t")("E"|"e")("M"|"m") >
   | <INSTANCEOF: ("I"|"i")("N"|"n")("S"|"s")("T"|"t")("A"|"a")("N"|"n")("C"|"c")("E"|"e")("O"|"o")("F"|"f") >
 }
 
@@ -500,6 +501,7 @@ Rid Rid():
   { return jjtThis; }
 }
 
+
 BucketIdentifier BucketIdentifier():
 {}
 {
@@ -589,6 +591,7 @@ Identifier Identifier():
   | token = <MERGE>
   | token = <CONTENT>
   | token = <KEY>
+  | token = <ITEM>
   | token = <OF>
   | token = <OFFSET>
   | token = <VALUE>
@@ -3566,6 +3569,8 @@ CreateIndexStatement CreateIndexStatement():
             <KEY> { lastProperty.byKey = true; }
             |
             <VALUE> { lastProperty.byValue = true; }
+            |
+            <ITEM> { lastProperty.byItem = true; }
           )
         ]
         (
@@ -3589,6 +3594,8 @@ CreateIndexStatement CreateIndexStatement():
               <KEY> { lastProperty.byKey = true; }
               |
               <VALUE> { lastProperty.byValue = true; }
+              |
+              <ITEM> { lastProperty.byItem = true; }
             )
           ]
         )*
