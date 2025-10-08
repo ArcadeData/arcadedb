@@ -107,6 +107,8 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     final Object[] convertedKeys = convertKeys(keys, binaryKeyTypes);
 
     writeEntry(keyValueContent, convertedKeys, rids);
+    if (keyValueContent.size() > currentPage.getMaxContentSize() - getHeaderSize(pageNum))
+      throw new IllegalArgumentException("Key/value size is too big to fit in a single page. Define the index with larger pages");
 
     int keyValueFreePosition = getValuesFreePosition(currentPage);
 
