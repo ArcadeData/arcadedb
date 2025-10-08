@@ -459,6 +459,9 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       final Binary keyValueContent = database.getContext().getTemporaryBuffer1();
       writeEntry(keyValueContent, convertedKeys, rids);
 
+      if (keyValueContent.size() > currentPage.getMaxContentSize() - getHeaderSize(pageNum))
+        throw new IllegalArgumentException("Key/value size is too big to fit in a single page. Define the index with larger pages");
+
       int keyValueFreePosition = getValuesFreePosition(currentPage);
 
       int keyIndex = result.found ? result.keyIndex + 1 : result.keyIndex;
