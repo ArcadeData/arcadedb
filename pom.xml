@@ -25,11 +25,7 @@
     <groupId>com.arcadedb</groupId>
     <artifactId>arcadedb-parent</artifactId>
     <packaging>pom</packaging>
-<<<<<<< HEAD
-    <version>25.7.1-SNAPSHOT</version>
-=======
-    <version>25.9.1</version>
->>>>>>> db314cb89 (Set release version to 25.9.1)
+    <version>25.10.1-SNAPSHOT</version>
 
     <name>ArcadeDB</name>
     <url>https://arcadedata.com/</url>
@@ -50,7 +46,7 @@
     </licenses>
 
     <properties>
-        <maven-compiler-plugin.release>17</maven-compiler-plugin.release>
+        <maven-compiler-plugin.release>21</maven-compiler-plugin.release>
         <exclude.tests></exclude.tests>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
@@ -123,19 +119,6 @@
         <url>https://github.com/ArcadeData/arcadedb</url>
         <tag>HEAD</tag>
     </scm>
-
-    <distributionManagement>
-        <repository>
-            <id>github</id>
-            <name>GitHub ArcadeDb Apache Maven Packages</name>
-            <url>https://maven.pkg.github.com/ArcadeData/arcadedb</url>
-        </repository>
-        <snapshotRepository>
-            <id>github</id>
-            <name>GitHub ArcadeDb Apache Maven Packages Snapshots</name>
-            <url>https://maven.pkg.github.com/ArcadeData/arcadedb</url>
-        </snapshotRepository>
-    </distributionManagement>
 
     <modules>
         <module>engine</module>
@@ -216,7 +199,6 @@
                         --add-exports java.management/sun.management=ALL-UNNAMED
                         --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED
                         --add-opens java.base/java.nio.channels.spi=ALL-UNNAMED
-                        --add-opens java.net.http/jdk.internal.net.http=ALL-UNNAMED
                     </argLine>
                     <skipTests>${skipTests}</skipTests>
                     <!--                    <skipTests>${skipUnit}</skipTests>-->
@@ -263,7 +245,6 @@
                         --add-exports java.management/sun.management=ALL-UNNAMED
                         --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED
                         --add-opens java.base/java.nio.channels.spi=ALL-UNNAMED
-                        --add-opens java.net.http/jdk.internal.net.http=ALL-UNNAMED
                     </argLine>
                 </configuration>
             </plugin>
@@ -273,14 +254,6 @@
                 <version>${maven-install-plugin.version}</version>
                 <configuration>
                     <allowIncompleteProjects>true</allowIncompleteProjects>
-                </configuration>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-deploy-plugin</artifactId>
-                <version>${maven-deploy-plugin.version}</version>
-                <configuration>
-                    <deployAtEnd>true</deployAtEnd>
                 </configuration>
             </plugin>
             <plugin>
@@ -310,6 +283,19 @@
                     </licenseSets>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <version>${maven-central-publishing-plugin.version}</version>
+                <extensions>true</extensions>
+                <configuration>
+                    <publishingServerId>central</publishingServerId>
+                    <autoPublish>true</autoPublish>
+                    <excludeArtifacts>
+                        arcadedb-coverage,arcadedb-e2e,arcadedb-e2e-perf
+                    </excludeArtifacts>
+                </configuration>
+            </plugin>
         </plugins>
 
         <pluginManagement>
@@ -318,7 +304,6 @@
                     <artifactId>maven-assembly-plugin</artifactId>
                     <version>${maven-assembly-plugin.version}</version>
                 </plugin>
-
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-jar-plugin</artifactId>
