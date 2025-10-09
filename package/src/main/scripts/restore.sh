@@ -32,7 +32,7 @@ done
 PRGDIR=`dirname "$PRG"`
 
 # Only set ARCADEDB_HOME if not already set
-[ -f "$ARCADEDB_HOME"/bin/console.sh ] || ARCADEDB_HOME=`cd "$PRGDIR/.." ; pwd`
+[ -f "$ARCADEDB_HOME"/bin/restore.sh ] || ARCADEDB_HOME=`cd "$PRGDIR/.." ; pwd`
 
 # Raspberry Pi check (Java VM does not run with -server argument on ARMv6)
 if [ `uname -m` != "armv6l" ]; then
@@ -44,6 +44,11 @@ if [ -f "${JAVA_HOME}/bin/java" ]; then
    JAVA=${JAVA_HOME}/bin/java
 else
    JAVA=java
+fi
+
+# ARCADEDB memory options, default uses the available RAM. To set it to a specific value, like 2GB of heap, use "-Xms2G -Xmx2G"
+if [ -z "$ARCADEDB_OPTS_MEMORY" ]; then
+  ARCADEDB_OPTS_MEMORY=""
 fi
 
 if [ -z "$JAVA_OPTS_SCRIPT" ] ; then
@@ -62,4 +67,4 @@ exec "$JAVA" $JAVA_OPTS \
     $JAVA_OPTS_SCRIPT \
     $ARCADEDB_SETTINGS \
     -cp "$ARCADEDB_HOME/lib/*" \
-    $ARGS com.arcadedb.integration.restore.Restore $*
+    $ARGS com.arcadedb.integration.restore.Restore "$@"
