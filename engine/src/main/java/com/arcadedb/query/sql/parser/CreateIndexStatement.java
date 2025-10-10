@@ -30,9 +30,13 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 
 public class CreateIndexStatement extends DDLStatement {
 
@@ -54,15 +58,9 @@ public class CreateIndexStatement extends DDLStatement {
   public void validate() throws CommandSQLParsingException {
     final String typeAsString = type.getStringValue().toUpperCase();
     switch (typeAsString) {
-    case "FULL_TEXT" -> {
-      ;
-    }
-    case "UNIQUE" -> {
-      ;
-    }
-    case "NOTUNIQUE" -> {
-      ;
-    }
+    case "FULL_TEXT" -> {}
+    case "UNIQUE" -> {}
+    case "NOTUNIQUE" -> {}
     default -> throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
     }
   }
@@ -71,7 +69,7 @@ public class CreateIndexStatement extends DDLStatement {
   public ResultSet executeDDL(final CommandContext context) {
     final Database database = context.getDatabase();
 
-    Identifier prevName= typeName;
+    Identifier prevName = typeName;
     if (typeName.getStringValue().startsWith("$")) {
       String variable = (String) context.getVariable(typeName.getStringValue());
       typeName = new Identifier(variable);
@@ -175,6 +173,8 @@ public class CreateIndexStatement extends DDLStatement {
           builder.append(" BY KEY");
         } else if (prop.byValue) {
           builder.append(" BY VALUE");
+        } else if (prop.byItem) {
+          builder.append(" BY ITEM");
         }
         if (prop.collate != null) {
           builder.append(" COLLATE ");
@@ -237,6 +237,7 @@ public class CreateIndexStatement extends DDLStatement {
     protected RecordAttribute recordAttribute;
     protected boolean         byKey   = false;
     protected boolean         byValue = false;
+    protected boolean         byItem  = false;
     protected Identifier      collate;
 
     public Property copy() {
@@ -245,6 +246,7 @@ public class CreateIndexStatement extends DDLStatement {
       result.recordAttribute = recordAttribute == null ? null : recordAttribute.copy();
       result.byKey = byKey;
       result.byValue = byValue;
+      result.byItem = byItem;
       result.collate = collate == null ? null : collate.copy();
       return result;
     }
@@ -262,6 +264,8 @@ public class CreateIndexStatement extends DDLStatement {
         return false;
       if (byValue != property.byValue)
         return false;
+      if (byItem != property.byItem)
+        return false;
       if (!Objects.equals(name, property.name))
         return false;
       if (!Objects.equals(recordAttribute, property.recordAttribute))
@@ -275,6 +279,7 @@ public class CreateIndexStatement extends DDLStatement {
       result = 31 * result + (recordAttribute != null ? recordAttribute.hashCode() : 0);
       result = 31 * result + (byKey ? 1 : 0);
       result = 31 * result + (byValue ? 1 : 0);
+      result = 31 * result + (byItem ? 1 : 0);
       result = 31 * result + (collate != null ? collate.hashCode() : 0);
       return result;
     }
@@ -296,6 +301,9 @@ public class CreateIndexStatement extends DDLStatement {
       }
       if (byValue) {
         result.append(" by value");
+      }
+      if (byItem) {
+        result.append(" by item");
       }
       return result.toString();
     }

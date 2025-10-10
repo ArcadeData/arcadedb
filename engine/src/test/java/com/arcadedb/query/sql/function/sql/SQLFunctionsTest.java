@@ -423,38 +423,30 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void queryDate() throws InterruptedException {
-
-//    System.out.println("dateTimeformat = " + database.getSchema().getDateTimeFormat());
-//    System.out.println("database.getSchema().getDateFormat() = " + database.getSchema().getDateFormat());
-//
-//    System.out.println("DATE_IMPLEMENTATION = " + GlobalConfiguration.DATE_IMPLEMENTATION.getValue());
-//    System.out.println("DATE_TIME_IMPLEMENTATION = " + GlobalConfiguration.DATE_TIME_IMPLEMENTATION.getValue());
-
+  public void queryDate() {
     ResultSet result = database.command("sql", "select count(*) as tot from Account");
     assertThat(result.hasNext()).isTrue();
     final long tot = result.next().<Long>getProperty("tot");
 
+    // Use a fixed timestamp to avoid race conditions where LocalDateTime.now() is captured
+    // at a different time than when the records are updated, causing intermittent test failures
+    final String fixedTimestamp = "2025-10-09T12:00:00.000Z";
+    final String pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
+
     database.transaction(() -> {
-      final ResultSet result2 = database.command("sql", "update Account set created = date()");
+      database.command("sql", "update Account set created = date('" + fixedTimestamp + "', \"" + pattern + "\")");
     });
+
     result = database.command("sql", "select count(*) as tot from Account where created is not null");
     assertThat(result.hasNext()).isTrue();
     assertThat(result.next().<Long>getProperty("tot")).isEqualTo(tot);
 
-    final String pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
-//    final String pattern = GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
-
-    DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern(pattern);
-    LocalDateTime now = LocalDateTime.now();
-    String formattedDate = now.format(timeFormatter);
-//    System.out.println("formattedDate = " + formattedDate);
-    String query = "select count() as tot from Account where created <= date('" + formattedDate + "', \"" + pattern + "\")";
+    // Query using the same fixed timestamp - guaranteed to match all records
+    String query = "select count() as tot from Account where created <= date('" + fixedTimestamp + "', \"" + pattern + "\")";
     result = database.command("sql", query);
 
     assertThat(result.next().<Long>getProperty("tot")).isEqualTo(tot)
-        .withFailMessage("Failed on querying by date with formattedDate=%s pattern=%s", formattedDate, pattern);
-
+        .withFailMessage("Failed on querying by date with formattedDate=%s pattern=%s", fixedTimestamp, pattern);
   }
 
   @Test
