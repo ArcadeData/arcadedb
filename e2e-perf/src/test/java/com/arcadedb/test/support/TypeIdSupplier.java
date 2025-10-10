@@ -23,8 +23,9 @@ import com.arcadedb.remote.RemoteDatabase;
 
 import java.util.Iterator;
 import java.util.List;
+import java.util.function.Supplier;
 
-public class TypeIdSupplier implements java.util.function.Supplier<Integer> {
+public class TypeIdSupplier implements Supplier<Integer> {
   /**
    * This class is a supplier for user IDs.
    * It fetches user IDs from the database in batches.

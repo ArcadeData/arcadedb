@@ -181,9 +181,9 @@ public class RemoteQueriesIT {
       }
     }
     ContextConfiguration configuration = new ContextConfiguration();
-    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);
     GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
-    assertThat(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION) == java.time.LocalDateTime.class).isTrue();
+    assertThat(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION) == LocalDateTime.class).isTrue();
 
     arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();

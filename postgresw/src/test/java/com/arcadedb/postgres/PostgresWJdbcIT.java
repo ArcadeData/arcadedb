@@ -31,11 +31,13 @@ import org.postgresql.util.PSQLException;
 
 import java.sql.Array;
 import java.sql.Connection;
+import java.sql.Date;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Properties;
@@ -208,8 +210,8 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         pst.setFloat(6, 6F);
         pst.setDouble(7, 7D);
         pst.setBoolean(8, false);
-        pst.setDate(9, new java.sql.Date(now));
-        pst.setTimestamp(10, new java.sql.Timestamp(now));
+        pst.setDate(9, new Date(now));
+        pst.setTimestamp(10, new Timestamp(now));
 
         pst.execute();
         pst.close();

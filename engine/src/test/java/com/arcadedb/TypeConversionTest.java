@@ -42,8 +42,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class TypeConversionTest extends TestHelper {
   public TypeConversionTest() throws ClassNotFoundException {
-    ((LocalDatabase) database).getSerializer().setDateImplementation(java.util.Date.class);
-    ((LocalDatabase) database).getSerializer().setDateTimeImplementation(java.util.Date.class);
+    ((LocalDatabase) database).getSerializer().setDateImplementation(Date.class);
+    ((LocalDatabase) database).getSerializer().setDateTimeImplementation(Date.class);
   }
 
   @Override

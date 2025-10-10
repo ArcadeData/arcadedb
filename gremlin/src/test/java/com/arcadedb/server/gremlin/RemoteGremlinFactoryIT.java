@@ -22,6 +22,7 @@ import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.gremlin.ArcadeGraphFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
+import org.apache.tinkerpop.gremlin.structure.T;
 import org.apache.tinkerpop.gremlin.structure.Transaction;
 import org.junit.jupiter.api.Test;
 
@@ -79,7 +80,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
         DEFAULT_PASSWORD_FOR_TESTS)) {
       try (final ArcadeGraph graph = pool.get()) {
         for (int i = 0; i < 1_000; i++)
-          graph.addVertex(org.apache.tinkerpop.gremlin.structure.T.label, "inputstructure", "json", "{\"name\": \"John\"}");
+          graph.addVertex(T.label, "inputstructure", "json", "{\"name\": \"John\"}");
 
         // THIS IS IN THE SAME SCOPE, SO IT CAN SEE THE PENDING VERTICES ADDED EARLIER
         try (final ResultSet list = graph.gremlin("g.V().hasLabel(\"inputstructure\").count()").execute()) {

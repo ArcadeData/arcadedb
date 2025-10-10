@@ -30,6 +30,7 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 import java.net.*;
+import java.security.SecureRandom;
 import java.security.cert.*;
 import java.util.*;
 import java.util.logging.*;
@@ -72,7 +73,7 @@ public class HTTPSSLIT extends BaseGraphServerTest {
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
       try {
         final SSLContext sc = SSLContext.getInstance("SSL");
-        sc.init(null, trustAllCertificates, new java.security.SecureRandom());
+        sc.init(null, trustAllCertificates, new SecureRandom());
         connection.setSSLSocketFactory(sc.getSocketFactory());
         connection.connect();
         final String response = readResponse(connection);

@@ -21,16 +21,19 @@ package com.arcadedb.query.sql.parser;
 
 import javax.annotation.processing.Generated;
 
+import java.util.ArrayList;
+import java.util.List;
+
 @Generated("JavaCC")
 public class JJTSqlParserState {
-  private final java.util.List<Node>    nodes;
-  private final java.util.List<Integer> marks;
+  private final List<Node>    nodes;
+  private final List<Integer> marks;
   private       int                     sp;        // number of nodes on stack
   private       int                     mk;        // current mark
 
   public JJTSqlParserState() {
-    nodes = new java.util.ArrayList<Node>();
-    marks = new java.util.ArrayList<Integer>();
+    nodes = new ArrayList<Node>();
+    marks = new ArrayList<Integer>();
     sp = 0;
     mk = 0;
   }

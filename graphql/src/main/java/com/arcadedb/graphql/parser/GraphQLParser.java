@@ -21,6 +21,8 @@
 package com.arcadedb.graphql.parser;
 
 import java.io.*;
+import java.util.ArrayList;
+import java.util.List;
 
 public class GraphQLParser/*@bgen(jjtree)*/implements GraphQLParserTreeConstants, GraphQLParserConstants {/*@bgen(jjtree)*/
   protected JJTGraphQLParserState jjtree = new JJTGraphQLParserState();private int tokenId = 0;
@@ -3335,7 +3337,7 @@ if (jjtc000) {
     return ret;
   }
 
-  private java.util.List<int[]> jj_expentries = new java.util.ArrayList<>();
+  private List<int[]> jj_expentries = new ArrayList<>();
   private int[] jj_expentry;
   private int jj_kind = -1;
 

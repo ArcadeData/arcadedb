@@ -27,11 +27,17 @@ import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.FileUtils;
 
+import javax.crypto.Cipher;
+import javax.crypto.CipherOutputStream;
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.SecretKeySpec;
+
 import java.io.*;
 import java.nio.charset.*;
+import java.security.SecureRandom;
 import java.security.spec.*;
 import java.util.*;
 import java.util.zip.*;
@@ -137,7 +143,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
         // Generate a random salt (e.g., 16 bytes)
         final byte[] salt = new byte[16];
 
-        new java.security.SecureRandom().nextBytes(salt);
+        new SecureRandom().nextBytes(salt);
         // Store this salt at the beginning of the backup file, similar to the IV.
 
         fos.write(salt);
@@ -147,20 +153,20 @@ public class FullBackupFormat extends AbstractBackupFormat {
         final KeySpec spec = new PBEKeySpec(settings.encryptionKey.toCharArray(), salt, 65536, 256); // 256-bit key
         final SecretKey tmp = factory.generateSecret(spec);
         final byte[] derivedKeyBytes = tmp.getEncoded();
-        final javax.crypto.SecretKey secretKey = new javax.crypto.spec.SecretKeySpec(derivedKeyBytes, settings.encryptionAlgorithm);
+        final SecretKey secretKey = new SecretKeySpec(derivedKeyBytes, settings.encryptionAlgorithm);
 
         // Initialize cipher
-        final javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance(settings.encryptionAlgorithm + "/CTR/NoPadding");
+        final Cipher cipher = Cipher.getInstance(settings.encryptionAlgorithm + "/CTR/NoPadding");
         final byte[] iv = new byte[16];
-        new java.security.SecureRandom().nextBytes(iv);
-        final javax.crypto.spec.IvParameterSpec ivSpec = new javax.crypto.spec.IvParameterSpec(iv);
-        cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, secretKey, ivSpec);
+        new SecureRandom().nextBytes(iv);
+        final IvParameterSpec ivSpec = new IvParameterSpec(iv);
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey, ivSpec);
 
         // Write IV at the beginning of the file
         fos.write(iv);
 
         // Wrap the output stream with CipherOutputStream
-        final javax.crypto.CipherOutputStream cos = new javax.crypto.CipherOutputStream(fos, cipher);
+        final CipherOutputStream cos = new CipherOutputStream(fos, cipher);
         zipFile = new ZipOutputStream(cos, StandardCharsets.UTF_8);
       } else
         zipFile = new ZipOutputStream(fos, StandardCharsets.UTF_8);

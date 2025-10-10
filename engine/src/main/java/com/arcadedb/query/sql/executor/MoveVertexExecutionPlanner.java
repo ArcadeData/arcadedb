@@ -59,7 +59,7 @@ public class MoveVertexExecutionPlanner {
   }
 
   private void handleTarget(final UpdateExecutionPlan result, final Identifier targetType,
-      final com.arcadedb.query.sql.parser.Bucket targetBucket,
+      final Bucket targetBucket,
       final CommandContext ctx) {
     result.chain(new MoveVertexStep(targetType, targetBucket, ctx));
   }

@@ -36,6 +36,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.utility.FileUtils;
@@ -64,7 +65,7 @@ public class ConsoleAsyncInsertTest {
   static final int    PARALLEL_LEVEL             = 6;
   static final String RECORD_TIME_FORMAT_PATTERN = "yyyyMMdd'_'HHmmss.SSSSSS";
   static final String userName                   = "user";
-  static final String password                   = com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+  static final String password                   = BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
 
   AtomicInteger autoIncrementOrderId = new AtomicInteger(0);
 
@@ -174,7 +175,7 @@ public class ConsoleAsyncInsertTest {
     String dateTimePattern = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS";
     GlobalConfiguration.SERVER_METRICS.setValue(false);
     GlobalConfiguration.HA_ENABLED.setValue(false);
-    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);
     GlobalConfiguration.DATE_TIME_FORMAT.setValue(dateTimePattern);
     GlobalConfiguration.ASYNC_WORKER_THREADS.setValue(PARALLEL_LEVEL);
 
@@ -251,7 +252,7 @@ public class ConsoleAsyncInsertTest {
     String dateTimePattern = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS";
     GlobalConfiguration.SERVER_METRICS.setValue(false);
     GlobalConfiguration.HA_ENABLED.setValue(false);
-    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);
     GlobalConfiguration.DATE_TIME_FORMAT.setValue(dateTimePattern);
     GlobalConfiguration.ASYNC_WORKER_THREADS.setValue(PARALLEL_LEVEL);
 
@@ -332,7 +333,7 @@ public class ConsoleAsyncInsertTest {
       }
     }
     String dateTimePattern = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS";
-    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);
     GlobalConfiguration.DATE_TIME_FORMAT.setValue(dateTimePattern);
     GlobalConfiguration.SERVER_METRICS.setValue(false);
     GlobalConfiguration.HA_ENABLED.setValue(false);

@@ -731,9 +731,9 @@ public class UpdateStatementExecutionTest extends TestHelper {
       dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "start", "stop");
     });
 
-    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);
     GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
-    ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(java.time.LocalDateTime.class);
+    ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(LocalDateTime.class);
 
     DateTimeFormatter FILENAME_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss");
 
@@ -776,7 +776,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
   @Test
   public void testCompositeIndexLookup() {
-    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);
     GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
     GlobalConfiguration.TX_RETRIES.setValue(0);
     final TypeIndex[] typeIndex = new TypeIndex[1];
