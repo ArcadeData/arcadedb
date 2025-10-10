@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
@@ -51,7 +52,7 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
 
       final Database db = context.getDatabase();
 
-      final com.arcadedb.engine.Bucket bucketObj;
+      final Bucket bucketObj;
       if (bucketName != null)
         bucketObj = db.getSchema().getBucketByName(bucketName);
       else

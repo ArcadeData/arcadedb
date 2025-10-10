@@ -28,6 +28,7 @@ import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrate
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
@@ -87,7 +88,7 @@ public class PerformanceInsertMTStressTest {
   private static void setupDatabaseSchema(Database db, int threadCount) {
     db.begin();
     String resourceTypeName = "Resource";
-    com.arcadedb.schema.DocumentType resourceType = db.getSchema().createDocumentType(resourceTypeName);
+    DocumentType resourceType = db.getSchema().createDocumentType(resourceTypeName);
 
     IntStream.rangeClosed(1, threadCount).forEach(i -> {
       resourceType.addBucket(db.getSchema().createBucket(resourceTypeName + "_" + i));

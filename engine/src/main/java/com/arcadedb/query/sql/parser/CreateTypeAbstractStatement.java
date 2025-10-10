@@ -190,7 +190,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     return result;
   }
 
-  protected List<com.arcadedb.engine.Bucket> getBuckets(final Schema schema) {
+  protected List<Bucket> getBuckets(final Schema schema) {
     final List<Bucket> bucketInstances = new ArrayList<>();
     for (final BucketIdentifier b : buckets) {
       if (!schema.existsBucket(b.bucketName.getStringValue()))

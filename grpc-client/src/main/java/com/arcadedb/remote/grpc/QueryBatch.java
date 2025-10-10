@@ -44,7 +44,7 @@ public final class QueryBatch {
   // Backward compatibility: provide records() method that extracts Records from
   // Results
   @Deprecated
-  public List<com.arcadedb.database.Record> records() {
+  public List<Record> records() {
     List<Record> records = new ArrayList<>(results.size());
     for (Result result : results) {
       if (result.isElement()) {

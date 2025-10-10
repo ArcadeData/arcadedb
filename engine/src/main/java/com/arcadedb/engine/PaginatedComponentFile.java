@@ -25,6 +25,8 @@ import java.lang.reflect.*;
 import java.nio.*;
 import java.nio.channels.*;
 import java.nio.channels.spi.*;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.logging.*;
 import java.util.zip.*;
 
@@ -91,9 +93,9 @@ public class PaginatedComponentFile extends ComponentFile {
       newFile = new File(osFile.getParentFile(), newFilePath);
     }
     try {
-      java.nio.file.Files.move(osFile.getAbsoluteFile().toPath(),
+      Files.move(osFile.getAbsoluteFile().toPath(),
           newFile.getAbsoluteFile().toPath(),
-          java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+          StandardCopyOption.ATOMIC_MOVE);
       open(newFile.getAbsolutePath(), mode);
     } catch (Exception e) {
       open(filePath, mode);

@@ -22,6 +22,8 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.grpc.GrpcRecord;
 import com.arcadedb.server.grpc.QueryResult;
+import io.grpc.StatusException;
+import io.grpc.StatusRuntimeException;
 import io.grpc.stub.BlockingClientCall;
 import com.arcadedb.log.LogManager;
 import java.util.logging.Level;
@@ -99,7 +101,7 @@ class StreamingResultSet implements ResultSet {
       streamExhausted = true;
       return false;
 
-    } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+    } catch (StatusRuntimeException | StatusException e) {
       db.handleGrpcException(e);
       throw new IllegalStateException("unreachable");
     } catch (InterruptedException e) {

@@ -71,7 +71,7 @@ public class CompositeIndexTest {
     }
     String dateTimePattern = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS";
     ContextConfiguration configuration = new ContextConfiguration();
-    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);
     GlobalConfiguration.DATE_TIME_FORMAT.setValue(dateTimePattern);
     ArcadeDBServer arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();

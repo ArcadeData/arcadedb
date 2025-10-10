@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.TestHelper;
 import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.function.Consumer;
@@ -75,8 +76,8 @@ public class ImmutableDocumentLazyLoadingInconsistencyTest extends TestHelper {
   public void beginTest() {
     database.transaction(() -> {
       final DocumentType type = database.getSchema().createDocumentType("SecurityTest");
-      type.createProperty("publicProperty", com.arcadedb.schema.Type.STRING);
-      type.createProperty("secretProperty", com.arcadedb.schema.Type.STRING);
+      type.createProperty("publicProperty", Type.STRING);
+      type.createProperty("secretProperty", Type.STRING);
     });
   }
 

@@ -42,6 +42,9 @@ import com.arcadedb.remote.RemoteImmutableVertex;
 import com.arcadedb.remote.RemoteSchema;
 import com.arcadedb.remote.RemoteTransactionExplicitLock;
 import com.arcadedb.remote.grpc.utils.ProtoUtils;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.grpc.ArcadeDbServiceGrpc;
 import com.arcadedb.server.grpc.BatchAck;
 import com.arcadedb.server.grpc.BeginTransactionRequest;
@@ -83,6 +86,7 @@ import com.arcadedb.server.grpc.UpdateRecordResponse;
 import com.google.protobuf.Int32Value;
 import io.grpc.CallCredentials;
 import io.grpc.Metadata;
+import io.grpc.Status;
 import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.BlockingClientCall;
@@ -91,9 +95,11 @@ import io.grpc.stub.ClientResponseObserver;
 import io.grpc.stub.StreamObserver;
 import com.arcadedb.log.LogManager;
 import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 import javax.annotation.Nullable;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -102,12 +108,17 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -370,7 +381,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
             "Failed to delete record: " + (resp.getMessage().isEmpty() ? "unknown error" : resp.getMessage()));
       }
 
-    } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+    } catch (StatusRuntimeException | StatusException e) {
       handleGrpcException(e); // rethrows mapped domain exception
       throw new IllegalStateException("unreachable");
     }
@@ -394,7 +405,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
       return res.getDeleted();
 
-    } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+    } catch (StatusRuntimeException | StatusException e) {
       handleGrpcException(e); // rethrows mapped domain exception
       throw new IllegalStateException("unreachable");
     }
@@ -568,7 +579,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         LogManager.instance().log(this, Level.FINE, "CLIENT executeQuery: results=%s", _r);
       }
       return createGrpcResultSet(response);
-    } catch (io.grpc.StatusException | io.grpc.StatusRuntimeException e) {
+    } catch (StatusException | StatusRuntimeException e) {
       handleGrpcException(e);
       return new InternalResultSet();
     }
@@ -850,7 +861,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
           drained = true;
           return false;
-        } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+        } catch (StatusRuntimeException | StatusException e) {
           handleGrpcException(e);
           throw new IllegalStateException("unreachable");
         } catch (InterruptedException ie) {
@@ -908,7 +919,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
             // else loop to fetch next batch (handles empty batches)
           }
           return false;
-        } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+        } catch (StatusRuntimeException | StatusException e) {
           handleGrpcException(e);
           throw new IllegalStateException("unreachable");
         } catch (InterruptedException ie) {
@@ -997,7 +1008,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
       return res.getRid(); // e.g. "#12:0"
 
-    } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+    } catch (StatusRuntimeException | StatusException e) {
       handleGrpcException(e); // rethrows mapped domain exception
       throw new IllegalStateException("unreachable");
     }
@@ -1016,7 +1027,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
           () -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).createRecord(req));
       return res.getRid();
 
-    } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+    } catch (StatusRuntimeException | StatusException e) {
       handleGrpcException(e);
       throw new IllegalStateException("unreachable");
     }
@@ -1058,7 +1069,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       // Most builds expose getSuccess(); if your proto has getUpdated(), swap here.
       return res.getSuccess();
 
-    } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+    } catch (StatusRuntimeException | StatusException e) {
       handleGrpcException(e); // rethrows mapped domain exception
       throw new IllegalStateException("unreachable");
     }
@@ -1087,7 +1098,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
       return res.getSuccess();
 
-    } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+    } catch (StatusRuntimeException | StatusException e) {
       handleGrpcException(e); // rethrows mapped domain exception
       throw new IllegalStateException("unreachable");
     }
@@ -1160,7 +1171,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       // record.
       return grpcRecordToDBRecord(resp.getRecord());
 
-    } catch (io.grpc.StatusException | io.grpc.StatusRuntimeException e) {
+    } catch (StatusException | StatusRuntimeException e) {
       handleGrpcException(e); // maps & rethrows proper domain exception
       throw new IllegalStateException("unreachable");
     }
@@ -1183,7 +1194,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       final long timeoutMs) {
 
     List<GrpcRecord> protoRows = rows.stream().map(this::toProtoRecordFromMap) // your converter
-        .collect(java.util.stream.Collectors.toList());
+        .collect(Collectors.toList());
 
     return insertBulk(options, protoRows, timeoutMs);
   }
@@ -1215,7 +1226,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       // use callUnary so tx cross-thread checks + rpcSeq happen in one place
       return callUnary("BulkInsert", () -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).bulkInsert(req));
 
-    } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+    } catch (StatusRuntimeException | StatusException e) {
       handleGrpcException(e); // maps to your domain exceptions and rethrows
       throw new IllegalStateException("unreachable"); // keep compiler happy
     }
@@ -1226,7 +1237,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       final int chunkSize,
       final long timeoutMs) throws InterruptedException {
 
-    List<GrpcRecord> protoRows = rows.stream().map(this::toProtoRecordFromMap).collect(java.util.stream.Collectors.toList());
+    List<GrpcRecord> protoRows = rows.stream().map(this::toProtoRecordFromMap).collect(Collectors.toList());
 
     return ingestStream(options, protoRows, chunkSize, timeoutMs);
   }
@@ -1336,14 +1347,14 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    * Pushes domain {@code com.arcadedb.database.Record} rows via
    * InsertBidirectional with per-batch ACKs.
    */
-  public InsertSummary ingestBidi(final List<com.arcadedb.database.Record> rows, final InsertOptions opts, final int chunkSize,
+  public InsertSummary ingestBidi(final List<Record> rows, final InsertOptions opts, final int chunkSize,
       final int maxInflight, final long timeoutMs) throws InterruptedException {
 
     return ingestBidiCore(rows, opts, chunkSize, maxInflight, timeoutMs,
-        (Object o) -> toProtoRecordFromDbRecord((com.arcadedb.database.Record) o));
+        (Object o) -> toProtoRecordFromDbRecord((Record) o));
   }
 
-  public InsertSummary ingestBidi(final List<com.arcadedb.database.Record> rows, final InsertOptions opts, final int chunkSize,
+  public InsertSummary ingestBidi(final List<Record> rows, final InsertOptions opts, final int chunkSize,
       final int maxInflight) throws InterruptedException {
 
     return ingestBidiCore(rows, opts, chunkSize, maxInflight, /* timeoutMs */ 5 * 60_000L, this::toProtoRecordFromDbRecord);
@@ -1371,7 +1382,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   private <T> InsertSummary ingestBidiCore(final List<T> rows, final InsertOptions options, final int chunkSize,
       final int maxInflight,
-      final long timeoutMs, final java.util.function.Function<? super T, GrpcRecord> mapper) throws InterruptedException {
+      final long timeoutMs, final Function<? super T, GrpcRecord> mapper) throws InterruptedException {
 
     // Fast-path & guards
     if (rows == null || rows.isEmpty())
@@ -1390,7 +1401,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     final InsertOptions effectiveOpts = ob.build();
 
     // Pre-map rows → proto
-    final List<GrpcRecord> protoRows = rows.stream().map(mapper).collect(java.util.stream.Collectors.toList());
+    final List<GrpcRecord> protoRows = rows.stream().map(mapper).collect(Collectors.toList());
 
     if (LogManager.instance().isDebugEnabled()) {
       LogManager.instance().log(this, Level.FINE, "CLIENT ingestBidi start: rows=%s, chunkSize=%s, maxInflight=%s, timeoutMs=%s", protoRows.size(), chunkSize,
@@ -1400,18 +1411,18 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     // --- streaming state
     final String sessionId = "sess-" + System.nanoTime();
     final CountDownLatch done = new CountDownLatch(1);
-    final AtomicReference<Throwable> errRef = new java.util.concurrent.atomic.AtomicReference<>();
+    final AtomicReference<Throwable> errRef = new AtomicReference<>();
     final AtomicLong seq = new AtomicLong(1);
     final AtomicInteger cursor = new AtomicInteger(0);
     final AtomicInteger sent = new AtomicInteger(0);
     final AtomicInteger acked = new AtomicInteger(0);
-    final AtomicReference<InsertSummary> committed = new java.util.concurrent.atomic.AtomicReference<>();
-    final List<BatchAck> acks = java.util.Collections.synchronizedList(new ArrayList<>());
+    final AtomicReference<InsertSummary> committed = new AtomicReference<>();
+    final List<BatchAck> acks = Collections.synchronizedList(new ArrayList<>());
 
-    final AtomicReference<ClientCallStreamObserver<InsertRequest>> observerRef = new java.util.concurrent.atomic.AtomicReference<>();
+    final AtomicReference<ClientCallStreamObserver<InsertRequest>> observerRef = new AtomicReference<>();
 
     final AtomicBoolean commitSent = new AtomicBoolean(false);
-    final ScheduledExecutorService scheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(
+    final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(
         r -> {
           Thread t = new Thread(r, "grpc-ack-grace-timer");
           t.setDaemon(true);
@@ -1419,7 +1430,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         });
     final long ackGraceMillis = Math.min(Math.max(timeoutMs / 10, 1_000L), 10_000L);
     final Object timerLock = new Object();
-    final AtomicReference<java.util.concurrent.ScheduledFuture<?>> ackGraceFuture = new java.util.concurrent.atomic.AtomicReference<>();
+    final AtomicReference<ScheduledFuture<?>> ackGraceFuture = new AtomicReference<>();
 
     final Runnable sendCommitIfNeeded = () -> {
       if (commitSent.compareAndSet(false, true)) {
@@ -1528,7 +1539,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         }
         case ERROR -> {
           // surface as error; caller will map/throw after await
-          errRef.set(new StatusRuntimeException(io.grpc.Status.INTERNAL.withDescription(v.getError().getMessage())));
+          errRef.set(new StatusRuntimeException(Status.INTERNAL.withDescription(v.getError().getMessage())));
           cancelAckGraceTimer.run();
           try {
             req.cancel("server ERROR", null);
@@ -1622,7 +1633,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   }
 
   // Domain Record (storage) -> GrpcRecord
-  private GrpcRecord toProtoRecordFromDbRecord(com.arcadedb.database.Record rec) {
+  private GrpcRecord toProtoRecordFromDbRecord(Record rec) {
     // Use ProtoUtils for proper conversion
     GrpcRecord out = ProtoUtils.toProtoRecord(rec);
     if (LogManager.instance().isDebugEnabled())
@@ -1789,13 +1800,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
         Object type = getSchema().getType(typeName);
 
-        if (type instanceof com.arcadedb.schema.VertexType) {
+        if (type instanceof VertexType) {
 
           return "v";
-        } else if (type instanceof com.arcadedb.schema.EdgeType) {
+        } else if (type instanceof EdgeType) {
 
           return "e";
-        } else if (type instanceof com.arcadedb.schema.DocumentType) {
+        } else if (type instanceof DocumentType) {
 
           return "d";
         } else {
@@ -1832,7 +1843,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   void handleGrpcException(Throwable e) {
     // Works for StatusException, StatusRuntimeException, and anything else
-    io.grpc.Status status = io.grpc.Status.fromThrowable(e);
+    Status status = Status.fromThrowable(e);
     String msg = status.getDescription() != null ? status.getDescription() : status.getCode().name();
 
     switch (status.getCode()) {
@@ -1869,9 +1880,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         return "String(" + s.length() + ")";
       if (o instanceof byte[] b)
         return "bytes[" + b.length + "]";
-      if (o instanceof java.util.Collection<?> c)
+      if (o instanceof Collection<?> c)
         return o.getClass().getSimpleName() + "[size=" + c.size() + "]";
-      if (o instanceof java.util.Map<?, ?> m)
+      if (o instanceof Map<?, ?> m)
         return o.getClass().getSimpleName() + "[size=" + m.size() + "]";
       return o.getClass().getSimpleName();
     } catch (Exception e) {
@@ -1970,10 +1981,10 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   @FunctionalInterface
   private interface Rpc<T> {
-    T run() throws io.grpc.StatusException; // V2 throws this; v1 lambdas compile fine too
+    T run() throws StatusException; // V2 throws this; v1 lambdas compile fine too
   }
 
-  private <Resp> Resp callUnary(String opName, Rpc<Resp> rpc) throws io.grpc.StatusException {
+  private <Resp> Resp callUnary(String opName, Rpc<Resp> rpc) throws StatusException {
     if (debugTx != null) {
       checkCrossThreadUse("RPC " + opName);
       logTx("RPC(local)", opName);
@@ -2011,7 +2022,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         debugTx.rpcSeq.incrementAndGet();
       }
       return it;
-    } catch (io.grpc.StatusRuntimeException e) {
+    } catch (StatusRuntimeException e) {
       handleGrpcException(e); // rethrows mapped runtime exception
       throw new IllegalStateException("unreachable");
     }
@@ -2020,13 +2031,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   // For async "client-streaming" and "bidirectional" calls that RETURN a request
   // StreamObserver
   private <Req, Resp> StreamObserver<Req> callAsyncDuplex(String opName, long timeoutMs,
-      java.util.function.BiFunction<ArcadeDbServiceGrpc.ArcadeDbServiceStub, StreamObserver<Resp>, StreamObserver<Req>> starter,
+      BiFunction<ArcadeDbServiceGrpc.ArcadeDbServiceStub, StreamObserver<Resp>, StreamObserver<Req>> starter,
       StreamObserver<Resp> responseObserver) {
     if (debugTx != null) {
       checkCrossThreadUse("STREAM " + opName);
       logTx("STREAM(local)", opName);
     }
-    final var stub = asyncStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+    final var stub = asyncStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS);
     StreamObserver<Req> reqObs = starter.apply(stub, wrapObserver(opName, responseObserver));
     if (debugTx != null) {
       debugTx.rpcSeq.incrementAndGet();
@@ -2037,13 +2048,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   // For async "server-streaming" calls that take (request, responseObserver) and
   // return void
   private <Req, Resp> void callAsyncServerStreaming(String opName, long timeoutMs, Req request,
-      java.util.function.BiConsumer<ArcadeDbServiceGrpc.ArcadeDbServiceStub, StreamObserver<Resp>> invoker,
+      BiConsumer<ArcadeDbServiceGrpc.ArcadeDbServiceStub, StreamObserver<Resp>> invoker,
       StreamObserver<Resp> responseObserver) {
     if (debugTx != null) {
       checkCrossThreadUse("STREAM " + opName);
       logTx("STREAM(local)", opName);
     }
-    final var stub = asyncStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+    final var stub = asyncStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS);
     invoker.accept(stub, wrapObserver(opName, responseObserver));
     if (debugTx != null) {
       debugTx.rpcSeq.incrementAndGet();
@@ -2082,7 +2093,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   private <Req, Resp> ClientResponseObserver<Req, Resp> wrapObserver(String opName, ClientResponseObserver<Req, Resp> delegate) {
     return new ClientResponseObserver<>() {
       @Override
-      public void beforeStart(io.grpc.stub.ClientCallStreamObserver<Req> r) {
+      public void beforeStart(ClientCallStreamObserver<Req> r) {
         // pass through; your delegate may set onReady handler, request(n), etc.
         delegate.beforeStart(r);
       }
@@ -2128,9 +2139,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       public void onError(Throwable t) {
         // Normalize gRPC errors through your handler, then pass the mapped exception
         try {
-          if (t instanceof io.grpc.StatusRuntimeException sre) {
+          if (t instanceof StatusRuntimeException sre) {
             handleGrpcException(sre); // throws
-          } else if (t instanceof io.grpc.StatusException se) {
+          } else if (t instanceof StatusException se) {
             handleGrpcException(se); // throws
           }
           // Non-gRPC error: forward as-is

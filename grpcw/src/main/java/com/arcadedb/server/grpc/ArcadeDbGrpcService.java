@@ -21,10 +21,14 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
@@ -34,6 +38,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.JsonSerializer;
@@ -44,16 +49,32 @@ import com.arcadedb.server.grpc.ProjectionSettings.ProjectionEncoding;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 
 /**
@@ -131,7 +152,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       // Resolve DB + params
       db = getDatabase(req.getDatabase(), req.getCredentials());
-      final java.util.Map<String, Object> params = convertParameters(req.getParametersMap());
+      final Map<String, Object> params = convertParameters(req.getParametersMap());
 
       // Language defaults to "sql" when empty
       final String language = (req.getLanguage() == null || req.getLanguage().isEmpty()) ? "sql" : req.getLanguage();
@@ -299,11 +320,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         throw new IllegalArgumentException("Class not found: " + cls);
 
       // All properties from the request (proto map) — nested under "record"
-      final java.util.Map<String, GrpcValue> props = req.getRecord().getPropertiesMap();
+      final Map<String, GrpcValue> props = req.getRecord().getPropertiesMap();
 
       // --- Vertex ---
-      if (dt instanceof com.arcadedb.schema.VertexType) {
-        com.arcadedb.graph.MutableVertex v = db.newVertex(cls);
+      if (dt instanceof VertexType) {
+        MutableVertex v = db.newVertex(cls);
 
         // apply properties with proper coercion
         props.forEach((k, val) -> v.set(k, toJavaForProperty(db, v, dt, k, val)));
@@ -346,10 +367,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           throw new IllegalArgumentException("Cannot resolve out/in vertices for edge");
 
         // IMPORTANT: use MutableVertex to avoid newEdge(...) ambiguity
-        com.arcadedb.graph.MutableVertex outV = (MutableVertex) outEl.asVertex(true);
-        com.arcadedb.graph.MutableVertex inV = (MutableVertex) inEl.asVertex(true);
+        MutableVertex outV = (MutableVertex) outEl.asVertex(true);
+        MutableVertex inV = (MutableVertex) inEl.asVertex(true);
 
-        com.arcadedb.graph.MutableEdge e = outV.newEdge(cls, inV);
+        MutableEdge e = outV.newEdge(cls, inV);
 
         // apply remaining properties (skip endpoints)
 
@@ -460,8 +481,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         // Apply updates
 
-        final java.util.Map<String, GrpcValue> props = req.hasRecord() ? req.getRecord().getPropertiesMap()
-            : req.hasPartial() ? req.getPartial().getPropertiesMap() : java.util.Collections.emptyMap();
+        final Map<String, GrpcValue> props = req.hasRecord() ? req.getRecord().getPropertiesMap()
+            : req.hasPartial() ? req.getPartial().getPropertiesMap() : Collections.emptyMap();
 
         // Exclude ArcadeDB system fields during update
 
@@ -487,8 +508,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         // Apply updates
 
-        final java.util.Map<String, GrpcValue> props = req.hasRecord() ? req.getRecord().getPropertiesMap()
-            : req.hasPartial() ? req.getPartial().getPropertiesMap() : java.util.Collections.emptyMap();
+        final Map<String, GrpcValue> props = req.hasRecord() ? req.getRecord().getPropertiesMap()
+            : req.hasPartial() ? req.getPartial().getPropertiesMap() : Collections.emptyMap();
 
         // Exclude ArcadeDB system fields during update
 
@@ -673,7 +694,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
           LogManager.instance().log(this, Level.FINE, "executeQuery(): isElement");
 
-          com.arcadedb.database.Record dbRecord = result.getElement().get();
+          Record dbRecord = result.getElement().get();
 
           LogManager.instance().log(this, Level.FINE, "executeQuery(): dbRecord -> @rid = %s", dbRecord.getIdentity().toString());
 
@@ -860,7 +881,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     final ServerCallStreamObserver<QueryResult> scso = (ServerCallStreamObserver<QueryResult>) responseObserver;
 
-    final java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
+    final AtomicBoolean cancelled = new AtomicBoolean(false);
     scso.setOnCancelHandler(() -> cancelled.set(true));
 
     Database db = null;
@@ -962,7 +983,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         if (r.isElement()) {
 
-          com.arcadedb.database.Record rec = r.getElement().get();
+          Record rec = r.getElement().get();
 
           batch.addRecords(convertToGrpcRecord(rec, db));
 
@@ -1015,7 +1036,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       ServerCallStreamObserver<QueryResult> scso,
       AtomicBoolean cancelled, ProjectionConfig projectionConfig) {
 
-    final java.util.List<GrpcRecord> all = new java.util.ArrayList<>();
+    final List<GrpcRecord> all = new ArrayList<>();
 
     try (ResultSet rs = db.query("sql", request.getQuery(), convertParameters(request.getParametersMap()))) {
 
@@ -1075,7 +1096,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return;
       waitUntilReady(scso, cancelled);
 
-      java.util.Map<String, Object> params = new java.util.HashMap<>(convertParameters(request.getParametersMap()));
+      Map<String, Object> params = new HashMap<>(convertParameters(request.getParametersMap()));
       params.put("_skip", offset);
       params.put("_limit", batchSize);
 
@@ -1217,13 +1238,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     final long startedAt = System.currentTimeMillis();
 
-    final java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
-    final java.util.concurrent.atomic.AtomicReference<InsertContext> ctxRef = new java.util.concurrent.atomic.AtomicReference<>();
+    final AtomicBoolean cancelled = new AtomicBoolean(false);
+    final AtomicReference<InsertContext> ctxRef = new AtomicReference<>();
 
     final Counts totals = new Counts();
 
     // cache the first-chunk effective options to validate consistency
-    final java.util.concurrent.atomic.AtomicReference<InsertOptions> firstOptsRef = new java.util.concurrent.atomic.AtomicReference<>();
+    final AtomicReference<InsertOptions> firstOptsRef = new AtomicReference<>();
 
     call.setOnCancelHandler(() -> cancelled.set(true));
 
@@ -1362,11 +1383,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final ServerCallStreamObserver<InsertResponse> call = (ServerCallStreamObserver<InsertResponse>) resp;
     call.disableAutoInboundFlowControl();
 
-    final java.util.concurrent.atomic.AtomicReference<InsertContext> ref = new java.util.concurrent.atomic.AtomicReference<>();
-    final java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
-    final java.util.concurrent.atomic.AtomicBoolean started = new java.util.concurrent.atomic.AtomicBoolean(false);
+    final AtomicReference<InsertContext> ref = new AtomicReference<>();
+    final AtomicBoolean cancelled = new AtomicBoolean(false);
+    final AtomicBoolean started = new AtomicBoolean(false);
 
-    final java.util.concurrent.ConcurrentLinkedQueue<InsertResponse> outQueue = new java.util.concurrent.ConcurrentLinkedQueue<>();
+    final ConcurrentLinkedQueue<InsertResponse> outQueue = new ConcurrentLinkedQueue<>();
 
     // drain helper
     final Runnable drain = () -> {
@@ -1379,7 +1400,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     };
 
     // enqueue or send immediately
-    final java.util.function.Consumer<InsertResponse> sendOrQueue = (ir) -> {
+    final Consumer<InsertResponse> sendOrQueue = (ir) -> {
       outQueue.offer(ir);
       drain.run();
     };
@@ -1538,7 +1559,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     };
   }
 
-  private boolean tryUpsertVertex(final InsertContext ctx, final com.arcadedb.graph.MutableVertex incoming) {
+  private boolean tryUpsertVertex(final InsertContext ctx, final MutableVertex incoming) {
 
     var keys = ctx.keyCols;
 
@@ -1620,7 +1641,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     long received, inserted, updated, ignored, failed;
 
-    final java.util.List<InsertError> errors = new java.util.ArrayList<>();
+    final List<InsertError> errors = new ArrayList<>();
 
     void add(Counts o) {
       received += o.received;
@@ -1637,7 +1658,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
   }
 
-  private Counts insertRows(InsertContext ctx, java.util.Iterator<GrpcRecord> it) {
+  private Counts insertRows(InsertContext ctx, Iterator<GrpcRecord> it) {
 
     Counts c = new Counts();
 
@@ -1680,11 +1701,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             c.errors.add(InsertError.newBuilder().setRowIndex(ctx.received - 1).setCode("MISSING_ENDPOINTS")
                 .setMessage("Edge requires 'out' and 'in'").build());
           } else {
-            var outV = ctx.db.lookupByRID(new com.arcadedb.database.RID(outRid), true).asVertex(true);
-            var inV = ctx.db.lookupByRID(new com.arcadedb.database.RID(inRid), true).asVertex(true);
+            var outV = ctx.db.lookupByRID(new RID(outRid), true).asVertex(true);
+            var inV = ctx.db.lookupByRID(new RID(inRid), true).asVertex(true);
 
             // Create edge from the OUT vertex
-            com.arcadedb.graph.MutableEdge e = outV.newEdge(ctx.opts.getTargetClass(), inV);
+            MutableEdge e = outV.newEdge(ctx.opts.getTargetClass(), inV);
             applyGrpcRecord(e, r); // sets edge properties
             e.save();
             c.inserted++;
@@ -1700,7 +1721,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           }
         }
 
-      } catch (com.arcadedb.exception.DuplicatedKeyException dup) {
+      } catch (DuplicatedKeyException dup) {
         switch (ctx.opts.getConflictMode()) {
         case CONFLICT_IGNORE -> c.ignored++;
         case CONFLICT_ABORT, UNRECOGNIZED -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
@@ -1772,7 +1793,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     });
   }
 
-  private static long tsToMillis(com.google.protobuf.Timestamp ts) {
+  private static long tsToMillis(Timestamp ts) {
     return ts.getSeconds() * 1000L + ts.getNanos() / 1_000_000L;
   }
 
@@ -1795,31 +1816,31 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     case BYTES_VALUE:
       return dbgDec("fromGrpcValue", v, v.getBytesValue().toByteArray(), null);
     case TIMESTAMP_VALUE:
-      return dbgDec("fromGrpcValue", v, new java.util.Date(tsToMillis(v.getTimestampValue())), null);
+      return dbgDec("fromGrpcValue", v, new Date(tsToMillis(v.getTimestampValue())), null);
     case LINK_VALUE:
-      return dbgDec("fromGrpcValue", v, new com.arcadedb.database.RID(v.getLinkValue().getRid()), null);
+      return dbgDec("fromGrpcValue", v, new RID(v.getLinkValue().getRid()), null);
 
     case DECIMAL_VALUE: {
       var d = v.getDecimalValue();
-      return dbgDec("fromGrpcValue", v, new java.math.BigDecimal(java.math.BigInteger.valueOf(d.getUnscaled()), d.getScale()),
+      return dbgDec("fromGrpcValue", v, new BigDecimal(BigInteger.valueOf(d.getUnscaled()), d.getScale()),
           null);
     }
 
     case LIST_VALUE: {
-      var out = new java.util.ArrayList<>();
+      var out = new ArrayList<>();
       for (GrpcValue e : v.getListValue().getValuesList())
         out.add(fromGrpcValue(e));
       return dbgDec("fromGrpcValue", v, out, null);
     }
 
     case MAP_VALUE: {
-      var out = new java.util.LinkedHashMap<String, Object>();
+      var out = new LinkedHashMap<String, Object>();
       v.getMapValue().getEntriesMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
       return dbgDec("fromGrpcValue", v, out, null);
     }
 
     case EMBEDDED_VALUE: {
-      var out = new java.util.LinkedHashMap<String, Object>();
+      var out = new LinkedHashMap<String, Object>();
       v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
       return dbgDec("fromGrpcValue", v, out, null);
     }
@@ -1830,10 +1851,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     return dbgDec("fromGrpcValue", v, null, null);
   }
 
-  private static com.google.protobuf.Timestamp msToTimestamp(long ms) {
+  private static Timestamp msToTimestamp(long ms) {
     long seconds = Math.floorDiv(ms, 1000L);
     int nanos = (int) Math.floorMod(ms, 1000L) * 1_000_000;
-    return com.google.protobuf.Timestamp.newBuilder().setSeconds(seconds).setNanos(nanos).build();
+    return Timestamp.newBuilder().setSeconds(seconds).setNanos(nanos).build();
   }
 
   private GrpcValue toGrpcValue(Object o) {
@@ -1868,20 +1889,20 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (o instanceof CharSequence v)
       return dbgEnc("toGrpcValue", o, b.setStringValue(v.toString()).build(), null);
     if (o instanceof byte[] v)
-      return dbgEnc("toGrpcValue", o, b.setBytesValue(com.google.protobuf.ByteString.copyFrom(v)).build(), null);
+      return dbgEnc("toGrpcValue", o, b.setBytesValue(ByteString.copyFrom(v)).build(), null);
 
-    if (o instanceof java.util.Date v) {
+    if (o instanceof Date v) {
       return dbgEnc("toGrpcValue", o,
           GrpcValue.newBuilder().setTimestampValue(msToTimestamp(v.getTime())).setLogicalType("datetime").build(), null);
     }
 
-    if (o instanceof com.arcadedb.database.RID rid) {
+    if (o instanceof RID rid) {
       return dbgEnc("toGrpcValue", o,
           GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType("rid").build(),
           null);
     }
 
-    if (o instanceof java.math.BigDecimal v) {
+    if (o instanceof BigDecimal v) {
       var unscaled = v.unscaledValue();
       if (unscaled.bitLength() <= 63) {
         return GrpcValue.newBuilder()
@@ -1895,7 +1916,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
     }
 
-    if (o instanceof com.arcadedb.database.Document edoc && edoc.getIdentity() == null) {
+    if (o instanceof Document edoc && edoc.getIdentity() == null) {
       GrpcEmbedded.Builder eb = GrpcEmbedded.newBuilder();
       if (edoc.getType() != null)
         eb.setType(edoc.getTypeName());
@@ -1906,7 +1927,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     // ===== PROJECTION-AWARE Document handling =====
-    if (o instanceof com.arcadedb.database.Document doc) {
+    if (o instanceof Document doc) {
 
       final boolean inProjection = (pc != null && pc.include);
 
@@ -1999,7 +2020,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           boolean hasEmptyCollection = false;
           for (String k : doc.getPropertyNames()) {
             Object v = doc.get(k);
-            if (v instanceof java.util.Collection<?> c && c.isEmpty()) {
+            if (v instanceof Collection<?> c && c.isEmpty()) {
               hasEmptyCollection = true;
               break;
             }
@@ -2007,7 +2028,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
           var json = (hasEmptyCollection ? SAFE : FAST).serializeDocument(doc);
 
-          byte[] jsonBytes = json.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+          byte[] jsonBytes = json.toString().getBytes(StandardCharsets.UTF_8);
 
           // Soft limit handling
           if (pc.softLimitBytes > 0 && jsonBytes.length > pc.softLimitBytes) {
@@ -2020,13 +2041,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build())
                   .setLogicalType("rid").build();
             } else {
-              jsonBytes = "{\"__truncated\":true}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+              jsonBytes = "{\"__truncated\":true}".getBytes(StandardCharsets.UTF_8);
             }
           } else {
             pc.used.addAndGet(jsonBytes.length);
           }
 
-          return GrpcValue.newBuilder().setBytesValue(com.google.protobuf.ByteString.copyFrom(jsonBytes)).setLogicalType("json")
+          return GrpcValue.newBuilder().setBytesValue(ByteString.copyFrom(jsonBytes)).setLogicalType("json")
               .build();
         } catch (Throwable t) {
           // Safe fallback: send as MAP (typed GrpcValue tree)
@@ -2068,7 +2089,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return GrpcValue.newBuilder().setMapValue(mb.build()).build();
     }
 
-    if (o instanceof java.util.Map<?, ?> m) {
+    if (o instanceof Map<?, ?> m) {
       GrpcMap.Builder mb = GrpcMap.newBuilder();
       for (var e : m.entrySet()) {
         mb.putEntries(String.valueOf(e.getKey()), toGrpcValue(e.getValue()));
@@ -2076,7 +2097,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setMapValue(mb.build()).build(), null);
     }
 
-    if (o instanceof java.util.Collection<?> c) {
+    if (o instanceof Collection<?> c) {
       GrpcList.Builder lb = GrpcList.newBuilder();
       for (Object e : c)
         lb.addValues(toGrpcValue(e));
@@ -2093,12 +2114,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     // RID/Identifiable string fallback
-    if (o instanceof com.arcadedb.database.Identifiable id)
+    if (o instanceof Identifiable id)
       return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder()
           .setLinkValue(GrpcLink.newBuilder().setRid(id.getIdentity().toString()).build()).setLogicalType("rid").build(), null);
 
     // Support ArcadeDB Result/ResultInternal as structural MAP
-    if (o instanceof com.arcadedb.query.sql.executor.Result res) {
+    if (o instanceof Result res) {
       GrpcMap.Builder mb = GrpcMap.newBuilder();
       try {
         for (String k : res.getPropertyNames()) {
@@ -2119,7 +2140,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   private static int bytesOf(String s) {
-    return s == null ? 0 : s.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+    return s == null ? 0 : s.getBytes(StandardCharsets.UTF_8).length;
   }
 
   private InsertOptions defaults(InsertOptions in) {
@@ -2149,12 +2170,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     final Database db;
 
-    final java.util.List<String> keyCols;
-    final java.util.List<String> updateCols;
+    final List<String> keyCols;
+    final List<String> updateCols;
 
     long startedAt;
 
-    final String sessionId = java.util.UUID.randomUUID().toString();
+    final String sessionId = UUID.randomUUID().toString();
     long received = 0;
 
     InsertContext(InsertOptions opts) {
@@ -2307,7 +2328,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     return params;
   }
 
-  private GrpcRecord convertToGrpcRecord(com.arcadedb.database.Record dbRecord, Database db) {
+  private GrpcRecord convertToGrpcRecord(Record dbRecord, Database db) {
 
     GrpcRecord.Builder builder = GrpcRecord.newBuilder().setRid(dbRecord.getIdentity().toString());
 
@@ -2388,10 +2409,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return null;
 
     // Try schema
-    com.arcadedb.schema.Property prop = null;
+    Property prop = null;
     try {
       prop = (dtype != null) ? dtype.getProperty(propName) : null;
-    } catch (com.arcadedb.exception.SchemaException ignore) {
+    } catch (SchemaException ignore) {
     }
 
     if (prop != null)
@@ -2401,7 +2422,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     return fromGrpcValue(grpcValue);
   }
 
-  private Object convertWithSchemaType(Database db, MutableDocument parent, com.arcadedb.schema.Property prop, String propName,
+  private Object convertWithSchemaType(Database db, MutableDocument parent, Property prop, String propName,
       GrpcValue v) {
 
     var t = prop.getType();
@@ -2479,12 +2500,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return switch (v.getKindCase()) {
         case DECIMAL_VALUE -> {
           var d = v.getDecimalValue();
-          yield new java.math.BigDecimal(java.math.BigInteger.valueOf(d.getUnscaled()), d.getScale());
+          yield new BigDecimal(BigInteger.valueOf(d.getUnscaled()), d.getScale());
         }
-        case STRING_VALUE -> new java.math.BigDecimal(v.getStringValue());
-        case DOUBLE_VALUE -> java.math.BigDecimal.valueOf(v.getDoubleValue());
-        case INT32_VALUE -> java.math.BigDecimal.valueOf(v.getInt32Value());
-        case INT64_VALUE -> java.math.BigDecimal.valueOf(v.getInt64Value());
+        case STRING_VALUE -> new BigDecimal(v.getStringValue());
+        case DOUBLE_VALUE -> BigDecimal.valueOf(v.getDoubleValue());
+        case INT32_VALUE -> BigDecimal.valueOf(v.getInt32Value());
+        case INT64_VALUE -> BigDecimal.valueOf(v.getInt64Value());
         default -> null;
       };
 
@@ -2492,23 +2513,23 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     case DATETIME:
       // Prefer timestamp_value; else accept epoch ms in int64; else parse string
       return switch (v.getKindCase()) {
-        case TIMESTAMP_VALUE -> new java.util.Date(tsToMillis(v.getTimestampValue()));
-        case INT64_VALUE -> new java.util.Date(v.getInt64Value());
-        case STRING_VALUE -> new java.util.Date(Long.parseLong(v.getStringValue())); // or parse ISO if you emit it
+        case TIMESTAMP_VALUE -> new Date(tsToMillis(v.getTimestampValue()));
+        case INT64_VALUE -> new Date(v.getInt64Value());
+        case STRING_VALUE -> new Date(Long.parseLong(v.getStringValue())); // or parse ISO if you emit it
         default -> null;
       };
 
     case BINARY:
       return switch (v.getKindCase()) {
         case BYTES_VALUE -> v.getBytesValue().toByteArray();
-        case STRING_VALUE -> v.getStringValue().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        case STRING_VALUE -> v.getStringValue().getBytes(StandardCharsets.UTF_8);
         default -> null;
       };
 
     case LINK:
       return switch (v.getKindCase()) {
-        case LINK_VALUE -> new com.arcadedb.database.RID(v.getLinkValue().getRid());
-        case STRING_VALUE -> new com.arcadedb.database.RID(v.getStringValue());
+        case LINK_VALUE -> new RID(v.getLinkValue().getRid());
+        case STRING_VALUE -> new RID(v.getStringValue());
         default -> null;
       };
 
@@ -2603,7 +2624,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     case MAP:
       if (v.getKindCase() == GrpcValue.KindCase.MAP_VALUE) {
-        var m = new java.util.LinkedHashMap<String, Object>();
+        var m = new LinkedHashMap<String, Object>();
         v.getMapValue().getEntriesMap().forEach((k, vv) -> m.put(k, fromGrpcValue(vv)));
         return m;
       }
@@ -2611,7 +2632,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     case LIST:
       if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-        var list = new java.util.ArrayList<>();
+        var list = new ArrayList<>();
         for (GrpcValue item : v.getListValue().getValuesList()) {
           list.add(fromGrpcValue(item));
         }
@@ -2620,7 +2641,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return null;
     case ARRAY_OF_SHORTS: {
       if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-        var out = new java.util.ArrayList<Short>();
+        var out = new ArrayList<Short>();
         for (GrpcValue item : v.getListValue().getValuesList()) {
           Object o = fromGrpcValue(item);
           if (o instanceof Number n)
@@ -2635,7 +2656,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     case ARRAY_OF_INTEGERS: {
       if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-        var out = new java.util.ArrayList<Integer>();
+        var out = new ArrayList<Integer>();
         for (GrpcValue item : v.getListValue().getValuesList()) {
           Object o = fromGrpcValue(item);
           if (o instanceof Number n)
@@ -2650,7 +2671,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     case ARRAY_OF_LONGS: {
       if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-        var out = new java.util.ArrayList<Long>();
+        var out = new ArrayList<Long>();
         for (GrpcValue item : v.getListValue().getValuesList()) {
           Object o = fromGrpcValue(item);
           if (o instanceof Number n)
@@ -2665,7 +2686,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     case ARRAY_OF_FLOATS: {
       if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-        var out = new java.util.ArrayList<Float>();
+        var out = new ArrayList<Float>();
         for (GrpcValue item : v.getListValue().getValuesList()) {
           Object o = fromGrpcValue(item);
           if (o instanceof Number n)
@@ -2680,7 +2701,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     case ARRAY_OF_DOUBLES: {
       if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-        var out = new java.util.ArrayList<Double>();
+        var out = new ArrayList<Double>();
         for (GrpcValue item : v.getListValue().getValuesList()) {
           Object o = fromGrpcValue(item);
           if (o instanceof Number n)
@@ -2698,9 +2719,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     case DATETIME_NANOS: {
       // Same handling as DATETIME
       return switch (v.getKindCase()) {
-        case TIMESTAMP_VALUE -> new java.util.Date(tsToMillis(v.getTimestampValue()));
-        case INT64_VALUE -> new java.util.Date(v.getInt64Value()); // epoch ms expected
-        case STRING_VALUE -> new java.util.Date(Long.parseLong(v.getStringValue()));
+        case TIMESTAMP_VALUE -> new Date(tsToMillis(v.getTimestampValue()));
+        case INT64_VALUE -> new Date(v.getInt64Value()); // epoch ms expected
+        case STRING_VALUE -> new Date(Long.parseLong(v.getStringValue()));
         default -> null;
       };
     }
@@ -2723,9 +2744,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return "String(" + s.length() + ")=\"" + (s.length() > 120 ? s.subSequence(0, 120) + "…" : s) + "\"";
       if (o instanceof byte[] b)
         return "bytes[" + b.length + "]";
-      if (o instanceof java.util.Collection<?> c)
+      if (o instanceof Collection<?> c)
         return o.getClass().getSimpleName() + "[size=" + c.size() + "]";
-      if (o instanceof java.util.Map<?, ?> m)
+      if (o instanceof Map<?, ?> m)
         return o.getClass().getSimpleName() + "[size=" + m.size() + "]";
       return o.getClass().getSimpleName() + "(" + String.valueOf(o) + ")";
     } catch (Exception e) {
@@ -2799,7 +2820,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (p.isBoolean())
         return b.setBoolValue(p.getAsBoolean()).build();
       if (p.isNumber()) {
-        java.math.BigDecimal bd;
+        BigDecimal bd;
         try {
           bd = p.getAsBigDecimal();
         } catch (Exception e) {
@@ -2816,14 +2837,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             return b.setInt64Value(l).build();
           } catch (ArithmeticException ignore) {
           }
-          java.math.BigInteger unscaled = bd.unscaledValue();
+          BigInteger unscaled = bd.unscaledValue();
           if (unscaled.bitLength() <= 63) {
             return b.setDecimalValue(GrpcDecimal.newBuilder().setUnscaled(unscaled.longValue()).setScale(bd.scale()).build())
                 .build();
           }
           return b.setStringValue(bd.toPlainString()).build();
         } else {
-          java.math.BigInteger unscaled = bd.unscaledValue();
+          BigInteger unscaled = bd.unscaledValue();
           if (unscaled.bitLength() <= 63) {
             return b.setDecimalValue(GrpcDecimal.newBuilder().setUnscaled(unscaled.longValue()).setScale(bd.scale()).build())
                 .build();
@@ -2862,7 +2883,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final int                softLimitBytes; // 0 = no soft limit
 
     // Running counter for MAP/JSON builds:
-    final    java.util.concurrent.atomic.AtomicInteger used      = new java.util.concurrent.atomic.AtomicInteger(0);
+    final    AtomicInteger used      = new AtomicInteger(0);
     volatile boolean                                   truncated = false;
 
     ProjectionConfig(boolean include, ProjectionEncoding enc, int softLimitBytes) {
