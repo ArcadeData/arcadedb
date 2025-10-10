@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import org.apache.commons.configuration2.Configuration;
 import org.apache.tinkerpop.gremlin.AbstractGraphProvider;
 import org.apache.tinkerpop.gremlin.LoadGraphWith;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.CountTest;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.ProfileTest;
 import org.apache.tinkerpop.gremlin.structure.Graph;
 import org.apache.tinkerpop.gremlin.structure.SerializationTest;
@@ -50,7 +51,7 @@ public class ArcadeGraphProvider extends AbstractGraphProvider {
     IGNORED_TESTS.put(SerializationTest.GraphSONV3Test.class, Arrays.asList("shouldSerializeTraversalMetrics"));
     IGNORED_TESTS.put(ProfileTest.Traversals.class, Arrays.asList("testProfileStrategyCallback", "testProfileStrategyCallbackSideEffect"));
     IGNORED_TESTS.put(IoGraphTest.class, Arrays.asList("shouldReadWriteClassicToFileWithHelpers[graphml]", "shouldReadWriteModernToFileWithHelpers[graphml]"));
-    IGNORED_TESTS.put(org.apache.tinkerpop.gremlin.process.traversal.step.map.CountTest.Traversals.class, Arrays.asList("g_VX1X_valuesXageX_countXlocalX"));
+    IGNORED_TESTS.put(CountTest.Traversals.class, Arrays.asList("g_VX1X_valuesXageX_countXlocalX"));
   }
 
   private static final Set<Class> IMPLEMENTATIONS = new HashSet<>() {{

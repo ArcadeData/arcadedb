@@ -23,15 +23,28 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.server.grpc.GrpcDecimal;
+import com.arcadedb.server.grpc.GrpcEmbedded;
+import com.arcadedb.server.grpc.GrpcLink;
+import com.arcadedb.server.grpc.GrpcList;
+import com.arcadedb.server.grpc.GrpcMap;
 import com.arcadedb.server.grpc.GrpcRecord;
 import com.arcadedb.server.grpc.GrpcValue;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.ToNumberPolicy;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.Timestamp;
 import com.arcadedb.log.LogManager;
+
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.util.ArrayList;
 import java.util.logging.Level;
 
 import java.util.Collection;
+import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 public class ProtoUtils {
@@ -72,9 +85,9 @@ public class ProtoUtils {
       }
       if (o instanceof byte[] b)
         return "bytes[" + b.length + "]";
-      if (o instanceof java.util.Collection<?> c)
+      if (o instanceof Collection<?> c)
         return o.getClass().getSimpleName() + "[size=" + c.size() + "]";
-      if (o instanceof java.util.Map<?, ?> m)
+      if (o instanceof Map<?, ?> m)
         return o.getClass().getSimpleName() + "[size=" + m.size() + "]";
       return o.getClass().getSimpleName() + "(" + String.valueOf(o) + ")";
     } catch (Exception e) {
@@ -252,27 +265,27 @@ public class ProtoUtils {
     if (value instanceof CharSequence v)
       return dbgEnc("toGrpcValue", value, b.setStringValue(v.toString()).build());
     if (value instanceof byte[] v)
-      return dbgEnc("toGrpcValue", value, b.setBytesValue(com.google.protobuf.ByteString.copyFrom(v)).build());
+      return dbgEnc("toGrpcValue", value, b.setBytesValue(ByteString.copyFrom(v)).build());
 
-    if (value instanceof java.util.Date v) {
+    if (value instanceof Date v) {
       return dbgEnc("toGrpcValue", value,
-          GrpcValue.newBuilder().setTimestampValue(com.google.protobuf.Timestamp.newBuilder()
+          GrpcValue.newBuilder().setTimestampValue(Timestamp.newBuilder()
                   .setSeconds(Math.floorDiv(v.getTime(), 1000L)).setNanos((int) Math.floorMod(v.getTime(), 1000L) * 1_000_000).build())
               .setLogicalType("datetime").build());
     }
 
     if (value instanceof RID rid) {
       return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder()
-          .setLinkValue(com.arcadedb.server.grpc.GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType("rid")
+          .setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType("rid")
           .build());
     }
 
-    if (value instanceof java.math.BigDecimal v) {
-      java.math.BigInteger unscaled = v.unscaledValue();
+    if (value instanceof BigDecimal v) {
+      BigInteger unscaled = v.unscaledValue();
       if (unscaled.bitLength() <= 63) {
         return dbgEnc("toGrpcValue", value,
             GrpcValue.newBuilder().setDecimalValue(
-                    com.arcadedb.server.grpc.GrpcDecimal.newBuilder().setUnscaled(unscaled.longValue()).setScale(v.scale()).build())
+                    GrpcDecimal.newBuilder().setUnscaled(unscaled.longValue()).setScale(v.scale()).build())
                 .setLogicalType("decimal").build());
       } else {
         return dbgEnc("toGrpcValue", value,
@@ -281,7 +294,7 @@ public class ProtoUtils {
     }
 
     if (value instanceof Document edoc && (edoc.getIdentity() == null)) {
-      com.arcadedb.server.grpc.GrpcEmbedded.Builder eb = com.arcadedb.server.grpc.GrpcEmbedded.newBuilder();
+      GrpcEmbedded.Builder eb = GrpcEmbedded.newBuilder();
       if (edoc.getType() != null)
         eb.setType(edoc.getType().getName());
       for (String k : edoc.getPropertyNames()) {
@@ -291,7 +304,7 @@ public class ProtoUtils {
     }
 
     if (value instanceof Map<?, ?> m) {
-      com.arcadedb.server.grpc.GrpcMap.Builder mb = com.arcadedb.server.grpc.GrpcMap.newBuilder();
+      GrpcMap.Builder mb = GrpcMap.newBuilder();
       for (var e : m.entrySet()) {
         mb.putEntries(String.valueOf(e.getKey()), toGrpcValue(e.getValue()));
       }
@@ -299,7 +312,7 @@ public class ProtoUtils {
     }
 
     if (value instanceof Collection<?> c) {
-      com.arcadedb.server.grpc.GrpcList.Builder lb = com.arcadedb.server.grpc.GrpcList.newBuilder();
+      GrpcList.Builder lb = GrpcList.newBuilder();
       for (Object e : c)
         lb.addValues(toGrpcValue(e));
       return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setListValue(lb.build()).build());
@@ -331,7 +344,7 @@ public class ProtoUtils {
         //System.out.println("JSON: " + json);
 
         @SuppressWarnings("unchecked")
-        java.util.Map<String, Object> map = GSON.fromJson(json, java.util.Map.class);
+        Map<String, Object> map = GSON.fromJson(json, Map.class);
 
         return dbgDec("fromGrpcValue", v, map);
       }
@@ -340,18 +353,18 @@ public class ProtoUtils {
     case TIMESTAMP_VALUE:
       return dbgDec("fromGrpcValue", v, tsToMillis(v.getTimestampValue())); // or Instant
     case LIST_VALUE: {
-      var out = new java.util.ArrayList<>();
+      var out = new ArrayList<>();
       for (GrpcValue e : v.getListValue().getValuesList())
         out.add(fromGrpcValue(e));
       return dbgDec("fromGrpcValue", v, out);
     }
     case MAP_VALUE: {
-      var out = new java.util.LinkedHashMap<String, Object>();
+      var out = new LinkedHashMap<String, Object>();
       v.getMapValue().getEntriesMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
       return dbgDec("fromGrpcValue", v, out);
     }
     case EMBEDDED_VALUE: {
-      var out = new java.util.LinkedHashMap<String, Object>();
+      var out = new LinkedHashMap<String, Object>();
       v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
       // v.getEmbeddedValue().getType() is available if you want to instantiate a
       // typed DTO
@@ -361,7 +374,7 @@ public class ProtoUtils {
       return dbgDec("fromGrpcValue", v, v.getLinkValue().getRid()); // or a Link object
     case DECIMAL_VALUE: {
       var d = v.getDecimalValue();
-      return dbgDec("fromGrpcValue", v, new java.math.BigDecimal(java.math.BigInteger.valueOf(d.getUnscaled()), d.getScale()));
+      return dbgDec("fromGrpcValue", v, new BigDecimal(BigInteger.valueOf(d.getUnscaled()), d.getScale()));
     }
     case KIND_NOT_SET:
       return dbgDec("fromGrpcValue", v, null);
@@ -370,7 +383,7 @@ public class ProtoUtils {
     return dbgDec("fromGrpcValue", v, null);
   }
 
-  static long tsToMillis(com.google.protobuf.Timestamp ts) {
+  static long tsToMillis(Timestamp ts) {
     return ts.getSeconds() * 1000L + ts.getNanos() / 1_000_000L;
   }
 }

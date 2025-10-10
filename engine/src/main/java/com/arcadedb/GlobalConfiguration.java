@@ -28,6 +28,8 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.SystemVariableResolver;
 
 import java.io.*;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.logging.*;
 
@@ -152,7 +154,7 @@ public enum GlobalConfiguration {
 
   DATE_IMPLEMENTATION("arcadedb.dateImplementation", SCOPE.DATABASE,
       "Default date implementation to use on deserialization. By default java.time.LocalDate is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDate",
-      Class.class, java.time.LocalDate.class, value -> {
+      Class.class, LocalDate.class, value -> {
     if (value instanceof String string) {
       try {
         return Class.forName(string);
@@ -168,7 +170,7 @@ public enum GlobalConfiguration {
 
   DATE_TIME_IMPLEMENTATION("arcadedb.dateTimeImplementation", SCOPE.DATABASE,
       "Default datetime implementation to use on deserialization. By default java.time.LocalDateTime is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDateTime, java.time.ZonedDateTime",
-      Class.class, java.time.LocalDateTime.class, value -> {
+      Class.class, LocalDateTime.class, value -> {
     if (value instanceof String string) {
       try {
         return Class.forName(string);

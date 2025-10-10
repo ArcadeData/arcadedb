@@ -32,11 +32,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -261,15 +257,15 @@ public class RemoteGrpcDatabaseRegressionTest {
 
       Object propsObj = r.getProperty("properties");
 
-      assertTrue(propsObj instanceof java.util.List<?>, "properties must be a List");
+      assertTrue(propsObj instanceof List<?>, "properties must be a List");
 
-      java.util.List<?> props = (java.util.List<?>) propsObj;
+      List<?> props = (List<?>) propsObj;
       assertTrue(!props.isEmpty(), "properties list should not be empty");
 
       Object first = props.get(0);
-      assertTrue(first instanceof java.util.Map<?, ?>, "each property is expected to be a Map");
+      assertTrue(first instanceof Map<?, ?>, "each property is expected to be a Map");
 
-      java.util.Map<?, ?> p0 = (java.util.Map<?, ?>) first;
+      Map<?, ?> p0 = (Map<?, ?>) first;
 
       // Spot-check expected keys
       assertTrue(p0.containsKey("name"), "property map must have 'name'");
@@ -283,7 +279,7 @@ public class RemoteGrpcDatabaseRegressionTest {
   void embeddedAuditMetadataRoundTrip() {
 
     final String recId = "audit1";
-    final java.util.Map<String, Object> audit = new java.util.LinkedHashMap<>();
+    final Map<String, Object> audit = new LinkedHashMap<>();
 
     audit.put("createdDate", 1720225210408L);
     audit.put("createdByUser", "service-account-empower-platform-admin");
@@ -297,9 +293,9 @@ public class RemoteGrpcDatabaseRegressionTest {
       assertTrue(rs.hasNext(), "inserted record should be queriable");
       Result r = rs.next();
       Object auditObj = r.getProperty("_auditMetadata");
-      assertTrue(auditObj instanceof java.util.Map<?, ?>, "_auditMetadata must be a Map");
+      assertTrue(auditObj instanceof Map<?, ?>, "_auditMetadata must be a Map");
       @SuppressWarnings("unchecked")
-      java.util.Map<String, Object> m = (java.util.Map<String, Object>) auditObj;
+      Map<String, Object> m = (Map<String, Object>) auditObj;
 
       Object cd = m.get("createdDate");
       Object md = m.get("lastModifiedDate");

@@ -532,7 +532,7 @@ public class TransactionManager {
             file.setActive(false);
             inactiveWALFilePool.add(file);
           }
-        } catch (final java.nio.channels.ClosedChannelException e) {
+        } catch (final ClosedChannelException e) {
           try {
             file.close();
           } catch (IOException ex) {

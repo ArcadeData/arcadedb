@@ -52,7 +52,7 @@ import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY;
 import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_CACHE_SIZE;
 import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_ITERATIONS;
 
-public class ServerSecurity implements ServerPlugin, com.arcadedb.security.SecurityManager {
+public class ServerSecurity implements ServerPlugin, SecurityManager {
 
   public static final  int                             LATEST_VERSION       = 1;
   private final        ArcadeDBServer                  server;

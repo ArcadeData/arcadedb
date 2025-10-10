@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.server.BaseGraphServerTest;
-
+import org.apache.tinkerpop.gremlin.structure.T;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -47,7 +47,7 @@ public class RemoteGremlinIT extends AbstractGremlinServerIT {
         graph.getDatabase().getSchema().createVertexType("inputstructure");
 
         for (int i = 0; i < 1_000; i++)
-          graph.addVertex(org.apache.tinkerpop.gremlin.structure.T.label, "inputstructure", "json", "{\"name\": \"John\"}");
+          graph.addVertex(T.label, "inputstructure", "json", "{\"name\": \"John\"}");
 
         try (final ResultSet list = graph.gremlin("g.V().hasLabel(\"inputstructure\")").execute()) {
           assertThat(list.stream().count()).isEqualTo(1_000);

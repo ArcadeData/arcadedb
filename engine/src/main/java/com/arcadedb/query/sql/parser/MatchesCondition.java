@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.*;
+import java.util.regex.Pattern;
 
 public class MatchesCondition extends BooleanExpression {
   protected Expression     expression;
@@ -63,9 +64,9 @@ public class MatchesCondition extends BooleanExpression {
 
   private boolean matches(final Object value, final String regex, final CommandContext context) {
     final String key = "MATCHES_" + regex.hashCode();
-    java.util.regex.Pattern p = (java.util.regex.Pattern) context.getVariable(key);
+    Pattern p = (Pattern) context.getVariable(key);
     if (p == null) {
-      p = java.util.regex.Pattern.compile(regex);
+      p = Pattern.compile(regex);
       context.setVariable(key, p);
     }
 
