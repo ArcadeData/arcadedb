@@ -125,7 +125,9 @@ public class DatabaseWrapper {
 
             CREATE VERTEX TYPE Photo;
             CREATE PROPERTY Photo.id INTEGER;
+            CREATE PROPERTY Photo.tags LIST OF STRING;
             CREATE INDEX ON Photo (id) UNIQUE;
+            CREATE INDEX ON Photo (tags BY ITEM) NOTUNIQUE;
 
             CREATE EDGE TYPE HasUploaded;
 
@@ -192,17 +194,19 @@ public class DatabaseWrapper {
     for (int i = 0; i < numberOfPhotos; i++) {
       int photoId = idSupplier.get();
       String photoName = String.format("download-%s.jpg", photoId);
+      String tag1 = "tag" + i % numberOfPhotos;
+      String tag2 = "tag" + (i % numberOfPhotos + 1);
       String sqlScript = """
           BEGIN;
           LOCK TYPE User, Photo, HasUploaded;
-          LET photo = CREATE VERTEX Photo SET id = ?, name = ?;
+          LET photo = CREATE VERTEX Photo SET id = ?, name = ?, tags = ['?', '?'];
           LET user = SELECT FROM User WHERE id = ?;
           CREATE EDGE HasUploaded FROM $user TO $photo;
           COMMIT RETRY 30;
           """;
       try {
         photosTimer.record(() -> {
-              db.command("sqlscript", sqlScript, photoId, photoName, userId);
+              db.command("sqlscript", sqlScript, photoId, photoName, userId, tag1, tag2);
             }
         );
 

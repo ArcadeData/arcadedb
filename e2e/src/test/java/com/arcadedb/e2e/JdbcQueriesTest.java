@@ -159,7 +159,8 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
           CREATE PROPERTY article.comment IF NOT EXISTS LIST OF comment;
           CREATE PROPERTY article.location IF NOT EXISTS EMBEDDED OF location;
 
-          CREATE INDEX IF NOT EXISTS on article(id) UNIQUE;
+          CREATE INDEX IF NOT EXISTS on article (id) UNIQUE;
+          CREATE INDEX IF NOT EXISTS on article (tags BY ITEM) NOTUNIQUE;
           """);
 
       st.execute("""
