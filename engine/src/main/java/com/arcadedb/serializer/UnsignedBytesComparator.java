@@ -17,10 +17,7 @@
  */
 package com.arcadedb.serializer;
 
-import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
-import java.lang.foreign.ValueLayout;
-import java.nio.ByteOrder;
 
 /**
  * This class was inspired by Guava's UnsignedBytes, under Apache 2 license.
@@ -52,79 +49,36 @@ public final class UnsignedBytesComparator {
   }
 
   public static class ModernComparator implements ByteArrayComparator {
-    static final boolean BIG_ENDIAN = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN);
-
     @Override
     public int compare(final byte[] left, final byte[] right) {
-      final int stride = 8;
-      final int minLength = Math.min(left.length, right.length);
-      final int strideLimit = minLength & -stride;
-      int i;
+      // assumes left and right are non-null
+      final MemorySegment leftSegment = MemorySegment.ofArray(left);
+      final MemorySegment rightSegment = MemorySegment.ofArray(right);
 
-      try (Arena arena = Arena.ofConfined()) {
-        MemorySegment leftSegment = MemorySegment.ofArray(left);
-        MemorySegment rightSegment = MemorySegment.ofArray(right);
-
-        /*
-         * Compare 8 bytes at a time. Benchmarking on x86 shows a stride of 8 bytes is no slower
-         * than 4 bytes even on 32-bit. On the other hand, it is substantially faster on 64-bit.
-         */
-        for (i = 0; i < strideLimit; i += stride) {
-          final long lw = leftSegment.get(ValueLayout.JAVA_LONG_UNALIGNED, i);
-          final long rw = rightSegment.get(ValueLayout.JAVA_LONG_UNALIGNED, i);
-
-          if (lw != rw) {
-            if (BIG_ENDIAN) {
-              return unsignedLongsCompare(lw, rw);
-            }
-
-            final int n = Long.numberOfTrailingZeros(lw ^ rw) & ~0x7;
-            return ((int) ((lw >>> n) & UNSIGNED_MASK)) - ((int) ((rw >>> n) & UNSIGNED_MASK));
-          }
-        }
+      final long index = leftSegment.mismatch(rightSegment);
+      if (index == -1) {
+        return Integer.compare(left.length, right.length);
       }
 
-      // The epilogue to cover the last (minLength % stride) elements.
-      for (; i < minLength; i++) {
-        final int result = UnsignedBytesComparator.compare(left[i], right[i]);
-        if (result != 0)
-          return result;
+      // index is either the byte offset which differs or the length of the shorter array
+      if (index >= left.length || index >= right.length) {
+        return Integer.compare(left.length, right.length);
       }
 
-      return left.length - right.length;
+      return Integer.compare(Byte.toUnsignedInt(left[(int) index]), Byte.toUnsignedInt(right[(int) index]));
     }
 
     @Override
     public boolean equals(final byte[] left, final byte[] right, final int length) {
-      final int stride = 8;
-      final int strideLimit = length & -stride;
-      int i;
+      // assumes left and right are non-null and length is non-zero
+      if (left.length < length || right.length < length)
+        return false;
 
-      try (Arena arena = Arena.ofConfined()) {
-        MemorySegment leftSegment = MemorySegment.ofArray(left);
-        MemorySegment rightSegment = MemorySegment.ofArray(right);
+      final MemorySegment leftSegment = MemorySegment.ofArray(left).asSlice(0, length);
+      final MemorySegment rightSegment = MemorySegment.ofArray(right).asSlice(0, length);
 
-        /*
-         * Compare 8 bytes at a time. Benchmarking on x86 shows a stride of 8 bytes is no slower
-         * than 4 bytes even on 32-bit. On the other hand, it is substantially faster on 64-bit.
-         */
-        for (i = 0; i < strideLimit; i += stride) {
-          final long lw = leftSegment.get(ValueLayout.JAVA_LONG_UNALIGNED, i);
-          final long rw = rightSegment.get(ValueLayout.JAVA_LONG_UNALIGNED, i);
-
-          if (lw != rw)
-            return false;
-        }
-      }
-
-      // The epilogue to cover the last (minLength % stride) elements.
-      for (; i < length; i++) {
-        final int result = UnsignedBytesComparator.compare(left[i], right[i]);
-        if (result != 0)
-          return false;
-      }
-
-      return true;
+      // mismatch is optimized and should be faster than a for loop
+      return leftSegment.mismatch(rightSegment) == -1;
     }
 
     @Override
