@@ -87,7 +87,6 @@ public class SingleServerLoadTestIT extends ContainersTestTemplate {
       // Each thread will create friendships
       executor.submit(() -> {
         DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier, protocol);
-        ;
         db1.createLike(numOfLike);
         db1.close();
       });

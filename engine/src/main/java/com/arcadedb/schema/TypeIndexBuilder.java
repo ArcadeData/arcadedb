@@ -28,10 +28,10 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.security.SecurityDatabaseUser;
 
-import java.util.*;
+import java.util.Arrays;
+import java.util.List;
 
 /**
  * Builder class for type indexes.
@@ -90,12 +90,34 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       if (type instanceof LocalEdgeType && ("@out".equals(propertyName) || "@in".equals(propertyName))) {
         keyTypes[i++] = Type.LINK;
       } else {
-        final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+        // Check if property has " by item" modifier
+        String actualPropertyName = propertyName;
+        boolean isByItem = false;
+
+        if (propertyName.endsWith(" by item")) {
+          isByItem = true;
+          actualPropertyName = propertyName.substring(0, propertyName.length() - 8);
+        }
+
+        final Property property = type.getPolymorphicPropertyIfExists(actualPropertyName);
         if (property == null)
           throw new SchemaException(
-              "Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
+              "Cannot create the index on type '" + typeName + "." + actualPropertyName + "' because the property does not exist");
 
-        keyTypes[i++] = property.getType();
+        // Validate BY ITEM is only used with LIST type
+        if (isByItem && property.getType() != Type.LIST) {
+          throw new SchemaException(
+              "Cannot create index with BY ITEM on property '" + typeName + "." + actualPropertyName +
+              "' because it is not a LIST type (found: " + property.getType() + ")");
+        }
+
+        // For BY ITEM on LIST, the key type should be STRING (since list items are indexed individually)
+        // Lists can contain heterogeneous types, so we use STRING as a generic type for list items
+        if (isByItem) {
+          keyTypes[i++] = Type.STRING;
+        } else {
+          keyTypes[i++] = property.getType();
+        }
       }
     }
 
