@@ -32,10 +32,8 @@ test.describe('ArcadeDB Studio Database Creation', () => {
     // Click sign in button using actual onclick handler
     await page.click('button[onclick="login()"]');
 
-    // Wait for login spinner to appear (indicates login started)
-    await expect(page.locator('#loginSpinner')).toBeVisible();
-
     // Wait for login to complete - check multiple conditions
+    // Note: Removed flaky spinner visibility check that fails when login is fast
     await Promise.all([
       expect(page.locator('#loginSpinner')).toBeHidden({ timeout: 30000 }),
       expect(page.locator('#studioPanel')).toBeVisible({ timeout: 30000 }),
