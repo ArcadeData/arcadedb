@@ -35,7 +35,7 @@
 
     <properties>
         <metrics.version>4.2.19</metrics.version>
-        <undertow-core.version>2.3.19.Final</undertow-core.version>
+        <undertow-core.version>2.3.20.Final</undertow-core.version>
         <slf4j.version>2.0.17</slf4j.version>
         <micrometer.version>1.15.4</micrometer.version>
         <swagger.version>2.2.38</swagger.version>
