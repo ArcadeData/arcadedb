@@ -109,7 +109,7 @@ updates:
   # E2E Python Testing Dependencies
   - package-ecosystem: "uv"
     enable-beta-ecosystems: "true"
-    directory: "/e2e-pythom"
+    directory: "/e2e-python"
     schedule:
       interval: weekly
       day: "sunday"
