@@ -97,10 +97,19 @@ updates:
       interval: weekly
       day: "sunday"
     open-pull-requests-limit: 10
-#  - package-ecosystem: "uv"
-#    enable-beta-ecosystems: "true"
-#    directory: "/e2e-pythom"
-#    schedule:
-#      interval: weekly
-#      day: "sunday"
-#    open-pull-requests-limit: 10
+
+  # E2E Studio Testing Dependencies
+  - package-ecosystem: "npm"
+    directory: "/e2e-studio"
+    schedule:
+      interval: weekly
+      day: "sunday"
+    open-pull-requests-limit: 10
+
+  # E2E Python Testing Dependencies
+  - package-ecosystem: "uv"
+    directory: "/e2e-python"
+    schedule:
+      interval: weekly
+      day: "sunday"
+    open-pull-requests-limit: 10
