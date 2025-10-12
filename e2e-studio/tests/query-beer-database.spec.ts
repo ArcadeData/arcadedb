@@ -70,9 +70,6 @@ test.describe('ArcadeDB Studio Beer Database Query', () => {
     // Check specifically for "Displayed 10 vertices and 0 edges"
     const graphStats = page.locator('text=Displayed').locator('..'); // Get parent element
     await expect(graphStats).toContainText('Displayed 10 vertices and 0 edges');
-
-    // Alternative verification: check for the exact count in the graph stats
-    await expect(page.getByText('10').nth(1)).toBeVisible(); // Second occurrence should be in graph stats
   });
 
   test.skip('should navigate graph by expanding edges from Beer to Brewery', async ({ page }) => {
