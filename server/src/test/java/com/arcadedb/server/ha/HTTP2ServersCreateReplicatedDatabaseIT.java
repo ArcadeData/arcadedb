@@ -74,7 +74,6 @@ public class HTTP2ServersCreateReplicatedDatabaseIT extends BaseGraphServerTest 
     Awaitility.await()
         .atMost(10, TimeUnit.SECONDS)
         .pollInterval(100, TimeUnit.MILLISECONDS)
-        .ignoreExceptions()
         .until(() -> {
           // CHECK THE SCHEMA HAS BEEN PROPAGATED to both servers
           for (int i = 0; i < getServerCount(); i++) {
@@ -82,6 +81,7 @@ public class HTTP2ServersCreateReplicatedDatabaseIT extends BaseGraphServerTest 
             try {
               command(serverIndex, "select from VertexType" + serverIndex);
             } catch (Exception e) {
+              LogManager.instance().log(this, Level.FINE, "Schema not yet propagated to server " + serverIndex, e);
               return false;
             }
           }
