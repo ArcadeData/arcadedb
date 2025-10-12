@@ -764,13 +764,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
     });
 
     database.async().waitCompletion();
-
-    // Wait for async operations to complete using awaitility
-    Awaitility.await()
-        .atMost(10, TimeUnit.SECONDS)
-        .pollInterval(100, TimeUnit.MILLISECONDS)
-        .until(() -> database.async().getExecutor().getQueue().isEmpty());
-    database.async().waitCompletion();
+    database.async().waitCompletion(); // Double wait to ensure completion
 
     database.command("sql", "create index on `This.is:special`(`other.special:property`) unique");
     database.command("sql", "rebuild index `This.is:special[other.special:property]`");

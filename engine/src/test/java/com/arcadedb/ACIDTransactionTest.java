@@ -79,12 +79,6 @@ public class ACIDTransactionTest extends TestHelper {
 
       db.async().waitCompletion();
 
-      // Wait for async operations to complete using awaitility
-      Awaitility.await()
-          .atMost(5, TimeUnit.SECONDS)
-          .pollInterval(100, TimeUnit.MILLISECONDS)
-          .until(() -> db.async().getExecutor().getQueue().isEmpty());
-
     } catch (final TransactionException e) {
       assertThat(e.getCause() instanceof IOException).isTrue();
     }
@@ -239,12 +233,6 @@ public class ACIDTransactionTest extends TestHelper {
       }
 
       db.async().waitCompletion();
-
-      // Wait for async operations to complete using awaitility
-      Awaitility.await()
-          .atMost(5, TimeUnit.SECONDS)
-          .pollInterval(100, TimeUnit.MILLISECONDS)
-          .until(() -> db.async().getExecutor().getQueue().isEmpty());
 
       assertThat(errors.get()).isEqualTo(1);
 
