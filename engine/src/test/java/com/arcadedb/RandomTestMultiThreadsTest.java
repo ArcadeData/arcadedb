@@ -73,6 +73,8 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
     final long begin = System.currentTimeMillis();
 
+    try {
+
     final ExecutorService executorService = Executors.newFixedThreadPool(WORKERS);
     final List<Future<?>> futures = new ArrayList<>();
 
@@ -83,21 +85,21 @@ public class RandomTestMultiThreadsTest extends TestHelper {
         Future<?> future = executorService.submit(() -> {
           beginTransaction();
 
-          long totalTransactionInCurrentTx = 0;
+            long totalTransactionInCurrentTx = 0;
 
-          while (true) {
-            final long i1 = total.incrementAndGet();
-            if (i1 >= CYCLES)
-              break;
+            while (true) {
+              final long i = total.incrementAndGet();
+              if (i >= CYCLES)
+                break;
 
-            try {
-              final int op = getRandom(100);
-              if (i1 % 5000 == 0)
-                LogManager.instance()
-                    .log(this, Level.FINE, "Operations %d/%d totalTransactionInCurrentTx=%d totalTransactions=%d (thread=%d)", i1,
-                        CYCLES, totalTransactionInCurrentTx, totalTransactionRecords.get(), threadId);
+              try {
+                final int op = getRandom(100);
+                if (i % 5000 == 0)
+                  LogManager.instance()
+                      .log(this, Level.FINE, "Operations %d/%d totalTransactionInCurrentTx=%d totalTransactions=%d (thread=%d)", i,
+                          CYCLES, totalTransactionInCurrentTx, totalTransactionRecords.get(), threadId);
 
-              LogManager.instance().log(this, Level.FINE, "Operation %d %d/%d (thread=%d)", op, i1, CYCLES, threadId);
+                LogManager.instance().log(this, Level.FINE, "Operation %d %d/%d (thread=%d)", op, i, CYCLES, threadId);
 
                 if (op >= 0 && op <= 19) {
                   final int txOps = getRandom(10);
@@ -231,6 +233,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
                   beginTransaction();
                 }
               }
+            }
 
             try {
               database.commit();
