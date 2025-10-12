@@ -160,7 +160,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
             final Result result = resultSet.next();
             final Set<String> props = result.getPropertyNames();
             assertThat(props).as("Found the following properties " + props).hasSize(2);
-            assertThat(result.<Integer>getProperty("id")).isEqualTo(counter);
+            assertThat(result.<Long>getProperty("id")).isEqualTo(counter);
             assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
           }
 
