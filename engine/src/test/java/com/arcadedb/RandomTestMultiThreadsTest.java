@@ -231,7 +231,6 @@ public class RandomTestMultiThreadsTest extends TestHelper {
                   beginTransaction();
                 }
               }
-            }
 
             try {
               database.commit();
