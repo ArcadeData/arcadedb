@@ -37,6 +37,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.*;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
@@ -72,31 +73,31 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
     final long begin = System.currentTimeMillis();
 
+    final ExecutorService executorService = Executors.newFixedThreadPool(WORKERS);
+    final List<Future<?>> futures = new ArrayList<>();
+
     try {
 
-      final Thread[] threads = new Thread[WORKERS];
       for (int i = 0; i < WORKERS; ++i) {
         final int threadId = i;
-        threads[i] = new Thread(new Runnable() {
-          @Override
-          public void run() {
-            beginTransaction();
+        Future<?> future = executorService.submit(() -> {
+          beginTransaction();
 
-            long totalTransactionInCurrentTx = 0;
+          long totalTransactionInCurrentTx = 0;
 
-            while (true) {
-              final long i = total.incrementAndGet();
-              if (i >= CYCLES)
-                break;
+          while (true) {
+            final long i1 = total.incrementAndGet();
+            if (i1 >= CYCLES)
+              break;
 
-              try {
-                final int op = getRandom(100);
-                if (i % 5000 == 0)
-                  LogManager.instance()
-                      .log(this, Level.FINE, "Operations %d/%d totalTransactionInCurrentTx=%d totalTransactions=%d (thread=%d)", i,
-                          CYCLES, totalTransactionInCurrentTx, totalTransactionRecords.get(), threadId);
+            try {
+              final int op = getRandom(100);
+              if (i1 % 5000 == 0)
+                LogManager.instance()
+                    .log(this, Level.FINE, "Operations %d/%d totalTransactionInCurrentTx=%d totalTransactions=%d (thread=%d)", i1,
+                        CYCLES, totalTransactionInCurrentTx, totalTransactionRecords.get(), threadId);
 
-                LogManager.instance().log(this, Level.FINE, "Operation %d %d/%d (thread=%d)", op, i, CYCLES, threadId);
+              LogManager.instance().log(this, Level.FINE, "Operation %d %d/%d (thread=%d)", op, i1, CYCLES, threadId);
 
                 if (op >= 0 && op <= 19) {
                   final int txOps = getRandom(10);
@@ -240,23 +241,36 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
           }
         });
-        threads[i].start();
+        futures.add(future);
       }
 
       //LogManager.instance().flush();
       //System.out.flush();
       //System.out.println("----------------");
 
-      for (int i = 0; i < WORKERS; ++i) {
+      // Wait for all futures to complete
+      for (Future<?> future : futures) {
         try {
-          threads[i].join();
+          future.get();
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
+          e.printStackTrace();
+        } catch (final ExecutionException e) {
           e.printStackTrace();
         }
       }
 
     } finally {
+      executorService.shutdown();
+      try {
+        if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
+          executorService.shutdownNow();
+        }
+      } catch (InterruptedException e) {
+        executorService.shutdownNow();
+        Thread.currentThread().interrupt();
+      }
+
       new DatabaseChecker(database).setVerboseLevel(0).check();
 
       //System.out.println(

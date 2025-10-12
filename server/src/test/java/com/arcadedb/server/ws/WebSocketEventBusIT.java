@@ -25,9 +25,11 @@ import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.CallableNoReturn;
 
 import org.assertj.core.api.Assertions;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 import org.xnio.http.UpgradeFailedException;
 
+import java.util.concurrent.TimeUnit;
 import java.util.logging.*;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
@@ -35,8 +37,6 @@ import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class WebSocketEventBusIT extends BaseGraphServerTest {
-  private static final int DELAY_MS = 1000;
-
   @Test
   public void closeUnsubscribesAll() throws Throwable {
     execute(() -> {
@@ -47,8 +47,10 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
         result = new JSONObject(client.send(buildActionMessage("subscribe", "graph", "V2")));
         assertThat(result.get("result")).isEqualTo("ok");
       }
-      Thread.sleep(DELAY_MS);
-      assertThat(getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph")).isEmpty();
+      Awaitility.await()
+          .atMost(5, TimeUnit.SECONDS)
+          .pollInterval(100, TimeUnit.MILLISECONDS)
+          .until(() -> getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph").isEmpty());
     }, "closeUnsubscribesAll");
   }
 
@@ -73,13 +75,16 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
         assertThat(json.get("changeType")).isEqualTo("create");
 
         // The sending thread should have detected and removed the zombie connection.
-        Thread.sleep(DELAY_MS);
-        assertThat(getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph")).hasSize(1);
+        Awaitility.await()
+            .atMost(5, TimeUnit.SECONDS)
+            .pollInterval(100, TimeUnit.MILLISECONDS)
+            .until(() -> getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph").size() == 1);
       }
 
-      Thread.sleep(DELAY_MS);
-      assertThat(
-          getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions(getDatabaseName()).isEmpty()).isTrue();
+      Awaitility.await()
+          .atMost(5, TimeUnit.SECONDS)
+          .pollInterval(100, TimeUnit.MILLISECONDS)
+          .until(() -> getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions(getDatabaseName()).isEmpty());
     }, "badCloseIsCleanedUp");
   }
 
