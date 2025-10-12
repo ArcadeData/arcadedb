@@ -190,13 +190,10 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   }
 
   protected void waitForReplicationIsCompleted(final int serverNumber) {
-
     Awaitility.await()
-        .atMost(2, TimeUnit.MINUTES)
+        .atMost(5, TimeUnit.MINUTES)
         .pollInterval(1, TimeUnit.SECONDS)
-        .untilTrue(new AtomicBoolean(getServer(serverNumber).getHA().getMessagesInQueue() == 0)
-        );
-
+        .until(() -> getServer(serverNumber).getHA().getMessagesInQueue() == 0);
   }
 
   @AfterEach
