@@ -49,6 +49,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -260,12 +261,15 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
     for (Future<?> future : futures) {
       try {
-        future.get();
+        future.get(120, TimeUnit.SECONDS);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         e.printStackTrace();
       } catch (final ExecutionException e) {
         e.printStackTrace();
+      } catch (final TimeoutException e) {
+        LogManager.instance().log(this, Level.SEVERE, "Future timed out after 120 seconds", e);
+        future.cancel(true);
       }
     }
 
@@ -273,6 +277,9 @@ public class RandomTestMultiThreadsTest extends TestHelper {
     try {
       if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
         executorService.shutdownNow();
+        if (!executorService.awaitTermination(30, TimeUnit.SECONDS)) {
+          LogManager.instance().log(this, Level.SEVERE, "ExecutorService did not terminate");
+        }
       }
     } catch (InterruptedException e) {
       executorService.shutdownNow();

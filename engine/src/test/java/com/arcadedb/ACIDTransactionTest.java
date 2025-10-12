@@ -507,9 +507,15 @@ public class ACIDTransactionTest extends TestHelper {
     // WAIT FOR ALL THE THREADS
     for (Future<?> future : futures) {
       try {
-        future.get();
-      } catch (InterruptedException | ExecutionException e) {
-        // IGNORE IT
+        future.get(120, TimeUnit.SECONDS);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        LogManager.instance().log(this, Level.WARNING, "Thread interrupted while waiting for future", e);
+      } catch (ExecutionException e) {
+        LogManager.instance().log(this, Level.WARNING, "Execution exception in future", e);
+      } catch (TimeoutException e) {
+        LogManager.instance().log(this, Level.SEVERE, "Future timed out after 120 seconds", e);
+        future.cancel(true);
       }
     }
 
