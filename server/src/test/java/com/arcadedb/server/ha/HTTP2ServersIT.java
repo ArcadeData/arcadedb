@@ -25,11 +25,13 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 
 import org.assertj.core.api.Assertions;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.net.*;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.*;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
@@ -73,10 +75,23 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
     });
 
-    Thread.sleep(300);
-
-    // CHECK THE SCHEMA HAS BEEN PROPAGATED
-    testEachServer((serverIndex) -> command(serverIndex, "select from VertexType" + serverIndex));
+    // Wait for schema propagation using awaitility
+    Awaitility.await()
+        .atMost(10, TimeUnit.SECONDS)
+        .pollInterval(100, TimeUnit.MILLISECONDS)
+        .ignoreExceptions()
+        .until(() -> {
+          // CHECK THE SCHEMA HAS BEEN PROPAGATED to both servers
+          for (int i = 0; i < getServerCount(); i++) {
+            final int serverIndex = i;
+            try {
+              command(serverIndex, "select from VertexType" + serverIndex);
+            } catch (Exception e) {
+              return false;
+            }
+          }
+          return true;
+        });
   }
 
   @Test
@@ -106,7 +121,8 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   @Test
   public void checkDeleteGraphElements() throws Exception {
 
-    Thread.sleep(3000);
+    // Wait for initial synchronization
+    waitForReplicationIsCompleted(0);
 
     testEachServer((serverIndex) -> {
       LogManager.instance().log(this, Level.FINE, "TESTS SERVER " + serverIndex);
@@ -116,7 +132,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
           "result").getJSONObject(0).getString(RID_PROPERTY);
 
       if (!getServer(serverIndex).getHA().isLeader())
-        Thread.sleep(300);
+        waitForReplicationIsCompleted(serverIndex);
 
       testEachServer((checkServer) -> {
         try {
@@ -133,7 +149,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
           "result").getJSONObject(0).getString(RID_PROPERTY);
 
       if (!getServer(serverIndex).getHA().isLeader())
-        Thread.sleep(300);
+        waitForReplicationIsCompleted(serverIndex);
 
       testEachServer((checkServer) -> {
         try {
@@ -150,7 +166,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
           .getJSONObject(0).getString(RID_PROPERTY);
 
       if (!getServer(serverIndex).getHA().isLeader())
-        Thread.sleep(300);
+        waitForReplicationIsCompleted(serverIndex);
 
       testEachServer((checkServer) -> {
         try {
@@ -167,7 +183,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
           "result").getJSONObject(0).getString(RID_PROPERTY);
 
       if (!getServer(serverIndex).getHA().isLeader())
-        Thread.sleep(300);
+        waitForReplicationIsCompleted(serverIndex);
 
       testEachServer((checkServer) -> {
         try {
@@ -183,7 +199,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
           .getJSONObject(0).getString(RID_PROPERTY);
 
       if (!getServer(serverIndex).getHA().isLeader())
-        Thread.sleep(300);
+        waitForReplicationIsCompleted(serverIndex);
 
       testEachServer((checkServer) -> {
         try {
@@ -198,7 +214,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       command(serverIndex, "delete from " + v1);
 
       if (!getServer(serverIndex).getHA().isLeader())
-        Thread.sleep(300);
+        waitForReplicationIsCompleted(serverIndex);
 
       testEachServer((checkServer) -> {
         try {
