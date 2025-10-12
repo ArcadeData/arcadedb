@@ -60,7 +60,7 @@ public class HTTPGraphConcurrentIT extends BaseGraphServerTest {
 
       final ExecutorService executorService = Executors.newFixedThreadPool(THREADS);
       final List<Future<?>> futures = new ArrayList<>();
-      
+
       for (int i = 0; i < THREADS; i++) {
         Future<?> future = executorService.submit(() -> {
           for (int j = 0; j < SCRIPTS; j++) {
@@ -97,7 +97,7 @@ public class HTTPGraphConcurrentIT extends BaseGraphServerTest {
           fail(e);
         }
       }
-      
+
       executorService.shutdown();
       if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
         executorService.shutdownNow();
