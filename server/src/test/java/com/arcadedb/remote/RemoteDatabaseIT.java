@@ -24,6 +24,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
@@ -542,10 +543,13 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         svt2.save();
         tx.commit();
 
+        // Test that updating svt2 to use the same UUID as svt1 throws a DuplicatedKeyException
         tx.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
-        svt2.set("svuuid", uuid1);
-        svt2.save();
-        tx.commit();
+        MutableVertex svt2Updated = tx.lookupByRID(svt2.getIdentity()).asVertex().modify();
+        svt2Updated.set("svuuid", uuid1);
+        svt2Updated.save();
+        assertThatThrownBy(() -> tx.commit())
+            .isInstanceOf(DuplicatedKeyException.class);
       }
     });
   }
