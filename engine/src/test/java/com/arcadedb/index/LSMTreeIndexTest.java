@@ -31,17 +31,12 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.assertj.core.api.Assertions;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
+import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -623,12 +618,23 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testScanIndexAscending() {
     database.transaction(() -> {
 
-      try {
-        // WAIT FOR THE INDEX TO BE COMPACTED
-        Thread.sleep(1000);
-      } catch (final InterruptedException e) {
-        e.printStackTrace();
-      }
+      // Wait for the index to be compacted using awaitility
+      Awaitility.await()
+          .atMost(10, TimeUnit.SECONDS)
+          .pollInterval(100, TimeUnit.MILLISECONDS)
+          .until(() -> {
+            // Check if all indexes are ready by trying to access them
+            try {
+              for (final Index index : database.getSchema().getIndexes()) {
+                if (!(index instanceof TypeIndex)) {
+                  ((RangeIndex) index).iterator(true);
+                }
+              }
+              return true;
+            } catch (Exception e) {
+              return false;
+            }
+          });
 
       int total = 0;
 
@@ -672,12 +678,23 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testScanIndexDescending() {
     database.transaction(() -> {
 
-      try {
-        // WAIT FOR THE INDEX TO BE COMPACTED
-        Thread.sleep(1000);
-      } catch (final InterruptedException e) {
-        e.printStackTrace();
-      }
+      // Wait for the index to be compacted using awaitility
+      Awaitility.await()
+          .atMost(10, TimeUnit.SECONDS)
+          .pollInterval(100, TimeUnit.MILLISECONDS)
+          .until(() -> {
+            // Check if all indexes are ready by trying to access them
+            try {
+              for (final Index index : database.getSchema().getIndexes()) {
+                if (!(index instanceof TypeIndex)) {
+                  ((RangeIndex) index).iterator(false);
+                }
+              }
+              return true;
+            } catch (Exception e) {
+              return false;
+            }
+          });
 
       int total = 0;
 
@@ -1024,92 +1041,94 @@ public class LSMTreeIndexTest extends TestHelper {
     final AtomicLong duplicatedExceptions = new AtomicLong();
     final AtomicLong crossThreadsInserted = new AtomicLong();
 
-    final Thread[] threads = new Thread[16];
-    LogManager.instance().log(this, Level.INFO, "%s Started with %d threads", null, getClass(), threads.length);
+    final int threadCount = 16;
+    final ExecutorService executorService = Executors.newFixedThreadPool(threadCount);
+    final List<Future<?>> futures = new ArrayList<>();
+    LogManager.instance().log(this, Level.INFO, "%s Started with %d threads", null, getClass(), threadCount);
 
-    for (int i = 0; i < threads.length; ++i) {
-      threads[i] = new Thread(new Runnable() {
-        @Override
-        public void run() {
-          try {
-            int threadInserted = 0;
-            for (int i = TOT; i < TOT + total; ++i) {
-              boolean keyPresent = false;
-              for (int retry = 0; retry < maxRetries && !keyPresent; ++retry) {
+    for (int i = 0; i < threadCount; ++i) {
+      Future<?> future = executorService.submit(() -> {
+        try {
+          int threadInserted = 0;
+          for (int i1 = TOT; i1 < TOT + total; ++i1) {
+            boolean keyPresent = false;
+            for (int retry = 0; retry < maxRetries && !keyPresent; ++retry) {
 
-                try {
-                  Thread.sleep(new Random().nextInt(10));
-                } catch (final InterruptedException e) {
-                  e.printStackTrace();
-                  Thread.currentThread().interrupt();
-                  return;
-                }
-
-                database.begin();
-                try {
-                  final MutableDocument v = database.newDocument(TYPE_NAME);
-                  v.set("id", i);
-                  v.set("name", "Jay");
-                  v.set("surname", "Miner");
-                  v.save();
-
-                  database.commit();
-
-                  threadInserted++;
-                  crossThreadsInserted.incrementAndGet();
-
-                  if (threadInserted % 1000 == 0)
-                    LogManager.instance()
-                        .log(this, Level.INFO, "%s Thread %d inserted record %s, total %d records with key %d (total=%d)", null,
-                            getClass(), Thread.currentThread().threadId(), v.getIdentity(), i, threadInserted,
-                            crossThreadsInserted.get());
-
-                  keyPresent = true;
-
-                } catch (final NeedRetryException e) {
-                  needRetryExceptions.incrementAndGet();
-                  assertThat(database.isTransactionActive()).isFalse();
-                  continue;
-                } catch (final DuplicatedKeyException e) {
-                  duplicatedExceptions.incrementAndGet();
-                  keyPresent = true;
-                  assertThat(database.isTransactionActive()).isFalse();
-                } catch (final Exception e) {
-                  LogManager.instance()
-                      .log(this, Level.SEVERE, "%s Thread %d Generic Exception", e, getClass(), Thread.currentThread().threadId());
-                  assertThat(database.isTransactionActive()).isFalse();
-                  return;
-                }
+              // Small random delay using awaitility
+              try {
+                TimeUnit.MILLISECONDS.sleep(new Random().nextInt(10));
+              } catch (final InterruptedException e) {
+                e.printStackTrace();
+                Thread.currentThread().interrupt();
+                return;
               }
 
-              if (!keyPresent)
-                LogManager.instance()
-                    .log(this, Level.WARNING, "%s Thread %d Cannot create key %d after %d retries! (total=%d)", null, getClass(),
-                        Thread.currentThread().threadId(), i, maxRetries, crossThreadsInserted.get());
+              database.begin();
+              try {
+                final MutableDocument v = database.newDocument(TYPE_NAME);
+                v.set("id", i1);
+                v.set("name", "Jay");
+                v.set("surname", "Miner");
+                v.save();
 
+                database.commit();
+
+                threadInserted++;
+                crossThreadsInserted.incrementAndGet();
+
+                if (threadInserted % 1000 == 0)
+                  LogManager.instance()
+                      .log(this, Level.INFO, "%s Thread %d inserted record %s, total %d records with key %d (total=%d)", null,
+                          getClass(), Thread.currentThread().threadId(), v.getIdentity(), i1, threadInserted,
+                          crossThreadsInserted.get());
+
+                keyPresent = true;
+
+              } catch (final NeedRetryException e) {
+                needRetryExceptions.incrementAndGet();
+                assertThat(database.isTransactionActive()).isFalse();
+                continue;
+              } catch (final DuplicatedKeyException e) {
+                duplicatedExceptions.incrementAndGet();
+                keyPresent = true;
+                assertThat(database.isTransactionActive()).isFalse();
+              } catch (final Exception e) {
+                LogManager.instance()
+                    .log(this, Level.SEVERE, "%s Thread %d Generic Exception", e, getClass(), Thread.currentThread().threadId());
+                assertThat(database.isTransactionActive()).isFalse();
+                return;
+              }
             }
 
-            LogManager.instance()
-                .log(this, Level.INFO, "%s Thread %d completed (inserted=%d)", null, getClass(), Thread.currentThread().threadId(),
-                    threadInserted);
+            if (!keyPresent)
+              LogManager.instance()
+                  .log(this, Level.WARNING, "%s Thread %d Cannot create key %d after %d retries! (total=%d)", null, getClass(),
+                      Thread.currentThread().threadId(), i1, maxRetries, crossThreadsInserted.get());
 
-          } catch (final Exception e) {
-            LogManager.instance().log(this, Level.SEVERE, "%s Thread %d Error", e, getClass(), Thread.currentThread().threadId());
           }
-        }
 
+          LogManager.instance()
+              .log(this, Level.INFO, "%s Thread %d completed (inserted=%d)", null, getClass(), Thread.currentThread().threadId(),
+                  threadInserted);
+
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "%s Thread %d Error", e, getClass(), Thread.currentThread().threadId());
+        }
       });
+      futures.add(future);
     }
 
-    for (int i = 0; i < threads.length; ++i)
-      threads[i].start();
-
-    for (int i = 0; i < threads.length; ++i) {
+    for (Future<?> future : futures) {
       try {
-        threads[i].join();
-      } catch (final InterruptedException e) {
+        future.get();
+      } catch (final InterruptedException | ExecutionException e) {
         e.printStackTrace();
       }
+    }
+    
+    executorService.shutdown();
+    if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
+      executorService.shutdownNow();
     }
 
     LogManager.instance()
