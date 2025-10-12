@@ -1125,7 +1125,7 @@ public class LSMTreeIndexTest extends TestHelper {
         e.printStackTrace();
       }
     }
-    
+
     executorService.shutdown();
     if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
       executorService.shutdownNow();

@@ -671,7 +671,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
         //noop
       }
     }
-    
+
     executorService.shutdown();
     try {
       if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {

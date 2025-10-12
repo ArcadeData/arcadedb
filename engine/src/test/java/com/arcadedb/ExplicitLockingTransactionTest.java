@@ -59,7 +59,7 @@ public class ExplicitLockingTransactionTest extends TestHelper {
     // SPAWN ALL THE THREADS AND INCREMENT ONE BY ONE THE ID OF THE VERTEX
     final ExecutorService executorService = Executors.newFixedThreadPool(CONCURRENT_THREADS);
     final List<Future<?>> futures = new ArrayList<>();
-    
+
     for (int i = 0; i < CONCURRENT_THREADS; i++) {
       Future<?> future = executorService.submit(() -> {
         for (int k = 0; k < TOT; ++k) {
@@ -92,7 +92,7 @@ public class ExplicitLockingTransactionTest extends TestHelper {
         // IGNORE IT
       }
     }
-    
+
     executorService.shutdown();
     try {
       if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
@@ -138,7 +138,7 @@ public class ExplicitLockingTransactionTest extends TestHelper {
     // SPAWN ALL THE THREADS AND INCREMENT ONE BY ONE THE ID OF THE VERTEX
     final ExecutorService executorService = Executors.newFixedThreadPool(CONCURRENT_THREADS);
     final List<Future<?>> futures = new ArrayList<>();
-    
+
     for (int i = 0; i < CONCURRENT_THREADS; i++) {
       Future<?> future = executorService.submit(() -> {
         for (int k = 0; k < TOT; ++k) {
@@ -171,7 +171,7 @@ public class ExplicitLockingTransactionTest extends TestHelper {
         // IGNORE IT
       }
     }
-    
+
     executorService.shutdown();
     try {
       if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
@@ -218,7 +218,7 @@ public class ExplicitLockingTransactionTest extends TestHelper {
     // SPAWN ALL THE THREADS AND INCREMENT ONE BY ONE THE ID OF THE VERTEX
     final ExecutorService executorService = Executors.newFixedThreadPool(CONCURRENT_THREADS);
     final List<Future<?>> futures = new ArrayList<>();
-    
+
     for (int i = 0; i < CONCURRENT_THREADS; i++) {
       Future<?> future = executorService.submit(() -> {
         for (int k = 0; k < TOT; ++k) {
@@ -250,7 +250,7 @@ public class ExplicitLockingTransactionTest extends TestHelper {
         // IGNORE IT
       }
     }
-    
+
     executorService.shutdown();
     try {
       if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
@@ -298,7 +298,7 @@ public class ExplicitLockingTransactionTest extends TestHelper {
     // SPAWN ALL THE THREADS AND INCREMENT ONE BY ONE THE ID OF THE VERTEX
     final ExecutorService executorService = Executors.newFixedThreadPool(CONCURRENT_THREADS);
     final List<Future<?>> futures = new ArrayList<>();
-    
+
     for (int i = 0; i < CONCURRENT_THREADS; i++) {
       Future<?> future = executorService.submit(() -> {
         for (int k = 0; k < TOT; ++k) {
@@ -330,7 +330,7 @@ public class ExplicitLockingTransactionTest extends TestHelper {
         // IGNORE IT
       }
     }
-    
+
     executorService.shutdown();
     try {
       if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
