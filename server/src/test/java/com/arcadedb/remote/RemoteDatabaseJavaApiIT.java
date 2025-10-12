@@ -210,7 +210,7 @@ public class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
 
     MutableVertex me = db.newVertex("Person").set("name", "me").save();
     MutableVertex you = db.newVertex("Person").set("name", "you").save();
-    MutableEdge friendOf = me.newEdge("bucket:EdgeBucket", you);
+    MutableEdge friendOf = me.newEdge("FriendOf", you).save();
 
     assertThat(friendOf.getOut()).isEqualTo(me.getIdentity());
     assertThat(friendOf.getIn()).isEqualTo(you.getIdentity());

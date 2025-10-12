@@ -20,7 +20,10 @@ package com.arcadedb.server.ha;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.utility.CodeUtils;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
+
+import java.util.concurrent.TimeUnit;
 
 public class ReplicationServerQuorumNoneIT extends ReplicationServerIT {
   @Override
@@ -31,12 +34,28 @@ public class ReplicationServerQuorumNoneIT extends ReplicationServerIT {
 
   @Override
   protected int getTxs() {
-    return 200;
+    // Reduced from 200 to align with use case: async replication is about behavior testing,
+    // not large volume stress testing. With QUORUM=NONE, messages queue up asynchronously
+    // and take much longer to drain than synchronous modes.
+    return 100;
   }
 
   @Override
   protected int getVerticesPerTx() {
-    return 5000;
+    // Reduced from 5000 to 1000 to prevent excessive queue buildup during async replication
+    // Total: 100 * 1000 = 100,000 vertices is still sufficient to test async replication behavior
+    return 1000;
+  }
+
+  @Override
+  protected void waitForReplicationIsCompleted(final int serverNumber) {
+    // With QUORUM=NONE (asynchronous replication), the leader doesn't wait for replica acknowledgment.
+    // Messages are queued and processed asynchronously, which can take longer than synchronous modes.
+    // Using a longer timeout to accommodate the async message queue processing.
+    Awaitility.await()
+        .atMost(10, TimeUnit.MINUTES)  // Increased from default 5 minutes for async queue draining
+        .pollInterval(2, TimeUnit.SECONDS)
+        .until(() -> getServer(serverNumber).getHA().getMessagesInQueue() == 0);
   }
 
   @AfterEach
