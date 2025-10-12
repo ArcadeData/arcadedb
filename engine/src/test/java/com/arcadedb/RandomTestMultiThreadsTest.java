@@ -35,11 +35,22 @@ import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.math.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -83,202 +94,199 @@ public class RandomTestMultiThreadsTest extends TestHelper {
         Future<?> future = executorService.submit(() -> {
           beginTransaction();
 
-            long totalTransactionInCurrentTx = 0;
+          long totalTransactionInCurrentTx = 0;
 
-            while (true) {
-              final long i = total.incrementAndGet();
-              if (i >= CYCLES)
-                break;
-
-              try {
-                final int op = getRandom(100);
-                if (i % 5000 == 0)
-                  LogManager.instance()
-                      .log(this, Level.FINE, "Operations %d/%d totalTransactionInCurrentTx=%d totalTransactions=%d (thread=%d)", i,
-                          CYCLES, totalTransactionInCurrentTx, totalTransactionRecords.get(), threadId);
-
-                LogManager.instance().log(this, Level.FINE, "Operation %d %d/%d (thread=%d)", op, i, CYCLES, threadId);
-
-                if (op >= 0 && op <= 19) {
-                  final int txOps = getRandom(10);
-                  if (debug)
-                    LogManager.instance().log(this, Level.SEVERE, "Creating %d transactions (thread=%d)...", txOps, threadId);
-
-                  createTransactions(database, txOps);
-                  totalTransactionInCurrentTx += txOps;
-
-                } else if (op >= 20 && op <= 39) {
-                  if (debug)
-                    LogManager.instance().log(this, Level.SEVERE, "Querying Account by index records (thread=%d)...", threadId);
-
-                  final Map<String, Object> map = new HashMap<>();
-                  final int randomId = getRandom(10000) + 1;
-                  map.put(":id", randomId);
-
-                  final ResultSet result = database.command("SQL", "select from Account where id = :id", map);
-                  while (result.hasNext()) {
-                    final Result record = result.next();
-                    record.toJSON();
-                    assertThat((Long) record.getProperty("id")).isEqualTo(randomId);
-                  }
-
-                } else if (op >= 40 && op <= 59) {
-                  if (debug)
-                    LogManager.instance().log(this, Level.SEVERE, "Querying Transaction by index records (thread=%d)...", threadId);
-
-                  final Map<String, Object> map = new HashMap<>();
-                  final int randomUUID = getRandom((int) (totalTransactionRecords.get() + 1)) + 1;
-                  map.put(":uuid", randomUUID);
-
-                  final ResultSet result = database.command("SQL", "select from Transaction where uuid = :uuid", map);
-                  while (result.hasNext()) {
-                    final Result record = result.next();
-                    record.toJSON();
-                    if (randomUUID != (Long) record.getProperty("uuid")) {
-                      LogManager.instance()
-                          .log(this, Level.SEVERE, "Looking for %d but found %d (threadId=%s)", randomUUID,
-                              record.getProperty("uuid"), Thread.currentThread().threadId());
-                    }
-                    assertThat((Long) record.getProperty("uuid")).isEqualTo(randomUUID);
-                  }
-                } else if (op >= 60 && op <= 64) {
-                  if (debug)
-                    LogManager.instance().log(this, Level.SEVERE, "Scanning Account records (thread=%d)...", threadId);
-
-                  final Map<String, Object> map = new HashMap<>();
-                  map.put(":limit", getRandom(100) + 1);
-
-                  final ResultSet result = database.command("SQL", "select from Account limit :limit", map);
-                  while (result.hasNext()) {
-                    final Result record = result.next();
-                    record.toJSON();
-                  }
-
-                } else if (op >= 65 && op <= 69) {
-                  if (debug)
-                    LogManager.instance().log(this, Level.SEVERE, "Scanning Transaction records (thread=%d)...", threadId);
-
-                  final Map<String, Object> map = new HashMap<>();
-                  map.put(":limit", getRandom((int) totalTransactionRecords.get() + 1) + 1);
-
-                  final ResultSet result = database.command("SQL", "select from Transaction limit :limit", map);
-                  while (result.hasNext()) {
-                    final Result record = result.next();
-                    record.toJSON();
-                  }
-
-                } else if (op >= 70 && op <= 74) {
-                  if (debug)
-                    LogManager.instance().log(this, Level.SEVERE, "Deleting records (thread=%d)...", threadId);
-
-                  totalTransactionInCurrentTx -= deleteRecords(database, threadId);
-                } else if (op >= 75 && op <= 84) {
-                  if (debug)
-                    LogManager.instance().log(this, Level.SEVERE, "Committing (thread=%d)...", threadId);
-                  database.commit();
-
-                  totalTransactionRecords.addAndGet(totalTransactionInCurrentTx);
-                  totalTransactionInCurrentTx = 0;
-
-                  beginTransaction();
-                } else if (op >= 85 && op <= 94) {
-                  if (debug)
-                    LogManager.instance().log(this, Level.SEVERE, "Updating records (thread=%d)...", threadId);
-
-                  updateRecords(database, threadId);
-                } else if (op >= 95 && op <= 95) {
-                  // DELETE RECORDS
-                  if (debug)
-                    LogManager.instance().log(this, Level.SEVERE, "Counting Transaction records (thread=%d)...", threadId);
-
-                  final long newCounter = database.countType("Transaction", true);
-
-                  LogManager.instance()
-                      .log(this, Level.FINE, "Found %d Transaction records, ram counter=%d (thread=%d)...", newCounter,
-                          totalTransactionRecords.get(), threadId);
-
-                  totalTransactionInCurrentTx -= deleteRecords(database, threadId);
-
-                } else if (op >= 96 && op <= 96) {
-                  // DELETE RECORDS
-                  if (debug)
-                    LogManager.instance().log(this, Level.SEVERE, "Counting account records (thread=%d)...", threadId);
-
-                  final long newCounter = database.countType("Account", true);
-
-                  LogManager.instance().log(this, Level.FINE, "Found %d Account records (thread=%d)...", newCounter, threadId);
-
-                  totalTransactionInCurrentTx -= deleteRecords(database, threadId);
-                } else if (op >= 97 && op <= 99) {
-                  // JUST WAIT
-                  final long ms = getRandom(299) + 1;
-                  if (debug)
-                    LogManager.instance().log(this, Level.SEVERE, "Sleeping %d ms (thread=%d)...", ms, threadId);
-                  Thread.sleep(ms);
-                }
-
-              } catch (final Exception e) {
-                if (e instanceof ConcurrentModificationException) {
-                  mvccErrors.incrementAndGet();
-                  total.decrementAndGet();
-                  totalTransactionInCurrentTx = 0;
-                } else {
-                  otherErrors.add(new Pair<>(threadId, e));
-                  LogManager.instance().log(this, Level.SEVERE, "UNEXPECTED ERROR: " + e, e);
-                }
-
-                if (!database.isTransactionActive()) {
-                  beginTransaction();
-                }
-              }
-            }
+          while (true) {
+            final long c = total.incrementAndGet();
+            if (c >= CYCLES)
+              break;
 
             try {
-              database.commit();
-            } catch (final Exception e) {
-              mvccErrors.incrementAndGet();
-            }
+              final int op = getRandom(100);
+              if (c % 5000 == 0)
+                LogManager.instance()
+                    .log(this, Level.FINE, "Operations %d/%d totalTransactionInCurrentTx=%d totalTransactions=%d (thread=%d)", c,
+                        CYCLES, totalTransactionInCurrentTx, totalTransactionRecords.get(), threadId);
 
+              LogManager.instance().log(this, Level.FINE, "Operation %d %d/%d (thread=%d)", op, c, CYCLES, threadId);
+
+              if (op >= 0 && op <= 19) {
+                final int txOps = getRandom(10);
+                if (debug)
+                  LogManager.instance().log(this, Level.SEVERE, "Creating %d transactions (thread=%d)...", txOps, threadId);
+
+                createTransactions(database, txOps);
+                totalTransactionInCurrentTx += txOps;
+
+              } else if (op >= 20 && op <= 39) {
+                if (debug)
+                  LogManager.instance().log(this, Level.SEVERE, "Querying Account by index records (thread=%d)...", threadId);
+
+                final Map<String, Object> map = new HashMap<>();
+                final int randomId = getRandom(10000) + 1;
+                map.put(":id", randomId);
+
+                final ResultSet result = database.command("SQL", "select from Account where id = :id", map);
+                while (result.hasNext()) {
+                  final Result record = result.next();
+                  record.toJSON();
+                  assertThat((Long) record.getProperty("id")).isEqualTo(randomId);
+                }
+
+              } else if (op >= 40 && op <= 59) {
+                if (debug)
+                  LogManager.instance().log(this, Level.SEVERE, "Querying Transaction by index records (thread=%d)...", threadId);
+
+                final Map<String, Object> map = new HashMap<>();
+                final int randomUUID = getRandom((int) (totalTransactionRecords.get() + 1)) + 1;
+                map.put(":uuid", randomUUID);
+
+                final ResultSet result = database.command("SQL", "select from Transaction where uuid = :uuid", map);
+                while (result.hasNext()) {
+                  final Result record = result.next();
+                  record.toJSON();
+                  if (randomUUID != (Long) record.getProperty("uuid")) {
+                    LogManager.instance()
+                        .log(this, Level.SEVERE, "Looking for %d but found %d (threadId=%s)", randomUUID,
+                            record.getProperty("uuid"), Thread.currentThread().threadId());
+                  }
+                  assertThat((Long) record.getProperty("uuid")).isEqualTo(randomUUID);
+                }
+              } else if (op >= 60 && op <= 64) {
+                if (debug)
+                  LogManager.instance().log(this, Level.SEVERE, "Scanning Account records (thread=%d)...", threadId);
+
+                final Map<String, Object> map = new HashMap<>();
+                map.put(":limit", getRandom(100) + 1);
+
+                final ResultSet result = database.command("SQL", "select from Account limit :limit", map);
+                while (result.hasNext()) {
+                  final Result record = result.next();
+                  record.toJSON();
+                }
+
+              } else if (op >= 65 && op <= 69) {
+                if (debug)
+                  LogManager.instance().log(this, Level.SEVERE, "Scanning Transaction records (thread=%d)...", threadId);
+
+                final Map<String, Object> map = new HashMap<>();
+                map.put(":limit", getRandom((int) totalTransactionRecords.get() + 1) + 1);
+
+                final ResultSet result = database.command("SQL", "select from Transaction limit :limit", map);
+                while (result.hasNext()) {
+                  final Result record = result.next();
+                  record.toJSON();
+                }
+
+              } else if (op >= 70 && op <= 74) {
+                if (debug)
+                  LogManager.instance().log(this, Level.SEVERE, "Deleting records (thread=%d)...", threadId);
+
+                totalTransactionInCurrentTx -= deleteRecords(database, threadId);
+              } else if (op >= 75 && op <= 84) {
+                if (debug)
+                  LogManager.instance().log(this, Level.SEVERE, "Committing (thread=%d)...", threadId);
+                database.commit();
+
+                totalTransactionRecords.addAndGet(totalTransactionInCurrentTx);
+                totalTransactionInCurrentTx = 0;
+
+                beginTransaction();
+              } else if (op >= 85 && op <= 94) {
+                if (debug)
+                  LogManager.instance().log(this, Level.SEVERE, "Updating records (thread=%d)...", threadId);
+
+                updateRecords(database, threadId);
+              } else if (op >= 95 && op <= 95) {
+                // DELETE RECORDS
+                if (debug)
+                  LogManager.instance().log(this, Level.SEVERE, "Counting Transaction records (thread=%d)...", threadId);
+
+                final long newCounter = database.countType("Transaction", true);
+
+                LogManager.instance()
+                    .log(this, Level.FINE, "Found %d Transaction records, ram counter=%d (thread=%d)...", newCounter,
+                        totalTransactionRecords.get(), threadId);
+
+                totalTransactionInCurrentTx -= deleteRecords(database, threadId);
+
+              } else if (op >= 96 && op <= 96) {
+                // DELETE RECORDS
+                if (debug)
+                  LogManager.instance().log(this, Level.SEVERE, "Counting account records (thread=%d)...", threadId);
+
+                final long newCounter = database.countType("Account", true);
+
+                LogManager.instance().log(this, Level.FINE, "Found %d Account records (thread=%d)...", newCounter, threadId);
+
+                totalTransactionInCurrentTx -= deleteRecords(database, threadId);
+              } else if (op >= 97 && op <= 99) {
+                // JUST WAIT
+                final long ms = getRandom(299) + 1;
+                if (debug)
+                  LogManager.instance().log(this, Level.SEVERE, "Sleeping %d ms (thread=%d)...", ms, threadId);
+                Thread.sleep(ms);
+              }
+
+            } catch (final Exception e) {
+              if (e instanceof ConcurrentModificationException) {
+                mvccErrors.incrementAndGet();
+                total.decrementAndGet();
+                totalTransactionInCurrentTx = 0;
+              } else {
+                otherErrors.add(new Pair<>(threadId, e));
+                LogManager.instance().log(this, Level.SEVERE, "UNEXPECTED ERROR: " + e, e);
+              }
+
+              if (!database.isTransactionActive()) {
+                beginTransaction();
+              }
+            }
           }
+
+          try {
+            database.commit();
+          } catch (final Exception e) {
+            mvccErrors.incrementAndGet();
+          }
+
         });
+
         futures.add(future);
       }
 
-      //LogManager.instance().flush();
-      //System.out.flush();
-      //System.out.println("----------------");
+    } catch (Exception e) {
+    }
 
-      // Wait for all futures to complete
-      for (Future<?> future : futures) {
-        try {
-          future.get();
-        } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
-          e.printStackTrace();
-        } catch (final ExecutionException e) {
-          e.printStackTrace();
-        }
-      }
-
-    } finally {
-      executorService.shutdown();
+    for (Future<?> future : futures) {
       try {
-        if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
-          executorService.shutdownNow();
-        }
-      } catch (InterruptedException e) {
-        executorService.shutdownNow();
+        future.get();
+      } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
+        e.printStackTrace();
+      } catch (final ExecutionException e) {
+        e.printStackTrace();
       }
+    }
 
-      new DatabaseChecker(database).setVerboseLevel(0).check();
-
-      //System.out.println(
-      //     "Test finished in " + (System.currentTimeMillis() - begin) + "ms, mvccExceptions=" + mvccErrors.get() + " otherExceptions=" + otherErrors.size());
-
-      for (final Pair<Integer, Exception> entry : otherErrors) {
-        //System.out.println(" = threadId=" + entry.getFirst() + " exception=" + entry.getSecond());
+    executorService.shutdown();
+    try {
+      if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
+        executorService.shutdownNow();
       }
+    } catch (InterruptedException e) {
+      executorService.shutdownNow();
+      Thread.currentThread().interrupt();
+    }
+
+    new DatabaseChecker(database).setVerboseLevel(0).check();
+
+    //System.out.println(
+    //     "Test finished in " + (System.currentTimeMillis() - begin) + "ms, mvccExceptions=" + mvccErrors.get() + " otherExceptions=" + otherErrors.size());
+
+    for (final Pair<Integer, Exception> entry : otherErrors) {
+      //System.out.println(" = threadId=" + entry.getFirst() + " exception=" + entry.getSecond());
+    }
   }
 
   private void beginTransaction() {
