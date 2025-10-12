@@ -51,7 +51,12 @@ public class RemoteDateIT {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
 
-    DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/remotedate");
+    // Set the database directory explicitly
+    final String databaseDir = rootPath + "/databases";
+    serverConfiguration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, databaseDir);
+
+    // Create and configure the database BEFORE starting the server
+    DatabaseFactory databaseFactory = new DatabaseFactory(databaseDir + "/remotedate");
 
     try (Database db = databaseFactory.create()) {
       db.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
@@ -61,11 +66,17 @@ public class RemoteDateIT {
         dtOrders.createProperty("vstart", Type.DATETIME_MICROS);
       });
     }
+    // Database is now closed
 
+    // Set server configuration BEFORE creating the server
     serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
+    serverConfiguration.setValue(GlobalConfiguration.SERVER_DATABASE_LOADATSTARTUP, true);
+
+    // Start the server - it will load the existing database with proper security
     ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
     arcadeDBServer.start();
 
+    // Now the server will have the database loaded with proper security
     Database database = arcadeDBServer.getDatabase("remotedate");
     try {
       LocalDateTime vstart = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
@@ -81,6 +92,7 @@ public class RemoteDateIT {
 
       database.commit();
 
+      // Now the remote connection will work because the database has proper security setup
       final RemoteDatabase remote = new RemoteDatabase("localhost", 2480, "remotedate", "root", DEFAULT_PASSWORD_FOR_TESTS);
 
       try (ResultSet resultSet = remote.query("sql", "select from Order")) {

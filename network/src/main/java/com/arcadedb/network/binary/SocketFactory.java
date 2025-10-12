@@ -115,7 +115,7 @@ public class SocketFactory {
     try {
       final URL url = new URI(path).toURL();
       input = url.openStream();
-    } catch (final MalformedURLException | URISyntaxException ignore) {
+    } catch (final MalformedURLException | URISyntaxException | IllegalArgumentException ignore) {
       input = null;
     }
 
