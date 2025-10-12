@@ -73,8 +73,6 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
     final long begin = System.currentTimeMillis();
 
-    try {
-
     final ExecutorService executorService = Executors.newFixedThreadPool(WORKERS);
     final List<Future<?>> futures = new ArrayList<>();
 
@@ -281,7 +279,6 @@ public class RandomTestMultiThreadsTest extends TestHelper {
       for (final Pair<Integer, Exception> entry : otherErrors) {
         //System.out.println(" = threadId=" + entry.getFirst() + " exception=" + entry.getSecond());
       }
-    }
   }
 
   private void beginTransaction() {
