@@ -55,30 +55,28 @@ public class RemoteDateIT {
     final String databaseDir = rootPath + "/databases";
     serverConfiguration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, databaseDir);
 
-    // Create and configure the database BEFORE starting the server
-    DatabaseFactory databaseFactory = new DatabaseFactory(databaseDir + "/remotedate");
-
-    try (Database db = databaseFactory.create()) {
-      db.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
-      db.command("sql", "alter database `arcadedb.dateTimeFormat` \"yyyy-MM-dd'T'HH:mm:ss.SSSSSS\"");
-      db.transaction(() -> {
-        DocumentType dtOrders = db.getSchema().createDocumentType("Order");
-        dtOrders.createProperty("vstart", Type.DATETIME_MICROS);
-      });
-    }
-    // Database is now closed
-
     // Set server configuration BEFORE creating the server
     serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
-    serverConfiguration.setValue(GlobalConfiguration.SERVER_DATABASE_LOADATSTARTUP, true);
 
-    // Start the server - it will load the existing database with proper security
+    // Start the server first so security is properly initialized
     ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
     arcadeDBServer.start();
 
-    // Now the server will have the database loaded with proper security
-    Database database = arcadeDBServer.getDatabase("remotedate");
+    // Create and configure the database through the server
+    Database database = arcadeDBServer.getOrCreateDatabase("remotedate");
     try {
+      // Configure datetime settings
+      database.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
+      database.command("sql", "alter database `arcadedb.dateTimeFormat` \"yyyy-MM-dd'T'HH:mm:ss.SSSSSS\"");
+
+      // Create schema
+      database.transaction(() -> {
+        if (!database.getSchema().existsType("Order")) {
+          DocumentType dtOrders = database.getSchema().createDocumentType("Order");
+          dtOrders.createProperty("vstart", Type.DATETIME_MICROS);
+        }
+      });
+
       LocalDateTime vstart = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
 
       database.begin();
