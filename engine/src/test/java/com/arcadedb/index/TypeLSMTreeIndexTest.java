@@ -36,8 +36,19 @@ import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -776,7 +787,9 @@ public class TypeLSMTreeIndexTest extends TestHelper {
     });
 
     database.async().waitCompletion();
-    database.async().waitCompletion(); // Double wait to ensure completion
+    // Second call ensures all async operations including index compaction are fully complete
+    // This is needed in CI environments where async operations may take longer to finalize
+    database.async().waitCompletion();
 
     database.command("sql", "create index on `This.is:special`(`other.special:property`) unique");
     database.command("sql", "rebuild index `This.is:special[other.special:property]`");
