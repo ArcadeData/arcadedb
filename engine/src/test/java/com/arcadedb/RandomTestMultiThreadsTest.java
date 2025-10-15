@@ -257,6 +257,8 @@ public class RandomTestMultiThreadsTest extends TestHelper {
       }
 
     } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error during task submission", e);
+      throw new RuntimeException("Failed to submit tasks", e);
     }
 
     for (Future<?> future : futures) {
@@ -264,9 +266,11 @@ public class RandomTestMultiThreadsTest extends TestHelper {
         future.get(120, TimeUnit.SECONDS);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
-        e.printStackTrace();
+        LogManager.instance().log(this, Level.SEVERE, "Thread interrupted while waiting for future", e);
+        fail("Test interrupted", e);
       } catch (final ExecutionException e) {
-        e.printStackTrace();
+        LogManager.instance().log(this, Level.SEVERE, "Execution exception in future", e.getCause());
+        fail("Test task failed", e.getCause());
       } catch (final TimeoutException e) {
         LogManager.instance().log(this, Level.SEVERE, "Future timed out after 120 seconds", e);
         future.cancel(true);

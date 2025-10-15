@@ -333,30 +333,30 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     if (serverCount == 1)
       return;
 
-    Awaitility.await()
-        .atMost(30, TimeUnit.SECONDS)
-        .pollInterval(500, TimeUnit.MILLISECONDS)
-        .until(() -> {
-          for (int i = 0; i < serverCount; ++i) {
-            if (getServerRole(i) == HAServer.SERVER_ROLE.ANY) {
-              // ONLY FOR CANDIDATE LEADERS
-              if (servers[i].getHA() != null) {
-                if (servers[i].getHA().isLeader()) {
-                  final int onlineReplicas = servers[i].getHA().getOnlineReplicas();
-                  if (onlineReplicas >= serverCount - 1) {
-                    // ALL CONNECTED
-                    serversSynchronized = true;
-                    LogManager.instance().log(this, Level.WARNING, "All %d replicas are online", onlineReplicas);
-                    return true;
+    try {
+      Awaitility.await()
+          .atMost(30, TimeUnit.SECONDS)
+          .pollInterval(500, TimeUnit.MILLISECONDS)
+          .until(() -> {
+            for (int i = 0; i < serverCount; ++i) {
+              if (getServerRole(i) == HAServer.SERVER_ROLE.ANY) {
+                // ONLY FOR CANDIDATE LEADERS
+                if (servers[i].getHA() != null) {
+                  if (servers[i].getHA().isLeader()) {
+                    final int onlineReplicas = servers[i].getHA().getOnlineReplicas();
+                    if (onlineReplicas >= serverCount - 1) {
+                      // ALL CONNECTED
+                      serversSynchronized = true;
+                      LogManager.instance().log(this, Level.WARNING, "All %d replicas are online", onlineReplicas);
+                      return true;
+                    }
                   }
                 }
               }
             }
-          }
-          return false;
-        });
-
-    if (!serversSynchronized) {
+            return false;
+          });
+    } catch (org.awaitility.core.ConditionTimeoutException e) {
       int lastTotalConnectedReplica = 0;
       for (int i = 0; i < serverCount; ++i) {
         if (getServerRole(i) == HAServer.SERVER_ROLE.ANY && servers[i].getHA() != null && servers[i].getHA().isLeader()) {
