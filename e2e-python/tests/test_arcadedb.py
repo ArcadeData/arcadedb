@@ -207,8 +207,8 @@ def test_psycopg2_with_named_parameterized_query():
 
     try:
         with conn.cursor() as cursor:
-            query_params = {'name': 'Stout'}
-            cursor.execute('SELECT * FROM Beer WHERE name = %(name)s', query_params)
+            query_params = {'name': 'Stout', 'brewery_id': 350}
+            cursor.execute('SELECT * FROM Beer WHERE name = %(name)s AND brewery_id = %(brewery_id)s', query_params)
             beer = cursor.fetchall()[0]
             assert 'Stout' in beer
     finally:
@@ -222,8 +222,8 @@ def test_psycopg2_with_named_parameterized_cypher_query():
 
     try:
         with conn.cursor() as cursor:
-            query_params = {'name': 'Stout'}
-            cursor.execute('{cypher} MATCH (b:Beer) WHERE b.name =%(name)s RETURN b', query_params)
+            query_params = {'name': 'Stout', 'brewery_id': 350}
+            cursor.execute('{cypher} MATCH (b:Beer) WHERE b.name =%(name)s AND b.brewery_id = %(brewery_id)s RETURN b', query_params)
             beer = cursor.fetchall()[0]
             assert 'Stout' in beer
     finally:
@@ -238,7 +238,7 @@ def test_psycopg2_with_positional_parameterized_query():
 
     try:
         with conn.cursor() as cursor:
-            cursor.execute('SELECT * FROM Beer WHERE name = %s', ("Stout",))
+            cursor.execute('SELECT * FROM Beer WHERE name = %s AND brewery_id = %s', ("Stout", 350))
             beer = cursor.fetchall()[0]
             assert 'Stout' in beer
     finally:
