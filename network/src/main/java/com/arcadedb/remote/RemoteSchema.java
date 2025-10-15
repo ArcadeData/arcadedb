@@ -42,9 +42,15 @@ import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.VectorIndexBuilder;
 import com.arcadedb.schema.VertexType;
 
-import java.time.*;
-import java.util.*;
-import java.util.stream.*;
+import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.TimeZone;
+import java.util.stream.Collectors;
 
 /**
  * Remote Schema implementation used by Remote Database. The types are loaded from the server the first time
@@ -579,15 +585,12 @@ public class RemoteSchema implements Schema {
   @Deprecated
   @Override
   public DocumentType getTypeByBucketName(final String bucketName) {
-    System.out.println("bucketName = " + bucketName);
-remoteDatabase.query("sql", "select from schema:types ").stream()
-    .forEach(r-> System.out.println("r.toJSON() = " + r.toJSON()));
-
     ResultSet resultSet = remoteDatabase.command("sql", "select from schema:types where buckets contains `" + bucketName + "`");
 
     final Result result = resultSet.nextIfAvailable();
 
-    return result != null ? remoteDatabase.getSchema().getType(result.getProperty("name")) : null;  }
+    return result != null ? remoteDatabase.getSchema().getType(result.getProperty("name")) : null;
+  }
 
   @Deprecated
   @Override
