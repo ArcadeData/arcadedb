@@ -54,6 +54,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Fail.fail;
 
 public class RandomTestMultiThreadsTest extends TestHelper {
   private static final int CYCLES           = 10000;
