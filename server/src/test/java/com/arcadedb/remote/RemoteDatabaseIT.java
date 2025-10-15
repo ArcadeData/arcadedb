@@ -31,7 +31,6 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.graph.Vertex.DIRECTION;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
@@ -40,10 +39,14 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-import static com.arcadedb.graph.Vertex.DIRECTION.*;
+import static com.arcadedb.graph.Vertex.DIRECTION.IN;
+import static com.arcadedb.graph.Vertex.DIRECTION.OUT;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -58,69 +61,64 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
   @Test
   public void simpleTxDocuments() throws Exception {
     testEachServer((serverIndex) -> {
-      assertThat(new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
-          DATABASE_NAME)).isTrue();
+      assertThat(new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)
+          .exists(DATABASE_NAME)).isTrue();
 
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
       database.command("sql", "create vertex type Person");
 
-      // BEGIN
-      database.transaction(() -> {
-        // CREATE DOCUMENT VIA API
-        final MutableDocument jay = database.newDocument("Person").set("name", "Jay").save();
-        assertThat(jay).isNotNull();
-        assertThat(jay.getString("name")).isEqualTo("Jay");
-        assertThat(jay.getIdentity()).isNotNull();
-        jay.save();
+      // CREATE DOCUMENT VIA API
+      final MutableDocument jay = database.newDocument("Person").set("name", "Jay").save();
+      assertThat(jay).isNotNull();
+      assertThat(jay.getString("name")).isEqualTo("Jay");
+      assertThat(jay.getIdentity()).isNotNull();
+      jay.save();
 
-        // TEST DELETION AND LOOKUP
-        jay.delete();
-        assertThatThrownBy(() -> jay.reload())
-            .isInstanceOf(RecordNotFoundException.class);
+      // TEST DELETION AND LOOKUP
+      jay.delete();
+      assertThatThrownBy(jay::reload).isInstanceOf(RecordNotFoundException.class);
 
-        // CREATE DOCUMENT VIA SQL
-        ResultSet result = database.command("SQL", "insert into Person set name = 'John'");
-        assertThat((Iterator<? extends Result>) result).isNotNull();
-        assertThat(result.hasNext()).isTrue();
-        final Result rec = result.next();
-        assertThat(rec.toJSON().toString().contains("John")).isTrue();
-        assertThat(rec.toElement().toMap().get("name")).isEqualTo("John");
-        final RID rid = rec.toElement().getIdentity();
-
-        // RETRIEVE DOCUMENT WITH QUERY
-        result = database.query("SQL", "select from Person where name = 'John'");
-        assertThat(result.hasNext()).isTrue();
-
-        // UPDATE DOCUMENT WITH COMMAND
-        result = database.command("SQL", "update Person set lastName = 'Red' where name = 'John'");
-        assertThat(result.hasNext()).isTrue();
-        assertThat(result.next().toJSON().getInt("count")).isEqualTo(1);
-
-        final Document record = (Document) database.lookupByRID(rid);
-        assertThat((Iterator<? extends Result>) result).isNotNull();
-        assertThat(record.getString("lastName")).isEqualTo("Red");
-
-        assertThat(database.countType("Person", true)).isEqualTo(1L);
-        assertThat(database.countType("Person", false)).isEqualTo(1L);
-
-        long totalInBuckets = 0L;
-        for (int i = 0; i < 100; i++) {
-          try {
-            totalInBuckets += database.countBucket("Person_" + i);
-          } catch (Exception e) {
-            // IGNORE IT
-            break;
-          }
-        }
-        assertThat(totalInBuckets).isEqualTo(1L);
-      });
-
-      // RETRIEVE DOCUMENT WITH QUERY AFTER COMMIT
-      final ResultSet result = database.query("SQL", "select from Person where name = 'John'");
+      // CREATE DOCUMENT VIA SQL
+      ResultSet result = database.command("SQL", "insert into Person set name = 'John'");
+      assertThat((Iterator<? extends Result>) result).isNotNull();
       assertThat(result.hasNext()).isTrue();
-      assertThat(result.next().<String>getProperty("lastName")).isEqualTo("Red");
+      final Result rec = result.next();
+      assertThat(rec.<String>getProperty("name")).isEqualTo("John");
+      final RID rid = rec.toElement().getIdentity();
+
+      // RETRIEVE DOCUMENT WITH QUERY
+      result = database.query("SQL", "select from Person where name = 'John'");
+      assertThat(result.hasNext()).isTrue();
+
+      // UPDATE DOCUMENT WITH COMMAND
+      result = database.command("SQL", "update Person set lastName = 'Red' where name = 'John'");
+      assertThat(result.hasNext()).isTrue();
+      assertThat(result.next().<Integer>getProperty("count")).isEqualTo(1);
+
+      final Document record = (Document) database.lookupByRID(rid);
+      assertThat((Iterator<? extends Result>) result).isNotNull();
+      assertThat(record.getString("lastName")).isEqualTo("Red");
+
+      assertThat(database.countType("Person", true)).isEqualTo(1L);
+      assertThat(database.countType("Person", false)).isEqualTo(1L);
+
+      long totalInBuckets = 0L;
+      for (int i = 0; i < 100; i++) {
+        try {
+          totalInBuckets += database.countBucket("Person_" + i);
+        } catch (Exception e) {
+          // IGNORE IT
+          break;
+        }
+      }
+      assertThat(totalInBuckets).isEqualTo(1L);
+
+    // RETRIEVE DOCUMENT WITH QUERY AFTER COMMIT
+    result = database.query("SQL", "select from Person where name = 'John'");
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("lastName")).isEqualTo("Red");
     });
   }
 
@@ -137,105 +135,94 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       database.command("sql", "create vertex type " + VERTEX2_TYPE_NAME);
       database.command("sql", "create edge type " + EDGE1_TYPE_NAME);
       database.command("sql", "create edge type " + EDGE2_TYPE_NAME);
+      database.command("SQL", "create vertex type Character");
 
-      // BEGIN
-      database.transaction(() -> {
-        // CREATE VERTEX TYPE
-        ResultSet result = database.command("SQL", "create vertex type Character");
-        assertThat((Iterator<? extends Result>) result).isNotNull();
-        assertThat(result.hasNext()).isTrue();
+      // CREATE DOCUMENT VIA API
+      MutableVertex jay = database.newVertex("Character").set("name", "Jay").save();
+      assertThat(jay instanceof RemoteMutableVertex).isTrue();
 
-        // CREATE DOCUMENT VIA API
-        final MutableVertex jay = database.newVertex("Character").set("name", "Jay").save();
-        assertThat(jay instanceof RemoteMutableVertex).isTrue();
+      assertThat(jay).isNotNull();
+      assertThat(jay.getString("name")).isEqualTo("Jay");
+      assertThat(jay.getIdentity()).isNotNull();
+      jay.save();
 
-        assertThat(jay).isNotNull();
-        assertThat(jay.getString("name")).isEqualTo("Jay");
-        assertThat(jay.getIdentity()).isNotNull();
-        jay.save();
+      assertThat(jay).isNotNull();
+      assertThat(jay.getString("name")).isEqualTo("Jay");
+      assertThat(jay.getIdentity()).isNotNull();
+      jay.save();
 
-        assertThat(jay).isNotNull();
-        assertThat(jay.getString("name")).isEqualTo("Jay");
-        assertThat(jay.getIdentity()).isNotNull();
-        jay.save();
+      // CREATE DOCUMENT VIA API
+      Map<String, Object> map = Map.of("on", "today", "for", "5 days");
+      Edge edge = jay.newEdge(EDGE1_TYPE_NAME, jay, map).save();
+      assertThat(edge instanceof RemoteMutableEdge).isTrue();
+      assertThat(edge.get("on")).isEqualTo("today");
+      assertThat(edge.get("for")).isEqualTo("5 days");
 
-        // CREATE DOCUMENT VIA API
-        final Map<String, Object> map = Map.of("on", "today", "for", "5 days");
-        Edge edge = jay.newEdge(EDGE1_TYPE_NAME, jay, map).save();
-        assertThat(edge instanceof RemoteMutableEdge).isTrue();
-        assertThat(edge.get("on")).isEqualTo("today");
-        assertThat(edge.get("for")).isEqualTo("5 days");
+      // TEST DELETION AND LOOKUP
+      jay.delete();
+      assertThatThrownBy(jay::reload).isInstanceOf(RecordNotFoundException.class);
 
-        // TEST DELETION AND LOOKUP
-        jay.delete();
-        assertThatThrownBy(() -> jay.reload())
-            .isInstanceOf(RecordNotFoundException.class);
+      // CREATE VERTEX 1
+      ResultSet result = database.command("SQL", "insert into Character set name = 'John'");
+      assertThat((Iterator<? extends Result>) result).isNotNull();
+      assertThat(result.hasNext()).isTrue();
+      Result rec = result.next();
+      assertThat(rec.toJSON().toString().contains("John")).isTrue();
+      assertThat(rec.toElement().toMap().get("name")).isEqualTo("John");
+      final RID rid1 = rec.getIdentity().get();
 
-        // CREATE VERTEX 1
-        result = database.command("SQL", "insert into Character set name = 'John'");
-        assertThat((Iterator<? extends Result>) result).isNotNull();
-        assertThat(result.hasNext()).isTrue();
-        Result rec = result.next();
-        assertThat(rec.toJSON().toString().contains("John")).isTrue();
-        assertThat(rec.toElement().toMap().get("name")).isEqualTo("John");
-        final RID rid1 = rec.getIdentity().get();
+      // CREATE VERTEX 2
+      result = database.command("SQL", "create vertex Character set name = 'Kimbal'");
+      assertThat((Iterator<? extends Result>) result).isNotNull();
+      assertThat(result.hasNext()).isTrue();
+      rec = result.next();
+      assertThat(rec.toJSON().toString().contains("Kimbal")).isTrue();
+      assertThat(rec.toElement().toMap().get("name")).isEqualTo("Kimbal");
+      final RID rid2 = rec.getIdentity().get();
 
-        // CREATE VERTEX 2
-        result = database.command("SQL", "create vertex Character set name = 'Kimbal'");
-        assertThat((Iterator<? extends Result>) result).isNotNull();
-        assertThat(result.hasNext()).isTrue();
-        rec = result.next();
-        assertThat(rec.toJSON().toString().contains("Kimbal")).isTrue();
-        assertThat(rec.toElement().toMap().get("name")).isEqualTo("Kimbal");
-        final RID rid2 = rec.getIdentity().get();
+      // RETRIEVE VERTEX WITH QUERY
+      result = database.query("SQL", "select from Character where name = 'John'");
+      assertThat(result.hasNext()).isTrue();
+      assertThat(result.next().isVertex()).isTrue();
 
-        // RETRIEVE VERTEX WITH QUERY
-        result = database.query("SQL", "select from Character where name = 'John'");
-        assertThat(result.hasNext()).isTrue();
-        assertThat(result.next().isVertex()).isTrue();
+      // UPDATE VERTEX WITH COMMAND
+      result = database.command("SQL", "update Character set lastName = 'Red' where name = 'John' or name = 'Kimbal'");
 
-        // UPDATE VERTEX WITH COMMAND
-        result = database.command("SQL", "update Character set lastName = 'Red' where name = 'John' or name = 'Kimbal'");
-        assertThat(result.hasNext()).isTrue();
-        assertThat(result.next().toJSON().getInt("count")).isEqualTo(2);
+      assertThat(result.next().<Integer>getProperty("count")).isEqualTo(2);
 
-        // CREATE EDGE WITH COMMAND
-        result = database.command("SQL", "create edge " + EDGE1_TYPE_NAME + " from " + rid1 + " to " + rid2);
-        assertThat(result.hasNext()).isTrue();
-        edge = result.next().getEdge().get();
+      // CREATE EDGE WITH COMMAND
+      result = database.command("SQL", "create edge " + EDGE1_TYPE_NAME + " from " + rid1 + " to " + rid2);
+      assertThat(result.hasNext()).isTrue();
+      edge = result.next().getEdge().get();
 
-        edge.toMap();
-        edge.toJSON();
+      edge.toMap();
+      edge.toJSON();
 
-        assertThat(edge.getTypeName()).isEqualTo(EDGE1_TYPE_NAME);
-        assertThat(edge.getOut()).isEqualTo(rid1);
-        assertThat(edge.getIn()).isEqualTo(rid2);
+      assertThat(edge.getTypeName()).isEqualTo(EDGE1_TYPE_NAME);
+      assertThat(edge.getOut()).isEqualTo(rid1);
+      assertThat(edge.getIn()).isEqualTo(rid2);
 
-        Vertex record = (Vertex) database.lookupByRID(rid1);
-        assertThat(record).isNotNull();
-        assertThat(record.getString("name")).isEqualTo("John");
-        assertThat(record.getString("lastName")).isEqualTo("Red");
+      Vertex vertex = (Vertex) database.lookupByRID(rid1);
+      assertThat(vertex).isNotNull();
+      assertThat(vertex.getString("name")).isEqualTo("John");
+      assertThat(vertex.getString("lastName")).isEqualTo("Red");
 
-        record.toMap();
-        record.toJSON();
+      vertex = (Vertex) database.lookupByRID(rid2);
+      assertThat(vertex).isNotNull();
+      assertThat(vertex.getString("name")).isEqualTo("Kimbal");
+      assertThat(vertex.getString("lastName")).isEqualTo("Red");
 
-        record = (Vertex) database.lookupByRID(rid2);
-        assertThat(record).isNotNull();
-        assertThat(record.getString("name")).isEqualTo("Kimbal");
-        assertThat(record.getString("lastName")).isEqualTo("Red");
-
-        final MutableDocument mutable = record.modify();
-        mutable.set("extra", 100);
-        mutable.save();
-      });
+      final MutableDocument mutable = vertex.modify();
+      mutable.set("extra", 100);
+      mutable.save();
 
       // RETRIEVE VERTEX WITH QUERY AFTER COMMIT
-      final ResultSet result = database.query("SQL", "select from Character where name = 'Kimbal'");
+      result = database.query("SQL", "select from Character where name = 'Kimbal'");
       assertThat(result.hasNext()).isTrue();
-      final Result record = result.next();
+      Result record = result.next();
       assertThat(record.isVertex()).isTrue();
 
-      final Vertex kimbal = record.getVertex().get();
+      Vertex kimbal = record.getVertex().get();
       assertThat(kimbal.getString("lastName")).isEqualTo("Red");
       assertThat(kimbal.getInteger("extra")).isEqualTo(100);
 
@@ -290,7 +277,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       assertThat(kimbal).isEqualTo(newEdge2.getInVertex());
       newEdge2.delete();
 
-      final Edge edge = albert.getEdges(OUT, EDGE2_TYPE_NAME).iterator().next();
+      edge = albert.getEdges(OUT, EDGE2_TYPE_NAME).iterator().next();
       assertThat(albert.getIdentity()).isEqualTo(edge.getOut());
       assertThat(albert).isEqualTo(edge.getOutVertex());
       assertThat(kimbal.getIdentity()).isEqualTo(edge.getIn());
@@ -604,9 +591,6 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       }
     });
   }
-
-
-
 
   @BeforeEach
   public void beginTest() {
