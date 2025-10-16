@@ -1111,6 +1111,9 @@ public class LocalDocumentType implements DocumentType {
   }
 
   DocumentType addSuperType(final DocumentType superType, final boolean createIndexes) {
+    if (this.equals(superType))
+      return this;
+
     if (superTypes.contains(superType))
       // ALREADY PARENT
       return this;
