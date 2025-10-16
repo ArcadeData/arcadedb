@@ -38,6 +38,7 @@ import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryTypes;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
 import java.util.*;
@@ -460,7 +461,9 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       writeEntry(keyValueContent, convertedKeys, rids);
 
       if (keyValueContent.size() > currentPage.getMaxContentSize() - getHeaderSize(pageNum))
-        throw new IllegalArgumentException("Key/value size is too big to fit in a single page. Define the index with larger pages");
+        throw new IllegalArgumentException("Key/value size (" + FileUtils.getSizeAsString(keyValueContent.size())
+            + ") is too big to fit in a single page (" + FileUtils.getSizeAsString(
+            currentPage.getMaxContentSize() - getHeaderSize(pageNum)) + "). Define the index with larger pages");
 
       int keyValueFreePosition = getValuesFreePosition(currentPage);
 
