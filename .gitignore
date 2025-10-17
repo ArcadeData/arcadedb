@@ -548,3 +548,6 @@ dist
 /backups/
 /claude/
 /grpc/src/generated
+
+.venv/
+.vscode/
