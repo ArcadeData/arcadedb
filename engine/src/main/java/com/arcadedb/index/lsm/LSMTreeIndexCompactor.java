@@ -33,6 +33,7 @@ import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public class LSMTreeIndexCompactor {
@@ -134,7 +135,7 @@ public class LSMTreeIndexCompactor {
               pagesToCompact, rootPage.getPageId(),
               rootPage.getVersion(), Thread.currentThread().threadId());
 
-      int compactedPageNumberInSeries = 1;
+      final AtomicInteger compactedPageNumberInSeries = new AtomicInteger(1);
 
       final LSMTreeIndexUnderlyingPageCursor[] iterators = new LSMTreeIndexUnderlyingPageCursor[pagesToCompact];
       for (int i = 0; i < pagesToCompact; ++i)
@@ -160,6 +161,8 @@ public class LSMTreeIndexCompactor {
       TrackableBinary currentPageBuffer = null;
 
       final Set<RID> rids = new LinkedHashSet<>();
+
+      final List<MutablePage> allNewPages = new ArrayList<>();
 
       for (boolean moreItems = true; moreItems; ++iterations) {
         moreItems = false;
@@ -212,8 +215,7 @@ public class LSMTreeIndexCompactor {
                 rids.add(rid);
               }
 
-              if (!rids.isEmpty())
-                totalMergedValues += rids.size();
+              totalMergedValues += value.length;
             }
 
             // CHECK IF THE NEXT ELEMENT HAS THE SAME KEY
@@ -237,29 +239,29 @@ public class LSMTreeIndexCompactor {
           final RID[] ridsArray = new RID[rids.size()];
           rids.toArray(ridsArray);
 
-          final MutablePage newPage = compactedIndex.appendDuringCompaction(keyValueContent, lastPage, currentPageBuffer,
+          final List<MutablePage> newPages = compactedIndex.appendDuringCompaction(keyValueContent, lastPage, currentPageBuffer,
               compactedPageNumberInSeries, minorKey,
               ridsArray);
 
-          if (newPage != lastPage) {
-            ++compactedPageNumberInSeries;
-
+          if (!newPages.isEmpty()) {
             if (rootPage != null) {
-              // NEW PAGE: STORE THE MIN KEY IN THE ROOT PAGE
-              final int newPageNum = newPage.getPageId().getPageNumber();
+              for (MutablePage newPage : newPages) {
+                // NEW PAGE: STORE THE MIN KEY IN THE ROOT PAGE
+                final int newPageNum = newPage.getPageId().getPageNumber();
 
-              final MutablePage newRootPage = compactedIndex.appendDuringCompaction(keyValueContent, rootPage, rootPageBuffer,
-                  compactedPageNumberInSeries,
-                  minorKey, new RID[] { new RID(database, 0, newPageNum) });
+                final List<MutablePage> newRootPages = compactedIndex.appendDuringCompaction(keyValueContent, rootPage,
+                    rootPageBuffer,
+                    compactedPageNumberInSeries,
+                    minorKey, new RID[] { new RID(database, 0, newPageNum) });
 
-              LogManager.instance()
-                  .log(mainIndex, Level.WARNING,
-                      "- Creating a new entry in index '%s' root page %s->%d (entry in page=%d threadId=%d)", null, mutableIndex,
-                      Arrays.toString(minorKey), newPageNum, mutableIndex.getCount(rootPage) - 1,
-                      Thread.currentThread().threadId());
+                LogManager.instance()
+                    .log(mainIndex, Level.WARNING,
+                        "- Creating a new entry in index '%s' root page %s->%d (entry in page=%d threadId=%d)", null, mutableIndex,
+                        Arrays.toString(minorKey), newPageNum, mutableIndex.getCount(rootPage) - 1,
+                        Thread.currentThread().threadId());
 
-              if (newRootPage != rootPage) {
-                throw new UnsupportedOperationException("Root index page overflow");
+                if (!newRootPages.isEmpty()) {
+                  throw new UnsupportedOperationException("Root index page overflow");
 //
 //                // TODO: MANAGE A LINKED LIST OF ROOT PAGES INSTEAD
 //                ++compactedPageNumberInSeries;
@@ -269,11 +271,11 @@ public class LSMTreeIndexCompactor {
 //                database.getPageManager().updatePage(rootPage, true, false);
 //                rootPage = null;
 //                rootPageBuffer = null;
+                }
               }
-            }
 
-            currentPageBuffer = newPage.getTrackable();
-            lastPage = newPage;
+              allNewPages.addAll(newPages);
+            }
           }
 
           // UPDATE LAST PAGE'S KEY
@@ -304,8 +306,8 @@ public class LSMTreeIndexCompactor {
 
       final List<MutablePage> modifiedPages = new ArrayList<>(1);
 
-      if (lastPage != null)
-        modifiedPages.add(database.getPageManager().updatePageVersion(lastPage, true));
+      for (MutablePage p : allNewPages)
+        modifiedPages.add(database.getPageManager().updatePageVersion(p, true));
       if (rootPage != null)
         modifiedPages.add(database.getPageManager().updatePageVersion(rootPage, true));
 

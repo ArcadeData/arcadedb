@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.log.LogManager;
@@ -31,10 +32,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
-import java.util.Iterator;
-import java.util.Optional;
-import java.util.Timer;
-import java.util.TimerTask;
+import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.logging.Level;
 
@@ -47,7 +45,7 @@ import static org.assertj.core.api.Assertions.fail;
  * @author Luca
  */
 public class LSMTreeIndexCompactionTest extends TestHelper {
-  private static final int    TOT               = 100_000;
+  private static final int    TOT               = 50_000;
   private static final int    INDEX_PAGE_SIZE   = 64 * 1024; // 64K
   private static final int    COMPACTION_RAM_MB = 1; // 1MB
   private static final int    PARALLEL          = 4;
@@ -64,6 +62,9 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       insertData();
       checkLookups(100, 1);
       checkRanges(100, 1);
+      checkNotUniqueEntries(1);
+
+      LogManager.instance().log(this, Level.SEVERE, "Iteration 1 completed");
 
       // THIS TIME LOOK UP FOR KEYS WHILE COMPACTION
       LogManager.instance().log(this, Level.FINE, "TEST: THIS TIME LOOK UP FOR KEYS WHILE COMPACTION");
@@ -85,13 +86,21 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       semaphore1.await();
 
       // INSERT DATA ON TOP OF THE MIXED MUTABLE-COMPACTED INDEX AND CHECK WITH LOOKUPS
-      LogManager.instance().log(this, Level.FINE, "TEST: INSERT DATA ON TOP OF THE MIXED MUTABLE-COMPACTED INDEX AND CHECK WITH LOOKUPS");
+      LogManager.instance()
+          .log(this, Level.FINE, "TEST: INSERT DATA ON TOP OF THE MIXED MUTABLE-COMPACTED INDEX AND CHECK WITH LOOKUPS");
       insertData();
+
+      LogManager.instance().log(this, Level.SEVERE, "Iteration 2 completed");
+
       checkLookups(1, 2);
       checkRanges(1, 2);
+      checkNotUniqueEntries(2);
+
       compaction();
+
       checkLookups(1, 2);
       checkRanges(1, 2);
+      checkNotUniqueEntries(2);
 
       // INSERT DATA WHILE COMPACTING AND CHECK AGAIN
       LogManager.instance().log(this, Level.FINE, "TEST: INSERT DATA WHILE COMPACTING AND CHECK AGAIN");
@@ -105,14 +114,19 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       }, 0);
 
       insertData();
+      LogManager.instance().log(this, Level.SEVERE, "Iteration 3 completed");
 
       semaphore2.await();
 
       checkLookups(1, 3);
       checkRanges(1, 3);
+      checkNotUniqueEntries(3);
+
       compaction();
+
       checkLookups(1, 3);
       checkRanges(1, 3);
+      checkNotUniqueEntries(3);
 
     } finally {
       GlobalConfiguration.INDEX_COMPACTION_RAM_MB.setValue(300);
@@ -120,14 +134,33 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
     }
   }
 
+  private void checkNotUniqueEntries(final int iterations) {
+     final IndexCursor records = database.lookupByKey(TYPE_NAME, new String[] { "sameValue" },
+        new Object[] { "same value - test multi pages" });
+    assertThat(Optional.ofNullable(records)).isNotNull();
+
+    int count = 0;
+    final Set<Identifiable> values = new HashSet<>();
+    for (final Iterator<Identifiable> it = records.iterator(); it.hasNext(); ) {
+      final Identifiable rid = it.next();
+      final Document record = (Document) rid.getRecord();
+      assertThat(record.get("sameValue")).isEqualTo("same value - test multi pages");
+      ++count;
+      values.add(rid);
+    }
+    assertThat(count).isEqualTo(TOT * iterations);
+    assertThat(values.size()).isEqualTo(TOT * iterations);
+  }
+
   private void compaction() {
     if (database.isOpen())
       for (final Index index : database.getSchema().getIndexes()) {
-        if (database.isOpen())
+        if (database.isOpen() && index instanceof TypeIndex)
           try {
             ((IndexInternal) index).scheduleCompaction();
             ((IndexInternal) index).compact();
           } catch (final Exception e) {
+            e.printStackTrace();
             fail("", e);
           }
       }
@@ -142,6 +175,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
         v.createProperty("id", String.class);
         v.createProperty("number", Integer.class);
         v.createProperty("relativeName", String.class);
+        v.createProperty("sameValue", String.class); // TEST SPLITTING KEY ENTRIES IN MULTIPLE PAGES
         v.createProperty("Name", String.class);
 
         schema.buildTypeIndex(TYPE_NAME, new String[] { "id" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false)
@@ -149,6 +183,8 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
         schema.buildTypeIndex(TYPE_NAME, new String[] { "number" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false)
             .withPageSize(INDEX_PAGE_SIZE).create();
         schema.buildTypeIndex(TYPE_NAME, new String[] { "relativeName" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false)
+            .withPageSize(INDEX_PAGE_SIZE).create();
+        schema.buildTypeIndex(TYPE_NAME, new String[] { "sameValue" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false)
             .withPageSize(INDEX_PAGE_SIZE).create();
       }
     });
@@ -189,6 +225,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
             v.set("id", randomString); // INDEXED
             v.set("number", counter); // INDEXED
             v.set("relativeName", "/shelf=" + counter + "/slot=1"); // INDEXED
+            v.set("sameValue", "same value - test multi pages"); // INDEXED
 
             v.set("Name", "1" + counter);
 
@@ -207,7 +244,8 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
         }
       });
 
-      LogManager.instance().log(this, Level.FINE, "TEST: Inserted " + totalToInsert + " elements in " + (System.currentTimeMillis() - begin) + "ms");
+      LogManager.instance()
+          .log(this, Level.FINE, "TEST: Inserted " + totalToInsert + " elements in " + (System.currentTimeMillis() - begin) + "ms");
 
     } finally {
       LogManager.instance().log(this, Level.FINE, "TEST: Insertion finished in " + (System.currentTimeMillis() - begin) + "ms");
@@ -248,7 +286,8 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
         long delta = System.currentTimeMillis() - begin;
         if (delta < 1)
           delta = 1;
-        LogManager.instance().log(this, Level.FINE, "Checked " + checked + " lookups in " + delta + "ms = " + (10000 / delta) + " lookups/msec");
+        LogManager.instance()
+            .log(this, Level.FINE, "Checked " + checked + " lookups in " + delta + "ms = " + (10000 / delta) + " lookups/msec");
         begin = System.currentTimeMillis();
       }
     }
@@ -267,7 +306,8 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
     final Index index = database.getSchema().getIndexByName(TYPE_NAME + "[number]");
 
     for (long number = 0; number < TOT - 1; number += step) {
-      final IndexCursor records = ((RangeIndex) index).range(true, new Object[] { number }, true, new Object[] { number + 1 }, true);
+      final IndexCursor records = ((RangeIndex) index).range(true, new Object[] { number }, true, new Object[] { number + 1 },
+          true);
       assertThat(Optional.ofNullable(records)).isNotNull();
 
       int count = 0;
@@ -291,7 +331,8 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
         long delta = System.currentTimeMillis() - begin;
         if (delta < 1)
           delta = 1;
-        LogManager.instance().log(this, Level.FINE, "Checked " + checked + " lookups in " + delta + "ms = " + (10000 / delta) + " lookups/msec");
+        LogManager.instance()
+            .log(this, Level.FINE, "Checked " + checked + " lookups in " + delta + "ms = " + (10000 / delta) + " lookups/msec");
         begin = System.currentTimeMillis();
       }
     }

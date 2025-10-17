@@ -26,6 +26,7 @@ import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
+import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
@@ -34,6 +35,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.BinaryTypes;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
 import java.util.*;
@@ -316,16 +318,46 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return new LookupResult(false, false, low, null);
   }
 
-  protected void writeEntry(final Binary buffer, final Object[] keys, final Object rid) {
+  protected void writeEntrySingleValue(final Binary buffer, final Object[] keys, final Object rid, final int pageUsableSpace) {
     buffer.clear();
     writeKeys(buffer, keys);
     writeEntryValue(buffer, rid);
+
+    if (buffer.size() > pageUsableSpace)
+      throw new IndexException(
+          "Key/value size (" + FileUtils.getSizeAsString(buffer.size()) + ") is too big to fit in a single page ("
+              + FileUtils.getSizeAsString(pageUsableSpace) + "). Define the index with larger pages");
   }
 
-  protected void writeEntry(final Binary buffer, final Object[] keys, final Object[] rids) {
-    buffer.clear();
-    writeKeys(buffer, keys);
-    writeEntryValues(buffer, rids);
+  protected int writeEntryMultipleValues(final Binary buffer, final Object[] keys, Object[] rids, final int availableSpaceInPage,
+      final int pageUsableSpace, final PageId pageId) {
+    Object[] values = rids;
+    do {
+      buffer.clear();
+      writeKeys(buffer, keys);
+
+      if (buffer.size() > pageUsableSpace)
+        throw new IndexException("Key size (" + FileUtils.getSizeAsString(buffer.size()) + ") is too big to fit in a single page ("
+            + FileUtils.getSizeAsString(pageUsableSpace) + "). Define the index with larger pages");
+
+      final int written = writeEntryValues(buffer, values, availableSpaceInPage);
+      if (written == values.length)
+        // ALL ENTRIES WRITTEN
+        break;
+
+      if (values.length <= 1)
+        return 0;
+
+      LogManager.instance()
+          .log(this, Level.SEVERE, "Cannot fit %d values in index page %s, saving only %d values",
+              values.length, pageId, written);
+
+      // NOT ENOUGH SPACE: Split the array with the max number of values that fit in the page
+      values = Arrays.copyOf(values, written);
+
+    } while (true);
+
+    return values.length;
   }
 
   /**
@@ -453,13 +485,17 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return 0;
   }
 
-  private void writeEntryValues(final Binary buffer, final Object[] values) {
+  private int writeEntryValues(final Binary buffer, final Object[] values, final int availableSpaceInPage) {
     // WRITE NUMBER OF VALUES
     serializer.serializeValue(database, buffer, BinaryTypes.TYPE_INT, values.length);
 
     // WRITE VALUES
-    for (int i = 0; i < values.length; ++i)
+    for (int i = 0; i < values.length; ++i) {
       serializer.serializeValue(database, buffer, valueType, values[i]);
+      if (buffer.size() > availableSpaceInPage)
+        return i;
+    }
+    return values.length;
   }
 
   private void writeEntryValue(final Binary buffer, final Object value) {
