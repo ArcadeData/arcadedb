@@ -24,9 +24,14 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.MutableVertex;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Fail.fail;
@@ -268,7 +273,6 @@ public class ExplicitLockingTransactionTest extends TestHelper {
     assertThat(caughtExceptions.get()).isEqualTo(0);
     assertThat(committed.get() + caughtExceptions.get()).isEqualTo(TOT * CONCURRENT_THREADS);
   }
-
 
   @Test
   public void testExplicitLockBucketSQL() {

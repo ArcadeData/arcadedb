@@ -19,7 +19,6 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.Record;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
@@ -35,9 +34,12 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.io.IOException;
+import java.util.Collection;
+import java.util.Iterator;
+import java.util.List;
+import java.util.NoSuchElementException;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

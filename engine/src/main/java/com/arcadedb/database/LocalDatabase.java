@@ -418,9 +418,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
       try {
-        TransactionContext lastTransaction = current.getLastTransaction();
-        if (lastTransaction != null)
-          lastTransaction.commit();
+        current.getLastTransaction().commit();
       } finally {
         current.popIfNotLastTransaction();
       }
