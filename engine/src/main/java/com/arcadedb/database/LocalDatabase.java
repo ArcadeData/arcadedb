@@ -80,14 +80,33 @@ import com.arcadedb.utility.LockException;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.RWLockContext;
 
-import java.io.*;
-import java.nio.channels.*;
-import java.nio.file.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.concurrent.locks.*;
-import java.util.logging.*;
+  import java.io.File;
+import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.logging.Level;
 
 /**
  * Local implementation of {@link Database}. It is based on files opened on the local file system.
@@ -99,9 +118,14 @@ import java.util.logging.*;
 public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public static final  int                                       EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
   public static final  int                                       MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
-  private static final Set<String>                               SUPPORTED_FILE_EXT                   = Set.of(Dictionary.DICT_EXT,
-      LocalBucket.BUCKET_EXT, LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT, LSMTreeIndexMutable.UNIQUE_INDEX_EXT,
-      LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT, LSMTreeIndexCompacted.UNIQUE_INDEX_EXT, HnswVectorIndex.FILE_EXT);
+  private static final Set<String>                               SUPPORTED_FILE_EXT                   = Set.of(
+      Dictionary.DICT_EXT,
+      LocalBucket.BUCKET_EXT,
+      LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT,
+      LSMTreeIndexMutable.UNIQUE_INDEX_EXT,
+      LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT,
+      LSMTreeIndexCompacted.UNIQUE_INDEX_EXT,
+      HnswVectorIndex.FILE_EXT);
   public final         AtomicLong                                indexCompactions                     = new AtomicLong();
   protected final      String                                    name;
   protected final      ComponentFile.MODE                        mode;
@@ -394,7 +418,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
       try {
-        current.getLastTransaction().commit();
+        TransactionContext lastTransaction = current.getLastTransaction();
+        if (lastTransaction != null)
+          lastTransaction.commit();
       } finally {
         current.popIfNotLastTransaction();
       }
@@ -538,10 +564,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public Iterator<Record> iterateType(final String typeName, final boolean polymorphic) {
     stats.iterateType.incrementAndGet();
 
-    return (Iterator<Record>) executeInReadLock(() -> {
+    return executeInReadLock(() -> {
       checkDatabaseIsOpen();
-      final DocumentType type = schema.getType(typeName);
-      final MultiIterator iter = new MultiIterator();
+      var type = schema.getType(typeName);
+      var iter = new MultiIterator<Record>();
 
       // SET THE PROFILED LIMITS IF ANY
       iter.setLimit(getResultSetLimit());
@@ -1637,12 +1663,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (record instanceof Document document) {
       final DocumentType type = document.getType();
       if (type != null) {
-//        System.out.println("invokeAfterReadEvents for type = pre");
-
-        Record record1 = ((RecordEventsRegistry) type.getEvents()).onAfterRead(record);
-//        System.out.println("invokeAfterReadEvents for type = after");
-
-        return record1;
+        return ((RecordEventsRegistry) type.getEvents()).onAfterRead(record);
       }
     }
     return record;
