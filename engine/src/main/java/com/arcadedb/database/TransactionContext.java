@@ -39,21 +39,12 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.TreeMap;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
-import java.util.stream.Collectors;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
+import java.util.stream.*;
 
 /**
  * Manage the transaction context. When the transaction begins, the modifiedPages map is initialized. This allows to always delegate
@@ -67,26 +58,26 @@ import java.util.stream.Collectors;
  */
 public class TransactionContext implements Transaction {
   private final DatabaseInternal                     database;
-  private final Map<Integer, Integer>                newPageCounters;
-  private final Map<Integer, AtomicInteger>          bucketRecordDelta;
-  private final Map<RID, Record>                     immutableRecordsCache;
-  private final Map<RID, Record>                     modifiedRecordsCache;
-  private final Map<PageId, ImmutablePage>           immutablePages;
-  private final Map<PageId, MutablePage>             modifiedPages;
-  private final Map<PageId, MutablePage>             newPages;
-  private final Map<RID, Record>                     updatedRecords;
+  private final Map<Integer, Integer>                newPageCounters       = new ConcurrentHashMap<>();
+  private final Map<Integer, AtomicInteger>          bucketRecordDelta     = new HashMap<>();
+  private final Map<RID, Record>                     immutableRecordsCache = new HashMap<>(1024);
+  private final Map<RID, Record>                     modifiedRecordsCache  = new HashMap<>(1024);
   private final TransactionIndexContext              indexChanges;
-  private       List<Integer>                        lockedFiles;
-  private       List<Integer>                        explicitLockedFiles;
+  private final Map<PageId, ImmutablePage>           immutablePages        = new HashMap<>(64);
+  private       Map<PageId, MutablePage>             modifiedPages;
+  private       Map<PageId, MutablePage>             newPages;
   private       boolean                              useWAL;
-  private       boolean                              asyncFlush;
+  private       boolean                              asyncFlush            = true;
   private       WALFile.FlushType                    walFlush;
-  private       long                                 txId;
-  private       STATUS                               status         = STATUS.INACTIVE;
+  private       List<Integer>                        lockedFiles;
+  private       List<Integer>                        explicitLockedFiles   = null;
+  private       long                                 txId                  = -1;
+  private       STATUS                               status                = STATUS.INACTIVE;
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
   // WITH GRAPHS WHERE EDGES ARE CREATED AND CHUNKS ARE UPDATED MULTIPLE TIMES IN THE SAME TX
   // TODO: OPTIMIZE modifiedRecordsCache STRUCTURE, MAYBE JOIN IT WITH UPDATED RECORDS?
-  private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+  private       Map<RID, Record>                     updatedRecords        = null;
+  private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel        = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private       LocalTransactionExplicitLock         explicitLock;
   private       Object                               requester;
 
@@ -107,18 +98,6 @@ public class TransactionContext implements Transaction {
     this.walFlush = WALFile.getWALFlushType(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH));
     this.useWAL = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL);
     this.indexChanges = new TransactionIndexContext(database);
-    txId = -1;
-    asyncFlush = true;
-    newPageCounters = new ConcurrentHashMap<>();
-    bucketRecordDelta = new HashMap<>();
-    immutableRecordsCache = new HashMap<>(1024);
-    modifiedRecordsCache = new HashMap<>(1024);
-    immutablePages = new HashMap<>(64);
-    modifiedPages = new LinkedHashMap<>();
-    newPages = new HashMap<>();
-    updatedRecords = new HashMap<>();
-    explicitLockedFiles = new ArrayList<>();
-    lockedFiles = new ArrayList<>();
   }
 
   @Override
@@ -130,9 +109,11 @@ public class TransactionContext implements Transaction {
 
     status = STATUS.BEGUN;
 
-    modifiedPages.clear();
+    modifiedPages = new HashMap<>();
 
-    newPages.clear();
+    if (newPages == null)
+      // KEEP ORDERING IN CASE MULTIPLE PAGES FOR THE SAME FILE ARE CREATED
+      newPages = new LinkedHashMap<>();
   }
 
   @Override
@@ -171,9 +152,9 @@ public class TransactionContext implements Transaction {
 
   public Record getRecordFromCache(final RID rid) {
     Record rec = modifiedRecordsCache.get(rid);
-    if (rec == null && immutableRecordsCache.containsKey(rid))
+    if (rec == null)
       rec = immutableRecordsCache.get(rid);
-    if (rec == null && updatedRecords.containsKey(rid))
+    if (rec == null && updatedRecords != null)
       // IN CASE `READ-YOUR-WRITE` IS FALSE, THE MODIFIED RECORD IS NOT IN CACHE AND MUST BE READ FROM THE UPDATE RECORDS
       rec = updatedRecords.get(rid);
     return rec;
@@ -206,8 +187,8 @@ public class TransactionContext implements Transaction {
   }
 
   public void removeRecordFromCache(final RID rid) {
-//    if (!updatedRecords.isEmpty())
-    updatedRecords.remove(rid);
+    if (updatedRecords != null)
+      updatedRecords.remove(rid);
 
     if (database.isReadYourWrites()) {
       if (rid == null)
@@ -240,7 +221,7 @@ public class TransactionContext implements Transaction {
             Thread.currentThread().threadId());
 
     if (database.isOpen() && database.getSchema().getDictionary() != null) {
-      if (!modifiedPages.isEmpty()) {
+      if (modifiedPages != null) {
         final int dictionaryId = database.getSchema().getDictionary().getFileId();
 
         for (final PageId pageId : modifiedPages.keySet()) {
@@ -256,9 +237,9 @@ public class TransactionContext implements Transaction {
         }
       }
     }
-    modifiedPages.clear();
-    newPages.clear();
-    updatedRecords.clear();
+    modifiedPages = null;
+    newPages = null;
+    updatedRecords = null;
 
     // RELOAD PREVIOUS VERSION OF MODIFIED RECORDS
     if (database.isOpen())
@@ -280,9 +261,8 @@ public class TransactionContext implements Transaction {
   public void addUpdatedRecord(final Record record) throws IOException {
     final RID rid = record.getIdentity();
 
-    if (!updatedRecords.isEmpty())
-      updatedRecords.clear();
-
+    if (updatedRecords == null)
+      updatedRecords = new HashMap<>();
     if (updatedRecords.put(record.getIdentity(), record) == null)
       ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).fetchPageInTransaction(rid);
     updateRecordInCache(record);
@@ -293,9 +273,15 @@ public class TransactionContext implements Transaction {
    * Used to determine if a page has been already loaded. This is important for isolation.
    */
   public boolean hasPageForRecord(final PageId pageId) {
-    return modifiedPages.containsKey(pageId) ||
-        newPages.containsKey(pageId) ||
-        immutablePages.containsKey(pageId);
+    if (modifiedPages != null)
+      if (modifiedPages.containsKey(pageId))
+        return true;
+
+    if (newPages != null)
+      if (newPages.containsKey(pageId))
+        return true;
+
+    return immutablePages.containsKey(pageId);
   }
 
   /**
@@ -304,10 +290,10 @@ public class TransactionContext implements Transaction {
   public BasePage getPage(final PageId pageId, final int size) throws IOException {
     BasePage page = null;
 
-//    if (!modifiedPages.isEmpty())
-    page = modifiedPages.get(pageId);
+    if (modifiedPages != null)
+      page = modifiedPages.get(pageId);
 
-    if (page == null)
+    if (page == null && newPages != null)
       page = newPages.get(pageId);
 
     if (page == null)
@@ -342,10 +328,10 @@ public class TransactionContext implements Transaction {
     if (!isActive())
       throw new TransactionException("Transaction not active");
 
-    MutablePage page = modifiedPages.get(pageId);
+    MutablePage page = modifiedPages != null ? modifiedPages.get(pageId) : null;
     if (page == null) {
-//      if (newPages.containsKey(pageId))
-      page = newPages.get(pageId);
+      if (newPages != null)
+        page = newPages.get(pageId);
 
       if (page == null) {
         // IF AVAILABLE REMOVE THE PAGE FROM IMMUTABLE PAGES TO KEEP ONLY ONE PAGE IN RAM
@@ -412,31 +398,35 @@ public class TransactionContext implements Transaction {
     final LinkedHashMap<String, Object> map = new LinkedHashMap<>();
 
     final Set<Integer> involvedFiles = new LinkedHashSet<>();
-    for (final PageId pid : modifiedPages.keySet())
-      involvedFiles.add(pid.getFileId());
-    for (final PageId pid : newPages.keySet())
-      involvedFiles.add(pid.getFileId());
+    if (modifiedPages != null)
+      for (final PageId pid : modifiedPages.keySet())
+        involvedFiles.add(pid.getFileId());
+    if (newPages != null)
+      for (final PageId pid : newPages.keySet())
+        involvedFiles.add(pid.getFileId());
     involvedFiles.addAll(newPageCounters.keySet());
 
     map.put("status", status.name());
     map.put("involvedFiles", involvedFiles);
-    map.put("modifiedPages", modifiedPages.size());
-    map.put("newPages", newPages.size());
-    map.put("updatedRecords", updatedRecords.size());
+    map.put("modifiedPages", modifiedPages != null ? modifiedPages.size() : 0);
+    map.put("newPages", newPages != null ? newPages.size() : 0);
+    map.put("updatedRecords", updatedRecords != null ? updatedRecords.size() : 0);
     map.put("newPageCounters", newPageCounters);
     map.put("indexChanges", indexChanges != null ? indexChanges.getTotalEntries() : 0);
     return map;
   }
 
   public boolean hasChanges() {
-    final int totalImpactedPages = modifiedPages.size() + newPages.size();
+    final int totalImpactedPages = modifiedPages.size() + (newPages != null ? newPages.size() : 0);
     return totalImpactedPages > 0 || !indexChanges.isEmpty();
   }
 
   public int getModifiedPages() {
     int result = 0;
-    result += modifiedPages.size();
-    result += newPages.size();
+    if (modifiedPages != null)
+      result += modifiedPages.size();
+    if (newPages != null)
+      result += newPages.size();
     return result;
   }
 
@@ -444,14 +434,14 @@ public class TransactionContext implements Transaction {
    * Test only API.
    */
   public void kill() {
-    if (!explicitLockedFiles.isEmpty()) {
+    if (explicitLockedFiles != null) {
       database.getTransactionManager().unlockFilesInOrder(explicitLockedFiles, getRequester());
-      explicitLockedFiles.clear();
+      explicitLockedFiles = null;
     }
-    lockedFiles.clear();
-    modifiedPages.clear();
-    newPages.clear();
-    updatedRecords.clear();
+    lockedFiles = null;
+    modifiedPages = null;
+    newPages = null;
+    updatedRecords = null;
     newPageCounters.clear();
     immutablePages.clear();
   }
@@ -502,7 +492,7 @@ public class TransactionContext implements Transaction {
     final int totalImpactedPages = buffer.pages.length;
     if (totalImpactedPages == 0 && keysTx.isEmpty()) {
       // EMPTY TRANSACTION = NO CHANGES
-      modifiedPages.clear();
+      modifiedPages = null;
       return;
     }
 
@@ -567,7 +557,7 @@ public class TransactionContext implements Transaction {
     if (status != STATUS.BEGUN)
       throw new TransactionException("Transaction in phase " + status);
 
-    if (!updatedRecords.isEmpty()) {
+    if (updatedRecords != null) {
       for (final Record rec : updatedRecords.values())
         try {
           database.updateRecordNoLock(rec, false);
@@ -576,7 +566,7 @@ public class TransactionContext implements Transaction {
           LogManager.instance()
               .log(this, Level.WARNING, "Attempt to update the delete record %s in transaction", rec.getIdentity());
         }
-      updatedRecords.clear();
+      updatedRecords = null;
     }
 
     if (!hasChanges())
@@ -589,7 +579,7 @@ public class TransactionContext implements Transaction {
       if (isLeader) {
         final Set<Integer> modifiedFiles = lockFilesFromChanges();
 
-        if (!explicitLockedFiles.isEmpty())
+        if (explicitLockedFiles != null)
           checkExplicitLocks(modifiedFiles);
         else
           // LOCK FILES IN ORDER (TO AVOID DEADLOCK)
@@ -633,7 +623,7 @@ public class TransactionContext implements Transaction {
           it.remove();
       }
 
-      if (!newPages.isEmpty())
+      if (newPages != null)
         for (final MutablePage p : newPages.values()) {
           final int[] range = p.getModifiedRange();
           if (range[1] > 0) {
@@ -739,21 +729,21 @@ public class TransactionContext implements Transaction {
   public void reset() {
     status = STATUS.INACTIVE;
 
-    if (!explicitLockedFiles.isEmpty()) {
+    if (explicitLockedFiles != null) {
       database.getTransactionManager().unlockFilesInOrder(explicitLockedFiles, getRequester());
-      explicitLockedFiles.clear();
+      explicitLockedFiles = null;
     }
 
-    if (!lockedFiles.isEmpty()) {
+    if (lockedFiles != null) {
       database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
-      lockedFiles.clear();
+      lockedFiles = null;
     }
 
     indexChanges.reset();
 
-    modifiedPages.clear();
-    newPages.clear();
-    updatedRecords.clear();
+    modifiedPages = null;
+    newPages = null;
+    updatedRecords = null;
     newPageCounters.clear();
     modifiedRecordsCache.clear();
     immutableRecordsCache.clear();
@@ -763,28 +753,26 @@ public class TransactionContext implements Transaction {
   }
 
   public void removeFile(final int fileId) {
-    newPages.values()
-        .removeIf(mutablePage -> fileId == mutablePage.getPageId().getFileId());
+    if (newPages != null)
+      newPages.values().removeIf(mutablePage -> fileId == mutablePage.getPageId().getFileId());
 
     newPageCounters.remove(fileId);
 
-    modifiedPages.values()
-        .removeIf(mutablePage -> fileId == mutablePage.getPageId().getFileId());
+    if (modifiedPages != null)
+      modifiedPages.values().removeIf(mutablePage -> fileId == mutablePage.getPageId().getFileId());
 
-    immutablePages.values()
-        .removeIf(page -> fileId == page.getPageId().getFileId());
+    immutablePages.values().removeIf(page -> fileId == page.getPageId().getFileId());
 
     // IMMUTABLE RECORD, AVOID IT'S POINTING TO THE OLD OFFSET IN A MODIFIED PAGE
     // SAME PAGE, REMOVE IT
-    immutableRecordsCache.values()
-        .removeIf(r -> r.getIdentity().getBucketId() == fileId);
+    immutableRecordsCache.values().removeIf(r -> r.getIdentity().getBucketId() == fileId);
 
-//    if (!lockedFiles.isEmpty())
-    lockedFiles.remove(fileId);
+    if (lockedFiles != null)
+      lockedFiles.remove(fileId);
 
-    // FILE DELETED: REMOVE ALL PENDING UPDATED OBJECTS
-    updatedRecords.entrySet()
-        .removeIf(entry -> entry.getKey().bucketId == fileId);
+    if (updatedRecords != null)
+      // FILE DELETED: REMOVE ALL PENDING UPDATED OBJECTS
+      updatedRecords.entrySet().removeIf(entry -> entry.getKey().bucketId == fileId);
 
     final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(fileId);
     if (component instanceof LSMTreeIndexAbstract)
@@ -804,13 +792,12 @@ public class TransactionContext implements Transaction {
   }
 
   protected void explicitLock(final Set<Integer> filesToLock) {
-    if (!explicitLockedFiles.isEmpty())
+    if (explicitLockedFiles != null)
       throw new TransactionException("Explicit lock already acquired");
 
-    if (!indexChanges.isEmpty() ||
-        !immutablePages.isEmpty() ||
-        !modifiedPages.isEmpty() ||
-        !newPages.isEmpty()
+    if (!indexChanges.isEmpty() || !immutablePages.isEmpty() || //
+        (modifiedPages != null && !modifiedPages.isEmpty()) || //
+        (newPages != null && !newPages.isEmpty()) //
     )
       throw new TransactionException("Explicit lock must be acquired before any modification");
 
@@ -822,8 +809,9 @@ public class TransactionContext implements Transaction {
 
     for (final PageId p : modifiedPages.keySet())
       modifiedFiles.add(p.getFileId());
-    for (final PageId p : newPages.keySet())
-      modifiedFiles.add(p.getFileId());
+    if (newPages != null)
+      for (final PageId p : newPages.keySet())
+        modifiedFiles.add(p.getFileId());
 
     indexChanges.addFilesToLock(modifiedFiles);
 
@@ -886,6 +874,6 @@ public class TransactionContext implements Transaction {
     }
 
     lockedFiles = explicitLockedFiles;
-    explicitLockedFiles = new ArrayList<>();
+    explicitLockedFiles = null;
   }
 }
