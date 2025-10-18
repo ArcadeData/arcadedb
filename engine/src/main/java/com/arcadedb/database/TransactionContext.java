@@ -191,7 +191,8 @@ public class TransactionContext implements Transaction {
   }
 
   public void removeRecordFromCache(final RID rid) {
-    updatedRecords.remove(rid);
+    if (!updatedRecords.isEmpty())
+      updatedRecords.remove(rid);
 
     if (database.isReadYourWrites()) {
       if (rid == null)
@@ -224,17 +225,19 @@ public class TransactionContext implements Transaction {
             Thread.currentThread().threadId());
 
     if (database.isOpen() && database.getSchema().getDictionary() != null) {
-      final int dictionaryId = database.getSchema().getDictionary().getFileId();
+      if (!modifiedPages.isEmpty()) {
+        final int dictionaryId = database.getSchema().getDictionary().getFileId();
 
-      for (final PageId pageId : modifiedPages.keySet()) {
-        if (dictionaryId == pageId.getFileId()) {
-          // RELOAD THE DICTIONARY
-          try {
-            database.getSchema().getDictionary().reload();
-          } catch (final IOException e) {
-            throw new SchemaException("Error on reloading schema dictionary");
+        for (final PageId pageId : modifiedPages.keySet()) {
+          if (dictionaryId == pageId.getFileId()) {
+            // RELOAD THE DICTIONARY
+            try {
+              database.getSchema().getDictionary().reload();
+            } catch (final IOException e) {
+              throw new SchemaException("Error on reloading schema dictionary");
+            }
+            break;
           }
-          break;
         }
       }
     }
@@ -423,8 +426,10 @@ public class TransactionContext implements Transaction {
    * Test only API.
    */
   public void kill() {
-    database.getTransactionManager().unlockFilesInOrder(explicitLockedFiles, getRequester());
-    explicitLockedFiles.clear();
+    if (!explicitLockedFiles.isEmpty()) {
+      database.getTransactionManager().unlockFilesInOrder(explicitLockedFiles, getRequester());
+      explicitLockedFiles.clear();
+    }
     lockedFiles.clear();
     modifiedPages.clear();
     newPages.clear();
@@ -544,15 +549,17 @@ public class TransactionContext implements Transaction {
     if (status != STATUS.BEGUN)
       throw new TransactionException("Transaction in phase " + status);
 
-    for (final Record rec : updatedRecords.values())
-      try {
-        database.updateRecordNoLock(rec, false);
-      } catch (final RecordNotFoundException e) {
-        // DELETED IN TRANSACTION, THIS IS FULLY MANAGED TO NEVER HAPPEN, BUT IF IT DOES DUE TO THE INTRODUCTION OF A BUG, JUST LOG SOMETHING AND MOVE ON
-        LogManager.instance()
-            .log(this, Level.WARNING, "Attempt to update the delete record %s in transaction", rec.getIdentity());
-      }
-    updatedRecords.clear();
+    if (!updatedRecords.isEmpty()) {
+      for (final Record rec : updatedRecords.values())
+        try {
+          database.updateRecordNoLock(rec, false);
+        } catch (final RecordNotFoundException e) {
+          // DELETED IN TRANSACTION, THIS IS FULLY MANAGED TO NEVER HAPPEN, BUT IF IT DOES DUE TO THE INTRODUCTION OF A BUG, JUST LOG SOMETHING AND MOVE ON
+          LogManager.instance()
+              .log(this, Level.WARNING, "Attempt to update the delete record %s in transaction", rec.getIdentity());
+        }
+      updatedRecords.clear();
+    }
 
     if (!hasChanges())
       // EMPTY TRANSACTION = NO CHANGES
@@ -711,7 +718,6 @@ public class TransactionContext implements Transaction {
   }
 
   public void reset() {
-
     status = STATUS.INACTIVE;
 
     if (!explicitLockedFiles.isEmpty()) {
@@ -738,23 +744,28 @@ public class TransactionContext implements Transaction {
   }
 
   public void removeFile(final int fileId) {
-    newPages.values().removeIf(mutablePage -> fileId == mutablePage.getPageId().getFileId());
+    newPages.values()
+        .removeIf(mutablePage -> fileId == mutablePage.getPageId().getFileId());
 
     newPageCounters.remove(fileId);
 
-    modifiedPages.values().removeIf(mutablePage -> fileId == mutablePage.getPageId().getFileId());
+    modifiedPages.values()
+        .removeIf(mutablePage -> fileId == mutablePage.getPageId().getFileId());
 
-    immutablePages.values().removeIf(page -> fileId == page.getPageId().getFileId());
+    immutablePages.values()
+        .removeIf(page -> fileId == page.getPageId().getFileId());
 
     // IMMUTABLE RECORD, AVOID IT'S POINTING TO THE OLD OFFSET IN A MODIFIED PAGE
     // SAME PAGE, REMOVE IT
-    immutableRecordsCache.values().removeIf(r -> r.getIdentity().getBucketId() == fileId);
+    immutableRecordsCache.values()
+        .removeIf(r -> r.getIdentity().getBucketId() == fileId);
 
-    if (lockedFiles != null)
+    if (!lockedFiles.isEmpty())
       lockedFiles.remove(fileId);
 
     // FILE DELETED: REMOVE ALL PENDING UPDATED OBJECTS
-    updatedRecords.entrySet().removeIf(entry -> entry.getKey().bucketId == fileId);
+    updatedRecords.entrySet()
+        .removeIf(entry -> entry.getKey().bucketId == fileId);
 
     final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(fileId);
     if (component instanceof LSMTreeIndexAbstract)
