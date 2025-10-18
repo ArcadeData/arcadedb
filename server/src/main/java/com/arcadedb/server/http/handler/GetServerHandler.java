@@ -46,7 +46,8 @@ public class GetServerHandler extends AbstractServerHttpHandler {
 
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
-    final JSONObject response = new JSONObject().put("version", Constants.getVersion())
+    final JSONObject response = new JSONObject().put("user", user != null ? user.getName() : null)
+                                                .put("version", Constants.getVersion())
                                                 .put("serverName", httpServer.getServer().getServerName());
 
     final String mode = getQueryParameter(exchange, "mode", "default");
