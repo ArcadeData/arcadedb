@@ -67,26 +67,26 @@ import java.util.stream.Collectors;
  */
 public class TransactionContext implements Transaction {
   private final DatabaseInternal                     database;
-  private final Map<Integer, Integer>                newPageCounters       = new ConcurrentHashMap<>();
-  private final Map<Integer, AtomicInteger>          bucketRecordDelta     = new HashMap<>();
-  private final Map<RID, Record>                     immutableRecordsCache = new HashMap<>(1024);
-  private final Map<RID, Record>                     modifiedRecordsCache  = new HashMap<>(1024);
+  private final Map<Integer, Integer>                newPageCounters;
+  private final Map<Integer, AtomicInteger>          bucketRecordDelta;
+  private final Map<RID, Record>                     immutableRecordsCache;
+  private final Map<RID, Record>                     modifiedRecordsCache;
+  private final Map<PageId, ImmutablePage>           immutablePages;
+  private final Map<PageId, MutablePage>             modifiedPages;
+  private final Map<PageId, MutablePage>             newPages;
+  private final Map<RID, Record>                     updatedRecords;
   private final TransactionIndexContext              indexChanges;
-  private final Map<PageId, ImmutablePage>           immutablePages        = new HashMap<>(1024);
-  private final Map<PageId, MutablePage>             modifiedPages         = new LinkedHashMap<>();
-  private final Map<PageId, MutablePage>             newPages              = new LinkedHashMap<>();
-  private final Map<RID, Record>                     updatedRecords        = new HashMap<>();
-  private       List<Integer>                        explicitLockedFiles   = new ArrayList<>();
-  private       List<Integer>                        lockedFiles           = new ArrayList<>();
+  private       List<Integer>                        lockedFiles;
+  private       List<Integer>                        explicitLockedFiles;
   private       boolean                              useWAL;
-  private       boolean                              asyncFlush            = true;
+  private       boolean                              asyncFlush;
   private       WALFile.FlushType                    walFlush;
-  private       long                                 txId                  = -1;
-  private       STATUS                               status                = STATUS.INACTIVE;
+  private       long                                 txId;
+  private       STATUS                               status         = STATUS.INACTIVE;
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
   // WITH GRAPHS WHERE EDGES ARE CREATED AND CHUNKS ARE UPDATED MULTIPLE TIMES IN THE SAME TX
   // TODO: OPTIMIZE modifiedRecordsCache STRUCTURE, MAYBE JOIN IT WITH UPDATED RECORDS?
-  private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel        = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+  private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private       LocalTransactionExplicitLock         explicitLock;
   private       Object                               requester;
 
@@ -107,6 +107,18 @@ public class TransactionContext implements Transaction {
     this.walFlush = WALFile.getWALFlushType(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH));
     this.useWAL = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL);
     this.indexChanges = new TransactionIndexContext(database);
+    txId = -1;
+    asyncFlush = true;
+    newPageCounters = new ConcurrentHashMap<>();
+    bucketRecordDelta = new HashMap<>();
+    immutableRecordsCache = new HashMap<>(1024);
+    modifiedRecordsCache = new HashMap<>(1024);
+    immutablePages = new HashMap<>(64);
+    modifiedPages = new LinkedHashMap<>();
+    newPages = new HashMap<>();
+    updatedRecords = new HashMap<>();
+    explicitLockedFiles = new ArrayList<>();
+    lockedFiles = new ArrayList<>();
   }
 
   @Override
@@ -118,6 +130,9 @@ public class TransactionContext implements Transaction {
 
     status = STATUS.BEGUN;
 
+    modifiedPages.clear();
+
+    newPages.clear();
   }
 
   @Override
@@ -191,8 +206,8 @@ public class TransactionContext implements Transaction {
   }
 
   public void removeRecordFromCache(final RID rid) {
-    if (!updatedRecords.isEmpty())
-      updatedRecords.remove(rid);
+//    if (!updatedRecords.isEmpty())
+    updatedRecords.remove(rid);
 
     if (database.isReadYourWrites()) {
       if (rid == null)
@@ -265,6 +280,9 @@ public class TransactionContext implements Transaction {
   public void addUpdatedRecord(final Record record) throws IOException {
     final RID rid = record.getIdentity();
 
+    if (!updatedRecords.isEmpty())
+      updatedRecords.clear();
+
     if (updatedRecords.put(record.getIdentity(), record) == null)
       ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).fetchPageInTransaction(rid);
     updateRecordInCache(record);
@@ -286,10 +304,10 @@ public class TransactionContext implements Transaction {
   public BasePage getPage(final PageId pageId, final int size) throws IOException {
     BasePage page = null;
 
-    if (modifiedPages.containsKey(pageId))
-      page = modifiedPages.get(pageId);
+//    if (!modifiedPages.isEmpty())
+    page = modifiedPages.get(pageId);
 
-    if (page == null && newPages.containsKey(pageId))
+    if (page == null)
       page = newPages.get(pageId);
 
     if (page == null)
@@ -326,8 +344,8 @@ public class TransactionContext implements Transaction {
 
     MutablePage page = modifiedPages.get(pageId);
     if (page == null) {
-      if (newPages.containsKey(pageId))
-        page = newPages.get(pageId);
+//      if (newPages.containsKey(pageId))
+      page = newPages.get(pageId);
 
       if (page == null) {
         // IF AVAILABLE REMOVE THE PAGE FROM IMMUTABLE PAGES TO KEEP ONLY ONE PAGE IN RAM
@@ -411,7 +429,7 @@ public class TransactionContext implements Transaction {
   }
 
   public boolean hasChanges() {
-    final int totalImpactedPages = modifiedPages.size() + (newPages.size());
+    final int totalImpactedPages = modifiedPages.size() + newPages.size();
     return totalImpactedPages > 0 || !indexChanges.isEmpty();
   }
 
@@ -615,13 +633,14 @@ public class TransactionContext implements Transaction {
           it.remove();
       }
 
-      for (final MutablePage p : newPages.values()) {
-        final int[] range = p.getModifiedRange();
-        if (range[1] > 0) {
-          pageManager.checkPageVersion(p, true);
-          pages.add(p);
+      if (!newPages.isEmpty())
+        for (final MutablePage p : newPages.values()) {
+          final int[] range = p.getModifiedRange();
+          if (range[1] > 0) {
+            pageManager.checkPageVersion(p, true);
+            pages.add(p);
+          }
         }
-      }
 
       Binary result = null;
 
@@ -760,8 +779,8 @@ public class TransactionContext implements Transaction {
     immutableRecordsCache.values()
         .removeIf(r -> r.getIdentity().getBucketId() == fileId);
 
-    if (!lockedFiles.isEmpty())
-      lockedFiles.remove(fileId);
+//    if (!lockedFiles.isEmpty())
+    lockedFiles.remove(fileId);
 
     // FILE DELETED: REMOVE ALL PENDING UPDATED OBJECTS
     updatedRecords.entrySet()
@@ -867,6 +886,6 @@ public class TransactionContext implements Transaction {
     }
 
     lockedFiles = explicitLockedFiles;
-    explicitLockedFiles.clear();
+    explicitLockedFiles = new ArrayList<>();
   }
 }
