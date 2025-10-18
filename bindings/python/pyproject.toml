@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel", "jpype1"]
+build-backend = "setuptools.build_meta"
+
+# This file is a template. During build, the following fields are dynamically set:
+# - name: Set based on distribution (headless, minimal, or full)
+# - version: Extracted from parent pom.xml via extract_version.py
+# - description: Set based on distribution features
+
+[project]
+name = "arcadedb-embedded"
+version = "0.0.0"
+description = "ArcadeDB embedded Python driver"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Arcade Data Ltd", email = "info@arcadedata.com"}
+]
+keywords = ["database", "graph", "document", "multi-model", "nosql", "arcadedb", "embedded"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+dependencies = [
+    "jpype1>=1.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov",
+    "black",
+    "isort",
+    "mypy",
+]
+vector = [
+    "numpy>=1.20.0",
+]
+
+[project.urls]
+Homepage = "https://arcadedb.com"
+Documentation = "https://docs.arcadedb.com"
+Repository = "https://github.com/ArcadeData/arcadedb"
+"Bug Tracker" = "https://github.com/ArcadeData/arcadedb/issues"
+
+[tool.setuptools]
+packages = ["arcadedb_embedded"]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.package-data]
+arcadedb_embedded = ["jars/*.jar"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "server: tests that require server support (minimal/full)",
+    "gremlin: tests that require Gremlin support (full only)",
+]
