@@ -20,6 +20,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 
@@ -61,7 +62,7 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
     // Lock all indexes for this type
     filesToLock.addAll(type.getAllIndexes(true).stream()
         .flatMap(i -> Arrays.stream(i.getIndexesOnBuckets()))
-        .map(b -> b.getFileId())
+        .map(IndexInternal::getFileId)
         .toList());
 
     // Lock all currently involved buckets for this type
