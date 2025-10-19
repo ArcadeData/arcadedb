@@ -46,7 +46,6 @@ import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   public static final String     UNIQUE_INDEX_EXT    = "uctidx";
   public static final String     NOTUNIQUE_INDEX_EXT = "nuctidx";
-  private final       AtomicLong statsAdjacentSteps  = new AtomicLong();
 
   /**
    * Called at cloning time.
