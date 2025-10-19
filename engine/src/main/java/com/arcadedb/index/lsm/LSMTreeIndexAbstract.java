@@ -613,9 +613,10 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return new RID(database, (rid.getBucketId() * -1) - 2, rid.getPosition());
   }
 
-  protected int findFirstEntryOfSameKey(final Binary currentPageBuffer, final Object[] keys, final int startIndexArray, int mid) {
+  private int findEntryOfSameKey(final Binary currentPageBuffer, final Object[] keys, final int startIndexArray, int mid, int start,
+      int end, int step) {
     int result;
-    for (int i = mid - 1; i >= 0; --i) {
+    for (int i = start; i != end; i += step) {
       currentPageBuffer.position(currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE)));
 
       result = 1;
@@ -646,38 +647,13 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return mid;
   }
 
+  protected int findFirstEntryOfSameKey(final Binary currentPageBuffer, final Object[] keys, final int startIndexArray, int mid) {
+    return findEntryOfSameKey(currentPageBuffer, keys, startIndexArray, mid, mid - 1, -1, -1);
+  }
+
   protected int findLastEntryOfSameKey(final int count, final Binary currentPageBuffer, final Object[] keys,
       final int startIndexArray, int mid) {
-    int result;// FIND THE MOST RIGHT ITEM
-    for (int i = mid + 1; i < count; ++i) {
-      currentPageBuffer.position(currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE)));
-
-      result = 1;
-      for (int keyIndex = 0; keyIndex < keys.length; ++keyIndex) {
-        final boolean notNull = version < 1 || currentPageBuffer.getByte() == 1;
-        if (!notNull)
-          break;
-
-        final byte keyType = binaryKeyTypes[keyIndex];
-        if (keyType == BinaryTypes.TYPE_STRING) {
-          // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
-          result = comparator.compareBytes((byte[]) keys[keyIndex], currentPageBuffer);
-        } else {
-          final Object key = serializer.deserializeValue(database, currentPageBuffer, keyType, null);
-          result = comparator.compare(keys[keyIndex], keyType, key, keyType);
-        }
-
-        if (result != 0)
-          break;
-      }
-
-      if (result == 0) {
-        mid = i;
-        statsAdjacentSteps.incrementAndGet();
-      } else
-        break;
-    }
-    return mid;
+    return findEntryOfSameKey(currentPageBuffer, keys, startIndexArray, mid, mid + 1, count, 1);
   }
 
   private void writeKeys(final Binary buffer, final Object[] keys) {
