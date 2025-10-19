@@ -53,7 +53,6 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   public static final String                UNIQUE_INDEX_EXT    = "umtidx";
   public static final String                NOTUNIQUE_INDEX_EXT = "numtidx";
   private             LSMTreeIndexCompacted subIndex            = null;
-  private final       AtomicLong            statsAdjacentSteps  = new AtomicLong();
   private             int                   minPagesToScheduleACompaction;
   private             int                   currentMutablePages = 0;
 
@@ -291,75 +290,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     return new LookupResult(true, false, mid, new int[] { currentPageBuffer.position() });
   }
 
-  private int findLastEntryOfSameKey(final int count, final Binary currentPageBuffer, final Object[] keys,
-      final int startIndexArray, int mid) {
-    int result;// FIND THE MOST RIGHT ITEM
-    for (int i = mid + 1; i < count; ++i) {
-      currentPageBuffer.position(currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE)));
-
-      result = 1;
-      for (int keyIndex = 0; keyIndex < keys.length; ++keyIndex) {
-        final boolean notNull = version < 1 || currentPageBuffer.getByte() == 1;
-        if (!notNull)
-          break;
-
-        final byte keyType = binaryKeyTypes[keyIndex];
-        if (keyType == BinaryTypes.TYPE_STRING) {
-          // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
-          result = comparator.compareBytes((byte[]) keys[keyIndex], currentPageBuffer);
-        } else {
-          final Object key = serializer.deserializeValue(database, currentPageBuffer, keyType, null);
-          result = comparator.compare(keys[keyIndex], keyType, key, keyType);
-        }
-
-        if (result != 0)
-          break;
-      }
-
-      if (result == 0) {
-        mid = i;
-        statsAdjacentSteps.incrementAndGet();
-      } else
-        break;
-    }
-    return mid;
-  }
-
   public void setCurrentMutablePages(final int currentMutablePages) {
     this.currentMutablePages = currentMutablePages;
-  }
-
-  private int findFirstEntryOfSameKey(final Binary currentPageBuffer, final Object[] keys, final int startIndexArray, int mid) {
-    int result;
-    for (int i = mid - 1; i >= 0; --i) {
-      currentPageBuffer.position(currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE)));
-
-      result = 1;
-      for (int keyIndex = 0; keyIndex < keys.length; ++keyIndex) {
-        final boolean notNull = version < 1 || currentPageBuffer.getByte() == 1;
-        if (!notNull)
-          break;
-
-        final byte keyType = binaryKeyTypes[keyIndex];
-        if (keyType == BinaryTypes.TYPE_STRING) {
-          // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
-          result = comparator.compareBytes((byte[]) keys[keyIndex], currentPageBuffer);
-        } else {
-          final Object key = serializer.deserializeValue(database, currentPageBuffer, keyType, null);
-          result = comparator.compare(keys[keyIndex], keyType, key, keyType);
-        }
-
-        if (result != 0)
-          break;
-      }
-
-      if (result == 0) {
-        mid = i;
-        statsAdjacentSteps.incrementAndGet();
-      } else
-        break;
-    }
-    return mid;
   }
 
   protected MutablePage createNewPage() throws IOException {
@@ -456,61 +388,93 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
       final LookupResult result = lookupInPage(pageNum, count, currentPageBuffer, convertedKeys, 1);
 
-      // WRITE KEY/VALUE PAIRS FIRST
-      final Binary keyValueContent = database.getContext().getTemporaryBuffer1();
-      writeEntry(keyValueContent, convertedKeys, rids);
-
-      if (keyValueContent.size() > currentPage.getMaxContentSize() - getHeaderSize(pageNum))
-        throw new IllegalArgumentException("Key/value size (" + FileUtils.getSizeAsString(keyValueContent.size())
-            + ") is too big to fit in a single page (" + FileUtils.getSizeAsString(
-            currentPage.getMaxContentSize() - getHeaderSize(pageNum)) + "). Define the index with larger pages");
-
       int keyValueFreePosition = getValuesFreePosition(currentPage);
 
       int keyIndex = result.found ? result.keyIndex + 1 : result.keyIndex;
-      boolean newPage = false;
 
-      final boolean mutablePage = isMutable(currentPage);
+      final Binary keyValueContent = database.getContext().getTemporaryBuffer1();
 
-      final int availableSpaceInPage = keyValueFreePosition - (getHeaderSize(pageNum) + (count * INT_SERIALIZED_SIZE));
-      if (!mutablePage || keyValueContent.size() >= availableSpaceInPage - INT_SERIALIZED_SIZE) {
+      int freeSpaceInPage = keyValueFreePosition - (getHeaderSize(pageNum) + (count * INT_SERIALIZED_SIZE));
 
-        if (mutablePage)
+      // WRITE KEY/VALUE PAIRS FIRST
+      RID[] values = rids;
+      do {
+        int writtenValues = freeSpaceInPage - INT_SERIALIZED_SIZE > 0 ?
+            writeEntryMultipleValues(keyValueContent, convertedKeys, values,
+                freeSpaceInPage - INT_SERIALIZED_SIZE,
+                currentPage.getMaxContentSize() - getHeaderSize(pageNum), currentPage.getPageId())
+            : 0;
+
+        boolean newPage = false;
+        final boolean mutablePage = isMutable(currentPage);
+
+        if (!mutablePage || writtenValues == 0) {
+          if (mutablePage)
+            setMutable(currentPage, false);
+
+          // NO SPACE LEFT, CREATE A NEW PAGE
+          newPage = true;
+
+          currentPage = createNewPage();
+
+          assert isMutable(currentPage);
+
+          currentPageBuffer = currentPage.getTrackable();
+          pageNum = currentPage.getPageId().getPageNumber();
+          count = 0;
+          keyIndex = 0;
+          keyValueFreePosition = currentPage.getMaxContentSize();
+
+          // WRITE THE KEY/VALUE CONTENT ON THE NEW PAGE
+          freeSpaceInPage = keyValueFreePosition - (getHeaderSize(pageNum) + INT_SERIALIZED_SIZE);
+          writtenValues = writeEntryMultipleValues(keyValueContent, convertedKeys, values, freeSpaceInPage,
+              currentPage.getMaxContentSize() - getHeaderSize(pageNum), currentPage.getPageId());
+        }
+
+        keyValueFreePosition -= keyValueContent.size();
+
+        // WRITE KEY/VALUE PAIR CONTENT
+        currentPageBuffer.putByteArray(keyValueFreePosition, keyValueContent.toByteArray());
+
+        final int startPos = getHeaderSize(pageNum) + (keyIndex * INT_SERIALIZED_SIZE);
+        if (keyIndex < count)
+          // NOT LAST KEY, SHIFT POINTERS TO THE RIGHT
+          currentPageBuffer.move(startPos, startPos + INT_SERIALIZED_SIZE, (count - keyIndex) * INT_SERIALIZED_SIZE);
+
+        currentPageBuffer.putInt(startPos, keyValueFreePosition);
+
+        setCount(currentPage, count + 1);
+        setValuesFreePosition(currentPage, keyValueFreePosition);
+
+        if (LogManager.instance().isDebugEnabled())
+          LogManager.instance().log(this, Level.FINE, "Put entry %s=%s in index '%s' (page=%s countInPage=%d newPage=%s thread=%d)",
+              Arrays.toString(keys), Arrays.toString(rids), componentName, currentPage.getPageId(), count + 1, newPage,
+              Thread.currentThread().threadId());
+
+        if (writtenValues < values.length) {
+          // NOT ALL THE VALUES HAVE BEEN WRITTEN, SPLIT THEM
+          values = Arrays.copyOfRange(values, writtenValues, values.length);
+
           setMutable(currentPage, false);
+          newPage = true;
 
-        // NO SPACE LEFT, CREATE A NEW PAGE
-        newPage = true;
+          currentPage = createNewPage();
 
-        currentPage = createNewPage();
+          assert isMutable(currentPage);
 
-        assert isMutable(currentPage);
+          currentPageBuffer = currentPage.getTrackable();
+          pageNum = currentPage.getPageId().getPageNumber();
+          count = 0;
+          keyIndex = 0;
+          keyValueFreePosition = currentPage.getMaxContentSize();
 
-        currentPageBuffer = currentPage.getTrackable();
-        pageNum = currentPage.getPageId().getPageNumber();
-        count = 0;
-        keyIndex = 0;
-        keyValueFreePosition = currentPage.getMaxContentSize();
-      }
+          // WRITE THE KEY/VALUE CONTENT ON THE NEW PAGE
+          freeSpaceInPage = keyValueFreePosition - (getHeaderSize(pageNum) + INT_SERIALIZED_SIZE);
+        } else
+          // ALL THE VALUES HAVE BEEN WRITTEN
+          break;
 
-      keyValueFreePosition -= keyValueContent.size();
-
-      // WRITE KEY/VALUE PAIR CONTENT
-      currentPageBuffer.putByteArray(keyValueFreePosition, keyValueContent.toByteArray());
-
-      final int startPos = getHeaderSize(pageNum) + (keyIndex * INT_SERIALIZED_SIZE);
-      if (keyIndex < count)
-        // NOT LAST KEY, SHIFT POINTERS TO THE RIGHT
-        currentPageBuffer.move(startPos, startPos + INT_SERIALIZED_SIZE, (count - keyIndex) * INT_SERIALIZED_SIZE);
-
-      currentPageBuffer.putInt(startPos, keyValueFreePosition);
-
-      setCount(currentPage, count + 1);
-      setValuesFreePosition(currentPage, keyValueFreePosition);
-
-      if (LogManager.instance().isDebugEnabled())
-        LogManager.instance().log(this, Level.FINE, "Put entry %s=%s in index '%s' (page=%s countInPage=%d newPage=%s thread=%d)",
-            Arrays.toString(keys), Arrays.toString(rids), componentName, currentPage.getPageId(), count + 1, newPage,
-            Thread.currentThread().threadId());
+      } while (true);
 
     } catch (final IOException e) {
       throw new DatabaseOperationException(
@@ -589,7 +553,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
       // WRITE KEY/VALUE PAIRS FIRST
       final Binary keyValueContent = database.getContext().getTemporaryBuffer1();
-      writeEntry(keyValueContent, keys, removedRID);
+      writeEntrySingleValue(keyValueContent, keys, removedRID,
+          currentPage.getMaxContentSize() - getHeaderSize(pageNum));
 
       int keyValueFreePosition = getValuesFreePosition(currentPage);
 

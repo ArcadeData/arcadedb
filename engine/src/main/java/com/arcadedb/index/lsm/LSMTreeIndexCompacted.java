@@ -31,11 +31,10 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
-import com.arcadedb.utility.CodeUtils;
-import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
@@ -45,8 +44,9 @@ import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
  * The first page (main page) contains the total pages under the fields "compactedPageNumberOfSeries". This is to avoid concurrent read/write while compaction.
  */
 public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
-  public static final String UNIQUE_INDEX_EXT    = "uctidx";
-  public static final String NOTUNIQUE_INDEX_EXT = "nuctidx";
+  public static final String     UNIQUE_INDEX_EXT    = "uctidx";
+  public static final String     NOTUNIQUE_INDEX_EXT = "nuctidx";
+  private final       AtomicLong statsAdjacentSteps  = new AtomicLong();
 
   /**
    * Called at cloning time.
@@ -88,17 +88,21 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     }
   }
 
-  public MutablePage appendDuringCompaction(final Binary keyValueContent, MutablePage currentPage,
-      final TrackableBinary currentPageBuffer, final int compactedPageNumberOfSeries, final Object[] keys, final RID[] rids)
+  public List<MutablePage> appendDuringCompaction(final Binary keyValueContent, MutablePage currentPage,
+      final TrackableBinary currentPageBuffer, final AtomicInteger compactedPageNumberOfSeries, final Object[] keys,
+      final RID[] rids)
       throws IOException, InterruptedException {
     if (keys == null)
       throw new IllegalArgumentException("Keys parameter is null");
+
+    final List<MutablePage> newPages = new ArrayList<>();
 
     TrackableBinary pageBuffer = currentPageBuffer;
 
     if (currentPage == null) {
       // CREATE A NEW PAGE
-      currentPage = createNewPage(compactedPageNumberOfSeries);
+      currentPage = createNewPage(compactedPageNumberOfSeries.getAndIncrement());
+      newPages.add(currentPage);
       pageBuffer = currentPage.getTrackable();
     }
 
@@ -108,39 +112,76 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
     final Object[] convertedKeys = convertKeys(keys, binaryKeyTypes);
 
-    writeEntry(keyValueContent, convertedKeys, rids);
-    if (keyValueContent.size() > currentPage.getMaxContentSize() - getHeaderSize(pageNum))
-      throw new IllegalArgumentException("Key/value size (" + FileUtils.getSizeAsString(keyValueContent.size())
-          + ") is too big to fit in a single page (" + FileUtils.getSizeAsString(
-          currentPage.getMaxContentSize() - getHeaderSize(pageNum)) + "). Define the index with larger pages");
-
     int keyValueFreePosition = getValuesFreePosition(currentPage);
+    int freeSpaceInPage = keyValueFreePosition - (getHeaderSize(pageNum) + (count * INT_SERIALIZED_SIZE) + INT_SERIALIZED_SIZE);
 
-    if (keyValueFreePosition - (getHeaderSize(pageNum) + (count * INT_SERIALIZED_SIZE) + INT_SERIALIZED_SIZE)
-        < keyValueContent.size()) {
-      // NO SPACE LEFT, CREATE A NEW PAGE AND FLUSH TO THE DATABASE THE CURRENT ONE (NO WAL)
-      database.getPageManager().updatePageVersion(currentPage, true);
-      database.getPageManager().writePages(List.of(currentPage), true);
+    RID[] values = rids;
 
-      currentPage = createNewPage(compactedPageNumberOfSeries);
-      pageBuffer = currentPage.getTrackable();
-      pageNum = currentPage.getPageId().getPageNumber();
-      count = 0;
-      keyValueFreePosition = currentPage.getMaxContentSize();
-    }
+    // REPEAT TO WRITE ALL THE RIDS (SPLIT THEM IF THEY DON'T FIT IN THE CURRENT PAGE)
+    do {
+      int writtenValues = writeEntryMultipleValues(keyValueContent, convertedKeys, values, freeSpaceInPage,
+          currentPage.getMaxContentSize() - getHeaderSize(pageNum), currentPage.getPageId());
 
-    keyValueFreePosition -= keyValueContent.size();
+      if (writtenValues == 0) {
+        // NO SPACE LEFT, CREATE A NEW PAGE AND FLUSH TO THE DATABASE THE CURRENT ONE (NO WAL)
+        database.getPageManager().updatePageVersion(currentPage, true);
+        database.getPageManager().writePages(List.of(currentPage), true);
 
-    // WRITE KEY/VALUE PAIR CONTENT
-    pageBuffer.putByteArray(keyValueFreePosition, keyValueContent.toByteArray());
+        currentPage = createNewPage(compactedPageNumberOfSeries.getAndIncrement());
 
-    final int startPos = getHeaderSize(pageNum) + (count * INT_SERIALIZED_SIZE);
-    pageBuffer.putInt(startPos, keyValueFreePosition);
+        newPages.add(currentPage);
 
-    setCount(currentPage, count + 1);
-    setValuesFreePosition(currentPage, keyValueFreePosition);
+        pageBuffer = currentPage.getTrackable();
+        pageNum = currentPage.getPageId().getPageNumber();
+        count = 0;
+        keyValueFreePosition = currentPage.getMaxContentSize();
 
-    return currentPage;
+        // WRITE THE KEY/VALUE CONTENT ON THE NEW PAGE
+        freeSpaceInPage = keyValueFreePosition - (getHeaderSize(pageNum) + INT_SERIALIZED_SIZE);
+        writtenValues = writeEntryMultipleValues(keyValueContent, convertedKeys, values, freeSpaceInPage,
+            currentPage.getMaxContentSize() - getHeaderSize(pageNum), currentPage.getPageId());
+      }
+
+      keyValueFreePosition -= keyValueContent.size();
+
+      // WRITE KEY/VALUE PAIR CONTENT
+      pageBuffer.putByteArray(keyValueFreePosition, keyValueContent.toByteArray());
+
+      final int startPos = getHeaderSize(pageNum) + (count * INT_SERIALIZED_SIZE);
+      pageBuffer.putInt(startPos, keyValueFreePosition);
+
+      setCount(currentPage, count + 1);
+      setValuesFreePosition(currentPage, keyValueFreePosition);
+
+      if (writtenValues < values.length) {
+        // NOT ALL THE VALUES HAVE BEEN WRITTEN, SPLIT THEM
+        LogManager.instance().log(this, Level.FINE,
+            "Splitting key values. Total values=%d, written values=%d in page %s",
+            values.length, writtenValues, currentPage.getPageId());
+
+        values = Arrays.copyOfRange(values, writtenValues, values.length);
+
+        // NO SPACE LEFT, CREATE A NEW PAGE AND FLUSH TO THE DATABASE THE CURRENT ONE (NO WAL)
+        database.getPageManager().updatePageVersion(currentPage, true);
+        database.getPageManager().writePages(List.of(currentPage), true);
+
+        currentPage = createNewPage(compactedPageNumberOfSeries.getAndIncrement());
+
+        newPages.add(currentPage);
+
+        pageBuffer = currentPage.getTrackable();
+        pageNum = currentPage.getPageId().getPageNumber();
+        count = 0;
+        keyValueFreePosition = currentPage.getMaxContentSize();
+        freeSpaceInPage = keyValueFreePosition - (getHeaderSize(pageNum) + INT_SERIALIZED_SIZE);
+
+      } else
+        // ALL THE VALUES HAVE BEEN WRITTEN
+        break;
+
+    } while (true);
+
+    return newPages;
   }
 
   protected LookupResult compareKey(final Binary currentPageBuffer, final int startIndexArray, final Object[] convertedKeys,
@@ -163,11 +204,19 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
           new int[] { currentPageBuffer.getInt(startIndexArray + (mid * INT_SERIALIZED_SIZE)) + keySerializedSize });
     } else if (purpose == 1) {
       // RETRIEVE
+
       currentPageBuffer.position(currentPageBuffer.getInt(startIndexArray + (mid * INT_SERIALIZED_SIZE)));
       final int keySerializedSize = getSerializedKeySize(currentPageBuffer, convertedKeys.length);
 
-      return new LookupResult(true, false, mid,
-          new int[] { currentPageBuffer.getInt(startIndexArray + (mid * INT_SERIALIZED_SIZE)) + keySerializedSize });
+      // RETRIEVE ALL THE RESULTS
+      final int firstKeyPos = findFirstEntryOfSameKey(currentPageBuffer, convertedKeys, startIndexArray, mid);
+      final int lastKeyPos = findLastEntryOfSameKey(count, currentPageBuffer, convertedKeys, startIndexArray, mid);
+
+      final int[] positionsArray = new int[lastKeyPos - firstKeyPos + 1];
+      for (int i = firstKeyPos; i <= lastKeyPos; ++i)
+        positionsArray[i - firstKeyPos] = currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE)) + keySerializedSize;
+
+      return new LookupResult(true, false, lastKeyPos, positionsArray);
     }
 
     // TODO: SET CORRECT VALUE POSITION FOR PARTIAL KEYS
@@ -389,7 +438,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
       final Binary rootPageBuffer = new Binary(rootPage.slice());
       final LookupResult resultInRootPage = lookupInPage(rootPage.getPageId().getPageNumber(), rootPageCount + 1, rootPageBuffer,
-          convertedKeys, 0);
+          convertedKeys, 1);
 
       if (!resultInRootPage.outside) {
         // IT'S IN PAGE RANGE
@@ -403,14 +452,32 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
           // NOT FOUND: GET THE PREVIOUS PAGE
           --pageInSeries;
 
-        final int pageNum = rootPage.getPageId().getPageNumber() + 1 + pageInSeries;
-        final BasePage currentPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageNum), pageSize);
-        final Binary currentPageBuffer = new Binary(currentPage.slice());
-        final int count = getCount(currentPage);
+        if (resultInRootPage.valueBeginPositions != null && resultInRootPage.valueBeginPositions.length > 1) {
+          final List<RID> pages = readAllValuesFromResult(rootPageBuffer, resultInRootPage);
+          for (RID page : pages) {
+            final int pageNum = (int) page.getPosition();
+            if (pageNum < 1)
+              continue;
 
-        if (!lookupInPageAndAddInResultset(currentPage, currentPageBuffer, count, originalKeys, convertedKeys, limit, set,
-            removedKeys))
-          return;
+            final BasePage currentPage = database.getTransaction()
+                .getPage(new PageId(database, file.getFileId(), pageNum), pageSize);
+            final Binary currentPageBuffer = new Binary(currentPage.slice());
+            final int count = getCount(currentPage);
+
+            if (!lookupInPageAndAddInResultset(currentPage, currentPageBuffer, count, originalKeys, convertedKeys, limit, set,
+                removedKeys))
+              return;
+          }
+        } else {
+          final int pageNum = rootPage.getPageId().getPageNumber() + 1 + pageInSeries;
+          final BasePage currentPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageNum), pageSize);
+          final Binary currentPageBuffer = new Binary(currentPage.slice());
+          final int count = getCount(currentPage);
+
+          if (!lookupInPageAndAddInResultset(currentPage, currentPageBuffer, count, originalKeys, convertedKeys, limit, set,
+              removedKeys))
+            return;
+        }
       }
 
       --pageNumber;
