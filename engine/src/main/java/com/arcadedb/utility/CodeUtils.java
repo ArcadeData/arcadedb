@@ -93,6 +93,9 @@ public class CodeUtils {
   }
 
   public static List<String> split(final String text, final String sep, final int limit, final int estimatedSize) {
+    if( text == null || text.isEmpty() )
+      return Collections.emptyList();
+
     final List<String> parts = limit > -1 ? new ArrayList<>(limit) : new ArrayList<>(estimatedSize);
     int startPos = 0;
     while (true) {

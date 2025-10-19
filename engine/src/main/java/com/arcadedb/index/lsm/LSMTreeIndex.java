@@ -615,8 +615,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     } finally {
       final Integer lockedFileId = lockedNewFileId.get();
-      if (lockedFileId != null)
-        database.getTransactionManager().unlockFile(lockedFileId, Thread.currentThread());
+      database.getTransactionManager().unlockFile(lockedFileId, Thread.currentThread());
 
       if (locked == LockManager.LOCK_STATUS.YES)
         // RELEASE THE DELETED FILE ONLY IF THE LOCK WAS ACQUIRED HERE
