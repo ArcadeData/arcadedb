@@ -39,6 +39,7 @@ import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
@@ -77,7 +78,8 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   protected final boolean          unique;
   protected       Type[]           keyTypes;
   protected       byte[]           binaryKeyTypes;
-  protected       NULL_STRATEGY    nullStrategy = NULL_STRATEGY.SKIP;
+  protected       NULL_STRATEGY    nullStrategy       = NULL_STRATEGY.SKIP;
+  protected final AtomicLong       statsAdjacentSteps = new AtomicLong();
 
   protected static class LookupResult {
     public final boolean found;
@@ -290,7 +292,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     result = compareKey(currentPageBuffer, startIndexArray, convertedKeys, high, count, purpose);
     if (result == HIGHER) {
       if (purpose == 3)
-        // BROWSE ASCENDING
+        // BROWSE DESCENDING
         return new LookupResult(false, false, high, new int[] { currentPageBuffer.position() });
 
       return new LookupResult(false, true, count, null);
@@ -349,7 +351,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
         return 0;
 
       LogManager.instance()
-          .log(this, Level.SEVERE, "Cannot fit %d values in index page %s, saving only %d values",
+          .log(this, Level.FINE, "Cannot fit %d values in index page %s, saving only %d values",
               values.length, pageId, written);
 
       // NOT ENOUGH SPACE: Split the array with the max number of values that fit in the page
@@ -526,7 +528,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       list.add((RID) serializer.deserializeValue(database, buffer, valueType, null));
   }
 
-  private List<RID> readAllValuesFromResult(final Binary currentPageBuffer, final LookupResult result) {
+  protected List<RID> readAllValuesFromResult(final Binary currentPageBuffer, final LookupResult result) {
     final List<RID> allValues = new ArrayList<>();
     for (int i = 0; i < result.valueBeginPositions.length; ++i) {
       currentPageBuffer.position(result.valueBeginPositions[i]);
@@ -609,6 +611,73 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
   protected RID getOriginalRID(final RID rid) {
     return new RID(database, (rid.getBucketId() * -1) - 2, rid.getPosition());
+  }
+
+  protected int findFirstEntryOfSameKey(final Binary currentPageBuffer, final Object[] keys, final int startIndexArray, int mid) {
+    int result;
+    for (int i = mid - 1; i >= 0; --i) {
+      currentPageBuffer.position(currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE)));
+
+      result = 1;
+      for (int keyIndex = 0; keyIndex < keys.length; ++keyIndex) {
+        final boolean notNull = version < 1 || currentPageBuffer.getByte() == 1;
+        if (!notNull)
+          break;
+
+        final byte keyType = binaryKeyTypes[keyIndex];
+        if (keyType == BinaryTypes.TYPE_STRING) {
+          // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
+          result = comparator.compareBytes((byte[]) keys[keyIndex], currentPageBuffer);
+        } else {
+          final Object key = serializer.deserializeValue(database, currentPageBuffer, keyType, null);
+          result = comparator.compare(keys[keyIndex], keyType, key, keyType);
+        }
+
+        if (result != 0)
+          break;
+      }
+
+      if (result == 0) {
+        mid = i;
+        statsAdjacentSteps.incrementAndGet();
+      } else
+        break;
+    }
+    return mid;
+  }
+
+  protected int findLastEntryOfSameKey(final int count, final Binary currentPageBuffer, final Object[] keys,
+      final int startIndexArray, int mid) {
+    int result;// FIND THE MOST RIGHT ITEM
+    for (int i = mid + 1; i < count; ++i) {
+      currentPageBuffer.position(currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE)));
+
+      result = 1;
+      for (int keyIndex = 0; keyIndex < keys.length; ++keyIndex) {
+        final boolean notNull = version < 1 || currentPageBuffer.getByte() == 1;
+        if (!notNull)
+          break;
+
+        final byte keyType = binaryKeyTypes[keyIndex];
+        if (keyType == BinaryTypes.TYPE_STRING) {
+          // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
+          result = comparator.compareBytes((byte[]) keys[keyIndex], currentPageBuffer);
+        } else {
+          final Object key = serializer.deserializeValue(database, currentPageBuffer, keyType, null);
+          result = comparator.compare(keys[keyIndex], keyType, key, keyType);
+        }
+
+        if (result != 0)
+          break;
+      }
+
+      if (result == 0) {
+        mid = i;
+        statsAdjacentSteps.incrementAndGet();
+      } else
+        break;
+    }
+    return mid;
   }
 
   private void writeKeys(final Binary buffer, final Object[] keys) {

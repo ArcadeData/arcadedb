@@ -53,7 +53,6 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   public static final String                UNIQUE_INDEX_EXT    = "umtidx";
   public static final String                NOTUNIQUE_INDEX_EXT = "numtidx";
   private             LSMTreeIndexCompacted subIndex            = null;
-  private final       AtomicLong            statsAdjacentSteps  = new AtomicLong();
   private             int                   minPagesToScheduleACompaction;
   private             int                   currentMutablePages = 0;
 
@@ -291,75 +290,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     return new LookupResult(true, false, mid, new int[] { currentPageBuffer.position() });
   }
 
-  private int findLastEntryOfSameKey(final int count, final Binary currentPageBuffer, final Object[] keys,
-      final int startIndexArray, int mid) {
-    int result;// FIND THE MOST RIGHT ITEM
-    for (int i = mid + 1; i < count; ++i) {
-      currentPageBuffer.position(currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE)));
-
-      result = 1;
-      for (int keyIndex = 0; keyIndex < keys.length; ++keyIndex) {
-        final boolean notNull = version < 1 || currentPageBuffer.getByte() == 1;
-        if (!notNull)
-          break;
-
-        final byte keyType = binaryKeyTypes[keyIndex];
-        if (keyType == BinaryTypes.TYPE_STRING) {
-          // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
-          result = comparator.compareBytes((byte[]) keys[keyIndex], currentPageBuffer);
-        } else {
-          final Object key = serializer.deserializeValue(database, currentPageBuffer, keyType, null);
-          result = comparator.compare(keys[keyIndex], keyType, key, keyType);
-        }
-
-        if (result != 0)
-          break;
-      }
-
-      if (result == 0) {
-        mid = i;
-        statsAdjacentSteps.incrementAndGet();
-      } else
-        break;
-    }
-    return mid;
-  }
-
   public void setCurrentMutablePages(final int currentMutablePages) {
     this.currentMutablePages = currentMutablePages;
-  }
-
-  private int findFirstEntryOfSameKey(final Binary currentPageBuffer, final Object[] keys, final int startIndexArray, int mid) {
-    int result;
-    for (int i = mid - 1; i >= 0; --i) {
-      currentPageBuffer.position(currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE)));
-
-      result = 1;
-      for (int keyIndex = 0; keyIndex < keys.length; ++keyIndex) {
-        final boolean notNull = version < 1 || currentPageBuffer.getByte() == 1;
-        if (!notNull)
-          break;
-
-        final byte keyType = binaryKeyTypes[keyIndex];
-        if (keyType == BinaryTypes.TYPE_STRING) {
-          // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
-          result = comparator.compareBytes((byte[]) keys[keyIndex], currentPageBuffer);
-        } else {
-          final Object key = serializer.deserializeValue(database, currentPageBuffer, keyType, null);
-          result = comparator.compare(keys[keyIndex], keyType, key, keyType);
-        }
-
-        if (result != 0)
-          break;
-      }
-
-      if (result == 0) {
-        mid = i;
-        statsAdjacentSteps.incrementAndGet();
-      } else
-        break;
-    }
-    return mid;
   }
 
   protected MutablePage createNewPage() throws IOException {

@@ -244,34 +244,27 @@ public class LSMTreeIndexCompactor {
               ridsArray);
 
           if (!newPages.isEmpty()) {
-            if (rootPage != null) {
-              for (MutablePage newPage : newPages) {
-                // NEW PAGE: STORE THE MIN KEY IN THE ROOT PAGE
-                final int newPageNum = newPage.getPageId().getPageNumber();
+            lastPage = newPages.getLast();
+            currentPageBuffer = lastPage.getTrackable();
 
-                final List<MutablePage> newRootPages = compactedIndex.appendDuringCompaction(keyValueContent, rootPage,
-                    rootPageBuffer,
-                    compactedPageNumberInSeries,
-                    minorKey, new RID[] { new RID(database, 0, newPageNum) });
+            for (MutablePage newPage : newPages) {
+              // NEW PAGE: STORE THE MIN KEY IN THE ROOT PAGE
+              final int newPageNum = newPage.getPageId().getPageNumber();
 
-                LogManager.instance()
-                    .log(mainIndex, Level.WARNING,
-                        "- Creating a new entry in index '%s' root page %s->%d (entry in page=%d threadId=%d)", null, mutableIndex,
-                        Arrays.toString(minorKey), newPageNum, mutableIndex.getCount(rootPage) - 1,
-                        Thread.currentThread().threadId());
+              final List<MutablePage> newRootPages = compactedIndex.appendDuringCompaction(keyValueContent, rootPage,
+                  rootPageBuffer,
+                  compactedPageNumberInSeries,
+                  minorKey, new RID[] { new RID(database, 0, newPageNum) });
 
-                if (!newRootPages.isEmpty()) {
-                  throw new UnsupportedOperationException("Root index page overflow");
-//
-//                // TODO: MANAGE A LINKED LIST OF ROOT PAGES INSTEAD
-//                ++compactedPageNumberInSeries;
-//
-//                LogManager.instance().info(mainIndex, "- End of space in root index page for index '%s' (rootEntries=%d)", compactedIndex.getName(),
-//                    compactedIndex.getCount(rootPage));
-//                database.getPageManager().updatePage(rootPage, true, false);
-//                rootPage = null;
-//                rootPageBuffer = null;
-                }
+              LogManager.instance()
+                  .log(mainIndex, Level.WARNING,
+                      "- Creating a new entry in index '%s' root page %s->%d (entry in page=%d threadId=%d)", null, mutableIndex,
+                      Arrays.toString(minorKey), newPageNum, mutableIndex.getCount(rootPage) - 1,
+                      Thread.currentThread().threadId());
+
+              if (!newRootPages.isEmpty()) {
+                // TODO: MANAGE A LINKED LIST OF ROOT PAGES INSTEAD
+                throw new UnsupportedOperationException("Root index page overflow");
               }
 
               allNewPages.addAll(newPages);
@@ -304,12 +297,8 @@ public class LSMTreeIndexCompactor {
                 Arrays.toString(lastPageMaxKey), compactedIndex.getCount(rootPage), Thread.currentThread().threadId());
       }
 
-      final List<MutablePage> modifiedPages = new ArrayList<>(1);
-
-      for (MutablePage p : allNewPages)
-        modifiedPages.add(database.getPageManager().updatePageVersion(p, true));
-      if (rootPage != null)
-        modifiedPages.add(database.getPageManager().updatePageVersion(rootPage, true));
+      final List<MutablePage> modifiedPages = new ArrayList<>(allNewPages);
+      modifiedPages.add(database.getPageManager().updatePageVersion(rootPage, true));
 
       database.getPageManager().writePages(modifiedPages, false);
 

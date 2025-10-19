@@ -64,7 +64,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       checkRanges(100, 1);
       checkNotUniqueEntries(1);
 
-      LogManager.instance().log(this, Level.SEVERE, "Iteration 1 completed");
+      LogManager.instance().log(this, Level.FINE, "Iteration 1 completed");
 
       // THIS TIME LOOK UP FOR KEYS WHILE COMPACTION
       LogManager.instance().log(this, Level.FINE, "TEST: THIS TIME LOOK UP FOR KEYS WHILE COMPACTION");
@@ -82,6 +82,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
 
       checkLookups(1, 1);
       checkRanges(1, 1);
+      checkNotUniqueEntries(1);
 
       semaphore1.await();
 
@@ -90,7 +91,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
           .log(this, Level.FINE, "TEST: INSERT DATA ON TOP OF THE MIXED MUTABLE-COMPACTED INDEX AND CHECK WITH LOOKUPS");
       insertData();
 
-      LogManager.instance().log(this, Level.SEVERE, "Iteration 2 completed");
+      LogManager.instance().log(this, Level.FINE, "Iteration 2 completed");
 
       checkLookups(1, 2);
       checkRanges(1, 2);
@@ -114,7 +115,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       }, 0);
 
       insertData();
-      LogManager.instance().log(this, Level.SEVERE, "Iteration 3 completed");
+      LogManager.instance().log(this, Level.FINE, "Iteration 3 completed");
 
       semaphore2.await();
 
