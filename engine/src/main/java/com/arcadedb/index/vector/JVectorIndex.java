@@ -24,15 +24,12 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.EmptyIndexCursor;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.Index.BuildIndexCallback;
-import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.JVectorIndexBuilder;
@@ -52,36 +49,29 @@ import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
-import java.io.EOFException;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
-import java.util.Collection;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
-import java.util.Arrays;
-import java.util.HashMap;
 
 /**
  * JVector-based vector index implementation for ArcadeDB.
@@ -128,86 +118,72 @@ import java.util.HashMap;
  * - Update Batching: Configurable batch processing for disk persistence
  * - Cache Efficiency: LRU eviction with memory pressure adaptation
  *
- * @author Claude Code AI Assistant
  */
 public class JVectorIndex extends Component implements Index, IndexInternal {
   // Configuration for vector index building
-  private static final int REBUILD_THRESHOLD = 1000;
-  private static final int BATCH_SIZE        = 10000;
-
+  private static final int    REBUILD_THRESHOLD   = 1000;
+  private static final int    BATCH_SIZE          = 10000;
   // File extensions for persistent storage - Enhanced File Organization Strategy
   // Legacy persistence files (current implementation)
-  private static final String VECTOR_DATA_EXT  = "jvector";   // Legacy vector storage
-  private static final String MAPPING_DATA_EXT = "jvmapping"; // RID ↔ NodeID mapping
-
+  private static final String VECTOR_DATA_EXT     = "jvector";   // Legacy vector storage
+  private static final String MAPPING_DATA_EXT    = "jvmapping"; // RID ↔ NodeID mapping
   // New hybrid persistence files for OnDiskGraphIndexWriter integration
-  private static final String JVECTOR_DISK_EXT = "jvdisk";    // JVector OnDiskGraphIndex native format
+  private static final String JVECTOR_DISK_EXT    = "jvdisk";    // JVector OnDiskGraphIndex native format
   private static final String JVECTOR_VECTORS_EXT = "jvectors"; // JVector native vector storage
 
-  public static final String FILE_EXT        = "jvectoridx"; // ArcadeDB component configuration
-  public static final int    CURRENT_VERSION = 0;
-
-
+  public static final  String                     FILE_EXT                           = "jvectoridx"; // ArcadeDB component configuration
+  public static final  int                        CURRENT_VERSION                    = 0;
   // Hybrid persistence configuration
-  private static final int DEFAULT_DISK_PERSISTENCE_THRESHOLD = 10000; // Vectors count threshold
-  private static final long DEFAULT_MEMORY_LIMIT_MB = 512; // Memory limit in MB
-  private static final boolean DEFAULT_ENABLE_DISK_PERSISTENCE = true;
-
+  private static final int                        DEFAULT_DISK_PERSISTENCE_THRESHOLD = 10000; // Vectors count threshold
+  private static final long                       DEFAULT_MEMORY_LIMIT_MB            = 512; // Memory limit in MB
+  private static final boolean                    DEFAULT_ENABLE_DISK_PERSISTENCE    = true;
   // Phase 3 Task 3.1: Incremental Updates Configuration
-  private static final int DEFAULT_DISK_BATCH_SIZE = 1000; // Batch size for disk updates
-  private static final long DEFAULT_DISK_BATCH_TIMEOUT_MS = 5000; // Batch processing timeout
-  private static final int DEFAULT_DISK_QUEUE_MAX_SIZE = 10000; // Maximum pending updates queue size
-  private static final boolean DEFAULT_ASYNC_PROCESSING = true; // Enable asynchronous processing
-
+  private static final int                        DEFAULT_DISK_BATCH_SIZE            = 1000; // Batch size for disk updates
+  private static final long                       DEFAULT_DISK_BATCH_TIMEOUT_MS      = 5000; // Batch processing timeout
+  private static final int                        DEFAULT_DISK_QUEUE_MAX_SIZE        = 10000; // Maximum pending updates queue size
+  private static final boolean                    DEFAULT_ASYNC_PROCESSING           = true; // Enable asynchronous processing
   // Phase 3 Task 3.2: Memory-Efficient Vector Values Configuration
-  private static final int DEFAULT_CACHE_MAX_SIZE = 1000; // Maximum cache size for vector values
-  private static final double DEFAULT_MEMORY_PRESSURE_THRESHOLD = 0.85; // Memory pressure detection threshold
-  private static final int DEFAULT_CACHE_PRELOAD_SIZE = 100; // Pre-load cache size for sequential access
-  private static final String DEFAULT_CACHE_EVICTION_POLICY = "LRU"; // Cache eviction policy
-
-  private final    VectorSimilarityFunction similarityFunction;
-  private final    int                      dimensions;
-  private final    int                      maxConnections;
-  private final    int                      beamWidth;
-  private final    String                   vertexType;
-  private final    String                   vectorPropertyName;
-  private final    String                   indexName;
-  private volatile GraphIndex               graphIndex;
-  private volatile GraphSearcher            graphSearcher;
-  private final    ReentrantReadWriteLock   indexLock = new ReentrantReadWriteLock();
-
+  private static final int                        DEFAULT_CACHE_MAX_SIZE             = 1000; // Maximum cache size for vector values
+  private static final double                     DEFAULT_MEMORY_PRESSURE_THRESHOLD  = 0.85; // Memory pressure detection threshold
+  private static final int                        DEFAULT_CACHE_PRELOAD_SIZE         = 100; // Pre-load cache size for sequential access
+  private static final String                     DEFAULT_CACHE_EVICTION_POLICY      = "LRU"; // Cache eviction policy
+  private final        VectorSimilarityFunction   similarityFunction;
+  private final        int                        dimensions;
+  private final        int                        maxConnections;
+  private final        int                        beamWidth;
+  private final        String                     vertexType;
+  private final        String                     vectorPropertyName;
+  private final        String                     indexName;
+  private volatile     GraphIndex                 graphIndex;
+  private volatile     GraphSearcher              graphSearcher;
+  private final        ReentrantReadWriteLock     indexLock                          = new ReentrantReadWriteLock();
   // Hybrid persistence configuration fields
-  private final    int                      diskPersistenceThreshold;
-  private final    long                     memoryLimitMB;
-  private final    boolean                  enableDiskPersistence;
-  private volatile HybridPersistenceMode    currentPersistenceMode = HybridPersistenceMode.MEMORY_ONLY;
-
+  private final        int                        diskPersistenceThreshold;
+  private final        long                       memoryLimitMB;
+  private final        boolean                    enableDiskPersistence;
+  private volatile     HybridPersistenceMode      currentPersistenceMode             = HybridPersistenceMode.JVECTOR_NATIVE;
   // Hybrid persistence state
-  private volatile boolean                  hasLegacyFiles = false;
-  private volatile boolean                  hasDiskFiles = false;
-
+  private volatile     boolean                    hasLegacyFiles                     = false;
+  private volatile     boolean                    hasDiskFiles                       = false;
   // JVector Persistence Manager for disk operations
-  private final JVectorPersistenceManager persistenceManager;
-
+  private final        JVectorPersistenceManager  persistenceManager;
   // Phase 3 Task 3.1: Incremental Updates for Disk Mode
-  private final Queue<PendingVectorUpdate> pendingUpdates = new ConcurrentLinkedQueue<>();
-  private final AtomicBoolean batchProcessingActive = new AtomicBoolean(false);
-  private final AtomicLong lastBatchProcessTime = new AtomicLong(System.currentTimeMillis());
-  private final int diskBatchSize;
-  private final long diskBatchTimeoutMs;
-  private final int diskQueueMaxSize;
-  private final boolean asyncProcessing;
-
+  private final        Queue<PendingVectorUpdate> pendingUpdates                     = new ConcurrentLinkedQueue<>();
+  private final        AtomicBoolean              batchProcessingActive              = new AtomicBoolean(false);
+  private final        AtomicLong                 lastBatchProcessTime               = new AtomicLong(System.currentTimeMillis());
+  private final        int                        diskBatchSize;
+  private final        long                       diskBatchTimeoutMs;
+  private final        int                        diskQueueMaxSize;
+  private final        boolean                    asyncProcessing;
   // Batch processing metrics
-  private final AtomicLong totalBatchesProcessed = new AtomicLong(0);
-  private final AtomicLong totalUpdatesProcessed = new AtomicLong(0);
-  private final AtomicLong averageBatchProcessingTime = new AtomicLong(0);
-
+  private final        AtomicLong                 totalBatchesProcessed              = new AtomicLong(0);
+  private final        AtomicLong                 totalUpdatesProcessed              = new AtomicLong(0);
+  private final        AtomicLong                 averageBatchProcessingTime         = new AtomicLong(0);
   // Phase 3 Task 3.2: Memory-Efficient Vector Values Configuration
-  private final int cacheMaxSize;
-  private final double memoryPressureThreshold;
-  private final int cachePreloadSize;
-  private final String cacheEvictionPolicy;
+  private final        int                        cacheMaxSize;
+  private final        double                     memoryPressureThreshold;
+  private final        int                        cachePreloadSize;
+  private final        String                     cacheEvictionPolicy;
 
   /**
    * Enumeration for hybrid persistence modes.
@@ -242,10 +218,10 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
    * Enables batched processing of vector updates to optimize disk I/O performance.
    */
   public static class PendingVectorUpdate {
-    final RID rid;
-    final float[] vector;
+    final RID        rid;
+    final float[]    vector;
     final UpdateType type;
-    final long timestamp;
+    final long       timestamp;
 
     public PendingVectorUpdate(RID rid, float[] vector, UpdateType type) {
       this.rid = rid;
@@ -262,22 +238,19 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
   }
 
   // Container index pattern fields for bucket-specific indexes
-  private final List<IndexInternal> associatedBucketIndexes = Collections.synchronizedList(new ArrayList<>());
-  private volatile int associatedBucketId = -1;
-
+  private final    List<IndexInternal>    associatedBucketIndexes = Collections.synchronizedList(new ArrayList<>());
+  private volatile int                    associatedBucketId      = -1;
   // Direct RID-based storage structures for simplified management
-  private final Map<Integer, RID> nodeIdToRid = new ConcurrentHashMap<>();
-  private final Map<RID, Integer> ridToNodeId = new ConcurrentHashMap<>();
-  private final AtomicInteger     nextNodeId  = new AtomicInteger(0);
-
+  private final    Map<Integer, RID>      nodeIdToRid             = new ConcurrentHashMap<>();
+  private final    Map<RID, Integer>      ridToNodeId             = new ConcurrentHashMap<>();
+  private final    AtomicInteger          nextNodeId              = new AtomicInteger(0);
   // Vector storage using node IDs for JVector compatibility
-  private final Map<Integer, float[]> vectorStorage     = new ConcurrentHashMap<>();
+  private final    Map<Integer, float[]>  vectorStorage           = new ConcurrentHashMap<>();
   // Direct RID-based vector access for efficiency
-  private final Map<RID, float[]>     ridVectorStorage  = new ConcurrentHashMap<>();
-  private final AtomicBoolean         indexNeedsRebuild = new AtomicBoolean(false);
-
+  private final    Map<RID, float[]>      ridVectorStorage        = new ConcurrentHashMap<>();
+  private final    AtomicBoolean          indexNeedsRebuild       = new AtomicBoolean(false);
   // Thread-safe storage operations lock
-  private final ReentrantReadWriteLock storageLock = new ReentrantReadWriteLock();
+  private final    ReentrantReadWriteLock storageLock             = new ReentrantReadWriteLock();
 
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override
@@ -308,7 +281,7 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
     static ComponentParams create(JVectorIndexBuilder builder) {
       String indexName = builder.getIndexName() != null ?
           builder.getIndexName() :
-          builder.getVertexType() + "[" + builder.getVectorPropertyName() + "]";
+          builder.getTypeName() + "[" + builder.getPropertyName() + "]";
 
       int fileId = builder.getDatabase().getFileManager().newFileId();
 
@@ -328,7 +301,7 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
   private void createComponentFile() throws IOException {
     File componentFile = new File(filePath);
     try (FileOutputStream fos = new FileOutputStream(componentFile);
-         DataOutputStream dos = new DataOutputStream(fos)) {
+        DataOutputStream dos = new DataOutputStream(fos)) {
 
       // Write minimal header with version and index metadata
       dos.writeInt(CURRENT_VERSION);
@@ -361,12 +334,12 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
     this.maxConnections = builder.getMaxConnections();
     this.beamWidth = builder.getBeamWidth();
     this.similarityFunction = builder.getSimilarityFunction();
-    this.vertexType = builder.getVertexType();
-    this.vectorPropertyName = builder.getVectorPropertyName();
+    this.vertexType = builder.getTypeName();
+    this.vectorPropertyName = builder.getPropertyName();
     // Use the computed index name consistently
     this.indexName = builder.getIndexName() != null ?
         builder.getIndexName() :
-        builder.getVertexType() + "[" + builder.getVectorPropertyName() + "]";
+        builder.getTypeName() + "[" + builder.getPropertyName() + "]";
 
     // Initialize hybrid persistence configuration
     this.diskPersistenceThreshold = builder.getDiskPersistenceThreshold() != null ?
@@ -399,8 +372,8 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
 
     LogManager.instance().log(this, Level.INFO,
         "JVector index created: name='%s', dimensions=%d, maxConnections=%d, beamWidth=%d, " +
-        "diskThreshold=%d, memoryLimit=%dMB, diskPersistence=%b, batchSize=%d, batchTimeout=%dms, " +
-        "cacheMaxSize=%d, memoryPressureThreshold=%.2f, evictionPolicy=%s",
+            "diskThreshold=%d, memoryLimit=%dMB, diskPersistence=%b, batchSize=%d, batchTimeout=%dms, " +
+            "cacheMaxSize=%d, memoryPressureThreshold=%.2f, evictionPolicy=%s",
         indexName, dimensions, maxConnections, beamWidth,
         diskPersistenceThreshold, memoryLimitMB, enableDiskPersistence,
         diskBatchSize, diskBatchTimeoutMs, cacheMaxSize, memoryPressureThreshold, cacheEvictionPolicy);
@@ -448,7 +421,7 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
 
       LogManager.instance().log(this, Level.FINE,
           "Loaded configuration: dimensions=%d, similarity=%s, diskThreshold=%d, batchSize=%d, " +
-          "cacheMaxSize=%d, memoryPressureThreshold=%.2f",
+              "cacheMaxSize=%d, memoryPressureThreshold=%.2f",
           dimensions, similarityFunction, diskPersistenceThreshold, diskBatchSize,
           cacheMaxSize, memoryPressureThreshold);
 
@@ -534,8 +507,8 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
    * Phase 3 Task 3.1: Add vector update to pending queue for disk mode processing.
    * Enables efficient batched processing of vector updates in disk-based persistence modes.
    *
-   * @param rid RID of the record
-   * @param vector Vector data (null for REMOVE operations)
+   * @param rid        RID of the record
+   * @param vector     Vector data (null for REMOVE operations)
    * @param updateType Type of update operation
    */
   private void addVectorToDiskQueue(RID rid, float[] vector, UpdateType updateType) {
@@ -706,55 +679,55 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
    */
   private void applyUpdateToMemory(PendingVectorUpdate update) {
     switch (update.type) {
-      case ADD:
-      case UPDATE:
-        if (update.vector != null) {
-          // Apply vector addition/update directly to memory structures
-          Integer existingNodeId = ridToNodeId.get(update.rid);
-          Integer nodeId;
+    case ADD:
+    case UPDATE:
+      if (update.vector != null) {
+        // Apply vector addition/update directly to memory structures
+        Integer existingNodeId = ridToNodeId.get(update.rid);
+        Integer nodeId;
 
-          if (existingNodeId != null) {
-            // Update existing vector
-            nodeId = existingNodeId;
-            LogManager.instance().log(this, Level.FINE,
-                "Updating existing vector for RID: %s with node ID: %d", update.rid, nodeId);
-          } else {
-            // Assign new node ID
-            nodeId = nextNodeId.getAndIncrement();
-            nodeIdToRid.put(nodeId, update.rid);
-            ridToNodeId.put(update.rid, nodeId);
-            LogManager.instance().log(this, Level.FINE,
-                "Assigned new node ID: %d for RID: %s", nodeId, update.rid);
-          }
-
-          // Store vector in both storage maps
-          vectorStorage.put(nodeId, update.vector.clone());
-          ridVectorStorage.put(update.rid, update.vector.clone());
-
-          // Mark index for rebuild
-          indexNeedsRebuild.set(true);
-        }
-        break;
-
-      case REMOVE:
-        // Remove vector from storage
-        Integer nodeId = ridToNodeId.remove(update.rid);
-        if (nodeId != null) {
-          nodeIdToRid.remove(nodeId);
-          vectorStorage.remove(nodeId);
-          ridVectorStorage.remove(update.rid);
-          indexNeedsRebuild.set(true);
+        if (existingNodeId != null) {
+          // Update existing vector
+          nodeId = existingNodeId;
           LogManager.instance().log(this, Level.FINE,
-              "Removed vector for RID: %s with node ID: %d", update.rid, nodeId);
+              "Updating existing vector for RID: %s with node ID: %d", update.rid, nodeId);
         } else {
+          // Assign new node ID
+          nodeId = nextNodeId.getAndIncrement();
+          nodeIdToRid.put(nodeId, update.rid);
+          ridToNodeId.put(update.rid, nodeId);
           LogManager.instance().log(this, Level.FINE,
-              "No vector mapping found for RID: %s", update.rid);
+              "Assigned new node ID: %d for RID: %s", nodeId, update.rid);
         }
-        break;
 
-      default:
-        LogManager.instance().log(this, Level.WARNING,
-            "Unknown update type: %s", update.type);
+        // Store vector in both storage maps
+        vectorStorage.put(nodeId, update.vector.clone());
+        ridVectorStorage.put(update.rid, update.vector.clone());
+
+        // Mark index for rebuild
+        indexNeedsRebuild.set(true);
+      }
+      break;
+
+    case REMOVE:
+      // Remove vector from storage
+      Integer nodeId = ridToNodeId.remove(update.rid);
+      if (nodeId != null) {
+        nodeIdToRid.remove(nodeId);
+        vectorStorage.remove(nodeId);
+        ridVectorStorage.remove(update.rid);
+        indexNeedsRebuild.set(true);
+        LogManager.instance().log(this, Level.FINE,
+            "Removed vector for RID: %s with node ID: %d", update.rid, nodeId);
+      } else {
+        LogManager.instance().log(this, Level.FINE,
+            "No vector mapping found for RID: %s", update.rid);
+      }
+      break;
+
+    default:
+      LogManager.instance().log(this, Level.WARNING,
+          "Unknown update type: %s", update.type);
     }
   }
 
@@ -780,7 +753,7 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
   private boolean isDiskMode() {
     HybridPersistenceMode mode = getCurrentPersistenceMode();
     return mode == HybridPersistenceMode.HYBRID_DISK ||
-           mode == HybridPersistenceMode.JVECTOR_NATIVE;
+        mode == HybridPersistenceMode.JVECTOR_NATIVE;
   }
 
   /**
@@ -826,98 +799,100 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
         return;
       }
       switch (updateType) {
-        case ADD:
-        case UPDATE:
-          if (vector != null) {
-            // Validate vector values
-            for (int i = 0; i < vector.length; i++) {
-              if (Float.isNaN(vector[i]) || Float.isInfinite(vector[i])) {
-                LogManager.instance().log(this, Level.WARNING,
-                    "Invalid vector value at index %d for RID %s: %f", i, rid, vector[i]);
-                return;
-              }
+      case ADD:
+      case UPDATE:
+        if (vector != null) {
+          // Validate vector values
+          for (int i = 0; i < vector.length; i++) {
+            if (Float.isNaN(vector[i]) || Float.isInfinite(vector[i])) {
+              LogManager.instance().log(this, Level.WARNING,
+                  "Invalid vector value at index %d for RID %s: %f", i, rid, vector[i]);
+              return;
             }
+          }
 
-            // Handle node ID assignment with bidirectional mapping
-            Integer existingNodeId = ridToNodeId.get(rid);
-            Integer nodeId;
+          // Handle node ID assignment with bidirectional mapping
+          Integer existingNodeId = ridToNodeId.get(rid);
+          Integer nodeId;
 
-            if (existingNodeId != null) {
-              // Update existing vector
-              nodeId = existingNodeId;
-              LogManager.instance().log(this, Level.FINE, "Updating existing vector for RID: %s with node ID: %d", rid, nodeId);
-            } else {
-              // Assign new node ID
-              nodeId = nextNodeId.getAndIncrement();
-              nodeIdToRid.put(nodeId, rid);
-              ridToNodeId.put(rid, nodeId);
-              LogManager.instance().log(this, Level.FINE, "Assigned new node ID: %d for RID: %s", nodeId, rid);
+          if (existingNodeId != null) {
+            // Update existing vector
+            nodeId = existingNodeId;
+            LogManager.instance().log(this, Level.FINE, "Updating existing vector for RID: %s with node ID: %d", rid, nodeId);
+          } else {
+            // Assign new node ID
+            nodeId = nextNodeId.getAndIncrement();
+            nodeIdToRid.put(nodeId, rid);
+            ridToNodeId.put(rid, nodeId);
+            LogManager.instance().log(this, Level.FINE, "Assigned new node ID: %d for RID: %s", nodeId, rid);
+          }
+
+          // Store vector in both storage maps for efficiency
+          float[] vectorCopy = vector.clone();
+          vectorStorage.put(nodeId, vectorCopy);
+          ridVectorStorage.put(rid, vectorCopy);
+
+          // Initialize GraphIndex after storing vector if needed
+          if (graphIndex == null) {
+            LogManager.instance()
+                .log(this, Level.FINE, "Initializing graph index after vector addition (total vectors: %d)", vectorStorage.size());
+            try {
+              initializeGraphIndex();
+            } catch (Exception e) {
+              LogManager.instance()
+                  .log(this, Level.WARNING, "Failed to initialize graph index after adding vector for RID: %s", rid, e);
+              // Don't fail the vector addition if graph index initialization fails
             }
+          }
 
-            // Store vector in both storage maps for efficiency
-            float[] vectorCopy = vector.clone();
-            vectorStorage.put(nodeId, vectorCopy);
-            ridVectorStorage.put(rid, vectorCopy);
-
-            // Initialize GraphIndex after storing vector if needed
-            if (graphIndex == null) {
-              LogManager.instance().log(this, Level.FINE, "Initializing graph index after vector addition (total vectors: %d)", vectorStorage.size());
+          // Schedule index rebuild based on threshold
+          if (vectorStorage.size() % REBUILD_THRESHOLD == 0) {
+            LogManager.instance().log(this, Level.INFO, "Triggering index rebuild at threshold (%d vectors)", REBUILD_THRESHOLD);
+            indexNeedsRebuild.set(true);
+            // Asynchronous rebuild to avoid blocking
+            CompletableFuture.runAsync(() -> {
               try {
-                initializeGraphIndex();
+                rebuildIndexIfNeeded();
               } catch (Exception e) {
-                LogManager.instance().log(this, Level.WARNING, "Failed to initialize graph index after adding vector for RID: %s", rid, e);
-                // Don't fail the vector addition if graph index initialization fails
+                LogManager.instance().log(this, Level.WARNING, "Error during asynchronous index rebuild", e);
               }
-            }
-
-            // Schedule index rebuild based on threshold
-            if (vectorStorage.size() % REBUILD_THRESHOLD == 0) {
-              LogManager.instance().log(this, Level.INFO, "Triggering index rebuild at threshold (%d vectors)", REBUILD_THRESHOLD);
-              indexNeedsRebuild.set(true);
-              // Asynchronous rebuild to avoid blocking
-              CompletableFuture.runAsync(() -> {
-                try {
-                  rebuildIndexIfNeeded();
-                } catch (Exception e) {
-                  LogManager.instance().log(this, Level.WARNING, "Error during asynchronous index rebuild", e);
-                }
-              });
-            }
-
-            LogManager.instance().log(this, Level.FINE,
-                "Successfully added vector for RID %s with node ID %d (total vectors: %d)", rid, nodeId, vectorStorage.size());
+            });
           }
-          break;
-
-        case REMOVE:
-          // Remove from bidirectional mapping
-          Integer nodeId = ridToNodeId.remove(rid);
-
-          if (nodeId == null) {
-            // Check if vector exists in direct storage without mapping
-            if (ridVectorStorage.containsKey(rid)) {
-              ridVectorStorage.remove(rid);
-              LogManager.instance().log(this, Level.FINE, "Removed orphaned vector for RID: %s", rid);
-            } else {
-              LogManager.instance().log(this, Level.FINE, "No vector mapping found for RID: %s", rid);
-            }
-            return;
-          }
-
-          // Clean up all storage references
-          RID removedRid = nodeIdToRid.remove(nodeId);
-          float[] removedVector = vectorStorage.remove(nodeId);
-          float[] directRemovedVector = ridVectorStorage.remove(rid);
-
-          // Mark index for rebuild to update graph structure
-          indexNeedsRebuild.set(true);
 
           LogManager.instance().log(this, Level.FINE,
-              "Successfully removed vector for RID %s with node ID %d (remaining vectors: %d)", rid, nodeId, vectorStorage.size());
-          break;
+              "Successfully added vector for RID %s with node ID %d (total vectors: %d)", rid, nodeId, vectorStorage.size());
+        }
+        break;
 
-        default:
-          LogManager.instance().log(this, Level.WARNING, "Unknown update type: %s", updateType);
+      case REMOVE:
+        // Remove from bidirectional mapping
+        Integer nodeId = ridToNodeId.remove(rid);
+
+        if (nodeId == null) {
+          // Check if vector exists in direct storage without mapping
+          if (ridVectorStorage.containsKey(rid)) {
+            ridVectorStorage.remove(rid);
+            LogManager.instance().log(this, Level.FINE, "Removed orphaned vector for RID: %s", rid);
+          } else {
+            LogManager.instance().log(this, Level.FINE, "No vector mapping found for RID: %s", rid);
+          }
+          return;
+        }
+
+        // Clean up all storage references
+        RID removedRid = nodeIdToRid.remove(nodeId);
+        float[] removedVector = vectorStorage.remove(nodeId);
+        float[] directRemovedVector = ridVectorStorage.remove(rid);
+
+        // Mark index for rebuild to update graph structure
+        indexNeedsRebuild.set(true);
+
+        LogManager.instance().log(this, Level.FINE,
+            "Successfully removed vector for RID %s with node ID %d (remaining vectors: %d)", rid, nodeId, vectorStorage.size());
+        break;
+
+      default:
+        LogManager.instance().log(this, Level.WARNING, "Unknown update type: %s", updateType);
       }
 
     } catch (Exception e) {
@@ -1363,7 +1338,8 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
    */
   public List<Pair<Identifiable, Float>> findNeighbors(final float[] queryVector, final int k) {
     if (queryVector == null || k <= 0) {
-      throw new IllegalArgumentException("Invalid query parameters: queryVector=" + (queryVector != null ? queryVector.length : "null") + ", k=" + k);
+      throw new IllegalArgumentException(
+          "Invalid query parameters: queryVector=" + (queryVector != null ? queryVector.length : "null") + ", k=" + k);
     }
 
     indexLock.readLock().lock();
@@ -1619,7 +1595,8 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
     indexLock.writeLock().lock();
     storageLock.writeLock().lock();
     try {
-      LogManager.instance().log(this, Level.INFO, "Dropping JVector index: " + indexName + " (bucketId: " + associatedBucketId + ")");
+      LogManager.instance()
+          .log(this, Level.INFO, "Dropping JVector index: " + indexName + " (bucketId: " + associatedBucketId + ")");
 
       // Phase 3 Task 3.1: Clear pending updates queue
       pendingUpdates.clear();
@@ -1814,7 +1791,9 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
    * Supports multiple vector formats from DocumentIndexer.
    *
    * @param key The key object containing vector data
+   *
    * @return Extracted vector as float[] or null if extraction fails
+   *
    * @throws IllegalArgumentException if the key type is not supported
    */
   private float[] extractVectorFromKey(Object key) {
@@ -1840,7 +1819,7 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
         } else {
           throw new IllegalArgumentException(
               String.format("List element at index %d is not a Number: %s",
-                           i, element != null ? element.getClass().getSimpleName() : "null"));
+                  i, element != null ? element.getClass().getSimpleName() : "null"));
         }
       }
       return vector;
@@ -1902,8 +1881,8 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
     // Unsupported key type
     throw new IllegalArgumentException(
         String.format("Unsupported vector key type for JVector index: %s. " +
-                     "Supported types: float[], double[], int[], long[], short[], byte[], List<Number>",
-                     key.getClass().getSimpleName()));
+                "Supported types: float[], double[], int[], long[], short[], byte[], List<Number>",
+            key.getClass().getSimpleName()));
   }
 
   /**
@@ -1913,7 +1892,7 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
     if (vectorLength != dimensions) {
       throw new IllegalArgumentException(
           String.format("Vector dimensions (%d) do not match index dimensions (%d)",
-                       vectorLength, dimensions));
+              vectorLength, dimensions));
     }
   }
 
@@ -1924,7 +1903,7 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
     if (vector.length != dimensions) {
       throw new IllegalArgumentException(
           String.format("Vector dimensions (%d) do not match index dimensions (%d)",
-                       vector.length, dimensions));
+              vector.length, dimensions));
     }
 
     // Validate vector values for NaN/Infinite
@@ -1932,7 +1911,7 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
       if (Float.isNaN(vector[i]) || Float.isInfinite(vector[i])) {
         throw new IllegalArgumentException(
             String.format("Invalid vector value at index %d: %f (NaN or Infinite not allowed)",
-                         i, vector[i]));
+                i, vector[i]));
       }
     }
   }
@@ -2297,8 +2276,6 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
     return null;
   }
 
-
-
   @Override
   public void updateTypeName(String newTypeName) {
     LogManager.instance().log(this, Level.INFO,
@@ -2387,11 +2364,11 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
   public class ArcadeVectorValues implements RandomAccessVectorValues {
     // Cache frequently accessed vectors to avoid repeated lookups
     private final Map<Integer, VectorFloat> vectorCache = new ConcurrentHashMap<>();
-    private final int maxCacheSize;
+    private final int                       maxCacheSize;
 
     // Phase 3 Task 3.2: Cache performance metrics
-    private final AtomicLong cacheHits = new AtomicLong(0);
-    private final AtomicLong cacheMisses = new AtomicLong(0);
+    private final AtomicLong cacheHits      = new AtomicLong(0);
+    private final AtomicLong cacheMisses    = new AtomicLong(0);
     private final AtomicLong cacheEvictions = new AtomicLong(0);
 
     public ArcadeVectorValues() {
@@ -2495,21 +2472,21 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
    */
   public class DiskVectorValues implements RandomAccessVectorValues {
     // Phase 3 Task 3.2: LRU cache implementation with weak references for memory efficiency
-    private final Map<Integer, VectorFloat> vectorCache;
+    private final Map<Integer, VectorFloat>                vectorCache;
     private final Map<Integer, WeakReference<VectorFloat>> weakCache = new ConcurrentHashMap<>();
-    private final int maxCacheSize;
-    private final int maxWeakCacheSize;
+    private final int                                      maxCacheSize;
+    private final int                                      maxWeakCacheSize;
 
     // Cache performance metrics
-    private final AtomicLong cacheHits = new AtomicLong(0);
-    private final AtomicLong cacheMisses = new AtomicLong(0);
-    private final AtomicLong weakCacheHits = new AtomicLong(0);
-    private final AtomicLong cacheEvictions = new AtomicLong(0);
+    private final AtomicLong cacheHits               = new AtomicLong(0);
+    private final AtomicLong cacheMisses             = new AtomicLong(0);
+    private final AtomicLong weakCacheHits           = new AtomicLong(0);
+    private final AtomicLong cacheEvictions          = new AtomicLong(0);
     private final AtomicLong memoryPressureEvictions = new AtomicLong(0);
 
     // Pre-loading support for sequential access patterns
     private final AtomicInteger lastAccessedNodeId = new AtomicInteger(-1);
-    private final List<Integer> preloadedNodeIds = Collections.synchronizedList(new ArrayList<>());
+    private final List<Integer> preloadedNodeIds   = Collections.synchronizedList(new ArrayList<>());
 
     public DiskVectorValues() {
       // Phase 3 Task 3.2: Adaptive cache sizing based on memory pressure and persistence mode
@@ -2662,7 +2639,8 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
 
     public double getCacheHitRatio() {
       long totalAccesses = cacheHits.get() + cacheMisses.get() + weakCacheHits.get();
-      if (totalAccesses == 0) return 0.0;
+      if (totalAccesses == 0)
+        return 0.0;
       return (double) (cacheHits.get() + weakCacheHits.get()) / totalAccesses;
     }
 
@@ -2721,6 +2699,8 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
    * Save configuration to component file.
    */
   private void saveConfiguration(JSONObject config) throws IOException {
+    File componentFile = new File(filePath);
+
     LogManager.instance().log(this, Level.FINE, "Configuration saved for JVector index: " + indexName);
   }
 
@@ -2735,7 +2715,7 @@ public class JVectorIndex extends Component implements Index, IndexInternal {
     JSONObject config = new JSONObject();
 
     try (FileInputStream fis = new FileInputStream(componentFile);
-         DataInputStream dis = new DataInputStream(fis)) {
+        DataInputStream dis = new DataInputStream(fis)) {
 
       // Read the data written by createComponentFile()
       int version = dis.readInt();

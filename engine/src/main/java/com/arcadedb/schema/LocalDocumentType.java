@@ -39,10 +39,20 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.logging.Level;
 
 public class LocalDocumentType implements DocumentType {
   protected       String                            name;
@@ -892,11 +902,12 @@ public class LocalDocumentType implements DocumentType {
         // CREATE THE TYPE-INDEX FOR THE 1ST TIME
         propIndex = new TypeIndex(name + Arrays.toString(propertyNames).replace(" ", ""), this);
 
-        schema.addIndex( propIndex);
+        schema.addIndex(propIndex);
         indexesByProperties.put(propertyList, propIndex);
       }
     }
 
+    System.out.println("propIndex = " + propIndex);
     // ADD AS SUB-INDEX
     propIndex.addIndexOnBucket(index);
     this.bucketSelectionStrategy.setType(this);
@@ -1083,8 +1094,10 @@ public class LocalDocumentType implements DocumentType {
       type.put("bucketSelectionStrategy", strategy.toJSON());
 
     for (final TypeIndex i : getAllIndexes(false)) {
-      for (final IndexInternal entry : i.getIndexesOnBuckets())
+      for (final IndexInternal entry : i.getIndexesOnBuckets()) {
+        LogManager.instance().log(this, Level.INFO, "index conf:: " + entry.getName() + " :: " + entry.toJSON());
         indexes.put(entry.getMostRecentFileName(), entry.toJSON());
+      }
     }
 
     type.put("custom", new JSONObject(custom));

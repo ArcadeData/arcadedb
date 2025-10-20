@@ -41,7 +41,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Tests for JVector index functionality.
  *
- * @author Claude Code AI Assistant
  */
 class JVectorIndexTest extends TestHelper {
 
@@ -58,9 +57,10 @@ class JVectorIndexTest extends TestHelper {
 
       // Create JVectorIndexBuilder directly instead of using schema.buildVectorIndex()
       final JVectorIndexBuilder builder = new JVectorIndexBuilder((DatabaseInternal) database)
-          .withVertexType("VectorDocument")
-          .withVectorProperty("embedding", Type.ARRAY_OF_FLOATS)
+          .withTypeName("VectorDocument")
+          .withProperty("embedding", Type.ARRAY_OF_FLOATS)
           .withSimilarityFunction(VectorSimilarityFunction.COSINE)
+          .withDiskPersistence(true)
           .withDimensions(4)
           .withMaxConnections(16)
           .withBeamWidth(100);
@@ -279,6 +279,7 @@ class JVectorIndexTest extends TestHelper {
 
       // Verify that the native disk file was created
       String diskFilePath = ((JVectorIndex) index).getJVectorDiskFilePath();
+      System.out.println("diskFilePath = " + diskFilePath);
       java.io.File diskFile = new java.io.File(diskFilePath);
 
       // The file should exist and have some content

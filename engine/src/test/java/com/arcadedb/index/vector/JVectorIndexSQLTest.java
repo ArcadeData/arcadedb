@@ -31,12 +31,10 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.in;
 
 /**
  * Tests for JVector index functionality.
  *
- * @author Claude Code AI Assistant
  */
 class JVectorIndexSQLTest extends TestHelper {
 
@@ -56,13 +54,16 @@ class JVectorIndexSQLTest extends TestHelper {
               "dimensions" : 4,
               "similarity" : "COSINE",
               "maxConnections" : 16,
-              "beamWidth" : 100
+              "beamWidth" : 100,
+              "enableDiskPersistence": true,
+              "diskPersistenceThreshold": 100,
+              "memoryLimitMB": 10
               };
           """);
     });
 
     index = database.getSchema().getEmbedded().getIndexByName("VectorDocument[embedding]");
-assertThat(index).isInstanceOf(JVectorIndex.class);
+    assertThat(index).isInstanceOf(JVectorIndex.class);
     indexName = index.getName();
   }
 

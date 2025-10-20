@@ -50,6 +50,9 @@ public class TextEmbeddingsImporter {
   private final    InputStream              inputStream;
   private final    ImporterSettings         settings;
   private final    ConsoleLogger            logger;
+  private          int                      memoryLimitMB;
+  private          int                      diskPersistenceThreshold;
+  private          boolean                  enableDiskPersistence;
   private          int                      maxConnections;
   private          int                      beamWidth;
   private          VectorSimilarityFunction similarityFunction;
@@ -96,6 +99,15 @@ public class TextEmbeddingsImporter {
 
     if (settings.options.containsKey("deletedProperty"))
       this.deletedPropertyName = settings.getValue("deletedProperty", null);
+
+    if (settings.options.containsKey("enableDiskPersistence"))
+      this.enableDiskPersistence = Boolean.parseBoolean(settings.getValue("enableDiskPersistence", "true"));
+
+    if (settings.options.containsKey("diskPersistenceThreshold"))
+      this.diskPersistenceThreshold = settings.getIntValue("diskPersistenceThreshold", 100);
+
+    if (settings.options.containsKey("memoryLimitMB"))
+      this.memoryLimitMB = settings.getIntValue("memoryLimitMB", 10);
 
     this.maxConnections = settings.getIntValue("maxConnections", 16);
     this.beamWidth = settings.getIntValue("beamWidth", 100);
@@ -156,9 +168,12 @@ public class TextEmbeddingsImporter {
       // Create JVector index
       database.transaction(() -> {
         database.getSchema().getEmbedded().buildVectorIndex()
-            .withVertexType(settings.vertexTypeName)
-            .withVectorProperty(vectorPropertyName, vectorPropertyType)
+            .withTypeName(settings.vertexTypeName)
+            .withProperty(vectorPropertyName, vectorPropertyType)
             .withDimensions(dimensions)
+            .withMemoryLimitMB(memoryLimitMB)
+            .withDiskPersistence(enableDiskPersistence)
+            .withDiskPersistenceThreshold(diskPersistenceThreshold)
             .withSimilarityFunction(similarityFunction)
             .withMaxConnections(maxConnections)
             .withBeamWidth(beamWidth)

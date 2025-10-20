@@ -23,8 +23,9 @@ class JVectorAutomaticIndexingTest extends TestHelper {
       vectorType.createProperty("embedding", Type.ARRAY_OF_FLOATS);
 
       final JVectorIndex index = new JVectorIndexBuilder((DatabaseInternal) database)
-          .withVertexType("VectorDocument")
-          .withVectorProperty("embedding", Type.ARRAY_OF_FLOATS)
+          .withTypeName("VectorDocument")
+          .withProperty("embedding", Type.ARRAY_OF_FLOATS)
+          .withDiskPersistence(true)
           .withDimensions(4)
           .create();
 

@@ -42,7 +42,8 @@ import static java.util.concurrent.TimeUnit.*;
  */
 public class GloVeTest {
   private final static int     PARALLEL_LEVEL = 8;
-  private static final String  FILE_NAME      = "/Users/luca/Downloads/glove.twitter.27B.100d.txt";
+
+  private static final String  FILE_NAME      = "/Users/frank/Downloads/glove.twitter.27B/glove.twitter.27B.100d.txt";
   private              boolean USE_SQL        = false;
 
   public static void main(String[] args) {
@@ -54,19 +55,19 @@ public class GloVeTest {
 
     final Database database;
 
-    final DatabaseFactory factory = new DatabaseFactory("glovedb");
+    final DatabaseFactory factory = new DatabaseFactory("databases/glovedb");
 
     // TODO: REMOVE THIS
-//    if (factory.exists())
-//      factory.open().drop();
+    if (factory.exists())
+      factory.open().drop();
 
     if (factory.exists()) {
       database = factory.open();
-      //LogManager.instance().log(this, Level.SEVERE, "Found existent database with %d words", database.countType("Word", false));
+      LogManager.instance().log(this, Level.SEVERE, "Found existent database with %d words", database.countType("Word", false));
 
     } else {
       database = factory.create();
-      LogManager.instance().log(this, Level.SEVERE, "Creating new database");
+      LogManager.instance().log(this, Level.WARNING, "Creating new database on:: " + database.getDatabasePath());
 
       final File file = new File(FILE_NAME);
       if (!file.exists()) {
@@ -84,8 +85,8 @@ public class GloVeTest {
 
       LogManager.instance().log(this, Level.SEVERE, "Creating index took %d millis which is %d minutes.%n", duration, MILLISECONDS.toMinutes(duration));
 
-      database.close();
-      System.exit(1);
+//      database.close();
+//      System.exit(1);
     }
 
     final JVectorIndex persistentIndex = (JVectorIndex) database.getSchema().getIndexByName("Word[vector]");

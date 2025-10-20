@@ -21,32 +21,26 @@ package com.arcadedb.index.vector;
 import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
-import io.github.jbellis.jvector.graph.GraphIndex;
-import io.github.jbellis.jvector.graph.GraphIndexBuilder;
-import io.github.jbellis.jvector.graph.GraphSearcher;
-import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
-import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndexWriter;
-import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
-import io.github.jbellis.jvector.disk.RandomAccessWriter;
 import io.github.jbellis.jvector.disk.BufferedRandomAccessWriter;
+import io.github.jbellis.jvector.disk.RandomAccessWriter;
 import io.github.jbellis.jvector.disk.ReaderSupplier;
 import io.github.jbellis.jvector.disk.SimpleMappedReader;
-import io.github.jbellis.jvector.util.PhysicalCoreExecutor;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.Collections;
-import java.util.HashMap;
-import java.io.FileOutputStream;
-import java.nio.channels.FileChannel;
-import io.github.jbellis.jvector.graph.disk.FeatureId;
+import io.github.jbellis.jvector.graph.GraphIndex;
+import io.github.jbellis.jvector.graph.GraphSearcher;
 import io.github.jbellis.jvector.graph.disk.Feature;
-import io.github.jbellis.jvector.graph.disk.InlineVectors;
+import io.github.jbellis.jvector.graph.disk.FeatureId;
+import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
+import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndexWriter;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -76,20 +70,17 @@ import java.util.logging.Level;
  * @author Claude Code AI Assistant
  */
 public class JVectorPersistenceManager {
-  private final JVectorIndex parentIndex;
-
+  private final        JVectorIndex           parentIndex;
   // Disk-based resources for JVector native persistence
-  private volatile RandomAccessFile diskGraphFile;
-  private volatile FileChannel diskGraphChannel;
-  private volatile RandomAccessFile diskVectorFile;
-  private volatile FileChannel diskVectorChannel;
-
+  private volatile     RandomAccessFile       diskGraphFile;
+  private volatile     FileChannel            diskGraphChannel;
+  private volatile     RandomAccessFile       diskVectorFile;
+  private volatile     FileChannel            diskVectorChannel;
   // Resource management lock
-  private final ReentrantReadWriteLock resourceLock = new ReentrantReadWriteLock();
-
+  private final        ReentrantReadWriteLock resourceLock       = new ReentrantReadWriteLock();
   // Buffer size for disk operations (configurable)
-  private static final int DISK_BUFFER_SIZE = 8192;
-  private static final int VECTOR_BUFFER_SIZE = 65536;
+  private static final int                    DISK_BUFFER_SIZE   = 8192;
+  private static final int                    VECTOR_BUFFER_SIZE = 65536;
 
   public JVectorPersistenceManager(JVectorIndex parentIndex) {
     this.parentIndex = parentIndex;
@@ -110,27 +101,27 @@ public class JVectorPersistenceManager {
           parentIndex.getName(), currentMode);
 
       switch (currentMode) {
-        case MEMORY_ONLY:
-          LogManager.instance().log(this, Level.INFO, "Memory-only mode - no disk data to load");
-          break;
+      case MEMORY_ONLY:
+        LogManager.instance().log(this, Level.INFO, "Memory-only mode - no disk data to load");
+        break;
 
-        case LEGACY_DISK:
-          loadLegacyPersistence();
-          break;
+      case LEGACY_DISK:
+        loadLegacyPersistence();
+        break;
 
-        case HYBRID_DISK:
-          loadHybridPersistence();
-          break;
+      case HYBRID_DISK:
+        loadHybridPersistence();
+        break;
 
-        case JVECTOR_NATIVE:
-          loadNativePersistence();
-          break;
+      case JVECTOR_NATIVE:
+        loadNativePersistence();
+        break;
 
-        default:
-          LogManager.instance().log(this, Level.WARNING,
-              "Unknown persistence mode: %s, falling back to legacy", currentMode);
-          loadLegacyPersistence();
-          break;
+      default:
+        LogManager.instance().log(this, Level.WARNING,
+            "Unknown persistence mode: %s, falling back to legacy", currentMode);
+        loadLegacyPersistence();
+        break;
       }
 
       LogManager.instance().log(this, Level.FINE,
@@ -159,55 +150,55 @@ public class JVectorPersistenceManager {
           parentIndex.getName(), currentMode);
 
       switch (currentMode) {
-        case MEMORY_ONLY:
-          // Check if we should upgrade to disk persistence
-          if (shouldUpgradeToLegacyDisk()) {
-            upgradeToDiskPersistence();
-          }
-          break;
+      case MEMORY_ONLY:
+        // Check if we should upgrade to disk persistence
+        if (shouldUpgradeToLegacyDisk()) {
+          upgradeToDiskPersistence();
+        }
+        break;
 
-        case LEGACY_DISK:
-          saveLegacyPersistence();
-          // Check if we should upgrade to hybrid mode
-          if (shouldUpgradeToHybridDisk()) {
-            upgradeToHybridPersistence();
-          }
-          break;
+      case LEGACY_DISK:
+        saveLegacyPersistence();
+        // Check if we should upgrade to hybrid mode
+        if (shouldUpgradeToHybridDisk()) {
+          upgradeToHybridPersistence();
+        }
+        break;
 
-        case HYBRID_DISK:
-          saveHybridPersistence();
-          // Also ensure the graph structure is written using native JVector disk writer
-          if (parentIndex.getGraphIndex() != null) {
-            LogManager.instance().log(this, Level.FINE,
-                "Executing native JVector disk writing for HYBRID_DISK mode");
-            try {
-              writeGraphToDisk();
-            } catch (Exception e) {
-              LogManager.instance().log(this, Level.WARNING,
-                  "Native disk writing failed in HYBRID_DISK mode, continuing with legacy persistence", e);
-            }
-          }
-          // Check if we should upgrade to native persistence
-          if (shouldUpgradeToNativeDisk()) {
-            upgradeToNativePersistence();
-          }
-          break;
-
-        case JVECTOR_NATIVE:
-          saveNativePersistence();
-          // Also ensure the graph structure is written using native JVector disk writer
-          if (parentIndex.getGraphIndex() != null) {
-            LogManager.instance().log(this, Level.FINE,
-                "Executing native JVector disk writing for JVECTOR_NATIVE mode");
+      case HYBRID_DISK:
+        saveHybridPersistence();
+        // Also ensure the graph structure is written using native JVector disk writer
+        if (parentIndex.getGraphIndex() != null) {
+          LogManager.instance().log(this, Level.FINE,
+              "Executing native JVector disk writing for HYBRID_DISK mode");
+          try {
             writeGraphToDisk();
+          } catch (Exception e) {
+            LogManager.instance().log(this, Level.WARNING,
+                "Native disk writing failed in HYBRID_DISK mode, continuing with legacy persistence", e);
           }
-          break;
+        }
+        // Check if we should upgrade to native persistence
+        if (shouldUpgradeToNativeDisk()) {
+          upgradeToNativePersistence();
+        }
+        break;
 
-        default:
-          LogManager.instance().log(this, Level.WARNING,
-              "Unknown persistence mode: %s, falling back to legacy", currentMode);
-          saveLegacyPersistence();
-          break;
+      case JVECTOR_NATIVE:
+        saveNativePersistence();
+        // Also ensure the graph structure is written using native JVector disk writer
+        if (parentIndex.getGraphIndex() != null) {
+          LogManager.instance().log(this, Level.FINE,
+              "Executing native JVector disk writing for JVECTOR_NATIVE mode");
+          writeGraphToDisk();
+        }
+        break;
+
+      default:
+        LogManager.instance().log(this, Level.WARNING,
+            "Unknown persistence mode: %s, falling back to legacy", currentMode);
+        saveLegacyPersistence();
+        break;
       }
 
       LogManager.instance().log(this, Level.FINE,
@@ -239,30 +230,30 @@ public class JVectorPersistenceManager {
 
     // Determine if upgrade is needed
     switch (currentMode) {
-      case MEMORY_ONLY:
-        if (shouldUpgradeToLegacyDisk()) {
-          shouldUpgrade = true;
-          targetMode = JVectorIndex.HybridPersistenceMode.LEGACY_DISK;
-        }
-        break;
+    case MEMORY_ONLY:
+      if (shouldUpgradeToLegacyDisk()) {
+        shouldUpgrade = true;
+        targetMode = JVectorIndex.HybridPersistenceMode.LEGACY_DISK;
+      }
+      break;
 
-      case LEGACY_DISK:
-        if (shouldUpgradeToHybridDisk()) {
-          shouldUpgrade = true;
-          targetMode = JVectorIndex.HybridPersistenceMode.HYBRID_DISK;
-        }
-        break;
+    case LEGACY_DISK:
+      if (shouldUpgradeToHybridDisk()) {
+        shouldUpgrade = true;
+        targetMode = JVectorIndex.HybridPersistenceMode.HYBRID_DISK;
+      }
+      break;
 
-      case HYBRID_DISK:
-        if (shouldUpgradeToNativeDisk()) {
-          shouldUpgrade = true;
-          targetMode = JVectorIndex.HybridPersistenceMode.JVECTOR_NATIVE;
-        }
-        break;
+    case HYBRID_DISK:
+      if (shouldUpgradeToNativeDisk()) {
+        shouldUpgrade = true;
+        targetMode = JVectorIndex.HybridPersistenceMode.JVECTOR_NATIVE;
+      }
+      break;
 
-      case JVECTOR_NATIVE:
-        // Already at highest persistence level
-        break;
+    case JVECTOR_NATIVE:
+      // Already at highest persistence level
+      break;
     }
 
     if (shouldUpgrade) {
@@ -458,7 +449,7 @@ public class JVectorPersistenceManager {
   /**
    * Save graph structure to native disk format using JVector's OnDiskGraphIndexWriter.
    * This method implements native JVector disk writing with complete HNSW graph persistence.
-   *
+   * <p>
    * Task 2.1: Native JVector Disk Writing Implementation
    * - Uses JVector 3.0.6 OnDiskGraphIndexWriter for native disk persistence
    * - Writes complete HNSW graph structure to eliminate rebuild on restart
@@ -485,7 +476,7 @@ public class JVectorPersistenceManager {
   /**
    * Write complete HNSW graph structure to disk using JVector's native OnDiskGraphIndexWriter.
    * This implements Task 2.1: Native JVector Disk Writing Implementation.
-   *
+   * <p>
    * Features:
    * - Uses JVector 3.0.6 OnDiskGraphIndexWriter API
    * - Writes complete graph structure eliminating need for rebuilding
@@ -610,7 +601,7 @@ public class JVectorPersistenceManager {
   /**
    * Load graph structure from native JVector disk format using OnDiskGraphIndex.load().
    * This method implements Task 2.2: Native JVector Disk Loading Implementation.
-   *
+   * <p>
    * Features:
    * - Uses JVector 3.0.6 OnDiskGraphIndex.load() API for native disk loading
    * - Loads persisted HNSW graphs directly from disk eliminating rebuild
@@ -798,7 +789,8 @@ public class JVectorPersistenceManager {
         buffer.clear();
         int bytesRead = diskVectorChannel.read(buffer);
 
-        if (bytesRead <= 0) break;
+        if (bytesRead <= 0)
+          break;
 
         buffer.flip();
 
@@ -889,7 +881,7 @@ public class JVectorPersistenceManager {
    */
   private boolean shouldUpgradeToNativeDisk() {
     return parentIndex.getVectorStorage().size() >= parentIndex.getDiskPersistenceThreshold() &&
-           estimateMemoryUsageMB() > (parentIndex.getMemoryLimitMB() / 2);
+        estimateMemoryUsageMB() > (parentIndex.getMemoryLimitMB() / 2);
   }
 
   /**
@@ -966,7 +958,7 @@ public class JVectorPersistenceManager {
   /**
    * Load persisted HNSW graph from disk using JVector's OnDiskGraphIndex.load() API.
    * This method implements the core disk loading functionality for Task 2.2.
-   *
+   * <p>
    * Features:
    * - Uses OnDiskGraphIndex.load() for native JVector disk loading
    * - Creates disk-based GraphSearcher for efficient searches
@@ -975,6 +967,7 @@ public class JVectorPersistenceManager {
    * - Thread-safe operation with proper locking
    *
    * @param diskPath Path to the JVector native disk file
+   *
    * @throws IOException if loading fails
    */
   private void loadGraphFromDisk(Path diskPath) throws IOException {
@@ -1074,6 +1067,7 @@ public class JVectorPersistenceManager {
    * This helps detect structural issues early without performing full searches.
    *
    * @param diskGraphSearcher The loaded disk-based GraphSearcher
+   *
    * @throws IOException if validation fails
    */
   private void validateDiskBasedSearcher(GraphSearcher diskGraphSearcher) throws IOException {
@@ -1137,7 +1131,7 @@ public class JVectorPersistenceManager {
     JSONObject nativeDisk = new JSONObject();
     nativeDisk.put("exists", parentIndex.fileExists(diskFilePath));
     nativeDisk.put("size", parentIndex.getFileSize(diskFilePath));
-    nativeDisk.put("loadable", nativeDisk.getBoolean("exists") && (Long)nativeDisk.get("size") > 64);
+    nativeDisk.put("loadable", nativeDisk.getBoolean("exists") && (Long) nativeDisk.get("size") > 64);
     files.put("nativeDiskFile", nativeDisk);
 
     JSONObject nativeVectors = new JSONObject();
@@ -1163,10 +1157,10 @@ public class JVectorPersistenceManager {
     try {
       // Check if we have active disk resources and valid graph searcher
       return (diskGraphChannel != null && diskGraphChannel.isOpen()) ||
-             (diskVectorChannel != null && diskVectorChannel.isOpen()) ||
-             (parentIndex.getGraphSearcher() != null &&
+          (diskVectorChannel != null && diskVectorChannel.isOpen()) ||
+          (parentIndex.getGraphSearcher() != null &&
               (parentIndex.getCurrentPersistenceMode() == JVectorIndex.HybridPersistenceMode.JVECTOR_NATIVE ||
-               parentIndex.getCurrentPersistenceMode() == JVectorIndex.HybridPersistenceMode.HYBRID_DISK));
+                  parentIndex.getCurrentPersistenceMode() == JVectorIndex.HybridPersistenceMode.HYBRID_DISK));
     } finally {
       resourceLock.readLock().unlock();
     }
@@ -1217,6 +1211,7 @@ public class JVectorPersistenceManager {
    * Used by DiskVectorValues for on-demand vector loading.
    *
    * @param nodeId the node ID to load
+   *
    * @return float array representing the vector, null if not found
    */
   public float[] loadVectorFromDisk(int nodeId) {
@@ -1281,6 +1276,7 @@ public class JVectorPersistenceManager {
    * Optimizes disk access by loading multiple vectors in a single operation.
    *
    * @param nodeIds array of node IDs to preload
+   *
    * @return map of node ID to vector array, empty for not found
    */
   public Map<Integer, float[]> preloadVectorsFromDisk(int[] nodeIds) {
@@ -1301,7 +1297,7 @@ public class JVectorPersistenceManager {
       }
 
       LogManager.instance().log(this, Level.FINE,
-                              "Preloaded " + results.size() + " vectors from disk out of " + nodeIds.length + " requested");
+          "Preloaded " + results.size() + " vectors from disk out of " + nodeIds.length + " requested");
 
     } finally {
       resourceLock.readLock().unlock();

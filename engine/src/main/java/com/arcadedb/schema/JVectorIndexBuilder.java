@@ -29,10 +29,9 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
-
-import java.io.File;
 
 /**
  * Builder class for JVector indexes.
@@ -40,22 +39,20 @@ import java.io.File;
  * @author Claude Code AI Assistant
  */
 public class JVectorIndexBuilder extends IndexBuilder<JVectorIndex> {
-  public static final  int DEFAULT_MAX_CONNECTIONS = 16;
-  public static final  int DEFAULT_BEAM_WIDTH      = 100;
-  private static final int CURRENT_VERSION         = 1;
-
-  private int                      dimensions;
-  private VectorSimilarityFunction similarityFunction = VectorSimilarityFunction.EUCLIDEAN;
-  private int                      maxConnections     = DEFAULT_MAX_CONNECTIONS;
-  private int                      beamWidth          = DEFAULT_BEAM_WIDTH;
-  private String                   vertexType;
-  private String                   vectorPropertyName;
-  private Type                     vectorPropertyType = Type.ARRAY_OF_FLOATS;
-
+  public static final  int                      DEFAULT_MAX_CONNECTIONS = 16;
+  public static final  int                      DEFAULT_BEAM_WIDTH      = 100;
+  private static final int                      CURRENT_VERSION         = 1;
+  private              int                      dimensions;
+  private              VectorSimilarityFunction similarityFunction      = VectorSimilarityFunction.EUCLIDEAN;
+  private              int                      maxConnections          = DEFAULT_MAX_CONNECTIONS;
+  private              int                      beamWidth               = DEFAULT_BEAM_WIDTH;
+  private              String                   typeName;
+  private              String                   propertyName;
+  private              Type                     propertyType            = Type.ARRAY_OF_FLOATS;
   // Hybrid persistence configuration
-  private Integer                  diskPersistenceThreshold;
-  private Long                     memoryLimitMB;
-  private Boolean                  enableDiskPersistence;
+  private              Integer                  diskPersistenceThreshold;
+  private              Long                     memoryLimitMB;
+  private              Boolean                  enableDiskPersistence;
 
   public JVectorIndexBuilder(final DatabaseInternal database) {
     super(database, JVectorIndex.class);
@@ -68,12 +65,12 @@ public class JVectorIndexBuilder extends IndexBuilder<JVectorIndex> {
     if (database.isAsyncProcessing())
       throw new NeedRetryException("Cannot create a new index while asynchronous tasks are running");
 
-    if (vertexType == null)
+    if (typeName == null)
       throw new IndexException("Vertex type is missing from vector index declaration");
-    if (vectorPropertyName == null)
+    if (propertyName == null)
       throw new IndexException("Vertex vector property name is missing from vector index declaration");
 
-    filePath = database.getDatabasePath() + File.separator + FileUtils.encode(vertexType, database.getSchema().getEncoding()) + "_"
+    filePath = database.getDatabasePath() + File.separator + FileUtils.encode(typeName, database.getSchema().getEncoding()) + "_"
         + System.nanoTime() + "."
         + database.getFileManager().newFileId() + ".v" + JVectorIndex.CURRENT_VERSION + "." + JVectorIndex.FILE_EXT;
 
@@ -81,35 +78,39 @@ public class JVectorIndexBuilder extends IndexBuilder<JVectorIndex> {
     if (ignoreIfExists) {
       Index index = schema.getIndexByName(indexName);
       if (index instanceof JVectorIndex vectorIndex) {
-        if (!index.getTypeName().equalsIgnoreCase(vertexType))
+        if (!index.getTypeName().equalsIgnoreCase(typeName))
           throw new IndexException("Index '" + indexName + "' is already defined but on type '" + index.getTypeName() + "'");
         return vectorIndex;
       }
     }
-
 
     final JVectorIndex index = (JVectorIndex) schema.indexFactory.createIndex(this);
 
     schema.registerFile(index.getComponent());
     schema.addIndex(index);
 
-    // JVectorIndex works as a container index. Register it with all buckets for automatic indexing.
-    final LocalDocumentType type = schema.getType(vertexType);
-    if (type != null) {
-      // Use direct bucket registration for automatic indexing discovery
-      for (final Bucket bucket : type.getBuckets(false)) {
-        final List<IndexInternal> bucketIndexes = type.bucketIndexesByBucket.computeIfAbsent(bucket.getFileId(), k -> new ArrayList<>());
-        bucketIndexes.add(index);
+    database.transaction(() -> {
+          // JVectorIndex works as a container index. Register it with all buckets for automatic indexing.
+          final LocalDocumentType type = schema.getType(typeName);
+          if (type != null) {
+            // Use direct bucket registration for automatic indexing discovery
+            for (final Bucket bucket : type.getBuckets(false)) {
+              final List<IndexInternal> bucketIndexes = type.bucketIndexesByBucket.computeIfAbsent(bucket.getFileId(),
+                  k -> new ArrayList<>());
+              bucketIndexes.add(index);
 
-        // CRITICAL: Register index with type for proper persistence
-//        type.addIndexInternal(index, bucket.getFileId(), new String[]{vectorPropertyName}, null);
-      }
-    }
+              // CRITICAL: Register index with type for proper persistence
+              type.addIndexInternal(index, bucket.getFileId(), new String[] { propertyName }, index);
+            }
+          }
 
-    index.build(LocalSchema.BUILD_TX_BATCH_SIZE, callback);
+          index.build(LocalSchema.BUILD_TX_BATCH_SIZE, callback);
 
-    // Save configuration to ensure index persists
-    schema.saveConfiguration();
+          // Save configuration to ensure index persists
+          schema.saveConfiguration();
+
+        }
+    );
 
     return index;
   }
@@ -134,19 +135,19 @@ public class JVectorIndexBuilder extends IndexBuilder<JVectorIndex> {
     return this;
   }
 
-  public JVectorIndexBuilder withVertexType(final String vertexType) {
-    this.vertexType = vertexType;
+  public JVectorIndexBuilder withTypeName(final String typeName) {
+    this.typeName = typeName;
     return this;
   }
 
-  public JVectorIndexBuilder withVectorProperty(final String vectorPropertyName, final Type vectorPropertyType) {
-    if (vectorPropertyType != Type.ARRAY_OF_SHORTS && vectorPropertyType != Type.ARRAY_OF_INTEGERS
-        && vectorPropertyType != Type.ARRAY_OF_LONGS
-        && vectorPropertyType != Type.ARRAY_OF_FLOATS && vectorPropertyType != Type.ARRAY_OF_DOUBLES)
-      throw new IllegalArgumentException("Vector property type '" + vectorPropertyType + "' not compatible with vectors");
+  public JVectorIndexBuilder withProperty(final String propertyName, final Type propertyType) {
+    if (propertyType != Type.ARRAY_OF_SHORTS && propertyType != Type.ARRAY_OF_INTEGERS
+        && propertyType != Type.ARRAY_OF_LONGS
+        && propertyType != Type.ARRAY_OF_FLOATS && propertyType != Type.ARRAY_OF_DOUBLES)
+      throw new IllegalArgumentException("Vector property type '" + propertyType + "' not compatible with vectors");
 
-    this.vectorPropertyName = vectorPropertyName;
-    this.vectorPropertyType = vectorPropertyType;
+    this.propertyName = propertyName;
+    this.propertyType = propertyType;
     return this;
   }
 
@@ -191,17 +192,16 @@ public class JVectorIndexBuilder extends IndexBuilder<JVectorIndex> {
     return beamWidth;
   }
 
-  public String getVertexType() {
-    return vertexType;
+  public String getTypeName() {
+    return typeName;
   }
 
-
-  public String getVectorPropertyName() {
-    return vectorPropertyName;
+  public String getPropertyName() {
+    return propertyName;
   }
 
-  public Type getVectorPropertyType() {
-    return vectorPropertyType;
+  public Type getPropertyType() {
+    return propertyType;
   }
 
   public Integer getDiskPersistenceThreshold() {

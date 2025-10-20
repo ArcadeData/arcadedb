@@ -28,14 +28,12 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.function.graph.SQLFunctionOutV;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -117,6 +115,9 @@ public class CreateIndexStatement extends DDLStatement {
       VectorSimilarityFunction similarityFunction = VectorSimilarityFunction.EUCLIDEAN;
       int maxConnections = 16;
       int beamWidth = 100;
+      int memoryLimitMB = 10;
+      int diskPersistenceThreshold = 100;
+      boolean enableDiskPersistence = true;
 
       if (metadata != null) {
         JSONObject meta = new JSONObject(metadata.toString());
@@ -124,16 +125,23 @@ public class CreateIndexStatement extends DDLStatement {
         similarityFunction = VectorSimilarityFunction.valueOf(meta.getString("similarity", "EUCLIDEAN").toUpperCase());
         maxConnections = meta.getInt("maxConnections", maxConnections);
         beamWidth = meta.getInt("beamWidth", beamWidth);
+        memoryLimitMB = meta.getInt("memoryLimitMB", memoryLimitMB);
+        enableDiskPersistence = meta.getBoolean("enableDiskPersistence", enableDiskPersistence);
+        diskPersistenceThreshold = meta.getInt("diskPersistenceThreshold", diskPersistenceThreshold);
       }
 
       database.getSchema().getEmbedded().buildVectorIndex()
           .withIndexName(name.getValue())
-          .withVertexType(typeName.getStringValue())
-          .withVectorProperty(fields[0], Type.ARRAY_OF_FLOATS)
+          .withTypeName(typeName.getStringValue())
+          .withProperty(fields[0], Type.ARRAY_OF_FLOATS)
+          .withDiskPersistence(enableDiskPersistence)
+          .withDiskPersistenceThreshold(diskPersistenceThreshold)
+          .withMemoryLimitMB(memoryLimitMB)
           .withDimensions(dimensions)
           .withSimilarityFunction(similarityFunction)
           .withMaxConnections(maxConnections)
           .withBeamWidth(beamWidth)
+          .withNullStrategy(nullStrategy)
           .withCallback((document, totalIndexed) -> {
             total.incrementAndGet();
             if (totalIndexed % 100000 == 0) {
