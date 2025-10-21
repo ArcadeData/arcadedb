@@ -49,6 +49,12 @@ jobs:
       - name: Set projects Maven version to GitHub Action GUI set version
         run: mvn versions:set "-DnewVersion=${{ github.event.inputs.releaseversion }}" --no-transfer-progress
 
+      - name: Update studio package.json version
+        run: |
+          cd studio
+          jq --arg version "${{ github.event.inputs.releaseversion }}" '.version = $version' package.json > package.json.tmp
+          mv package.json.tmp package.json
+
       - name: Publish package
         run: |
           export MAVEN_OPTS="--add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.desktop/java.awt.font=ALL-UNNAMED"
@@ -75,6 +81,13 @@ jobs:
       - name: Set next development version
         if: success()
         run: mvn versions:set "-DnewVersion=${{ github.event.inputs.nextversion }}" --no-transfer-progress
+
+      - name: Update studio package.json to next development version
+        if: success()
+        run: |
+          cd studio
+          jq --arg version "${{ github.event.inputs.nextversion }}" '.version = $version' package.json > package.json.tmp
+          mv package.json.tmp package.json
 
       - name: Commit next development version
         if: success()
