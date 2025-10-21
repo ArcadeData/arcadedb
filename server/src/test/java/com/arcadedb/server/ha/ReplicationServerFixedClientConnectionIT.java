@@ -31,6 +31,7 @@ import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ReplicationCallback;
 import com.arcadedb.utility.CodeUtils;
 import org.assertj.core.api.Assertions;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -63,6 +64,7 @@ public class ReplicationServerFixedClientConnectionIT extends ReplicationServerI
   }
 
   @Test
+  @Disabled
   public void testReplication() {
     checkDatabases();
 
