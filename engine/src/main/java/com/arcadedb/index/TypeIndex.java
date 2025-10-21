@@ -43,7 +43,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * It represent an index on a type. It's backed by one or multiple underlying indexes, one per bucket. By using multiple buckets, the read/write operation can
+ * It represents an index on a type. It's backed by one or multiple underlying indexes, one per bucket. By using multiple buckets, the read/write operation can
  * work concurrently and lock-free.
  *
  * @author Luca Garulli
@@ -325,10 +325,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public boolean equals(final Object obj) {
-    if (!(obj instanceof TypeIndex))
+    if (!(obj instanceof TypeIndex index2))
       return false;
-
-    final TypeIndex index2 = (TypeIndex) obj;
 
     if (!BinaryComparator.equalsString(getName(), index2.getName()))
       return false;

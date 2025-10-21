@@ -24,6 +24,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.JVectorIndex;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
@@ -89,18 +90,22 @@ public class JVectorIndexBuilder extends IndexBuilder<JVectorIndex> {
     schema.registerFile(index.getComponent());
     schema.addIndex(index);
 
+    final LocalDocumentType type = schema.getType(typeName);
+    TypeIndex wrapper = new TypeIndex(indexName, type);
+
+    wrapper.addIndexOnBucket(index);
     database.transaction(() -> {
           // JVectorIndex works as a container index. Register it with all buckets for automatic indexing.
-          final LocalDocumentType type = schema.getType(typeName);
           if (type != null) {
             // Use direct bucket registration for automatic indexing discovery
             for (final Bucket bucket : type.getBuckets(false)) {
               final List<IndexInternal> bucketIndexes = type.bucketIndexesByBucket.computeIfAbsent(bucket.getFileId(),
                   k -> new ArrayList<>());
+
               bucketIndexes.add(index);
 
               // CRITICAL: Register index with type for proper persistence
-              type.addIndexInternal(index, bucket.getFileId(), new String[] { propertyName }, index);
+              type.addIndexInternal(index, bucket.getFileId(), new String[] { propertyName }, wrapper);
             }
           }
 

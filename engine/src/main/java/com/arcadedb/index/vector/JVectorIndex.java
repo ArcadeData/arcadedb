@@ -25,7 +25,6 @@ import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.index.EmptyIndexCursor;
-import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
@@ -119,7 +118,7 @@ import java.util.logging.Level;
  * - Cache Efficiency: LRU eviction with memory pressure adaptation
  *
  */
-public class JVectorIndex extends Component implements Index, IndexInternal {
+public class JVectorIndex extends Component implements IndexInternal {
   // Configuration for vector index building
   private static final int    REBUILD_THRESHOLD   = 1000;
   private static final int    BATCH_SIZE          = 10000;
