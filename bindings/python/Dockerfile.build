@@ -1,0 +1,163 @@
+# Multi-stage Docker build for ArcadeDB Python bindings
+# Supports building all three distributions: headless, minimal, full
+#
+# REQUIRED BUILD ARGS (passed from build-all.sh):
+#   DISTRIBUTION - one of: headless, minimal, full
+#   ARCADEDB_TAG - version tag from pom.xml (e.g., 25.10.1-SNAPSHOT)
+
+ARG DISTRIBUTION
+ARG ARCADEDB_TAG
+
+# Stage 1: Use prebuilt ArcadeDB image to obtain compiled JARs
+# ArcadeDB publishes three separate images:
+#   - arcadedata/arcadedb-headless (minimal JARs, no Studio)
+#   - arcadedata/arcadedb-minimal (includes Studio, excludes Gremlin/GraphQL/MongoDB/Redis)
+#   - arcadedata/arcadedb (full distribution with all features)
+FROM arcadedata/arcadedb:${ARCADEDB_TAG} AS java-builder-full
+FROM arcadedata/arcadedb-minimal:${ARCADEDB_TAG} AS java-builder-minimal
+FROM arcadedata/arcadedb-headless:${ARCADEDB_TAG} AS java-builder-headless
+
+# Select the right builder based on DISTRIBUTION arg (passed from build-all.sh)
+FROM java-builder-${DISTRIBUTION} AS java-builder
+
+# nothing to do here; jars will be copied from /home/arcadedb/lib in the python-builder stage
+
+# Stage 2: Build Python wheel
+
+FROM python:3.11-slim AS python-builder
+
+# Install system dependencies (JDK needed for JPype at build/test time)
+RUN apt-get update && apt-get install -y \
+    openjdk-21-jdk \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set JAVA_HOME
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+ENV PATH=$PATH:$JAVA_HOME/bin
+
+WORKDIR /build
+
+# Copy compiled JARs from the prebuilt ArcadeDB image
+# The official image places JARs under /home/arcadedb/lib
+RUN mkdir -p /build/jars
+COPY --from=java-builder /home/arcadedb/lib /build/jars/
+
+# Copy Python bindings source
+COPY bindings/python/src ./src
+COPY bindings/python/tests ./tests
+COPY bindings/python/setup_jars.py .
+COPY bindings/python/extract_version.py .
+COPY bindings/python/write_version.py .
+COPY bindings/python/pyproject.toml ./
+
+# Also copy repository pom.xml so extract_version.py can read it
+COPY ../../pom.xml /arcadedb/pom.xml
+
+# Install Python build dependencies
+RUN pip install --no-cache-dir build wheel setuptools jpype1
+
+# Re-declare build args for this stage (required after FROM)
+ARG DISTRIBUTION
+ARG ARCADEDB_TAG
+ENV ARCADEDB_DISTRIBUTION=${DISTRIBUTION}
+
+# Extract version and copy JARs
+# Version is passed from build-all.sh via ARCADEDB_TAG build arg
+RUN echo "📌 Building distribution: ${DISTRIBUTION}" && \
+    echo "📌 Docker tag used: ${ARCADEDB_TAG}" && \
+    python3 write_version.py /arcadedb/pom.xml && \
+    python3 setup_jars.py && \
+    echo "📦 JAR files copied"
+
+# Build the wheel
+# Extract PEP 440 version from pom.xml
+RUN export ARCADEDB_VERSION=$(python3 extract_version.py --format=pep440 /arcadedb/pom.xml) && \
+    echo "📦 Python package version: ${ARCADEDB_VERSION}" && \
+    case ${DISTRIBUTION} in \
+        headless) \
+            PACKAGE_NAME="arcadedb-embedded-headless" && \
+            DESCRIPTION="ArcadeDB embedded Python bindings - Headless distribution (excludes Gremlin, GraphQL, MongoDB/Redis wire protocols, and Studio)" \
+            ;; \
+        minimal) \
+            PACKAGE_NAME="arcadedb-embedded-minimal" && \
+            DESCRIPTION="ArcadeDB embedded Python bindings - Minimal distribution (excludes Gremlin, GraphQL, MongoDB/Redis wire protocols)" \
+            ;; \
+        full) \
+            PACKAGE_NAME="arcadedb-embedded" && \
+            DESCRIPTION="ArcadeDB embedded Python bindings - Full distribution (includes Gremlin, GraphQL, MongoDB/Redis wire protocols, and Studio)" \
+            ;; \
+        *) \
+            PACKAGE_NAME="arcadedb-embedded" && \
+            DESCRIPTION="ArcadeDB embedded Python bindings" \
+            ;; \
+    esac && \
+    sed -i 's|^name = .*|name = "'"${PACKAGE_NAME}"'"|' pyproject.toml && \
+    sed -i 's|^version = .*|version = "'"${ARCADEDB_VERSION}"'"|' pyproject.toml && \
+    sed -i 's|^description = .*|description = "'"${DESCRIPTION}"'"|' pyproject.toml && \
+    python3 -m build --wheel && \
+    echo "✅ Wheel built successfully!" && \
+    ls -lh dist/
+
+# Stage 3: Export stage (for extracting wheels)
+FROM python-builder AS export
+# This stage exists to provide a stable location for wheel extraction
+# The dist directory is preserved from python-builder stage
+
+# Stage 4: Test the built wheel
+FROM python:3.11-slim AS tester
+
+# Install Java runtime for JPype
+RUN apt-get update && apt-get install -y \
+    openjdk-21-jre-headless \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+ENV PATH=$PATH:$JAVA_HOME/bin
+
+WORKDIR /test
+
+# Copy the wheel from builder
+COPY --from=python-builder /build/dist/*.whl /tmp/
+
+# Install the wheel and test dependencies
+RUN pip install --no-cache-dir /tmp/*.whl pytest pytest-cov
+
+# Copy tests
+COPY --from=python-builder /build/tests ./tests/
+
+# Create a quick installation test
+RUN echo '#!/usr/bin/env python3\n\
+import arcadedb_embedded as arcadedb\n\
+import tempfile\n\
+import shutil\n\
+import os\n\
+\n\
+print("🎮 Testing ArcadeDB Python bindings...")\n\
+print(f"📦 Version: {arcadedb.__version__}")\n\
+\n\
+temp_dir = tempfile.mkdtemp()\n\
+db_path = os.path.join(temp_dir, "test_db")\n\
+\n\
+try:\n\
+    with arcadedb.create_database(db_path) as db:\n\
+        print("✅ Database created")\n\
+        \n\
+        with db.transaction():\n\
+            db.command("sql", "CREATE DOCUMENT TYPE TestDoc")\n\
+            db.command("sql", "INSERT INTO TestDoc SET name = '\''docker_test'\'', value = 123")\n\
+        print("✅ Transaction committed")\n\
+        \n\
+        result = db.query("sql", "SELECT FROM TestDoc")\n\
+        for record in result:\n\
+            print(f"✅ Query result: {record.get_property('\''name'\'')} = {record.get_property('\''value'\'')}")\n\
+    \n\
+    print("🎉 All tests passed!")\n\
+finally:\n\
+    if os.path.exists(temp_dir):\n\
+        shutil.rmtree(temp_dir)\n\
+' > /test/test_install.py && chmod +x /test/test_install.py
+
+# Run the installation test
+RUN python3 /test/test_install.py
+
+CMD ["python3", "/test/test_install.py"]

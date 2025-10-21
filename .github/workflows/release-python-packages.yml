@@ -1,0 +1,121 @@
+name: Build and Release Python Packages to PyPI
+
+on:
+  release:
+    types: [published]  # Trigger when GitHub Release is published
+    # Release tag must match 'v*-python' (e.g., v3.0.5-python)
+
+jobs:
+  # Check if this is a Python release
+  check-release:
+    name: Validate Python Release Tag
+    runs-on: ubuntu-latest
+    outputs:
+      is-python-release: ${{ steps.check.outputs.is-python-release }}
+    steps:
+      - name: Check if release tag contains 'python' (case-insensitive)
+        id: check
+        run: |
+          TAG_NAME="${{ github.event.release.tag_name }}"
+          TAG_LOWER=$(echo "$TAG_NAME" | tr '[:upper:]' '[:lower:]')
+
+          if [[ "$TAG_LOWER" == *"python"* ]]; then
+            echo "✅ This is a Python release: $TAG_NAME"
+            echo "is-python-release=true" >> $GITHUB_OUTPUT
+          else
+            echo "⏭️ Not a Python release (tag: $TAG_NAME), skipping workflow"
+            echo "is-python-release=false" >> $GITHUB_OUTPUT
+          fi
+
+  # Run tests first to ensure quality
+  test:
+    name: Run Tests Before Release
+    needs: check-release
+    if: needs.check-release.outputs.is-python-release == 'true'
+    uses: ./.github/workflows/test-python-bindings.yml
+    secrets: inherit
+
+  build:
+    needs: test  # Wait for tests to pass
+    name: Build Python Distribution (${{ matrix.distribution }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        distribution: [headless, minimal, full]
+        include:
+          - distribution: headless
+            environment: pypi-headless
+          - distribution: minimal
+            environment: pypi-minimal
+          - distribution: full
+            environment: pypi-full
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Build ${{ matrix.distribution }} distribution
+        run: |
+          cd bindings/python
+          ./build-all.sh ${{ matrix.distribution }}
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wheel-${{ matrix.distribution }}
+          path: bindings/python/dist/*.whl
+          retention-days: 5
+
+  publish-headless:
+    name: Publish arcadedb-embedded-headless to PyPI
+    needs: [check-release, build]
+    if: needs.check-release.outputs.is-python-release == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi-headless
+    permissions:
+      id-token: write
+    steps:
+      - name: Download headless wheel
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: wheel-headless
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # release/v1
+
+  publish-minimal:
+    name: Publish arcadedb-embedded-minimal to PyPI
+    needs: [check-release, build]
+    if: needs.check-release.outputs.is-python-release == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi-minimal
+    permissions:
+      id-token: write
+    steps:
+      - name: Download minimal wheel
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: wheel-minimal
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # release/v1
+
+  publish-full:
+    name: Publish arcadedb-embedded to PyPI
+    needs: [check-release, build]
+    if: needs.check-release.outputs.is-python-release == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi-full
+    permissions:
+      id-token: write
+    steps:
+      - name: Download full wheel
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: wheel-full
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # release/v1

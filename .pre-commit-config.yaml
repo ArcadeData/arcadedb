@@ -18,14 +18,40 @@ repos:
       - id: check-yaml
         args:
           - --allow-multiple-documents
-        exclude: ^k8s/
+        exclude: ^(k8s/|bindings/python/mkdocs\.yml$)
       - id: check-json
       - id: check-xml
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+        language_version: python3
+        files: ^bindings/python/.*\.py$
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        args: ["--profile", "black"]
+        files: ^bindings/python/.*\.py$
+  - repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
+    rev: v2.14.0
+    hooks:
+      - id: pretty-format-yaml
+        args:
+          - --autofix
+          - --indent=2
+        files: ^bindings/python/.*\.ya?ml$
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.10.0-1
+    hooks:
+      - id: shfmt
+        args: ["-i", "4", "-ci", "-sr", "-w"]
+        files: ^bindings/python/.*\.sh$
   - repo: https://github.com/pre-commit/mirrors-prettier
     rev: v3.1.0
     hooks:
       - id: prettier
-        types: [ java, xml ]
+        types: [ java, xml, markdown ]
         additional_dependencies:
           - prettier@3.1.0
           - prettier-plugin-java@2.4.0
@@ -34,3 +60,4 @@ repos:
           - --write
           - --list-different
           - --ignore-unknown
+        exclude: ^bindings/python/

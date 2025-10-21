@@ -1,0 +1,130 @@
+name: Deploy MkDocs to GitHub Pages
+
+on:
+  release:
+    types: [published]  # Trigger when GitHub Release is published
+    # Release tag should contain 'python' (case-insensitive, e.g., v25.9.1-python, v1.0.0-Python)
+
+  # Allow manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to deploy (e.g., 25.9.1 or dev)'
+        required: true
+        default: 'dev'
+      set_latest:
+        description: 'Set as latest version?'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write  # Need write to push to gh-pages branch
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: https://humemai.github.io/arcadedb/
+
+    steps:
+      - name: Check if this is a Python release
+        if: github.event_name == 'release'
+        id: check-python-release
+        run: |
+          TAG_NAME="${{ github.event.release.tag_name }}"
+          TAG_LOWER=$(echo "$TAG_NAME" | tr '[:upper:]' '[:lower:]')
+
+          if [[ "$TAG_LOWER" == *"python"* ]]; then
+            echo "✅ This is a Python release: $TAG_NAME"
+            echo "is-python-release=true" >> $GITHUB_OUTPUT
+          else
+            echo "⏭️ Not a Python release (tag: $TAG_NAME), skipping docs deployment"
+            echo "is-python-release=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+      - name: Skip workflow for non-Python releases
+        if: github.event_name == 'release' && steps.check-python-release.outputs.is-python-release != 'true'
+        run: |
+          echo "This is not a Python release, exiting gracefully"
+          exit 0
+
+      - name: Checkout repository
+        if: github.event_name != 'release' || steps.check-python-release.outputs.is-python-release == 'true'
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0  # Full history for mike versioning
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        if: github.event_name != 'release' || steps.check-python-release.outputs.is-python-release == 'true'
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        if: github.event_name != 'release' || steps.check-python-release.outputs.is-python-release == 'true'
+        working-directory: bindings/python
+        run: |
+          pip install --upgrade pip
+          pip install mkdocs-material mkdocs-git-revision-date-localized-plugin mike
+
+      - name: Configure Git
+        if: github.event_name != 'release' || steps.check-python-release.outputs.is-python-release == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Extract version from release tag or input
+        if: github.event_name != 'release' || steps.check-python-release.outputs.is-python-release == 'true'
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            SET_LATEST="${{ github.event.inputs.set_latest }}"
+          else
+            # Extract version from release tag (v25.9.1-python -> 25.9.1 or v25.9.1.1-python -> 25.9.1.1)
+            TAG_NAME="${{ github.event.release.tag_name }}"
+            TAG_LOWER=$(echo "$TAG_NAME" | tr '[:upper:]' '[:lower:]')
+
+            # Verify tag contains 'python' (case-insensitive)
+            if [[ ! "$TAG_LOWER" == *"python"* ]]; then
+              echo "❌ Release tag should contain 'python' (case-insensitive), got: $TAG_NAME"
+              exit 1
+            fi
+
+            # Strip 'v' prefix and remove everything after and including '-python' or '-Python', etc.
+            VERSION="${TAG_NAME#v}"      # Remove 'v' prefix
+            VERSION="${VERSION%%-[Pp][Yy][Tt][Hh][Oo][Nn]*}" # Remove '-python' suffix (case-insensitive)
+            SET_LATEST="true"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "set_latest=$SET_LATEST" >> $GITHUB_OUTPUT
+          echo "📦 Deploying documentation version: $VERSION"
+
+      - name: Deploy with mike (set as latest)
+        if: (github.event_name != 'release' || steps.check-python-release.outputs.is-python-release == 'true') && steps.version.outputs.set_latest == 'true'
+        working-directory: bindings/python
+        run: |
+          mike deploy --push --update-aliases \
+            ${{ steps.version.outputs.version }} latest \
+            --title "${{ steps.version.outputs.version }} (latest)"
+          mike set-default --push latest
+
+      - name: Deploy with mike (not latest)
+        if: (github.event_name != 'release' || steps.check-python-release.outputs.is-python-release == 'true') && steps.version.outputs.set_latest != 'true'
+        working-directory: bindings/python
+        run: |
+          mike deploy --push \
+            ${{ steps.version.outputs.version }} \
+            --title "${{ steps.version.outputs.version }}"
