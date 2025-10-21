@@ -1213,7 +1213,7 @@ public class LocalSchema implements Schema {
     }
 
     try {
-      LogManager.instance().log(this, Level.INFO, "Saving schema configuration to file - versionSerial = %s ", versionSerial);
+      LogManager.instance().log(this, Level.FINE, "Saving schema configuration to file - versionSerial = %s ", versionSerial);
       versionSerial.incrementAndGet();
 
       update(toJSON());
