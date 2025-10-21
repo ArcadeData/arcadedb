@@ -140,6 +140,7 @@
         <module>package</module>
         <module>e2e</module>
         <module>e2e-perf</module>
+        <module>resilience</module>
     </modules>
 
     <build>
@@ -292,7 +293,7 @@
                     <publishingServerId>central</publishingServerId>
                     <autoPublish>true</autoPublish>
                     <excludeArtifacts>
-                        arcadedb-coverage,arcadedb-e2e,arcadedb-e2e-perf
+                        arcadedb-coverage,arcadedb-e2e,arcadedb-e2e-perf,arcadedb-resilience-tests
                     </excludeArtifacts>
                 </configuration>
             </plugin>
