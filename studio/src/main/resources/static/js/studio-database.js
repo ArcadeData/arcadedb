@@ -561,10 +561,13 @@ function executeCommandTable() {
 
   let beginTime = new Date();
 
+  // Use /query endpoint for mongo queries, /command for others
+  let endpoint = language === "mongo" ? "api/v1/query/" + database : "api/v1/command/" + database;
+
   jQuery
     .ajax({
       type: "POST",
-      url: "api/v1/command/" + database,
+      url: endpoint,
       data: JSON.stringify({
         language: language,
         command: command,
@@ -580,7 +583,11 @@ function executeCommandTable() {
       let elapsed = new Date() - beginTime;
       $("#result-elapsed").html(elapsed);
 
-      $("#result-num").html(data.result.records.length);
+      if (data && data.result && data.result.records) {
+        $("#result-num").html(data.result.records.length);
+      } else {
+        $("#result-num").html(0);
+      }
       $("#resultJson").val(JSON.stringify(data, null, 2));
       $("#resultExplain").val(data.explain != null ? data.explain : "No profiler data found");
 
@@ -612,10 +619,13 @@ function executeCommandGraph() {
 
   let beginTime = new Date();
 
+  // Use /query endpoint for mongo queries, /command for others
+  let endpoint = language === "mongo" ? "api/v1/query/" + database : "api/v1/command/" + database;
+
   jQuery
     .ajax({
       type: "POST",
-      url: "api/v1/command/" + database,
+      url: endpoint,
       data: JSON.stringify({
         language: language,
         command: command,
@@ -631,7 +641,11 @@ function executeCommandGraph() {
       let elapsed = new Date() - beginTime;
       $("#result-elapsed").html(elapsed);
 
-      $("#result-num").html(data.result.records.length);
+      if (data && data.result && data.result.records) {
+        $("#result-num").html(data.result.records.length);
+      } else {
+        $("#result-num").html(0);
+      }
       $("#resultJson").val(JSON.stringify(data, null, 2));
       $("#resultExplain").val(data.explain != null ? data.explain : "'");
 
@@ -640,7 +654,8 @@ function executeCommandGraph() {
 
       let activeTab = $("#tabs-command .active").attr("id");
 
-      if (data.result.vertices.length == 0 && data.result.records.length > 0) {
+      if (data && data.result && data.result.vertices && data.result.records && 
+          data.result.vertices.length == 0 && data.result.records.length > 0) {
         if (activeTab == "tab-table-sel") renderTable();
         else globalActivateTab("tab-table");
       } else {
