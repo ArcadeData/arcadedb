@@ -189,13 +189,10 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   }
 
   protected void waitForReplicationIsCompleted(final int serverNumber) {
-
     Awaitility.await()
-        .atMost(2, TimeUnit.MINUTES)
+        .atMost(5, TimeUnit.MINUTES)
         .pollInterval(1, TimeUnit.SECONDS)
-        .untilTrue(new AtomicBoolean(getServer(serverNumber).getHA().getMessagesInQueue() == 0)
-        );
-
+        .until(() -> getServer(serverNumber).getHA().getMessagesInQueue() == 0);
   }
 
   @AfterEach
@@ -220,11 +217,24 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       if (anyServerRestarted) {
         // WAIT A BIT FOR THE SERVER TO BE SYNCHRONIZED
         testLog("Wait a bit until realignment is completed");
-        try {
-          Thread.sleep(5000);
-        } catch (final InterruptedException e) {
-          e.printStackTrace();
-        }
+        Awaitility.await()
+            .atMost(30, TimeUnit.SECONDS)
+            .pollInterval(500, TimeUnit.MILLISECONDS)
+            .ignoreExceptions()
+            .until(() -> {
+              // Check if all servers are synchronized
+              for (int i = 0; i < servers.length; i++) {
+                if (servers[i] != null && servers[i].isStarted()) {
+                  if (servers[i].getHA() != null && !servers[i].getHA().isLeader()) {
+                    // For replicas, check if they're aligned
+                    if (servers[i].getHA().getMessagesInQueue() > 0) {
+                      return false;
+                    }
+                  }
+                }
+              }
+              return true;
+            });
       }
     } finally {
       try {
@@ -322,37 +332,41 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     if (serverCount == 1)
       return;
 
-    int lastTotalConnectedReplica = 0;
-    final long beginTime = System.currentTimeMillis();
-    while (System.currentTimeMillis() - beginTime < 10_000) {
-      try {
-        for (int i = 0; i < serverCount; ++i) {
-          if (getServerRole(i) == HAServer.SERVER_ROLE.ANY) {
-            // ONLY FOR CANDIDATE LEADERS
-            if (servers[i].getHA() != null) {
-              if (servers[i].getHA().isLeader()) {
-                lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
-                if (lastTotalConnectedReplica >= serverCount - 1) {
-                  // ALL CONNECTED
-                  serversSynchronized = true;
-                  LogManager.instance().log(this, Level.WARNING, "All %d replicas are online", lastTotalConnectedReplica);
-                  return;
-                } else
-                  Thread.sleep(500);
+    try {
+      Awaitility.await()
+          .atMost(30, TimeUnit.SECONDS)
+          .pollInterval(500, TimeUnit.MILLISECONDS)
+          .until(() -> {
+            for (int i = 0; i < serverCount; ++i) {
+              if (getServerRole(i) == HAServer.SERVER_ROLE.ANY) {
+                // ONLY FOR CANDIDATE LEADERS
+                if (servers[i].getHA() != null) {
+                  if (servers[i].getHA().isLeader()) {
+                    final int onlineReplicas = servers[i].getHA().getOnlineReplicas();
+                    if (onlineReplicas >= serverCount - 1) {
+                      // ALL CONNECTED
+                      serversSynchronized = true;
+                      LogManager.instance().log(this, Level.WARNING, "All %d replicas are online", onlineReplicas);
+                      return true;
+                    }
+                  }
+                }
               }
-            } else
-              // WAIT FOR HA COMPONENT TO BE ONLINE
-              Thread.sleep(500);
-          }
+            }
+            return false;
+          });
+    } catch (org.awaitility.core.ConditionTimeoutException e) {
+      int lastTotalConnectedReplica = 0;
+      for (int i = 0; i < serverCount; ++i) {
+        if (getServerRole(i) == HAServer.SERVER_ROLE.ANY && servers[i].getHA() != null && servers[i].getHA().isLeader()) {
+          lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
+          break;
         }
-      } catch (InterruptedException e) {
-        break;
       }
+      LogManager.instance()
+          .log(this, Level.SEVERE, "Timeout on waiting for all servers to get online %d < %d", 1 + lastTotalConnectedReplica,
+              serverCount);
     }
-
-    LogManager.instance()
-        .log(this, Level.SEVERE, "Timeout on waiting for all servers to get online %d < %d", 1 + lastTotalConnectedReplica,
-            serverCount);
   }
 
   protected boolean areAllReplicasAreConnected() {

@@ -20,6 +20,7 @@ package com.arcadedb.server.http;
 
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.http.handler.OpenApiSpecGenerator;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.PathItem;
 import io.swagger.v3.oas.models.info.Info;
@@ -271,18 +272,31 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   @Test
   void testOpenApiSpecGeneratorClassExists() {
     // This test verifies that the OpenApiSpecGenerator class can be instantiated
-    // This will fail until we implement the class
+    // The class requires an HttpServer instance which we get from the test server
     try {
       Class<?> generatorClass = Class.forName("com.arcadedb.server.http.handler.OpenApiSpecGenerator");
       assertThat(generatorClass)
           .as("OpenApiSpecGenerator class should exist")
           .isNotNull();
 
-      // Try to instantiate it
-      Object generator = generatorClass.getDeclaredConstructor().newInstance();
-      assertThat(generator)
-          .as("OpenApiSpecGenerator should be instantiable")
+      // Get the HttpServer from the test server instance
+      HttpServer httpServer = getServer(0).getHttpServer();
+      assertThat(httpServer)
+          .as("HttpServer should be available from test server")
           .isNotNull();
+
+      // Instantiate the generator with the HttpServer dependency
+      OpenApiSpecGenerator generator = new OpenApiSpecGenerator(httpServer);
+      assertThat(generator)
+          .as("OpenApiSpecGenerator should be instantiable with HttpServer")
+          .isNotNull();
+
+      // Verify it can generate a spec
+      OpenAPI spec = generator.generateSpec();
+      assertThat(spec)
+          .as("OpenApiSpecGenerator should generate OpenAPI spec")
+          .isNotNull();
+
     } catch (ClassNotFoundException e) {
       fail("OpenApiSpecGenerator class not found. Expected at: com.arcadedb.server.http.handler.OpenApiSpecGenerator");
     } catch (Exception e) {

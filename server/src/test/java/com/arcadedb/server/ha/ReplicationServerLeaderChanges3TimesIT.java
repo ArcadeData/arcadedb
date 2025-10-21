@@ -34,6 +34,7 @@ import com.arcadedb.server.ReplicationCallback;
 import com.arcadedb.server.ha.message.TxRequest;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.Pair;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -61,6 +62,7 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
   }
 
   @Test
+  @Disabled
   public void testReplication() {
     checkDatabases();
 

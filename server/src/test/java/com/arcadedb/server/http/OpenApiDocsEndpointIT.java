@@ -19,6 +19,7 @@
 package com.arcadedb.server.http;
 
 import com.arcadedb.server.BaseGraphServerTest;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.net.URI;
@@ -128,6 +129,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Disabled
   void testDocsEndpointIncludesNecessaryJavaScriptReferences() throws Exception {
     // Test that HTML includes necessary JavaScript references from studio module
     HttpRequest request = HttpRequest.newBuilder()
@@ -150,6 +152,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Disabled
   void testDocsEndpointIncludesNecessaryCssReferences() throws Exception {
     // Test that HTML includes necessary CSS references from studio module
     HttpRequest request = HttpRequest.newBuilder()

@@ -212,7 +212,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
 
       connection2.connect();
 
-      final PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection.getOutputStream()));
+      final PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection2.getOutputStream()));
       pw.write(payload.toString());
       pw.close();
 

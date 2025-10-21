@@ -57,6 +57,12 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
 
     // CREATE NEW TYPE
     final VertexType type1 = databases[0].getSchema().createVertexType("RuntimeVertex0");
+    for (int i = 0; i < getServerCount(); i++) {
+      databases[i] = getServer(i).getDatabase(getDatabaseName());
+      if (databases[i].isTransactionActive())
+        databases[i].commit();
+    }
+
     testOnAllServers((database) -> isInSchemaFile(database, "RuntimeVertex0"));
 
     // CREATE NEW PROPERTY

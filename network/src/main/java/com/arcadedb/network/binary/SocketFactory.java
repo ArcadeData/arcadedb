@@ -74,10 +74,10 @@ public class SocketFactory {
   protected SSLContext createSSLContext() {
     try {
       if (keyStorePath != null && trustStorePath != null) {
-        if (keyStorePassword == null || keyStorePassword.equals("")) {
+        if (keyStorePassword == null || keyStorePassword.isEmpty()) {
           throw new ConfigurationException("Please provide a keystore password");
         }
-        if (trustStorePassword == null || trustStorePassword.equals("")) {
+        if (trustStorePassword == null || trustStorePassword.isEmpty()) {
           throw new ConfigurationException("Please provide a truststore password");
         }
 
@@ -113,9 +113,9 @@ public class SocketFactory {
     InputStream input;
 
     try {
-      final URL url = new URL(path);
+      final URL url = new URI(path).toURL();
       input = url.openStream();
-    } catch (final MalformedURLException ignore) {
+    } catch (final MalformedURLException | URISyntaxException | IllegalArgumentException ignore) {
       input = null;
     }
 
