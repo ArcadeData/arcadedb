@@ -39,13 +39,22 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RWLockContext;
 
-import java.io.*;
-import java.net.*;
-import java.net.http.*;
-import java.time.*;
-import java.util.*;
-import java.util.logging.*;
-import java.util.stream.*;
+import java.io.IOException;
+import java.net.Authenticator;
+import java.net.ConnectException;
+import java.net.PasswordAuthentication;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
+import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 /**
  * Remote Database implementation. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
@@ -290,7 +299,7 @@ public class RemoteHttpComponent extends RWLockContext {
         Thread.currentThread().interrupt();
         throw new RemoteException("Request interrupted", e);
       } catch (final RemoteException | NeedRetryException | DuplicatedKeyException | TransactionException | TimeoutException |
-                     SecurityException e) {
+                     SecurityException | RecordNotFoundException e) {
         throw e;
       } catch (final Exception e) {
         throw new RemoteException("Error on executing remote operation " + operation + " (cause: " + e.getMessage() + ")", e);

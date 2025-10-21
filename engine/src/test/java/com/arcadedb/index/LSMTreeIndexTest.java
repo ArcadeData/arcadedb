@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.assertj.core.api.Assertions;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -42,6 +43,12 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -623,12 +630,25 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testScanIndexAscending() {
     database.transaction(() -> {
 
-      try {
-        // WAIT FOR THE INDEX TO BE COMPACTED
-        Thread.sleep(1000);
-      } catch (final InterruptedException e) {
-        e.printStackTrace();
-      }
+      // Wait for the index to be compacted using awaitility
+      // Increased timeout for CI environments
+      Awaitility.await("Wait for index compaction (ascending)")
+          .atMost(30, TimeUnit.SECONDS)
+          .pollInterval(200, TimeUnit.MILLISECONDS)
+          .until(() -> {
+            // Check if all indexes are ready by trying to access them
+            try {
+              for (final Index index : database.getSchema().getIndexes()) {
+                if (!(index instanceof TypeIndex)) {
+                  ((RangeIndex) index).iterator(true);
+                }
+              }
+              return true;
+            } catch (Exception e) {
+              // Retry on any exception - indexes may still be compacting
+              return false;
+            }
+          });
 
       int total = 0;
 
@@ -672,12 +692,25 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testScanIndexDescending() {
     database.transaction(() -> {
 
-      try {
-        // WAIT FOR THE INDEX TO BE COMPACTED
-        Thread.sleep(1000);
-      } catch (final InterruptedException e) {
-        e.printStackTrace();
-      }
+      // Wait for the index to be compacted using awaitility
+      // Increased timeout for CI environments
+      Awaitility.await("Wait for index compaction (descending)")
+          .atMost(30, TimeUnit.SECONDS)
+          .pollInterval(200, TimeUnit.MILLISECONDS)
+          .until(() -> {
+            // Check if all indexes are ready by trying to access them
+            try {
+              for (final Index index : database.getSchema().getIndexes()) {
+                if (!(index instanceof TypeIndex)) {
+                  ((RangeIndex) index).iterator(false);
+                }
+              }
+              return true;
+            } catch (Exception e) {
+              // Retry on any exception - indexes may still be compacting
+              return false;
+            }
+          });
 
       int total = 0;
 
@@ -1024,21 +1057,23 @@ public class LSMTreeIndexTest extends TestHelper {
     final AtomicLong duplicatedExceptions = new AtomicLong();
     final AtomicLong crossThreadsInserted = new AtomicLong();
 
-    final Thread[] threads = new Thread[16];
-    LogManager.instance().log(this, Level.INFO, "%s Started with %d threads", null, getClass(), threads.length);
+    final int threadCount = 16;
+    final ExecutorService executorService = Executors.newFixedThreadPool(threadCount);
+    final List<Future<?>> futures = new ArrayList<>();
+    LogManager.instance().log(this, Level.INFO, "%s Started with %d threads", null, getClass(), threadCount);
 
-    for (int i = 0; i < threads.length; ++i) {
-      threads[i] = new Thread(new Runnable() {
-        @Override
-        public void run() {
+    try {
+      for (int i = 0; i < threadCount; ++i) {
+        Future<?> future = executorService.submit(() -> {
           try {
             int threadInserted = 0;
-            for (int i = TOT; i < TOT + total; ++i) {
+            for (int i1 = TOT; i1 < TOT + total; ++i1) {
               boolean keyPresent = false;
               for (int retry = 0; retry < maxRetries && !keyPresent; ++retry) {
 
+                // Small random delay using awaitility
                 try {
-                  Thread.sleep(new Random().nextInt(10));
+                  TimeUnit.MILLISECONDS.sleep(new Random().nextInt(10));
                 } catch (final InterruptedException e) {
                   e.printStackTrace();
                   Thread.currentThread().interrupt();
@@ -1048,7 +1083,7 @@ public class LSMTreeIndexTest extends TestHelper {
                 database.begin();
                 try {
                   final MutableDocument v = database.newDocument(TYPE_NAME);
-                  v.set("id", i);
+                  v.set("id", i1);
                   v.set("name", "Jay");
                   v.set("surname", "Miner");
                   v.save();
@@ -1061,7 +1096,7 @@ public class LSMTreeIndexTest extends TestHelper {
                   if (threadInserted % 1000 == 0)
                     LogManager.instance()
                         .log(this, Level.INFO, "%s Thread %d inserted record %s, total %d records with key %d (total=%d)", null,
-                            getClass(), Thread.currentThread().threadId(), v.getIdentity(), i, threadInserted,
+                            getClass(), Thread.currentThread().threadId(), v.getIdentity(), i1, threadInserted,
                             crossThreadsInserted.get());
 
                   keyPresent = true;
@@ -1085,7 +1120,7 @@ public class LSMTreeIndexTest extends TestHelper {
               if (!keyPresent)
                 LogManager.instance()
                     .log(this, Level.WARNING, "%s Thread %d Cannot create key %d after %d retries! (total=%d)", null, getClass(),
-                        Thread.currentThread().threadId(), i, maxRetries, crossThreadsInserted.get());
+                        Thread.currentThread().threadId(), i1, maxRetries, crossThreadsInserted.get());
 
             }
 
@@ -1096,19 +1131,28 @@ public class LSMTreeIndexTest extends TestHelper {
           } catch (final Exception e) {
             LogManager.instance().log(this, Level.SEVERE, "%s Thread %d Error", e, getClass(), Thread.currentThread().threadId());
           }
+        });
+        futures.add(future);
+      }
+
+      // Wait for all threads to complete with explicit timeout
+      for (Future<?> future : futures) {
+        try {
+          future.get(120, TimeUnit.SECONDS);
+        } catch (final InterruptedException | ExecutionException | TimeoutException e) {
+          LogManager.instance().log(this, Level.WARNING, "Thread execution failed or timed out", e);
         }
+      }
 
-      });
-    }
-
-    for (int i = 0; i < threads.length; ++i)
-      threads[i].start();
-
-    for (int i = 0; i < threads.length; ++i) {
+    } finally {
+      executorService.shutdown();
       try {
-        threads[i].join();
-      } catch (final InterruptedException e) {
-        e.printStackTrace();
+        if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
+          executorService.shutdownNow();
+        }
+      } catch (InterruptedException e) {
+        executorService.shutdownNow();
+        Thread.currentThread().interrupt();
       }
     }
 

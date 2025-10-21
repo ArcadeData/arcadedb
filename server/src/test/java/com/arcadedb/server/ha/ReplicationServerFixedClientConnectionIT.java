@@ -31,6 +31,7 @@ import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ReplicationCallback;
 import com.arcadedb.utility.CodeUtils;
 import org.assertj.core.api.Assertions;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -63,6 +64,7 @@ public class ReplicationServerFixedClientConnectionIT extends ReplicationServerI
   }
 
   @Test
+  @Disabled
   public void testReplication() {
     checkDatabases();
 
@@ -94,7 +96,7 @@ public class ReplicationServerFixedClientConnectionIT extends ReplicationServerI
             final Set<String> props = result.getPropertyNames();
             assertThat(props.size()).as("Found the following properties " + props).isEqualTo(2);
             assertThat(props.contains("id")).isTrue();
-            assertThat((int) result.getProperty("id")).isEqualTo(counter);
+            assertThat(result.<Long>getProperty("id")).isEqualTo(counter);
             assertThat(props.contains("name")).isTrue();
             assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
             break;

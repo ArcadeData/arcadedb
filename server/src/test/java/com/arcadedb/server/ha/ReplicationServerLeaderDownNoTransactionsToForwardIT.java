@@ -82,7 +82,7 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
             final Set<String> props = result.getPropertyNames();
             assertThat(props.size()).as("Found the following properties " + props).isEqualTo(2);
             assertThat(props.contains("id")).isTrue();
-            assertThat((int) result.getProperty("id")).isEqualTo(counter);
+            assertThat(result.<Long>getProperty("id")).isEqualTo(counter);
             assertThat(props.contains("name")).isTrue();
             assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
             break;

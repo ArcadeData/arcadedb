@@ -24,7 +24,14 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.MutableVertex;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Fail.fail;
@@ -55,9 +62,11 @@ public class ExplicitLockingTransactionTest extends TestHelper {
     final int CONCURRENT_THREADS = 16;
 
     // SPAWN ALL THE THREADS AND INCREMENT ONE BY ONE THE ID OF THE VERTEX
-    final Thread[] threads = new Thread[CONCURRENT_THREADS];
+    final ExecutorService executorService = Executors.newFixedThreadPool(CONCURRENT_THREADS);
+    final List<Future<?>> futures = new ArrayList<>();
+
     for (int i = 0; i < CONCURRENT_THREADS; i++) {
-      threads[i] = new Thread(() -> {
+      Future<?> future = executorService.submit(() -> {
         for (int k = 0; k < TOT; ++k) {
           try {
             database.transaction(() -> {
@@ -77,16 +86,27 @@ public class ExplicitLockingTransactionTest extends TestHelper {
         }
 
       });
-      threads[i].start();
+      futures.add(future);
     }
 
     // WAIT FOR ALL THE THREADS
-    for (int i = 0; i < CONCURRENT_THREADS; i++)
+    for (Future<?> future : futures) {
       try {
-        threads[i].join();
-      } catch (InterruptedException e) {
+        future.get();
+      } catch (InterruptedException | ExecutionException e) {
         // IGNORE IT
       }
+    }
+
+    executorService.shutdown();
+    try {
+      if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
+        executorService.shutdownNow();
+      }
+    } catch (InterruptedException e) {
+      executorService.shutdownNow();
+      Thread.currentThread().interrupt();
+    }
 
     assertThat(database.countType("Node", true)).isEqualTo(1);
 
@@ -121,9 +141,11 @@ public class ExplicitLockingTransactionTest extends TestHelper {
     final int CONCURRENT_THREADS = 16;
 
     // SPAWN ALL THE THREADS AND INCREMENT ONE BY ONE THE ID OF THE VERTEX
-    final Thread[] threads = new Thread[CONCURRENT_THREADS];
+    final ExecutorService executorService = Executors.newFixedThreadPool(CONCURRENT_THREADS);
+    final List<Future<?>> futures = new ArrayList<>();
+
     for (int i = 0; i < CONCURRENT_THREADS; i++) {
-      threads[i] = new Thread(() -> {
+      Future<?> future = executorService.submit(() -> {
         for (int k = 0; k < TOT; ++k) {
           try {
             database.transaction(() -> {
@@ -143,16 +165,27 @@ public class ExplicitLockingTransactionTest extends TestHelper {
         }
 
       });
-      threads[i].start();
+      futures.add(future);
     }
 
     // WAIT FOR ALL THE THREADS
-    for (int i = 0; i < CONCURRENT_THREADS; i++)
+    for (Future<?> future : futures) {
       try {
-        threads[i].join();
-      } catch (InterruptedException e) {
+        future.get();
+      } catch (InterruptedException | ExecutionException e) {
         // IGNORE IT
       }
+    }
+
+    executorService.shutdown();
+    try {
+      if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
+        executorService.shutdownNow();
+      }
+    } catch (InterruptedException e) {
+      executorService.shutdownNow();
+      Thread.currentThread().interrupt();
+    }
 
     assertThat(database.countType("Node", true)).isEqualTo(1);
 
@@ -188,9 +221,11 @@ public class ExplicitLockingTransactionTest extends TestHelper {
     final int CONCURRENT_THREADS = 16;
 
     // SPAWN ALL THE THREADS AND INCREMENT ONE BY ONE THE ID OF THE VERTEX
-    final Thread[] threads = new Thread[CONCURRENT_THREADS];
+    final ExecutorService executorService = Executors.newFixedThreadPool(CONCURRENT_THREADS);
+    final List<Future<?>> futures = new ArrayList<>();
+
     for (int i = 0; i < CONCURRENT_THREADS; i++) {
-      threads[i] = new Thread(() -> {
+      Future<?> future = executorService.submit(() -> {
         for (int k = 0; k < TOT; ++k) {
           try {
             database.command("sqlscript",
@@ -209,16 +244,27 @@ public class ExplicitLockingTransactionTest extends TestHelper {
         }
 
       });
-      threads[i].start();
+      futures.add(future);
     }
 
     // WAIT FOR ALL THE THREADS
-    for (int i = 0; i < CONCURRENT_THREADS; i++)
+    for (Future<?> future : futures) {
       try {
-        threads[i].join();
-      } catch (InterruptedException e) {
+        future.get();
+      } catch (InterruptedException | ExecutionException e) {
         // IGNORE IT
       }
+    }
+
+    executorService.shutdown();
+    try {
+      if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
+        executorService.shutdownNow();
+      }
+    } catch (InterruptedException e) {
+      executorService.shutdownNow();
+      Thread.currentThread().interrupt();
+    }
 
     assertThat(database.countType("Node", true)).isEqualTo(1);
 
@@ -227,7 +273,6 @@ public class ExplicitLockingTransactionTest extends TestHelper {
     assertThat(caughtExceptions.get()).isEqualTo(0);
     assertThat(committed.get() + caughtExceptions.get()).isEqualTo(TOT * CONCURRENT_THREADS);
   }
-
 
   @Test
   public void testExplicitLockBucketSQL() {
@@ -255,9 +300,11 @@ public class ExplicitLockingTransactionTest extends TestHelper {
     final int CONCURRENT_THREADS = 16;
 
     // SPAWN ALL THE THREADS AND INCREMENT ONE BY ONE THE ID OF THE VERTEX
-    final Thread[] threads = new Thread[CONCURRENT_THREADS];
+    final ExecutorService executorService = Executors.newFixedThreadPool(CONCURRENT_THREADS);
+    final List<Future<?>> futures = new ArrayList<>();
+
     for (int i = 0; i < CONCURRENT_THREADS; i++) {
-      threads[i] = new Thread(() -> {
+      Future<?> future = executorService.submit(() -> {
         for (int k = 0; k < TOT; ++k) {
           try {
             database.command("sqlscript",
@@ -276,16 +323,27 @@ public class ExplicitLockingTransactionTest extends TestHelper {
         }
 
       });
-      threads[i].start();
+      futures.add(future);
     }
 
     // WAIT FOR ALL THE THREADS
-    for (int i = 0; i < CONCURRENT_THREADS; i++)
+    for (Future<?> future : futures) {
       try {
-        threads[i].join();
-      } catch (InterruptedException e) {
+        future.get();
+      } catch (InterruptedException | ExecutionException e) {
         // IGNORE IT
       }
+    }
+
+    executorService.shutdown();
+    try {
+      if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
+        executorService.shutdownNow();
+      }
+    } catch (InterruptedException e) {
+      executorService.shutdownNow();
+      Thread.currentThread().interrupt();
+    }
 
     assertThat(database.countType("Node", true)).isEqualTo(1);
 

@@ -112,6 +112,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
       final ResultSet qResult = executeCommand(database, language, command, paramMap);
 
       final JSONObject response = new JSONObject();
+      response.put("user", user != null ? user.getName() : null);
 
       serializeResultSet(database, serializer, limit, response, qResult);
 

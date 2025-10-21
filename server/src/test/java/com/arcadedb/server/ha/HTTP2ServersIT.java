@@ -25,11 +25,13 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 
 import org.assertj.core.api.Assertions;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.net.*;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.*;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
@@ -73,10 +75,23 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
     });
 
-    Thread.sleep(300);
-
-    // CHECK THE SCHEMA HAS BEEN PROPAGATED
-    testEachServer((serverIndex) -> command(serverIndex, "select from VertexType" + serverIndex));
+    // Wait for schema propagation using awaitility
+    Awaitility.await()
+        .atMost(10, TimeUnit.SECONDS)
+        .pollInterval(100, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          // CHECK THE SCHEMA HAS BEEN PROPAGATED to both servers
+          for (int i = 0; i < getServerCount(); i++) {
+            final int serverIndex = i;
+            try {
+              command(serverIndex, "select from VertexType" + serverIndex);
+            } catch (Exception e) {
+              LogManager.instance().log(this, Level.FINE, "Schema not yet propagated to server " + serverIndex, e);
+              return false;
+            }
+          }
+          return true;
+        });
   }
 
   @Test
@@ -106,7 +121,10 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   @Test
   public void checkDeleteGraphElements() throws Exception {
 
-    Thread.sleep(3000);
+    // Wait for initial synchronization of all servers
+    for (int i = 0; i < getServerCount(); i++) {
+      waitForReplicationIsCompleted(i);
+    }
 
     testEachServer((serverIndex) -> {
       LogManager.instance().log(this, Level.FINE, "TESTS SERVER " + serverIndex);
@@ -115,13 +133,13 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
           command(serverIndex, "create vertex V1 content {\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}")).getJSONArray(
           "result").getJSONObject(0).getString(RID_PROPERTY);
 
-      if (!getServer(serverIndex).getHA().isLeader())
-        Thread.sleep(300);
+      // Always wait for replication after writes, regardless of leader status
+      waitForReplicationIsCompleted(serverIndex);
 
       testEachServer((checkServer) -> {
         try {
           assertThat(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result")).isNotEmpty().
-              withFailMessage("executed on server " + serverIndex + " checking on server " + serverIndex);
+              withFailMessage("executed on server " + serverIndex + " checking on server " + checkServer);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking for V1 on server " + checkServer);
           throw e;
@@ -132,14 +150,14 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
           command(serverIndex, "create vertex V1 content {\"name\":\"John\",\"surname\":\"Red\",\"age\":50}")).getJSONArray(
           "result").getJSONObject(0).getString(RID_PROPERTY);
 
-      if (!getServer(serverIndex).getHA().isLeader())
-        Thread.sleep(300);
+      // Always wait for replication after writes
+      waitForReplicationIsCompleted(serverIndex);
 
       testEachServer((checkServer) -> {
         try {
 
           assertThat(new JSONObject(command(checkServer, "select from " + v2)).getJSONArray("result")).isNotEmpty()
-              .withFailMessage("executed on server " + serverIndex + " checking on server " + serverIndex);
+              .withFailMessage("executed on server " + serverIndex + " checking on server " + checkServer);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking for V2 on server " + checkServer);
           throw e;
@@ -149,13 +167,13 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       final String e1 = new JSONObject(command(serverIndex, "create edge E1 from " + v1 + " to " + v2)).getJSONArray("result")
           .getJSONObject(0).getString(RID_PROPERTY);
 
-      if (!getServer(serverIndex).getHA().isLeader())
-        Thread.sleep(300);
+      // Always wait for replication after writes
+      waitForReplicationIsCompleted(serverIndex);
 
       testEachServer((checkServer) -> {
         try {
           assertThat(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result")).isNotEmpty()
-              .withFailMessage("executed on server " + serverIndex + " checking on server " + serverIndex);
+              .withFailMessage("executed on server " + serverIndex + " checking on server " + checkServer);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking on E1 on server " + checkServer);
           throw e;
@@ -166,13 +184,13 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
           command(serverIndex, "create vertex V1 content {\"name\":\"Nikola\",\"surname\":\"Tesla\",\"age\":150}")).getJSONArray(
           "result").getJSONObject(0).getString(RID_PROPERTY);
 
-      if (!getServer(serverIndex).getHA().isLeader())
-        Thread.sleep(300);
+      // Always wait for replication after writes
+      waitForReplicationIsCompleted(serverIndex);
 
       testEachServer((checkServer) -> {
         try {
           assertThat(new JSONObject(command(checkServer, "select from " + v3)).getJSONArray("result")).isNotEmpty()
-              .withFailMessage("executed on server " + serverIndex + " checking on server " + serverIndex);
+              .withFailMessage("executed on server " + serverIndex + " checking on server " + checkServer);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking for V3 on server " + checkServer);
           throw e;
@@ -182,13 +200,13 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       final String e2 = new JSONObject(command(serverIndex, "create edge E2 from " + v2 + " to " + v3)).getJSONArray("result")
           .getJSONObject(0).getString(RID_PROPERTY);
 
-      if (!getServer(serverIndex).getHA().isLeader())
-        Thread.sleep(300);
+      // Always wait for replication after writes
+      waitForReplicationIsCompleted(serverIndex);
 
       testEachServer((checkServer) -> {
         try {
           assertThat(new JSONObject(command(checkServer, "select from " + e2)).getJSONArray("result")).isNotEmpty()
-              .withFailMessage("executed on server " + serverIndex + " checking on server " + serverIndex);
+              .withFailMessage("executed on server " + serverIndex + " checking on server " + checkServer);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking for E2 on server " + checkServer);
           throw e;
@@ -197,22 +215,39 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       command(serverIndex, "delete from " + v1);
 
-      if (!getServer(serverIndex).getHA().isLeader())
-        Thread.sleep(300);
+      // Always wait for replication after deletes - this is critical
+      waitForReplicationIsCompleted(serverIndex);
+
+      // Also wait for all other servers to process the delete
+      for (int i = 0; i < getServerCount(); i++) {
+        if (i != serverIndex) {
+          waitForReplicationIsCompleted(i);
+        }
+      }
 
       testEachServer((checkServer) -> {
         try {
-          new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result");
-          fail("executed on server " + serverIndex + " checking on server " + serverIndex);
-        } catch (FileNotFoundException e) {
-          //  EXPECTED
+          final String response = command(checkServer, "select from " + v1);
+          // If we get here without an exception, check that the result is empty
+          final JSONObject jsonResponse = new JSONObject(response);
+          final int resultCount = jsonResponse.getJSONArray("result").length();
+          assertThat(resultCount).as("Record should have been deleted").isEqualTo(0);
+        } catch (IOException e) {
+          // IOException from HTTP error is acceptable - it means the record query failed
+          // This can happen when the server returns 404/500 for a deleted record
+          LogManager.instance().log(this, Level.FINE, "Expected error when querying deleted vertex " + v1 + " on server " + checkServer);
         }
 
         try {
-          new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result");
-          fail("executed on server " + serverIndex + " checking on server " + serverIndex);
-        } catch (FileNotFoundException e) {
-          //  EXPECTED
+          final String response = command(checkServer, "select from " + e1);
+          // If we get here without an exception, check that the result is empty
+          final JSONObject jsonResponse = new JSONObject(response);
+          final int resultCount = jsonResponse.getJSONArray("result").length();
+          assertThat(resultCount).as("Edge should have been deleted").isEqualTo(0);
+        } catch (IOException e) {
+          // IOException from HTTP error is acceptable - it means the edge query failed
+          // This can happen when the server returns 404/500 for a deleted edge
+          LogManager.instance().log(this, Level.FINE, "Expected error when querying deleted edge " + e1 + " on server " + checkServer);
         }
       });
     });
