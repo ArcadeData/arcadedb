@@ -73,11 +73,11 @@ public class MongoQueryEngine implements QueryEngine {
 
   @Override
   public ResultSet command(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
-    return null;
+    return query(query, configuration, parameters);
   }
 
   @Override
   public ResultSet command(final String query, ContextConfiguration configuration, final Object... parameters) {
-    return null;
+    return query(query, configuration, parameters);
   }
 }
