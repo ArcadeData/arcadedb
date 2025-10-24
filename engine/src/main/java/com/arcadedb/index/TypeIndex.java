@@ -26,24 +26,32 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.io.*;
-import java.util.*;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
- * It represent an index on a type. It's backed by one or multiple underlying indexes, one per bucket. By using multiple buckets, the read/write operation can
+ * It represents an index on a type. It's backed by one or multiple underlying indexes, one per bucket. By using multiple buckets, the read/write operation can
  * work concurrently and lock-free.
  *
  * @author Luca Garulli
  */
 public class TypeIndex implements RangeIndex, IndexInternal {
-  private       String              logicName;
   private final List<IndexInternal> indexesOnBuckets = new ArrayList<>();
   private final DocumentType        type;
+  private       String              logicName;
   private       boolean             valid            = true;
   private       IndexInternal       associatedIndex;
 
@@ -236,8 +244,21 @@ public class TypeIndex implements RangeIndex, IndexInternal {
             "Cannot drop index '" + getName() + "' because one or more underlying files are not available");
       }
 
-    for (final Index index : new ArrayList<>(indexesOnBuckets))
-      type.getSchema().dropIndex(index.getName());
+    // FIXED: Avoid infinite recursion by directly cleaning up bucket indexes
+    // instead of calling schema.dropIndex() which creates a recursive loop
+    final LocalSchema schema = (LocalSchema) type.getSchema();
+    final LocalDocumentType localType = (LocalDocumentType) type;
+
+    for (final IndexInternal index : new ArrayList<>(indexesOnBuckets)) {
+      // Remove the index from the bucket mapping first to clean up type relationships
+      localType.removeBucketIndexInternal(index);
+
+      // Drop the underlying index directly without going through schema.dropIndex()
+      index.drop();
+
+      // Remove from schema's index map directly to complete cleanup
+      schema.removeIndexFromMap(index.getName());
+    }
 
     indexesOnBuckets.clear();
 
@@ -304,10 +325,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public boolean equals(final Object obj) {
-    if (!(obj instanceof TypeIndex))
+    if (!(obj instanceof TypeIndex index2))
       return false;
-
-    final TypeIndex index2 = (TypeIndex) obj;
 
     if (!BinaryComparator.equalsString(getName(), index2.getName()))
       return false;
