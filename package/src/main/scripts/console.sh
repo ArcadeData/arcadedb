@@ -57,10 +57,10 @@ if [ -z "$JAVA_OPTS_SCRIPT" ] ; then
         --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED \
         --add-opens java.base/java.nio.channels.spi=ALL-UNNAMED \
         --add-opens java.base/java.lang=ALL-UNNAMED \
+        --enable-native-access=ALL-UNNAMED \
         -Dpolyglot.engine.WarnInterpreterOnly=false \
         -Djava.awt.headless=true \
-        -Dfile.encoding=UTF8 \
-        --illegal-access=deny"
+        -Dfile.encoding=UTF8"
 fi
 
 if [ $# -gt 0 ] ; then
