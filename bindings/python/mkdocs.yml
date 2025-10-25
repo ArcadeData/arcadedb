@@ -1,0 +1,177 @@
+site_name: ArcadeDB Python Bindings
+site_url: https://humemai.github.io/arcadedb
+site_description: Native Python bindings for ArcadeDB - the multi-model database
+site_author: humemai
+repo_url: https://github.com/humemai/arcadedb
+repo_name: humemai/arcadedb
+edit_uri: edit/python-embedded/bindings/python/docs/
+
+copyright: Copyright &copy; 2025 humemai
+
+theme:
+  name: material
+  language: en
+  palette:
+    # Light mode
+  - scheme: default
+    primary: blue
+    accent: indigo
+    toggle:
+      icon: material/brightness-7
+      name: Switch to dark mode
+    # Dark mode
+  - scheme: slate
+    primary: blue
+    accent: indigo
+    toggle:
+      icon: material/brightness-4
+      name: Switch to light mode
+
+  features:
+    # Navigation
+  - navigation.instant          # Fast page loading
+  - navigation.tracking         # URL updates as you scroll
+  - navigation.tabs             # Top-level tabs
+  - navigation.tabs.sticky      # Sticky tabs
+  - navigation.sections         # Sections in nav
+  - navigation.path             # Breadcrumbs
+  - navigation.indexes          # Section index pages
+  - navigation.top              # Back to top button
+  - navigation.footer           # Previous/next navigation
+  - navigation.prune            # Prune navigation for large sites
+
+    # Search
+  - search.suggest              # Search suggestions
+  - search.highlight            # Highlight search terms
+  - search.share                # Share search results
+
+    # Header
+  - header.autohide            # Hide header on scroll
+
+    # Content
+  - content.code.copy           # Copy code button
+  - content.code.annotate       # Code annotations
+  - content.tabs.link           # Link content tabs
+  - content.tooltips            # Tooltips
+
+    # Table of contents
+  - toc.follow                  # TOC follows scroll
+  - toc.integrate               # TOC in nav
+
+  icon:
+    repo: fontawesome/brands/github
+    edit: material/pencil
+    view: material/eye
+
+plugins:
+- search:
+    separator: '[\s\-,:!=\[\]()"/]+|(?!\b)(?=[A-Z][a-z])|\.(?!\d)|&[lg]t;'
+    lang:
+    - en
+- git-revision-date-localized:
+    enable_creation_date: true
+    type: timeago
+
+markdown_extensions:
+  # Python Markdown
+- abbr
+- admonition
+- attr_list
+- def_list
+- footnotes
+- md_in_html
+- toc:
+    permalink: true
+    toc_depth: 3
+
+  # Python Markdown Extensions
+- pymdownx.arithmatex:
+    generic: true
+- pymdownx.betterem:
+    smart_enable: all
+- pymdownx.caret
+- pymdownx.details
+- pymdownx.emoji:
+    emoji_index: !!python/name:material.extensions.emoji.twemoji
+    emoji_generator: !!python/name:material.extensions.emoji.to_svg
+- pymdownx.highlight:
+    anchor_linenums: true
+    line_spans: __span
+    pygments_lang_class: true
+- pymdownx.inlinehilite
+- pymdownx.keys
+- pymdownx.mark
+- pymdownx.smartsymbols
+- pymdownx.superfences:
+    custom_fences:
+    - name: mermaid
+      class: mermaid
+      format: !!python/name:pymdownx.superfences.fence_code_format
+- pymdownx.tabbed:
+    alternate_style: true
+- pymdownx.tasklist:
+    custom_checkbox: true
+- pymdownx.tilde
+
+extra:
+  social:
+  - icon: fontawesome/brands/github
+    link: https://github.com/humemai/arcadedb
+  - icon: fontawesome/brands/python
+    link: https://pypi.org/project/arcadedb-embedded/
+
+  version:
+    provider: mike
+    default: latest
+
+extra_css:
+- stylesheets/extra.css
+
+nav:
+- Home: index.md
+- Getting Started:
+  - Installation: getting-started/installation.md
+  - Quick Start: getting-started/quickstart.md
+  - Distributions: getting-started/distributions.md
+- Examples:
+  - Overview: examples/index.md
+  - 01 - Simple Document Store: examples/01_simple_document_store.md
+  - 02 - Social Network Graph: examples/02_social_network_graph.md
+  - 03 - Vector Search: examples/03_vector_search.md
+  - 04 - CSV Import (Documents): examples/04_csv_import_documents.md
+- User Guide:
+  - Core Operations:
+    - Database Management: guide/core/database.md
+    - Queries: guide/core/queries.md
+    - Transactions: guide/core/transactions.md
+  - Operations & Logging: guide/operations.md
+  - Server Mode: guide/server.md
+  - Vector Search: guide/vectors.md
+  - Data Import: guide/import.md
+  - Graph Operations: guide/graphs.md
+- API Reference:
+  - Database: api/database.md
+  - Results: api/results.md
+  - Server: api/server.md
+  - Transactions: api/transactions.md
+  - Vector: api/vector.md
+  - Importer: api/importer.md
+  - Exceptions: api/exceptions.md
+- Development:
+  - Architecture: development/architecture.md
+  - Contributing: development/contributing.md
+  - Documentation: development/documentation.md
+  - Testing:
+    - Overview: development/testing.md
+    - Getting Started: development/testing/overview.md
+    - Core Tests: development/testing/test-core.md
+    - Server Tests: development/testing/test-server.md
+    - Advanced Testing:
+      - Concurrency: development/testing/test-concurrency.md
+      - Server Patterns: development/testing/test-server-patterns.md
+      - Data Import: development/testing/test-importer.md
+      - Gremlin Queries: development/testing/test-gremlin.md
+    - Best Practices: development/testing/best-practices.md
+  - Release Workflow: development/release.md
+  - Troubleshooting: development/troubleshooting.md
+- Java API Coverage: java-api-coverage.md

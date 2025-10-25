@@ -1,0 +1,179 @@
+name: Test Python Bindings
+
+on:
+  # Run on any push to any branch
+  push:
+
+  # Run on any pull request
+  pull_request:
+
+  # Allow being called by other workflows (e.g., release workflow)
+  workflow_call:
+
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      distribution:
+        description: 'Distribution to test (all, headless, minimal, or full)'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - headless
+          - minimal
+          - full
+
+jobs:
+  test:
+    name: Test ${{ matrix.distribution }} distribution
+    runs-on: ubuntu-latest
+    strategy:
+      # Don't cancel other matrix jobs if one fails
+      fail-fast: false
+      matrix:
+        distribution: [headless, minimal, full]
+        # Filter based on workflow_dispatch input if present
+        exclude:
+          - distribution: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.distribution != 'all' && github.event.inputs.distribution != 'headless' && 'headless' || '' }}
+          - distribution: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.distribution != 'all' && github.event.inputs.distribution != 'minimal' && 'minimal' || '' }}
+          - distribution: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.distribution != 'all' && github.event.inputs.distribution != 'full' && 'full' || '' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Build and test ${{ matrix.distribution }} distribution
+        run: |
+          cd bindings/python
+          echo "🔨 Building ${{ matrix.distribution }} distribution..."
+          ./build-all.sh ${{ matrix.distribution }}
+        env:
+          DISTRIBUTION: ${{ matrix.distribution }}
+
+      - name: Extract wheel for additional testing
+        run: |
+          cd bindings/python
+          mkdir -p test-install
+          cp dist/*${{ matrix.distribution }}*.whl test-install/ || cp dist/*.whl test-install/
+
+      - name: Set up Python for host testing
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Install Java (required for JPype)
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Install wheel and test dependencies
+        run: |
+          cd bindings/python
+          pip install test-install/*.whl pytest pytest-cov requests
+
+      - name: Run pytest on host
+        id: pytest
+        run: |
+          cd bindings/python
+          echo "🧪 Testing ${{ matrix.distribution }} distribution..."
+
+          # Run pytest with verbose output
+          pytest tests/ -v --tb=short --color=yes 2>&1 | tee pytest-output.txt
+
+          # Check results
+          if grep -q "failed" pytest-output.txt; then
+            echo "❌ Tests FAILED"
+            exit 1
+          elif grep -q "passed" pytest-output.txt || grep -q "skipped" pytest-output.txt; then
+            echo "✅ Tests PASSED (may include skipped tests based on distribution)"
+
+            # Count results
+            PASSED=$(grep -oP '\d+(?= passed)' pytest-output.txt || echo "0")
+            SKIPPED=$(grep -oP '\d+(?= skipped)' pytest-output.txt || echo "0")
+            FAILED=$(grep -oP '\d+(?= failed)' pytest-output.txt || echo "0")
+
+            echo "passed=$PASSED" >> $GITHUB_OUTPUT
+            echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
+            echo "failed=$FAILED" >> $GITHUB_OUTPUT
+
+            # Exit with error if any failures
+            if [ "$FAILED" != "0" ]; then
+              exit 1
+            fi
+          else
+            echo "⚠️ Unexpected test output"
+            exit 1
+          fi
+
+      - name: Generate test summary
+        if: always()
+        run: |
+          cd bindings/python
+
+          echo "## 🧪 Test Results: ${{ matrix.distribution }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.pytest.outcome }}" = "success" ]; then
+            echo "✅ **Status**: PASSED" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Status**: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| ✅ Passed | ${{ steps.pytest.outputs.passed || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⏭️ Skipped | ${{ steps.pytest.outputs.skipped || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ❌ Failed | ${{ steps.pytest.outputs.failed || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Expected Behavior by Distribution:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Headless**: Some tests skipped (no server/Gremlin features)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Minimal**: Few tests skipped (no Gremlin, has server/Studio)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Full**: Minimal skipped tests (all features available)" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-results-${{ matrix.distribution }}
+          path: |
+            bindings/python/pytest-output.txt
+            bindings/python/.coverage
+          retention-days: 7
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wheel-${{ matrix.distribution }}-test
+          path: bindings/python/dist/*.whl
+          retention-days: 7
+
+  # Summary job that checks all distributions
+  test-summary:
+    name: Test Summary
+    needs: test
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check test results
+        run: |
+          echo "## 🎯 Overall Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.test.result }}" = "success" ]; then
+            echo "✅ **All distributions passed testing!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "All three Python distributions (headless, minimal, full) have been successfully built and tested." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Some distributions failed testing**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Please check the individual test jobs for details." >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
