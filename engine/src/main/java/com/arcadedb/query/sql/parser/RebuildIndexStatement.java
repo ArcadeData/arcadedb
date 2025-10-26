@@ -153,16 +153,26 @@ public class RebuildIndexStatement extends DDLStatement {
           database.getSchema().dropIndex(idx.getName());
 
           if (typeName != null && idx instanceof TypeIndex) {
-            database.getSchema().buildTypeIndex(typeName, propertyNames.toArray(new String[propertyNames.size()])).withType(type)
-                .withUnique(unique).withPageSize(pageSize).withCallback(callback).withBatchSize(batchSize)
-                .withMaxAttempts(maxAttempts).withNullStrategy(nullStrategy)//
+            database.getSchema().buildTypeIndex(typeName, propertyNames.toArray(new String[propertyNames.size()]))
+                .withType(type)
+                .withUnique(unique)
+                .withPageSize(pageSize)
+                .withCallback(callback)
+                .withBatchSize(batchSize)
+                .withMaxAttempts(maxAttempts)
+                .withNullStrategy(nullStrategy)//
                 .create();
 
           } else {
             database.getSchema()
                 .buildBucketIndex(typeName, database.getSchema().getBucketById(idx.getAssociatedBucketId()).getName(),
-                    propertyNames.toArray(new String[propertyNames.size()])).withType(type).withUnique(unique)
-                .withPageSize(pageSize).withCallback(callback).withBatchSize(batchSize).withMaxAttempts(maxAttempts)
+                    propertyNames.toArray(new String[propertyNames.size()]))
+                .withType(type)
+                .withUnique(unique)
+                .withPageSize(pageSize)
+                .withCallback(callback)
+                .withBatchSize(batchSize)
+                .withMaxAttempts(maxAttempts)
                 .withNullStrategy(nullStrategy)//
                 .create();
           }

@@ -29,9 +29,11 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONObject;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -50,6 +52,8 @@ public class CreateIndexStatement extends DDLStatement {
   protected LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP;
   protected List<Identifier>                   keyTypes     = new ArrayList<Identifier>();
 
+  private final List<String> allowed = List.of("FULL_TEXT", "UNIQUE", "NOTUNIQUE", "JVECTOR");
+
   public CreateIndexStatement(final int id) {
     super(id);
   }
@@ -57,12 +61,10 @@ public class CreateIndexStatement extends DDLStatement {
   @Override
   public void validate() throws CommandSQLParsingException {
     final String typeAsString = type.getStringValue().toUpperCase();
-    switch (typeAsString) {
-    case "FULL_TEXT" -> {}
-    case "UNIQUE" -> {}
-    case "NOTUNIQUE" -> {}
-    default -> throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
-    }
+
+    if (!allowed.contains(typeAsString))
+      throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
+
   }
 
   @Override
@@ -92,37 +94,78 @@ public class CreateIndexStatement extends DDLStatement {
 
     final Schema.INDEX_TYPE indexType;
     boolean unique = false;
-
-    final String typeAsString = type.getStringValue();
-    if (typeAsString.equalsIgnoreCase("FULL_TEXT"))
-      indexType = Schema.INDEX_TYPE.FULL_TEXT;
-    else if (typeAsString.equalsIgnoreCase("UNIQUE")) {
+    final String typeAsString = type.getStringValue().toUpperCase();
+    switch (typeAsString) {
+    case "FULL_TEXT" -> indexType = Schema.INDEX_TYPE.FULL_TEXT;
+    case "UNIQUE" -> {
       indexType = Schema.INDEX_TYPE.LSM_TREE;
       unique = true;
-    } else if (typeAsString.equalsIgnoreCase("NOTUNIQUE")) {
-      indexType = Schema.INDEX_TYPE.LSM_TREE;
-    } else if (typeAsString.equalsIgnoreCase("HNSW")) {
-      indexType = Schema.INDEX_TYPE.HNSW;
-      unique = true;
-    } else
-      throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
+    }
+    case "NOTUNIQUE" -> indexType = Schema.INDEX_TYPE.LSM_TREE;
+    case "JVECTOR" -> indexType = Schema.INDEX_TYPE.JVECTOR;
+    default -> throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
+    }
 
     final AtomicLong total = new AtomicLong();
 
-    database.getSchema().buildTypeIndex(typeName.getStringValue(), fields)
-        .withType(indexType)
-        .withUnique(unique)
-        .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE)
-        .withNullStrategy(nullStrategy)
-        .withCallback((document, totalIndexed) -> {
-          total.incrementAndGet();
+    if (indexType.equals(Schema.INDEX_TYPE.JVECTOR)) {
+      System.out.println("building Jvector index for " + typeName.getStringValue());
+      // Extract configuration from metadata if provided, otherwise use defaults
+      int dimensions = 128;
+      VectorSimilarityFunction similarityFunction = VectorSimilarityFunction.EUCLIDEAN;
+      int maxConnections = 16;
+      int beamWidth = 100;
+      int memoryLimitMB = 10;
+      int diskPersistenceThreshold = 100;
+      boolean enableDiskPersistence = true;
 
-          if (totalIndexed % 100000 == 0) {
-            System.out.print(".");
-            System.out.flush();
-          }
-        }).create();
+      if (metadata != null) {
+        JSONObject meta = new JSONObject(metadata.toString());
+        dimensions = meta.getInt("dimensions", dimensions);
+        similarityFunction = VectorSimilarityFunction.valueOf(meta.getString("similarity", "EUCLIDEAN").toUpperCase());
+        maxConnections = meta.getInt("maxConnections", maxConnections);
+        beamWidth = meta.getInt("beamWidth", beamWidth);
+        memoryLimitMB = meta.getInt("memoryLimitMB", memoryLimitMB);
+        enableDiskPersistence = meta.getBoolean("enableDiskPersistence", enableDiskPersistence);
+        diskPersistenceThreshold = meta.getInt("diskPersistenceThreshold", diskPersistenceThreshold);
+      }
 
+      database.getSchema().getEmbedded().buildVectorIndex()
+          .withIndexName(name.getValue())
+          .withTypeName(typeName.getStringValue())
+          .withProperty(fields[0], Type.ARRAY_OF_FLOATS)
+          .withDiskPersistence(enableDiskPersistence)
+          .withDiskPersistenceThreshold(diskPersistenceThreshold)
+          .withMemoryLimitMB(memoryLimitMB)
+          .withDimensions(dimensions)
+          .withSimilarityFunction(similarityFunction)
+          .withMaxConnections(maxConnections)
+          .withBeamWidth(beamWidth)
+          .withNullStrategy(nullStrategy)
+          .withCallback((document, totalIndexed) -> {
+            total.incrementAndGet();
+            if (totalIndexed % 100000 == 0) {
+              System.out.print(".");
+              System.out.flush();
+            }
+          })
+          .create();
+
+    } else {
+      System.out.println("building LSM index for " + typeName.getStringValue());
+      database.getSchema().buildTypeIndex(typeName.getStringValue(), fields)
+          .withType(indexType)
+          .withUnique(unique)
+          .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE)
+          .withNullStrategy(nullStrategy)
+          .withCallback((document, totalIndexed) -> {
+            total.incrementAndGet();
+            if (totalIndexed % 100000 == 0) {
+              System.out.print(".");
+              System.out.flush();
+            }
+          }).create();
+    }
     typeName = prevName;
 
     final InternalResultSet rs = new InternalResultSet();

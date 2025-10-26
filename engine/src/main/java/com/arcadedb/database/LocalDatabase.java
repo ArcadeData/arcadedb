@@ -56,7 +56,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
-import com.arcadedb.index.vector.HnswVectorIndex;
+import com.arcadedb.index.vector.JVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QueryEngineManager;
@@ -118,14 +118,14 @@ import java.util.logging.Level;
 public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public static final  int                                       EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
   public static final  int                                       MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
-  private static final Set<String>                               SUPPORTED_FILE_EXT                   = Set.of(
+  private static final Set<String>                               SUPPORTED_FILE_EXT                   = Set.of(Dictionary.DICT_EXT,
       Dictionary.DICT_EXT,
       LocalBucket.BUCKET_EXT,
       LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT,
       LSMTreeIndexMutable.UNIQUE_INDEX_EXT,
       LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT,
       LSMTreeIndexCompacted.UNIQUE_INDEX_EXT,
-      HnswVectorIndex.FILE_EXT);
+      JVectorIndex.FILE_EXT);
   public final         AtomicLong                                indexCompactions                     = new AtomicLong();
   protected final      String                                    name;
   protected final      ComponentFile.MODE                        mode;
