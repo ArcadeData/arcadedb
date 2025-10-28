@@ -49,6 +49,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeFullTextIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.index.vector.HnswVectorIndex;
@@ -557,7 +558,7 @@ public class LocalSchema implements Schema {
   @Override
   @Deprecated
   public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
-      final String[] propertyNames, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
+      final String[] propertyNames, final int pageSize, final NULL_STRATEGY nullStrategy,
       final Index.BuildIndexCallback callback) {
     return buildTypeIndex(typeName, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withCallback(callback).withNullStrategy(nullStrategy).create();
@@ -588,7 +589,7 @@ public class LocalSchema implements Schema {
   @Override
   @Deprecated
   public TypeIndex getOrCreateTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
-      final String[] propertyNames, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
+      final String[] propertyNames, final int pageSize, final NULL_STRATEGY nullStrategy,
       final Index.BuildIndexCallback callback) {
     return buildTypeIndex(typeName, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withNullStrategy(nullStrategy).withCallback(callback).withIgnoreIfExists(true).create();
@@ -597,7 +598,7 @@ public class LocalSchema implements Schema {
   @Override
   @Deprecated
   public Index createBucketIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName, final String bucketName,
-      final String[] propertyNames, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
+      final String[] propertyNames, final int pageSize, final NULL_STRATEGY nullStrategy,
       final Index.BuildIndexCallback callback) {
     return buildBucketIndex(typeName, bucketName, propertyNames).withType(indexType).withUnique(unique).withPageSize(pageSize)
         .withNullStrategy(nullStrategy).withCallback(callback).create();
@@ -606,7 +607,7 @@ public class LocalSchema implements Schema {
   @Override
   @Deprecated
   public Index createManualIndex(final INDEX_TYPE indexType, final boolean unique, final String indexName, final Type[] keyTypes,
-      final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
+      final int pageSize, final NULL_STRATEGY nullStrategy) {
     return buildManualIndex(indexName, keyTypes).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy).create();
   }
 
@@ -1082,9 +1083,9 @@ public class LocalSchema implements Schema {
 
             IndexInternal index = indexMap.get(indexName);
             if (index != null) {
-              final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = indexJSON.has("nullStrategy") ?
-                  LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(indexJSON.getString("nullStrategy")) :
-                  LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
+              final NULL_STRATEGY nullStrategy = indexJSON.has("nullStrategy") ?
+                  NULL_STRATEGY.valueOf(indexJSON.getString("nullStrategy")) :
+                  NULL_STRATEGY.ERROR;
 
               index.setNullStrategy(nullStrategy);
 
@@ -1152,9 +1153,9 @@ public class LocalSchema implements Schema {
                     for (int i = 0; i < properties.length; ++i)
                       properties[i] = schemaIndexProperties.getString(i);
 
-                    final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = entry.getValue().has("nullStrategy") ?
-                        LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(entry.getValue().getString("nullStrategy")) :
-                        LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
+                    final NULL_STRATEGY nullStrategy = entry.getValue().has("nullStrategy") ?
+                        NULL_STRATEGY.valueOf(entry.getValue().getString("nullStrategy")) :
+                        NULL_STRATEGY.ERROR;
 
                     index.setNullStrategy(nullStrategy);
                     type.addIndexInternal(index, bucket.getFileId(), properties, null);
@@ -1380,9 +1381,18 @@ public class LocalSchema implements Schema {
     }
   }
 
-  protected Index createBucketIndex(final LocalDocumentType type, final Type[] keyTypes, final Bucket bucket, final String typeName,
-      final INDEX_TYPE indexType, final boolean unique, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
-      final Index.BuildIndexCallback callback, final String[] propertyNames, final TypeIndex propIndex, final int batchSize) {
+  protected Index createBucketIndex(final LocalDocumentType type,
+      final Type[] keyTypes,
+      final Bucket bucket,
+      final String typeName,
+      final INDEX_TYPE indexType,
+      final boolean unique,
+      final int pageSize,
+      final NULL_STRATEGY nullStrategy,
+      final Index.BuildIndexCallback callback,
+      final String[] propertyNames,
+      final TypeIndex propIndex,
+      final int batchSize) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     if (bucket == null)
@@ -1394,9 +1404,15 @@ public class LocalSchema implements Schema {
       throw new DatabaseMetadataException(
           "Cannot create index '" + indexName + "' on type '" + typeName + "' because it already exists");
 
-    final IndexBuilder<Index> builder = buildBucketIndex(typeName, bucket.getName(), propertyNames).withUnique(unique)
-        .withType(indexType).withFilePath(databasePath + File.separator + indexName).withKeyTypes(keyTypes).withPageSize(pageSize)
-        .withNullStrategy(nullStrategy).withCallback(callback).withIndexName(indexName);
+    final IndexBuilder<Index> builder = buildBucketIndex(typeName, bucket.getName(), propertyNames)
+        .withUnique(unique)
+        .withType(indexType)
+        .withFilePath(databasePath + File.separator + indexName)
+        .withKeyTypes(keyTypes)
+        .withPageSize(pageSize)
+        .withNullStrategy(nullStrategy)
+        .withCallback(callback)
+        .withIndexName(indexName);
 
     final IndexInternal index = indexFactory.createIndex(builder);
 

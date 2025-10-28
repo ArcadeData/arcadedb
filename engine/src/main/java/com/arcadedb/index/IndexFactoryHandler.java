@@ -23,5 +23,5 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 @ExcludeFromJacocoGeneratedReport
 public interface IndexFactoryHandler {
-  IndexInternal create(IndexBuilder builder);
+  IndexInternal create(IndexBuilder<? extends Index> builder);
 }
