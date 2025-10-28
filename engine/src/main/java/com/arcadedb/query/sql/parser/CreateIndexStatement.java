@@ -111,6 +111,7 @@ public class CreateIndexStatement extends DDLStatement {
 
     database.getSchema().buildTypeIndex(typeName.getStringValue(), fields)
         .withType(indexType)
+        .withIgnoreIfExists(ifNotExists)
         .withUnique(unique)
         .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE)
         .withNullStrategy(nullStrategy)
