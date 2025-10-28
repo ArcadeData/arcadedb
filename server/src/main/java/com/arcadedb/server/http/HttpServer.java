@@ -108,7 +108,9 @@ public class HttpServer implements ServerPlugin {
     final int[] httpPortRange = extractPortRange(configuration.getValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT));
     final int[] httpsPortRange = getHttpsPortRange(configuration);
 
-    LogManager.instance().log(this, Level.INFO, "- Starting HTTP Server (host=%s port=%s httpsPort=%s)...", host, httpPortRange,
+    LogManager.instance().log(this, Level.INFO, "- Starting HTTP Server (host=%s port=%s httpsPort=%s)...",
+        host, //
+        Arrays.toString(httpPortRange), //
         httpsPortRange != null ? Arrays.toString(httpsPortRange) : "-");
 
     final PathHandler routes = setupRoutes();
