@@ -2096,7 +2096,16 @@ public class SelectExecutionPlanner {
           final Expression left = textCondition.getLeft();
           if (left.isBaseIdentifier()) {
             final String fieldName = left.getDefaultAlias().getStringValue();
-            if (indexField.equals(fieldName)) {
+            // Strip modifiers to get base field name
+            String baseFieldName = indexField;
+            if (indexField.endsWith(" by key")) {
+              baseFieldName = indexField.substring(0, indexField.length() - 7);
+            } else if (indexField.endsWith(" by value")) {
+              baseFieldName = indexField.substring(0, indexField.length() - 9);
+            } else if (indexField.endsWith(" by item")) {
+              baseFieldName = indexField.substring(0, indexField.length() - 8);
+            }
+            if (baseFieldName.equals(fieldName)) {
               found = true;
               indexFieldFound = true;
               final ContainsTextCondition condition = new ContainsTextCondition(-1);
@@ -2157,7 +2166,8 @@ public class SelectExecutionPlanner {
       }
 
       final IndexSearchInfo info = new IndexSearchInfo(baseFieldName, allowsRangeQueries(index), isMap(clazz, baseFieldName),
-          isIndexByKey(index, baseFieldName), isIndexByValue(index, baseFieldName), isIndexByItem(index, baseFieldName), true, context);
+          isIndexByKey(index, baseFieldName), isIndexByValue(index, baseFieldName), isIndexByItem(index, baseFieldName), true,
+          context);
       blockIterator = blockCopy.getSubBlocks().iterator();
       boolean indexFieldFound = false;
       boolean rangeOp = false;

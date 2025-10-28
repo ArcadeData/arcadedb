@@ -27,9 +27,18 @@ import com.arcadedb.utility.IterableObjectArray;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.ResettableIterator;
 
-import java.lang.reflect.*;
-import java.util.*;
-import java.util.logging.*;
+import java.lang.reflect.Array;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.Set;
+import java.util.logging.Level;
 import java.util.stream.StreamSupport;
 
 /**
@@ -137,7 +146,7 @@ public class MultiValue {
 
     try {
       if (object instanceof List<?> list)
-        return list.get(0);
+        return list.getFirst();
       else if (object instanceof Iterable<?> iterable)
         return iterable.iterator().next();
       else if (object instanceof Map<?, ?> map)
@@ -172,7 +181,7 @@ public class MultiValue {
 
     try {
       if (object instanceof List<?> list)
-        return list.get(list.size() - 1);
+        return list.getLast();
       else if (object instanceof Iterable<?> iterable) {
         Object last = null;
         for (final Object o : iterable)
@@ -297,10 +306,10 @@ public class MultiValue {
     else if (iObject.getClass().isArray())
       return new IterableObjectArray<>(iObject);
     else if (iObject instanceof Iterator<?> iterator) {
-
       final List<Object> temp = new ArrayList<>();
-      for (final Iterator<?> it = iterator; it.hasNext(); )
-        temp.add(it.next());
+      while (iterator.hasNext()) {
+        temp.add(iterator.next());
+      }
       return temp;
     }
 
@@ -348,7 +357,6 @@ public class MultiValue {
 
     if (iObject instanceof Iterator<?> iterator)
       return iterator;
-
     if (iObject instanceof Iterable<?> iterable)
       return iterable.iterator();
     if (iObject instanceof Map<?, ?> map)

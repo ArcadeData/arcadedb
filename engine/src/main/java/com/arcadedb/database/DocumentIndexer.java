@@ -105,12 +105,10 @@ public class DocumentIndexer {
       return;
     }
 
-    if (!(listValue instanceof List)) {
+    if (!(listValue instanceof List<?> list)) {
       throw new IndexException("Property '" + propertyNames[listPropertyIndex] +
           "' is indexed with BY ITEM but is not a LIST type");
     }
-
-    final List<?> list = (List<?>) listValue;
 
     if (list.isEmpty()) {
       // Empty list - no index entries

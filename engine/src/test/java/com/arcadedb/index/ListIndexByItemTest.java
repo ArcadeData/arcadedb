@@ -40,15 +40,6 @@ public class ListIndexByItemTest extends TestHelper {
   @Override
   public void beginTest() {
     database.transaction(() -> {
-      // Create document type for embedded pair
-      final DocumentType pairType = database.getSchema().createDocumentType("pair");
-      pairType.createProperty("name", Type.STRING);
-      pairType.createProperty("data", Type.STRING);
-
-      // Create vertex type with list of pairs
-      final DocumentType metadataType = database.getSchema().createVertexType("metadata");
-      metadataType.createProperty("identifiers", Type.LIST);
-
       // Create test data for primitive list indexing
       final DocumentType simpleListType = database.getSchema().createDocumentType("SimpleListDoc");
       simpleListType.createProperty("tags", Type.LIST);
@@ -332,4 +323,80 @@ public class ListIndexByItemTest extends TestHelper {
       assertThat(result.next().<Integer>getProperty("id")).isEqualTo(700);
     });
   }
+
+  @Test
+  public void testSimpleListIndexByItemFullTextSearch() {
+    // Test indexing primitive values in a list
+    database.transaction(() -> {
+      database.command("sql", "CREATE INDEX ON SimpleListDoc (tags BY ITEM) FULL_TEXT");
+      database.command("sql", "CREATE INDEX ON SimpleListDoc (id) UNIQUE");
+    });
+
+    database.transaction(() -> {
+      database.command("sqlscript",
+          """
+                INSERT INTO SimpleListDoc SET id = 1, tags = ['java', 'database', 'nosql'];
+                INSERT INTO SimpleListDoc SET id = 2, tags = ['python', 'database', 'ml'];
+                INSERT INTO SimpleListDoc SET id = 3, tags = ['java', 'spring', 'web'];
+              """);
+    });
+
+    database.transaction(() -> {
+      // Query documents containing "java" in tags list
+      ResultSet result = database.query("sql", "SELECT FROM SimpleListDoc WHERE tags CONTAINSTEXT 'java'");
+      List<Integer> ids = result.stream().map(r -> r.<Integer>getProperty("id")).toList();
+      assertThat(ids).containsExactlyInAnyOrder(1, 3);
+
+      result = database.query("sql", "SELECT FROM SimpleListDoc WHERE tags MATCHES 'java'");
+      ids = result.stream().map(r -> r.<Integer>getProperty("id")).toList();
+      assertThat(ids).containsExactlyInAnyOrder(1, 3);
+
+      // Query documents containing "database" in tags list
+      result = database.query("sql", "SELECT FROM SimpleListDoc WHERE tags = 'database'");
+      ids = result.stream().map(r -> r.<Integer>getProperty("id")).toList();
+      assertThat(ids).containsExactlyInAnyOrder(1, 2);
+
+      // Verify index is being used
+      String explain = database.query("sql",
+              "EXPLAIN SELECT FROM SimpleListDoc WHERE tags = 'java'")
+          .next()
+          .getProperty("executionPlan")
+          .toString();
+      assertThat(explain).contains("SimpleListDoc[tags");  // Index name contains "tags" (may be "tags by item" or "tagsbyitem")
+    });
+  }
+
+  @Test
+  public void testListIndexByItemLikeSearch() {
+    // Test indexing primitive values in a list
+    database.transaction(() -> {
+      database.command("sql", "CREATE INDEX ON SimpleListDoc (tags BY ITEM) NOTUNIQUE");
+      database.command("sql", "CREATE INDEX ON SimpleListDoc (id) UNIQUE");
+    });
+
+    database.transaction(() -> {
+      database.command("sqlscript",
+          """
+                INSERT INTO SimpleListDoc SET id = 1, tags = ['java', 'database', 'nosql'];
+                INSERT INTO SimpleListDoc SET id = 2, tags = ['python', 'database', 'ml'];
+                INSERT INTO SimpleListDoc SET id = 3, tags = ['java', 'spring', 'web'];
+              """);
+    });
+
+    database.transaction(() -> {
+      // Query documents containing "java" in tags list
+      ResultSet result = database.query("sql", "SELECT FROM SimpleListDoc WHERE tags LIKE '%data%'");
+      List<Integer> ids = result.stream().map(r -> r.<Integer>getProperty("id")).toList();
+      assertThat(ids).containsExactlyInAnyOrder(1, 2);
+
+      // Verify index is being used
+      String explain = database.query("sql",
+              "EXPLAIN SELECT FROM SimpleListDoc WHERE tags = 'java'")
+          .next()
+          .getProperty("executionPlan")
+          .toString();
+      assertThat(explain).contains("SimpleListDoc[tags");  // Index name contains "tags" (may be "tags by item" or "tagsbyitem")
+    });
+  }
+
 }

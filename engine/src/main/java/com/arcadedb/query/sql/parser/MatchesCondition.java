@@ -22,9 +22,13 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 public class MatchesCondition extends BooleanExpression {
@@ -72,6 +76,17 @@ public class MatchesCondition extends BooleanExpression {
 
     if (value instanceof CharSequence sequence) {
       return p.matcher(sequence).matches();
+    } else if (MultiValue.isMultiValue(value)) {
+      final Iterator<?> values = MultiValue.getMultiValueIterator(value);
+      while (values.hasNext()) {
+        final Object item = values.next();
+        if (item instanceof CharSequence seq) {
+          if (p.matcher(seq).matches()) {
+            return true;
+          }
+        }
+      }
+      return false;
     } else {
       return false;
     }
