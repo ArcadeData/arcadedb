@@ -1,0 +1,34 @@
+/* Custom styles for ArcadeDB Python documentation */
+
+/* Navigation sidebar scrolling fix */
+.md-sidebar--primary .md-sidebar__scrollwrap {
+  height: 100vh;
+  overflow-y: auto;
+}
+
+/* Code block improvements */
+.highlight pre {
+  border-radius: 0.4em;
+}
+
+/* Admonition spacing */
+.admonition {
+  margin: 1.5em 0;
+}
+
+/* Table improvements */
+table {
+  display: block;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+/* Better spacing for code in tables */
+td code, th code {
+  white-space: nowrap;
+}
+
+/* Version badge styling */
+.md-typeset .admonition.version {
+  border-left-color: #00c853;
+}

@@ -1,0 +1,211 @@
+name: Test Python Examples
+
+on:
+  # Run on any push to any branch
+  push:
+
+  # Run on any pull request
+  pull_request:
+
+  # Allow being called by other workflows (e.g., release workflow)
+  workflow_call:
+
+  # Allow manual trigger
+  workflow_dispatch:
+
+jobs:
+  test-examples:
+    name: Test Python Examples
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Build minimal distribution
+        run: |
+          cd bindings/python
+          echo "🔨 Building minimal distribution for examples..."
+          ./build-all.sh minimal
+
+      - name: Set up Python
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Install Java (required for JPype)
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Install ArcadeDB Python bindings
+        run: |
+          cd bindings/python
+          pip install dist/*minimal*.whl
+
+      - name: Install example dependencies
+        run: |
+          # Install dependencies needed by examples
+          pip install numpy requests
+
+      - name: Download sample data
+        run: |
+          cd bindings/python/examples
+          echo "📥 Downloading sample data for examples..."
+          # Download large dataset for comprehensive testing
+          python download_sample_data.py
+
+      - name: Run all examples
+        id: run_examples
+        env:
+          # Increase JVM heap for large CSV imports (example 04)
+          ARCADEDB_JVM_MAX_HEAP: "8g"
+        run: |
+          cd bindings/python/examples
+
+          echo "🚀 Running Python Examples..."
+          echo ""
+
+          # Initialize counters
+          total=0
+          passed=0
+          failed=0
+          skipped=0
+
+          # Create results file
+          results_file="example-results.txt"
+          > $results_file
+
+          # Find all Python example files (exclude download_sample_data.py as it's a utility)
+          examples=$(ls [0-9]*.py 2>/dev/null | sort)
+
+          if [ -z "$examples" ]; then
+            echo "❌ No example files found!"
+            exit 1
+          fi
+
+          # Run each example
+          for example in $examples; do
+            total=$((total + 1))
+            echo "----------------------------------------"
+            echo "📝 Running: $example"
+            echo "----------------------------------------"
+
+            # Create a timeout wrapper to prevent hanging
+            if timeout 1800 python "$example" > "${example}.log" 2>&1; then
+              echo "✅ PASSED: $example" | tee -a $results_file
+              passed=$((passed + 1))
+            else
+              exit_code=$?
+              if [ $exit_code -eq 124 ]; then
+                echo "⏱️  TIMEOUT: $example (exceeded 30 minutes)" | tee -a $results_file
+                failed=$((failed + 1))
+              else
+                echo "❌ FAILED: $example (exit code: $exit_code)" | tee -a $results_file
+                failed=$((failed + 1))
+              fi
+              # Show last 20 lines of error log
+              echo "Last 20 lines of output:"
+              tail -n 20 "${example}.log"
+            fi
+            echo ""
+          done
+
+          # Print summary
+          echo "========================================"
+          echo "📊 EXAMPLE TEST SUMMARY"
+          echo "========================================"
+          echo "Total:   $total"
+          echo "Passed:  $passed ✅"
+          echo "Failed:  $failed ❌"
+          echo "Skipped: $skipped ⏭️"
+          echo "========================================"
+          echo ""
+
+          # Output to GitHub Actions
+          echo "total=$total" >> $GITHUB_OUTPUT
+          echo "passed=$passed" >> $GITHUB_OUTPUT
+          echo "failed=$failed" >> $GITHUB_OUTPUT
+          echo "skipped=$skipped" >> $GITHUB_OUTPUT
+
+          # Show detailed results
+          echo "Detailed Results:"
+          cat $results_file
+
+          # Exit with error if any failed
+          if [ $failed -gt 0 ]; then
+            echo "❌ Some examples failed!"
+            exit 1
+          else
+            echo "✅ All examples passed!"
+          fi
+
+      - name: Generate test summary
+        if: always()
+        run: |
+          cd bindings/python/examples
+
+          echo "## 🎮 Python Examples Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          total="${{ steps.run_examples.outputs.total || '0' }}"
+          passed="${{ steps.run_examples.outputs.passed || '0' }}"
+          failed="${{ steps.run_examples.outputs.failed || '0' }}"
+
+          if [ "${{ steps.run_examples.outcome }}" = "success" ]; then
+            echo "✅ **Status**: ALL EXAMPLES PASSED ($passed/$total)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Status**: SOME EXAMPLES FAILED ($passed/$total passed)" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|------:|" >> $GITHUB_STEP_SUMMARY
+          echo "| 📝 Total | $total |" >> $GITHUB_STEP_SUMMARY
+          echo "| ✅ Passed | $passed |" >> $GITHUB_STEP_SUMMARY
+          echo "| ❌ Failed | $failed |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⏭️ Skipped | ${{ steps.run_examples.outputs.skipped || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Add detailed results if available
+          if [ -f example-results.txt ]; then
+            echo "### Detailed Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            cat example-results.txt >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Examples Tested" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- 01_simple_document_store.py - Document CRUD operations" >> $GITHUB_STEP_SUMMARY
+          echo "- 02_social_network_graph.py - Graph modeling and traversal" >> $GITHUB_STEP_SUMMARY
+          echo "- 03_vector_search.py - Vector embeddings and similarity search" >> $GITHUB_STEP_SUMMARY
+          echo "- 04_csv_import_documents.py - CSV data import with type inference" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "_Note: Example 04 requires the MovieLens dataset. If it fails, the dataset may need to be downloaded._" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload example logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: example-logs
+          path: |
+            bindings/python/examples/*.log
+            bindings/python/examples/example-results.txt
+          retention-days: 7
+
+      - name: Upload example databases
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: example-databases
+          path: bindings/python/examples/my_test_databases/
+          retention-days: 3

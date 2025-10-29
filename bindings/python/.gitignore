@@ -1,0 +1,41 @@
+# Generated during build - do not commit
+src/arcadedb_embedded/_version.py
+
+# Python bindings - generated version file
+bindings/python/src/arcadedb_embedded/_version.py
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+log/
+*.log
+
+# MkDocs
+site/
+README.old.md
+
+# Jupyter Notebooks for internal testing
+notebooks/

@@ -18,7 +18,7 @@ repos:
       - id: check-yaml
         args:
           - --allow-multiple-documents
-        exclude: ^k8s/
+        exclude: ^(k8s/|bindings/python/mkdocs\.yml$)
       - id: check-json
       - id: check-xml
   - repo: https://github.com/pre-commit/mirrors-prettier
