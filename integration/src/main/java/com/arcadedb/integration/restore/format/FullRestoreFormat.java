@@ -105,7 +105,7 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
         throw new RestoreException("Unable to perform restore");
 
       logger.logLine(0, "Full restore completed in %d seconds %s -> %s (%,d%% compression)", elapsedInSecs,
-          FileUtils.getSizeAsString(databaseOrigSize), FileUtils.getSizeAsString((inputSource.fileSize)),
+          FileUtils.getSizeAsString((inputSource.fileSize)), FileUtils.getSizeAsString(databaseOrigSize),
           databaseOrigSize > 0 ? (databaseOrigSize - inputSource.fileSize) * 100 / databaseOrigSize : 0);
     });
   }
