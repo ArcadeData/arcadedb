@@ -75,7 +75,7 @@
         <postgres.version>42.7.8</postgres.version>
 
         <assertj-core.version>3.27.6</assertj-core.version>
-        <junit.jupiter.version>6.0.0</junit.jupiter.version>
+        <junit.jupiter.version>6.0.1</junit.jupiter.version>
         <awaitility.version>4.3.0</awaitility.version>
         <mockito-core.version>5.16.0</mockito-core.version>
         <json-path.version>2.10.0</json-path.version>
