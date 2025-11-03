@@ -18,6 +18,9 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.GroupBy;
 import com.arcadedb.query.sql.parser.Projection;
@@ -30,13 +33,42 @@ import java.util.*;
  */
 public class AggregateProjectionCalculationStep extends ProjectionCalculationStep {
 
+  /**
+   * Lightweight wrapper for GROUP BY keys using Object[] instead of ArrayList.
+   * This reduces memory overhead by eliminating ArrayList wrapper objects for each key.
+   */
+  private static class GroupByKey {
+    private final Object[] values;
+    private final int hashCode;
+
+    GroupByKey(final Object[] values) {
+      this.values = values;
+      this.hashCode = Arrays.hashCode(values);
+    }
+
+    @Override
+    public boolean equals(final Object obj) {
+      if (this == obj)
+        return true;
+      if (!(obj instanceof GroupByKey))
+        return false;
+      return Arrays.equals(this.values, ((GroupByKey) obj).values);
+    }
+
+    @Override
+    public int hashCode() {
+      return hashCode;
+    }
+  }
+
   private final GroupBy groupBy;
   private final long    timeoutMillis;
   private final long    limit;
+  private final long    maxGroupsAllowed;
 
   //the key is the GROUP BY key, the value is the (partially) aggregated value
-  private final Map<List, ResultInternal> aggregateResults = new LinkedHashMap<>();
-  private       List<ResultInternal>      finalResults     = null;
+  private final Map<GroupByKey, ResultInternal> aggregateResults = new LinkedHashMap<>();
+  private       List<ResultInternal>            finalResults     = null;
 
   private int nextItem = 0;
 
@@ -47,6 +79,12 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     this.groupBy = groupBy;
     this.timeoutMillis = timeoutMillis;
     this.limit = limit;
+
+    // Memory optimization: Enforce memory limits for GROUP BY operations
+    final Database db = context == null ? null : context.getDatabase();
+    this.maxGroupsAllowed = db == null ?
+        GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong() :
+        db.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP);
   }
 
   @Override
@@ -109,17 +147,33 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   private void aggregate(final Result next, final CommandContext context) {
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
-      final List<Object> key = new ArrayList<>();
+      // Memory optimization: Use Object[] instead of ArrayList to reduce object allocation overhead
+      final GroupByKey key;
       if (groupBy != null) {
+        final Object[] keyValues = new Object[groupBy.getItems().size()];
+        int idx = 0;
         for (final Expression item : groupBy.getItems()) {
-          final Object val = item.execute(next, context);
-          key.add(val);
+          keyValues[idx++] = item.execute(next, context);
         }
+        key = new GroupByKey(keyValues);
+      } else {
+        // No GROUP BY means single aggregation group
+        key = new GroupByKey(new Object[0]);
       }
       ResultInternal preAggr = aggregateResults.get(key);
       if (preAggr == null) {
-        if (limit > 0 && aggregateResults.size() > limit)
+        // Query LIMIT optimization: stop processing once we have enough groups
+        if (limit > 0 && aggregateResults.size() >= limit)
           return;
+
+        // Memory safety: enforce memory limit for GROUP BY operations
+        if (maxGroupsAllowed > 0 && aggregateResults.size() >= maxGroupsAllowed) {
+          aggregateResults.clear();
+          throw new CommandExecutionException(
+              "Limit of allowed groups for in-heap GROUP BY in a single query exceeded (" + maxGroupsAllowed
+                  + "). You can set " + GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey()
+                  + " to increase this limit");
+        }
 
         preAggr = new ResultInternal(context.getDatabase());
 
@@ -141,6 +195,13 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
           }
           aggrCtx.apply(next, context);
         }
+      }
+
+      // Memory optimization: Clear the element reference from the input Result after processing
+      // This releases the full Document object and allows it to be garbage collected
+      // We've already extracted all needed values into the key and preAggr
+      if (next instanceof ResultInternal) {
+        ((ResultInternal) next).setElement(null);
       }
     } finally {
       if (context.isProfiling())
