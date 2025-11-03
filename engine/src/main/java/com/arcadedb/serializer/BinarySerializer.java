@@ -203,7 +203,13 @@ public class BinarySerializer {
   public Map<String, Object> deserializeProperties(final Database database, final Binary buffer,
       final EmbeddedModifier embeddedModifier, final RID rid, final String... fieldNames) {
     try {
+      final int initialPosition = buffer.position();
       final int headerEndOffset = buffer.getInt();
+      if (headerEndOffset < 0)
+        throw new SerializationException(
+            "Error on deserialize record. It may be corrupted (headerEndOffset=" + headerEndOffset + " at position "
+                + initialPosition + ")");
+
       final int properties = (int) buffer.getUnsignedNumber();
 
       if (properties < 0)
