@@ -1,0 +1,10 @@
+# JAR Exclusion List for ArcadeDB Python Package
+#
+# This file lists JAR patterns to exclude from the package.
+# Each line is a glob pattern that will be used to match JAR filenames.
+#
+# Format: One pattern per line, comments start with #
+# Empty lines are ignored
+
+# gRPC wire protocol (~40MB) - not commonly needed for Python use cases
+arcadedb-grpcw-*.jar
