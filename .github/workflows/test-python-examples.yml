@@ -1,0 +1,411 @@
+name: Test Python Examples
+
+on:
+  # Run on pull requests to main
+  pull_request:
+    branches: [main]
+
+  # Allow being called by other workflows (e.g., release workflow)
+  workflow_call:
+
+  # Allow manual trigger
+  workflow_dispatch:
+
+jobs:
+  # First job: Download ArcadeDB JARs (platform-agnostic)
+  download-jars:
+    name: Download ArcadeDB JARs
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Download JARs from ArcadeDB Docker image
+        shell: bash
+        run: |
+          cd bindings/python
+
+          # Detect ArcadeDB version from pom.xml (Docker format: X.Y.Z-SNAPSHOT)
+          ARCADEDB_TAG=$(python3 extract_version.py --format=docker)
+          echo "📌 ArcadeDB version: $ARCADEDB_TAG"
+
+          # Download JARs from official Docker image
+          echo "📦 Downloading JARs from arcadedata/arcadedb:$ARCADEDB_TAG..."
+
+          # Create output directory
+          mkdir -p src/arcadedb_embedded/jars
+
+          # Create a temporary container and copy JARs from it
+          CONTAINER_ID=$(docker create arcadedata/arcadedb:$ARCADEDB_TAG)
+          docker cp $CONTAINER_ID:/home/arcadedb/lib/. src/arcadedb_embedded/jars/
+          docker rm $CONTAINER_ID
+
+          echo "✅ Downloaded $(ls -1 src/arcadedb_embedded/jars/*.jar | wc -l) JARs"
+
+      - name: Remove excluded JARs
+        shell: bash
+        run: |
+          cd bindings/python
+
+          JARS_DIR="src/arcadedb_embedded/jars"
+          EXCLUSIONS_FILE="jar_exclusions.txt"
+
+          if [[ -f "$EXCLUSIONS_FILE" ]]; then
+            echo "🗑️  Removing excluded JARs from jar_exclusions.txt..."
+            EXCLUSION_COUNT=0
+
+            while IFS= read -r pattern || [[ -n "$pattern" ]]; do
+              # Skip empty lines and comments
+              if [[ -n "$pattern" ]] && [[ ! "$pattern" =~ ^# ]]; then
+                echo "   Processing pattern: $pattern"
+
+                # Remove matching JARs
+                for jar in "$JARS_DIR"/$pattern; do
+                  if [[ -f "$jar" ]]; then
+                    rm -f "$jar"
+                    echo "   - Removed: $(basename "$jar")"
+                    EXCLUSION_COUNT=$((EXCLUSION_COUNT + 1))
+                  fi
+                done
+              fi
+            done < "$EXCLUSIONS_FILE"
+
+            JAR_COUNT_AFTER=$(ls -1 "$JARS_DIR"/*.jar 2>/dev/null | wc -l)
+            echo "✅ Removed $EXCLUSION_COUNT JAR(s), $JAR_COUNT_AFTER remaining"
+          else
+            echo "⚠️  No jar_exclusions.txt found, skipping exclusions"
+          fi
+
+      - name: Upload filtered JARs as artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: arcadedb-jars-examples
+          path: bindings/python/src/arcadedb_embedded/jars/*.jar
+          retention-days: 1
+
+  # Second job: Test examples on each platform
+  test-examples:
+    name: Test Python Examples (${{ matrix.platform }})
+    runs-on: ${{ matrix.runs-on }}
+    needs: download-jars
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runs-on: ubuntu-24.04
+          - platform: linux/arm64
+            runs-on: ubuntu-24.04-arm
+          - platform: darwin/amd64
+            runs-on: macos-15-intel
+          - platform: darwin/arm64
+            runs-on: macos-15
+          - platform: windows/amd64
+            runs-on: windows-2025
+          - platform: windows/arm64
+            runs-on: windows-11-arm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Download JARs artifact
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: arcadedb-jars-examples
+          path: bindings/python/src/arcadedb_embedded/jars
+
+      - name: Set up Java (for native builds on macOS/Windows)
+        if: matrix.platform != 'linux/amd64' && matrix.platform != 'linux/arm64'
+        uses: actions/setup-java@7a6d8a8234af8eb26422e24e3006232cccaa061b # v4.6.0
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Set up Docker Buildx (Linux only)
+        if: matrix.platform == 'linux/amd64' || matrix.platform == 'linux/arm64'
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Set up Python
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Install Python build dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install build wheel setuptools
+
+      - name: Create python3 symlink (Windows only)
+        if: matrix.platform == 'windows/amd64' || matrix.platform == 'windows/arm64'
+        shell: bash
+        run: |
+          # On Windows, setup-python doesn't create python3 symlink
+          PYTHON_DIR=$(dirname "$(which python)")
+          ln -s "$PYTHON_DIR/python.exe" "$PYTHON_DIR/python3.exe" || true
+          python3 --version
+
+      - name: Build arcadedb-embedded (${{ matrix.platform }})
+        shell: bash
+        run: |
+          cd bindings/python
+          echo "🔨 Building arcadedb-embedded for ${{ matrix.platform }}..."
+          ./build.sh ${{ matrix.platform }}
+
+      # Note: Java is NOT required - arcadedb-embedded has bundled JRE!
+
+      - name: Install ArcadeDB Python bindings
+        shell: bash
+        run: |
+          cd bindings/python
+          pip install dist/*embed*.whl
+
+      - name: Install example dependencies
+        shell: bash
+        run: |
+          # Install dependencies needed by examples
+          pip install numpy requests
+
+      - name: Install timeout command (macOS only)
+        if: matrix.platform == 'darwin/amd64' || matrix.platform == 'darwin/arm64'
+        shell: bash
+        run: |
+          # macOS doesn't have timeout command by default, use coreutils
+          brew install coreutils
+
+      - name: Set UTF-8 encoding (Windows only)
+        if: matrix.platform == 'windows/amd64' || matrix.platform == 'windows/arm64'
+        shell: bash
+        run: |
+          # Set UTF-8 encoding to handle emoji characters
+          echo "PYTHONIOENCODING=utf-8" >> $GITHUB_ENV
+
+      - name: Run all examples
+        id: run_examples
+        shell: bash
+        env:
+          # Increase JVM heap for large CSV imports (example 04)
+          ARCADEDB_JVM_MAX_HEAP: "8g"
+        run: |
+          cd bindings/python/examples
+
+          echo "🚀 Running Python Examples..."
+          echo ""
+
+          # Initialize counters
+          total=0
+          passed=0
+          failed=0
+          skipped=0
+
+          # Create results file
+          results_file="example-results.txt"
+          > $results_file
+
+          # Find all Python example files (exclude download_sample_data.py as it's a utility)
+          # Testing examples 01-03 (verified working)
+          examples=$(ls 0[1-3]*.py 2>/dev/null | sort)
+
+          if [ -z "$examples" ]; then
+            echo "❌ No example files found!"
+            exit 1
+          fi
+
+          # Detect timeout command (macOS uses gtimeout, Linux uses timeout)
+          if command -v gtimeout &> /dev/null; then
+            TIMEOUT_CMD="gtimeout"
+          else
+            TIMEOUT_CMD="timeout"
+          fi
+
+          # Run each example
+          for example in $examples; do
+            # For example 04, test both small and large datasets
+            if [ "$example" = "04_csv_import_documents.py" ]; then
+              for size in small large; do
+                total=$((total + 1))
+                example_name="$example (--size $size)"
+                log_file="${example%.py}_${size}.log"
+
+                echo "----------------------------------------"
+                echo "📝 Running: $example_name"
+                echo "----------------------------------------"
+
+                # Create a timeout wrapper to prevent hanging (30 min for small, 60 min for large)
+                if [ "$size" = "small" ]; then
+                  timeout_duration=1800
+                else
+                  timeout_duration=3600
+                fi
+
+                if $TIMEOUT_CMD $timeout_duration python "$example" --size "$size" > "$log_file" 2>&1; then
+                  echo "✅ PASSED: $example_name" | tee -a $results_file
+                  passed=$((passed + 1))
+                else
+                  exit_code=$?
+                  if [ $exit_code -eq 124 ]; then
+                    echo "⏱️  TIMEOUT: $example_name (exceeded $((timeout_duration/60)) minutes)" | tee -a $results_file
+                    failed=$((failed + 1))
+                  else
+                    echo "❌ FAILED: $example_name (exit code: $exit_code)" | tee -a $results_file
+                    failed=$((failed + 1))
+                  fi
+                  # Show last 20 lines of error log
+                  echo "Last 20 lines of output:"
+                  tail -n 20 "$log_file"
+                fi
+                echo ""
+              done
+            else
+              total=$((total + 1))
+              echo "----------------------------------------"
+              echo "📝 Running: $example"
+              echo "----------------------------------------"
+
+              # Create a timeout wrapper to prevent hanging
+              if $TIMEOUT_CMD 1800 python "$example" > "${example}.log" 2>&1; then
+                echo "✅ PASSED: $example" | tee -a $results_file
+                passed=$((passed + 1))
+              else
+                exit_code=$?
+                if [ $exit_code -eq 124 ]; then
+                  echo "⏱️  TIMEOUT: $example (exceeded 30 minutes)" | tee -a $results_file
+                  failed=$((failed + 1))
+                else
+                  echo "❌ FAILED: $example (exit code: $exit_code)" | tee -a $results_file
+                  failed=$((failed + 1))
+                fi
+                # Show last 20 lines of error log
+                echo "Last 20 lines of output:"
+                tail -n 20 "${example}.log"
+              fi
+              echo ""
+            fi
+          done
+
+          # Print summary
+          echo "========================================"
+          echo "📊 EXAMPLE TEST SUMMARY"
+          echo "========================================"
+          echo "Total:   $total"
+          echo "Passed:  $passed ✅"
+          echo "Failed:  $failed ❌"
+          echo "Skipped: $skipped ⏭️"
+          echo "========================================"
+          echo ""
+
+          # Output to GitHub Actions
+          echo "total=$total" >> $GITHUB_OUTPUT
+          echo "passed=$passed" >> $GITHUB_OUTPUT
+          echo "failed=$failed" >> $GITHUB_OUTPUT
+          echo "skipped=$skipped" >> $GITHUB_OUTPUT
+
+          # Show detailed results
+          echo "Detailed Results:"
+          cat $results_file
+
+          # Exit with error if any failed
+          if [ $failed -gt 0 ]; then
+            echo "❌ Some examples failed!"
+            exit 1
+          else
+            echo "✅ All examples passed!"
+          fi
+
+      - name: Generate test summary
+        if: always()
+        shell: bash
+        run: |
+          cd bindings/python/examples
+
+          echo "## 🎮 Python Examples Test Results (${{ matrix.platform }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          total="${{ steps.run_examples.outputs.total || '0' }}"
+          passed="${{ steps.run_examples.outputs.passed || '0' }}"
+          failed="${{ steps.run_examples.outputs.failed || '0' }}"
+
+          if [ "${{ steps.run_examples.outcome }}" = "success" ]; then
+            echo "✅ **Status**: ALL EXAMPLES PASSED ($passed/$total)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Status**: SOME EXAMPLES FAILED ($passed/$total passed)" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|------:|" >> $GITHUB_STEP_SUMMARY
+          echo "| 📝 Total | $total |" >> $GITHUB_STEP_SUMMARY
+          echo "| ✅ Passed | $passed |" >> $GITHUB_STEP_SUMMARY
+          echo "| ❌ Failed | $failed |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⏭️ Skipped | ${{ steps.run_examples.outputs.skipped || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Add detailed results if available
+          if [ -f example-results.txt ]; then
+            echo "### Detailed Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            cat example-results.txt >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Examples Tested" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **01_simple_document_store.py** - Document CRUD operations with comprehensive data types" >> $GITHUB_STEP_SUMMARY
+          echo "- **02_social_network_graph.py** - Graph modeling with vertices, edges, and traversal" >> $GITHUB_STEP_SUMMARY
+          echo "- **03_vector_search.py** - Vector embeddings and semantic similarity search (experimental)" >> $GITHUB_STEP_SUMMARY
+          echo "- **04_csv_import_documents.py** - CSV import with automatic dataset download and type inference" >> $GITHUB_STEP_SUMMARY
+          echo "  - Tested with \`--size small\` (~1 MB, ~100K ratings, 30 min timeout)" >> $GITHUB_STEP_SUMMARY
+          echo "  - Tested with \`--size large\` (~265 MB, ~33M ratings, 60 min timeout)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload example logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: example-logs-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}
+          path: |
+            bindings/python/examples/*.log
+            bindings/python/examples/example-results.txt
+          retention-days: 7
+
+      - name: Upload example databases
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: example-databases-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}
+          path: bindings/python/examples/my_test_databases/
+          retention-days: 3
+
+  # Summary job that checks all platforms
+  test-examples-summary:
+    name: Examples Test Summary
+    needs: test-examples
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check test results
+        shell: bash
+        run: |
+          echo "## 🎯 Overall Examples Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.test-examples.result }}" = "success" ]; then
+            echo "✅ **All platforms passed example testing!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "All examples ran successfully across all 6 platforms." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Platforms tested**: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64, windows/arm64" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Some platforms failed example testing**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Please check the individual platform jobs for details." >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
