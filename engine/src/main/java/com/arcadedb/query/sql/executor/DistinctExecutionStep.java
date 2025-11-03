@@ -28,10 +28,46 @@ import java.util.*;
 
 /**
  * Created by luigidellaquila on 08/07/16.
+ *
+ * Optimized to store only distinct field values instead of full Result objects to reduce memory footprint.
  */
 public class DistinctExecutionStep extends AbstractExecutionStep {
-  final Set<Result> pastItems = new HashSet<>();
-  final RidSet      pastRids  = new RidSet();
+  /**
+   * Lightweight wrapper that stores only the property values from a Result for DISTINCT comparison.
+   * This dramatically reduces memory usage compared to storing full Result objects.
+   */
+  private static class DistinctKey {
+    private final Map<String, Object> properties;
+    private final int hashCode;
+
+    DistinctKey(final Result result) {
+      // Extract only the properties (not the element reference, metadata, etc.)
+      final Set<String> propertyNames = result.getPropertyNames();
+      this.properties = new HashMap<>(propertyNames.size());
+      for (final String propName : propertyNames) {
+        this.properties.put(propName, result.getProperty(propName));
+      }
+      // Pre-compute hashCode for performance
+      this.hashCode = properties.hashCode();
+    }
+
+    @Override
+    public boolean equals(final Object other) {
+      if (this == other)
+        return true;
+      if (!(other instanceof DistinctKey))
+        return false;
+      return this.properties.equals(((DistinctKey) other).properties);
+    }
+
+    @Override
+    public int hashCode() {
+      return hashCode;
+    }
+  }
+
+  final Set<DistinctKey> pastItems = new HashSet<>();
+  final RidSet           pastRids  = new RidSet();
   ResultSet lastResult = null;
   Result    nextValue;
   private final long maxElementsAllowed;
@@ -119,7 +155,8 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
         return;
       }
     }
-    pastItems.add(nextValue);
+    // Store only the property values, not the full Result object
+    pastItems.add(new DistinctKey(nextValue));
     if (maxElementsAllowed > 0 && maxElementsAllowed < pastItems.size()) {
       this.pastItems.clear();
       throw new CommandExecutionException(
@@ -137,7 +174,8 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
         return pastRids.contains(identity);
       }
     }
-    return pastItems.contains(nextValue);
+    // Check using only the property values
+    return pastItems.contains(new DistinctKey(nextValue));
   }
 
   @Override

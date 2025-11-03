@@ -46,7 +46,7 @@ public class GroupBy extends SimpleNode {
 
   public GroupBy copy() {
     final GroupBy result = new GroupBy(-1);
-    result.items = items.stream().map(x -> x.copy()).collect(Collectors.toList());
+    result.items = items.stream().map(Expression::copy).collect(Collectors.toList());
     return result;
   }
 
