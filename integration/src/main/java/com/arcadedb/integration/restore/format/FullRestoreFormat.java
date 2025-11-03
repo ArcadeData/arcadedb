@@ -134,9 +134,12 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
     final long origSize = uncompressedFile.length();
     final long compressedSize = compressedFile.getCompressedSize();
 
-    logger.logLine(2, " %s -> %s (%,d%% compression)",
-        FileUtils.getSizeAsString(compressedSize), FileUtils.getSizeAsString(origSize),
-        origSize > 0 ? (origSize - compressedSize) * 100 / origSize : 0);
+    if (compressedSize > -1) {
+      logger.logLine(2, " %s -> %s (%,d%% compression)",
+          FileUtils.getSizeAsString(compressedSize), FileUtils.getSizeAsString(origSize),
+          origSize > 0 ? (origSize - compressedSize) * 100 / origSize : 0);
+    } else
+      logger.logLine(2, " uncompressed to %s", FileUtils.getSizeAsString(origSize));
 
     return origSize;
   }
