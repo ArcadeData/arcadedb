@@ -23,12 +23,15 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.LSMVectorIndexBuilder;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -61,6 +64,7 @@ public class CreateIndexStatement extends DDLStatement {
     case "FULL_TEXT" -> {}
     case "UNIQUE" -> {}
     case "NOTUNIQUE" -> {}
+    case "LSM_VECTOR" -> {}
     default -> throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
     }
   }
@@ -94,35 +98,145 @@ public class CreateIndexStatement extends DDLStatement {
     boolean unique = false;
 
     final String typeAsString = type.getStringValue();
-    if (typeAsString.equalsIgnoreCase("FULL_TEXT"))
+    final AtomicLong total = new AtomicLong();
+
+    if (typeAsString.equalsIgnoreCase("FULL_TEXT")) {
       indexType = Schema.INDEX_TYPE.FULL_TEXT;
-    else if (typeAsString.equalsIgnoreCase("UNIQUE")) {
+
+      database.getSchema().buildTypeIndex(typeName.getStringValue(), fields)
+          .withType(indexType)
+          .withIgnoreIfExists(ifNotExists)
+          .withUnique(unique)
+          .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE)
+          .withNullStrategy(nullStrategy)
+          .withCallback((document, totalIndexed) -> {
+            total.incrementAndGet();
+            if (totalIndexed % 100000 == 0) {
+              System.out.print(".");
+              System.out.flush();
+            }
+          }).create();
+
+    } else if (typeAsString.equalsIgnoreCase("UNIQUE")) {
       indexType = Schema.INDEX_TYPE.LSM_TREE;
       unique = true;
+
+      database.getSchema().buildTypeIndex(typeName.getStringValue(), fields)
+          .withType(indexType)
+          .withIgnoreIfExists(ifNotExists)
+          .withUnique(unique)
+          .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE)
+          .withNullStrategy(nullStrategy)
+          .withCallback((document, totalIndexed) -> {
+            total.incrementAndGet();
+            if (totalIndexed % 100000 == 0) {
+              System.out.print(".");
+              System.out.flush();
+            }
+          }).create();
+
     } else if (typeAsString.equalsIgnoreCase("NOTUNIQUE")) {
       indexType = Schema.INDEX_TYPE.LSM_TREE;
+
+      database.getSchema().buildTypeIndex(typeName.getStringValue(), fields)
+          .withType(indexType)
+          .withIgnoreIfExists(ifNotExists)
+          .withUnique(unique)
+          .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE)
+          .withNullStrategy(nullStrategy)
+          .withCallback((document, totalIndexed) -> {
+            total.incrementAndGet();
+            if (totalIndexed % 100000 == 0) {
+              System.out.print(".");
+              System.out.flush();
+            }
+          }).create();
+
     } else if (typeAsString.equalsIgnoreCase("HNSW")) {
       indexType = Schema.INDEX_TYPE.HNSW;
       unique = true;
-    } else
+
+      database.getSchema().buildTypeIndex(typeName.getStringValue(), fields)
+          .withType(indexType)
+          .withIgnoreIfExists(ifNotExists)
+          .withUnique(unique)
+          .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE)
+          .withNullStrategy(nullStrategy)
+          .withCallback((document, totalIndexed) -> {
+            total.incrementAndGet();
+            if (totalIndexed % 100000 == 0) {
+              System.out.print(".");
+              System.out.flush();
+            }
+          }).create();
+
+    } else if (typeAsString.equalsIgnoreCase("LSM_VECTOR")) {
+      indexType = Schema.INDEX_TYPE.LSM_VECTOR;
+      unique = true;
+
+      // Parse metadata for vector index
+      if (metadata == null) {
+        throw new CommandExecutionException(
+            "LSM_VECTOR index requires METADATA with vector configuration (e.g., METADATA {\"dimensions\": 512})");
+      }
+
+      final JSONObject metadataJson;
+      try {
+        metadataJson = new JSONObject(metadata.toString());
+      } catch (final Exception e) {
+        throw new CommandExecutionException("Invalid METADATA JSON format: " + e.getMessage(), e);
+      }
+
+      // Validate required fields
+      if (!metadataJson.has("dimensions")) {
+        throw new CommandExecutionException(
+            "LSM_VECTOR metadata requires 'dimensions' parameter (e.g., \"dimensions\": 512)");
+      }
+
+      final int dimensions;
+      try {
+        dimensions = metadataJson.getInt("dimensions");
+      } catch (final Exception e) {
+        throw new CommandExecutionException("'dimensions' must be an integer: " + e.getMessage(), e);
+      }
+
+      // Create LSMVectorIndexBuilder with metadata parameters
+      final LSMVectorIndexBuilder vectorBuilder = database.getSchema()
+          .buildLSMVectorIndex(typeName.getStringValue(), fields[0]);
+
+      // Apply metadata parameters with defaults
+      final String similarity = metadataJson.getString("similarity", "COSINE");
+      final int maxConnections = metadataJson.getInt("maxConnections", 16);
+      final int beamWidth = metadataJson.getInt("beamWidth", 100);
+      final float alpha = (float) metadataJson.getDouble("alpha", 1.2);
+
+      // Configure the builder
+      try {
+        vectorBuilder
+            .withIndexName(name.getValue())
+            .withDimensions(dimensions)
+            .withSimilarity(similarity)
+            .withMaxConnections(maxConnections)
+            .withBeamWidth(beamWidth)
+            .withAlpha(alpha)
+            .withIgnoreIfExists(ifNotExists)
+            .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE)
+            .withNullStrategy(nullStrategy)
+            .withCallback((document, totalIndexed) -> {
+              total.incrementAndGet();
+              if (totalIndexed % 100000 == 0) {
+                System.out.print(".");
+                System.out.flush();
+              }
+            })
+            .create();
+      } catch (final ConfigurationException e) {
+        throw new CommandExecutionException("Invalid LSM_VECTOR configuration: " + e.getMessage(), e);
+      }
+
+    } else {
       throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
-
-    final AtomicLong total = new AtomicLong();
-
-    database.getSchema().buildTypeIndex(typeName.getStringValue(), fields)
-        .withType(indexType)
-        .withIgnoreIfExists(ifNotExists)
-        .withUnique(unique)
-        .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE)
-        .withNullStrategy(nullStrategy)
-        .withCallback((document, totalIndexed) -> {
-          total.incrementAndGet();
-
-          if (totalIndexed % 100000 == 0) {
-            System.out.print(".");
-            System.out.flush();
-          }
-        }).create();
+    }
 
     typeName = prevName;
 

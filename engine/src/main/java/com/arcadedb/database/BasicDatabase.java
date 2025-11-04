@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
+import java.io.IOException;
 import java.util.*;
 
 @ExcludeFromJacocoGeneratedReport

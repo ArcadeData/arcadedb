@@ -20,9 +20,11 @@ package com.arcadedb.integration.importer.vector;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.lsm.LSMVectorIndex;
 import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
@@ -59,7 +61,7 @@ public class FastTextDatabase {
 
     final Database database;
 
-    final DatabaseFactory factory = new DatabaseFactory("textdb");
+    final DatabaseFactory factory = new DatabaseFactory("databases/textdb");
 
     // TODO: REMOVE THIS
 //    if (factory.exists())
@@ -89,7 +91,7 @@ public class FastTextDatabase {
           MILLISECONDS.toMinutes(System.currentTimeMillis() - start));
     }
 
-    final HnswVectorIndex persistentIndex = (HnswVectorIndex) database.getSchema().getIndexByName("Word[name,vector]");
+    final LSMVectorIndex persistentIndex = (LSMVectorIndex) database.getSchema().getIndexByName("Word[name,vector]");
 
     try {
       int k = 10;
@@ -106,9 +108,9 @@ public class FastTextDatabase {
       final long begin = System.currentTimeMillis();
       final AtomicLong lastStats = new AtomicLong();
 
-      final List<String> words = new ArrayList<>();
+      final List<Identifiable> words = new ArrayList<>();
       for (Iterator<Record> it = database.iterateType("Word", true); it.hasNext(); )
-        words.add(it.next().asVertex().getString("name"));
+        words.add(it.next().getIdentity());
 
       for (int cycle = 0; ; ++cycle) {
         final int currentCycle = cycle;
@@ -116,13 +118,13 @@ public class FastTextDatabase {
         executor.submit(() -> {
           try {
             final int randomWord = random.nextInt(words.size());
-            String input = words.get(randomWord);
+            Identifiable input = words.get(randomWord);
 
             final long startWord = System.currentTimeMillis();
 
             database.begin();
 
-            List<Pair<Vertex, Float>> approximateResults = persistentIndex.findNeighborsFromId(input, k);
+            List<Pair<Identifiable, ? extends Number>> approximateResults = persistentIndex.findNeighborsFromId(input, k, null);
 
             final long delta = System.currentTimeMillis() - startWord;
 
@@ -130,8 +132,8 @@ public class FastTextDatabase {
             totalSearchTime.addAndGet(delta);
 
             final Map<String, Float> results = new LinkedHashMap<>();
-            for (Pair<Vertex, Float> result : approximateResults)
-              results.put(result.getFirst().getString("name"), result.getSecond());
+            for (Pair<Identifiable, ? extends Number> result : approximateResults)
+              results.put(result.getFirst().asVertex().getString("name"), result.getSecond().floatValue());
 
             //LogManager.instance().log(this, Level.SEVERE, "%d Found similar words for '%s' in %dms: %s", currentCycle, input, delta, results);
 

@@ -21,16 +21,18 @@ package com.arcadedb.integration.importer.vector;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.index.vector.HnswVectorIndexRAM;
+import com.arcadedb.database.RID;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.index.lsm.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorUtils;
-import com.arcadedb.index.vector.distance.DistanceFunctionFactory;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
+import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.LSMVectorIndexBuilder;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DateUtils;
-import com.github.jelmerk.knn.DistanceFunction;
 
 import java.io.*;
 import java.util.*;
@@ -46,9 +48,9 @@ public class TextEmbeddingsImporter {
   private final    InputStream      inputStream;
   private final    ImporterSettings settings;
   private final    ConsoleLogger    logger;
-  private          int              m;
-  private          int              ef;
-  private          int              efConstruction;
+  private          int              maxConnections;
+  private          int              beamWidth;
+  private          float            alpha;
   private          boolean          normalizeVectors    = false;
   private          String           databasePath;
   private          boolean          overwriteDatabase   = false;
@@ -94,9 +96,21 @@ public class TextEmbeddingsImporter {
     if (settings.options.containsKey("deletedProperty"))
       this.deletedPropertyName = settings.getValue("deletedProperty", null);
 
-    this.m = settings.getIntValue("m", 16);
-    this.ef = settings.getIntValue("ef", 256);
-    this.efConstruction = settings.getIntValue("efConstruction", 256);
+    // LSM Vector Index parameters with backward compatibility for old HNSW names
+    // maxConnections: LSM name, m: old HNSW name (default: 16)
+    this.maxConnections = settings.getIntValue("maxConnections",
+        settings.getIntValue("m", 16));
+
+    // beamWidth: LSM name (no direct HNSW equivalent, use max of ef/efConstruction or default 100)
+    // Take the maximum of ef and efConstruction for better beam width
+    int ef = settings.getIntValue("ef", 100);
+    int efConstruction = settings.getIntValue("efConstruction", 100);
+    int defaultBeamWidth = Math.max(ef, efConstruction);
+    this.beamWidth = settings.getIntValue("beamWidth", defaultBeamWidth);
+
+    // alpha: Diversity parameter (LSM specific, default: 1.2)
+    // Parse as int and convert to float (e.g., 120 -> 1.2)
+    this.alpha = settings.getIntValue("alpha", 120) / 100f;
 
     if (settings.options.containsKey("normalizeVectors"))
       this.normalizeVectors = Boolean.parseBoolean(settings.getValue("normalizeVectors", null));
@@ -106,53 +120,100 @@ public class TextEmbeddingsImporter {
     if (!createDatabase())
       return null;
 
-    final DistanceFunction distanceFunction = DistanceFunctionFactory.getImplementationByName(
-        vectorTypeName + distanceFunctionName);
-
     beginTime = System.currentTimeMillis();
 
-    final List<TextFloatsEmbedding> texts = loadFromFile();
+    // Load all embeddings from file
+    final List<TextFloatsEmbedding> allTexts = loadFromFile();
 
-    if (settings.documentsSkipEntries != null) {
-      for (int i = 0; i < settings.documentsSkipEntries; i++)
-        texts.removeFirst();
+    if (allTexts.isEmpty()) {
+      logger.logLine(1, "No embeddings found in input file");
+      return database;
     }
 
-    if (!texts.isEmpty()) {
-      final int dimensions = texts.get(1).dimensions();
-
-      logger.logLine(2, "- Parsed %,d embeddings with %,d dimensions in RAM", texts.size(), dimensions);
-
-      final HnswVectorIndexRAM<String, float[], TextFloatsEmbedding, Float> hnswIndex = HnswVectorIndexRAM.newBuilder(dimensions,
-          distanceFunction,
-          texts.size()).withM(m).withEf(ef).withEfConstruction(efConstruction).build();
-
-      hnswIndex.addAll(texts, Runtime.getRuntime().availableProcessors(), (workDone, max) -> ++indexedEmbedding, 1);
-
-      Type vectorPropertyType = switch (vectorTypeName) {
-        case "Short" -> Type.ARRAY_OF_SHORTS;
-        case "Integer" -> Type.ARRAY_OF_INTEGERS;
-        case "Long" -> Type.ARRAY_OF_LONGS;
-        case "Float" -> Type.ARRAY_OF_FLOATS;
-        case "Double" -> Type.ARRAY_OF_DOUBLES;
-        default -> throw new IllegalArgumentException("Type '" + vectorTypeName + "' not supported");
-      };
-
-      hnswIndex.createPersistentIndex(database)//
-          .withVertexType(settings.vertexTypeName).withEdgeType(settings.edgeTypeName)
-          .withVectorProperty(vectorPropertyName, vectorPropertyType)
-          .withIdProperty(idPropertyName)//
-          .withDeletedProperty(deletedPropertyName)//
-          .withVertexCreationCallback((record, item, total) -> ++verticesCreated)//
-          .withCallback((record, total) -> ++verticesConnected)//
-          .withBatchSize(1000).create();
+    if (settings.documentsSkipEntries != null && settings.documentsSkipEntries > 0) {
+      for (int i = 0; i < settings.documentsSkipEntries && !allTexts.isEmpty(); i++)
+        allTexts.removeFirst();
     }
 
+    if (allTexts.isEmpty()) {
+      logger.logLine(1, "No embeddings left after skipping entries");
+      return database;
+    }
+
+    final int dimensions = allTexts.get(0).dimensions();
+
+    logger.logLine(2, "- Parsed %,d embeddings with %,d dimensions", allTexts.size(), dimensions);
+
+    // Create vertex type within a transaction if it doesn't exist
+    LocalSchema schema = database.getSchema().getEmbedded();
+    if (!schema.existsType(settings.vertexTypeName) ) {
+      database.transaction(() -> {
+        final LocalSchema txSchema = database.getSchema().getEmbedded();
+        if (!txSchema.existsType(settings.vertexTypeName) ) {
+          txSchema.createVertexType(settings.vertexTypeName);
+        }
+      });
+      // Get fresh schema reference after transaction completes
+      schema = database.getSchema().getEmbedded();
+    }
+
+    // Verify vector property name is not null, use default if needed
+    final String vectorProp = vectorPropertyName != null ? vectorPropertyName : "vector";
+
+    // Create LSMVectorIndex using builder
+    final LSMVectorIndexBuilder builder = schema.buildLSMVectorIndex(settings.vertexTypeName, vectorProp);
+    builder.withDimensions(dimensions)
+
+        .withSimilarity(distanceFunctionName)
+        .withMaxConnections(maxConnections)
+        .withBeamWidth(beamWidth)
+        .withAlpha(alpha);
+
+    final LSMVectorIndex lsmVectorIndex = builder.create();
+
+    logger.logLine(2, "- Created LSMVectorIndex with %,d dimensions", dimensions);
+
+    // Process embeddings and create vertices
+    long embeddingsProcessed = 0;
+    database.begin();
+    for (final TextFloatsEmbedding embedding : allTexts) {
+      // Create vertex with properties and save it
+      MutableVertex vertex = database.newVertex(settings.vertexTypeName)
+          .set(idPropertyName, embedding.id())
+          .set(vectorProp, embedding.vector());
+
+      if (deletedPropertyName != null && !deletedPropertyName.isEmpty()) {
+        vertex = vertex.set(deletedPropertyName, false);
+      }
+
+      vertex = vertex.save();
+      ++verticesCreated;
+
+      // Index the vector
+      float[] vector = embedding.vector();
+      if (normalizeVectors) {
+        vector = VectorUtils.normalize(vector);
+      }
+
+      lsmVectorIndex.put(new Object[]{vector}, new RID[]{vertex.getIdentity()});
+      ++indexedEmbedding;
+
+      ++embeddingsProcessed;
+      if (embeddingsProcessed % 1000 == 0) {
+        database.commit();
+        database.begin();
+        logger.logLine(2, "- Processed %,d embeddings", embeddingsProcessed);
+      }
+    }
+
+    lsmVectorIndex.compact();
     logger.logLine(1, "***************************************************************************************************");
     logger.logLine(1, "Import of Text Embeddings database completed in %s with %,d errors and %,d warnings.",
         DateUtils.formatElapsed((System.currentTimeMillis() - beginTime)), errors, warnings);
     logger.logLine(1, "\nSUMMARY\n");
-    logger.logLine(1, "- Embeddings.................................: %,d", texts.size());
+    logger.logLine(1, "- Embeddings.................................: %,d", allTexts.size());
+    logger.logLine(1, "- Vertices Created...........................: %,d", verticesCreated);
+    logger.logLine(1, "- Embeddings Indexed..........................: %,d", indexedEmbedding);
     logger.logLine(1, "***************************************************************************************************");
     logger.logLine(1, "");
 

@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.BucketIndexBuilder;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.LSMVectorIndexBuilder;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.ManualIndexBuilder;
 import com.arcadedb.schema.Schema;
@@ -457,6 +458,17 @@ public class RemoteSchema implements Schema {
   @Deprecated
   @Override
   public FunctionDefinition getFunction(final String libraryName, final String functionName) throws IllegalArgumentException {
+    throw new UnsupportedOperationException();
+  }
+
+  /**
+   * @param typeName      the document type name to create the index on
+   * @param propertyNames the property names to index
+   *
+   * @return
+   */
+  @Override
+  public LSMVectorIndexBuilder buildLSMVectorIndex(String typeName, String[] propertyNames) {
     throw new UnsupportedOperationException();
   }
 
