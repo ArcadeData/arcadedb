@@ -53,7 +53,7 @@ public class ArrayConcatExpressionElement extends Expression {
   public Expression splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext context) {
     if (isAggregate(context)) {
       final ArrayConcatExpressionElement result = new ArrayConcatExpressionElement(-1);
-      
+
       // Split the base expression
       final Expression baseResult = super.splitForAggregation(aggregateSplit, context);
       result.singleQuotes = baseResult.singleQuotes;
@@ -65,10 +65,10 @@ public class ArrayConcatExpressionElement extends Expression {
       result.booleanValue = baseResult.booleanValue;
       result.arrayConcatExpression = baseResult.arrayConcatExpression;
       result.whereCondition = baseResult.whereCondition;
-      
+
       // Always preserve the nested projection - it will be applied in the post-aggregate phase
       result.nestedProjection = nestedProjection == null ? null : nestedProjection.copy();
-      
+
       return result;
     } else {
       return this;
