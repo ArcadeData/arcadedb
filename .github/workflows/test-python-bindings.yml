@@ -24,6 +24,9 @@ on:
   # Allow manual trigger
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   # First job: Download ArcadeDB JARs (platform-agnostic)
   download-jars:
