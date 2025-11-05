@@ -1,4 +1,6 @@
 name: Test Python Examples
+permissions:
+  contents: read
 
 on:
   # Run on push to bindings/python/ directory
