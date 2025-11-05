@@ -338,7 +338,7 @@ public class Expression extends SimpleNode {
         }
       }
       if (arrayConcatExpression != null) {
-        final SimpleNode splitResult = arrayConcatExpression.splitForAggregation(context);
+        final SimpleNode splitResult = arrayConcatExpression.splitForAggregation(aggregateSplit, context);
         if (splitResult instanceof ArrayConcatExpression expression) {
           result.arrayConcatExpression = expression;
         } else if (splitResult instanceof Expression expression) {

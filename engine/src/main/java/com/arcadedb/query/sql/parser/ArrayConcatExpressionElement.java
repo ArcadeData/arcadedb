@@ -54,6 +54,10 @@ public class ArrayConcatExpressionElement extends Expression {
     if (isAggregate(context)) {
       final ArrayConcatExpressionElement result = new ArrayConcatExpressionElement(-1);
 
+      // If there's a nested projection, we need to track the number of aggregates before and after
+      // the split so we can attach the nested projection to the newly created aggregate item
+      final int aggregateCountBefore = nestedProjection != null ? aggregateSplit.getAggregate().size() : 0;
+
       // Split the base expression
       final Expression baseResult = super.splitForAggregation(aggregateSplit, context);
       result.singleQuotes = baseResult.singleQuotes;
@@ -66,8 +70,16 @@ public class ArrayConcatExpressionElement extends Expression {
       result.arrayConcatExpression = baseResult.arrayConcatExpression;
       result.whereCondition = baseResult.whereCondition;
 
-      // Always preserve the nested projection - it will be applied in the post-aggregate phase
-      result.nestedProjection = nestedProjection == null ? null : nestedProjection.copy();
+      // If a nested projection exists and new aggregate items were created, 
+      // attach the nested projection to the last newly created aggregate item
+      if (nestedProjection != null && aggregateSplit.getAggregate().size() > aggregateCountBefore) {
+        // The last aggregate item is the one that was just created for this element
+        final ProjectionItem lastAggregate = aggregateSplit.getAggregate().get(aggregateSplit.getAggregate().size() - 1);
+        // Only set if not already set (in case of nested aggregates)
+        if (lastAggregate.nestedProjection == null) {
+          lastAggregate.nestedProjection = nestedProjection.copy();
+        }
+      }
 
       return result;
     } else {
