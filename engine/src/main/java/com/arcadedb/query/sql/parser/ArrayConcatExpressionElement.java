@@ -20,9 +20,71 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.Result;
+
 public class ArrayConcatExpressionElement extends Expression {
+  protected NestedProjection nestedProjection;
+
   public ArrayConcatExpressionElement(final int id) {
     super(id);
+  }
+
+  @Override
+  public Object execute(final Identifiable currentRecord, final CommandContext context) {
+    Object result = super.execute(currentRecord, context);
+    if (nestedProjection != null) {
+      result = nestedProjection.apply(this, result, context);
+    }
+    return result;
+  }
+
+  @Override
+  public Object execute(final Result currentRecord, final CommandContext context) {
+    Object result = super.execute(currentRecord, context);
+    if (nestedProjection != null) {
+      result = nestedProjection.apply(this, result, context);
+    }
+    return result;
+  }
+
+  @Override
+  public Expression splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext context) {
+    if (isAggregate(context)) {
+      final ArrayConcatExpressionElement result = new ArrayConcatExpressionElement(-1);
+
+      // If there's a nested projection, we need to track the number of aggregates before and after
+      // the split so we can attach the nested projection to the newly created aggregate item
+      final int aggregateCountBefore = nestedProjection != null ? aggregateSplit.getAggregate().size() : 0;
+
+      // Split the base expression
+      final Expression baseResult = super.splitForAggregation(aggregateSplit, context);
+      result.singleQuotes = baseResult.singleQuotes;
+      result.doubleQuotes = baseResult.doubleQuotes;
+      result.isNull = baseResult.isNull;
+      result.rid = baseResult.rid;
+      result.mathExpression = baseResult.mathExpression;
+      result.json = baseResult.json;
+      result.booleanValue = baseResult.booleanValue;
+      result.arrayConcatExpression = baseResult.arrayConcatExpression;
+      result.whereCondition = baseResult.whereCondition;
+
+      // If a nested projection exists and new aggregate items were created,
+      // attach the nested projection to the last newly created aggregate item
+      if (nestedProjection != null && aggregateSplit.getAggregate().size() > aggregateCountBefore) {
+        // The last aggregate item is the one that was just created for this element
+        final ProjectionItem lastAggregate = aggregateSplit.getAggregate().get(aggregateSplit.getAggregate().size() - 1);
+        // Only set if not already set (in case of nested aggregates)
+        if (lastAggregate.nestedProjection == null) {
+          lastAggregate.nestedProjection = nestedProjection.copy();
+        }
+      }
+
+      return result;
+    } else {
+      return this;
+    }
   }
 
   @Override
@@ -35,6 +97,7 @@ public class ArrayConcatExpressionElement extends Expression {
     result.mathExpression = mathExpression == null ? null : mathExpression.copy();
     result.json = json == null ? null : json.copy();
     result.booleanValue = booleanValue;
+    result.nestedProjection = nestedProjection == null ? null : nestedProjection.copy();
 
     return result;
   }

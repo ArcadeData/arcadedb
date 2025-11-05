@@ -1777,6 +1777,7 @@ ArrayConcatExpressionElement ArrayConcatExpressionElement():
     jjtThis.json = Json() {jjtThis.value = jjtThis.json; }
 
   )
+  [ jjtThis.nestedProjection = NestedProjection() ]
   { return jjtThis; }
 }
 
