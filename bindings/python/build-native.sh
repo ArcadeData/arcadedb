@@ -57,6 +57,35 @@ if ! command -v jlink &> /dev/null; then
     exit 1
 fi
 
+# Check for build module (required for wheel building)
+PYTHON_WITH_BUILD=""
+
+# Look for Python with working build module
+# Test that -m build actually works, not just that import build succeeds
+for py_cmd in python3.13 python3.12 python3.11 python3 python; do
+    if command -v "$py_cmd" &> /dev/null; then
+        PY_PATH="$(command -v "$py_cmd")"
+        # Test both import AND that -m build works
+        if "$PY_PATH" -c "import build" 2> /dev/null && "$PY_PATH" -m build --version &> /dev/null 2>&1; then
+            PYTHON_WITH_BUILD="$PY_PATH"
+            echo -e "${CYAN}✅ Found working build module in: ${YELLOW}${PYTHON_WITH_BUILD}${NC}"
+            break
+        fi
+    fi
+done
+
+if [[ -z "$PYTHON_WITH_BUILD" ]]; then
+    echo -e "${RED}❌ build module not found or broken in any Python installation${NC}"
+    echo -e "${YELLOW}💡 Please ensure build module is properly installed:${NC}"
+    echo -e "${YELLOW}   1. If you have a venv, activate it and run: pip install build${NC}"
+    echo -e "${YELLOW}   2. Otherwise, create a venv:${NC}"
+    echo -e "${YELLOW}      python3 -m venv .build-env${NC}"
+    echo -e "${YELLOW}      source .build-env/bin/activate${NC}"
+    echo -e "${YELLOW}      pip install build${NC}"
+    echo -e "${YELLOW}      ./build.sh${NC}"
+    exit 1
+fi
+
 echo ""
 
 # Step 1: Download ArcadeDB JARs (if not already present)
@@ -190,7 +219,7 @@ if [[ "$PLATFORM" == darwin/* ]]; then
 fi
 
 # Build wheel
-python3 -m build --wheel --outdir "$SCRIPT_DIR/dist"
+"$PYTHON_WITH_BUILD" -m build --wheel --outdir "$SCRIPT_DIR/dist"
 
 # Rename wheel to have correct platform tag if needed
 # (python -m build may not set it correctly for cross-platform builds)

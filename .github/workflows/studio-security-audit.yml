@@ -1,4 +1,4 @@
-# ArcadeDB Studio Security Audit Workflow
+  # ArcadeDB Studio Security Audit Workflow
 # Runs automated security checks on the frontend dependencies
 
 name: "Studio Security Audit"

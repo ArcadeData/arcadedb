@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel", "jpype1"]
+requires = ["build>=0.7.0", "setuptools>=61.0", "wheel", "jpype1"]
 build-backend = "setuptools.build_meta"
 
 # This file defines the package metadata for arcadedb-embedded.
@@ -7,13 +7,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "arcadedb-embedded"
-version = "0.0.0"
+version = "25.10.1.dev0"
 description = "ArcadeDB embedded multi-model database with bundled JRE - no Java installation required"
 readme = "README.md"
 requires-python = ">=3.8"
-license = {text = "Apache-2.0"}
+license = { text = "Apache-2.0" }
 authors = [
-    {name = "Arcade Data Ltd", email = "info@arcadedata.com"}
+    { name = "Arcade Data Ltd", email = "info@arcadedata.com" }
 ]
 keywords = ["database", "graph", "document", "multi-model", "nosql", "arcadedb", "embedded", "jre", "java"]
 classifiers = [
@@ -35,12 +35,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = [
+test = [
     "pytest>=7.0.0",
     "pytest-cov",
+]
+dev = [
     "black",
     "isort",
     "mypy",
+    "pytest>=7.0.0",
+    "pytest-cov",
 ]
 vector = [
     "numpy>=1.20.0",
@@ -55,7 +59,7 @@ Repository = "https://github.com/humemai/arcadedb-embedded-python"
 
 [tool.setuptools]
 packages = ["arcadedb_embedded"]
-package-dir = {"" = "src"}
+package-dir = { "" = "src" }
 include-package-data = true
 
 [tool.setuptools.package-data]
