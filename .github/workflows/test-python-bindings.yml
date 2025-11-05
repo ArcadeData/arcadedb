@@ -141,7 +141,7 @@ jobs:
         # Skip for Linux: Docker build downloads JARs from ArcadeDB image directly
         # Only needed for native builds (macOS/Windows)
         if: matrix.platform != 'linux/amd64' && matrix.platform != 'linux/arm64'
-        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
           name: arcadedb-jars
           path: bindings/python/src/arcadedb_embedded/jars
