@@ -14,52 +14,21 @@ public class ArrayConcatNestedProjectionTest extends TestHelper {
   @Test
   public void testArrayConcatWithNestedProjection() {
     database.transaction(() -> {
-      // First test a simpler case without aggregates
-      try {
-        ResultSet rs = database.command("SQL", "SELECT [{'x':1}]:{x} || []");
-        assertThat(rs.hasNext()).isTrue();
-        Result record = rs.next();
-        String propertyName = record.getPropertyNames().iterator().next();
-        Object result = record.getProperty(propertyName);
-        System.out.println("Simple case - Property: '" + propertyName + "' = " + result);
-      } catch (Exception e) {
-        System.out.println("Error with simple case: " + e.getMessage());
-        e.printStackTrace();
-      }
-
-      // Test the nested projection alone
-      try {
-        ResultSet rs = database.command("SQL", "SELECT list({'x':1}):{x}");
-        assertThat(rs.hasNext()).isTrue();
-        Result record = rs.next();
-        String propertyName = record.getPropertyNames().iterator().next();
-        Object result = record.getProperty(propertyName);
-        System.out.println("Nested projection alone - Property: '" + propertyName + "' = " + result);
-      } catch (Exception e) {
-        System.out.println("Error with nested projection alone: " + e.getMessage());
-        e.printStackTrace();
-      }
-
       // Test case from issue: SELECT list({"x":1}):{x} || []
-      ResultSet rs = database.command("SQL", "SELECT list({'x':1}):{x} || []");
+      // This tests array concatenation with nested projection on an aggregate function
+      final ResultSet rs = database.command("SQL", "SELECT list({'x':1}):{x} || []");
 
       assertThat(rs.hasNext()).isTrue();
-      Result record = rs.next();
+      final Result record = rs.next();
 
-      System.out.println("All properties: " + record.getPropertyNames());
-      for (String propName : record.getPropertyNames()) {
-        System.out.println("Property '" + propName + "' = " + record.getProperty(propName));
-      }
-
-      // Get the first property (should be the only one)
-      String propertyName = record.getPropertyNames().iterator().next();
-      Object result = record.getProperty(propertyName);
-      System.out.println("Result: " + result);
-      System.out.println("Result type: " + (result != null ? result.getClass() : "null"));
+      // Get the result from the query
+      final String propertyName = record.getPropertyNames().iterator().next();
+      final Object result = record.getProperty(propertyName);
 
       // Expected: [{"x":1}]
       assertThat(result).isNotNull();
       assertThat(result).isInstanceOf(List.class);
+      
       final List<?> resultList = (List<?>) result;
       assertThat(resultList).hasSize(1);
 
