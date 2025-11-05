@@ -14,7 +14,20 @@ public class ArrayConcatNestedProjectionTest extends TestHelper {
   @Test
   public void testArrayConcatWithNestedProjection() {
     database.transaction(() -> {
-      // First test the nested projection alone
+      // First test a simpler case without aggregates
+      try {
+        ResultSet rs = database.command("SQL", "SELECT [{'x':1}]:{x} || []");
+        assertThat(rs.hasNext()).isTrue();
+        Result record = rs.next();
+        String propertyName = record.getPropertyNames().iterator().next();
+        Object result = record.getProperty(propertyName);
+        System.out.println("Simple case - Property: '" + propertyName + "' = " + result);
+      } catch (Exception e) {
+        System.out.println("Error with simple case: " + e.getMessage());
+        e.printStackTrace();
+      }
+      
+      // Test the nested projection alone
       try {
         ResultSet rs = database.command("SQL", "SELECT list({'x':1}):{x}");
         assertThat(rs.hasNext()).isTrue();

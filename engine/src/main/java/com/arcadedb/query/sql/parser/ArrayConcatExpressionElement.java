@@ -66,8 +66,17 @@ public class ArrayConcatExpressionElement extends Expression {
       result.arrayConcatExpression = baseResult.arrayConcatExpression;
       result.whereCondition = baseResult.whereCondition;
       
-      // Preserve the nested projection
-      result.nestedProjection = nestedProjection == null ? null : nestedProjection.copy();
+      // If there's a nested projection and we have aggregate projections, 
+      // add the nested projection to the last aggregate projection item
+      if (nestedProjection != null && !aggregateSplit.getAggregate().isEmpty()) {
+        final ProjectionItem lastAggregate = aggregateSplit.getAggregate().get(aggregateSplit.getAggregate().size() - 1);
+        if (lastAggregate.nestedProjection == null) {
+          lastAggregate.nestedProjection = nestedProjection.copy();
+        }
+      } else {
+        // Preserve the nested projection in the result for non-aggregate cases
+        result.nestedProjection = nestedProjection == null ? null : nestedProjection.copy();
+      }
       
       return result;
     } else {
