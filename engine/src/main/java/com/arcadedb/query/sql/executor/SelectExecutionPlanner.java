@@ -1678,11 +1678,13 @@ public class SelectExecutionPlanner {
     List<IndexSearchDescriptor> indexSearchDescriptors =
         info.flattenedWhereClause.stream()
             .map(x -> findBestIndexFor(context, indexes, x, typez))
-            .filter(Objects::nonNull)
             .collect(Collectors.toList());
 
-    if (indexSearchDescriptors.isEmpty())
-      return null; // some blocks could not be managed with an index
+    // Fix for issue #2695: If any OR branch cannot be optimized with an index,
+    // we must fall back to a full scan. Otherwise, those branches would be silently
+    // ignored, causing incomplete query results (e.g., DELETE only deleting some records).
+    if (indexSearchDescriptors.contains(null))
+      return null; // some blocks could not be managed with an index, fall back to full scan
 
     List<IndexSearchDescriptor> optimumIndexSearchDescriptors =
         commonFactor(indexSearchDescriptors);
