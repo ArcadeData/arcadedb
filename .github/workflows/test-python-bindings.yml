@@ -1,11 +1,22 @@
 name: Test Python Bindings
 
 on:
-  # Run on any push to any branch
+  # Run on push to bindings/python/ directory
   push:
+    paths:
+      - 'bindings/python/**'
+      - '.github/workflows/test-python-bindings.yml'
 
-  # Run on any pull request
+  # Run on pull request affecting bindings/python/
   pull_request:
+    paths:
+      - 'bindings/python/**'
+      - '.github/workflows/test-python-bindings.yml'
+
+  # Run after release workflow completes
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
 
   # Allow being called by other workflows (e.g., release workflow)
   workflow_call:
@@ -17,7 +28,7 @@ jobs:
   # First job: Download ArcadeDB JARs (platform-agnostic)
   download-jars:
     name: Download ArcadeDB JARs
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0

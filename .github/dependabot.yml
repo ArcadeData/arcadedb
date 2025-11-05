@@ -26,7 +26,7 @@ updates:
     directory: "/studio"
     schedule:
       interval: "weekly"
-      day: "monday"
+      day: "sunday"
       time: "09:00"
       timezone: "UTC"
     open-pull-requests-limit: 15
@@ -109,6 +109,14 @@ updates:
   # E2E Python Testing Dependencies
   - package-ecosystem: "uv"
     directory: "/e2e-python"
+    schedule:
+      interval: weekly
+      day: "sunday"
+    open-pull-requests-limit: 10
+
+  # Bindings Python
+  - package-ecosystem: "uv"
+    directory: "/bindings/python"
     schedule:
       interval: weekly
       day: "sunday"

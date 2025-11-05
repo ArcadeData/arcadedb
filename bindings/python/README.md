@@ -144,9 +144,31 @@ See [tests/README.md](tests/README.md) for detailed test documentation.
 - **Linux**: Docker (handles all dependencies)
 - **macOS/Windows**: Java 21+ JDK with jlink (to build the bundled JRE)
 
+### Setup Virtual Environment
+
+First, create and activate a Python virtual environment:
+
 ```bash
 cd bindings/python/
 
+# Create virtual environment
+python3 -m venv .venv
+
+# Activate it
+# On macOS/Linux:
+source .venv/bin/activate
+
+# On Windows:
+.venv\Scripts\activate
+
+# Install build and test dependencies
+pip install build
+pip install -e ".[test]"
+```
+
+### Build the Package
+
+```bash
 # Build for your current platform (auto-detected)
 ./build.sh
 
@@ -155,6 +177,16 @@ cd bindings/python/
 ./build.sh darwin/arm64   # Requires Java JDK (native build)
 ./build.sh windows/arm64  # Requires Java JDK (native build)
 # etc.
+```
+
+### Run Tests
+
+```bash
+# Run all tests
+pytest tests/
+
+# Run specific test file
+pytest tests/test_core.py -v
 ```
 
 Built wheels will be in `dist/`. **[Build instructions](https://humemai.github.io/arcadedb-embedded-python/latest/getting-started/installation/#building-from-source)**
