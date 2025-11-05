@@ -6,14 +6,14 @@ on:
     branches:
       - main
     # Skip if only Python bindings change
-    paths:
-      - '!bindings/python/**'
+    paths-ignore:
+      - 'bindings/python/**'
   push:
     branches:
       - main
     # Skip if only Python bindings change
-    paths:
-      - '!bindings/python/**'
+    paths-ignore:
+      - 'bindings/python/**'
 
 jobs:
   setup:
