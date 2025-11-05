@@ -28,7 +28,7 @@ public class ArrayConcatNestedProjectionTest extends TestHelper {
       // Expected: [{"x":1}]
       assertThat(result).isNotNull();
       assertThat(result).isInstanceOf(List.class);
-      
+
       final List<?> resultList = (List<?>) result;
       assertThat(resultList).hasSize(1);
 

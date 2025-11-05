@@ -70,7 +70,7 @@ public class ArrayConcatExpressionElement extends Expression {
       result.arrayConcatExpression = baseResult.arrayConcatExpression;
       result.whereCondition = baseResult.whereCondition;
 
-      // If a nested projection exists and new aggregate items were created, 
+      // If a nested projection exists and new aggregate items were created,
       // attach the nested projection to the last newly created aggregate item
       if (nestedProjection != null && aggregateSplit.getAggregate().size() > aggregateCountBefore) {
         // The last aggregate item is the one that was just created for this element
