@@ -126,9 +126,32 @@ public class ArrayConcatExpression extends SimpleNode {
     return false;
   }
 
-  public SimpleNode splitForAggregation(final CommandContext context) {
+  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext context) {
     if (isAggregate(context)) {
-      throw new CommandExecutionException("Cannot use aggregate functions in array concatenation");
+      final ArrayConcatExpression result = new ArrayConcatExpression(-1);
+      for (final ArrayConcatExpressionElement expr : this.childExpressions) {
+        if (expr.isAggregate(context)) {
+          // Split the aggregate expression, passing the aggregateSplit context
+          final Expression splitResult = expr.splitForAggregation(aggregateSplit, context);
+          if (splitResult instanceof ArrayConcatExpressionElement element) {
+            result.childExpressions.add(element);
+          } else {
+            // Convert Expression to ArrayConcatExpressionElement
+            final ArrayConcatExpressionElement element = new ArrayConcatExpressionElement(-1);
+            element.mathExpression = splitResult.mathExpression;
+            element.json = splitResult.json;
+            element.rid = splitResult.rid;
+            element.isNull = splitResult.isNull;
+            element.booleanValue = splitResult.booleanValue;
+            element.arrayConcatExpression = splitResult.arrayConcatExpression;
+            element.nestedProjection = expr.nestedProjection;
+            result.childExpressions.add(element);
+          }
+        } else {
+          result.childExpressions.add(expr.copy());
+        }
+      }
+      return result;
     } else {
       return this;
     }
