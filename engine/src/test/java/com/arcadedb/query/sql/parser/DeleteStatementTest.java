@@ -25,8 +25,11 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -107,13 +110,14 @@ public class DeleteStatementTest extends TestHelper {
     assertThat(CollectionUtils.countEntries(result)).isEqualTo(6);
 
     // Delete using multiple OR conditions (this should delete all 6 edges)
-    final String deleteQuery = "delete from HierarchyDuctDuct where " +
-        "((internal_from = 'A') AND (internal_to = 'B') AND (swap = false) AND (order_number = 1)) OR " +
-        "((internal_from = 'A') AND (internal_to = 'C') AND (swap = false) AND (order_number = 2)) OR " +
-        "((internal_from = 'A') AND (internal_to = 'D') AND (swap = false) AND (order_number = 3)) OR " +
-        "((internal_from = 'A') AND (internal_to = 'E') AND (swap = false) AND (order_number = 4)) OR " +
-        "((internal_from = 'A') AND (internal_to = 'F') AND (swap = false) AND (order_number = 5)) OR " +
-        "((internal_from = 'A') AND (internal_to = 'G') AND (swap = false) AND (order_number = 6))";
+    final String deleteQuery = """
+        delete from HierarchyDuctDuct where
+        ((internal_from = 'A') AND (internal_to = 'B') AND (swap = false) AND (order_number = 1)) OR
+        ((internal_from = 'A') AND (internal_to = 'C') AND (swap = false) AND (order_number = 2)) OR
+        ((internal_from = 'A') AND (internal_to = 'D') AND (swap = false) AND (order_number = 3)) OR
+        ((internal_from = 'A') AND (internal_to = 'E') AND (swap = false) AND (order_number = 4)) OR
+        ((internal_from = 'A') AND (internal_to = 'F') AND (swap = false) AND (order_number = 5)) OR
+        ((internal_from = 'A') AND (internal_to = 'G') AND (swap = false) AND (order_number = 6))""";
 
     final ResultSet deleteResult = database.command("sql", deleteQuery);
     final long deletedCount = deleteResult.next().getProperty("count");
@@ -150,13 +154,14 @@ public class DeleteStatementTest extends TestHelper {
     assertThat(CollectionUtils.countEntries(result)).isEqualTo(6);
 
     // Delete using OR with indexed field - all branches should be processed
-    final String deleteQuery = "delete from Product where " +
-        "(id = 1 AND category = 'cat1') OR " +
-        "(id = 2 AND category = 'cat2') OR " +
-        "(id = 3 AND category = 'cat3') OR " +
-        "(id = 4 AND category = 'cat4') OR " +
-        "(id = 5 AND category = 'cat5') OR " +
-        "(id = 6 AND category = 'cat6')";
+    final String deleteQuery = """
+        delete from Product where
+        (id = 1 AND category = 'cat1') OR
+        (id = 2 AND category = 'cat2') OR
+        (id = 3 AND category = 'cat3') OR
+        (id = 4 AND category = 'cat4') OR
+        (id = 5 AND category = 'cat5') OR
+        (id = 6 AND category = 'cat6')""";
 
     final ResultSet deleteResult = database.command("sql", deleteQuery);
     final long deletedCount = deleteResult.next().getProperty("count");

@@ -1686,9 +1686,6 @@ public class SelectExecutionPlanner {
     if (indexSearchDescriptors.contains(null))
       return null; // some blocks could not be managed with an index, fall back to full scan
 
-    if (indexSearchDescriptors.isEmpty())
-      return null;
-
     List<IndexSearchDescriptor> optimumIndexSearchDescriptors =
         commonFactor(indexSearchDescriptors);
 
