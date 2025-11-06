@@ -1958,12 +1958,19 @@ public class SelectExecutionPlanner {
 
     // get all valid index descriptors
     List<IndexSearchDescriptor> descriptors = indexes.stream()
-        .map(index -> buildIndexSearchDescriptor(context, index, block, clazz)).filter(Objects::nonNull)
-        .filter(x -> x.keyCondition != null).filter(x -> !x.getSubBlocks().isEmpty()).collect(Collectors.toList());
+        .map(index -> buildIndexSearchDescriptor(context, index, block, clazz))
+        .filter(Objects::nonNull)
+        .filter(x -> x.keyCondition != null)
+        .filter(x -> !x.getSubBlocks().isEmpty())
+        .collect(Collectors.toList());
 
-    final List<IndexSearchDescriptor> fullTextIndexDescriptors = indexes.stream().filter(idx -> idx.getType().equals(FULL_TEXT))
-        .map(idx -> buildIndexSearchDescriptorForFulltext(context, idx, block, clazz)).filter(Objects::nonNull)
-        .filter(x -> x.keyCondition != null).filter(x -> !x.getSubBlocks().isEmpty()).toList();
+    final List<IndexSearchDescriptor> fullTextIndexDescriptors = indexes.stream()
+        .filter(idx -> idx.getType().equals(FULL_TEXT))
+        .map(idx -> buildIndexSearchDescriptorForFulltext(context, idx, block, clazz))
+        .filter(Objects::nonNull)
+        .filter(x -> x.keyCondition != null)
+        .filter(x -> !x.getSubBlocks().isEmpty())
+        .toList();
 
     descriptors.addAll(fullTextIndexDescriptors);
 
@@ -1973,21 +1980,27 @@ public class SelectExecutionPlanner {
 
     // sort by cost
     final List<Pair<Integer, IndexSearchDescriptor>> sortedDescriptors = descriptors.stream()
-        .map(x -> (Pair<Integer, IndexSearchDescriptor>) new Pair(x.cost(context), x)).sorted().collect(Collectors.toList());
+        .map(x -> (Pair<Integer, IndexSearchDescriptor>) new Pair(x.cost(context), x))
+        .sorted()
+        .toList();
 
     // get only the descriptors with the lowest cost
     if (sortedDescriptors.isEmpty()) {
       descriptors = Collections.emptyList();
     } else {
-      descriptors = sortedDescriptors.stream().filter(x -> x.getFirst().equals(sortedDescriptors.getFirst().getFirst()))
-          .map(x -> x.getSecond()).collect(Collectors.toList());
+      descriptors = sortedDescriptors.stream()
+          .filter(x -> x.getFirst().equals(sortedDescriptors.getFirst().getFirst()))
+          .map(x -> x.getSecond())
+          .toList();
     }
 
     // sort remaining by the number of indexed fields
-    descriptors = descriptors.stream().sorted(Comparator.comparingInt(x -> x.getSubBlocks().size())).collect(Collectors.toList());
+    descriptors = descriptors.stream()
+        .sorted(Comparator.comparingInt(x -> x.getSubBlocks().size()))
+        .toList();
 
     // get the one that has more indexed fields
-    return descriptors.isEmpty() ? null : descriptors.getFirst();
+    return descriptors.isEmpty() ? null : descriptors.getLast();
   }
 
   /**

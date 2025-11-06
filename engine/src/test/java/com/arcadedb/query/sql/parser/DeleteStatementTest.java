@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 
@@ -73,7 +74,7 @@ public class DeleteStatementTest extends TestHelper {
 
   @Test
   public void testDeleteWithMultipleOrConditions() {
-    // Reproduction test for issue #2695
+    // Reproduction test for issue #  2695
     // DELETE with multiple OR conditions should delete all matching records
     database.command("sql", "create vertex type Duct");
     database.command("sql", "create edge type HierarchyDuctDuct");
@@ -107,8 +108,7 @@ public class DeleteStatementTest extends TestHelper {
 
     // Verify we have 6 edges
     ResultSet result = database.query("sql", "select from HierarchyDuctDuct");
-    assertThat(CollectionUtils.countEntries(result)).isEqualTo(6);
-
+    assertThat(result.stream().count()).isEqualTo(6);
     // Delete using multiple OR conditions (this should delete all 6 edges)
     final String deleteQuery = """
         delete from HierarchyDuctDuct where
@@ -127,7 +127,7 @@ public class DeleteStatementTest extends TestHelper {
 
     // Verify all edges are deleted
     result = database.query("sql", "select from HierarchyDuctDuct");
-    assertThat(CollectionUtils.countEntries(result)).isEqualTo(0);
+    assertThat(result.stream().count()).isZero();
 
     database.commit();
   }
@@ -174,6 +174,47 @@ public class DeleteStatementTest extends TestHelper {
     assertThat(CollectionUtils.countEntries(result)).isEqualTo(0);
 
     database.commit();
+  }
+
+  @Test
+  void testDeleteWithMultipleOrAndMultipleIndexes() {
+    database.command("sqlscript", """
+        CREATE VERTEX TYPE duct;
+        CREATE PROPERTY duct.id STRING;
+        CREATE INDEX ON duct (id) UNIQUE;
+
+        CREATE EDGE TYPE duct_duct;
+        CREATE PROPERTY duct_duct.from_id STRING;
+        CREATE PROPERTY duct_duct.to_id STRING;
+        CREATE PROPERTY duct_duct.swap STRING;
+        CREATE INDEX ON duct_duct (from_id,to_id,swap) UNIQUE;
+        CREATE INDEX ON duct_duct (from_id) NOTUNIQUE;
+        CREATE INDEX ON duct_duct (to_id) NOTUNIQUE;
+        CREATE INDEX ON duct_duct (swap) NOTUNIQUE;
+        """);
+
+    database.command("sqlscript", """
+        INSERT INTO duct (id) VALUES ('1'), ('2'), ('3');
+
+        CREATE EDGE duct_duct from #1:0 to #1:1 SET from_id='1', to_id='2', swap='N';
+        CREATE EDGE duct_duct from #1:0 to #1:2 SET from_id='1', to_id='3', swap='N';
+        """);
+
+
+    ResultSet deleted = database.command("sql", """
+        DELETE FROM duct_duct WHERE (from_id='1' AND to_id='2' AND swap='N') OR (from_id='1' AND to_id='3' AND swap='N');
+        """);
+    assertThat(deleted.next().<Long>getProperty("count")).isEqualTo(2);
+    ResultSet resultSet = database.query("sql", "select from duct_duct");
+    assertThat(resultSet.stream().count()).isEqualTo(0);
+
+    database.command("sqlscript", """
+        CREATE EDGE duct_duct from #1:0 to #1:1 SET from_id='1', to_id='2', swap='N';
+        CREATE EDGE duct_duct from #1:0 to #1:2 SET from_id='1', to_id='3', swap='N';
+        """);
+    ResultSet inserted = database.query("sql", "select from duct_duct");
+    assertThat(inserted.stream().count()).isEqualTo(2);
+
   }
 
   protected SqlParser getParserFor(final String string) {
