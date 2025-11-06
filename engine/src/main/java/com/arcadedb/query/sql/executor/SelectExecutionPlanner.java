@@ -1991,7 +1991,7 @@ public class SelectExecutionPlanner {
       descriptors = sortedDescriptors.stream()
           .filter(x -> x.getFirst().equals(sortedDescriptors.getFirst().getFirst()))
           .map(x -> x.getSecond())
-          .collect(Collectors.toList());
+          .toList();
     }
 
     // sort remaining by the number of indexed fields
