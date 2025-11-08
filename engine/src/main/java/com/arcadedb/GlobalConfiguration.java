@@ -272,6 +272,10 @@ public enum GlobalConfiguration {
   POLYGLOT_COMMAND_TIMEOUT("arcadedb.polyglotCommand.timeout", SCOPE.DATABASE, "Default timeout for polyglot commands (in ms)",
       Long.class, 10_000),
 
+  QUERY_ENGINES_USE_VIRTUAL_THREADS("arcadedb.queryEngines.useVirtualThreads", SCOPE.DATABASE,
+      "Use virtual threads for executing Java and Polyglot queries. Virtual threads provide better scalability for concurrent query execution.",
+      Boolean.class, true),
+
   QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP("arcadedb.queryMaxHeapElementsAllowedPerOp", SCOPE.DATABASE, """
       Maximum number of elements (records) allowed in a single query for memory-intensive operations (eg. ORDER BY in heap). \
       If exceeded, the query fails with an OCommandExecutionException. Negative number means no limit.\
