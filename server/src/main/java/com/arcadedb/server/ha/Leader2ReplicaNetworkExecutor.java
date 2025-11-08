@@ -155,7 +155,10 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   public void run() {
     LogManager.instance().setContext(server.getServerName());
 
-    senderThread = new Thread(new Runnable() {
+    final boolean useVirtualThreads = server.getServer().getConfiguration()
+        .getValueAsBoolean(com.arcadedb.GlobalConfiguration.HA_USE_VIRTUAL_THREADS);
+
+    final Runnable senderRunnable = new Runnable() {
       @Override
       public void run() {
         LogManager.instance().setContext(server.getServerName());
@@ -205,11 +208,18 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
                 senderQueue.size());
 
       }
-    });
-    senderThread.start();
+    };
+
+    // Use virtual threads if configured, otherwise use platform threads
+    if (useVirtualThreads) {
+      senderThread = Thread.startVirtualThread(senderRunnable);
+    } else {
+      senderThread = new Thread(senderRunnable);
+      senderThread.start();
+    }
     senderThread.setName(server.getServer().getServerName() + " leader2replica-sender->" + remoteServerName);
 
-    forwarderThread = new Thread(new Runnable() {
+    final Runnable forwarderRunnable = new Runnable() {
       @Override
       public void run() {
         LogManager.instance().setContext(server.getServerName());
@@ -245,8 +255,15 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
             .log(this, Level.FINE, "Replication thread to remote server '%s' is off (buffered=%d)", remoteServerName,
                 forwarderQueue.size());
       }
-    });
-    forwarderThread.start();
+    };
+
+    // Use virtual threads if configured, otherwise use platform threads
+    if (useVirtualThreads) {
+      forwarderThread = Thread.startVirtualThread(forwarderRunnable);
+    } else {
+      forwarderThread = new Thread(forwarderRunnable);
+      forwarderThread.start();
+    }
     forwarderThread.setName(server.getServer().getServerName() + " leader-forwarder");
 
     // REUSE THE SAME BUFFER TO AVOID MALLOC
