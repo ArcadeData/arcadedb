@@ -443,6 +443,10 @@ public enum GlobalConfiguration {
   HA_REPLICATION_INCOMING_PORTS("arcadedb.ha.replicationIncomingPorts", SCOPE.SERVER,
       "TCP/IP port number used for incoming replication connections", String.class, "2424-2433"),
 
+  HA_USE_VIRTUAL_THREADS("arcadedb.ha.useVirtualThreads", SCOPE.SERVER,
+      "Use virtual threads for HA replication network executors. Virtual threads provide better scalability for replica connections (requires Java 21+).",
+      Boolean.class, true),
+
   // KUBERNETES
   HA_K8S("arcadedb.ha.k8s", SCOPE.SERVER, "The server is running inside Kubernetes", Boolean.class, false),
 
