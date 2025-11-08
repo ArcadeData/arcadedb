@@ -460,12 +460,20 @@ public enum GlobalConfiguration {
   POSTGRES_DEBUG("arcadedb.postgres.debug", SCOPE.SERVER,
       "Enables the printing of Postgres protocol to the console. Default is false", Boolean.class, false),
 
+  POSTGRES_USE_VIRTUAL_THREADS("arcadedb.postgres.useVirtualThreads", SCOPE.SERVER,
+      "Use virtual threads for PostgreSQL wire protocol connections. Virtual threads provide better scalability for concurrent connections (requires Java 21+).",
+      Boolean.class, true),
+
   // REDIS
   REDIS_PORT("arcadedb.redis.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for Redis plugin. Default is 6379", Integer.class, 6379),
 
   REDIS_HOST("arcadedb.redis.host", SCOPE.SERVER,
       "TCP/IP host name used for incoming connections for Redis plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),
+
+  REDIS_USE_VIRTUAL_THREADS("arcadedb.redis.useVirtualThreads", SCOPE.SERVER,
+      "Use virtual threads for Redis wire protocol connections. Virtual threads provide better scalability for concurrent connections (requires Java 21+).",
+      Boolean.class, true),
 
   // MONGO
   MONGO_PORT("arcadedb.mongo.port", SCOPE.SERVER,
