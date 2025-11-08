@@ -379,6 +379,10 @@ public enum GlobalConfiguration {
       "Timeout in seconds for a HTTP session (managing a transaction) to expire. This timeout is computed from the latest command against the session",
       Long.class, 5), // 5 SECONDS DEFAULT
 
+  SERVER_HTTP_USE_VIRTUAL_THREADS("arcadedb.server.httpUseVirtualThreads", SCOPE.SERVER,
+      "Use virtual threads for HTTP request handling. Virtual threads provide better scalability for concurrent HTTP connections (requires Java 21+).",
+      Boolean.class, true),
+
   // SERVER WS
   SERVER_WS_EVENT_BUS_QUEUE_SIZE("arcadedb.server.eventBusQueueSize", SCOPE.SERVER,
       "Size of the queue used as a buffer for unserviced database change events.", Integer.class, 1000),
