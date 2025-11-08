@@ -48,10 +48,10 @@ class SingleServerLoadTestIT extends ContainersTestTemplate {
 
     // Parameters for the test
     final int numOfThreads = 5; //number of threads to use to insert users and photos
-    final int numOfUsers = 10000; // Each thread will create 200000 users
-    final int numOfPhotos = 10; // Each user will have 5 photos
-    final int numOfFriendship = 1000; // Each thread will create 100000 friendships
-    final int numOfLike = 1000; // Each thread will create 100000 likes
+    final int numOfUsers = 10000; // number of users per thread
+    final int numOfPhotos = 10; // number of phots per user
+    final int numOfFriendship = 1000; // total number of friendships edges to create
+    final int numOfLike = 1000; // total number of likes to photo edges to create
 
     int expectedUsersCount = numOfUsers * numOfThreads;
     int expectedPhotoCount = expectedUsersCount * numOfPhotos;
