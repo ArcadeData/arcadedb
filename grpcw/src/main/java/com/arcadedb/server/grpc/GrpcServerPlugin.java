@@ -39,6 +39,8 @@ import io.grpc.xds.XdsServerBuilder;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
@@ -141,7 +143,9 @@ public class GrpcServerPlugin implements ServerPlugin {
     grpcServer = serverBuilder
         .maxInboundMessageSize(256 * 1024 * 1024)
         .maxInboundMetadataSize(32 * 1024 * 1024)
-        .build().start();
+        .executor(Executors.newVirtualThreadPerTaskExecutor())
+        .build()
+        .start();
 
     // Build status message
     StringBuilder status = new StringBuilder();
@@ -180,7 +184,9 @@ public class GrpcServerPlugin implements ServerPlugin {
     xdsServer = xdsBuilder
         .maxInboundMessageSize(256 * 1024 * 1024)
         .maxInboundMetadataSize(32 * 1024 * 1024)
-        .build().start();
+        .executor(Executors.newVirtualThreadPerTaskExecutor())
+        .build()
+        .start();
 
     LogManager.instance().log(this, Level.INFO, "gRPC XDS server started on port %s (xDS management enabled)", port);
   }
