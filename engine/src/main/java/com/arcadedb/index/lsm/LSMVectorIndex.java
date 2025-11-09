@@ -81,18 +81,18 @@ public class LSMVectorIndex implements Index, IndexInternal, RangeIndex {
     public IndexInternal create(final IndexBuilder builder) {
       final LSMVectorIndexBuilder vectorBuilder = (LSMVectorIndexBuilder) builder;
       return new LSMVectorIndex(
-          vectorBuilder.getDatabase(),
-          vectorBuilder.getIndexName(),
-          vectorBuilder.getFilePath(),
-          vectorBuilder.getTypeName(),
-          vectorBuilder.getPropertyName(),
-          ComponentFile.MODE.READ_WRITE,
-          vectorBuilder.getDimensions(),
-          vectorBuilder.getSimilarityFunction(),
-          vectorBuilder.getMaxConnections(),
-          vectorBuilder.getBeamWidth(),
-          vectorBuilder.getAlpha(),
-          vectorBuilder.getNullStrategy());
+          vectorBuilder.getDatabase(),        // database
+          vectorBuilder.getTypeName(),        // docType (was getIndexName - FIXED)
+          vectorBuilder.getPropertyName(),    // property (was getFilePath - FIXED)
+          vectorBuilder.getIndexName(),       // name (was getTypeName - FIXED)
+          vectorBuilder.getFilePath(),        // filePath (was getPropertyName - FIXED)
+          ComponentFile.MODE.READ_WRITE,      // mode
+          vectorBuilder.getDimensions(),      // dimensions
+          vectorBuilder.getSimilarityFunction(),  // similarityFunction
+          vectorBuilder.getMaxConnections(),  // maxConnections
+          vectorBuilder.getBeamWidth(),       // beamWidth
+          vectorBuilder.getAlpha(),           // alpha
+          vectorBuilder.getNullStrategy());   // nullStrategy
     }
   }
 

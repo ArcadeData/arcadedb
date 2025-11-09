@@ -358,10 +358,10 @@ public class LSMVectorIndexTest extends TestHelper {
           index.knnSearch(v1, 2);
 
       assertThat(results).hasSize(2);
-      // v2 should be closest to v1 (Euclidean distance)
-      assertThat(results.get(0).rids).contains(rid2);
-      // v3 or v4 should be 2nd
-      assertThat(results.get(1).rids).anyMatch(rid -> rid.equals(rid3) || rid.equals(rid4));
+      // v1 itself should be closest (exact match, distance 0)
+      assertThat(results.get(0).rids).contains(rid1);
+      // v2 should be 2nd closest (Euclidean distance ~0.141)
+      assertThat(results.get(1).rids).contains(rid2);
     });
   }
 
@@ -369,32 +369,41 @@ public class LSMVectorIndexTest extends TestHelper {
   public void testKNNSearchAllDistanceMetrics() {
     database.transaction(() -> {
       // Test COSINE similarity
-      testKNNWithMetric("COSINE", 3);
+      testKNNWithMetric("COSINE", 3, 0);
 
       // Test EUCLIDEAN distance
-      testKNNWithMetric("EUCLIDEAN", 3);
+      testKNNWithMetric("EUCLIDEAN", 3, 10);
 
       // Test DOT_PRODUCT
-      testKNNWithMetric("DOT_PRODUCT", 3);
+      testKNNWithMetric("DOT_PRODUCT", 3, 20);
     });
   }
 
-  private void testKNNWithMetric(final String metric, final int dimensions) {
+  private void testKNNWithMetric(final String metric, final int dimensions, final int ridOffset) {
     final Schema schema = database.getSchema();
-    final LSMVectorIndex index = schema.buildLSMVectorIndex("TestVector", "embedding")
+    // Use unique property name for each metric to avoid schema conflicts
+    final String propertyName = "embedding_" + metric.toLowerCase();
+    final LSMVectorIndex index = schema.buildLSMVectorIndex("TestVector", propertyName)
         .withIndexName("test_knn_" + metric + "_idx")
         .withDimensions(dimensions)
         .withSimilarity(metric)
         .create();
 
-    // Create test vectors
+    // Create test vectors with better distinction for all metrics
+    // v1: [1.0, 0.0, 0.0, ...] - first component only
+    // v2: [0.0, 1.0, 0.0, ...] - second component only (orthogonal to v1)
     final float[] v1 = new float[dimensions];
     final float[] v2 = new float[dimensions];
     v1[0] = 1.0f;
-    v2[0] = 1.1f;
+    if (dimensions > 1) {
+      v2[1] = 1.0f;
+    } else {
+      v2[0] = 0.5f; // For 1D, use different value
+    }
 
-    final RID rid1 = new RID(database, 1, 0);
-    final RID rid2 = new RID(database, 1, 1);
+    // Use unique RIDs for each metric test to avoid confusion
+    final RID rid1 = new RID(database, 1, ridOffset);
+    final RID rid2 = new RID(database, 1, ridOffset + 1);
 
     index.put(new Object[] { v1 }, new RID[] { rid1 });
     index.put(new Object[] { v2 }, new RID[] { rid2 });
