@@ -580,6 +580,8 @@ public class JSONObject implements Map<String, Object> {
       return array.getInternal();
     } else if (object instanceof Collection collection) {
       return new JSONArray(collection).getInternal();
+    } else if (object instanceof Object[] objects) {
+      return new JSONArray(objects).getInternal();
     } else if (object instanceof Map map) {
       return new JSONObject(map).getInternal();
     } else if (object instanceof Document document) {
