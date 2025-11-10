@@ -289,7 +289,21 @@ public class BinaryComparator {
     case BinaryTypes.TYPE_BINARY: {
       switch (type2) {
       case BinaryTypes.TYPE_BINARY: {
-        return ((Binary) value1).compareTo((Binary) value2);
+        // Handle both byte[] and Binary objects
+        if (value1 instanceof byte[] bytes1) {
+          if (value2 instanceof byte[] bytes2) {
+            return UnsignedBytesComparator.BEST_COMPARATOR.compare(bytes1, bytes2);
+          } else if (value2 instanceof Binary binary2) {
+            return -compareBytes(binary2.getContent(), bytes1);
+          }
+        } else if (value1 instanceof Binary binary1) {
+          if (value2 instanceof byte[] bytes2) {
+            return compareBytes(binary1.getContent(), bytes2);
+          } else if (value2 instanceof Binary binary2) {
+            return binary1.compareTo(binary2);
+          }
+        }
+        throw new IllegalArgumentException("Invalid binary type for comparison: " + value1.getClass() + " and " + value2.getClass());
       }
       }
       throw new UnsupportedOperationException("Comparing binary types");
