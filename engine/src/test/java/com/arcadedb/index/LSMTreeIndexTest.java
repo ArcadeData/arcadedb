@@ -1227,14 +1227,14 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testBuildWithLogging() {
     // Test that the build method logs progress messages
     final List<String> logMessages = new ArrayList<>();
-    
+
     try {
       // Set custom logger to capture log messages
       LogManager.instance().setLogger(new com.arcadedb.log.Logger() {
         @Override
         public void log(final Object requester, final Level level, final String message, final Throwable exception, final String context,
-            final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6, 
-            final Object arg7, final Object arg8, final Object arg9, final Object arg10, final Object arg11, final Object arg12, 
+            final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6,
+            final Object arg7, final Object arg8, final Object arg9, final Object arg10, final Object arg11, final Object arg12,
             final Object arg13, final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
           if (message != null && (message.contains("Building index") || message.contains("Completed building"))) {
             logMessages.add(String.format(message, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10));
@@ -1242,7 +1242,7 @@ public class LSMTreeIndexTest extends TestHelper {
         }
 
         @Override
-        public void log(final Object requester, final Level level, final String message, final Throwable exception, final String context, 
+        public void log(final Object requester, final Level level, final String message, final Throwable exception, final String context,
             final Object... args) {
           if (message != null && (message.contains("Building index") || message.contains("Completed building"))) {
             if (args != null && args.length > 0) {
@@ -1282,23 +1282,23 @@ public class LSMTreeIndexTest extends TestHelper {
 
       // Verify that log messages were captured
       assertThat(logMessages).isNotEmpty();
-      
+
       // Check for start message
       boolean hasStartMessage = logMessages.stream()
           .anyMatch(msg -> msg.contains("Building index") && msg.contains("properties"));
       assertThat(hasStartMessage).isTrue();
-      
+
       // Check for progress messages (should have at least 2 for 25000 records with 10K interval)
       long progressMessages = logMessages.stream()
           .filter(msg -> msg.contains("processed") && msg.contains("records/sec"))
           .count();
       assertThat(progressMessages).isGreaterThanOrEqualTo(2);
-      
+
       // Check for completion message
       boolean hasCompletionMessage = logMessages.stream()
           .anyMatch(msg -> msg.contains("Completed building index"));
       assertThat(hasCompletionMessage).isTrue();
-      
+
     } finally {
       // Restore default logger
       LogManager.instance().setLogger(new com.arcadedb.log.DefaultLogger());
