@@ -43,7 +43,7 @@ public class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
     createArcadeContainer("arcade", "none", "none", "any", false, network);
 
     List<ServerWrapper> serverWrappers = startContainers();
-    ServerWrapper server = serverWrappers.getFirst();
+    ServerWrapper server = serverWrappers.get(0);
     DatabaseWrapper db = new DatabaseWrapper(server, idSupplier, protocol);
     db.createDatabase();
     db.createSchema();

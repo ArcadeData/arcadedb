@@ -42,7 +42,7 @@ public class SingleServerLoadTestIT extends ContainersTestTemplate {
   void singleServerLoadTest(DatabaseWrapper.Protocol protocol) throws InterruptedException, IOException {
 
     createArcadeContainer("arcade", "none", "none", "any", false, network);
-    ServerWrapper server = startContainers().getFirst();
+    ServerWrapper server = startContainers().get(0);
     DatabaseWrapper db = new DatabaseWrapper(server, idSupplier, protocol);
     db.createDatabase();
     db.createSchema();

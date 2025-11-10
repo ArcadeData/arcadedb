@@ -248,7 +248,7 @@ public class LSMTreeIndexCompactor {
               ridsArray);
 
           if (!newPages.isEmpty()) {
-            lastPage = newPages.getLast();
+            lastPage = newPages.get(newPages.size()-1);
             currentPageBuffer = lastPage.getTrackable();
 
             for (MutablePage newPage : newPages) {

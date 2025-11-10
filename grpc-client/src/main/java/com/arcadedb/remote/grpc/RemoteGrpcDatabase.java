@@ -1925,7 +1925,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   // one place to handle JDK 17/21 differences
   private static String tidName(Thread t) {
     try {
-      // Java 19+: threadId()
+      // Java 19+: getId()
       long tid = (long) Thread.class.getMethod("threadId").invoke(t);
       return tid + ":" + t.getName();
     } catch (ReflectiveOperationException ignore) {
@@ -1934,7 +1934,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   }
 
   private static String legacyTidName(Thread t) {
-    return t.threadId() + ":" + t.getName();
+    return t.getId() + ":" + t.getName();
   }
 
   // Optional knobs you can toggle from the TM for a single run

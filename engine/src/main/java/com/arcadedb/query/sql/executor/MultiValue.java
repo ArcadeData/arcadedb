@@ -146,7 +146,7 @@ public class MultiValue {
 
     try {
       if (object instanceof List<?> list)
-        return list.getFirst();
+        return list.get(0);
       else if (object instanceof Iterable<?> iterable)
         return iterable.iterator().next();
       else if (object instanceof Map<?, ?> map)
@@ -181,7 +181,7 @@ public class MultiValue {
 
     try {
       if (object instanceof List<?> list)
-        return list.getLast();
+        return list.get(list.size() - 1);
       else if (object instanceof Iterable<?> iterable) {
         Object last = null;
         for (final Object o : iterable)

@@ -46,17 +46,26 @@ public class SQLFunctionPow extends SQLFunctionMathAbstract {
     final Object inputValue = params[0];
     final int powerValue = ((Number) params[1]).intValue();
 
-    switch (inputValue) {
-    case null -> result = null;
-    case Number number when number.doubleValue() < 0.0 -> result = null;
-    case BigDecimal decimal -> result = decimal.pow(powerValue);
-    case BigInteger integer -> result = integer.pow(powerValue);
-    case Integer integer -> result = Double.valueOf(Math.pow(integer, powerValue)).intValue();
-    case Long long1 -> result = Double.valueOf(Math.pow(long1, powerValue)).longValue();
-    case Short short1 -> result = Double.valueOf(Math.pow(short1, powerValue)).shortValue();
-    case Double double1 -> result = Math.pow(double1, powerValue);
-    case Float float1 -> result = Double.valueOf(Math.pow(float1, powerValue)).floatValue();
-    default -> throw new IllegalArgumentException("Argument to power must be a number");
+    if (inputValue == null) {
+      result = null;
+    } else if (inputValue instanceof Number number && number.doubleValue() < 0.0) {
+      result = null;
+    } else if (inputValue instanceof BigDecimal decimal) {
+      result = decimal.pow(powerValue);
+    } else if (inputValue instanceof BigInteger integer) {
+      result = integer.pow(powerValue);
+    } else if (inputValue instanceof Integer integer) {
+      result = Double.valueOf(Math.pow(integer, powerValue)).intValue();
+    } else if (inputValue instanceof Long long1) {
+      result = Double.valueOf(Math.pow(long1, powerValue)).longValue();
+    } else if (inputValue instanceof Short short1) {
+      result = Double.valueOf(Math.pow(short1, powerValue)).shortValue();
+    } else if (inputValue instanceof Double double1) {
+      result = Math.pow(double1, powerValue);
+    } else if (inputValue instanceof Float float1) {
+      result = Double.valueOf(Math.pow(float1, powerValue)).floatValue();
+    } else {
+      throw new IllegalArgumentException("Argument to power must be a number");
     }
 
     return getResult();

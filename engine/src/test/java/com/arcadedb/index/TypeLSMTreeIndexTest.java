@@ -77,7 +77,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
         total++;
         assertThat(results).hasSize(1);
-        assertThat((int) results.getFirst()).isEqualTo(i);
+        assertThat((int) results.get(0)).isEqualTo(i);
       }
 
       assertThat(total).isEqualTo(TOT);
@@ -640,7 +640,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
                   if (threadInserted % 1000 == 0)
                     LogManager.instance()
                         .log(this, Level.FINE, "%s Thread %d inserted %d records with key %d (total=%d)", null, getClass(),
-                            Thread.currentThread().threadId(), i1, threadInserted, crossThreadsInserted.get());
+                            Thread.currentThread().getId(), i1, threadInserted, crossThreadsInserted.get());
 
                   keyPresent = true;
 
@@ -654,7 +654,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
                   assertThat(database.isTransactionActive()).isFalse();
                 } catch (final Exception e) {
                   LogManager.instance()
-                      .log(this, Level.SEVERE, "%s Thread %d Generic Exception", e, getClass(), Thread.currentThread().threadId());
+                      .log(this, Level.SEVERE, "%s Thread %d Generic Exception", e, getClass(), Thread.currentThread().getId());
                   assertThat(database.isTransactionActive()).isFalse();
                   return;
                 }
@@ -663,16 +663,16 @@ public class TypeLSMTreeIndexTest extends TestHelper {
               if (!keyPresent)
                 LogManager.instance()
                     .log(this, Level.WARNING, "%s Thread %d Cannot create key %d after %d retries! (total=%d)", null, getClass(),
-                        Thread.currentThread().threadId(), i1, maxRetries, crossThreadsInserted.get());
+                        Thread.currentThread().getId(), i1, maxRetries, crossThreadsInserted.get());
 
             }
 
             LogManager.instance()
-                .log(this, Level.FINE, "%s Thread %d completed (inserted=%d)", null, getClass(), Thread.currentThread().threadId(),
+                .log(this, Level.FINE, "%s Thread %d completed (inserted=%d)", null, getClass(), Thread.currentThread().getId(),
                     threadInserted);
 
           } catch (final Exception e) {
-            LogManager.instance().log(this, Level.SEVERE, "%s Thread %d Error", e, getClass(), Thread.currentThread().threadId());
+            LogManager.instance().log(this, Level.SEVERE, "%s Thread %d Error", e, getClass(), Thread.currentThread().getId());
           }
         });
         futures.add(future);
