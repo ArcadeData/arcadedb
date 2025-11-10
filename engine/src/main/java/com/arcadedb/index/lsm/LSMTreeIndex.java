@@ -626,6 +626,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {
     checkIsValid();
     final AtomicLong total = new AtomicLong();
+    final long LOG_INTERVAL = 10000; // Log every 10K records
 
     if (propertyNames == null || propertyNames.isEmpty())
       throw new IndexException("Cannot rebuild index '" + name + "' because metadata information are missing");
@@ -634,9 +635,21 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     if (status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE)) {
 
+      LogManager.instance().log(this, Level.INFO, "Building index '%s' on %d properties...", name, propertyNames.size());
+
+      final long startTime = System.currentTimeMillis();
+
       db.scanBucket(db.getSchema().getBucketById(associatedBucketId).getName(), record -> {
         db.getIndexer().addToIndex(LSMTreeIndex.this, record.getIdentity(), (Document) record);
         total.incrementAndGet();
+
+        // Periodic progress logging
+        if (total.get() % LOG_INTERVAL == 0) {
+          final long elapsed = System.currentTimeMillis() - startTime;
+          final double rate = total.get() / (elapsed / 1000.0);
+          LogManager.instance().log(this, Level.INFO, "Building index '%s': processed %d records (%.0f records/sec)...",
+              name, total.get(), rate);
+        }
 
         if (total.get() % buildIndexBatchSize == 0) {
           // CHUNK OF 100K
@@ -649,6 +662,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
         return true;
       });
+
+      // Completion logging
+      final long elapsed = System.currentTimeMillis() - startTime;
+      LogManager.instance().log(this, Level.INFO, "Completed building index '%s': processed %d records in %dms", name,
+          total.get(), elapsed);
 
       status.set(INDEX_STATUS.AVAILABLE);
 
