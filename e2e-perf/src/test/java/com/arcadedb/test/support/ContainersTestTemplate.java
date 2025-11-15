@@ -207,7 +207,7 @@ public abstract class ContainersTestTemplate {
 
         .withEnv("JAVA_OPTS", String.format("""
             -Darcadedb.server.rootPassword=playwithdata
-            -Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GRPC:com.arcadedb.server.grpc.GrpcServerPlugin
+            -Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GRPC:com.arcadedb.server.grpc.GrpcServerPlugin,PrometheusMetrics:com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin
             -Darcadedb.server.httpsIoThreads=30
             -Darcadedb.bucketReuseSpaceMode=low
             -Darcadedb.server.name=%s
