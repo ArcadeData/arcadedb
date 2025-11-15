@@ -39,7 +39,7 @@ public abstract class ArcadeContainerTemplate {
             -Darcadedb.grpc.reflection.enabled=true
             -Darcadedb.grpc.health.enabled=true
             -Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}
-            -Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin,GRPC:com.arcadedb.server.grpc.GrpcServerPlugin
+            -Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin,GRPC:com.arcadedb.server.grpc.GrpcServerPlugin,PrometheusMetrics:com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin
             """)
         .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
     ARCADE.start();
