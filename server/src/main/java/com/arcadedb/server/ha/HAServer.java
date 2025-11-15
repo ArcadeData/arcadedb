@@ -1004,7 +1004,12 @@ public class HAServer implements ServerPlugin {
     leaderConnection.get().startup();
 
     // START SEPARATE THREAD TO EXECUTE LEADER'S REQUESTS
-    leaderConnection.get().start();
+    final Replica2LeaderNetworkExecutor replicaExecutor = leaderConnection.get();
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_USE_VIRTUAL_THREADS)) {
+      Thread.startVirtualThread(replicaExecutor);
+    } else {
+      replicaExecutor.start();
+    }
   }
 
   protected ChannelBinaryClient createNetworkConnection(final String host, final int port, final short commandId)

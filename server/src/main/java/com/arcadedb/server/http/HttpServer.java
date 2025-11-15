@@ -50,6 +50,8 @@ import io.undertow.UndertowOptions;
 import io.undertow.server.RoutingHandler;
 import io.undertow.server.handlers.PathHandler;
 import org.xnio.Options;
+import org.xnio.Xnio;
+import org.xnio.XnioWorker;
 
 import javax.net.ssl.KeyManager;
 import javax.net.ssl.KeyManagerFactory;
@@ -61,6 +63,7 @@ import java.net.*;
 import java.security.*;
 import java.security.cert.*;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.logging.*;
 
 import static com.arcadedb.GlobalConfiguration.NETWORK_SSL_KEYSTORE;
@@ -78,6 +81,7 @@ public class HttpServer implements ServerPlugin {
   private          Undertow           undertow;
   private volatile String             listeningAddress;
   private          int                httpPortListening;
+  private          XnioWorker         xnioWorker;  // Keep reference to shut down properly
 
   public HttpServer(final ArcadeDBServer server) {
     this.server = server;
@@ -95,6 +99,16 @@ public class HttpServer implements ServerPlugin {
         undertow.stop();
       } catch (final Exception e) {
         // IGNORE IT
+      }
+    }
+
+    // Shutdown custom XNIO worker if created
+    if (xnioWorker != null) {
+      try {
+        xnioWorker.shutdown();
+        xnioWorker.awaitTermination(10, TimeUnit.SECONDS);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING, "Error shutting down XNIO worker", e);
       }
     }
 
@@ -182,8 +196,34 @@ public class HttpServer implements ServerPlugin {
         .setHandler(routes)//
         .setSocketOption(Options.READ_TIMEOUT, configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT))
         .setIoThreads(configuration.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_IO_THREADS))//
-        .setWorkerThreads(500)//
         .setServerOption(SHUTDOWN_TIMEOUT, 5000);
+
+    // Configure worker threads based on virtual thread setting
+    if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_HTTP_USE_VIRTUAL_THREADS)) {
+      LogManager.instance().log(this, Level.INFO, "- Configuring HTTP Server with Java Virtual Threads");
+
+      // Create XNIO worker with virtual thread executor
+      final Xnio xnio = Xnio.getInstance();
+      final XnioWorker.Builder workerBuilder = xnio.createWorkerBuilder();
+
+      // Set external executor service to use virtual threads
+      workerBuilder.setExternalExecutorService(Executors.newVirtualThreadPerTaskExecutor());
+
+      // Configure worker pool size (can be small since we're using virtual threads)
+      workerBuilder.setCoreWorkerPoolSize(1);
+      workerBuilder.setMaxWorkerPoolSize(1);
+
+      // Set IO threads
+      workerBuilder.setWorkerIoThreads(configuration.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_IO_THREADS));
+      workerBuilder.setWorkerName("arcade-http-virtual");
+      workerBuilder.setDaemon(true);
+
+      xnioWorker = workerBuilder.build();
+      builder.setWorker(xnioWorker);
+    } else {
+      // Use traditional platform thread pool
+      builder.setWorkerThreads(500);
+    }
 
     if (configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL)) {
       final SSLContext sslContext = createSSLContext();
