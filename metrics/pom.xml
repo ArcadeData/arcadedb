@@ -42,13 +42,13 @@
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-server</artifactId>
             <version>${project.parent.version}</version>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
             <version>${micrometer.version}</version>
         </dependency>
-
         <dependency>
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-server</artifactId>
