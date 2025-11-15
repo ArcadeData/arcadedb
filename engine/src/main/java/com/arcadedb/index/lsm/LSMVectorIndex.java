@@ -38,6 +38,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -96,15 +97,15 @@ public class LSMVectorIndex implements Index, IndexInternal, RangeIndex {
     }
   }
 
-  private final String           name;
-  private final int              dimensions;
-  private final String           similarityFunction;
-  private final int              maxConnections;
-  private final int              beamWidth;
-  private final float            alpha;
-  private final DatabaseInternal database;
-  private       String           docType;
-  private       String           vectorPropertyName;
+  private final String                   name;
+  private final int                      dimensions;
+  private final VectorSimilarityFunction similarityFunction;
+  private final int                      maxConnections;
+  private final int                      beamWidth;
+  private final float                    alpha;
+  private final DatabaseInternal         database;
+  private final String                   docType;
+  private final String                   vectorPropertyName;
 
   // Components
   protected LSMVectorIndexMutable   mutableIndex;
@@ -119,7 +120,7 @@ public class LSMVectorIndex implements Index, IndexInternal, RangeIndex {
    */
   public LSMVectorIndex(final DatabaseInternal database, final String docType, final String property, final String name,
       final String filePath,
-      final ComponentFile.MODE mode, final int dimensions, final String similarityFunction,
+      final ComponentFile.MODE mode, final int dimensions, final VectorSimilarityFunction similarityFunction,
       final int maxConnections, final int beamWidth, final float alpha,
       final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
     try {
@@ -574,11 +575,10 @@ public class LSMVectorIndex implements Index, IndexInternal, RangeIndex {
       // Sort by distance/similarity based on metric type
       // EUCLIDEAN: lower distance is better → ascending sort
       // COSINE/DOT_PRODUCT: higher similarity is better → descending sort
-      if ("EUCLIDEAN".equals(similarityFunction)) {
-        results.sort((a, b) -> Float.compare(a.distance, b.distance)); // Ascending
-      } else {
-        // COSINE and DOT_PRODUCT are similarity metrics (higher is better)
-        results.sort((a, b) -> Float.compare(b.distance, a.distance)); // Descending
+        switch (similarityFunction) {
+      case EUCLIDEAN -> results.sort((a, b) -> Float.compare(a.distance, b.distance)); // Ascending
+      case COSINE, DOT_PRODUCT -> results.sort((a, b) -> Float.compare(b.distance, a.distance)); // Descending
+      default -> throw new IllegalStateException("Unsupported similarity function: " + similarityFunction);
       }
 
       return results.subList(0, Math.min(k, results.size()));

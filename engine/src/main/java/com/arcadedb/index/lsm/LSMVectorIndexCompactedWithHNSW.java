@@ -27,8 +27,8 @@ import io.github.jbellis.jvector.graph.GraphSearcher;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.SearchResult;
 import io.github.jbellis.jvector.util.Bits;
-import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
+import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 
@@ -72,14 +72,14 @@ public class LSMVectorIndexCompactedWithHNSW extends LSMVectorIndexCompacted {
   private static final int DEFAULT_EF              = 200;              // Beam width for search
 
   // HNSW Index and mapping
-  private final Map<Integer, RID[]>        idToRids        = new HashMap<>();
-  private final Map<Integer, float[]>      idToVectors     = new HashMap<>();
-  private       int                        nextId          = 0;
-  private final int                        maxM;
-  private final int                        efConstruction;
-  private final int                        ef;
-  private       GraphIndex                 hnswIndex       = null;     // Phase 4.5: JVector HNSW graph
-  private final VectorTypeSupport          vectorTypeSupport;          // JVector vector factory
+  private final Map<Integer, RID[]>   idToRids    = new HashMap<>();
+  private final Map<Integer, float[]> idToVectors = new HashMap<>();
+  private       int                   nextId      = 0;
+  private final int                   maxM;
+  private final int                   efConstruction;
+  private final int                   ef;
+  private       GraphIndex            hnswIndex   = null;     // Phase 4.5: JVector HNSW graph
+  private final VectorTypeSupport     vectorTypeSupport;          // JVector vector factory
 
   /**
    * Creates a new LSMVectorIndexCompactedWithHNSW instance.
@@ -111,7 +111,7 @@ public class LSMVectorIndexCompactedWithHNSW extends LSMVectorIndexCompacted {
       final ComponentFile.MODE fileMode,
       final int pageSize,
       final int dimensions,
-      final String similarityFunction,
+      final VectorSimilarityFunction similarityFunction,
       final int maxConnections,
       final int beamWidth,
       final float alpha,
@@ -162,7 +162,7 @@ public class LSMVectorIndexCompactedWithHNSW extends LSMVectorIndexCompacted {
       final VectorValuesAdapter vectorValues = new VectorValuesAdapter();
 
       // Map similarity function name to JVector enum
-      final VectorSimilarityFunction similarityFunc = mapSimilarityFunction(getSimilarityFunction());
+      final VectorSimilarityFunction similarityFunc = getSimilarityFunction();
 
       // Build HNSW graph with configured parameters
       // GraphIndexBuilder(RandomAccessVectorValues, VectorSimilarityFunction, int M, int efConstruction, float alpha, float ml)
@@ -222,7 +222,7 @@ public class LSMVectorIndexCompactedWithHNSW extends LSMVectorIndexCompacted {
             queryVectorFloat,         // query vector (as VectorFloat)
             k,                        // number of results
             new VectorValuesAdapter(), // vector values
-            mapSimilarityFunction(getSimilarityFunction()), // similarity function
+            getSimilarityFunction(), // similarity function
             hnswIndex,                // graph index
             new Bits.MatchAllBits()   // bits (all nodes accepted)
         );
@@ -288,22 +288,6 @@ public class LSMVectorIndexCompactedWithHNSW extends LSMVectorIndexCompacted {
   }
 
   /**
-   * Map similarity function string to JVector's VectorSimilarityFunction enum.
-   *
-   * @param similarityFunction the function name (COSINE, EUCLIDEAN, DOT_PRODUCT)
-   * @return the corresponding VectorSimilarityFunction
-   * @throws IllegalArgumentException if function is unknown
-   */
-  private VectorSimilarityFunction mapSimilarityFunction(final String similarityFunction) {
-    return switch (similarityFunction) {
-      case "COSINE" -> VectorSimilarityFunction.COSINE;
-      case "EUCLIDEAN" -> VectorSimilarityFunction.EUCLIDEAN;
-      case "DOT_PRODUCT" -> VectorSimilarityFunction.DOT_PRODUCT;
-      default -> throw new IllegalArgumentException("Unknown similarity function: " + similarityFunction);
-    };
-  }
-
-  /**
    * Adapter for JVector's RandomAccessVectorValues interface.
    *
    * <p>Wraps HNSW vectors map to provide JVector with vector access interface.
@@ -325,6 +309,7 @@ public class LSMVectorIndexCompactedWithHNSW extends LSMVectorIndexCompacted {
      * Uses JVector's official VectorTypeSupport API to create VectorFloat instances.
      *
      * @param targetOrd the ordinal (node ID)
+     *
      * @return the vector wrapped as VectorFloat
      */
     @Override

@@ -24,8 +24,10 @@ import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMVectorIndex;
 import com.arcadedb.security.SecurityDatabaseUser;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 import java.io.File;
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -62,14 +64,14 @@ import java.util.concurrent.atomic.AtomicReference;
 public class LSMVectorIndexBuilder extends IndexBuilder<LSMVectorIndex> {
 
   // JVector HNSW parameters
-  private int    dimensions         = -1; // Required parameter
-  private String similarityFunction = "COSINE";
-  private int    maxConnections     = 16;
-  private int    beamWidth          = 100;
-  private float  alpha              = 1.2f;
-  private String typeName;
-  private String propertyName;
-  private Type   propertyType;
+  private int                      dimensions         = -1; // Required parameter
+  private VectorSimilarityFunction similarityFunction = VectorSimilarityFunction.COSINE;
+  private int                      maxConnections     = 16;
+  private int                      beamWidth          = 100;
+  private float                    alpha              = 1.2f;
+  private String                   typeName;
+  private String                   propertyName;
+  private Type                     propertyType;
 
   public String getTypeName() {
     return typeName;
@@ -94,7 +96,7 @@ public class LSMVectorIndexBuilder extends IndexBuilder<LSMVectorIndex> {
    *
    * @throws NullPointerException if database is null
    */
-  LSMVectorIndexBuilder(final DatabaseInternal database) {
+  public LSMVectorIndexBuilder(final DatabaseInternal database) {
     super(database, LSMVectorIndex.class);
     // LSM_VECTOR indexes are always unique
     super.withUnique(true);
@@ -129,16 +131,11 @@ public class LSMVectorIndexBuilder extends IndexBuilder<LSMVectorIndex> {
    *
    * @throws ConfigurationException if function is invalid
    */
-  public LSMVectorIndexBuilder withSimilarity(final String function) {
-    if (function == null || function.trim().isEmpty()) {
+  public LSMVectorIndexBuilder withSimilarity(final VectorSimilarityFunction function) {
+    if (function == null ) {
       throw new ConfigurationException("Similarity function cannot be null or empty");
     }
-    final String upperFunc = function.toUpperCase();
-    if (!upperFunc.equals("COSINE") && !upperFunc.equals("EUCLIDEAN") && !upperFunc.equals("DOT_PRODUCT")) {
-      throw new ConfigurationException(
-          "Invalid similarity function: " + function + ". Must be COSINE, EUCLIDEAN, or DOT_PRODUCT");
-    }
-    this.similarityFunction = upperFunc;
+    this.similarityFunction = function;
     return this;
   }
 
@@ -248,6 +245,9 @@ public class LSMVectorIndexBuilder extends IndexBuilder<LSMVectorIndex> {
     // Get embedded schema
     final LocalSchema schema = database.getSchema().getEmbedded();
 
+    if (indexName == null) {
+      indexName = typeName + Arrays.toString(new Object[] { propertyName }).replace(" ", "");
+    }
     // Handle ignoreIfExists
     if (ignoreIfExists) {
       final IndexInternal existingIndex = schema.indexMap.get(indexName);
@@ -309,7 +309,7 @@ public class LSMVectorIndexBuilder extends IndexBuilder<LSMVectorIndex> {
    *
    * @return the similarity function name
    */
-  public String getSimilarityFunction() {
+  public VectorSimilarityFunction getSimilarityFunction() {
     return similarityFunction;
   }
 

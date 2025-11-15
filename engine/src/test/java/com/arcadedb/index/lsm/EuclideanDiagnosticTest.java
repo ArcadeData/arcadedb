@@ -3,6 +3,7 @@ package com.arcadedb.index.lsm;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.schema.Schema;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -19,7 +20,7 @@ public class EuclideanDiagnosticTest extends TestHelper {
       final LSMVectorIndex index = schema.buildLSMVectorIndex("TestVector", "embedding")
           .withIndexName("euclidean_diagnostic_idx")
           .withDimensions(3)
-          .withSimilarity("EUCLIDEAN")
+          .withSimilarity(VectorSimilarityFunction.EUCLIDEAN)
           .create();
 
       // Test vectors

@@ -21,6 +21,7 @@ package com.arcadedb.index.lsm;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.ComponentFile;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -50,38 +51,39 @@ import java.util.Set;
  */
 public class LSMVectorIndexCompacted {
 
-  private final LSMVectorIndex mainIndex;
-  private final DatabaseInternal database;
-  private final String name;
-  private final String filePath;
-  private final ComponentFile.MODE fileMode;
-  private final int dimensions;
-  private final String similarityFunction;
-  private final int maxConnections;
-  private final int beamWidth;
-  private final float alpha;
-  private final int pageSize;
+  private final LSMVectorIndex                     mainIndex;
+  private final DatabaseInternal                   database;
+  private final String                             name;
+  private final String                             filePath;
+  private final ComponentFile.MODE                 fileMode;
+  private final int                                dimensions;
+  private final VectorSimilarityFunction           similarityFunction;
+  private final int                                maxConnections;
+  private final int                                beamWidth;
+  private final float                              alpha;
+  private final int                                pageSize;
   private final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy;
 
   // In-memory vector storage (Phase 3: persist to disk with JVector HNSW)
   private final Map<LSMVectorIndexMutable.VectorKey, Set<RID>> vectorToRIDs = new HashMap<>();
-  private long totalEntries = 0;
+  private       long                                           totalEntries = 0;
 
   /**
    * Creates a new LSMVectorIndexCompacted component.
    *
-   * @param mainIndex the parent LSMVectorIndex
-   * @param database the database instance
-   * @param name the index name
-   * @param filePath the path to the index file
-   * @param fileMode the file mode
-   * @param pageSize the page size
-   * @param dimensions vector dimensionality
+   * @param mainIndex          the parent LSMVectorIndex
+   * @param database           the database instance
+   * @param name               the index name
+   * @param filePath           the path to the index file
+   * @param fileMode           the file mode
+   * @param pageSize           the page size
+   * @param dimensions         vector dimensionality
    * @param similarityFunction similarity metric (COSINE, EUCLIDEAN, DOT_PRODUCT)
-   * @param maxConnections HNSW max connections
-   * @param beamWidth HNSW beam width
-   * @param alpha HNSW alpha diversity parameter
-   * @param nullStrategy the null value strategy
+   * @param maxConnections     HNSW max connections
+   * @param beamWidth          HNSW beam width
+   * @param alpha              HNSW alpha diversity parameter
+   * @param nullStrategy       the null value strategy
+   *
    * @throws IOException if file I/O error occurs
    */
   public LSMVectorIndexCompacted(
@@ -92,7 +94,7 @@ public class LSMVectorIndexCompacted {
       final ComponentFile.MODE fileMode,
       final int pageSize,
       final int dimensions,
-      final String similarityFunction,
+      final VectorSimilarityFunction similarityFunction,
       final int maxConnections,
       final int beamWidth,
       final float alpha,
@@ -117,7 +119,7 @@ public class LSMVectorIndexCompacted {
    * <p>Called by compactor to add deduplicated vectors.
    *
    * @param vector the vector embedding
-   * @param rids the RIDs associated with this vector
+   * @param rids   the RIDs associated with this vector
    */
   public void appendDuringCompaction(final float[] vector, final Set<RID> rids) {
     if (vector == null || vector.length != dimensions)
@@ -134,6 +136,7 @@ public class LSMVectorIndexCompacted {
    * Search for a vector and return all matching RIDs.
    *
    * @param queryVector the query vector
+   *
    * @return set of RIDs matching this vector
    */
   public Set<RID> search(final float[] queryVector) {
@@ -151,7 +154,8 @@ public class LSMVectorIndexCompacted {
    * <p>Phase 3: JVector will provide efficient KNN via HNSW.
    *
    * @param queryVector the query vector
-   * @param k number of neighbors to return
+   * @param k           number of neighbors to return
+   *
    * @return list of K nearest vectors with their RIDs and distances
    */
   public List<LSMVectorIndexMutable.VectorSearchResult> knnSearch(final float[] queryVector, final int k) {
@@ -166,9 +170,10 @@ public class LSMVectorIndexCompacted {
    *
    * <p>Phase 3: JVector will provide efficient KNN via HNSW with integrated filtering.
    *
-   * @param queryVector the query vector
-   * @param k number of neighbors to return
+   * @param queryVector    the query vector
+   * @param k              number of neighbors to return
    * @param ignoreCallback optional callback to filter results during search
+   *
    * @return list of K nearest vectors with their RIDs and distances
    */
   public List<LSMVectorIndexMutable.VectorSearchResult> knnSearch(final float[] queryVector, final int k,
@@ -201,14 +206,38 @@ public class LSMVectorIndexCompacted {
       }
     }
 
-    // Sort by distance/similarity based on metric type
-    // EUCLIDEAN: lower distance is better → ascending sort
-    // COSINE/DOT_PRODUCT: higher similarity is better → descending sort
+    // Sort by distance/similarity with exact match priority
+    // IMPORTANT: Exact matches always come first, regardless of metric
+    // Then sort by distance/similarity based on metric type:
+    // - EUCLIDEAN: lower distance is better → ascending sort
+    // - COSINE/DOT_PRODUCT: higher similarity is better → descending sort
     if ("EUCLIDEAN".equals(similarityFunction)) {
-      results.sort((a, b) -> Float.compare(a.distance, b.distance)); // Ascending
+      results.sort((a, b) -> {
+        // Priority: exact matches first
+        boolean aIsExact = vectorsEqual(queryVector, a.vector);
+        boolean bIsExact = vectorsEqual(queryVector, b.vector);
+        if (aIsExact && !bIsExact)
+          return -1;
+        if (!aIsExact && bIsExact)
+          return 1;
+
+        // Both exact or both not exact: sort by distance
+        return Float.compare(a.distance, b.distance);
+      });
     } else {
       // COSINE and DOT_PRODUCT are similarity metrics (higher is better)
-      results.sort((a, b) -> Float.compare(b.distance, a.distance)); // Descending
+      results.sort((a, b) -> {
+        // Priority: exact matches first
+        boolean aIsExact = vectorsEqual(queryVector, a.vector);
+        boolean bIsExact = vectorsEqual(queryVector, b.vector);
+        if (aIsExact && !bIsExact)
+          return -1;
+        if (!aIsExact && bIsExact)
+          return 1;
+
+        // Both exact or both not exact: sort by similarity
+        return Float.compare(b.distance, a.distance);
+      });
     }
 
     return results.subList(0, Math.min(k, results.size()));
@@ -222,10 +251,9 @@ public class LSMVectorIndexCompacted {
       throw new IllegalArgumentException("Vector dimensions mismatch");
 
     return switch (similarityFunction) {
-      case "COSINE" -> cosineSimilarity(vector1, vector2);
-      case "EUCLIDEAN" -> euclideanDistance(vector1, vector2);
-      case "DOT_PRODUCT" -> dotProduct(vector1, vector2);
-      default -> throw new IllegalArgumentException("Unknown similarity function: " + similarityFunction);
+      case COSINE -> cosineSimilarity(vector1, vector2);
+      case EUCLIDEAN -> euclideanDistance(vector1, vector2);
+      case DOT_PRODUCT -> dotProduct(vector1, vector2);
     };
   }
 
@@ -264,6 +292,19 @@ public class LSMVectorIndexCompacted {
   }
 
   /**
+   * Check if two vectors are exactly equal.
+   */
+  private boolean vectorsEqual(final float[] v1, final float[] v2) {
+    if (v1.length != v2.length)
+      return false;
+    for (int i = 0; i < v1.length; i++) {
+      if (Float.floatToIntBits(v1[i]) != Float.floatToIntBits(v2[i]))
+        return false;
+    }
+    return true;
+  }
+
+  /**
    * Get number of vectors in compacted index.
    *
    * @return vector count
@@ -284,7 +325,7 @@ public class LSMVectorIndexCompacted {
     return dimensions;
   }
 
-  public String getSimilarityFunction() {
+  public VectorSimilarityFunction getSimilarityFunction() {
     return similarityFunction;
   }
 

@@ -22,9 +22,12 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.log.LogManager;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.ArrayList;
@@ -64,52 +67,55 @@ import java.util.logging.Level;
  */
 public class LSMVectorIndexMutable {
 
-  private final LSMVectorIndex mainIndex;
-  private final DatabaseInternal database;
-  private final String name;
-  private final String filePath;
-  private final ComponentFile.MODE fileMode;
-  private final int dimensions;
-  private final String similarityFunction;
-  private final int maxConnections;
-  private final int beamWidth;
-  private final float alpha;
-  private final int pageSize;
+  private final LSMVectorIndex                     mainIndex;
+  private final DatabaseInternal                   database;
+  private final String                             name;
+  private final String                             filePath;
+  private final ComponentFile.MODE                 fileMode;
+  private final int                                dimensions;
+  private final VectorSimilarityFunction           similarityFunction;
+  private final int                                maxConnections;
+  private final int                                beamWidth;
+  private final float                              alpha;
+  private final int                                pageSize;
   private final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy;
 
-  // Disk persistence (Phase 3)
-  private ComponentFile componentFile;
-  private long currentPageOffset = 0;
-  private final List<Long> pageOffsets = new ArrayList<>(); // Track offsets of each page
-  private ByteBuffer currentPageBuffer;
-  private long entriesWrittenToDisk = 0;
-  private boolean diskEnabled = false;
+  // Disk persistence (Phase 4-5)
+  private       PaginatedComponentFile componentFile;
+  private       FileChannel            fileChannel;
+  private       RandomAccessFile       randomAccessFile;
+  private       long                   currentPageOffset    = 0;
+  private final List<Long>             pageOffsets          = new ArrayList<>(); // Track offsets of each page
+  private       ByteBuffer             currentPageBuffer;
+  private       long                   entriesWrittenToDisk = 0;
+  private       boolean                diskEnabled          = false;
 
   // In-memory vector storage (dual-purpose: fast search + disk buffer)
   private final Map<VectorKey, Set<RID>> vectorToRIDs = new HashMap<>();
-  private final List<MutablePage> mutablePages = new ArrayList<>();
-  private int totalEntries = 0;
+  private final List<MutablePage>        mutablePages = new ArrayList<>();
+  private       int                      totalEntries = 0;
 
   // Threshold for scheduling compaction
   private static final int DEFAULT_MIN_PAGES_TO_SCHEDULE_COMPACTION = 100;
-  public static final int DEFAULT_PAGE_SIZE = 65536; // 64KB default page size
-  private int minPagesToScheduleACompaction = DEFAULT_MIN_PAGES_TO_SCHEDULE_COMPACTION;
+  public static final  int DEFAULT_PAGE_SIZE                        = 65536; // 64KB default page size
+  private              int minPagesToScheduleACompaction            = DEFAULT_MIN_PAGES_TO_SCHEDULE_COMPACTION;
 
   /**
    * Creates a new LSMVectorIndexMutable component.
    *
-   * @param mainIndex the parent LSMVectorIndex
-   * @param database the database instance
-   * @param name the index name
-   * @param filePath the path to the index file
-   * @param fileMode the file mode
-   * @param pageSize the page size
-   * @param dimensions vector dimensionality
+   * @param mainIndex          the parent LSMVectorIndex
+   * @param database           the database instance
+   * @param name               the index name
+   * @param filePath           the path to the index file
+   * @param fileMode           the file mode
+   * @param pageSize           the page size
+   * @param dimensions         vector dimensionality
    * @param similarityFunction similarity metric (COSINE, EUCLIDEAN, DOT_PRODUCT)
-   * @param maxConnections HNSW max connections
-   * @param beamWidth HNSW beam width
-   * @param alpha HNSW alpha diversity parameter
-   * @param nullStrategy the null value strategy
+   * @param maxConnections     HNSW max connections
+   * @param beamWidth          HNSW beam width
+   * @param alpha              HNSW alpha diversity parameter
+   * @param nullStrategy       the null value strategy
+   *
    * @throws IOException if file I/O error occurs
    */
   public LSMVectorIndexMutable(
@@ -120,7 +126,7 @@ public class LSMVectorIndexMutable {
       final ComponentFile.MODE fileMode,
       final int pageSize,
       final int dimensions,
-      final String similarityFunction,
+      final VectorSimilarityFunction similarityFunction,
       final int maxConnections,
       final int beamWidth,
       final float alpha,
@@ -158,25 +164,39 @@ public class LSMVectorIndexMutable {
 
   /**
    * Initialize disk storage for the mutable index.
-   * Creates or opens the index file and initializes page buffers.
+   * Creates or opens the index file for persistent vector storage.
+   * Phase 5: Opens RandomAccessFile for actual disk I/O operations.
    *
    * @param filePath the file path for the index
    * @param fileMode the file mode (READ_WRITE, etc.)
+   *
    * @throws IOException if file creation fails
    */
   private void initializeDiskStorage(final String filePath, final ComponentFile.MODE fileMode) throws IOException {
-    // Phase 3: Create file directly without ComponentFile API
-    // Initialize page buffer for tracking
+    // Phase 5: Initialize file for direct disk I/O using RandomAccessFile
+    // Open file in read-write mode to allow both writes and reads
+    try {
+      this.randomAccessFile = new RandomAccessFile(filePath, "rw");
+      this.fileChannel = randomAccessFile.getChannel();
+    } catch (final IOException e) {
+      // If file opening fails, throw to allow graceful fallback in constructor
+      throw new IOException("Failed to open index file for persistence: " + e.getMessage(), e);
+    }
+
+    // Initialize page buffer and tracking
     this.currentPageBuffer = ByteBuffer.allocate(pageSize);
     this.pageOffsets.add(0L); // Page 0 starts at offset 0
-    // Additional initialization can be added here when full file I/O is needed
+    this.currentPageOffset = 0;
+
+    LogManager.instance().log(this, Level.FINE,
+        "Disk persistence initialized for mutable index '%s' at path '%s' (Phase 5: actual file I/O)", name, filePath);
   }
 
   /**
    * Insert a vector into the mutable index.
    *
    * @param vector the vector embedding (float array)
-   * @param rid the record ID associated with this vector
+   * @param rid    the record ID associated with this vector
    */
   public void put(final float[] vector, final RID rid) {
     if (vector == null)
@@ -191,16 +211,37 @@ public class LSMVectorIndexMutable {
     vectorToRIDs.computeIfAbsent(key, k -> new HashSet<>()).add(rid);
     totalEntries++;
 
-    // Phase 2: Persist to disk pages (TODO: implement in Phase 3)
-    // For now, vectors are only stored in-memory via vectorToRIDs HashMap
-    // Disk persistence will serialize entries using VectorSerializer when componentFile is fully integrated
+    // Phase 4: Persist to disk pages via VectorSerializer
+    if (diskEnabled) {
+      try {
+        Set<RID> rids = new HashSet<>();
+        rids.add(rid);
+        int entrySize = VectorSerializer.calculateEntrySize(vector, 1);
+
+        // Check if entry fits in current page
+        if (currentPageBuffer.remaining() < entrySize) {
+          flushCurrentPage(); // Move to next page
+        }
+
+        // Serialize entry into current page buffer
+        Binary buffer = new Binary(currentPageBuffer.array());
+        buffer.position(currentPageBuffer.position());
+        VectorSerializer.serializeVectorEntry(buffer, vector, rids);
+        currentPageBuffer.position(buffer.position());
+
+      } catch (final Exception e) {
+        // Log error, continue with in-memory only
+        LogManager.instance().log(this, Level.WARNING,
+            "Error persisting vector entry: %s", e.getMessage());
+      }
+    }
   }
 
   /**
    * Remove a vector from the mutable index.
    *
    * @param vector the vector embedding
-   * @param rid the record ID to remove
+   * @param rid    the record ID to remove
    */
   public void remove(final float[] vector, final RID rid) {
     if (vector == null)
@@ -220,6 +261,7 @@ public class LSMVectorIndexMutable {
    * Search for a vector and return all matching RIDs.
    *
    * @param queryVector the query vector
+   *
    * @return set of RIDs matching this vector
    */
   public Set<RID> search(final float[] queryVector) {
@@ -240,7 +282,8 @@ public class LSMVectorIndexMutable {
    * in compacted index for efficient KNN via HNSW.
    *
    * @param queryVector the query vector
-   * @param k number of neighbors to return
+   * @param k           number of neighbors to return
+   *
    * @return list of K nearest vectors with their RIDs and distances
    */
   public List<VectorSearchResult> knnSearch(final float[] queryVector, final int k) {
@@ -253,9 +296,10 @@ public class LSMVectorIndexMutable {
    * <p>Implements Option B: integrated filtering during search.
    * Filters results in-place while iterating, skipping ignored RIDs.
    *
-   * @param queryVector the query vector
-   * @param k number of neighbors to return
+   * @param queryVector    the query vector
+   * @param k              number of neighbors to return
    * @param ignoreCallback optional callback to filter results during search
+   *
    * @return list of K nearest vectors with their RIDs and distances
    */
   public List<VectorSearchResult> knnSearch(final float[] queryVector, final int k,
@@ -309,6 +353,7 @@ public class LSMVectorIndexMutable {
    *
    * @param vector1 first vector
    * @param vector2 second vector
+   *
    * @return distance value
    */
   private float computeDistance(final float[] vector1, final float[] vector2) {
@@ -316,10 +361,9 @@ public class LSMVectorIndexMutable {
       throw new IllegalArgumentException("Vector dimensions mismatch");
 
     return switch (similarityFunction) {
-      case "COSINE" -> cosineSimilarity(vector1, vector2);
-      case "EUCLIDEAN" -> euclideanDistance(vector1, vector2);
-      case "DOT_PRODUCT" -> dotProduct(vector1, vector2);
-      default -> throw new IllegalArgumentException("Unknown similarity function: " + similarityFunction);
+      case COSINE -> cosineSimilarity(vector1, vector2);
+      case EUCLIDEAN -> euclideanDistance(vector1, vector2);
+      case DOT_PRODUCT -> dotProduct(vector1, vector2);
     };
   }
 
@@ -370,11 +414,120 @@ public class LSMVectorIndexMutable {
    * Get all vectors stored in this mutable index.
    *
    * <p>Used by compactor for K-way merge.
+   * Phase 4: Includes both in-memory and disk-persisted vectors.
    *
    * @return map of vectors to their RIDs
    */
   public Map<VectorKey, Set<RID>> getAllVectors() {
-    return new HashMap<>(vectorToRIDs);
+    Map<VectorKey, Set<RID>> result = new HashMap<>(vectorToRIDs);
+
+    // Phase 4: Load persisted vectors from disk if disk persistence is enabled
+    if (diskEnabled && !pageOffsets.isEmpty()) {
+      try {
+        for (int i = 0; i < pageOffsets.size(); i++) {
+          Map<VectorKey, Set<RID>> pageVectors = loadPageFromDisk(i);
+          // Merge disk vectors with in-memory vectors (disk vectors are older)
+          for (final Map.Entry<VectorKey, Set<RID>> entry : pageVectors.entrySet()) {
+            result.computeIfAbsent(entry.getKey(), k -> new HashSet<>()).addAll(entry.getValue());
+          }
+        }
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Error loading vectors from disk: %s", e.getMessage());
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Load vectors from a specific page on disk.
+   * Phase 5: Implements actual page reading from disk using FileChannel and VectorSerializer deserialization.
+   *
+   * @param pageIndex the page number to load
+   *
+   * @return map of vector keys to RID sets for this page
+   *
+   * @throws IOException if page I/O error occurs
+   */
+  private Map<VectorKey, Set<RID>> loadPageFromDisk(final int pageIndex) throws IOException {
+    Map<VectorKey, Set<RID>> pageVectors = new HashMap<>();
+
+    if (pageIndex < 0 || pageIndex >= pageOffsets.size()) {
+      return pageVectors; // Page doesn't exist
+    }
+
+    final long pageOffset = pageOffsets.get(pageIndex);
+    final long pageEnd = (pageIndex + 1 < pageOffsets.size())
+        ? pageOffsets.get(pageIndex + 1)
+        : currentPageOffset;
+    final int pageSize = (int) (pageEnd - pageOffset);
+
+    if (pageSize <= 0) {
+      return pageVectors; // Empty page
+    }
+
+    try {
+      // Phase 5: Read page from disk using FileChannel
+      if (fileChannel == null || !fileChannel.isOpen()) {
+        LogManager.instance().log(this, Level.WARNING,
+            "FileChannel not available for reading page %d", pageIndex);
+        return pageVectors;
+      }
+
+      // Allocate buffer to read the page
+      ByteBuffer pageBuffer = ByteBuffer.allocate(pageSize);
+
+      // Read page data from disk at specific offset
+      int bytesRead = fileChannel.read(pageBuffer, pageOffset);
+
+      if (bytesRead <= 0) {
+        LogManager.instance().log(this, Level.FINE,
+            "Page %d is empty or not readable (read %d bytes)", pageIndex, bytesRead);
+        return pageVectors;
+      }
+
+      // Prepare buffer for reading (rewind to beginning)
+      pageBuffer.rewind();
+
+      // Deserialize vectors from page buffer using VectorSerializer
+      while (pageBuffer.remaining() > 0) {
+        try {
+          Binary buffer = new Binary(pageBuffer.array());
+          buffer.position(pageBuffer.position());
+
+          // Deserialize vector and RIDs
+          // Returns Object[] containing [float[] vector, Set<RID> rids]
+          Object[] entry = VectorSerializer.deserializeVectorEntry(buffer, database);
+          if (entry != null && entry.length >= 2) {
+            final float[] vector = (float[]) entry[0];
+            @SuppressWarnings("unchecked")
+            final Set<RID> rids = (Set<RID>) entry[1];
+            final VectorKey key = new VectorKey(vector);
+            pageVectors.put(key, rids);
+
+            // Update buffer position after deserialization
+            pageBuffer.position(buffer.position());
+          } else {
+            // No more complete entries in buffer
+            break;
+          }
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.FINE,
+              "Error deserializing vector from page %d: %s", pageIndex, e.getMessage());
+          break;
+        }
+      }
+
+      LogManager.instance().log(this, Level.FINE,
+          "Loaded page %d from disk: %d vectors, %d bytes", pageIndex, pageVectors.size(), bytesRead);
+
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Error reading page %d from disk: %s", pageIndex, e.getMessage());
+    }
+
+    return pageVectors;
   }
 
   /**
@@ -439,7 +592,7 @@ public class LSMVectorIndexMutable {
    *
    * @return similarity function name
    */
-  public String getSimilarityFunction() {
+  public VectorSimilarityFunction getSimilarityFunction() {
     return similarityFunction;
   }
 
@@ -472,17 +625,37 @@ public class LSMVectorIndexMutable {
 
   /**
    * Close the mutable index (cleanup resources).
+   * Phase 5: Flush all pending disk writes and close file handles.
    */
   public void close() {
-    // Flush disk cache
-    try {
-      if (componentFile != null && componentFile.isOpen()) {
-        flushCurrentPage();
-        componentFile.close();
+    // Flush disk cache with all remaining entries
+    if (diskEnabled) {
+      try {
+        flushCurrentPage(); // Flush final partial page
+        LogManager.instance().log(this, Level.FINE,
+            "Mutable index '%s' closed after writing %d entries to disk", name, entriesWrittenToDisk);
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.WARNING, "Error flushing on close: %s", e.getMessage());
       }
-    } catch (final IOException e) {
-      LogManager.instance().log(this, Level.WARNING, "Error closing mutable index file: %s", e.getMessage());
+
+      // Phase 5: Close file handles
+      try {
+        if (fileChannel != null && fileChannel.isOpen()) {
+          fileChannel.close();
+        }
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.WARNING, "Error closing FileChannel: %s", e.getMessage());
+      }
+
+      try {
+        if (randomAccessFile != null) {
+          randomAccessFile.close();
+        }
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.WARNING, "Error closing RandomAccessFile: %s", e.getMessage());
+      }
     }
+
     // Close in-memory pages
     mutablePages.forEach(MutablePage::close);
   }
@@ -493,9 +666,9 @@ public class LSMVectorIndexMutable {
    * Represents a mutable page in memory.
    */
   static class MutablePage {
-    private final int pageNumber;
-    private final int pageSize;
-    private boolean mutable = true;
+    private final int     pageNumber;
+    private final int     pageSize;
+    private       boolean mutable = true;
 
     MutablePage(final int pageNumber, final int pageSize) {
       this.pageNumber = pageNumber;
@@ -519,8 +692,8 @@ public class LSMVectorIndexMutable {
    * Wrapper for vector with proper equality and hashing.
    */
   static class VectorKey {
-    final float[] vector;
-    private final int hash;
+    final         float[] vector;
+    private final int     hash;
 
     VectorKey(final float[] vector) {
       this.vector = vector.clone();
@@ -557,18 +730,44 @@ public class LSMVectorIndexMutable {
 
   /**
    * Flush current page buffer to disk and create a new page.
+   * Phase 5: Implements actual disk write operations using RandomAccessFile and FileChannel.
    *
    * @throws IOException if I/O error occurs
    */
   private void flushCurrentPage() throws IOException {
-    if (componentFile == null || !componentFile.isOpen() || currentPageBuffer == null || currentPageBuffer.position() == 0) {
+    if (!diskEnabled || currentPageBuffer == null || currentPageBuffer.position() == 0) {
       return; // Nothing to flush
     }
 
-    // Write current page buffer to file (TODO: implement in Phase 3)
-    // currentPageBuffer.flip(); // Prepare buffer for reading
-    // componentFile.write(currentPageBuffer, currentPageOffset);
-    // currentPageOffset += currentPageBuffer.limit();
+    try {
+      // Prepare buffer for writing (flip from write mode to read mode)
+      currentPageBuffer.flip();
+
+      // Phase 5: Write page to disk using FileChannel
+      if (fileChannel != null && fileChannel.isOpen()) {
+        // Write the current page buffer to disk at the current offset
+        int bytesWritten = fileChannel.write(currentPageBuffer, currentPageOffset);
+
+        // Update position tracking for next page
+        currentPageOffset += bytesWritten;
+
+        // Track flushed entries for audit trail
+        entriesWrittenToDisk++;
+
+        LogManager.instance().log(this, Level.FINE,
+            "Flushed page to disk: offset=%d, size=%d bytes", currentPageOffset - bytesWritten, bytesWritten);
+      } else {
+        throw new IOException("FileChannel is not available for writing");
+      }
+
+      // Create new page for next batch of vectors
+      createNewPage();
+
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Error flushing page buffer: %s", e.getMessage());
+      throw e; // Re-throw to allow caller to handle
+    }
   }
 
   /**
@@ -583,8 +782,8 @@ public class LSMVectorIndexMutable {
    * Result of a KNN search.
    */
   public static class VectorSearchResult {
-    public final float[] vector;
-    public final float distance;
+    public final float[]  vector;
+    public final float    distance;
     public final Set<RID> rids;
 
     public VectorSearchResult(final float[] vector, final float distance, final Set<RID> rids) {

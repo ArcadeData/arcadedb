@@ -85,11 +85,11 @@ public class GloVeTest {
 
       LogManager.instance().log(this, Level.SEVERE, "Creating index took %d millis which is %d minutes.%n", duration, MILLISECONDS.toMinutes(duration));
 
-      database.close();
+//      database.close();
 //      System.exit(1);
     }
 
-    final LSMVectorIndex persistentIndex = (LSMVectorIndex) database.getSchema().getIndexByName("Word[name,vector]");
+    final LSMVectorIndex persistentIndex = (LSMVectorIndex) database.getSchema().getIndexByName("Word[vector]");
 
     try {
 

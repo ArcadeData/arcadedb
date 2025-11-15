@@ -3,6 +3,7 @@ package com.arcadedb.index.lsm;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.schema.Schema;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -21,7 +22,7 @@ public class EuclideanOnlyTest extends TestHelper {
       final LSMVectorIndex index = schema.buildLSMVectorIndex("TestVector", "embedding")
           .withIndexName("test_euclidean_only_idx")
           .withDimensions(3)
-          .withSimilarity("EUCLIDEAN")
+          .withSimilarity(VectorSimilarityFunction.EUCLIDEAN)
           .create();
 
       // Create test vectors
@@ -33,14 +34,18 @@ public class EuclideanOnlyTest extends TestHelper {
       final RID rid1 = new RID(database, 1, 0);
       final RID rid2 = new RID(database, 1, 1);
 
+      System.out.println("rid1 = " + rid1);
+      System.out.println("rid2 = " + rid2);
       index.put(new Object[] { v1 }, new RID[] { rid1 });
       index.put(new Object[] { v2 }, new RID[] { rid2 });
+
 
       // KNN search should return v1 first (distance 0.0)
       final List<LSMVectorIndexMutable.VectorSearchResult> results = index.knnSearch(v1, 1);
 
       assertThat(results).isNotEmpty();
-      assertThat(results.get(0).rids).contains(rid1);
+      System.out.println("results.getFirst().rids = " + results.getFirst().rids);
+      assertThat(results.getFirst().rids).contains(rid1);
     });
   }
 }

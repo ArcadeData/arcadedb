@@ -28,16 +28,20 @@ import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
-import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LSMVectorIndexBuilder;
-import com.arcadedb.schema.Type;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DateUtils;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.stream.*;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Imports Embeddings in arbitrary dimensions.
@@ -146,10 +150,10 @@ public class TextEmbeddingsImporter {
 
     // Create vertex type within a transaction if it doesn't exist
     LocalSchema schema = database.getSchema().getEmbedded();
-    if (!schema.existsType(settings.vertexTypeName) ) {
+    if (!schema.existsType(settings.vertexTypeName)) {
       database.transaction(() -> {
         final LocalSchema txSchema = database.getSchema().getEmbedded();
-        if (!txSchema.existsType(settings.vertexTypeName) ) {
+        if (!txSchema.existsType(settings.vertexTypeName)) {
           txSchema.createVertexType(settings.vertexTypeName);
         }
       });
@@ -163,7 +167,6 @@ public class TextEmbeddingsImporter {
     // Create LSMVectorIndex using builder
     final LSMVectorIndexBuilder builder = schema.buildLSMVectorIndex(settings.vertexTypeName, vectorProp);
     builder.withDimensions(dimensions)
-
         .withSimilarity(distanceFunctionName)
         .withMaxConnections(maxConnections)
         .withBeamWidth(beamWidth)
@@ -171,7 +174,7 @@ public class TextEmbeddingsImporter {
 
     final LSMVectorIndex lsmVectorIndex = builder.create();
 
-    logger.logLine(2, "- Created LSMVectorIndex with %,d dimensions", dimensions);
+    logger.logLine(2, "- Created LSMVectorIndex %s  with %,d dimensions", lsmVectorIndex.getName(), dimensions);
 
     // Process embeddings and create vertices
     long embeddingsProcessed = 0;
@@ -195,7 +198,7 @@ public class TextEmbeddingsImporter {
         vector = VectorUtils.normalize(vector);
       }
 
-      lsmVectorIndex.put(new Object[]{vector}, new RID[]{vertex.getIdentity()});
+      lsmVectorIndex.put(new Object[] { vector }, new RID[] { vertex.getIdentity() });
       ++indexedEmbedding;
 
       ++embeddingsProcessed;

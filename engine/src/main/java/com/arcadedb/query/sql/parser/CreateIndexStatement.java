@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LSMVectorIndexBuilder;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -215,7 +216,7 @@ public class CreateIndexStatement extends DDLStatement {
         vectorBuilder
             .withIndexName(name.getValue())
             .withDimensions(dimensions)
-            .withSimilarity(similarity)
+            .withSimilarity(VectorSimilarityFunction.valueOf(similarity.toUpperCase()))
             .withMaxConnections(maxConnections)
             .withBeamWidth(beamWidth)
             .withAlpha(alpha)

@@ -21,6 +21,7 @@ package com.arcadedb.index.lsm;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.ComponentFile;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 import java.io.IOException;
 import java.util.HashSet;
@@ -55,7 +56,7 @@ public class LSMVectorIndexCompactor {
   private final String                             indexName;
   private final String                             filePath;
   private final int                                dimensions;
-  private final String                             similarityFunction;
+  private final VectorSimilarityFunction           similarityFunction;
   private final int                                maxConnections;
   private final int                                beamWidth;
   private final float                              alpha;
@@ -81,7 +82,7 @@ public class LSMVectorIndexCompactor {
       final String indexName,
       final String filePath,
       final int dimensions,
-      final String similarityFunction,
+      final VectorSimilarityFunction similarityFunction,
       final int maxConnections,
       final int beamWidth,
       final float alpha,

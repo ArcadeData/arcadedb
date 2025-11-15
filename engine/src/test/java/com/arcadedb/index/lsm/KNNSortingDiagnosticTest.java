@@ -3,6 +3,7 @@ package com.arcadedb.index.lsm;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.schema.Schema;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -19,7 +20,7 @@ public class KNNSortingDiagnosticTest extends TestHelper {
       final LSMVectorIndex index = schema.buildLSMVectorIndex("TestVector", "embedding")
           .withIndexName("diagnostic_idx")
           .withDimensions(3)
-          .withSimilarity("COSINE")
+          .withSimilarity(VectorSimilarityFunction.COSINE)
           .create();
 
       // Test vectors

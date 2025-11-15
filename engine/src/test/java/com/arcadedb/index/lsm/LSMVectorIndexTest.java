@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.schema.Schema;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -57,7 +58,7 @@ public class LSMVectorIndexTest extends TestHelper {
 
               CREATE INDEX ON TestVector (embedding) LSM_VECTOR METADATA {
                                   "dimensions" : 10,
-                                  "similarity" : "COSINE",
+                                  "similarity" : COSINE,
                                   "maxConnections" : 16,
                                   "beamWidth" : 100
                                   };
@@ -85,7 +86,7 @@ public class LSMVectorIndexTest extends TestHelper {
       final LSMVectorIndex index = schema.buildLSMVectorIndex("TestVector", "embedding")
           .withIndexName("test_insert_idx")
           .withDimensions(5)
-          .withSimilarity("EUCLIDEAN")
+          .withSimilarity(VectorSimilarityFunction.EUCLIDEAN)
           .create();
 
       // Create test RIDs
@@ -112,7 +113,7 @@ public class LSMVectorIndexTest extends TestHelper {
       final LSMVectorIndex index = schema.buildLSMVectorIndex("TestVector", "embedding")
           .withIndexName("test_search_idx")
           .withDimensions(3)
-          .withSimilarity("COSINE")
+          .withSimilarity(VectorSimilarityFunction.COSINE)
           .create();
 
       // Create test vectors
@@ -138,7 +139,7 @@ public class LSMVectorIndexTest extends TestHelper {
       final LSMVectorIndex index = schema.buildLSMVectorIndex("TestVector", "embedding")
           .withIndexName("test_compact_idx")
           .withDimensions(2)
-          .withSimilarity("DOT_PRODUCT")
+          .withSimilarity(VectorSimilarityFunction.DOT_PRODUCT)
           .create();
 
       // Verify initial status
@@ -154,14 +155,14 @@ public class LSMVectorIndexTest extends TestHelper {
   }
 
   @Test
-  public void testCompactionExecution() throws IOException, InterruptedException {
+  public void testCompactionExecution() {
     database.transaction(() -> {
       // Create index using Java API
       final Schema schema = database.getSchema();
       final LSMVectorIndex index = schema.buildLSMVectorIndex("TestVector", "embedding")
           .withIndexName("test_exec_compact_idx")
           .withDimensions(4)
-          .withSimilarity("COSINE")
+          .withSimilarity(VectorSimilarityFunction.COSINE)
           .create();
 
       // Insert some vectors
@@ -184,9 +185,7 @@ public class LSMVectorIndexTest extends TestHelper {
       final boolean compacted;
       try {
         compacted = index.compact();
-      } catch (IOException e) {
-        throw new RuntimeException(e);
-      } catch (InterruptedException e) {
+      } catch (IOException | InterruptedException e) {
         throw new RuntimeException(e);
       }
       assertThat(compacted).isTrue();
@@ -200,14 +199,14 @@ public class LSMVectorIndexTest extends TestHelper {
   }
 
   @Test
-  public void testVectorSearchAfterCompaction() throws IOException, InterruptedException {
+  public void testVectorSearchAfterCompaction()  {
     database.transaction(() -> {
       // Create index using Java API
       final Schema schema = database.getSchema();
       final LSMVectorIndex index = schema.buildLSMVectorIndex("TestVector", "embedding")
           .withIndexName("test_search_after_compact_idx")
           .withDimensions(2)
-          .withSimilarity("EUCLIDEAN")
+          .withSimilarity(VectorSimilarityFunction.EUCLIDEAN)
           .create();
 
       // Insert vectors
@@ -224,9 +223,7 @@ public class LSMVectorIndexTest extends TestHelper {
       index.scheduleCompaction();
       try {
         index.compact();
-      } catch (IOException e) {
-        throw new RuntimeException(e);
-      } catch (InterruptedException e) {
+      } catch (IOException | InterruptedException e) {
         throw new RuntimeException(e);
       }
 
@@ -249,7 +246,7 @@ public class LSMVectorIndexTest extends TestHelper {
       final LSMVectorIndex index = schema.buildLSMVectorIndex("TestVector", "embedding")
           .withIndexName("test_empty_cursor_idx")
           .withDimensions(1)
-          .withSimilarity("COSINE")
+          .withSimilarity(VectorSimilarityFunction.COSINE)
           .create();
 
       // Search for non-existent vector
@@ -269,7 +266,7 @@ public class LSMVectorIndexTest extends TestHelper {
       final LSMVectorIndex index = schema.buildLSMVectorIndex("TestVector", "embedding")
           .withIndexName("test_json_idx")
           .withDimensions(8)
-          .withSimilarity("COSINE")
+          .withSimilarity(VectorSimilarityFunction.COSINE)
           .create();
 
       // Serialize to JSON
@@ -278,7 +275,7 @@ public class LSMVectorIndexTest extends TestHelper {
       assertThat(json.get("name")).isEqualTo("test_json_idx");
       assertThat(json.get("type")).isEqualTo("LSM_VECTOR");
       assertThat(json.get("dimensions")).isEqualTo(8);
-      assertThat(json.get("similarity")).isEqualTo("COSINE");
+      assertThat(json.get("similarity")).isEqualTo(VectorSimilarityFunction.COSINE.name());
     });
   }
 
@@ -290,7 +287,7 @@ public class LSMVectorIndexTest extends TestHelper {
       final LSMVectorIndex index = schema.buildLSMVectorIndex("TestVector", "embedding")
           .withIndexName("test_knn_mutable_idx")
           .withDimensions(3)
-          .withSimilarity("COSINE")
+          .withSimilarity(VectorSimilarityFunction.COSINE)
           .create();
 
       // Insert test vectors
@@ -317,14 +314,14 @@ public class LSMVectorIndexTest extends TestHelper {
   }
 
   @Test
-  public void testKNNSearchWithHNSWAfterCompaction() throws IOException, InterruptedException {
+  public void testKNNSearchWithHNSWAfterCompaction() {
     database.transaction(() -> {
       // Create index using Java API
       final Schema schema = database.getSchema();
       final LSMVectorIndex index = schema.buildLSMVectorIndex("TestVector", "embedding")
           .withIndexName("test_knn_hnsw_idx")
           .withDimensions(4)
-          .withSimilarity("EUCLIDEAN")
+          .withSimilarity(VectorSimilarityFunction.EUCLIDEAN)
           .create();
 
       // Insert vectors
@@ -347,9 +344,7 @@ public class LSMVectorIndexTest extends TestHelper {
       index.scheduleCompaction();
       try {
         index.compact();
-      } catch (IOException e) {
-        throw new RuntimeException(e);
-      } catch (InterruptedException e) {
+      } catch (IOException | InterruptedException e) {
         throw new RuntimeException(e);
       }
 
@@ -369,20 +364,20 @@ public class LSMVectorIndexTest extends TestHelper {
   public void testKNNSearchAllDistanceMetrics() {
     database.transaction(() -> {
       // Test COSINE similarity
-      testKNNWithMetric("COSINE", 3, 0);
+      testKNNWithMetric(VectorSimilarityFunction.COSINE, 3, 0);
 
       // Test EUCLIDEAN distance
-      testKNNWithMetric("EUCLIDEAN", 3, 10);
+      testKNNWithMetric(VectorSimilarityFunction.EUCLIDEAN, 3, 10);
 
       // Test DOT_PRODUCT
-      testKNNWithMetric("DOT_PRODUCT", 3, 20);
+      testKNNWithMetric(VectorSimilarityFunction.DOT_PRODUCT, 3, 20);
     });
   }
 
-  private void testKNNWithMetric(final String metric, final int dimensions, final int ridOffset) {
+  private void testKNNWithMetric(final VectorSimilarityFunction metric, final int dimensions, final int ridOffset) {
     final Schema schema = database.getSchema();
     // Use unique property name for each metric to avoid schema conflicts
-    final String propertyName = "embedding_" + metric.toLowerCase();
+    final String propertyName = "embedding_" + metric.name().toLowerCase();
     final LSMVectorIndex index = schema.buildLSMVectorIndex("TestVector", propertyName)
         .withIndexName("test_knn_" + metric + "_idx")
         .withDimensions(dimensions)
@@ -413,18 +408,18 @@ public class LSMVectorIndexTest extends TestHelper {
         index.knnSearch(v1, 1);
 
     assertThat(results).isNotEmpty();
-    assertThat(results.get(0).rids).contains(rid1);
+    assertThat(results.getFirst().rids).contains(rid1);
   }
 
   @Test
-  public void testHybridKNNSearchMutableAndCompacted() throws IOException, InterruptedException {
+  public void testHybridKNNSearchMutableAndCompacted()  {
     database.transaction(() -> {
       // Create index using Java API
       final Schema schema = database.getSchema();
       final LSMVectorIndex index = schema.buildLSMVectorIndex("TestVector", "embedding")
           .withIndexName("test_hybrid_knn_idx")
           .withDimensions(2)
-          .withSimilarity("COSINE")
+          .withSimilarity(VectorSimilarityFunction.COSINE)
           .create();
 
       // Insert vectors in mutable
@@ -440,9 +435,7 @@ public class LSMVectorIndexTest extends TestHelper {
       index.scheduleCompaction();
       try {
         index.compact();
-      } catch (IOException e) {
-        throw new RuntimeException(e);
-      } catch (InterruptedException e) {
+      } catch (IOException | InterruptedException e) {
         throw new RuntimeException(e);
       }
 

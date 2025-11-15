@@ -468,7 +468,7 @@ public class RemoteSchema implements Schema {
    * @return
    */
   @Override
-  public LSMVectorIndexBuilder buildLSMVectorIndex(String typeName, String[] propertyNames) {
+  public LSMVectorIndexBuilder buildLSMVectorIndex(String typeName, String propertyNames) {
     throw new UnsupportedOperationException();
   }
 

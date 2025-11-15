@@ -19,14 +19,14 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.ConfigurationException;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Unit tests for LSMVectorIndexBuilder.
@@ -76,12 +76,12 @@ class LSMVectorIndexBuilderTest extends TestHelper {
       LSMVectorIndexBuilder builder = database.getSchema()
           .buildLSMVectorIndex("TestVector", "embedding");
       builder.withDimensions(128);
-      builder.withSimilarity("COSINE");
+      builder.withSimilarity(VectorSimilarityFunction.COSINE);
       builder.withMaxConnections(16);
       builder.withBeamWidth(100);
 
       assertEquals(128, builder.getDimensions());
-      assertEquals("COSINE", builder.getSimilarityFunction());
+      assertEquals(VectorSimilarityFunction.COSINE, builder.getSimilarityFunction());
       assertEquals(16, builder.getMaxConnections());
       assertEquals(100, builder.getBeamWidth());
       assertEquals(1.2f, builder.getAlpha());
@@ -97,7 +97,7 @@ class LSMVectorIndexBuilderTest extends TestHelper {
       // Builder with no dimensions should fail on validate/create
       LSMVectorIndexBuilder builder = database.getSchema()
           .buildLSMVectorIndex("Type", "prop");
-      builder.withSimilarity("COSINE");
+      builder.withSimilarity(VectorSimilarityFunction.COSINE);
 
       // Should throw when accessing builder state without dimensions
       assertEquals(-1, builder.getDimensions());
@@ -172,34 +172,15 @@ class LSMVectorIndexBuilderTest extends TestHelper {
           .buildLSMVectorIndex("Type", "prop");
 
       // Valid functions
-      builder.withSimilarity("COSINE");
-      assertEquals("COSINE", builder.getSimilarityFunction());
+      builder.withSimilarity(VectorSimilarityFunction.COSINE);
+      assertEquals(VectorSimilarityFunction.COSINE, builder.getSimilarityFunction());
 
-      builder.withSimilarity("EUCLIDEAN");
-      assertEquals("EUCLIDEAN", builder.getSimilarityFunction());
+      builder.withSimilarity(VectorSimilarityFunction.EUCLIDEAN);
+      assertEquals(VectorSimilarityFunction.EUCLIDEAN, builder.getSimilarityFunction());
 
-      builder.withSimilarity("DOT_PRODUCT");
-      assertEquals("DOT_PRODUCT", builder.getSimilarityFunction());
+      builder.withSimilarity(VectorSimilarityFunction.DOT_PRODUCT);
+      assertEquals(VectorSimilarityFunction.DOT_PRODUCT, builder.getSimilarityFunction());
 
-      // Case insensitive
-      builder.withSimilarity("cosine");
-      assertEquals("COSINE", builder.getSimilarityFunction());
-    });
-  }
-
-  /**
-   * Tests similarity function validation - invalid value.
-   */
-  @Test
-  void testSimilarityFunctionInvalid() {
-    database.transaction(() -> {
-      LSMVectorIndexBuilder builder = database.getSchema()
-          .buildLSMVectorIndex("Type", "prop");
-
-      ConfigurationException ex = assertThrows(ConfigurationException.class, () -> {
-        builder.withSimilarity("INVALID");
-      });
-      assertTrue(ex.getMessage().contains("Invalid similarity function"));
     });
   }
 
@@ -387,13 +368,13 @@ class LSMVectorIndexBuilderTest extends TestHelper {
       LSMVectorIndexBuilder builder = database.getSchema()
           .buildLSMVectorIndex("Type", "prop")
           .withDimensions(256)
-          .withSimilarity("EUCLIDEAN")
+          .withSimilarity(VectorSimilarityFunction.EUCLIDEAN)
           .withMaxConnections(32)
           .withBeamWidth(200)
           .withAlpha(1.5f);
 
       assertEquals(256, builder.getDimensions());
-      assertEquals("EUCLIDEAN", builder.getSimilarityFunction());
+      assertEquals(VectorSimilarityFunction.EUCLIDEAN, builder.getSimilarityFunction());
       assertEquals(32, builder.getMaxConnections());
       assertEquals(200, builder.getBeamWidth());
       assertEquals(1.5f, builder.getAlpha());
@@ -413,7 +394,7 @@ class LSMVectorIndexBuilderTest extends TestHelper {
       assertEquals(-1, builder.getDimensions());
 
       // Others have defaults
-      assertEquals("COSINE", builder.getSimilarityFunction());
+      assertEquals(VectorSimilarityFunction.COSINE, builder.getSimilarityFunction());
       assertEquals(16, builder.getMaxConnections());
       assertEquals(100, builder.getBeamWidth());
       assertEquals(1.2f, builder.getAlpha());
