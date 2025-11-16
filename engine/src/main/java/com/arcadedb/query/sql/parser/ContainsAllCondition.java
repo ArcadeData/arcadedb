@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -199,6 +200,50 @@ public class ContainsAllCondition extends BooleanExpression {
   @Override
   protected SimpleNode[] getCacheableElements() {
     return new SimpleNode[] { left, right, rightBlock };
+  }
+
+  @Override
+  public boolean isIndexAware(final IndexSearchInfo info) {
+    if (left.isBaseIdentifier()) {
+      if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
+        // CONTAINSALL operator only works with BY-ITEM indexes, not regular list indexes
+        if (info.isIndexByItem())
+          return right != null && right.isEarlyCalculated(info.getContext());
+      }
+    }
+    return false;
+  }
+
+  @Override
+  public Expression resolveKeyFrom(final BinaryCondition additional) {
+    if (right != null)
+      return right;
+    throw new UnsupportedOperationException("Cannot execute index query with " + this);
+  }
+
+  @Override
+  public Expression resolveKeyTo(final BinaryCondition additional) {
+    if (right != null)
+      return right;
+    throw new UnsupportedOperationException("Cannot execute index query with " + this);
+  }
+
+  @Override
+  public boolean isKeyFromIncluded(final BinaryCondition additional) {
+    if (additional != null && additional.getOperator() != null) {
+      return additional.getOperator().isGreaterInclude();
+    } else {
+      return true;
+    }
+  }
+
+  @Override
+  public boolean isKeyToIncluded(final BinaryCondition additional) {
+    if (additional != null && additional.getOperator() != null) {
+      return additional.getOperator().isLessInclude();
+    } else {
+      return true;
+    }
   }
 }
 /* JavaCC - OriginalChecksum=ab7b4e192a01cda09a82d5b80ef4ec60 (do not edit this line) */
