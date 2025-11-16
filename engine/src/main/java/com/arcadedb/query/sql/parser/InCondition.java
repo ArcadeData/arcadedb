@@ -262,7 +262,7 @@ public class InCondition extends BooleanExpression {
       if (rightMathExpression instanceof BaseExpression) {
         final BaseExpression baseExpr = (BaseExpression) rightMathExpression;
         if (baseExpr.getIdentifier() != null) {
-          final String fieldName = baseExpr.getIdentifier().getSuffix().identifier.getStringValue();
+          final String fieldName = baseExpr.getIdentifier().getSuffix().getStringValue();
           if (info.getField().equals(fieldName)) {
             // The right side matches the indexed field, and left side is the search value
             return left.isEarlyCalculated(info.getContext());
