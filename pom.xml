@@ -70,7 +70,7 @@
         <maven-central-publishing-plugin.version>0.9.0</maven-central-publishing-plugin.version>
 
         <testcontainers.version>1.21.3</testcontainers.version>
-        <logback-classic.version>1.5.20</logback-classic.version>
+        <logback-classic.version>1.5.21</logback-classic.version>
         <micrometer.version>1.16.0</micrometer.version>
         <postgres.version>42.7.8</postgres.version>
 
