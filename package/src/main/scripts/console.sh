@@ -60,7 +60,7 @@ if [ -z "$JAVA_OPTS_SCRIPT" ] ; then
         -Dpolyglot.engine.WarnInterpreterOnly=false \
         -Djava.awt.headless=true \
         -Dfile.encoding=UTF8 \
-        --illegal-access=deny"
+        --enable-native-access=ALL-UNNAMED"
 fi
 
 if [ $# -gt 0 ] ; then
