@@ -32,12 +32,14 @@ import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.CodeUtils;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import java.util.Random;
 import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -116,9 +118,9 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
         // Use Awaitility instead of busy-wait
         try {
-          org.awaitility.Awaitility.await()
-              .atMost(30, java.util.concurrent.TimeUnit.SECONDS)
-              .pollInterval(300, java.util.concurrent.TimeUnit.MILLISECONDS)
+          Awaitility.await()
+              .atMost(30, TimeUnit.SECONDS)
+              .pollInterval(300, TimeUnit.MILLISECONDS)
               .until(() -> getServer(finalServerId).getStatus() != ArcadeDBServer.STATUS.SHUTTING_DOWN);
         } catch (org.awaitility.core.ConditionTimeoutException e) {
           LogManager.instance().log(this, Level.SEVERE, "TEST: Timeout waiting for server %d to shutdown", e, finalServerId);
@@ -151,9 +153,9 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
         // Wait for server to be fully online and replicas to reconnect
         try {
-          org.awaitility.Awaitility.await()
-              .atMost(30, java.util.concurrent.TimeUnit.SECONDS)
-              .pollInterval(500, java.util.concurrent.TimeUnit.MILLISECONDS)
+          Awaitility.await()
+              .atMost(30, TimeUnit.SECONDS)
+              .pollInterval(500, TimeUnit.MILLISECONDS)
               .until(() -> areAllReplicasAreConnected());
         } catch (org.awaitility.core.ConditionTimeoutException e) {
           LogManager.instance().log(this, Level.WARNING, "TEST: Timeout waiting for replicas to reconnect after server %d restart", e, finalServerId);

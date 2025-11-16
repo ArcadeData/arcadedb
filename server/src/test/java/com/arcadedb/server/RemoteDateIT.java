@@ -30,12 +30,14 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
 import java.time.temporal.*;
+import java.util.concurrent.TimeUnit;
 
 import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -63,9 +65,9 @@ class RemoteDateIT {
     arcadeDBServer.start();
 
     // Wait for server to be fully started and ready
-    org.awaitility.Awaitility.await()
-        .atMost(30, java.util.concurrent.TimeUnit.SECONDS)
-        .pollInterval(100, java.util.concurrent.TimeUnit.MILLISECONDS)
+    Awaitility.await()
+        .atMost(30, TimeUnit.SECONDS)
+        .pollInterval(100, TimeUnit.MILLISECONDS)
         .until(() -> arcadeDBServer.isStarted() && arcadeDBServer.getHttpServer() != null);
 
     RemoteDatabase remote = null;

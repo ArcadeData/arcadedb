@@ -30,11 +30,13 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -59,9 +61,9 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
     final VertexType type1 = databases[0].getSchema().createVertexType("RuntimeVertex0");
 
     // Wait a bit for schema change to propagate
-    org.awaitility.Awaitility.await()
-        .atMost(5, java.util.concurrent.TimeUnit.SECONDS)
-        .pollInterval(100, java.util.concurrent.TimeUnit.MILLISECONDS)
+    Awaitility.await()
+        .atMost(5, TimeUnit.SECONDS)
+        .pollInterval(100, TimeUnit.MILLISECONDS)
         .until(() -> {
           for (int i = 1; i < getServerCount(); i++) {
             if (!getServer(i).getDatabase(getDatabaseName()).getSchema().existsType("RuntimeVertex0")) {
@@ -83,9 +85,9 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
     type1.createProperty("nameNotFoundInDictionary", Type.STRING);
 
     // Wait for property to propagate
-    org.awaitility.Awaitility.await()
-        .atMost(5, java.util.concurrent.TimeUnit.SECONDS)
-        .pollInterval(100, java.util.concurrent.TimeUnit.MILLISECONDS)
+    Awaitility.await()
+        .atMost(5, TimeUnit.SECONDS)
+        .pollInterval(100, TimeUnit.MILLISECONDS)
         .until(() -> {
           for (int i = 1; i < getServerCount(); i++) {
             if (getServer(i).getDatabase(getDatabaseName()).getSchema().getType("RuntimeVertex0").getProperty("nameNotFoundInDictionary") == null) {
@@ -101,9 +103,9 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
     final Bucket newBucket = databases[0].getSchema().createBucket("newBucket");
 
     // Wait for bucket to propagate
-    org.awaitility.Awaitility.await()
-        .atMost(5, java.util.concurrent.TimeUnit.SECONDS)
-        .pollInterval(100, java.util.concurrent.TimeUnit.MILLISECONDS)
+    Awaitility.await()
+        .atMost(5, TimeUnit.SECONDS)
+        .pollInterval(100, TimeUnit.MILLISECONDS)
         .until(() -> {
           for (int i = 1; i < getServerCount(); i++) {
             if (!getServer(i).getDatabase(getDatabaseName()).getSchema().existsBucket("newBucket")) {
@@ -191,10 +193,10 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
 
     // Additional wait to ensure schema files are flushed to disk
     try {
-      org.awaitility.Awaitility.await()
-          .atMost(10, java.util.concurrent.TimeUnit.SECONDS)
-          .pollDelay(100, java.util.concurrent.TimeUnit.MILLISECONDS)
-          .pollInterval(100, java.util.concurrent.TimeUnit.MILLISECONDS)
+      Awaitility.await()
+          .atMost(10, TimeUnit.SECONDS)
+          .pollDelay(100, TimeUnit.MILLISECONDS)
+          .pollInterval(100, TimeUnit.MILLISECONDS)
           .until(() -> {
             // Verify all servers have synchronized schema
             for (int i = 0; i < getServerCount(); i++) {
