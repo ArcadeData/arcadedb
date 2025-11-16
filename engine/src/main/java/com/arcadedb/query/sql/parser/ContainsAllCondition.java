@@ -208,7 +208,7 @@ public class ContainsAllCondition extends BooleanExpression {
       if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
         // CONTAINSALL operator only works with BY-ITEM indexes, not regular list indexes
         if (info.isIndexByItem())
-          return right.isEarlyCalculated(info.getContext());
+          return right != null && right.isEarlyCalculated(info.getContext());
       }
     }
     return false;
