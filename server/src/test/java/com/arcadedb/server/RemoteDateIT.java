@@ -62,9 +62,17 @@ class RemoteDateIT {
     ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
     arcadeDBServer.start();
 
-    // Create and configure the database through the server
-    Database database = arcadeDBServer.getOrCreateDatabase("remotedate");
+    // Wait for server to be fully started and ready
+    org.awaitility.Awaitility.await()
+        .atMost(30, java.util.concurrent.TimeUnit.SECONDS)
+        .pollInterval(100, java.util.concurrent.TimeUnit.MILLISECONDS)
+        .until(() -> arcadeDBServer.isStarted() && arcadeDBServer.getHttpServer() != null);
+
+    RemoteDatabase remote = null;
     try {
+      // Create and configure the database through the server
+      Database database = arcadeDBServer.getOrCreateDatabase("remotedate");
+
       // Configure datetime settings
       database.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
       database.command("sql", "alter database `arcadedb.dateTimeFormat` \"yyyy-MM-dd'T'HH:mm:ss.SSSSSS\"");
@@ -90,8 +98,11 @@ class RemoteDateIT {
 
       database.commit();
 
+      // Ensure HTTP server is ready before creating remote connection
+      final int httpPort = arcadeDBServer.getHttpServer().getPort();
+
       // Now the remote connection will work because the database has proper security setup
-      final RemoteDatabase remote = new RemoteDatabase("localhost", 2480, "remotedate", "root", DEFAULT_PASSWORD_FOR_TESTS);
+      remote = new RemoteDatabase("localhost", httpPort, "remotedate", "root", DEFAULT_PASSWORD_FOR_TESTS);
 
       try (ResultSet resultSet = remote.query("sql", "select from Order")) {
         Result result = resultSet.next();
@@ -99,7 +110,19 @@ class RemoteDateIT {
       }
 
     } finally {
-      arcadeDBServer.stop();
+      // Close remote connection first
+      if (remote != null) {
+        try {
+          remote.close();
+        } catch (Exception e) {
+          // Ignore close errors
+        }
+      }
+
+      // Then stop the server
+      if (arcadeDBServer != null) {
+        arcadeDBServer.stop();
+      }
     }
   }
 

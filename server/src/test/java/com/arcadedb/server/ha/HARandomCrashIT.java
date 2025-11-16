@@ -61,79 +61,107 @@ public class HARandomCrashIT extends ReplicationServerIT {
   public void replication() {
     checkDatabases();
 
-    final Timer timer = new Timer();
+    final Timer timer = new Timer("HARandomCrashIT-Timer", true);
+    final Random random = new Random();
+
     timer.schedule(new TimerTask() {
       @Override
       public void run() {
         if (!areAllReplicasAreConnected())
           return;
 
-        final int serverId = new Random().nextInt(getServerCount());
-
         if (restarts >= getServerCount()) {
           delay = 0;
           return;
         }
 
-        for (int i = 0; i < getServerCount(); ++i)
-          if (getServer(i).isStarted()) {
-            final Database db = getServer(i).getDatabase(getDatabaseName());
-            db.begin();
-            try {
-              final long count = db.countType(VERTEX1_TYPE_NAME, true);
-              if (count > ((long) getTxs() * getVerticesPerTx()) * 9 / 10) {
-                LogManager.instance()
-                    .log(this, getLogLevel(), "TEST: Skip stop of server because it's close to the end of the test (%d/%d)", null,
-                        count, getTxs() * getVerticesPerTx());
-                return;
-              }
-            } catch (final Exception e) {
-              // GENERIC ERROR, SKIP STOP
-              LogManager.instance().log(this, Level.SEVERE, "TEST: Skip stop of server for generic error", e);
-              continue;
-            } finally {
-              db.rollback();
-            }
+        // Select a random server that is currently started
+        int serverId = -1;
+        for (int attempt = 0; attempt < getServerCount() * 2; attempt++) {
+          int candidate = random.nextInt(getServerCount());
+          if (getServer(candidate).isStarted()) {
+            serverId = candidate;
+            break;
+          }
+        }
 
-            delay = 100;
-            LogManager.instance().log(this, getLogLevel(), "TEST: Stopping the Server %s (delay=%d)...", null, serverId, delay);
+        if (serverId == -1) {
+          LogManager.instance().log(this, getLogLevel(), "TEST: No started server found to crash");
+          return;
+        }
 
-            getServer(serverId).stop();
-
-            while (getServer(serverId).getStatus() == ArcadeDBServer.STATUS.SHUTTING_DOWN)
-              CodeUtils.sleep(300);
-
-            LogManager.instance().log(this, getLogLevel(), "TEST: Restarting the Server %s (delay=%d)...", null, serverId, delay);
-
-            restarts++;
-
-            for (int restartRetry = 0; restartRetry < 3; restartRetry++) {
-              try {
-                getServer(serverId).start();
-                break;
-              } catch (Throwable e) {
-                LogManager.instance()
-                    .log(this, getLogLevel(), "TEST: Error on restarting the server %s, retrying (%d/%d)", e, restartRetry + 1, 3);
-              }
-            }
-
-            LogManager.instance().log(this, getLogLevel(), "TEST: Server %s restarted (delay=%d)...", null, serverId, delay);
-
-            new Timer().schedule(new TimerTask() {
-              @Override
-              public void run() {
-                delay = 0;
-                LogManager.instance().log(this, getLogLevel(), "TEST: Resetting delay (delay=%d)...", null, delay);
-              }
-            }, 10_000);
-
+        final Database db = getServer(serverId).getDatabase(getDatabaseName());
+        db.begin();
+        try {
+          final long count = db.countType(VERTEX1_TYPE_NAME, true);
+          if (count > ((long) getTxs() * getVerticesPerTx()) * 9 / 10) {
+            LogManager.instance()
+                .log(this, getLogLevel(), "TEST: Skip stop of server because it's close to the end of the test (%d/%d)", null,
+                    count, getTxs() * getVerticesPerTx());
             return;
           }
+        } catch (final Exception e) {
+          // GENERIC ERROR, SKIP STOP
+          LogManager.instance().log(this, Level.SEVERE, "TEST: Skip stop of server for generic error", e);
+          return;
+        } finally {
+          db.rollback();
+        }
 
-        LogManager.instance().log(this, getLogLevel(), "TEST: Cannot restart server because unable to count vertices");
+        delay = 100;
+        final int finalServerId = serverId;
+        LogManager.instance().log(this, getLogLevel(), "TEST: Stopping the Server %d (delay=%d)...", null, finalServerId, delay);
 
+        getServer(finalServerId).stop();
+
+        // Use Awaitility instead of busy-wait
+        try {
+          org.awaitility.Awaitility.await()
+              .atMost(30, java.util.concurrent.TimeUnit.SECONDS)
+              .pollInterval(300, java.util.concurrent.TimeUnit.MILLISECONDS)
+              .until(() -> getServer(finalServerId).getStatus() != ArcadeDBServer.STATUS.SHUTTING_DOWN);
+        } catch (org.awaitility.core.ConditionTimeoutException e) {
+          LogManager.instance().log(this, Level.SEVERE, "TEST: Timeout waiting for server %d to shutdown", e, finalServerId);
+          return;
+        }
+
+        LogManager.instance().log(this, getLogLevel(), "TEST: Restarting the Server %d (delay=%d)...", null, finalServerId, delay);
+
+        restarts++;
+
+        boolean restarted = false;
+        for (int restartRetry = 0; restartRetry < 3; restartRetry++) {
+          try {
+            getServer(finalServerId).start();
+            restarted = true;
+            break;
+          } catch (Throwable e) {
+            LogManager.instance()
+                .log(this, getLogLevel(), "TEST: Error on restarting the server %d, retrying (%d/%d)", e, finalServerId, restartRetry + 1, 3);
+            CodeUtils.sleep(1_000);
+          }
+        }
+
+        if (!restarted) {
+          LogManager.instance().log(this, Level.SEVERE, "TEST: Failed to restart server %d after 3 attempts", null, finalServerId);
+          return;
+        }
+
+        LogManager.instance().log(this, getLogLevel(), "TEST: Server %d restarted successfully (delay=%d)...", null, finalServerId, delay);
+
+        // Wait for server to be fully online and replicas to reconnect
+        try {
+          org.awaitility.Awaitility.await()
+              .atMost(30, java.util.concurrent.TimeUnit.SECONDS)
+              .pollInterval(500, java.util.concurrent.TimeUnit.MILLISECONDS)
+              .until(() -> areAllReplicasAreConnected());
+        } catch (org.awaitility.core.ConditionTimeoutException e) {
+          LogManager.instance().log(this, Level.WARNING, "TEST: Timeout waiting for replicas to reconnect after server %d restart", e, finalServerId);
+        }
+
+        delay = 0;
       }
-    }, 15_000, 10_000);
+    }, 20_000, 15_000);
 
     final String server1Address = getServer(0).getHttpServer().getListeningAddress();
     final String[] server1AddressParts = HostUtil.parseHostAddress(server1Address, HostUtil.CLIENT_DEFAULT_PORT);
@@ -164,7 +192,9 @@ public class HARandomCrashIT extends ReplicationServerIT {
             assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
           }
 
-          CodeUtils.sleep(100);
+          // Small delay to allow replication to process if server crashes are happening
+          if (delay > 0)
+            CodeUtils.sleep(Math.min(delay, 200));
 
           break;
 
@@ -176,7 +206,8 @@ public class HARandomCrashIT extends ReplicationServerIT {
             throw e;
           counter = lastGoodCounter;
 
-          CodeUtils.sleep(1_000);
+          // Exponential backoff for retries
+          CodeUtils.sleep(Math.min(1_000 * (retry + 1), 5_000));
 
         } catch (final DuplicatedKeyException e) {
           // THIS MEANS THE ENTRY WAS INSERTED BEFORE THE CRASH
