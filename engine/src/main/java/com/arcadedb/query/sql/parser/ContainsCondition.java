@@ -253,12 +253,13 @@ public class ContainsCondition extends BooleanExpression {
   }
 
   public boolean isIndexAware(final IndexSearchInfo info) {
-//    if (left.isBaseIdentifier()) {
-//      if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
-//        if (right != null)
-//          return right.isEarlyCalculated(info.getContext());
-//      }
-//    }
+      if (left.isBaseIdentifier()) {
+      if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
+        // CONTAINS operator only works with BY-ITEM indexes, not regular list indexes
+        if (info.isIndexByItem() && right != null)
+          return right.isEarlyCalculated(info.getContext());
+      }
+    }
     return false;
   }
 
