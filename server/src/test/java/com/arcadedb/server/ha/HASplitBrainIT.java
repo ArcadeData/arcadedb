@@ -23,10 +23,12 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.HostUtil;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
@@ -60,9 +62,9 @@ public class HASplitBrainIT extends ReplicationServerIT {
 
     // Wait for cluster to stabilize after rejoining
     try {
-      org.awaitility.Awaitility.await()
-          .atMost(60, java.util.concurrent.TimeUnit.SECONDS)
-          .pollInterval(1, java.util.concurrent.TimeUnit.SECONDS)
+      Awaitility.await()
+          .atMost(60, TimeUnit.SECONDS)
+          .pollInterval(1, TimeUnit.SECONDS)
           .until(() -> {
             try {
               // Ensure we have a stable leader
