@@ -86,7 +86,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Unit Tests Reporter
-        uses: dorny/test-reporter@dc3a92680fcc15842eef52e8c4606ea7ce6bd3f3 # v2.1.1
+        uses: dorny/test-reporter@7b7927aa7da8b82e81e755810cb51f39941a2cc7 # v2.2.0
         if: success() || failure()
         with:
           name: Unit Tests Report
@@ -129,7 +129,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Unit Tests Reporter
-        uses: dorny/test-reporter@dc3a92680fcc15842eef52e8c4606ea7ce6bd3f3 # v2.1.1
+        uses: dorny/test-reporter@7b7927aa7da8b82e81e755810cb51f39941a2cc7 # v2.2.0
         if: success() || failure()
         with:
           name: Unit Tests Report
@@ -172,7 +172,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: IT Tests Reporter
-        uses: dorny/test-reporter@dc3a92680fcc15842eef52e8c4606ea7ce6bd3f3 # v2.1.1
+        uses: dorny/test-reporter@7b7927aa7da8b82e81e755810cb51f39941a2cc7 # v2.2.0
         if: success() || failure()
         with:
           name: IT Tests Report
@@ -225,7 +225,7 @@ jobs:
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
 
       - name: E2E Tests Reporter
-        uses: dorny/test-reporter@dc3a92680fcc15842eef52e8c4606ea7ce6bd3f3 # v2.1.1
+        uses: dorny/test-reporter@7b7927aa7da8b82e81e755810cb51f39941a2cc7 # v2.2.0
         if: success() || failure()
         with:
           name: Java E2E Tests Report
@@ -269,7 +269,7 @@ jobs:
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
 
       - name: E2E Perf Tests Reporter
-        uses: dorny/test-reporter@dc3a92680fcc15842eef52e8c4606ea7ce6bd3f3 # v2.1.1
+        uses: dorny/test-reporter@7b7927aa7da8b82e81e755810cb51f39941a2cc7 # v2.2.0
         if: success() || failure()
         with:
           name: Java E2E Perf Tests Report
@@ -348,7 +348,7 @@ jobs:
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
 
       - name: Studio E2E Tests Reporter
-        uses: dorny/test-reporter@dc3a92680fcc15842eef52e8c4606ea7ce6bd3f3 # v2.1.1
+        uses: dorny/test-reporter@7b7927aa7da8b82e81e755810cb51f39941a2cc7 # v2.2.0
         if: success() || failure()
         with:
           name: Studio E2E Tests Report
