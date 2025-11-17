@@ -362,6 +362,7 @@ public class LSMVectorIndexTest extends TestHelper {
 
   @Test
   public void testKNNSearchAllDistanceMetrics() {
+
     database.transaction(() -> {
       // Test COSINE similarity
       testKNNWithMetric(VectorSimilarityFunction.COSINE, 3, 0);

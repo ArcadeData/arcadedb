@@ -28,6 +28,7 @@ import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 import java.io.File;
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -279,6 +280,29 @@ public class LSMVectorIndexBuilder extends IndexBuilder<LSMVectorIndex> {
         // Register file if it's a paginated component
         if (index instanceof PaginatedComponent component) {
           schema.registerFile(component);
+        }
+
+        // Register index directly with all buckets for automatic indexing
+        // Note: We cannot use addIndexInternal() because it creates TypeIndex wrappers
+        // that expect per-bucket component files, which LSMVectorIndex doesn't have
+        if (database.getSchema().existsType(typeName)) {
+          final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(typeName);
+
+          // Set metadata on the index first
+          final List<com.arcadedb.engine.Bucket> buckets = type.getBuckets(false);
+          if (!buckets.isEmpty()) {
+            final int firstBucketId = buckets.get(0).getFileId();
+            index.setMetadata(typeName, new String[] { propertyName }, firstBucketId);
+          }
+
+          // Register with all buckets
+          for (final com.arcadedb.engine.Bucket bucket : buckets) {
+            final List<IndexInternal> bucketIndexes = type.bucketIndexesByBucket.computeIfAbsent(
+                bucket.getFileId(), k -> new java.util.ArrayList<>());
+            if (!bucketIndexes.contains(index)) {
+              bucketIndexes.add(index);
+            }
+          }
         }
 
         // Register in schema's index map

@@ -34,6 +34,7 @@ import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -197,7 +198,22 @@ public class LSMVectorIndexCompactedWithHNSW extends LSMVectorIndexCompacted {
    *
    * @return list of K nearest vectors with distances and RIDs
    */
+  /**
+   * Find K nearest neighbors using HNSW acceleration (with optional filtering).
+   * Delegates to the 2-parameter version since HNSW doesn't support filtering yet.
+   */
   @Override
+  public List<LSMVectorIndexMutable.VectorSearchResult> knnSearch(
+      final float[] queryVector, final int k,
+      final com.arcadedb.index.lsm.LSMVectorIndex.IgnoreVertexCallback ignoreCallback) {
+    // TODO: Implement filtering support in HNSW search
+    // For now, delegate to HNSW search without filtering
+    return knnSearch(queryVector, k);
+  }
+
+  /**
+   * Find K nearest neighbors using HNSW acceleration.
+   */
   public List<LSMVectorIndexMutable.VectorSearchResult> knnSearch(
       final float[] queryVector, final int k) {
 
@@ -218,9 +234,14 @@ public class LSMVectorIndexCompactedWithHNSW extends LSMVectorIndexCompacted {
 
         // Create GraphSearcher and perform search
         // GraphSearcher.search() is a static method that takes multiple parameters
+        // IMPORTANT: For HNSW approximate search, we search for more results than k
+        // to improve recall, then trim to k afterwards. This helps find closer neighbors
+        // that might be missed due to graph navigation.
+        // For small datasets (< 10 vectors), search all vectors to ensure exact results
+        final int searchK = idToRids.size() < 10 ? idToRids.size() : Math.min(k * 3, idToRids.size());
         final SearchResult searchResult = GraphSearcher.search(
             queryVectorFloat,         // query vector (as VectorFloat)
-            k,                        // number of results
+            searchK,                  // number of results (increased for better recall)
             new VectorValuesAdapter(), // vector values
             getSimilarityFunction(), // similarity function
             hnswIndex,                // graph index
@@ -234,8 +255,20 @@ public class LSMVectorIndexCompactedWithHNSW extends LSMVectorIndexCompacted {
           final RID[] rids = idToRids.get(nodeId);
 
           if (vector != null && rids != null) {
+            // Convert JVector similarity score to distance based on similarity function
+            // JVector always returns similarity scores (higher is better), but we need distances for EUCLIDEAN
+            final float distance;
+            if (getSimilarityFunction() == VectorSimilarityFunction.EUCLIDEAN) {
+              // For EUCLIDEAN, JVector returns similarity = 1 / (1 + distance)
+              // Convert back to distance: distance = (1 / similarity) - 1
+              distance = (1.0f / nodeScore.score) - 1.0f;
+            } else {
+              // For COSINE and DOT_PRODUCT, score is already the similarity
+              distance = nodeScore.score;
+            }
+
             results.add(new LSMVectorIndexMutable.VectorSearchResult(
-                vector, nodeScore.score, Set.of(rids)));
+                vector, distance, Set.of(rids)));
           }
         }
 

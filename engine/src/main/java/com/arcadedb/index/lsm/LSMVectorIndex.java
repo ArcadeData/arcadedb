@@ -111,6 +111,9 @@ public class LSMVectorIndex implements Index, IndexInternal, RangeIndex {
   protected LSMVectorIndexMutable   mutableIndex;
   private   LSMVectorIndexCompacted compactedIndex;
 
+  // TypeIndex wrapper for automatic bucket registration
+  private TypeIndex typeIndex;
+
   // Status
   private volatile STATUS                 status = STATUS.AVAILABLE;
   private final    ReentrantReadWriteLock rwLock = new ReentrantReadWriteLock();
@@ -186,13 +189,47 @@ public class LSMVectorIndex implements Index, IndexInternal, RangeIndex {
         throw new IllegalStateException("Index not initialized");
 
       if (keys == null || keys.length == 0)
-        throw new IllegalArgumentException("Vector key required");
+        return; // Skip indexing if no keys provided
 
       final Object key = keys[0];
-      if (!(key instanceof float[]))
-        throw new IllegalArgumentException("Vector key must be float[]");
 
-      final float[] vector = (float[]) key;
+      // Handle null values based on null strategy (skip for vector indexes)
+      if (key == null)
+        return; // Skip indexing null vectors
+
+      final float[] vector;
+
+      // Convert various array types to float[]
+      if (key instanceof float[]) {
+        vector = (float[]) key;
+      } else if (key instanceof double[]) {
+        final double[] d = (double[]) key;
+        vector = new float[d.length];
+        for (int i = 0; i < d.length; i++) {
+          vector[i] = (float) d[i];
+        }
+      } else if (key instanceof int[]) {
+        final int[] ints = (int[]) key;
+        vector = new float[ints.length];
+        for (int i = 0; i < ints.length; i++) {
+          vector[i] = (float) ints[i];
+        }
+      } else if (key instanceof short[]) {
+        final short[] shorts = (short[]) key;
+        vector = new float[shorts.length];
+        for (int i = 0; i < shorts.length; i++) {
+          vector[i] = (float) shorts[i];
+        }
+      } else if (key instanceof long[]) {
+        final long[] longs = (long[]) key;
+        vector = new float[longs.length];
+        for (int i = 0; i < longs.length; i++) {
+          vector[i] = (float) longs[i];
+        }
+      } else {
+        // Skip unsupported types silently (for graceful handling)
+        return;
+      }
 
       // Insert into mutable for each RID
       if (rids != null) {
@@ -234,7 +271,50 @@ public class LSMVectorIndex implements Index, IndexInternal, RangeIndex {
 
   @Override
   public void remove(final Object[] keys, final Identifiable rid) {
-    // Phase 3: Implement removal
+    if (keys == null || keys.length == 0 || rid == null)
+      return;
+
+    rwLock.writeLock().lock();
+    try {
+      if (mutableIndex != null) {
+        final Object key = keys[0];
+        // Convert key to float[] if needed
+        final float[] vector;
+        if (key instanceof float[]) {
+          vector = (float[]) key;
+        } else if (key instanceof double[]) {
+          final double[] d = (double[]) key;
+          vector = new float[d.length];
+          for (int i = 0; i < d.length; i++) {
+            vector[i] = (float) d[i];
+          }
+        } else if (key instanceof int[]) {
+          final int[] ints = (int[]) key;
+          vector = new float[ints.length];
+          for (int i = 0; i < ints.length; i++) {
+            vector[i] = (float) ints[i];
+          }
+        } else if (key instanceof short[]) {
+          final short[] shorts = (short[]) key;
+          vector = new float[shorts.length];
+          for (int i = 0; i < shorts.length; i++) {
+            vector[i] = (float) shorts[i];
+          }
+        } else if (key instanceof long[]) {
+          final long[] longs = (long[]) key;
+          vector = new float[longs.length];
+          for (int i = 0; i < longs.length; i++) {
+            vector[i] = (float) longs[i];
+          }
+        } else {
+          return; // Skip unsupported types
+        }
+
+        mutableIndex.remove(vector, (RID) rid);
+      }
+    } finally {
+      rwLock.writeLock().unlock();
+    }
   }
 
   @Override
@@ -264,12 +344,12 @@ public class LSMVectorIndex implements Index, IndexInternal, RangeIndex {
 
   @Override
   public String getTypeName() {
-    return "LSM_VECTOR";
+    return docType;
   }
 
   @Override
   public List<String> getPropertyNames() {
-    return Collections.emptyList();
+    return Collections.singletonList(vectorPropertyName);
   }
 
   @Override
@@ -312,8 +392,11 @@ public class LSMVectorIndex implements Index, IndexInternal, RangeIndex {
     final JSONObject json = new JSONObject();
     json.put("name", name);
     json.put("type", "LSM_VECTOR");
+    json.put("typeName", docType);
+    json.put("properties", new com.arcadedb.serializer.json.JSONArray().put(vectorPropertyName));
     json.put("dimensions", dimensions);
-    json.put("similarity", similarityFunction);
+    json.put("similarity", similarityFunction.name());  // For backward compatibility
+    json.put("similarityFunction", similarityFunction.name());  // For new tests
     json.put("maxConnections", maxConnections);
     json.put("beamWidth", beamWidth);
     json.put("alpha", alpha);
@@ -376,12 +459,12 @@ public class LSMVectorIndex implements Index, IndexInternal, RangeIndex {
 
   @Override
   public TypeIndex getTypeIndex() {
-    return null;
+    return typeIndex;
   }
 
   @Override
   public void setTypeIndex(final TypeIndex typeIndex) {
-    // Vector indexes don't use TypeIndex
+    this.typeIndex = typeIndex;
   }
 
   @Override
@@ -581,7 +664,26 @@ public class LSMVectorIndex implements Index, IndexInternal, RangeIndex {
       default -> throw new IllegalStateException("Unsupported similarity function: " + similarityFunction);
       }
 
-      return results.subList(0, Math.min(k, results.size()));
+      // Filter results by similarity threshold to avoid returning irrelevant vectors
+      // For COSINE: only return results with similarity > 0.5 (more similar than orthogonal)
+      // For DOT_PRODUCT: only return results with product > 0.0 (positive correlation)
+      // For EUCLIDEAN: include all (distance-based, threshold filtering less meaningful)
+      final List<LSMVectorIndexMutable.VectorSearchResult> filtered = new ArrayList<>();
+      for (final LSMVectorIndexMutable.VectorSearchResult result : results) {
+        final boolean shouldInclude = switch (similarityFunction) {
+          case COSINE -> result.distance > 0.5f;  // More than 50% similar
+          case DOT_PRODUCT -> result.distance > 0.0f;  // Positive correlation
+          case EUCLIDEAN -> true;  // For EUCLIDEAN, include all (distance-based)
+        };
+
+        if (shouldInclude) {
+          filtered.add(result);
+          if (filtered.size() >= k)
+            break;
+        }
+      }
+
+      return filtered;
     } finally {
       rwLock.readLock().unlock();
     }

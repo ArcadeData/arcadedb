@@ -231,7 +231,7 @@ public class CreateIndexStatement extends DDLStatement {
               }
             })
             .create();
-      } catch (final ConfigurationException e) {
+      } catch (final ConfigurationException | IllegalArgumentException e) {
         throw new CommandExecutionException("Invalid LSM_VECTOR configuration: " + e.getMessage(), e);
       }
 

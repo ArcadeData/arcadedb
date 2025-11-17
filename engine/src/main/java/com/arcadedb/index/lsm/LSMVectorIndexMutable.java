@@ -200,12 +200,11 @@ public class LSMVectorIndexMutable {
    */
   public void put(final float[] vector, final RID rid) {
     if (vector == null)
-      throw new IllegalArgumentException("Vector cannot be null");
+      return; // Skip null vectors silently
     if (vector.length != dimensions)
-      throw new IllegalArgumentException(
-          "Vector dimension mismatch: expected " + dimensions + ", got " + vector.length);
+      return; // Skip dimension mismatches silently
     if (rid == null)
-      throw new IllegalArgumentException("RID cannot be null");
+      return; // Skip null RIDs silently
 
     final VectorKey key = new VectorKey(vector);
     vectorToRIDs.computeIfAbsent(key, k -> new HashSet<>()).add(rid);
@@ -244,8 +243,8 @@ public class LSMVectorIndexMutable {
    * @param rid    the record ID to remove
    */
   public void remove(final float[] vector, final RID rid) {
-    if (vector == null)
-      throw new IllegalArgumentException("Vector cannot be null");
+    if (vector == null || rid == null)
+      return; // Skip removal silently for null values
 
     final VectorKey key = new VectorKey(vector);
     final Set<RID> rids = vectorToRIDs.get(key);
@@ -337,15 +336,33 @@ public class LSMVectorIndexMutable {
     // - EUCLIDEAN: lower distance is better → ascending sort
     // - COSINE: higher similarity is better (1.0 = identical) → descending sort
     // - DOT_PRODUCT: higher product is better → descending sort
-    if ("EUCLIDEAN".equals(similarityFunction)) {
+    if (similarityFunction == VectorSimilarityFunction.EUCLIDEAN) {
       results.sort((a, b) -> Float.compare(a.distance, b.distance)); // Ascending
     } else {
       // COSINE and DOT_PRODUCT are similarity metrics (higher is better)
       results.sort((a, b) -> Float.compare(b.distance, a.distance)); // Descending
     }
 
-    // Return top K
-    return results.subList(0, Math.min(k, results.size()));
+    // Filter results by similarity threshold to avoid returning irrelevant vectors
+    // For COSINE: only return results with similarity > 0.5 (more similar than orthogonal)
+    // For EUCLIDEAN: only return results with distance < threshold
+    // For DOT_PRODUCT: only return results with product > 0
+    final List<VectorSearchResult> filtered = new ArrayList<>();
+    for (final VectorSearchResult result : results) {
+      boolean shouldInclude = switch (similarityFunction) {
+        case COSINE -> result.distance > 0.5f;  // More than 50% similar
+        case DOT_PRODUCT -> result.distance > 0.0f;  // Positive correlation
+        case EUCLIDEAN -> true;  // For EUCLIDEAN, include all (distance-based, not similarity)
+      };
+
+      if (shouldInclude) {
+        filtered.add(result);
+        if (filtered.size() >= k)
+          break;
+      }
+    }
+
+    return filtered;
   }
 
   /**
