@@ -101,6 +101,13 @@ public class EmbeddedListIndexByItemTest extends TestHelper {
       result = database.query("sql", "SELECT FROM Photo WHERE tags CONTAINS (id=100 and name='nature')");
       count = result.stream().peek(r -> System.out.println("Found: " + r.toJSON())).count();
       assertThat(count).isEqualTo(2); // Photos 1 and 2 have tags with id=100 and name='nature'
+      
+      // Check if this query uses an index
+      explain = database.query("sql", "EXPLAIN SELECT FROM Photo WHERE tags CONTAINS (id=100 and name='nature')")
+          .next().getProperty("executionPlan").toString();
+      System.out.println("Explain for multiple conditions:");
+      System.out.println(explain);
+      // TODO: This should use an index on tags.id or tags.name
     });
   }
 }
