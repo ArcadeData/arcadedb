@@ -54,10 +54,10 @@ public class CompoundConditionIndexTest extends TestHelper {
       // Alternative syntax that uses indexes:
       // Instead of: tags CONTAINS (id=100 and name='Apple Inc')
       // Use: tags.id CONTAINS 100 AND tags.name CONTAINS 'Apple Inc'
-      System.out.println("=== Alternative query using separate index queries ===");
-      ResultSet result = database.query("sql", 
+      //System.out.println("=== Alternative query using separate index queries ===");
+      ResultSet result = database.query("sql",
           "SELECT FROM Photo WHERE tags.id CONTAINS 100 AND tags.name CONTAINS 'Apple Inc'");
-      long count = result.stream().peek(r -> System.out.println("Found: " + r.toJSON())).count();
+      long count = result.stream().count();
       assertThat(count).isEqualTo(1); // Only photo 1 matches both conditions
 
       // Verify both indexes are used
@@ -66,9 +66,9 @@ public class CompoundConditionIndexTest extends TestHelper {
           .next()
           .getProperty("executionPlan")
           .toString();
-      System.out.println("Explain plan:");
-      System.out.println(explain);
-      
+      //System.out.println("Explain plan:");
+      //System.out.println(explain);
+
       // Should use at least one index (ideally both, but the planner may choose one)
       assertThat(explain).containsAnyOf(
           "FETCH FROM INDEX Photo[tags.idbyitem]",
