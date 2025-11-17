@@ -32,6 +32,7 @@ import com.arcadedb.schema.LSMVectorIndexBuilder;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DateUtils;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -167,7 +168,7 @@ public class TextEmbeddingsImporter {
     // Create LSMVectorIndex using builder
     final LSMVectorIndexBuilder builder = schema.buildLSMVectorIndex(settings.vertexTypeName, vectorProp);
     builder.withDimensions(dimensions)
-        .withSimilarity(distanceFunctionName)
+        .withSimilarity(VectorSimilarityFunction.valueOf(distanceFunctionName))
         .withMaxConnections(maxConnections)
         .withBeamWidth(beamWidth)
         .withAlpha(alpha);
