@@ -29,6 +29,7 @@ import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 public class DocumentIndexer {
   private final LocalDatabase database;
@@ -96,9 +97,15 @@ public class DocumentIndexer {
   }
 
   private void addListItemsToIndex(final Index entry, final RID rid, final Document record,
-                                    final String[] propertyNames, final int listPropertyIndex) {
-    // Get the list property value
-    final Object listValue = getPropertyValue(record, propertyNames[listPropertyIndex]);
+      final String[] propertyNames, final int listPropertyIndex) {
+    final String propertyName = propertyNames[listPropertyIndex];
+
+    // Check if this is a nested property path (e.g., "tags.id")
+    final String[] pathParts = propertyName.split("\\.");
+    final String listPropertyName = pathParts[0];
+
+    // Get the list property value (just the root property, e.g., "tags")
+    final Object listValue = record.get(listPropertyName);
 
     if (listValue == null) {
       // Null list - no index entries
@@ -106,7 +113,7 @@ public class DocumentIndexer {
     }
 
     if (!(listValue instanceof List<?> list)) {
-      throw new IndexException("Property '" + propertyNames[listPropertyIndex] +
+      throw new IndexException("Property '" + listPropertyName +
           "' is indexed with BY ITEM but is not a LIST type");
     }
 
@@ -121,15 +128,46 @@ public class DocumentIndexer {
 
       for (int i = 0; i < keyValues.length; ++i) {
         if (i == listPropertyIndex) {
-          // Use the individual list item as the key value
-          keyValues[i] = listItem;
+          // For nested paths (e.g., "tags.id"), extract the nested property from the list item
+          if (pathParts.length > 1) {
+            // Build the nested path without the first part (e.g., "id" from "tags.id")
+            final StringBuilder nestedPath = new StringBuilder();
+            for (int j = 1; j < pathParts.length; j++) {
+              if (j > 1)
+                nestedPath.append(".");
+              nestedPath.append(pathParts[j]);
+            }
+
+            // Extract the nested property value from the list item
+            Object nestedValue = listItem;
+            for (int j = 1; j < pathParts.length; j++) {
+              if (nestedValue == null) {
+                break;
+              }
+              if (nestedValue instanceof Document doc) {
+                nestedValue = doc.get(pathParts[j]);
+              } else if (nestedValue instanceof Map map) {
+                nestedValue = map.get(pathParts[j]);
+              } else {
+                nestedValue = null;
+                break;
+              }
+            }
+            keyValues[i] = nestedValue;
+          } else {
+            // Simple property - use the list item directly
+            keyValues[i] = listItem;
+          }
         } else {
           // Use normal property value for other properties
           keyValues[i] = getPropertyValue(record, propertyNames[i]);
         }
       }
 
-      entry.put(keyValues, new RID[] { rid });
+      // Only index if we have a valid key value
+      if (keyValues[listPropertyIndex] != null) {
+        entry.put(keyValues, new RID[] { rid });
+      }
     }
   }
 
@@ -207,41 +245,115 @@ public class DocumentIndexer {
   }
 
   private void updateListItemsInIndex(final Index index, final RID rid,
-                                      final Document originalRecord, final Document modifiedRecord,
-                                      final String[] propertyNames, final int listPropertyIndex) {
-    final Object oldListValue = getPropertyValue(originalRecord, propertyNames[listPropertyIndex]);
-    final Object newListValue = getPropertyValue(modifiedRecord, propertyNames[listPropertyIndex]);
+      final Document originalRecord, final Document modifiedRecord,
+      final String[] propertyNames, final int listPropertyIndex) {
+    final String propertyName = propertyNames[listPropertyIndex];
+    final String[] pathParts = propertyName.split("\\.");
+    final String listPropertyName = pathParts[0];
+
+    // Get the list values from both records
+    final Object oldListValue = originalRecord.get(listPropertyName);
+    final Object newListValue = modifiedRecord.get(listPropertyName);
 
     final List<?> oldList = (oldListValue instanceof List) ? (List<?>) oldListValue : List.of();
     final List<?> newList = (newListValue instanceof List) ? (List<?>) newListValue : List.of();
 
-    // Remove entries for items that are no longer in the list
-    for (final Object oldItem : oldList) {
-      if (!newList.contains(oldItem)) {
-        final Object[] keyValues = new Object[propertyNames.length];
-        for (int i = 0; i < keyValues.length; ++i) {
-          if (i == listPropertyIndex) {
-            keyValues[i] = oldItem;
-          } else {
-            keyValues[i] = getPropertyValue(originalRecord, propertyNames[i]);
-          }
-        }
-        index.remove(keyValues, rid);
-      }
-    }
+    // For nested paths, we need to compare the extracted values, not the objects themselves
+    final boolean isNested = pathParts.length > 1;
 
-    // Add entries for new items
-    for (final Object newItem : newList) {
-      if (!oldList.contains(newItem)) {
-        final Object[] keyValues = new Object[propertyNames.length];
-        for (int i = 0; i < keyValues.length; ++i) {
-          if (i == listPropertyIndex) {
-            keyValues[i] = newItem;
+    if (isNested) {
+      // Build a helper to extract nested values
+      java.util.function.Function<Object, Object> extractValue = (item) -> {
+        Object value = item;
+        for (int j = 1; j < pathParts.length; j++) {
+          if (value == null)
+            break;
+          if (value instanceof Document doc) {
+            value = doc.get(pathParts[j]);
+          } else if (value instanceof Map<?, ?> map) {
+            value = map.get(pathParts[j]);
           } else {
-            keyValues[i] = getPropertyValue(modifiedRecord, propertyNames[i]);
+            value = null;
+            break;
           }
         }
-        index.put(keyValues, new RID[] { rid });
+        return value;
+      };
+
+      // Collect old and new values
+      final List<Object> oldValues = new ArrayList<>();
+      for (Object item : oldList) {
+        final Object val = extractValue.apply(item);
+        if (val != null)
+          oldValues.add(val);
+      }
+
+      final List<Object> newValues = new ArrayList<>();
+      for (Object item : newList) {
+        final Object val = extractValue.apply(item);
+        if (val != null)
+          newValues.add(val);
+      }
+
+      // Remove entries for values that are no longer in the list
+      for (final Object oldValue : oldValues) {
+        if (!newValues.contains(oldValue)) {
+          final Object[] keyValues = new Object[propertyNames.length];
+          for (int i = 0; i < keyValues.length; ++i) {
+            if (i == listPropertyIndex) {
+              keyValues[i] = oldValue;
+            } else {
+              keyValues[i] = getPropertyValue(originalRecord, propertyNames[i]);
+            }
+          }
+          index.remove(keyValues, rid);
+        }
+      }
+
+      // Add entries for new values
+      for (final Object newValue : newValues) {
+        if (!oldValues.contains(newValue)) {
+          final Object[] keyValues = new Object[propertyNames.length];
+          for (int i = 0; i < keyValues.length; ++i) {
+            if (i == listPropertyIndex) {
+              keyValues[i] = newValue;
+            } else {
+              keyValues[i] = getPropertyValue(modifiedRecord, propertyNames[i]);
+            }
+          }
+          index.put(keyValues, new RID[] { rid });
+        }
+      }
+    } else {
+      // Simple list items - use direct comparison
+      // Remove entries for items that are no longer in the list
+      for (final Object oldItem : oldList) {
+        if (!newList.contains(oldItem)) {
+          final Object[] keyValues = new Object[propertyNames.length];
+          for (int i = 0; i < keyValues.length; ++i) {
+            if (i == listPropertyIndex) {
+              keyValues[i] = oldItem;
+            } else {
+              keyValues[i] = getPropertyValue(originalRecord, propertyNames[i]);
+            }
+          }
+          index.remove(keyValues, rid);
+        }
+      }
+
+      // Add entries for new items
+      for (final Object newItem : newList) {
+        if (!oldList.contains(newItem)) {
+          final Object[] keyValues = new Object[propertyNames.length];
+          for (int i = 0; i < keyValues.length; ++i) {
+            if (i == listPropertyIndex) {
+              keyValues[i] = newItem;
+            } else {
+              keyValues[i] = getPropertyValue(modifiedRecord, propertyNames[i]);
+            }
+          }
+          index.put(keyValues, new RID[] { rid });
+        }
       }
     }
   }
@@ -306,8 +418,12 @@ public class DocumentIndexer {
   }
 
   private void deleteListItemsFromIndex(final Index index, final Document record,
-                                        final String[] propertyNames, final int listPropertyIndex) {
-    final Object listValue = getPropertyValue(record, propertyNames[listPropertyIndex]);
+      final String[] propertyNames, final int listPropertyIndex) {
+    final String propertyName = propertyNames[listPropertyIndex];
+    final String[] pathParts = propertyName.split("\\.");
+    final String listPropertyName = pathParts[0];
+
+    final Object listValue = record.get(listPropertyName);
 
     if (listValue == null || !(listValue instanceof List)) {
       return;
@@ -321,13 +437,34 @@ public class DocumentIndexer {
 
       for (int i = 0; i < keyValues.length; ++i) {
         if (i == listPropertyIndex) {
-          keyValues[i] = listItem;
+          // For nested paths, extract the nested property value
+          if (pathParts.length > 1) {
+            Object nestedValue = listItem;
+            for (int j = 1; j < pathParts.length; j++) {
+              if (nestedValue == null)
+                break;
+              if (nestedValue instanceof Document doc) {
+                nestedValue = doc.get(pathParts[j]);
+              } else if (nestedValue instanceof Map map) {
+                nestedValue = map.get(pathParts[j]);
+              } else {
+                nestedValue = null;
+                break;
+              }
+            }
+            keyValues[i] = nestedValue;
+          } else {
+            keyValues[i] = listItem;
+          }
         } else {
           keyValues[i] = getPropertyValue(record, propertyNames[i]);
         }
       }
 
-      index.remove(keyValues, record.getIdentity());
+      // Only remove if we have a valid key value
+      if (keyValues[listPropertyIndex] != null) {
+        index.remove(keyValues, record.getIdentity());
+      }
     }
   }
 
@@ -339,6 +476,67 @@ public class DocumentIndexer {
       else if ("@in".equals(propertyName))
         return edge.getIn();
     }
-    return record.get(propertyName);
+
+    // First, try to get the property with the exact name (handles properties with dots in their names)
+    if (record.has(propertyName)) {
+      return record.get(propertyName);
+    }
+
+    // If property doesn't exist and contains a dot, try as nested path
+    if (propertyName.contains(".")) {
+      return getNestedPropertyValue(record, propertyName);
+    }
+
+    return null;
+  }
+
+  /**
+   * Retrieves a nested property value using dot notation path.
+   * For example, "tags.id" would get the property 'id' from the value of property 'tags'.
+   * This is only called when the property with the full name doesn't exist.
+   *
+   * @param record       The document to extract the property from
+   * @param propertyPath The dot-separated property path (e.g., "tags.id")
+   *
+   * @return The nested property value, or null if any part of the path is null
+   */
+  private Object getNestedPropertyValue(final Document record, final String propertyPath) {
+    final String[] pathParts = propertyPath.split("\\.", 2); // Split into at most 2 parts
+    Object current = record.get(pathParts[0]);
+
+    if (current == null || pathParts.length == 1) {
+      return current;
+    }
+
+    // Continue with the rest of the path
+    return getNestedValue(current, pathParts[1]);
+  }
+
+  /**
+   * Helper method to recursively get nested values from objects.
+   */
+  private Object getNestedValue(Object current, String path) {
+    if (current == null) {
+      return null;
+    }
+
+    final String[] pathParts = path.split("\\.", 2);
+    final String currentPart = pathParts[0];
+
+    if (current instanceof Document doc) {
+      current = doc.get(currentPart);
+    } else if (current instanceof Map map) {
+      current = map.get(currentPart);
+    } else {
+      // Cannot traverse further - not a document or map
+      return null;
+    }
+
+    // If there are more parts, recurse
+    if (pathParts.length > 1 && current != null) {
+      return getNestedValue(current, pathParts[1]);
+    }
+
+    return current;
   }
 }
