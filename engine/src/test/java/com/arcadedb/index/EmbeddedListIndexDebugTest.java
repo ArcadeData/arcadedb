@@ -54,7 +54,7 @@ public class EmbeddedListIndexDebugTest extends TestHelper {
 
     // Insert one document
     database.transaction(() -> {
-      database.command("sql", 
+      database.command("sql",
           "INSERT INTO Photo SET id = 1, tags = [{'@type':'Tag', 'id': 100, 'name': 'test'}]");
     });
 
@@ -62,20 +62,20 @@ public class EmbeddedListIndexDebugTest extends TestHelper {
     database.transaction(() -> {
       // Get the index
       var indexes = database.getSchema().getType("Photo").getAllIndexes(false);
-      System.out.println("=== Indexes ===");
+      //System.out.println.println("=== Indexes ===");
       for (TypeIndex idx : indexes) {
-        System.out.println("Index: " + idx.getName() + ", properties: " + idx.getPropertyNames());
-        
+        //System.out.println.println("Index: " + idx.getName() + ", properties: " + idx.getPropertyNames());
+
         // Try to look up the value in the index
-        System.out.println("Trying to lookup value 100 in index...");
+        //System.out.println.println("Trying to lookup value 100 in index...");
         var cursor = idx.get(new Object[]{100});
         int count = 0;
         while (cursor.hasNext()) {
           var identifiable = cursor.next();
-          System.out.println("  Found: " + identifiable.getIdentity());
+          //System.out.println.println("  Found: " + identifiable.getIdentity());
           count++;
         }
-        System.out.println("  Total results: " + count);
+        //System.out.println.println("  Total results: " + count);
       }
     });
   }
