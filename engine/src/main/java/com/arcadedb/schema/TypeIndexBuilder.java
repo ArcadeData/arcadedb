@@ -99,10 +99,35 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
           actualPropertyName = propertyName.substring(0, propertyName.length() - 8);
         }
 
-        final Property property = type.getPolymorphicPropertyIfExists(actualPropertyName);
-        if (property == null)
-          throw new SchemaException(
-              "Cannot create the index on type '" + typeName + "." + actualPropertyName + "' because the property does not exist");
+        // Check if this is a nested property path (e.g., "tags.id")
+        final String[] pathParts = actualPropertyName.split("\\.");
+        Property property = null;
+        
+        if (pathParts.length == 1) {
+          // Simple property name
+          property = type.getPolymorphicPropertyIfExists(actualPropertyName);
+          if (property == null)
+            throw new SchemaException(
+                "Cannot create the index on type '" + typeName + "." + actualPropertyName + "' because the property does not exist");
+        } else {
+          // Nested property path - validate only the root property
+          property = type.getPolymorphicPropertyIfExists(pathParts[0]);
+          if (property == null)
+            throw new SchemaException(
+                "Cannot create the index on type '" + typeName + "." + pathParts[0] + "' because the property does not exist");
+          
+          // For nested paths with BY ITEM, the root must be a LIST
+          if (isByItem && property.getType() != Type.LIST) {
+            throw new SchemaException(
+                "Cannot create index with BY ITEM on property '" + typeName + "." + pathParts[0] +
+                "' because it is not a LIST type (found: " + property.getType() + ")");
+          }
+          
+          // For nested properties, we'll use STRING as the key type since we can't validate the nested structure at schema definition time
+          // The actual type will be determined at runtime during indexing
+          keyTypes[i++] = Type.STRING;
+          continue;
+        }
 
         // Validate BY ITEM is only used with LIST type
         if (isByItem && property.getType() != Type.LIST) {
