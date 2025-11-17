@@ -472,39 +472,63 @@ public class DocumentIndexer {
         return edge.getIn();
     }
     
-    // Check if this is a nested property path (e.g., "tags.id")
+    // First, try to get the property with the exact name (handles properties with dots in their names)
+    if (record.has(propertyName)) {
+      return record.get(propertyName);
+    }
+    
+    // If property doesn't exist and contains a dot, try as nested path
     if (propertyName.contains(".")) {
       return getNestedPropertyValue(record, propertyName);
     }
     
-    return record.get(propertyName);
+    return null;
   }
   
   /**
    * Retrieves a nested property value using dot notation path.
    * For example, "tags.id" would get the property 'id' from the value of property 'tags'.
+   * This is only called when the property with the full name doesn't exist.
    * 
    * @param record The document to extract the property from
    * @param propertyPath The dot-separated property path (e.g., "tags.id")
    * @return The nested property value, or null if any part of the path is null
    */
   private Object getNestedPropertyValue(final Document record, final String propertyPath) {
-    final String[] pathParts = propertyPath.split("\\.");
-    Object current = record;
+    final String[] pathParts = propertyPath.split("\\.", 2); // Split into at most 2 parts
+    Object current = record.get(pathParts[0]);
     
-    for (int i = 0; i < pathParts.length; i++) {
-      if (current == null) {
-        return null;
-      }
-      
-      if (current instanceof Document doc) {
-        current = doc.get(pathParts[i]);
-      } else if (current instanceof Map map) {
-        current = map.get(pathParts[i]);
-      } else {
-        // Cannot traverse further - not a document or map
-        return null;
-      }
+    if (current == null || pathParts.length == 1) {
+      return current;
+    }
+    
+    // Continue with the rest of the path
+    return getNestedValue(current, pathParts[1]);
+  }
+  
+  /**
+   * Helper method to recursively get nested values from objects.
+   */
+  private Object getNestedValue(Object current, String path) {
+    if (current == null) {
+      return null;
+    }
+    
+    final String[] pathParts = path.split("\\.", 2);
+    final String currentPart = pathParts[0];
+    
+    if (current instanceof Document doc) {
+      current = doc.get(currentPart);
+    } else if (current instanceof Map map) {
+      current = map.get(currentPart);
+    } else {
+      // Cannot traverse further - not a document or map
+      return null;
+    }
+    
+    // If there are more parts, recurse
+    if (pathParts.length > 1 && current != null) {
+      return getNestedValue(current, pathParts[1]);
     }
     
     return current;
