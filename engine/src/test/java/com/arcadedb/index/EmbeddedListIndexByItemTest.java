@@ -75,24 +75,32 @@ public class EmbeddedListIndexByItemTest extends TestHelper {
       }
     });
 
-    // Query by embedded property - should use the index
+    // Query by embedded property - test both = and CONTAINS operators
     database.transaction(() -> {
-      // The correct query syntax for nested list properties is: tags.id CONTAINS value
-      // This checks if any item in the tags list has an id property equal to the value
+      // The correct query syntax for nested list properties uses CONTAINS operator
       System.out.println("=== Query: tags.id CONTAINS 100 ===");
       ResultSet result = database.query("sql", "SELECT FROM Photo WHERE tags.id CONTAINS 100");
       long count = result.stream().peek(r -> System.out.println("Found: " + r.toJSON())).count();
       assertThat(count).isEqualTo(2); // Photos 1 and 2
 
+      // Verify index is being used
+      String explain = database.query("sql", "EXPLAIN SELECT FROM Photo WHERE tags.id CONTAINS 100")
+          .next().getProperty("executionPlan").toString();
+      System.out.println("Explain for CONTAINS:");
+      System.out.println(explain);
+      assertThat(explain).contains("FETCH FROM INDEX Photo[tags.idbyitem]");
+
       // Find all photos with tag id 103
-      System.out.println("=== Query: tags.id CONTAINS 103 ===");
+      System.out.println("\n=== Query: tags.id CONTAINS 103 ===");
       result = database.query("sql", "SELECT FROM Photo WHERE tags.id CONTAINS 103");
       count = result.stream().peek(r -> System.out.println("Found: " + r.toJSON())).count();
       assertThat(count).isEqualTo(1); // Photo 3
-
-      // Note: Query optimizer integration is pending
-      // The queries work correctly but currently use a full table scan instead of the index
-      // This is a future enhancement that requires updating the SQL query planner
+      
+      // Test with multiple conditions (as mentioned in comment)
+      System.out.println("\n=== Query with multiple conditions ===");
+      result = database.query("sql", "SELECT FROM Photo WHERE tags CONTAINS (id=100 and name='nature')");
+      count = result.stream().peek(r -> System.out.println("Found: " + r.toJSON())).count();
+      assertThat(count).isEqualTo(2); // Photos 1 and 2 have tags with id=100 and name='nature'
     });
   }
 }
