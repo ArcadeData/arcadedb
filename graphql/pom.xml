@@ -33,7 +33,7 @@
     <name>ArcadeDB GraphQL</name>
 
     <properties>
-        <ph-javacc-maven-plugin.version>5.0.0</ph-javacc-maven-plugin.version>
+        <ph-javacc-maven-plugin.version>5.0.1</ph-javacc-maven-plugin.version>
     </properties>
 
     <dependencies>
