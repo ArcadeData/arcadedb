@@ -92,9 +92,16 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
   // In-memory JVector index (rebuilt from pages on load)
   private volatile ImmutableGraphIndex                  graphIndex;
+  private volatile List<VectorEntry>                    graphIndexOrdinalMapping; // Maps graph ordinals to vector entries
   private final ConcurrentHashMap<Integer, VectorEntry> vectorRegistry;
   private final AtomicInteger                           nextId;
   private final AtomicReference<INDEX_STATUS>           status;
+  private final AtomicBoolean                           graphIndexDirty;
+
+  // Compaction support
+  private final AtomicInteger                           currentMutablePages;
+  private       int                                     minPagesToScheduleACompaction;
+  private       LSMVectorIndexCompacted                 compactedSubIndex;
 
   /**
    * Represents a vector entry with its RID and vector data
@@ -207,7 +214,14 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
     this.vectorRegistry = new ConcurrentHashMap<>();
     this.nextId = new AtomicInteger(0);
     this.status = new AtomicReference<>(INDEX_STATUS.AVAILABLE);
+    this.graphIndexDirty = new AtomicBoolean(false);
     this.associatedBucketId = -1; // Will be set via setMetadata()
+
+    // Initialize compaction fields
+    this.currentMutablePages = new AtomicInteger(1); // Start with page 0
+    this.minPagesToScheduleACompaction = builder.getDatabase().getConfiguration()
+        .getValueAsInteger(com.arcadedb.GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
+    this.compactedSubIndex = null;
 
     initializeGraphIndex();
   }
@@ -224,7 +238,14 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
     this.vectorRegistry = new ConcurrentHashMap<>();
     this.nextId = new AtomicInteger(0);
     this.status = new AtomicReference<>(INDEX_STATUS.AVAILABLE);
+    this.graphIndexDirty = new AtomicBoolean(false);
     this.associatedBucketId = -1; // Will be set via setMetadata()
+
+    // Initialize compaction fields
+    this.currentMutablePages = new AtomicInteger(getTotalPages());
+    this.minPagesToScheduleACompaction = database.getConfiguration()
+        .getValueAsInteger(com.arcadedb.GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
+    this.compactedSubIndex = null;
 
     // Load configuration from JSON metadata file
     final String metadataPath = filePath.replace("." + FILE_EXT, ".metadata.json");
@@ -262,11 +283,17 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
   private void initializeGraphIndex() {
     lock.writeLock().lock();
     try {
+      // Build list of non-deleted vectors with index mapping
+      final List<VectorEntry> nonDeletedVectors = vectorRegistry.values().stream()
+          .filter(v -> !v.deleted)
+          .sorted((a, b) -> Integer.compare(a.id, b.id)) // Sort by ID for consistent ordering
+          .toList();
+
       // Create a RandomAccessVectorValues implementation from our vector registry
       final RandomAccessVectorValues vectors = new RandomAccessVectorValues() {
         @Override
         public int size() {
-          return (int) vectorRegistry.values().stream().filter(v -> !v.deleted).count();
+          return nonDeletedVectors.size();
         }
 
         @Override
@@ -276,10 +303,9 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
         @Override
         public VectorFloat<?> getVector(int i) {
-          final VectorEntry entry = vectorRegistry.values().stream()
-              .filter(v -> !v.deleted && v.id == i)
-              .findFirst()
-              .orElse(null);
+          if (i < 0 || i >= nonDeletedVectors.size())
+            return null;
+          final VectorEntry entry = nonDeletedVectors.get(i);
           return entry != null ? vts.createFloatVector(entry.vector) : null;
         }
 
@@ -313,10 +339,13 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
             true)) {         // enable concurrent updates
 
           this.graphIndex = builder.build(vectors);
+          // Store the mapping for search results (ordinal -> VectorEntry)
+          this.graphIndexOrdinalMapping = new ArrayList<>(nonDeletedVectors);
           LogManager.instance().log(this, Level.INFO, "JVector graph index built successfully");
         }
       } else {
         this.graphIndex = null;
+        this.graphIndexOrdinalMapping = null;
         LogManager.instance().log(this, Level.INFO, "No vectors to index, graph index is null");
       }
     } catch (final Exception e) {
@@ -327,6 +356,10 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
     }
   }
 
+  /**
+   * Load all vectors from LSM-style pages.
+   * Reads from all pages, later entries override earlier ones (LSM merge-on-read).
+   */
   private void loadVectorsFromPages() {
     try {
       // Read header from page 0
@@ -334,40 +367,52 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
       final ByteBuffer buffer0 = page0.getContent();
       buffer0.position(0);
 
-      final int totalEntries = buffer0.getInt();
-      if (totalEntries == 0) {
-        LogManager.instance().log(this, Level.INFO, "No vectors to load for index: " + indexName);
+      final int storedNextId = buffer0.getInt();
+      if (storedNextId == 0) {
+        LogManager.instance().log(this, Level.FINE, "No vectors to load - empty index: " + indexName);
         return;
       }
 
-      // Read metadata (already set from constructor, but validate)
+      // Read and validate metadata
       final int storedDimensions = buffer0.getInt();
-      final int storedSimilarity = buffer0.getInt();
-      final int storedMaxConnections = buffer0.getInt();
-      final int storedBeamWidth = buffer0.getInt();
-      final int storedNextId = buffer0.getInt();
-
       if (storedDimensions != dimensions) {
         throw new IndexException("Dimension mismatch: expected " + dimensions + " but found " + storedDimensions);
       }
 
+      // Skip similarity, maxConnections, beamWidth - already set from constructor
+      buffer0.getInt();
+      buffer0.getInt();
+      buffer0.getInt();
+
       nextId.set(storedNextId);
 
-      // Read vector entries from subsequent pages
-      final int entrySize = 4 + 8 + 4 + (dimensions * 4) + 1;
-      final int entriesPerPage = (getPageSize() - 100) / entrySize;
-
-      int pageNum = 1;
+      // Read all data pages (1 onwards) in LSM style
+      final int totalPages = getTotalPages();
       int entriesRead = 0;
 
-      while (entriesRead < totalEntries) {
-        final BasePage currentPage = database.getTransaction().getPage(new PageId(database, getFileId(), pageNum++), getPageSize());
+      for (int pageNum = 1; pageNum < totalPages; pageNum++) {
+        final BasePage currentPage = database.getTransaction().getPage(
+            new PageId(database, getFileId(), pageNum), getPageSize());
         final ByteBuffer pageBuffer = currentPage.getContent();
         pageBuffer.position(0);
 
-        final int entriesInPage = pageBuffer.getInt();
+        // Read page header
+        final int offsetFreeContent = pageBuffer.getInt();
+        final int numberOfEntries = pageBuffer.getInt();
 
-        for (int i = 0; i < entriesInPage && entriesRead < totalEntries; i++) {
+        if (numberOfEntries == 0)
+          continue; // Empty page
+
+        // Read pointer table
+        final int[] pointers = new int[numberOfEntries];
+        for (int i = 0; i < numberOfEntries; i++) {
+          pointers[i] = pageBuffer.getInt();
+        }
+
+        // Read entries using pointers
+        for (int i = 0; i < numberOfEntries; i++) {
+          pageBuffer.position(pointers[i]);
+
           final int id = pageBuffer.getInt();
           final long position = pageBuffer.getLong();
           final int bucketId = pageBuffer.getInt();
@@ -380,19 +425,22 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
           final boolean deleted = pageBuffer.get() == 1;
 
+          // Add/update in registry (LSM style: later entries override earlier ones)
           final VectorEntry entry = new VectorEntry(id, rid, vector);
           entry.deleted = deleted;
           vectorRegistry.put(id, entry);
-
           entriesRead++;
         }
       }
 
-      LogManager.instance().log(this, Level.INFO, "Loaded " + entriesRead + " vectors for index: " + indexName);
+      LogManager.instance().log(this, Level.INFO,
+          "Loaded " + vectorRegistry.size() + " unique vectors (" + entriesRead + " total entries) from " +
+          (totalPages - 1) + " pages for index: " + indexName);
 
-      // Rebuild the graph index with loaded vectors
+      // Rebuild the graph index with loaded non-deleted vectors
       if (!vectorRegistry.isEmpty()) {
         initializeGraphIndex();
+        graphIndexDirty.set(false);
       }
 
     } catch (final Exception e) {
@@ -401,52 +449,69 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
     }
   }
 
-  private void persistVectorsToPages() {
+  /**
+   * Persist only changed vectors incrementally to pages in LSM style.
+   * Pages grow from head (pointers) and tail (data), similar to LSMTreeIndexMutable.
+   * This avoids rewriting the entire index on every commit.
+   */
+  private void persistVectorsDeltaIncremental(final List<Integer> changedVectorIds) {
     try {
-      // Write header to page 0
-      final BasePage page0 = database.getTransaction().getPage(new PageId(database, getFileId(), 0), getPageSize());
+      // Update metadata in page 0
+      final BasePage page0 = database.getTransaction().getPageToModify(
+          new PageId(database, getFileId(), 0), getPageSize(), false);
       final ByteBuffer buffer0 = page0.getContent();
-      buffer0.clear();
-
-      // Write metadata
-      buffer0.putInt(vectorRegistry.size());  // Total entries (including deleted)
+      buffer0.position(0);
+      buffer0.putInt(nextId.get()); // Update next ID
       buffer0.putInt(dimensions);
       buffer0.putInt(similarityFunction.ordinal());
       buffer0.putInt(maxConnections);
       buffer0.putInt(beamWidth);
-      buffer0.putInt(nextId.get());
 
-      // Write vector entries to subsequent pages
-      // Calculate how many entries fit per page
-      final int entrySize = 4 + 8 + 4 + (dimensions * 4) + 1; // id + RID + position + vector + deleted flag
-      final int entriesPerPage = (getPageSize() - 100) / entrySize; // Reserve 100 bytes for page overhead
+      if (changedVectorIds.isEmpty())
+        return;
 
-      int pageNum = 1;
-      int entryInPage = 0;
-      BasePage currentPage = null;
-      ByteBuffer pageBuffer = null;
-      int startPosition = 0;
+      // Calculate entry size: id(4) + position(8) + bucketId(4) + vector(dimensions*4) + deleted(1)
+      final int entrySize = 4 + 8 + 4 + (dimensions * 4) + 1;
 
-      for (final VectorEntry entry : vectorRegistry.values()) {
-        if (entryInPage == 0) {
-          // Flush previous page if exists
-          if (currentPage != null) {
-            // Update entry count at the beginning of the page
-            final int savedPosition = pageBuffer.position();
-            pageBuffer.position(startPosition);
-            pageBuffer.putInt(entryInPage);
-            pageBuffer.position(savedPosition);
-          }
+      // Get or create the last mutable page
+      int lastPageNum = getTotalPages() - 1;
+      if (lastPageNum < 1) {
+        lastPageNum = 1;
+        createNewVectorDataPage(lastPageNum);
+      }
 
-          // Get new page
-          currentPage = database.getTransaction().getPage(new PageId(database, getFileId(), pageNum++), getPageSize());
+      // Append changed vectors to pages
+      for (final Integer vectorId : changedVectorIds) {
+        final VectorEntry entry = vectorRegistry.get(vectorId);
+        if (entry == null)
+          continue;
+
+        // Get current page
+        BasePage currentPage = database.getTransaction().getPageToModify(
+            new PageId(database, getFileId(), lastPageNum), getPageSize(), false);
+        ByteBuffer pageBuffer = currentPage.getContent();
+
+        // Read page header
+        int offsetFreeContent = pageBuffer.getInt(0);
+        int numberOfEntries = pageBuffer.getInt(4);
+
+        // Calculate space needed
+        final int headerSize = 8 + ((numberOfEntries + 1) * 4); // offsetFree + count + pointers
+        final int availableSpace = offsetFreeContent - headerSize;
+
+        if (availableSpace < entrySize) {
+          // Page is full, create a new page
+          lastPageNum++;
+          currentPage = createNewVectorDataPage(lastPageNum);
           pageBuffer = currentPage.getContent();
-          pageBuffer.clear();
-          startPosition = pageBuffer.position();
-          pageBuffer.putInt(0); // Entry count placeholder
+          offsetFreeContent = pageBuffer.getInt(0);
+          numberOfEntries = 0;
         }
 
-        // Write entry
+        // Write entry at tail (backwards from offsetFreeContent)
+        final int entryOffset = offsetFreeContent - entrySize;
+        pageBuffer.position(entryOffset);
+
         pageBuffer.putInt(entry.id);
         pageBuffer.putLong(entry.rid.getPosition());
         pageBuffer.putInt(entry.rid.getBucketId());
@@ -455,32 +520,39 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
         }
         pageBuffer.put((byte) (entry.deleted ? 1 : 0));
 
-        entryInPage++;
+        // Add pointer to entry in header
+        pageBuffer.putInt(8 + (numberOfEntries * 4), entryOffset);
 
-        if (entryInPage >= entriesPerPage) {
-          // Page is full, update entry count
-          final int savedPosition = pageBuffer.position();
-          pageBuffer.position(startPosition);
-          pageBuffer.putInt(entryInPage);
-          pageBuffer.position(savedPosition);
-
-          entryInPage = 0;
-          currentPage = null;
-        }
-      }
-
-      // Flush final page if it has data
-      if (currentPage != null && entryInPage > 0) {
-        final int savedPosition = pageBuffer.position();
-        pageBuffer.position(startPosition);
-        pageBuffer.putInt(entryInPage);
-        pageBuffer.position(savedPosition);
+        // Update page header
+        numberOfEntries++;
+        offsetFreeContent = entryOffset;
+        pageBuffer.putInt(0, offsetFreeContent);
+        pageBuffer.putInt(4, numberOfEntries);
       }
 
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error persisting vectors to pages", e);
-      throw new IndexException("Error persisting vectors to pages", e);
+      LogManager.instance().log(this, Level.SEVERE, "Error persisting vector delta", e);
+      throw new IndexException("Error persisting vector delta", e);
     }
+  }
+
+  /**
+   * Create a new vector data page with LSM-style header.
+   * Page layout: [offsetFreeContent(4)][numberOfEntries(4)][pointers...]...[entries from tail]
+   */
+  private BasePage createNewVectorDataPage(final int pageNum) {
+    final PageId pageId = new PageId(database, getFileId(), pageNum);
+    final BasePage page = database.getTransaction().addPage(pageId, getPageSize());
+    final ByteBuffer buffer = page.getContent();
+
+    buffer.position(0);
+    buffer.putInt(getPageSize()); // offsetFreeContent starts at end of page
+    buffer.putInt(0);              // numberOfEntries = 0
+
+    // Track mutable pages for compaction trigger
+    currentMutablePages.incrementAndGet();
+
+    return page;
   }
 
   @Override
@@ -501,6 +573,25 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
     lock.readLock().lock();
     try {
+      // Lazy rebuild: If graph index is dirty, rebuild it before searching
+      if (graphIndexDirty.get()) {
+        lock.readLock().unlock();
+        lock.writeLock().lock();
+        try {
+          // Double-check after acquiring write lock
+          if (graphIndexDirty.get()) {
+            LogManager.instance().log(this, Level.INFO,
+                "Graph index is dirty, rebuilding from " + vectorRegistry.size() + " vectors");
+            initializeGraphIndex();
+            graphIndexDirty.set(false);
+          }
+          // Downgrade to read lock
+          lock.readLock().lock();
+        } finally {
+          lock.writeLock().unlock();
+        }
+      }
+
       if (graphIndex == null)
         return new IndexCursor() {
           @Override
@@ -553,11 +644,11 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
         // Convert query vector to VectorFloat
         final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
 
-        // Create RandomAccessVectorValues for scoring
+        // Create RandomAccessVectorValues for scoring using the same ordinal mapping as the graph index
         final RandomAccessVectorValues vectors = new RandomAccessVectorValues() {
           @Override
           public int size() {
-            return (int) vectorRegistry.values().stream().filter(v -> !v.deleted).count();
+            return graphIndexOrdinalMapping != null ? graphIndexOrdinalMapping.size() : 0;
           }
 
           @Override
@@ -567,10 +658,9 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
           @Override
           public VectorFloat<?> getVector(int i) {
-            final VectorEntry entry = vectorRegistry.values().stream()
-                .filter(v -> !v.deleted && v.id == i)
-                .findFirst()
-                .orElse(null);
+            if (graphIndexOrdinalMapping == null || i < 0 || i >= graphIndexOrdinalMapping.size())
+              return null;
+            final VectorEntry entry = graphIndexOrdinalMapping.get(i);
             return entry != null ? vts.createFloatVector(entry.vector) : null;
           }
 
@@ -595,15 +685,14 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
             Bits.ALL
         );
 
-        // Extract RIDs from search results
+        // Extract RIDs from search results using ordinal mapping
         for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
-          final int nodeId = nodeScore.node;
-          final VectorEntry entry = vectorRegistry.values().stream()
-              .filter(v -> !v.deleted && v.id == nodeId)
-              .findFirst()
-              .orElse(null);
-          if (entry != null) {
-            resultRIDs.add(entry.rid);
+          final int ordinal = nodeScore.node;
+          if (graphIndexOrdinalMapping != null && ordinal >= 0 && ordinal < graphIndexOrdinalMapping.size()) {
+            final VectorEntry entry = graphIndexOrdinalMapping.get(ordinal);
+            if (entry != null && !entry.deleted) {
+              resultRIDs.add(entry.rid);
+            }
           }
         }
 
@@ -717,8 +806,12 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
         final int id = nextId.getAndIncrement();
         final VectorEntry vectorEntry = new VectorEntry(id, rid, vector);
         vectorRegistry.put(id, vectorEntry);
-        initializeGraphIndex();
-        persistVectorsToPages();
+
+        // Persist incrementally
+        persistVectorsDeltaIncremental(Collections.singletonList(id));
+
+        // Mark graph as dirty - will rebuild on next query
+        graphIndexDirty.set(true);
       } finally {
         lock.writeLock().unlock();
       }
@@ -754,11 +847,19 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
       // No transaction: apply immediately
       lock.writeLock().lock();
       try {
-        vectorRegistry.values().stream()
-            .filter(v -> v.rid.equals(rid))
-            .forEach(v -> v.deleted = true);
-        initializeGraphIndex();
-        persistVectorsToPages();
+        final List<Integer> deletedIds = new ArrayList<>();
+        for (final VectorEntry v : vectorRegistry.values()) {
+          if (v.rid.equals(rid)) {
+            v.deleted = true;
+            deletedIds.add(v.id);
+          }
+        }
+
+        // Persist incrementally
+        persistVectorsDeltaIncremental(deletedIds);
+
+        // Mark graph as dirty - will rebuild on next query
+        graphIndexDirty.set(true);
       } finally {
         lock.writeLock().unlock();
       }
@@ -774,9 +875,10 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
     lock.writeLock().lock();
     try {
-      boolean needsRebuild = false;
+      // Track which vector IDs changed for incremental persistence
+      final List<Integer> changedVectorIds = new ArrayList<>();
 
-      // Apply all buffered operations
+      // Apply all buffered operations to in-memory registry
       for (final Map.Entry<RID, TransactionVectorContext.VectorOperation> entry : context.operations.entrySet()) {
         final RID rid = entry.getKey();
         final TransactionVectorContext.VectorOperation op = entry.getValue();
@@ -785,25 +887,34 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
           final int id = nextId.getAndIncrement();
           final VectorEntry vectorEntry = new VectorEntry(id, rid, op.vector);
           vectorRegistry.put(id, vectorEntry);
-          needsRebuild = true;
+          changedVectorIds.add(id);
         } else if (op.type == TransactionVectorContext.OperationType.REMOVE) {
           // Mark as deleted
-          vectorRegistry.values().stream()
-              .filter(v -> v.rid.equals(rid))
-              .forEach(v -> v.deleted = true);
-          needsRebuild = true;
+          for (final VectorEntry v : vectorRegistry.values()) {
+            if (v.rid.equals(rid)) {
+              v.deleted = true;
+              changedVectorIds.add(v.id);
+            }
+          }
         }
       }
 
-      if (needsRebuild) {
-        // Rebuild the graph index with the updated vectors
-        initializeGraphIndex();
+      // Persist ONLY the changed vectors incrementally to LSM-style pages
+      persistVectorsDeltaIncremental(changedVectorIds);
 
-        // Persist to pages
-        persistVectorsToPages();
-      }
+      // Mark graph index as dirty - will be rebuilt lazily on next query
+      graphIndexDirty.set(true);
+
     } finally {
       lock.writeLock().unlock();
+    }
+
+    // Check if compaction should be triggered
+    if (minPagesToScheduleACompaction > 1 && currentMutablePages.get() >= minPagesToScheduleACompaction) {
+      LogManager.instance()
+          .log(this, Level.FINE, "Scheduled compaction of vector index '%s' (currentMutablePages=%d totalPages=%d)",
+              null, componentName, currentMutablePages.get(), getTotalPages());
+      ((com.arcadedb.database.async.DatabaseAsyncExecutorImpl) database.async()).compact(this);
     }
   }
 
@@ -884,13 +995,13 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
   @Override
   public boolean scheduleCompaction() {
-    // Compaction handled internally by JVector
-    return false;
+    return status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.COMPACTION_SCHEDULED);
   }
 
   @Override
   public boolean isCompacting() {
-    return false; // JVector handles compaction internally
+    final INDEX_STATUS currentStatus = status.get();
+    return currentStatus == INDEX_STATUS.COMPACTION_SCHEDULED || currentStatus == INDEX_STATUS.COMPACTION_IN_PROGRESS;
   }
 
   @Override
@@ -937,8 +1048,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
   @Override
   public boolean compact() throws IOException, InterruptedException {
-    // Compaction handled internally by JVector
-    return false;
+    return LSMVectorIndexCompactor.compact(this);
   }
 
   @Override
@@ -1052,5 +1162,121 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
   public int getBeamWidth() {
     return beamWidth;
+  }
+
+  /**
+   * Gets the compacted sub-index, if any.
+   */
+  public LSMVectorIndexCompacted getSubIndex() {
+    return compactedSubIndex;
+  }
+
+  /**
+   * Sets the compacted sub-index.
+   */
+  public void setSubIndex(final LSMVectorIndexCompacted subIndex) {
+    this.compactedSubIndex = subIndex;
+  }
+
+  /**
+   * Gets the current number of mutable pages.
+   */
+  public int getCurrentMutablePages() {
+    return currentMutablePages.get();
+  }
+
+  /**
+   * Atomically replaces this index with a new one that has the compacted sub-index.
+   * Copies remaining mutable pages from startingFromPage onwards to the new index.
+   *
+   * @param startingFromPage The first page to copy from current index
+   * @param compactedIndex The compacted sub-index to attach
+   * @return The new index file ID
+   */
+  protected int splitIndex(final int startingFromPage, final LSMVectorIndexCompacted compactedIndex)
+      throws IOException, InterruptedException {
+
+    if (database.isTransactionActive())
+      throw new IllegalStateException("Cannot replace compacted index because a transaction is active");
+
+    final int fileId = getFileId();
+    final com.arcadedb.utility.LockManager.LOCK_STATUS locked =
+        database.getTransactionManager().tryLockFile(fileId, 0, Thread.currentThread());
+
+    if (locked == com.arcadedb.utility.LockManager.LOCK_STATUS.NO)
+      throw new IllegalStateException("Cannot replace compacted index because cannot lock index file " + fileId);
+
+    final AtomicInteger lockedNewFileId = new AtomicInteger(-1);
+
+    try {
+      lock.writeLock().lock();
+      try {
+        // Create new index file with compacted sub-index
+        final String newName = componentName + "_" + System.nanoTime();
+        final String newFilePath = database.getDatabasePath() + File.separator + newName;
+
+        // Build metadata for new index
+        final LSMVectorIndexBuilder builder = new LSMVectorIndexBuilder(database, typeName, propertyNames)
+            .withIndexName(indexName)
+            .withDimensions(dimensions)
+            .withSimilarity(similarityFunction.name())
+            .withMaxConnections(maxConnections)
+            .withBeamWidth(beamWidth);
+
+        // Create the new index with same configuration
+        final LSMVectorIndex newIndex = new LSMVectorIndex(builder);
+        newIndex.setSubIndex(compactedIndex);
+        database.getSchema().getEmbedded().registerFile(newIndex);
+
+        // Lock new file
+        database.getTransactionManager().tryLockFile(newIndex.getFileId(), 0, Thread.currentThread());
+        lockedNewFileId.set(newIndex.getFileId());
+
+        final List<com.arcadedb.engine.MutablePage> modifiedPages = new ArrayList<>();
+
+        // Copy remaining mutable pages from old index to new index
+        final int pagesToCopy = getTotalPages() - startingFromPage;
+        for (int i = 0; i < pagesToCopy; i++) {
+          final BasePage currentPage = database.getTransaction()
+              .getPage(new PageId(database, fileId, i + startingFromPage), pageSize);
+
+          // Copy the entire page content
+          final com.arcadedb.engine.MutablePage newPage =
+              new com.arcadedb.engine.MutablePage(new PageId(database, newIndex.getFileId(), i + 1), pageSize);
+
+          final ByteBuffer oldContent = currentPage.getContent();
+          oldContent.rewind();
+          newPage.getContent().put(oldContent);
+
+          modifiedPages.add(database.getPageManager().updatePageVersion(newPage, true));
+        }
+
+        // Write all pages
+        if (!modifiedPages.isEmpty()) {
+          database.getPageManager().writePages(modifiedPages, false);
+        }
+
+        // Update schema with file migration
+        ((com.arcadedb.schema.LocalSchema) database.getSchema()).setMigratedFileId(fileId, newIndex.getFileId());
+        database.getSchema().getEmbedded().saveConfiguration();
+
+        LogManager.instance().log(this, Level.INFO,
+            "Successfully split vector index '%s': old fileId=%d, new fileId=%d, pages copied=%d",
+            null, componentName, fileId, newIndex.getFileId(), pagesToCopy);
+
+        return newIndex.getFileId();
+
+      } finally {
+        lock.writeLock().unlock();
+      }
+
+    } finally {
+      final Integer lockedFile = lockedNewFileId.get();
+      if (lockedFile != -1)
+        database.getTransactionManager().unlockFile(lockedFile, Thread.currentThread());
+
+      if (locked == com.arcadedb.utility.LockManager.LOCK_STATUS.YES)
+        database.getTransactionManager().unlockFile(fileId, Thread.currentThread());
+    }
   }
 }
