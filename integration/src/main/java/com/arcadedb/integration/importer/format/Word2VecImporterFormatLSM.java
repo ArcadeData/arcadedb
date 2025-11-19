@@ -37,7 +37,7 @@ import java.io.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Word2VecImporterFormat extends AbstractImporterFormat {
+public class Word2VecImporterFormatLSM extends AbstractImporterFormat {
   private TextEmbeddingsImporterLSM importer;
 
   @Override
@@ -72,6 +72,6 @@ public class Word2VecImporterFormat extends AbstractImporterFormat {
 
   @Override
   public String getFormat() {
-    return "Word2Vec";
+    return "Word2VecLSM";
   }
 }
