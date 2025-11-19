@@ -43,27 +43,27 @@ public class TextEmbeddingsImporterLSM {
   private final    InputStream      inputStream;
   private final    ImporterSettings settings;
   private final    ConsoleLogger    logger;
-  private          boolean          normalizeVectors    = false;
+  private          boolean          normalizeVectors  = false;
   private          String           databasePath;
-  private          boolean          overwriteDatabase   = false;
-  private          long             errors              = 0L;
-  private          long             warnings            = 0L;
+  private          boolean          overwriteDatabase = false;
+  private          long             errors            = 0L;
+  private          long             warnings          = 0L;
   private          DatabaseFactory  factory;
   private          Database         database;
   private          long             beginTime;
-  private          boolean          error               = false;
-  private          ImporterContext  context             = new ImporterContext();
+  private          boolean          error             = false;
+  private          ImporterContext  context           = new ImporterContext();
   private          String           vectorTypeName;
   private          String           similarityFunctionName;
   private          String           vectorPropertyName;
-  private          String           idPropertyName      = "name";
-  private          int              maxConnections      = 16;
-  private          int              beamWidth           = 100;
-  private volatile long             embeddingsParsed    = 0L;
-  private volatile long             verticesCreated     = 0L;
+  private          String           idPropertyName    = "name";
+  private          int              maxConnections    = 16;
+  private          int              beamWidth         = 100;
+  private volatile long             embeddingsParsed  = 0L;
+  private volatile long             verticesCreated   = 0L;
 
-  public TextEmbeddingsImporterLSM(final DatabaseInternal database, final InputStream inputStream, final ImporterSettings settings)
-      throws ClassNotFoundException {
+  public TextEmbeddingsImporterLSM(final DatabaseInternal database, final InputStream inputStream,
+      final ImporterSettings settings) {
     this.settings = settings;
     this.database = database;
     this.databasePath = database.getDatabasePath();

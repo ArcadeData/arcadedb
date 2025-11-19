@@ -95,60 +95,61 @@ public class Word2VecImporterLSMIT {
 
     FileUtils.deleteRecursively(new File(databasePath));
 
-    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
-    if (databaseFactory.exists())
-      databaseFactory.open().drop();
+    try (final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath)) {
+      if (databaseFactory.exists())
+        databaseFactory.open().drop();
 
-    final Database db = databaseFactory.create();
-    try {
-      // Import using LSMVector
-      db.command("sql", "import database file://src/test/resources/importer-word2vec.txt "  //
-          + "with distanceFunction = cosine, m = 16, beamWidth = 100, " //
-          + "vertexType = Word, vectorProperty = vector, idProperty = name" //
-      );
+      final Database db = databaseFactory.create();
+      try {
+        // Import using LSMVector
+        db.command("sql", "import database file://src/test/resources/importer-word2vec.txt "  //
+            + "with distanceFunction = cosine, m = 16, beamWidth = 100, " //
+            + "vertexType = Word, vectorProperty = vector, idProperty = name" //
+        );
 
-      assertThat(db.countType("Word", true)).isEqualTo(10);
+        assertThat(db.countType("Word", true)).isEqualTo(10);
 
-      final TypeIndex typeIndex = (TypeIndex) db.getSchema().getIndexByName("Word[vector]");
-      final long initialCount = typeIndex.countEntries();
-      assertThat(initialCount).isEqualTo(10);
+        final TypeIndex typeIndex = (TypeIndex) db.getSchema().getIndexByName("Word[vector]");
+        final long initialCount = typeIndex.countEntries();
+        assertThat(initialCount).isEqualTo(10);
 
-      // Update a vector (LSM append-only semantics)
-      db.transaction(() -> {
-        final ResultSet rs = db.query("sql", "SELECT FROM Word WHERE name = '<user>' LIMIT 1");
-        if (rs.hasNext()) {
-          final var vertex = rs.next().toElement().asVertex().modify();
-          final float[] newVector = new float[100];
-          for (int i = 0; i < 100; i++) {
-            newVector[i] = (float) Math.random();
+        // Update a vector (LSM append-only semantics)
+        db.transaction(() -> {
+          final ResultSet rs = db.query("sql", "SELECT FROM Word WHERE name = '<user>' LIMIT 1");
+          if (rs.hasNext()) {
+            final var vertex = rs.next().toElement().asVertex().modify();
+            final float[] newVector = new float[100];
+            for (int i = 0; i < 100; i++) {
+              newVector[i] = (float) Math.random();
+            }
+            vertex.set("vector", newVector);
+            vertex.save();
           }
-          vertex.set("vector", newVector);
-          vertex.save();
-        }
-        rs.close();
-      });
+          rs.close();
+        });
 
-      // Count should still be 10 (last-write-wins in LSM)
-      final long countAfterUpdate = typeIndex.countEntries();
-      assertThat(countAfterUpdate).isEqualTo(10);
+        // Count should still be 10 (last-write-wins in LSM)
+        final long countAfterUpdate = typeIndex.countEntries();
+        assertThat(countAfterUpdate).isEqualTo(10);
 
-      // Delete a vertex
-      db.transaction(() -> {
-        final ResultSet rs = db.query("sql", "SELECT FROM Word WHERE name = '<url>' LIMIT 1");
-        if (rs.hasNext()) {
-          rs.next().toElement().asVertex().delete();
-        }
-        rs.close();
-      });
+        // Delete a vertex
+        db.transaction(() -> {
+          final ResultSet rs = db.query("sql", "SELECT FROM Word WHERE name = '<url>' LIMIT 1");
+          if (rs.hasNext()) {
+            rs.next().toElement().asVertex().delete();
+          }
+          rs.close();
+        });
 
-      // Count should be 9
-      final long countAfterDelete = typeIndex.countEntries();
-      assertThat(countAfterDelete).isEqualTo(9);
+        // Count should be 9
+        final long countAfterDelete = typeIndex.countEntries();
+        assertThat(countAfterDelete).isEqualTo(9);
 
-    } finally {
-      db.drop();
-      TestHelper.checkActiveDatabases();
-      FileUtils.deleteRecursively(new File(databasePath));
+      } finally {
+        db.drop();
+        TestHelper.checkActiveDatabases();
+        FileUtils.deleteRecursively(new File(databasePath));
+      }
     }
   }
 

@@ -40,8 +40,11 @@ import java.util.stream.*;
 /**
  * Imports Embeddings in arbitrary dimensions.
  *
+ * Deprecated, use TextEmbeddingsImporterLSM instead.
+ *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@Deprecated
 public class TextEmbeddingsImporter {
   private final    InputStream      inputStream;
   private final    ImporterSettings settings;
