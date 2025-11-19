@@ -257,9 +257,9 @@ public class ContainsCondition extends BooleanExpression {
     // due to the presence of a suffix/modifier. We'll check both cases:
     // 1. Simple identifiers: left.isBaseIdentifier() == true (e.g., "tags")
     // 2. Nested identifiers: Compare the full string representation (e.g., "tags.id")
-    
+
     String fieldName = null;
-    
+
     if (left.isBaseIdentifier()) {
       // Simple identifier - use default alias
       fieldName = left.getDefaultAlias().getStringValue();
@@ -271,13 +271,13 @@ public class ContainsCondition extends BooleanExpression {
         fieldName = leftStr;
       }
     }
-    
+
     if (fieldName != null && info.getField().equals(fieldName)) {
       // CONTAINS operator only works with BY-ITEM indexes, not regular list indexes
       if (info.isIndexByItem() && right != null)
         return right.isEarlyCalculated(info.getContext());
     }
-    
+
     return false;
   }
 
