@@ -62,6 +62,7 @@ public class CreateIndexStatement extends DDLStatement {
     case "FULL_TEXT" -> {}
     case "UNIQUE" -> {}
     case "NOTUNIQUE" -> {}
+    case "HNSW" -> {}
     case "LSM_VECTOR" -> {}
     default -> throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
     }
