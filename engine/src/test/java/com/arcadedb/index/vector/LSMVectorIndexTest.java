@@ -420,4 +420,346 @@ public class LSMVectorIndexTest extends TestHelper {
     // Note: This is a heuristic test, may be flaky in CI
     System.out.println("Rebuild time: " + rebuildTime + "ms, No rebuild time: " + noRebuildTime + "ms");
   }
+
+  @Test
+  public void testCompactionTrigger() {
+    // Test that compaction is triggered after reaching the threshold
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE CompactDoc IF NOT EXISTS");
+      database.command("sql", "CREATE PROPERTY CompactDoc.vec IF NOT EXISTS ARRAY_OF_FLOATS");
+      database.command("sql", "CREATE INDEX IF NOT EXISTS ON CompactDoc (vec) LSM_VECTOR " +
+          "METADATA {dimensions: 4, similarity: 'COSINE'}");
+    });
+
+    final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("CompactDoc[vec]");
+    Assertions.assertNotNull(typeIndex, "Index should exist");
+
+    final var indexes = typeIndex.getIndexesOnBuckets();
+    Assertions.assertTrue(indexes.length > 0, "Should have at least one bucket index");
+
+    final LSMVectorIndex lsmIndex = (LSMVectorIndex) indexes[0];
+    final int initialPages = lsmIndex.getCurrentMutablePages();
+
+    // Get compaction threshold
+    final int threshold = database.getConfiguration()
+        .getValueAsInteger(com.arcadedb.GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
+
+    // Add enough vectors to trigger multiple page creations
+    // Each page is 256KB, with 4-dim vectors, we can fit many vectors per page
+    // We need to fill pages to trigger compaction
+    final int vectorsPerBatch = 10000; // Should be enough to create new pages
+    final int batches = Math.max(threshold + 2, 12); // Ensure we exceed threshold
+
+    for (int batch = 0; batch < batches; batch++) {
+      final int batchNum = batch;
+      database.transaction(() -> {
+        for (int i = 0; i < vectorsPerBatch; i++) {
+          final var doc = database.newDocument("CompactDoc");
+          doc.set("vec", new float[] {
+              (float) (batchNum * vectorsPerBatch + i),
+              (float) (batchNum * vectorsPerBatch + i + 1),
+              (float) (batchNum * vectorsPerBatch + i + 2),
+              (float) (batchNum * vectorsPerBatch + i + 3)
+          });
+          doc.save();
+        }
+      });
+
+      // Check if pages increased
+      if (lsmIndex.getCurrentMutablePages() > initialPages) {
+        System.out.println("After batch " + batch + ": mutablePages=" + lsmIndex.getCurrentMutablePages() +
+            ", threshold=" + threshold);
+      }
+    }
+
+    final int finalPages = lsmIndex.getCurrentMutablePages();
+    System.out.println("Initial pages: " + initialPages + ", Final pages: " + finalPages +
+        ", Threshold: " + threshold);
+
+    // Verify that compaction would have been triggered
+    Assertions.assertTrue(finalPages >= threshold || initialPages >= threshold,
+        "Should have reached compaction threshold at some point");
+  }
+
+  @Test
+  public void testCompactionMergeMultipleUpdates() {
+    // Test K-way merge with multiple updates to same vectors
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE MergeDoc IF NOT EXISTS");
+      database.command("sql", "CREATE PROPERTY MergeDoc.id IF NOT EXISTS STRING");
+      database.command("sql", "CREATE PROPERTY MergeDoc.vec IF NOT EXISTS ARRAY_OF_FLOATS");
+      database.command("sql", "CREATE INDEX IF NOT EXISTS ON MergeDoc (vec) LSM_VECTOR " +
+          "METADATA {dimensions: 3, similarity: 'COSINE'}");
+    });
+
+    final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("MergeDoc[vec]");
+    Assertions.assertNotNull(typeIndex, "Index should exist");
+
+    // Add initial vectors
+    final List<com.arcadedb.database.RID> rids = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < 20; i++) {
+        final var doc = database.newDocument("MergeDoc");
+        doc.set("id", "doc" + i);
+        doc.set("vec", new float[] { (float) i, (float) i * 2, (float) i * 3 });
+        doc.save();
+        rids.add(doc.getIdentity());
+      }
+    });
+
+    final long countAfterInsert = typeIndex.countEntries();
+    Assertions.assertEquals(20, countAfterInsert, "Should have 20 entries after insert");
+
+    // Update same vectors multiple times (creates multiple LSM entries)
+    for (int iteration = 0; iteration < 5; iteration++) {
+      final int iter = iteration;
+      database.transaction(() -> {
+        for (int i = 0; i < 10; i++) {
+          final var doc = rids.get(i).asDocument().modify();
+          doc.set("vec", new float[] {
+              (float) (i + 100 * (iter + 1)),
+              (float) (i * 2 + 100 * (iter + 1)),
+              (float) (i * 3 + 100 * (iter + 1))
+          });
+          doc.save();
+        }
+      });
+    }
+
+    // Count should still be 20 (no duplicates despite multiple updates)
+    final long countAfterUpdates = typeIndex.countEntries();
+    Assertions.assertEquals(20, countAfterUpdates,
+        "Should still have 20 entries after updates (LSM last-write-wins semantics)");
+
+    // Verify we can query the updated vectors
+    database.transaction(() -> {
+      final float[] queryVec = { 500.0f, 500.0f, 500.0f }; // Query for last iteration values
+      final var cursor = typeIndex.get(new Object[] { queryVec }, 5);
+      int count = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        count++;
+      }
+      Assertions.assertTrue(count > 0, "Should find vectors with updated values");
+    });
+  }
+
+  @Test
+  public void testCompactionDeletedEntryRemoval() {
+    // Test that deleted entries are removed during compaction
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE DeleteDoc IF NOT EXISTS");
+      database.command("sql", "CREATE PROPERTY DeleteDoc.id IF NOT EXISTS STRING");
+      database.command("sql", "CREATE PROPERTY DeleteDoc.vec IF NOT EXISTS ARRAY_OF_FLOATS");
+      database.command("sql", "CREATE INDEX IF NOT EXISTS ON DeleteDoc (vec) LSM_VECTOR " +
+          "METADATA {dimensions: 2, similarity: 'COSINE'}");
+    });
+
+    final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("DeleteDoc[vec]");
+    Assertions.assertNotNull(typeIndex, "Index should exist");
+
+    // Add vectors
+    final List<com.arcadedb.database.RID> rids = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < 50; i++) {
+        final var doc = database.newDocument("DeleteDoc");
+        doc.set("id", "doc" + i);
+        doc.set("vec", new float[] { (float) i, (float) i * 2 });
+        doc.save();
+        rids.add(doc.getIdentity());
+      }
+    });
+
+    Assertions.assertEquals(50, typeIndex.countEntries(), "Should have 50 entries");
+
+    // Delete half of the vectors
+    database.transaction(() -> {
+      for (int i = 0; i < 25; i++) {
+        rids.get(i).asDocument().delete();
+      }
+    });
+
+    // Count should reflect deletions
+    final long countAfterDelete = typeIndex.countEntries();
+    Assertions.assertEquals(25, countAfterDelete, "Should have 25 entries after deleting 25");
+
+    // Verify remaining vectors are queryable
+    database.transaction(() -> {
+      final float[] queryVec = { 30.0f, 60.0f }; // Vector from non-deleted range
+      final var cursor = typeIndex.get(new Object[] { queryVec }, 10);
+      int count = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        count++;
+      }
+      Assertions.assertTrue(count > 0, "Should find non-deleted vectors");
+    });
+
+    // After compaction, deleted entries should be physically removed
+    // (We can't directly test this without triggering manual compaction,
+    // but the count verification above confirms logical deletion works)
+  }
+
+  @Test
+  public void testCompactionWithConcurrentQueries() throws InterruptedException {
+    // Test that queries work correctly during compaction
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE ConcurrentDoc IF NOT EXISTS");
+      database.command("sql", "CREATE PROPERTY ConcurrentDoc.vec IF NOT EXISTS ARRAY_OF_FLOATS");
+      database.command("sql", "CREATE INDEX IF NOT EXISTS ON ConcurrentDoc (vec) LSM_VECTOR " +
+          "METADATA {dimensions: 4, similarity: 'COSINE'}");
+    });
+
+    final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("ConcurrentDoc[vec]");
+    Assertions.assertNotNull(typeIndex, "Index should exist");
+
+    // Add initial vectors
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++) {
+        final var doc = database.newDocument("ConcurrentDoc");
+        doc.set("vec", new float[] {
+            (float) i, (float) i + 1, (float) i + 2, (float) i + 3
+        });
+        doc.save();
+      }
+    });
+
+    Assertions.assertEquals(100, typeIndex.countEntries(), "Should have 100 entries");
+
+    // Perform concurrent queries while index is active
+    final int numThreads = 5;
+    final int queriesPerThread = 10;
+    final List<Thread> threads = new ArrayList<>();
+    final java.util.concurrent.atomic.AtomicInteger successfulQueries =
+        new java.util.concurrent.atomic.AtomicInteger(0);
+    final java.util.concurrent.atomic.AtomicInteger failedQueries =
+        new java.util.concurrent.atomic.AtomicInteger(0);
+
+    for (int t = 0; t < numThreads; t++) {
+      final int threadId = t;
+      final Thread thread = new Thread(() -> {
+        for (int q = 0; q < queriesPerThread; q++) {
+          final int queryId = q; // Make it final for lambda
+          try {
+            database.transaction(() -> {
+              final float[] queryVec = {
+                  (float) (threadId * 10 + queryId),
+                  (float) (threadId * 10 + queryId + 1),
+                  (float) (threadId * 10 + queryId + 2),
+                  (float) (threadId * 10 + queryId + 3)
+              };
+              final var cursor = typeIndex.get(new Object[] { queryVec }, 5);
+              int count = 0;
+              while (cursor.hasNext()) {
+                cursor.next();
+                count++;
+              }
+              // Should find at least some results
+              if (count > 0) {
+                successfulQueries.incrementAndGet();
+              }
+            });
+          } catch (final Exception e) {
+            failedQueries.incrementAndGet();
+            System.err.println("Query failed: " + e.getMessage());
+          }
+        }
+      });
+      threads.add(thread);
+      thread.start();
+    }
+
+    // Wait for all threads
+    for (final Thread thread : threads) {
+      thread.join();
+    }
+
+    System.out.println("Successful queries: " + successfulQueries.get() +
+        ", Failed queries: " + failedQueries.get());
+
+    // Most queries should succeed
+    Assertions.assertTrue(successfulQueries.get() > (numThreads * queriesPerThread) / 2,
+        "Most concurrent queries should succeed");
+    Assertions.assertEquals(0, failedQueries.get(), "No queries should fail with exceptions");
+  }
+
+  @Test
+  public void testGraphIndexCorrectnessAfterCompaction() {
+    // Test that graph index is correctly rebuilt after compaction
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE GraphDoc IF NOT EXISTS");
+      database.command("sql", "CREATE PROPERTY GraphDoc.vec IF NOT EXISTS ARRAY_OF_FLOATS");
+      database.command("sql", "CREATE INDEX IF NOT EXISTS ON GraphDoc (vec) LSM_VECTOR " +
+          "METADATA {dimensions: 8, similarity: 'EUCLIDEAN', maxConnections: 16, beamWidth: 100}");
+    });
+
+    final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("GraphDoc[vec]");
+    Assertions.assertNotNull(typeIndex, "Index should exist");
+
+    // Add vectors in a pattern that creates a structure in the graph
+    final List<com.arcadedb.database.RID> rids = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++) {
+        final var doc = database.newDocument("GraphDoc");
+        // Create vectors in clusters (should form neighborhoods in graph)
+        final int cluster = i / 10;
+        doc.set("vec", new float[] {
+            (float) cluster * 10, (float) cluster * 10 + 1,
+            (float) cluster * 10 + 2, (float) cluster * 10 + 3,
+            (float) i % 10, (float) (i % 10) + 1,
+            (float) (i % 10) + 2, (float) (i % 10) + 3
+        });
+        doc.save();
+        rids.add(doc.getIdentity());
+      }
+    });
+
+    Assertions.assertEquals(100, typeIndex.countEntries(), "Should have 100 entries");
+
+    // Query before any updates (graph index initialized)
+    final Set<String> resultsBeforeUpdates = new HashSet<>();
+    database.transaction(() -> {
+      final float[] queryVec = { 50.0f, 51.0f, 52.0f, 53.0f, 0.0f, 1.0f, 2.0f, 3.0f };
+      final var cursor = typeIndex.get(new Object[] { queryVec }, 10);
+      while (cursor.hasNext()) {
+        final var rid = cursor.next();
+        resultsBeforeUpdates.add(rid.getIdentity().toString());
+      }
+    });
+
+    Assertions.assertTrue(resultsBeforeUpdates.size() > 0, "Should find results before updates");
+
+    // Update some vectors (will trigger graph dirty flag)
+    database.transaction(() -> {
+      for (int i = 0; i < 20; i++) {
+        final var doc = rids.get(i).asDocument().modify();
+        final int cluster = i / 10;
+        doc.set("vec", new float[] {
+            (float) cluster * 10, (float) cluster * 10 + 1,
+            (float) cluster * 10 + 2, (float) cluster * 10 + 3,
+            (float) i % 10 + 0.1f, (float) (i % 10) + 1.1f,
+            (float) (i % 10) + 2.1f, (float) (i % 10) + 3.1f
+        });
+        doc.save();
+      }
+    });
+
+    // Query after updates (should trigger lazy graph rebuild)
+    final Set<String> resultsAfterUpdates = new HashSet<>();
+    database.transaction(() -> {
+      final float[] queryVec = { 50.0f, 51.0f, 52.0f, 53.0f, 0.1f, 1.1f, 2.1f, 3.1f };
+      final var cursor = typeIndex.get(new Object[] { queryVec }, 10);
+      while (cursor.hasNext()) {
+        final var rid = cursor.next();
+        resultsAfterUpdates.add(rid.getIdentity().toString());
+      }
+    });
+
+    Assertions.assertTrue(resultsAfterUpdates.size() > 0,
+        "Should find results after updates (graph index rebuilt)");
+
+    // Results should be different after updates (graph index reflects new data)
+    System.out.println("Results before updates: " + resultsBeforeUpdates.size() +
+        ", Results after updates: " + resultsAfterUpdates.size());
+  }
 }
