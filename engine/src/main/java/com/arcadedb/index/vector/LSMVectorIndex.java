@@ -18,7 +18,6 @@
  */
 package com.arcadedb.index.vector;
 
-import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
@@ -28,8 +27,6 @@ import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
-import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
@@ -50,8 +47,8 @@ import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.SearchResult;
 import io.github.jbellis.jvector.graph.similarity.BuildScoreProvider;
 import io.github.jbellis.jvector.util.Bits;
-import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
+import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 
@@ -72,44 +69,44 @@ import java.util.logging.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.index.Index, IndexInternal {
-  public static final String FILE_EXT        = "lsmvectoridx";
-  public static final int    CURRENT_VERSION = 0;
-  public static final int    DEF_PAGE_SIZE   = 262_144;
-  private static final VectorTypeSupport vts = VectorizationProvider.getInstance().getVectorTypeSupport();
+  public static final  String            FILE_EXT        = "lsmvecidx";
+  public static final  int               CURRENT_VERSION = 0;
+  public static final  int               DEF_PAGE_SIZE   = 262_144;
+  private static final VectorTypeSupport vts             = VectorizationProvider.getInstance().getVectorTypeSupport();
 
-  private final int                                     dimensions;
-  private final VectorSimilarityFunction                similarityFunction;
-  private final int                                     maxConnections;
-  private final int                                     beamWidth;
-  private final String                                  indexName;
-  private final String                                  typeName;
-  private final String[]                                propertyNames;
-  private final ReentrantReadWriteLock                  lock;
-  private int                                           associatedBucketId;
+  private final int                      dimensions;
+  private final VectorSimilarityFunction similarityFunction;
+  private final int                      maxConnections;
+  private final int                      beamWidth;
+  private final String                   indexName;
+  private final String                   typeName;
+  private final String[]                 propertyNames;
+  private final ReentrantReadWriteLock   lock;
+  private       int                      associatedBucketId;
 
   // Transaction support: pending operations are buffered per transaction
   private final ConcurrentHashMap<Long, TransactionVectorContext> transactionContexts;
 
   // In-memory JVector index (rebuilt from pages on load)
-  private volatile ImmutableGraphIndex                  graphIndex;
-  private volatile List<VectorEntry>                    graphIndexOrdinalMapping; // Maps graph ordinals to vector entries
-  private final ConcurrentHashMap<Integer, VectorEntry> vectorRegistry;
-  private final AtomicInteger                           nextId;
-  private final AtomicReference<INDEX_STATUS>           status;
-  private final AtomicBoolean                           graphIndexDirty;
+  private volatile ImmutableGraphIndex                     graphIndex;
+  private volatile List<VectorEntry>                       graphIndexOrdinalMapping; // Maps graph ordinals to vector entries
+  private final    ConcurrentHashMap<Integer, VectorEntry> vectorRegistry;
+  private final    AtomicInteger                           nextId;
+  private final    AtomicReference<INDEX_STATUS>           status;
+  private final    AtomicBoolean                           graphIndexDirty;
 
   // Compaction support
-  private final AtomicInteger                           currentMutablePages;
-  private       int                                     minPagesToScheduleACompaction;
-  private       LSMVectorIndexCompacted                 compactedSubIndex;
+  private final AtomicInteger           currentMutablePages;
+  private final int                     minPagesToScheduleACompaction;
+  private       LSMVectorIndexCompacted compactedSubIndex;
 
   /**
    * Represents a vector entry with its RID and vector data
    */
   private static class VectorEntry {
-    final int       id;
-    final RID       rid;
-    final float[]   vector;
+    final    int     id;
+    final    RID     rid;
+    final    float[] vector;
     volatile boolean deleted;
 
     VectorEntry(final int id, final RID rid, final float[] vector) {
@@ -161,8 +158,10 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
     @Override
     public boolean equals(final Object o) {
-      if (this == o) return true;
-      if (!(o instanceof ComparableVector other)) return false;
+      if (this == o)
+        return true;
+      if (!(o instanceof ComparableVector other))
+        return false;
       return java.util.Arrays.equals(vector, other.vector);
     }
 
@@ -435,7 +434,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
       LogManager.instance().log(this, Level.INFO,
           "Loaded " + vectorRegistry.size() + " unique vectors (" + entriesRead + " total entries) from " +
-          (totalPages - 1) + " pages for index: " + indexName);
+              (totalPages - 1) + " pages for index: " + indexName);
 
       // Rebuild the graph index with loaded non-deleted vectors
       if (!vectorRegistry.isEmpty()) {
@@ -562,12 +561,12 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
   @Override
   public IndexCursor get(final Object[] keys, final int limit) {
-    if (keys == null || keys.length == 0 || !(keys[0] instanceof float[]))
+    if (keys == null || keys.length == 0 || !(keys[0] instanceof float[] queryVector))
       throw new IllegalArgumentException("Expected float array as key for vector search");
 
-    final float[] queryVector = (float[]) keys[0];
     if (queryVector.length != dimensions)
-      throw new IllegalArgumentException("Query vector dimension " + queryVector.length + " does not match index dimension " + dimensions);
+      throw new IllegalArgumentException(
+          "Query vector dimension " + queryVector.length + " does not match index dimension " + dimensions);
 
     final int k = limit > 0 ? limit : 10; // Default to top 10 results
 
@@ -762,45 +761,39 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
     if (values == null || values.length == 0)
       throw new IllegalArgumentException("Values cannot be null or empty");
 
-    // Unwrap ComparableVector if needed (for transaction replay)
+    // Validate vector - can be either float[] or ComparableVector (from transaction replay)
     final float[] vector;
-    if (keys[0] instanceof ComparableVector) {
-      vector = ((ComparableVector) keys[0]).vector;
-    } else if (keys[0] instanceof float[]) {
+    if (keys[0] instanceof float[]) {
       vector = (float[]) keys[0];
+    } else if (keys[0] instanceof ComparableVector) {
+      vector = ((ComparableVector) keys[0]).vector;
     } else {
-      throw new IllegalArgumentException("Expected float array or ComparableVector as key for vector index, got " + keys[0].getClass());
+      throw new IllegalArgumentException(
+          "Expected float array or ComparableVector as key for vector index, got " + keys[0].getClass());
     }
 
     if (vector.length != dimensions)
       throw new IllegalArgumentException("Vector dimension " + vector.length + " does not match index dimension " + dimensions);
 
     final RID rid = values[0];
-
-    // Buffer operations during transactions for atomic commit
     final com.arcadedb.database.TransactionContext.STATUS txStatus = getDatabase().getTransaction().getStatus();
-    if (txStatus == com.arcadedb.database.TransactionContext.STATUS.BEGUN ||
-        txStatus == com.arcadedb.database.TransactionContext.STATUS.COMMIT_1ST_PHASE ||
-        txStatus == com.arcadedb.database.TransactionContext.STATUS.COMMIT_2ND_PHASE) {
 
-      // Only buffer if this is the original call, not a replay
-      // Replay is detected by checking if the key is already wrapped in ComparableVector
-      if (!(keys[0] instanceof ComparableVector)) {
-        // Register the index with the transaction for file locking
-        // Wrap in ComparableVector to mark it as tracked
-        getDatabase().getTransaction()
-            .addIndexOperation(this, com.arcadedb.database.TransactionIndexContext.IndexKey.IndexKeyOperation.ADD,
-                new Object[]{new ComparableVector(vector)}, rid);
+    if (txStatus == com.arcadedb.database.TransactionContext.STATUS.BEGUN) {
+      // During BEGUN: Register with TransactionIndexContext for file locking and transaction tracking
+      // Wrap vector in ComparableVector for TransactionIndexContext's TreeMap
+      getDatabase().getTransaction()
+          .addIndexOperation(this, com.arcadedb.database.TransactionIndexContext.IndexKey.IndexKeyOperation.ADD,
+              new Object[] { new ComparableVector(vector) }, rid);
 
-        // Buffer the operation in our local context for actual processing in onAfterCommit()
-        final long txId = Thread.currentThread().getId();
-        final TransactionVectorContext context = transactionContexts.computeIfAbsent(txId, k -> new TransactionVectorContext());
-        context.operations.put(rid, new TransactionVectorContext.VectorOperation(
-            TransactionVectorContext.OperationType.ADD, vector));
-      }
-      // If it's wrapped, this is a replay during commit - skip buffering since we already have it
+      // Buffer the operation locally for actual processing in onAfterCommit()
+      final long txId = Thread.currentThread().getId();
+      final TransactionVectorContext context = transactionContexts.computeIfAbsent(txId, k -> new TransactionVectorContext());
+      context.operations.put(rid, new TransactionVectorContext.VectorOperation(
+          TransactionVectorContext.OperationType.ADD, vector));
+
     } else {
-      // No transaction: apply immediately
+      // No transaction OR during commit replay: apply immediately
+      // During commit phases, TransactionIndexContext.commit() calls this method directly
       lock.writeLock().lock();
       try {
         final int id = nextId.getAndIncrement();
@@ -827,24 +820,24 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
   @Override
   public void remove(final Object[] keys, final Identifiable value) {
     final RID rid = value.getIdentity();
+    final com.arcadedb.database.TransactionContext.STATUS txStatus = getDatabase().getTransaction().getStatus();
 
-    // Register with transaction system so onAfterCommit() gets called
-    if (getDatabase().getTransaction().getStatus() == com.arcadedb.database.TransactionContext.STATUS.BEGUN) {
-      // For remove, we don't have the vector value, so use a dummy comparable
-      final ComparableVector comparableKey = new ComparableVector(new float[dimensions]);
-
-      // Register with transaction index system
+    if (txStatus == com.arcadedb.database.TransactionContext.STATUS.BEGUN) {
+      // During BEGUN: Register with TransactionIndexContext for file locking and transaction tracking
+      // Use a dummy ComparableVector since we don't have the vector value for removes
       getDatabase().getTransaction()
           .addIndexOperation(this, com.arcadedb.database.TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
-              new Object[]{comparableKey}, rid);
+              new Object[] { new ComparableVector(new float[dimensions]) }, rid);
 
-      // Buffer the operation in our local context for actual processing in onAfterCommit()
+      // Buffer the operation locally (used only for cleanup tracking)
       final long txId = Thread.currentThread().getId();
       final TransactionVectorContext context = transactionContexts.computeIfAbsent(txId, k -> new TransactionVectorContext());
       context.operations.put(rid, new TransactionVectorContext.VectorOperation(
           TransactionVectorContext.OperationType.REMOVE, null));
-    } else{
-      // No transaction: apply immediately
+
+    } else {
+      // No transaction OR during commit replay: apply immediately
+      // During commit phases, TransactionIndexContext.commit() calls this method directly
       lock.writeLock().lock();
       try {
         final List<Integer> deletedIds = new ArrayList<>();
@@ -868,46 +861,13 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
   @Override
   public void onAfterCommit() {
+    // Operations are already handled by TransactionIndexContext.commit()
+    // which calls put()/remove() during commit phases
+    // So we just need to clean up our local context and trigger compaction if needed
     final long txId = Thread.currentThread().getId();
     final TransactionVectorContext context = transactionContexts.remove(txId);
     if (context == null || context.operations.isEmpty())
       return;
-
-    lock.writeLock().lock();
-    try {
-      // Track which vector IDs changed for incremental persistence
-      final List<Integer> changedVectorIds = new ArrayList<>();
-
-      // Apply all buffered operations to in-memory registry
-      for (final Map.Entry<RID, TransactionVectorContext.VectorOperation> entry : context.operations.entrySet()) {
-        final RID rid = entry.getKey();
-        final TransactionVectorContext.VectorOperation op = entry.getValue();
-
-        if (op.type == TransactionVectorContext.OperationType.ADD) {
-          final int id = nextId.getAndIncrement();
-          final VectorEntry vectorEntry = new VectorEntry(id, rid, op.vector);
-          vectorRegistry.put(id, vectorEntry);
-          changedVectorIds.add(id);
-        } else if (op.type == TransactionVectorContext.OperationType.REMOVE) {
-          // Mark as deleted
-          for (final VectorEntry v : vectorRegistry.values()) {
-            if (v.rid.equals(rid)) {
-              v.deleted = true;
-              changedVectorIds.add(v.id);
-            }
-          }
-        }
-      }
-
-      // Persist ONLY the changed vectors incrementally to LSM-style pages
-      persistVectorsDeltaIncremental(changedVectorIds);
-
-      // Mark graph index as dirty - will be rebuilt lazily on next query
-      graphIndexDirty.set(true);
-
-    } finally {
-      lock.writeLock().unlock();
-    }
 
     // Check if compaction should be triggered
     if (minPagesToScheduleACompaction > 1 && currentMutablePages.get() >= minPagesToScheduleACompaction) {
@@ -1190,7 +1150,8 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
    * Copies remaining mutable pages from startingFromPage onwards to the new index.
    *
    * @param startingFromPage The first page to copy from current index
-   * @param compactedIndex The compacted sub-index to attach
+   * @param compactedIndex   The compacted sub-index to attach
+   *
    * @return The new index file ID
    */
   protected int splitIndex(final int startingFromPage, final LSMVectorIndexCompacted compactedIndex)
@@ -1271,7 +1232,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
       }
 
     } finally {
-      final Integer lockedFile = lockedNewFileId.get();
+      final int lockedFile = lockedNewFileId.get();
       if (lockedFile != -1)
         database.getTransactionManager().unlockFile(lockedFile, Thread.currentThread());
 
