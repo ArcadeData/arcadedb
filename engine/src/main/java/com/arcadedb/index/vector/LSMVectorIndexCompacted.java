@@ -28,6 +28,7 @@ import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
@@ -127,15 +128,15 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
       newPages.add(currentPage);
     }
 
-    final ByteBuffer pageBuffer = currentPage.getContent();
+    ByteBuffer pageBuffer = currentPage.getContent();
 
-    // Read page header
-    int offsetFreeContent = pageBuffer.getInt(0);
-    int numberOfEntries = pageBuffer.getInt(4);
-    final int pageNum = currentPage.getPageId().getPageNumber();
+    // Read page header (account for PAGE_HEADER_SIZE offset used by writeInt/readInt methods)
+    int offsetFreeContent = currentPage.readInt(0);
+    int numberOfEntries = currentPage.readInt(4);
+    int pageNum = currentPage.getPageId().getPageNumber();
 
     // Calculate space needed
-    final int headerSize = getHeaderSize(pageNum);
+    int headerSize = getHeaderSize(pageNum);
     final int pointerTableSize = (numberOfEntries + 1) * 4; // +1 for new entry
     final int availableSpace = offsetFreeContent - (headerSize + pointerTableSize);
 
@@ -147,13 +148,26 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
       currentPage = createNewPage(compactedPageNumberOfSeries.getAndIncrement());
       newPages.add(currentPage);
 
-      // Reset for new page
-      offsetFreeContent = currentPage.getContent().getInt(0);
+      // Update pageBuffer reference to point to the new page
+      pageBuffer = currentPage.getContent();
+
+      // Reset for new page (account for PAGE_HEADER_SIZE offset)
+      offsetFreeContent = currentPage.readInt(0);
       numberOfEntries = 0;
+      pageNum = currentPage.getPageId().getPageNumber();
+      headerSize = getHeaderSize(pageNum);
     }
 
     // Write entry at tail (backwards from offsetFreeContent)
     final int entryOffset = offsetFreeContent - entrySize;
+
+    // Validate we have enough space (safety check)
+    if (entryOffset < 0) {
+      throw new IndexException("Entry size (" + entrySize + ") exceeds available page space. " +
+          "offsetFreeContent=" + offsetFreeContent + ", headerSize=" + headerSize +
+          ", pageSize=" + pageSize + ", pageNum=" + pageNum);
+    }
+
     pageBuffer.position(entryOffset);
 
     pageBuffer.putInt(vectorId);
@@ -167,11 +181,11 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
     // Add pointer to entry in header
     pageBuffer.putInt(headerSize + (numberOfEntries * 4), entryOffset);
 
-    // Update page header
+    // Update page header (use writeInt to account for PAGE_HEADER_SIZE offset)
     numberOfEntries++;
     offsetFreeContent = entryOffset;
-    pageBuffer.putInt(0, offsetFreeContent);
-    pageBuffer.putInt(4, numberOfEntries);
+    currentPage.writeInt(0, offsetFreeContent);
+    currentPage.writeInt(4, numberOfEntries);
 
     return newPages;
   }
