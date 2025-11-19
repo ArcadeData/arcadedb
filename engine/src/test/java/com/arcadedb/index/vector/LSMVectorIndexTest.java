@@ -40,14 +40,14 @@ public class LSMVectorIndexTest extends TestHelper {
   public void testCreateIndexViaSQLAndQuery() {
     database.transaction(() -> {
       // Create the schema
-      database.command("sql", "CREATE VERTEX TYPE VectorDocument IF NOT EXISTS");
-      database.command("sql", "CREATE PROPERTY VectorDocument.id IF NOT EXISTS STRING");
-      database.command("sql", "CREATE PROPERTY VectorDocument.title IF NOT EXISTS STRING");
-      database.command("sql", "CREATE PROPERTY VectorDocument.embedding IF NOT EXISTS ARRAY_OF_FLOATS");
-      database.command("sql", "CREATE PROPERTY VectorDocument.category IF NOT EXISTS STRING");
+      database.command("sql", "CREATE VERTEX TYPE VectorVertex IF NOT EXISTS");
+      database.command("sql", "CREATE PROPERTY VectorVertex.id IF NOT EXISTS STRING");
+      database.command("sql", "CREATE PROPERTY VectorVertex.title IF NOT EXISTS STRING");
+      database.command("sql", "CREATE PROPERTY VectorVertex.embedding IF NOT EXISTS ARRAY_OF_FLOATS");
+      database.command("sql", "CREATE PROPERTY VectorVertex.category IF NOT EXISTS STRING");
 
       // Create the LSM_VECTOR index
-      database.command("sql", "CREATE INDEX IF NOT EXISTS ON VectorDocument (embedding) LSM_VECTOR " +
+      database.command("sql", "CREATE INDEX IF NOT EXISTS ON VectorVertex (embedding) LSM_VECTOR " +
           "METADATA {" +
           "  \"dimensions\" : " + DIMENSIONS + "," +
           "  \"similarity\" : \"COSINE\"," +
@@ -58,7 +58,7 @@ public class LSMVectorIndexTest extends TestHelper {
 
     // Verify the index was created
     final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
-        .getIndexByName("VectorDocument[embedding]");
+        .getIndexByName("VectorVertex[embedding]");
     Assertions.assertNotNull(typeIndex, "Index should be created");
 
     // Get one of the underlying LSMVectorIndex instances to verify configuration
@@ -69,7 +69,7 @@ public class LSMVectorIndexTest extends TestHelper {
     // Insert test data
     database.transaction(() -> {
       for (int i = 0; i < 100; i++) {
-        final var doc = database.newVertex("VectorDocument");
+        final var doc = database.newVertex("VectorVertex");
         doc.set("id", "doc" + i);
         doc.set("title", "Document " + i);
 
@@ -454,14 +454,14 @@ public class LSMVectorIndexTest extends TestHelper {
       final int batchNum = batch;
       database.transaction(() -> {
         for (int i = 0; i < vectorsPerBatch; i++) {
-          final var doc = database.newDocument("CompactDoc");
-          doc.set("vec", new float[] {
+          final var vertex = database.newVertex("CompactDoc");
+          vertex.set("vec", new float[] {
               (float) (batchNum * vectorsPerBatch + i),
               (float) (batchNum * vectorsPerBatch + i + 1),
               (float) (batchNum * vectorsPerBatch + i + 2),
               (float) (batchNum * vectorsPerBatch + i + 3)
           });
-          doc.save();
+          vertex.save();
         }
       });
 
@@ -499,11 +499,11 @@ public class LSMVectorIndexTest extends TestHelper {
     final List<com.arcadedb.database.RID> rids = new ArrayList<>();
     database.transaction(() -> {
       for (int i = 0; i < 20; i++) {
-        final var doc = database.newDocument("MergeDoc");
-        doc.set("id", "doc" + i);
-        doc.set("vec", new float[] { (float) i, (float) i * 2, (float) i * 3 });
-        doc.save();
-        rids.add(doc.getIdentity());
+        final var vertex = database.newVertex("MergeDoc");
+        vertex.set("id", "doc" + i);
+        vertex.set("vec", new float[] { (float) i, (float) i * 2, (float) i * 3 });
+        vertex.save();
+        rids.add(vertex.getIdentity());
       }
     });
 
@@ -562,11 +562,11 @@ public class LSMVectorIndexTest extends TestHelper {
     final List<com.arcadedb.database.RID> rids = new ArrayList<>();
     database.transaction(() -> {
       for (int i = 0; i < 50; i++) {
-        final var doc = database.newDocument("DeleteDoc");
-        doc.set("id", "doc" + i);
-        doc.set("vec", new float[] { (float) i, (float) i * 2 });
-        doc.save();
-        rids.add(doc.getIdentity());
+        final var vertex = database.newVertex("DeleteDoc");
+        vertex.set("id", "doc" + i);
+        vertex.set("vec", new float[] { (float) i, (float) i * 2 });
+        vertex.save();
+        rids.add(vertex.getIdentity());
       }
     });
 
@@ -616,11 +616,11 @@ public class LSMVectorIndexTest extends TestHelper {
     // Add initial vectors
     database.transaction(() -> {
       for (int i = 0; i < 100; i++) {
-        final var doc = database.newDocument("ConcurrentDoc");
-        doc.set("vec", new float[] {
+        final var vertex = database.newVertex("ConcurrentDoc");
+        vertex.set("vec", new float[] {
             (float) i, (float) i + 1, (float) i + 2, (float) i + 3
         });
-        doc.save();
+        vertex.save();
       }
     });
 
@@ -700,17 +700,17 @@ public class LSMVectorIndexTest extends TestHelper {
     final List<com.arcadedb.database.RID> rids = new ArrayList<>();
     database.transaction(() -> {
       for (int i = 0; i < 100; i++) {
-        final var doc = database.newDocument("GraphDoc");
+        final var vertex = database.newVertex("GraphDoc");
         // Create vectors in clusters (should form neighborhoods in graph)
         final int cluster = i / 10;
-        doc.set("vec", new float[] {
+        vertex.set("vec", new float[] {
             (float) cluster * 10, (float) cluster * 10 + 1,
             (float) cluster * 10 + 2, (float) cluster * 10 + 3,
             (float) i % 10, (float) (i % 10) + 1,
             (float) (i % 10) + 2, (float) (i % 10) + 3
         });
-        doc.save();
-        rids.add(doc.getIdentity());
+        vertex.save();
+        rids.add(vertex.getIdentity());
       }
     });
 
