@@ -168,7 +168,7 @@ public class TextEmbeddingsImporter {
     // Create LSMVectorIndex using builder
     final LSMVectorIndexBuilder builder = schema.buildLSMVectorIndex(settings.vertexTypeName, vectorProp);
     builder.withDimensions(dimensions)
-        .withSimilarity(VectorSimilarityFunction.valueOf(distanceFunctionName))
+        .withSimilarity(VectorSimilarityFunction.valueOf(distanceFunctionName.toUpperCase()))
         .withMaxConnections(maxConnections)
         .withBeamWidth(beamWidth)
         .withAlpha(alpha);

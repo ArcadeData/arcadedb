@@ -38,13 +38,13 @@ public class FastTextVectorImportTest extends com.arcadedb.TestHelper
     @Test
     public void vectorNeighborsQuery() {
         database.command("sql", "import database file://src/test/resources/cc.en.300.small.vec.gz "  //
-                + "with distanceFunction = cosine, m = 16, ef = 128, efConstruction = 128, " //
+                + "with distanceFunction = COSINE, m = 16, ef = 128, efConstruction = 128, " //
                 + "vertexType = Word, edgeType = Proximity, vectorProperty = vector, idProperty = name" //
         );
         assertThat(database.countType("Word", true)).isEqualTo(1000);
 
         final ResultSet rs = database.command("SQL",
-                "select expand(vectorNeighbors('Word[name,vector]','with',10))");
+                "select expand(vectorNeighbors('Word[vector]','with',10))");
 
         final AtomicInteger total = new AtomicInteger();
         while (rs.hasNext()) {
@@ -61,7 +61,7 @@ public class FastTextVectorImportTest extends com.arcadedb.TestHelper
     @Test
     public void parsingLimitEntries() {
         database.command("sql", "import database file://src/test/resources/cc.en.300.small.vec.gz "  //
-                + "with distanceFunction = cosine, m = 16, ef = 128, efConstruction = 128, " //
+                + "with distanceFunction = COSINE, m = 16, ef = 128, efConstruction = 128, " //
                 + "vertexType = Word, edgeType = Proximity, vectorProperty = vector, idProperty = name, "
                 + "parsingLimitEntries = 101"
         );
