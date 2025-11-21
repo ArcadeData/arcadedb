@@ -153,7 +153,21 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
     @Override
     public int compareTo(final ComparableVector other) {
-      return Integer.compare(this.hashCode, other.hashCode);
+      // First compare by hash code for performance
+      final int hashCompare = Integer.compare(this.hashCode, other.hashCode);
+      if (hashCompare != 0)
+        return hashCompare;
+      
+      // If hash codes are equal, perform lexicographical comparison of vector elements
+      // to maintain the Comparable contract: compareTo == 0 iff equals == true
+      final int minLength = Math.min(this.vector.length, other.vector.length);
+      for (int i = 0; i < minLength; i++) {
+        final int elementCompare = Float.compare(this.vector[i], other.vector[i]);
+        if (elementCompare != 0)
+          return elementCompare;
+      }
+      // If all compared elements are equal, compare by length
+      return Integer.compare(this.vector.length, other.vector.length);
     }
 
     @Override
