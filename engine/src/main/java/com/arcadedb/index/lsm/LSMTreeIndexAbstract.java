@@ -585,9 +585,6 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
         if (rid.getBucketId() < 0) {
           // This is a deletion marker - convert to original RID
           final RID originalRID = getOriginalRID(rid);
-          // com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.INFO,
-          //     "LOOKUP_DEBUG: Found deletion marker - rid=%s (original=%s), tracking deleted RID", rid, originalRID);
-
           deletedRIDs.add(originalRID);
 
           // For unique indexes, also mark the entire key as removed
@@ -599,15 +596,13 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
         // For unique indexes, check if the entire key has been removed
         if (mainIndex.isUnique() && removedKeys.contains(keys)) {
-          // com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.INFO,
-          //     "LOOKUP_DEBUG: Skipping rid=%s because key is in removedKeys (unique index)", rid);
+          // Skipping rid because key is in removedKeys (unique index)
           continue;
         }
 
         // For all indexes, check if this specific RID has been deleted
         if (deletedRIDs.contains(rid)) {
-          // com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.INFO,
-          //     "LOOKUP_DEBUG: Skipping rid=%s because it is in deletedRIDs", rid);
+          // Skipping rid because it is in deletedRIDs
           continue;
         }
 

@@ -145,7 +145,7 @@ export async function queryWithSession(database, sessionId, sql, params = null) 
 
 // Generate unique database name for test isolation
 export function uniqueDbName(prefix) {
-    return `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    return `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 }
 
 // Cleanup helper - ensures database is dropped even if it doesn't exist
