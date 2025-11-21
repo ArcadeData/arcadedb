@@ -8,7 +8,7 @@ import {
     logMessage
 } from './helpers.js';
 
-describe('ULTRA MINIMAL ArcadeDB Bug - Plain SQL Only', () => {
+describe('Issue 2814 - Filtering with index - https://github.com/ArcadeData/arcadedb/issues/2814', () => {
     const dbName = uniqueDbName('ultra_minimal');
 
     beforeAll(async () => {
@@ -20,7 +20,7 @@ describe('ULTRA MINIMAL ArcadeDB Bug - Plain SQL Only', () => {
         await cleanupDatabase(dbName);
     });
 
-    test('absolute minimal reproduction', async () => {
+    test('Filtering with index - non-unique index works as expected', async () => {
         logMessage('\n=== SETUP ===');
 
         // 1. Create two types with LINK and COMPOSITE INDEX like HostCard
