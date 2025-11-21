@@ -159,3 +159,10 @@ export async function cleanupDatabase(name) {
         // Ignore errors during cleanup
     }
 }
+
+export function logMessage(...args) {
+    const adbLog = process.env.ADB_LOG;
+    if (adbLog === 'true' || adbLog === '1') {
+        console.log(...args);
+    }
+}
