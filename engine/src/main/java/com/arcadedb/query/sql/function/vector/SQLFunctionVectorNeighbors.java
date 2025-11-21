@@ -103,10 +103,11 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionAbstract {
       final String keyStr = key.toString();
       final String typeName = lsmIndex.getTypeName();
       final String vectorProperty = lsmIndex.getPropertyNames().getFirst();
+      final String idProperty = lsmIndex.getIdPropertyName();
 
-      // Query for the vertex by the ID property (usually "name")
+      // Query for the vertex by the configured ID property
       final ResultSet rs = context.getDatabase().query("sql",
-          "SELECT " + vectorProperty + " FROM " + typeName + " WHERE name = ? LIMIT 1", keyStr);
+          "SELECT " + vectorProperty + " FROM " + typeName + " WHERE " + idProperty + " = ? LIMIT 1", keyStr);
 
       if (rs.hasNext()) {
         final var result = rs.next();
