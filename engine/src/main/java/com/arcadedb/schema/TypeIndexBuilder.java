@@ -101,15 +101,15 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
         // First, try to find the property with the exact name (handles properties with dots in their names)
         Property property = type.getPolymorphicPropertyIfExists(actualPropertyName);
-        
+
         if (property == null && actualPropertyName.contains(".")) {
           // Property with exact name doesn't exist, check if this could be a nested path
           final String[] pathParts = actualPropertyName.split("\\.", 2); // Split into at most 2 parts
           final String rootPropertyName = pathParts[0];
-          
+
           // Try to find the root property
           property = type.getPolymorphicPropertyIfExists(rootPropertyName);
-          
+
           if (property != null) {
             // Found root property - this is a nested path
             // For nested paths with BY ITEM, the root must be a LIST
@@ -118,14 +118,14 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
                   "Cannot create index with BY ITEM on nested property path '" + typeName + "." + actualPropertyName +
                   "' because the root property '" + rootPropertyName + "' is not a LIST type (found: " + property.getType() + ")");
             }
-            
+
             // For nested properties, we'll use STRING as the key type since we can't validate the nested structure at schema definition time
             // The actual type will be determined at runtime during indexing
             keyTypes[i++] = Type.STRING;
             continue;
           }
         }
-        
+
         // If we still don't have a property, it doesn't exist
         if (property == null) {
           throw new SchemaException(
