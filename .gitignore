@@ -551,3 +551,4 @@ dist
 
 .venv/
 .vscode/
+*.lsmvecidx
