@@ -35,8 +35,9 @@ class ArcadeDBServer:
                 - mode: Server mode (default: development)
         """
         start_jvm()
-        from com.arcadedb import ContextConfiguration
         from com.arcadedb.server import ArcadeDBServer as JavaArcadeDBServer
+
+        from com.arcadedb import ContextConfiguration
 
         self._config = config or {}
         self._root_path = root_path

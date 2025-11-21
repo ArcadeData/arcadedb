@@ -75,8 +75,7 @@ export async function beginTransaction(database) {
         method: 'POST',
         headers: { 'Authorization': AUTH }
     });
-    const sessionId = res.headers.get('arcadedb-session-id');
-    return sessionId;
+    return res.headers.get('arcadedb-session-id');
 }
 
 export async function commitTransaction(database, sessionId) {
