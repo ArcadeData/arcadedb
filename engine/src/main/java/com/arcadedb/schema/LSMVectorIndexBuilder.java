@@ -243,7 +243,12 @@ public class LSMVectorIndexBuilder extends IndexBuilder<TypeIndex> {
 
   /**
    * Configures the index from a metadata JSON object.
-   * Expected keys: dimensions, similarity, maxConnections, beamWidth, idPropertyName
+   * Expected keys:
+   * - dimensions (required): number of vector dimensions
+   * - similarity (optional): similarity function (COSINE, DOT_PRODUCT, EUCLIDEAN), defaults to COSINE
+   * - maxConnections (optional): max connections per node in HNSW graph, defaults to 16
+   * - beamWidth (optional): beam width for search operations, defaults to 100
+   * - idPropertyName (optional): property name used to identify vertices, defaults to "id"
    *
    * @param metadata the metadata JSON
    *
