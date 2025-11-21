@@ -423,7 +423,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
         if (numberOfEntries == 0)
           continue; // Empty page
 
-        // Read pointer table (starts after offsetFreeContent, numberOfEntries, and mutable byte)
+        // Read pointer table (starts at HEADER_BASE_SIZE offset)
         final int[] pointers = new int[numberOfEntries];
         for (int i = 0; i < numberOfEntries; i++) {
           pointers[i] = pageBuffer.getInt(HEADER_BASE_SIZE + (i * 4));
@@ -542,7 +542,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
         }
         pageBuffer.put((byte) (entry.deleted ? 1 : 0));
 
-        // Add pointer to entry in header (after offsetFreeContent, numberOfEntries, and mutable byte)
+        // Add pointer to entry in header (at HEADER_BASE_SIZE offset)
         pageBuffer.putInt(HEADER_BASE_SIZE + (numberOfEntries * 4), entryOffset);
 
         // Update page header

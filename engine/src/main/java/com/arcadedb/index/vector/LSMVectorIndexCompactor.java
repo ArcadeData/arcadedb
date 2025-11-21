@@ -153,7 +153,7 @@ public class LSMVectorIndexCompactor {
             mainIndex.getPageSize());
         final ByteBuffer buffer = page.getContent();
         
-        // Read the mutable flag at offset 8 (after offsetFreeContent and numberOfEntries)
+        // Read the mutable flag (OFFSET_MUTABLE = 8, after offsetFreeContent and numberOfEntries)
         buffer.position(LSMVectorIndex.OFFSET_MUTABLE);
         final byte mutable = buffer.get();
         
@@ -211,7 +211,7 @@ public class LSMVectorIndexCompactor {
       if (numberOfEntries == 0)
         continue;
 
-      // Read pointer table (starts at offset 9, after offsetFreeContent, numberOfEntries, and mutable byte)
+      // Read pointer table (starts at HEADER_BASE_SIZE offset)
       final int[] pointers = new int[numberOfEntries];
       for (int i = 0; i < numberOfEntries; i++) {
         pointers[i] = buffer.getInt(LSMVectorIndex.HEADER_BASE_SIZE + (i * 4));
