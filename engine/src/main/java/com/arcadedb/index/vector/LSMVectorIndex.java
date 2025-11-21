@@ -412,11 +412,12 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
         // Read page header
         final int offsetFreeContent = pageBuffer.getInt();
         final int numberOfEntries = pageBuffer.getInt();
+        final byte mutable = pageBuffer.get(); // Read mutable flag (but don't use it during loading)
 
         if (numberOfEntries == 0)
           continue; // Empty page
 
-        // Read pointer table
+        // Read pointer table (starts after offsetFreeContent, numberOfEntries, and mutable byte)
         final int[] pointers = new int[numberOfEntries];
         for (int i = 0; i < numberOfEntries; i++) {
           pointers[i] = pageBuffer.getInt();
@@ -509,11 +510,13 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
         int numberOfEntries = pageBuffer.getInt(4);
 
         // Calculate space needed
-        final int headerSize = 8 + ((numberOfEntries + 1) * 4); // offsetFree + count + pointers
+        final int headerSize = 9 + ((numberOfEntries + 1) * 4); // offsetFree + count + mutable + pointers
         final int availableSpace = offsetFreeContent - headerSize;
 
         if (availableSpace < entrySize) {
-          // Page is full, create a new page
+          // Page is full, mark it as immutable before creating a new page
+          pageBuffer.put(8, (byte) 0); // mutable = 0 (page is no longer being written to)
+          
           lastPageNum++;
           currentPage = createNewVectorDataPage(lastPageNum);
           pageBuffer = currentPage.getContent();
@@ -533,8 +536,8 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
         }
         pageBuffer.put((byte) (entry.deleted ? 1 : 0));
 
-        // Add pointer to entry in header
-        pageBuffer.putInt(8 + (numberOfEntries * 4), entryOffset);
+        // Add pointer to entry in header (after offsetFreeContent, numberOfEntries, and mutable byte)
+        pageBuffer.putInt(9 + (numberOfEntries * 4), entryOffset);
 
         // Update page header
         numberOfEntries++;
@@ -551,7 +554,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
   /**
    * Create a new vector data page with LSM-style header.
-   * Page layout: [offsetFreeContent(4)][numberOfEntries(4)][pointers...]...[entries from tail]
+   * Page layout: [offsetFreeContent(4)][numberOfEntries(4)][mutable(1)][pointers...]...[entries from tail]
    */
   private BasePage createNewVectorDataPage(final int pageNum) {
     final PageId pageId = new PageId(database, getFileId(), pageNum);
@@ -561,6 +564,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
     buffer.position(0);
     buffer.putInt(getPageSize()); // offsetFreeContent starts at end of page
     buffer.putInt(0);              // numberOfEntries = 0
+    buffer.put((byte) 1);          // mutable = 1 (page is actively being written to)
 
     // Track mutable pages for compaction trigger
     currentMutablePages.incrementAndGet();
