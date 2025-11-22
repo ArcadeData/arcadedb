@@ -48,10 +48,10 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeFullTextIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
-import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
+import com.arcadedb.index.lsm.LSMVectorIndex;
 import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -140,6 +140,7 @@ public class LocalSchema implements Schema {
     indexFactory.register(INDEX_TYPE.LSM_TREE.name(), new LSMTreeIndex.IndexFactoryHandler());
     indexFactory.register(INDEX_TYPE.FULL_TEXT.name(), new LSMTreeFullTextIndex.IndexFactoryHandler());
     indexFactory.register(INDEX_TYPE.HNSW.name(), new HnswVectorIndex.IndexFactoryHandler());
+    indexFactory.register(INDEX_TYPE.LSM_VECTOR.name(), new LSMVectorIndex.IndexFactoryHandler());
     configurationFile = new File(databasePath + File.separator + SCHEMA_FILE_NAME);
   }
 
@@ -532,6 +533,11 @@ public class LocalSchema implements Schema {
   @Override
   public VectorIndexBuilder buildVectorIndex() {
     return new VectorIndexBuilder(database);
+  }
+
+  @Override
+  public LSMVectorIndexBuilder buildLSMVectorIndex(final String typeName, final String propertyNames) {
+    return new LSMVectorIndexBuilder(database).withTypeName(typeName).withProperty(propertyNames, Type.ARRAY_OF_FLOATS);
   }
 
   @Override

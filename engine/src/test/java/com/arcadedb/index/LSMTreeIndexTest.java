@@ -585,7 +585,6 @@ public class LSMTreeIndexTest extends TestHelper {
       for (int i = 0; i < TOT; ++i) {
         for (final Index index : indexes)
           assertThat(index.get(new Object[] { i }).hasNext()).withFailMessage("Found item with key " + i).isFalse();
-        ;
       }
 
     });
@@ -1232,7 +1231,8 @@ public class LSMTreeIndexTest extends TestHelper {
       // Set custom logger to capture log messages
       LogManager.instance().setLogger(new com.arcadedb.log.Logger() {
         @Override
-        public void log(final Object requester, final Level level, final String message, final Throwable exception, final String context,
+        public void log(final Object requester, final Level level, final String message, final Throwable exception,
+            final String context,
             final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6,
             final Object arg7, final Object arg8, final Object arg9, final Object arg10, final Object arg11, final Object arg12,
             final Object arg13, final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
@@ -1242,7 +1242,8 @@ public class LSMTreeIndexTest extends TestHelper {
         }
 
         @Override
-        public void log(final Object requester, final Level level, final String message, final Throwable exception, final String context,
+        public void log(final Object requester, final Level level, final String message, final Throwable exception,
+            final String context,
             final Object... args) {
           if (message != null && (message.contains("Building index") || message.contains("Completed building"))) {
             if (args != null && args.length > 0) {

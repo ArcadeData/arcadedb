@@ -372,7 +372,22 @@ public interface Schema {
    */
   FunctionDefinition getFunction(String libraryName, String functionName) throws IllegalArgumentException;
 
+  /**
+   * Builds a new LSM Vector index builder.
+   *
+   * <p>LSM Vector indexes combine JVector's HNSW-Vamana algorithm with ArcadeDB's
+   * page-based LSM storage, providing memory-efficient vector similarity search.
+   *
+   * <p>The returned builder must be configured with vector-specific parameters
+   * via the builder methods before calling {@link LSMVectorIndexBuilder#create()}.
+   *
+   * @param typeName      the document type name to create the index on
+   * @param propertyNames the property names to index
+   * @return a new LSMVectorIndexBuilder configured for the given type and properties
+   */
+  LSMVectorIndexBuilder buildLSMVectorIndex(String typeName, String propertyNames);
+
   enum INDEX_TYPE {
-    LSM_TREE, FULL_TEXT, HNSW
+    LSM_TREE, FULL_TEXT, HNSW, LSM_VECTOR
   }
 }
