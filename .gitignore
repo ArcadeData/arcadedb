@@ -552,6 +552,6 @@ dist
 .venv/
 .vscode/
 
-# Test artifacts
+# Test database files
 *.lsmvecidx
 *.metadata.json
