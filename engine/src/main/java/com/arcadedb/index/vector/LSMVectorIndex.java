@@ -164,7 +164,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
       final int hashCompare = Integer.compare(this.hashCode, other.hashCode);
       if (hashCompare != 0)
         return hashCompare;
-      
+
       // If hash codes are equal, perform lexicographical comparison of vector elements
       // to maintain the Comparable contract: compareTo == 0 iff equals == true
       final int minLength = Math.min(this.vector.length, other.vector.length);
@@ -525,7 +525,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
         if (availableSpace < entrySize) {
           // Page is full, mark it as immutable before creating a new page
           pageBuffer.put(OFFSET_MUTABLE, (byte) 0); // mutable = 0 (page is no longer being written to)
-          
+
           lastPageNum++;
           currentPage = createNewVectorDataPage(lastPageNum);
           pageBuffer = currentPage.getContent();

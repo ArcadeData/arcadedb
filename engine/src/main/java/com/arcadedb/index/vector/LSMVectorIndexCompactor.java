@@ -152,11 +152,11 @@ public class LSMVectorIndexCompactor {
         final BasePage page = database.getTransaction().getPage(new PageId(database, mainIndex.getFileId(), pageIndex),
             mainIndex.getPageSize());
         final ByteBuffer buffer = page.getContent();
-        
+
         // Read the mutable flag (OFFSET_MUTABLE = 8, after offsetFreeContent and numberOfEntries)
         buffer.position(LSMVectorIndex.OFFSET_MUTABLE);
         final byte mutable = buffer.get();
-        
+
         if (mutable == 0) {
           // Found an immutable page, this is the last one to compact
           lastImmutablePage = pageIndex;
