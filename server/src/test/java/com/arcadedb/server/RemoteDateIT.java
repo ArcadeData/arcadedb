@@ -18,28 +18,17 @@
  */
 package com.arcadedb.server;
 
-import com.arcadedb.ContextConfiguration;
-import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.integration.misc.IntegrationUtils;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
-import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
-import org.awaitility.Awaitility;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.time.*;
-import java.time.temporal.*;
-import java.util.concurrent.TimeUnit;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 
-import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -47,99 +36,43 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class RemoteDateIT {
+public class RemoteDateIT extends BaseGraphServerTest {
+
   @Test
-  void dateTimeMicros1() {
-    final ContextConfiguration serverConfiguration = new ContextConfiguration();
-    final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
+  public void testDateTimeMicros1() {
 
-    // Set the database directory explicitly
-    final String databaseDir = rootPath + "/databases";
-    serverConfiguration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, databaseDir);
-
-    // Set server configuration BEFORE creating the server
-    serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
-
-    // Start the server first so security is properly initialized
-    ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
-    arcadeDBServer.start();
-
-    // Wait for server to be fully started and ready
-    Awaitility.await()
-        .atMost(30, TimeUnit.SECONDS)
-        .pollInterval(100, TimeUnit.MILLISECONDS)
-        .until(() -> arcadeDBServer.isStarted() && arcadeDBServer.getHttpServer() != null);
-
-    RemoteDatabase remote = null;
-    try {
+    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
       // Create and configure the database through the server
-      Database database = arcadeDBServer.getOrCreateDatabase("remotedate");
 
       // Configure datetime settings
       database.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
-      database.command("sql", "alter database `arcadedb.dateTimeFormat` \"yyyy-MM-dd'T'HH:mm:ss.SSSSSS\"");
+      database.command("sql", """
+          alter database `arcadedb.dateTimeFormat` "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
+          """);
 
       // Create schema
-      database.transaction(() -> {
-        if (!database.getSchema().existsType("Order")) {
-          DocumentType dtOrders = database.getSchema().createDocumentType("Order");
-          dtOrders.createProperty("vstart", Type.DATETIME_MICROS);
-        }
-      });
+      DocumentType dtOrders = database.getSchema().createDocumentType("Order");
+      dtOrders.createProperty("vstart", Type.DATETIME_MICROS);
 
       LocalDateTime vstart = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
 
-      database.begin();
-      try (ResultSet resultSet = database.command("sql",  "INSERT INTO Order SET vstart = ?", vstart)) {
-        assertThat(resultSet.next().toJSON().getLong("vstart")).isEqualTo(DateUtils.dateTimeToTimestamp(vstart, ChronoUnit.MICROS));
-      }
-      try (ResultSet resultSet = database.query("sql", "select from Order")) {
-        Result result = resultSet.next();
-        assertThat(result.toElement().get("vstart")).isEqualTo(vstart);
-      }
+      ResultSet resultSet = database.command("sql", "INSERT INTO Order SET vstart = ?", vstart);
+      System.out.println("resultSet.next()\n          .toJSON() = " + resultSet.next()
+          .toJSON());
+      assertThat(resultSet.next()
+          .toJSON()
+          .getLong("vstart"))
+          .isEqualTo(DateUtils.dateTimeToTimestamp(vstart, ChronoUnit.MICROS));
+      resultSet = database.query("sql", "select from Order");
+      Result result = resultSet.next();
+      assertThat(result.toElement().get("vstart")).isEqualTo(vstart);
 
-      database.commit();
+      resultSet = database.query("sql", "select from Order");
+      result = resultSet.next();
+      assertThat(result.toElement().get("vstart")).isEqualTo(vstart.toString());
 
-      // Ensure HTTP server is ready before creating remote connection
-      final int httpPort = arcadeDBServer.getHttpServer().getPort();
-
-      // Now the remote connection will work because the database has proper security setup
-      remote = new RemoteDatabase("localhost", httpPort, "remotedate", "root", DEFAULT_PASSWORD_FOR_TESTS);
-
-      try (ResultSet resultSet = remote.query("sql", "select from Order")) {
-        Result result = resultSet.next();
-        assertThat(result.toElement().get("vstart")).isEqualTo(vstart.toString());
-      }
-
-    } finally {
-      // Close remote connection first
-      if (remote != null) {
-        try {
-          remote.close();
-        } catch (Exception e) {
-          // Ignore close errors
-        }
-      }
-
-      // Then stop the server
-      if (arcadeDBServer != null) {
-        arcadeDBServer.stop();
-      }
     }
   }
 
-  @BeforeEach
-  void beginTest() {
-    final ContextConfiguration serverConfiguration = new ContextConfiguration();
-    final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
-    DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/remotedate");
-    if (databaseFactory.exists())
-      databaseFactory.open().drop();
-  }
-
-  @AfterEach
-  void endTests() {
-    TestServerHelper.checkActiveDatabases();
-    GlobalConfiguration.resetAll();
-  }
 }
