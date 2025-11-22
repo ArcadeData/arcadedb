@@ -258,8 +258,8 @@ public class TextEmbeddingsImporterLSM {
         String word = tokens.getFirst();
 
         float[] vector = new float[tokens.size() - 1];
-        for (int i = 1; i < tokens.size() - 1; i++)
-          vector[i] = Float.parseFloat(tokens.get(i));
+        for (int i = 1; i < tokens.size(); i++)
+          vector[i - 1] = Float.parseFloat(tokens.get(i));
 
         vectorSize.set(vector.length);
 
