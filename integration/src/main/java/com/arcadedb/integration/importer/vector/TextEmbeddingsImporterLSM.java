@@ -21,16 +21,13 @@ package com.arcadedb.integration.importer.vector;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.index.vector.HnswVectorIndexRAM;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.index.vector.VectorUtils;
-import com.arcadedb.index.vector.distance.DistanceFunctionFactory;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
-import com.arcadedb.schema.Type;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DateUtils;
-import com.github.jelmerk.knn.DistanceFunction;
 
 import java.io.*;
 import java.util.*;
@@ -38,51 +35,44 @@ import java.util.concurrent.atomic.*;
 import java.util.stream.*;
 
 /**
- * Imports Embeddings in arbitrary dimensions.
- *
- * Deprecated, use TextEmbeddingsImporterLSM instead.
+ * Imports Embeddings using LSMVector index instead of HNSW.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-@Deprecated
-public class TextEmbeddingsImporter {
+public class TextEmbeddingsImporterLSM {
   private final    InputStream      inputStream;
   private final    ImporterSettings settings;
   private final    ConsoleLogger    logger;
-  private          int              m;
-  private          int              ef;
-  private          int              efConstruction;
-  private          boolean          normalizeVectors    = false;
+  private          boolean          normalizeVectors  = false;
   private          String           databasePath;
-  private          boolean          overwriteDatabase   = false;
-  private          long             errors              = 0L;
-  private          long             warnings            = 0L;
+  private          boolean          overwriteDatabase = false;
+  private          long             errors            = 0L;
+  private          long             warnings          = 0L;
   private          DatabaseFactory  factory;
   private          Database         database;
   private          long             beginTime;
-  private          boolean          error               = false;
-  private          ImporterContext  context             = new ImporterContext();
+  private          boolean          error             = false;
+  private          ImporterContext  context           = new ImporterContext();
   private          String           vectorTypeName;
-  private          String           distanceFunctionName;
+  private          String           similarityFunctionName;
   private          String           vectorPropertyName;
-  private          String           idPropertyName      = "name";
-  private          String           deletedPropertyName = "deleted";
-  private volatile long             embeddingsParsed    = 0L;
-  private volatile long             indexedEmbedding    = 0L;
-  private volatile long             verticesCreated     = 0L;
-  private volatile long             verticesConnected   = 0L;
+  private          String           idPropertyName    = "name";
+  private          int              maxConnections    = 16;
+  private          int              beamWidth         = 100;
+  private volatile long             embeddingsParsed  = 0L;
+  private volatile long             verticesCreated   = 0L;
 
-  public TextEmbeddingsImporter(final DatabaseInternal database, final InputStream inputStream, final ImporterSettings settings)
-      throws ClassNotFoundException {
+  public TextEmbeddingsImporterLSM(final DatabaseInternal database, final InputStream inputStream,
+      final ImporterSettings settings) {
     this.settings = settings;
     this.database = database;
     this.databasePath = database.getDatabasePath();
     this.inputStream = inputStream;
     this.logger = new ConsoleLogger(settings.verboseLevel);
 
-    distanceFunctionName = settings.getValue("distanceFunction", "InnerProduct");
-    distanceFunctionName =
-        Character.toUpperCase(distanceFunctionName.charAt(0)) + distanceFunctionName.substring(1).toLowerCase(Locale.ENGLISH);
+    similarityFunctionName = settings.getValue("distanceFunction", "Cosine");
+    similarityFunctionName =
+        Character.toUpperCase(similarityFunctionName.charAt(0)) + similarityFunctionName.substring(1).toLowerCase(Locale.ENGLISH);
 
     vectorTypeName = settings.getValue("vectorType", "Float");
     // USE CAMEL CASE FOR THE VECTOR TYPE
@@ -94,12 +84,8 @@ public class TextEmbeddingsImporter {
     if (settings.options.containsKey("idProperty"))
       this.idPropertyName = settings.getValue("idProperty", null);
 
-    if (settings.options.containsKey("deletedProperty"))
-      this.deletedPropertyName = settings.getValue("deletedProperty", null);
-
-    this.m = settings.getIntValue("m", 16);
-    this.ef = settings.getIntValue("ef", 256);
-    this.efConstruction = settings.getIntValue("efConstruction", 256);
+    this.maxConnections = settings.getIntValue("m", 16);
+    this.beamWidth = settings.getIntValue("beamWidth", 100);
 
     if (settings.options.containsKey("normalizeVectors"))
       this.normalizeVectors = Boolean.parseBoolean(settings.getValue("normalizeVectors", null));
@@ -108,9 +94,6 @@ public class TextEmbeddingsImporter {
   public Database run() throws IOException, ClassNotFoundException, InterruptedException {
     if (!createDatabase())
       return null;
-
-    final DistanceFunction distanceFunction = DistanceFunctionFactory.getImplementationByName(
-        vectorTypeName + distanceFunctionName);
 
     beginTime = System.currentTimeMillis();
 
@@ -126,29 +109,68 @@ public class TextEmbeddingsImporter {
 
       logger.logLine(2, "- Parsed %,d embeddings with %,d dimensions in RAM", texts.size(), dimensions);
 
-      final HnswVectorIndexRAM<String, float[], TextFloatsEmbedding, Float> hnswIndex = HnswVectorIndexRAM.newBuilder(dimensions,
-          distanceFunction,
-          texts.size()).withM(m).withEf(ef).withEfConstruction(efConstruction).build();
-
-      hnswIndex.addAll(texts, Runtime.getRuntime().availableProcessors(), (workDone, max) -> ++indexedEmbedding, 1);
-
-      Type vectorPropertyType = switch (vectorTypeName) {
-        case "Short" -> Type.ARRAY_OF_SHORTS;
-        case "Integer" -> Type.ARRAY_OF_INTEGERS;
-        case "Long" -> Type.ARRAY_OF_LONGS;
-        case "Float" -> Type.ARRAY_OF_FLOATS;
-        case "Double" -> Type.ARRAY_OF_DOUBLES;
-        default -> throw new IllegalArgumentException("Type '" + vectorTypeName + "' not supported");
+      // Normalize similarity function name for SQL
+      final String normalizedSimilarity = switch (similarityFunctionName) {
+        case "Cosine" -> "COSINE";
+        case "Euclidean" -> "EUCLIDEAN";
+        case "Dot_product", "Dotproduct" -> "DOT_PRODUCT";
+        default -> similarityFunctionName.toUpperCase(Locale.ENGLISH);
       };
 
-      hnswIndex.createPersistentIndex(database)//
-          .withVertexType(settings.vertexTypeName).withEdgeType(settings.edgeTypeName)
-          .withVectorProperty(vectorPropertyName, vectorPropertyType)
-          .withIdProperty(idPropertyName)//
-          .withDeletedProperty(deletedPropertyName)//
-          .withVertexCreationCallback((record, item, total) -> ++verticesCreated)//
-          .withCallback((record, total) -> ++verticesConnected)//
-          .withBatchSize(1000).create();
+      // Create vertex type and LSM_VECTOR index
+      database.transaction(() -> {
+        // Check if type exists first
+        if (!database.getSchema().existsType(settings.vertexTypeName)) {
+          database.command("sql", "CREATE VERTEX TYPE " + settings.vertexTypeName);
+        }
+
+        // Create properties
+        final var type = database.getSchema().getType(settings.vertexTypeName);
+        if (!type.existsProperty(idPropertyName)) {
+          database.command("sql", "CREATE PROPERTY " + settings.vertexTypeName + "." + idPropertyName + " STRING");
+        }
+        if (!type.existsProperty(vectorPropertyName)) {
+          database.command("sql", "CREATE PROPERTY " + settings.vertexTypeName + "." + vectorPropertyName + " ARRAY_OF_FLOATS");
+        }
+
+        // Create LSM_VECTOR index
+        final String indexName = settings.vertexTypeName + "[" + vectorPropertyName + "]";
+        try {
+          database.getSchema().getIndexByName(indexName);
+          // Index already exists
+        } catch (final Exception e) {
+          // Index doesn't exist, create it
+          database.command("sql", "CREATE INDEX ON " + settings.vertexTypeName + " (" + vectorPropertyName + ") LSM_VECTOR " +
+              "METADATA {dimensions: " + dimensions + ", similarity: '" + normalizedSimilarity + "', " +
+              "maxConnections: " + maxConnections + ", beamWidth: " + beamWidth + ", idPropertyName: '" + idPropertyName + "'}");
+        }
+      });
+
+      logger.logLine(2, "- Created schema and LSM_VECTOR index");
+
+      // Insert all embeddings
+      final int batchSize = 1000;
+      for (int i = 0; i < texts.size(); i += batchSize) {
+        final int start = i;
+        final int end = Math.min(i + batchSize, texts.size());
+
+        database.transaction(() -> {
+          for (int j = start; j < end; j++) {
+            final TextFloatsEmbedding embedding = texts.get(j);
+            final MutableDocument vertex = database.newVertex(settings.vertexTypeName);
+            vertex.set(idPropertyName, embedding.id());
+            vertex.set(vectorPropertyName, embedding.vector());
+            vertex.save();
+            ++verticesCreated;
+          }
+        });
+
+        if ((i / batchSize) % 10 == 0) {
+          logger.logLine(2, "- Inserted %,d / %,d vertices", verticesCreated, texts.size());
+        }
+      }
+
+      logger.logLine(2, "- Inserted all %,d vertices with vector index", verticesCreated);
     }
 
     logger.logLine(1, "***************************************************************************************************");
@@ -156,6 +178,7 @@ public class TextEmbeddingsImporter {
         DateUtils.formatElapsed((System.currentTimeMillis() - beginTime)), errors, warnings);
     logger.logLine(1, "\nSUMMARY\n");
     logger.logLine(1, "- Embeddings.................................: %,d", texts.size());
+    logger.logLine(1, "- Vertices created...........................: %,d", verticesCreated);
     logger.logLine(1, "***************************************************************************************************");
     logger.logLine(1, "");
 
@@ -169,23 +192,15 @@ public class TextEmbeddingsImporter {
 
   public void printProgress() {
     float progressPerc = 0F;
-    if (verticesConnected > 0)
-      progressPerc = 40F + (verticesConnected * 60F / embeddingsParsed); // 60% OF THE TOTAL PROCESS
-    else if (verticesCreated > 0)
-      progressPerc = 10F + (verticesCreated * 30F / embeddingsParsed); // 30% OF THE TOTAL PROCESS
-    else if (indexedEmbedding > 0)
-      progressPerc = indexedEmbedding * 10F / embeddingsParsed; // 10% OF THE TOTAL PROCESS
+    if (verticesCreated > 0 && embeddingsParsed > 0)
+      progressPerc = (verticesCreated * 100F / embeddingsParsed);
 
     String result = "- %.2f%%".formatted(progressPerc);
 
     if (embeddingsParsed > 0)
       result += " - %,d embeddings parsed".formatted(embeddingsParsed);
-    if (indexedEmbedding > 0)
-      result += " - %,d embeddings indexed".formatted(indexedEmbedding);
     if (verticesCreated > 0)
       result += " - %,d vertices created".formatted(verticesCreated);
-    if (verticesConnected > 0)
-      result += " - %,d vertices connected".formatted(verticesConnected);
 
     result += " (elapsed " + DateUtils.formatElapsed(System.currentTimeMillis() - beginTime) + ")";
 
@@ -221,7 +236,7 @@ public class TextEmbeddingsImporter {
     return context;
   }
 
-  public TextEmbeddingsImporter setContext(final ImporterContext context) {
+  public TextEmbeddingsImporterLSM setContext(final ImporterContext context) {
     this.context = context;
     return this;
   }
@@ -243,8 +258,8 @@ public class TextEmbeddingsImporter {
         String word = tokens.getFirst();
 
         float[] vector = new float[tokens.size() - 1];
-        for (int i = 1; i < tokens.size() - 1; i++)
-          vector[i] = Float.parseFloat(tokens.get(i));
+        for (int i = 1; i < tokens.size(); i++)
+          vector[i - 1] = Float.parseFloat(tokens.get(i));
 
         vectorSize.set(vector.length);
 

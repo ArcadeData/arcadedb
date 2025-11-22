@@ -59,9 +59,8 @@ public class TransactionIndexContext {
     public boolean equals(final Object o) {
       if (this == o)
         return true;
-      if (!(o instanceof IndexKey))
+      if (!(o instanceof IndexKey indexKey))
         return false;
-      final IndexKey indexKey = (IndexKey) o;
       if (unique)
         return Arrays.equals(keyValues, indexKey.keyValues);
       return Objects.equals(rid, indexKey.rid) && Arrays.equals(keyValues, indexKey.keyValues);
@@ -114,17 +113,17 @@ public class TransactionIndexContext {
           return 1;
         } else if (v2 == null) {
           return -1;
-        } else if (v1 instanceof List list && v2 instanceof List list1) {
+        } else if (v1 instanceof List<?> list && v2 instanceof List<?> list1) {
 
           return CollectionUtils.compare(list, list1);
 
-        } else if (v1 instanceof List l1) {
+        } else if (v1 instanceof List<?> l1) {
           for (int j = 0; j < l1.size(); j++) {
             cmp = j > 0 ? 1 : BinaryComparator.compareTo(l1.get(j), v2);
             if (cmp != 0)
               return cmp;
           }
-        } else if (v2 instanceof List l2) {
+        } else if (v2 instanceof List<?> l2) {
           for (int j = 0; j < l2.size(); j++) {
             cmp = j > 0 ? -1 : BinaryComparator.compareTo(v1, l2.get(j));
             if (cmp != 0)
@@ -151,7 +150,7 @@ public class TransactionIndexContext {
   public int getTotalEntries() {
     int total = 0;
     for (final Map<ComparableKey, Map<IndexKey, IndexKey>> entry : indexEntries.values()) {
-      total += entry.values().size();
+      total += entry.values().stream().mapToInt(Map::size).sum();
     }
     return total;
   }
