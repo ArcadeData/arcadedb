@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.BucketIndexBuilder;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.LSMVectorIndexBuilder;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.ManualIndexBuilder;
 import com.arcadedb.schema.Schema;
@@ -42,15 +43,9 @@ import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.VectorIndexBuilder;
 import com.arcadedb.schema.VertexType;
 
-import java.time.ZoneId;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.TimeZone;
-import java.util.stream.Collectors;
+import java.time.*;
+import java.util.*;
+import java.util.stream.*;
 
 /**
  * Remote Schema implementation used by Remote Database. The types are loaded from the server the first time
@@ -268,9 +263,13 @@ public class RemoteSchema implements Schema {
     throw new UnsupportedOperationException();
   }
 
-  @Deprecated
   @Override
   public VectorIndexBuilder buildVectorIndex() {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public LSMVectorIndexBuilder buildLSMVectorIndex(String typeName, String[] propertyNames) {
     throw new UnsupportedOperationException();
   }
 

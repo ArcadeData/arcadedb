@@ -26,6 +26,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
@@ -61,6 +62,8 @@ public class CreateIndexStatement extends DDLStatement {
     case "FULL_TEXT" -> {}
     case "UNIQUE" -> {}
     case "NOTUNIQUE" -> {}
+    case "HNSW" -> {}
+    case "LSM_VECTOR" -> {}
     default -> throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
     }
   }
@@ -104,25 +107,50 @@ public class CreateIndexStatement extends DDLStatement {
     } else if (typeAsString.equalsIgnoreCase("HNSW")) {
       indexType = Schema.INDEX_TYPE.HNSW;
       unique = true;
+    } else if (typeAsString.equalsIgnoreCase("LSM_VECTOR")) {
+      indexType = Schema.INDEX_TYPE.LSM_VECTOR;
+      unique = false;
     } else
       throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
 
     final AtomicLong total = new AtomicLong();
 
-    database.getSchema().buildTypeIndex(typeName.getStringValue(), fields)
-        .withType(indexType)
-        .withIgnoreIfExists(ifNotExists)
-        .withUnique(unique)
-        .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE)
-        .withNullStrategy(nullStrategy)
-        .withCallback((document, totalIndexed) -> {
-          total.incrementAndGet();
+    // Handle LSM_VECTOR index creation separately
+    if (indexType == Schema.INDEX_TYPE.LSM_VECTOR) {
+      if (metadata == null)
+        throw new CommandSQLParsingException("LSM_VECTOR index requires METADATA with dimensions, similarity, maxConnections, and beamWidth");
 
-          if (totalIndexed % 100000 == 0) {
-            System.out.print(".");
-            System.out.flush();
-          }
-        }).create();
+      final Map<String, Object> metadataMap = metadata.toMap((Result) null, context);
+      final com.arcadedb.serializer.json.JSONObject jsonMetadata = new com.arcadedb.serializer.json.JSONObject(metadataMap);
+
+      final com.arcadedb.schema.LSMVectorIndexBuilder builder = database.getSchema().buildLSMVectorIndex(typeName.getStringValue(), fields);
+      builder.withIndexName(name.getValue());
+      builder.withIgnoreIfExists(ifNotExists);
+      builder.withMetadata(jsonMetadata);
+      builder.withCallback((document, totalIndexed) -> {
+        total.incrementAndGet();
+        if (totalIndexed % 100000 == 0) {
+          System.out.print(".");
+          System.out.flush();
+        }
+      });
+      builder.create();
+    } else {
+      database.getSchema().buildTypeIndex(typeName.getStringValue(), fields)
+          .withType(indexType)
+          .withIgnoreIfExists(ifNotExists)
+          .withUnique(unique)
+          .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE)
+          .withNullStrategy(nullStrategy)
+          .withCallback((document, totalIndexed) -> {
+            total.incrementAndGet();
+
+            if (totalIndexed % 100000 == 0) {
+              System.out.print(".");
+              System.out.flush();
+            }
+          }).create();
+    }
 
     typeName = prevName;
 

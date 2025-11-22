@@ -68,6 +68,8 @@ public interface Schema {
 
   VectorIndexBuilder buildVectorIndex();
 
+  LSMVectorIndexBuilder buildLSMVectorIndex(String typeName, String[] propertyNames);
+
   TypeIndex createTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String typeName, String... propertyNames);
 
   /**
@@ -373,6 +375,6 @@ public interface Schema {
   FunctionDefinition getFunction(String libraryName, String functionName) throws IllegalArgumentException;
 
   enum INDEX_TYPE {
-    LSM_TREE, FULL_TEXT, HNSW
+    LSM_TREE, FULL_TEXT, HNSW, LSM_VECTOR
   }
 }
