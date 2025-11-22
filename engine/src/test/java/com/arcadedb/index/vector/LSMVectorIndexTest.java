@@ -418,7 +418,7 @@ public class LSMVectorIndexTest extends TestHelper {
 
     // Second query should be significantly faster (no rebuild overhead)
     // Note: This is a heuristic test, may be flaky in CI
-    System.out.println("Rebuild time: " + rebuildTime + "ms, No rebuild time: " + noRebuildTime + "ms");
+    //System.out.println("Rebuild time: " + rebuildTime + "ms, No rebuild time: " + noRebuildTime + "ms");
   }
 
   @Test
@@ -466,15 +466,15 @@ public class LSMVectorIndexTest extends TestHelper {
       });
 
       // Check if pages increased
-      if (lsmIndex.getCurrentMutablePages() > initialPages) {
-        System.out.println("After batch " + batch + ": mutablePages=" + lsmIndex.getCurrentMutablePages() +
-            ", threshold=" + threshold);
-      }
+//      if (lsmIndex.getCurrentMutablePages() > initialPages) {
+//        System.out.println("After batch " + batch + ": mutablePages=" + lsmIndex.getCurrentMutablePages() +
+//            ", threshold=" + threshold);
+//      }
     }
 
     final int finalPages = lsmIndex.getCurrentMutablePages();
-    System.out.println("Initial pages: " + initialPages + ", Final pages: " + finalPages +
-        ", Threshold: " + threshold);
+//    System.out.println("Initial pages: " + initialPages + ", Final pages: " + finalPages +
+//        ", Threshold: " + threshold);
 
     // Verify that compaction would have been triggered
     Assertions.assertTrue(finalPages >= threshold || initialPages >= threshold,

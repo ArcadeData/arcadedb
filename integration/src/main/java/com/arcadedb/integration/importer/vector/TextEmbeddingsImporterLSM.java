@@ -142,7 +142,7 @@ public class TextEmbeddingsImporterLSM {
           // Index doesn't exist, create it
           database.command("sql", "CREATE INDEX ON " + settings.vertexTypeName + " (" + vectorPropertyName + ") LSM_VECTOR " +
               "METADATA {dimensions: " + dimensions + ", similarity: '" + normalizedSimilarity + "', " +
-              "maxConnections: " + maxConnections + ", beamWidth: " + beamWidth + "}");
+              "maxConnections: " + maxConnections + ", beamWidth: " + beamWidth + ", idPropertyName: '" + idPropertyName + "'}");
         }
       });
 
