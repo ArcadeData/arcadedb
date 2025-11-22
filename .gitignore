@@ -552,3 +552,7 @@ dist
 .venv/
 .vscode/
 @*
+
+# Test artifacts
+*.lsmvecidx
+*.metadata.json
