@@ -150,7 +150,7 @@ public class TransactionIndexContext {
   public int getTotalEntries() {
     int total = 0;
     for (final Map<ComparableKey, Map<IndexKey, IndexKey>> entry : indexEntries.values()) {
-      total += entry.size();
+      total += entry.values().stream().mapToInt(Map::size).sum();
     }
     return total;
   }
