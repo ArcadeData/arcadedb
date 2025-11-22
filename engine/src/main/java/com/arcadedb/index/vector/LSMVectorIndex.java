@@ -568,6 +568,134 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
     return page;
   }
 
+  /**
+   * Search for k nearest neighbors to the given vector and return results with similarity scores.
+   * This method is similar to HnswVectorIndex.findNeighborsFromVector and avoids the need to
+   * recalculate distances after the search.
+   *
+   * @param queryVector The query vector to search for
+   * @param k The number of neighbors to return
+   * @return List of pairs containing RID and similarity score
+   */
+  public List<com.arcadedb.utility.Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k) {
+    if (queryVector == null)
+      throw new IllegalArgumentException("Query vector cannot be null");
+
+    if (queryVector.length != dimensions)
+      throw new IllegalArgumentException(
+          "Query vector dimension " + queryVector.length + " does not match index dimension " + dimensions);
+
+    lock.readLock().lock();
+    try {
+      // Lazy rebuild: If graph index is dirty, rebuild it before searching
+      if (graphIndexDirty.get()) {
+        lock.readLock().unlock();
+        lock.writeLock().lock();
+        try {
+          // Double-check after acquiring write lock
+          if (graphIndexDirty.get()) {
+            LogManager.instance().log(this, Level.INFO,
+                "Graph index is dirty, rebuilding from " + vectorRegistry.size() + " vectors");
+            initializeGraphIndex();
+            graphIndexDirty.set(false);
+          }
+          // Downgrade to read lock
+          lock.readLock().lock();
+        } finally {
+          lock.writeLock().unlock();
+        }
+      }
+
+      if (graphIndex == null || vectorRegistry.isEmpty()) {
+        return Collections.emptyList();
+      }
+
+      // Convert query vector to VectorFloat
+      final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
+
+      // Create RandomAccessVectorValues for scoring using the same ordinal mapping as the graph index
+      final RandomAccessVectorValues vectors = new RandomAccessVectorValues() {
+        @Override
+        public int size() {
+          return graphIndexOrdinalMapping != null ? graphIndexOrdinalMapping.size() : 0;
+        }
+
+        @Override
+        public int dimension() {
+          return dimensions;
+        }
+
+        @Override
+        public VectorFloat<?> getVector(int i) {
+          if (graphIndexOrdinalMapping == null || i < 0 || i >= graphIndexOrdinalMapping.size())
+            return null;
+          final VectorEntry entry = graphIndexOrdinalMapping.get(i);
+          return entry != null ? vts.createFloatVector(entry.vector) : null;
+        }
+
+        @Override
+        public boolean isValueShared() {
+          return false;
+        }
+
+        @Override
+        public RandomAccessVectorValues copy() {
+          return this;
+        }
+      };
+
+      // Perform search
+      final SearchResult searchResult = GraphSearcher.search(
+          queryVectorFloat,
+          k,
+          vectors,
+          similarityFunction,
+          graphIndex,
+          Bits.ALL
+      );
+
+      // Extract RIDs and scores from search results using ordinal mapping
+      final List<com.arcadedb.utility.Pair<RID, Float>> results = new ArrayList<>();
+      for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
+        final int ordinal = nodeScore.node;
+        if (graphIndexOrdinalMapping != null && ordinal >= 0 && ordinal < graphIndexOrdinalMapping.size()) {
+          final VectorEntry entry = graphIndexOrdinalMapping.get(ordinal);
+          if (entry != null && !entry.deleted) {
+            // JVector returns similarity scores - convert to distance based on similarity function
+            final float score = nodeScore.score;
+            final float distance;
+            switch (similarityFunction) {
+              case COSINE:
+                // For cosine, similarity is in [-1, 1], distance is 1 - similarity
+                distance = 1.0f - score;
+                break;
+              case EUCLIDEAN:
+                // For euclidean, the score is already the distance
+                distance = score;
+                break;
+              case DOT_PRODUCT:
+                // For dot product, higher score is better (closer), so negate it
+                distance = -score;
+                break;
+              default:
+                distance = score;
+            }
+            results.add(new com.arcadedb.utility.Pair<>(entry.rid, distance));
+          }
+        }
+      }
+
+      LogManager.instance().log(this, Level.FINE, "Vector search returned " + results.size() + " results");
+      return results;
+
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error performing vector search", e);
+      throw new IndexException("Error performing vector search", e);
+    } finally {
+      lock.readLock().unlock();
+    }
+  }
+
   @Override
   public IndexCursor get(final Object[] keys) {
     return get(keys, -1);
