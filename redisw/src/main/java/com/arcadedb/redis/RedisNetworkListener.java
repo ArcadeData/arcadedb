@@ -62,7 +62,13 @@ public class RedisNetworkListener extends Thread {
 
           // CREATE A NEW PROTOCOL INSTANCE
           final RedisNetworkExecutor connection = new RedisNetworkExecutor(server, socket);
-          connection.start();
+
+          // Use virtual threads if configured, otherwise use platform threads
+          if (server.getConfiguration().getValueAsBoolean(com.arcadedb.GlobalConfiguration.REDIS_USE_VIRTUAL_THREADS)) {
+            Thread.startVirtualThread(connection);
+          } else {
+            connection.start();
+          }
 
           if (callback != null)
             callback.connected();
