@@ -30,11 +30,13 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -57,6 +59,20 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
 
     // CREATE NEW TYPE
     final VertexType type1 = databases[0].getSchema().createVertexType("RuntimeVertex0");
+
+    // Wait a bit for schema change to propagate
+    Awaitility.await()
+        .atMost(5, TimeUnit.SECONDS)
+        .pollInterval(100, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          for (int i = 1; i < getServerCount(); i++) {
+            if (!getServer(i).getDatabase(getDatabaseName()).getSchema().existsType("RuntimeVertex0")) {
+              return false;
+            }
+          }
+          return true;
+        });
+
     for (int i = 0; i < getServerCount(); i++) {
       databases[i] = getServer(i).getDatabase(getDatabaseName());
       if (databases[i].isTransactionActive())
@@ -67,10 +83,38 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
 
     // CREATE NEW PROPERTY
     type1.createProperty("nameNotFoundInDictionary", Type.STRING);
+
+    // Wait for property to propagate
+    Awaitility.await()
+        .atMost(5, TimeUnit.SECONDS)
+        .pollInterval(100, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          for (int i = 1; i < getServerCount(); i++) {
+            if (getServer(i).getDatabase(getDatabaseName()).getSchema().getType("RuntimeVertex0").getProperty("nameNotFoundInDictionary") == null) {
+              return false;
+            }
+          }
+          return true;
+        });
+
     testOnAllServers((database) -> isInSchemaFile(database, "nameNotFoundInDictionary"));
 
     // CREATE NEW BUCKET
     final Bucket newBucket = databases[0].getSchema().createBucket("newBucket");
+
+    // Wait for bucket to propagate
+    Awaitility.await()
+        .atMost(5, TimeUnit.SECONDS)
+        .pollInterval(100, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          for (int i = 1; i < getServerCount(); i++) {
+            if (!getServer(i).getDatabase(getDatabaseName()).getSchema().existsBucket("newBucket")) {
+              return false;
+            }
+          }
+          return true;
+        });
+
     for (final Database database : databases)
       assertThat(database.getSchema().existsBucket("newBucket")).isTrue();
 
@@ -142,7 +186,32 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
   }
 
   private void testOnAllServers(final Callable<String, Database> callback) {
-    // CREATE NEW TYPE
+    // Wait for replication to complete on all servers
+    for (int i = 0; i < getServerCount(); i++) {
+      waitForReplicationIsCompleted(i);
+    }
+
+    // Additional wait to ensure schema files are flushed to disk
+    try {
+      Awaitility.await()
+          .atMost(10, TimeUnit.SECONDS)
+          .pollDelay(100, TimeUnit.MILLISECONDS)
+          .pollInterval(100, TimeUnit.MILLISECONDS)
+          .until(() -> {
+            // Verify all servers have synchronized schema
+            for (int i = 0; i < getServerCount(); i++) {
+              if (getServer(i).getHA() != null && !getServer(i).getHA().isLeader()) {
+                if (getServer(i).getHA().getMessagesInQueue() > 0) {
+                  return false;
+                }
+              }
+            }
+            return true;
+          });
+    } catch (org.awaitility.core.ConditionTimeoutException e) {
+      // Continue anyway, the file check below will catch any inconsistencies
+    }
+
     schemaFiles.clear();
     for (final Database database : databases) {
       try {
