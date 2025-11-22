@@ -23,7 +23,6 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
-import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
@@ -120,66 +119,18 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionAbstract {
       }
     }
 
-    // Perform vector search
-    final IndexCursor cursor = lsmIndex.get(new Object[] { queryVector }, limit);
-    final ArrayList<Object> result = new ArrayList<>();
+    // Perform vector search using the new method that returns scores directly
+    final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighborsFromVector(queryVector, limit);
+    final ArrayList<Object> result = new ArrayList<>(neighbors.size());
 
-    while (cursor.hasNext()) {
-      final Identifiable id = cursor.next();
-      if (id != null) {
-        final RID rid = id.getIdentity();
-        final Vertex vertex = rid.asVertex();
-
-        // Calculate distance (we don't have it from the cursor, so we'll compute it)
-        final Object vectorObj = vertex.get(lsmIndex.getPropertyNames().get(0));
-        if (vectorObj instanceof float[] vertexVector) {
-          final float distance = calculateDistance(queryVector, vertexVector, lsmIndex.getSimilarityFunction().name());
-          result.add(Map.of("vertex", vertex, "distance", distance));
-        }
-      }
+    for (final Pair<RID, Float> neighbor : neighbors) {
+      final RID rid = neighbor.getFirst();
+      final Vertex vertex = rid.asVertex();
+      final float distance = neighbor.getSecond();
+      result.add(Map.of("vertex", vertex, "distance", distance));
     }
 
     return result;
-  }
-
-  private float calculateDistance(final float[] v1, final float[] v2, final String similarityFunction) {
-    switch (similarityFunction) {
-    case "COSINE":
-      return 1.0f - cosineSimilarity(v1, v2);
-    case "EUCLIDEAN":
-      return euclideanDistance(v1, v2);
-    case "DOT_PRODUCT":
-      return -dotProduct(v1, v2); // Negative because higher dot product = closer
-    default:
-      return euclideanDistance(v1, v2);
-    }
-  }
-
-  private float cosineSimilarity(final float[] v1, final float[] v2) {
-    float dot = 0.0f, norm1 = 0.0f, norm2 = 0.0f;
-    for (int i = 0; i < v1.length; i++) {
-      dot += v1[i] * v2[i];
-      norm1 += v1[i] * v1[i];
-      norm2 += v2[i] * v2[i];
-    }
-    return (float) (dot / (Math.sqrt(norm1) * Math.sqrt(norm2)));
-  }
-
-  private float euclideanDistance(final float[] v1, final float[] v2) {
-    float sum = 0.0f;
-    for (int i = 0; i < v1.length; i++) {
-      final float diff = v1[i] - v2[i];
-      sum += diff * diff;
-    }
-    return (float) Math.sqrt(sum);
-  }
-
-  private float dotProduct(final float[] v1, final float[] v2) {
-    float sum = 0.0f;
-    for (int i = 0; i < v1.length; i++) {
-      sum += v1[i] * v2[i];
-    }
-    return sum;
   }
 
   public String getSyntax() {

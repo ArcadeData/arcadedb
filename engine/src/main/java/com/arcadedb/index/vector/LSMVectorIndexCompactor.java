@@ -139,20 +139,30 @@ public class LSMVectorIndexCompactor {
 
   /**
    * Finds the last immutable page in the index.
+   * Scans pages from the end backwards and stops at the first immutable page.
    * Mutable pages (still being written) are skipped for compaction.
    */
   private static int findLastImmutablePage(final LSMVectorIndex mainIndex, final int totalPages) {
     final DatabaseInternal database = mainIndex.getDatabase();
     int lastImmutablePage = -1;
 
+    // Start from the end and work backwards, stopping at the first immutable page
     for (int pageIndex = totalPages - 1; pageIndex >= 1; --pageIndex) {
       try {
         final BasePage page = database.getTransaction().getPage(new PageId(database, mainIndex.getFileId(), pageIndex),
             mainIndex.getPageSize());
-        // For vector pages, all pages after page 0 are data pages (no mutable flag currently)
-        // We consider all existing pages as candidates for compaction
-        lastImmutablePage = pageIndex;
-        break;
+        final ByteBuffer buffer = page.getContent();
+        
+        // Read the mutable flag (OFFSET_MUTABLE = 8, after offsetFreeContent and numberOfEntries)
+        buffer.position(LSMVectorIndex.OFFSET_MUTABLE);
+        final byte mutable = buffer.get();
+        
+        if (mutable == 0) {
+          // Found an immutable page, this is the last one to compact
+          lastImmutablePage = pageIndex;
+          break;
+        }
+        // Otherwise, this page is still mutable, skip it and continue backwards
       } catch (final Exception e) {
         // Page might not exist yet, continue
       }
@@ -194,16 +204,17 @@ public class LSMVectorIndexCompactor {
       final ByteBuffer buffer = page.getContent();
 
       // Read page header
-      final int offsetFreeContent = buffer.getInt(0);
-      final int numberOfEntries = buffer.getInt(4);
+      final int offsetFreeContent = buffer.getInt(LSMVectorIndex.OFFSET_FREE_CONTENT);
+      final int numberOfEntries = buffer.getInt(LSMVectorIndex.OFFSET_NUM_ENTRIES);
+      final byte mutable = buffer.get(LSMVectorIndex.OFFSET_MUTABLE); // Read mutable flag (for validation)
 
       if (numberOfEntries == 0)
         continue;
 
-      // Read pointer table
+      // Read pointer table (starts at HEADER_BASE_SIZE offset)
       final int[] pointers = new int[numberOfEntries];
       for (int i = 0; i < numberOfEntries; i++) {
-        pointers[i] = buffer.getInt(8 + (i * 4));
+        pointers[i] = buffer.getInt(LSMVectorIndex.HEADER_BASE_SIZE + (i * 4));
       }
 
       // Read entries

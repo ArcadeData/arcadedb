@@ -74,6 +74,12 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
   public static final  int               DEF_PAGE_SIZE   = 262_144;
   private static final VectorTypeSupport vts             = VectorizationProvider.getInstance().getVectorTypeSupport();
 
+  // Page header layout constants
+  public static final int OFFSET_FREE_CONTENT = 0;  // 4 bytes
+  public static final int OFFSET_NUM_ENTRIES = 4;   // 4 bytes
+  public static final int OFFSET_MUTABLE = 8;       // 1 byte
+  public static final int HEADER_BASE_SIZE = 9;     // offsetFreeContent(4) + numberOfEntries(4) + mutable(1)
+
   private final int                      dimensions;
   private final VectorSimilarityFunction similarityFunction;
   private final int                      maxConnections;
@@ -413,16 +419,17 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
         pageBuffer.position(0);
 
         // Read page header
-        final int offsetFreeContent = pageBuffer.getInt();
-        final int numberOfEntries = pageBuffer.getInt();
+        final int offsetFreeContent = pageBuffer.getInt(OFFSET_FREE_CONTENT);
+        final int numberOfEntries = pageBuffer.getInt(OFFSET_NUM_ENTRIES);
+        final byte mutable = pageBuffer.get(OFFSET_MUTABLE); // Read mutable flag (but don't use it during loading)
 
         if (numberOfEntries == 0)
           continue; // Empty page
 
-        // Read pointer table
+        // Read pointer table (starts at HEADER_BASE_SIZE offset)
         final int[] pointers = new int[numberOfEntries];
         for (int i = 0; i < numberOfEntries; i++) {
-          pointers[i] = pageBuffer.getInt();
+          pointers[i] = pageBuffer.getInt(HEADER_BASE_SIZE + (i * 4));
         }
 
         // Read entries using pointers
@@ -508,19 +515,21 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
         ByteBuffer pageBuffer = currentPage.getContent();
 
         // Read page header
-        int offsetFreeContent = pageBuffer.getInt(0);
-        int numberOfEntries = pageBuffer.getInt(4);
+        int offsetFreeContent = pageBuffer.getInt(OFFSET_FREE_CONTENT);
+        int numberOfEntries = pageBuffer.getInt(OFFSET_NUM_ENTRIES);
 
         // Calculate space needed
-        final int headerSize = 8 + ((numberOfEntries + 1) * 4); // offsetFree + count + pointers
+        final int headerSize = HEADER_BASE_SIZE + ((numberOfEntries + 1) * 4); // base header + pointers
         final int availableSpace = offsetFreeContent - headerSize;
 
         if (availableSpace < entrySize) {
-          // Page is full, create a new page
+          // Page is full, mark it as immutable before creating a new page
+          pageBuffer.put(OFFSET_MUTABLE, (byte) 0); // mutable = 0 (page is no longer being written to)
+          
           lastPageNum++;
           currentPage = createNewVectorDataPage(lastPageNum);
           pageBuffer = currentPage.getContent();
-          offsetFreeContent = pageBuffer.getInt(0);
+          offsetFreeContent = pageBuffer.getInt(OFFSET_FREE_CONTENT);
           numberOfEntries = 0;
         }
 
@@ -536,14 +545,14 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
         }
         pageBuffer.put((byte) (entry.deleted ? 1 : 0));
 
-        // Add pointer to entry in header
-        pageBuffer.putInt(8 + (numberOfEntries * 4), entryOffset);
+        // Add pointer to entry in header (at HEADER_BASE_SIZE offset)
+        pageBuffer.putInt(HEADER_BASE_SIZE + (numberOfEntries * 4), entryOffset);
 
         // Update page header
         numberOfEntries++;
         offsetFreeContent = entryOffset;
-        pageBuffer.putInt(0, offsetFreeContent);
-        pageBuffer.putInt(4, numberOfEntries);
+        pageBuffer.putInt(OFFSET_FREE_CONTENT, offsetFreeContent);
+        pageBuffer.putInt(OFFSET_NUM_ENTRIES, numberOfEntries);
       }
 
     } catch (final Exception e) {
@@ -554,7 +563,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
   /**
    * Create a new vector data page with LSM-style header.
-   * Page layout: [offsetFreeContent(4)][numberOfEntries(4)][pointers...]...[entries from tail]
+   * Page layout: [offsetFreeContent(4)][numberOfEntries(4)][mutable(1)][pointers...]...[entries from tail]
    */
   private BasePage createNewVectorDataPage(final int pageNum) {
     final PageId pageId = new PageId(database, getFileId(), pageNum);
@@ -564,11 +573,140 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
     buffer.position(0);
     buffer.putInt(getPageSize()); // offsetFreeContent starts at end of page
     buffer.putInt(0);              // numberOfEntries = 0
+    buffer.put((byte) 1);          // mutable = 1 (page is actively being written to)
 
     // Track mutable pages for compaction trigger
     currentMutablePages.incrementAndGet();
 
     return page;
+  }
+
+  /**
+   * Search for k nearest neighbors to the given vector and return results with similarity scores.
+   * This method is similar to HnswVectorIndex.findNeighborsFromVector and avoids the need to
+   * recalculate distances after the search.
+   *
+   * @param queryVector The query vector to search for
+   * @param k The number of neighbors to return
+   * @return List of pairs containing RID and similarity score
+   */
+  public List<com.arcadedb.utility.Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k) {
+    if (queryVector == null)
+      throw new IllegalArgumentException("Query vector cannot be null");
+
+    if (queryVector.length != dimensions)
+      throw new IllegalArgumentException(
+          "Query vector dimension " + queryVector.length + " does not match index dimension " + dimensions);
+
+    lock.readLock().lock();
+    try {
+      // Lazy rebuild: If graph index is dirty, rebuild it before searching
+      if (graphIndexDirty.get()) {
+        lock.readLock().unlock();
+        lock.writeLock().lock();
+        try {
+          // Double-check after acquiring write lock
+          if (graphIndexDirty.get()) {
+            LogManager.instance().log(this, Level.INFO,
+                "Graph index is dirty, rebuilding from " + vectorRegistry.size() + " vectors");
+            initializeGraphIndex();
+            graphIndexDirty.set(false);
+          }
+          // Downgrade to read lock
+          lock.readLock().lock();
+        } finally {
+          lock.writeLock().unlock();
+        }
+      }
+
+      if (graphIndex == null || vectorRegistry.isEmpty()) {
+        return Collections.emptyList();
+      }
+
+      // Convert query vector to VectorFloat
+      final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
+
+      // Create RandomAccessVectorValues for scoring using the same ordinal mapping as the graph index
+      final RandomAccessVectorValues vectors = new RandomAccessVectorValues() {
+        @Override
+        public int size() {
+          return graphIndexOrdinalMapping != null ? graphIndexOrdinalMapping.size() : 0;
+        }
+
+        @Override
+        public int dimension() {
+          return dimensions;
+        }
+
+        @Override
+        public VectorFloat<?> getVector(int i) {
+          if (graphIndexOrdinalMapping == null || i < 0 || i >= graphIndexOrdinalMapping.size())
+            return null;
+          final VectorEntry entry = graphIndexOrdinalMapping.get(i);
+          return entry != null ? vts.createFloatVector(entry.vector) : null;
+        }
+
+        @Override
+        public boolean isValueShared() {
+          return false;
+        }
+
+        @Override
+        public RandomAccessVectorValues copy() {
+          return this;
+        }
+      };
+
+      // Perform search
+      final SearchResult searchResult = GraphSearcher.search(
+          queryVectorFloat,
+          k,
+          vectors,
+          similarityFunction,
+          graphIndex,
+          Bits.ALL
+      );
+
+      // Extract RIDs and scores from search results using ordinal mapping
+      final List<com.arcadedb.utility.Pair<RID, Float>> results = new ArrayList<>();
+      for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
+        final int ordinal = nodeScore.node;
+        if (graphIndexOrdinalMapping != null && ordinal >= 0 && ordinal < graphIndexOrdinalMapping.size()) {
+          final VectorEntry entry = graphIndexOrdinalMapping.get(ordinal);
+          if (entry != null && !entry.deleted) {
+            // JVector returns similarity scores - convert to distance based on similarity function
+            final float score = nodeScore.score;
+            final float distance;
+            switch (similarityFunction) {
+              case COSINE:
+                // For cosine, similarity is in [-1, 1], distance is 1 - similarity
+                distance = 1.0f - score;
+                break;
+              case EUCLIDEAN:
+                // For euclidean, the score is already the distance
+                distance = score;
+                break;
+              case DOT_PRODUCT:
+                // For dot product, higher score is better (closer), so negate it
+                distance = -score;
+                break;
+              default:
+                distance = score;
+            }
+            results.add(new com.arcadedb.utility.Pair<>(entry.rid, distance));
+          }
+        }
+      }
+
+      LogManager.instance().log(this, Level.FINE, "Vector search returned " + results.size() + " results");
+      return results;
+
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error performing vector search", e);
+      throw new IndexException("Error performing vector search", e);
+    } finally {
+      lock.readLock().unlock();
+    }
   }
 
   @Override
