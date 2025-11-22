@@ -48,6 +48,7 @@ public class LSMVectorIndexBuilder extends IndexBuilder<TypeIndex> {
   private VectorSimilarityFunction   similarityFunction = VectorSimilarityFunction.COSINE;
   private int                        maxConnections     = 16;
   private int                        beamWidth          = 100;
+  private String                     idPropertyName     = "id";
 
   public LSMVectorIndexBuilder(final DatabaseInternal database, final String typeName, final String[] propertyNames) {
     super(database, TypeIndex.class);
@@ -227,8 +228,27 @@ public class LSMVectorIndexBuilder extends IndexBuilder<TypeIndex> {
   }
 
   /**
+   * Sets the ID property name used to identify vertices.
+   * This property is used when searching for vertices by ID.
+   * Default is "id".
+   *
+   * @param idPropertyName the ID property name
+   *
+   * @return this builder
+   */
+  public LSMVectorIndexBuilder withIdProperty(final String idPropertyName) {
+    this.idPropertyName = idPropertyName;
+    return this;
+  }
+
+  /**
    * Configures the index from a metadata JSON object.
-   * Expected keys: dimensions, similarity, maxConnections, beamWidth
+   * Expected keys:
+   * - dimensions (required): number of vector dimensions
+   * - similarity (optional): similarity function (COSINE, DOT_PRODUCT, EUCLIDEAN), defaults to COSINE
+   * - maxConnections (optional): max connections per node in HNSW graph, defaults to 16
+   * - beamWidth (optional): beam width for search operations, defaults to 100
+   * - idPropertyName (optional): property name used to identify vertices, defaults to "id"
    *
    * @param metadata the metadata JSON
    *
@@ -246,6 +266,9 @@ public class LSMVectorIndexBuilder extends IndexBuilder<TypeIndex> {
 
     if (metadata.has("beamWidth"))
       this.beamWidth = metadata.getInt("beamWidth");
+
+    if (metadata.has("idPropertyName"))
+      this.idPropertyName = metadata.getString("idPropertyName");
 
     return this;
   }
@@ -273,6 +296,10 @@ public class LSMVectorIndexBuilder extends IndexBuilder<TypeIndex> {
 
   public int getBeamWidth() {
     return beamWidth;
+  }
+
+  public String getIdPropertyName() {
+    return idPropertyName;
   }
 
   public String getIndexName() {

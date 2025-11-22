@@ -87,6 +87,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
   private final String                   indexName;
   private final String                   typeName;
   private final String[]                 propertyNames;
+  private final String                   idPropertyName;
   private final ReentrantReadWriteLock   lock;
   private       int                      associatedBucketId;
 
@@ -227,6 +228,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
     this.similarityFunction = builder.getSimilarityFunction();
     this.maxConnections = builder.getMaxConnections();
     this.beamWidth = builder.getBeamWidth();
+    this.idPropertyName = builder.getIdPropertyName();
 
     this.lock = new ReentrantReadWriteLock();
     this.transactionContexts = new ConcurrentHashMap<>();
@@ -282,6 +284,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
     this.similarityFunction = VectorSimilarityFunction.valueOf(json.getString("similarityFunction", "COSINE"));
     this.maxConnections = json.getInt("maxConnections", 16);
     this.beamWidth = json.getInt("beamWidth", 100);
+    this.idPropertyName = json.getString("idPropertyName", "id");
 
     // Load property names
     final List<String> propList = new ArrayList<>();
@@ -1173,6 +1176,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
     json.put("similarityFunction", similarityFunction.name());
     json.put("maxConnections", maxConnections);
     json.put("beamWidth", beamWidth);
+    json.put("idPropertyName", idPropertyName);
     json.put("version", CURRENT_VERSION);
     return json;
   }
@@ -1274,6 +1278,10 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
   public int getBeamWidth() {
     return beamWidth;
+  }
+
+  public String getIdPropertyName() {
+    return idPropertyName;
   }
 
   /**
