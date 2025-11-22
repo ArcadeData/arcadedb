@@ -42,13 +42,13 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class LSMVectorIndexBuilder extends IndexBuilder<TypeIndex> {
-  private final String               typeName;
-  private final String[]             propertyNames;
-  private int                        dimensions;
-  private VectorSimilarityFunction   similarityFunction = VectorSimilarityFunction.COSINE;
-  private int                        maxConnections     = 16;
-  private int                        beamWidth          = 100;
-  private String                     idPropertyName     = "id";
+  private final String                   typeName;
+  private final String[]                 propertyNames;
+  private       int                      dimensions;
+  private       VectorSimilarityFunction similarityFunction = VectorSimilarityFunction.COSINE;
+  private       int                      maxConnections     = 16;
+  private       int                      beamWidth          = 100;
+  private       String                   idPropertyName     = "id";
 
   public LSMVectorIndexBuilder(final DatabaseInternal database, final String typeName, final String[] propertyNames) {
     super(database, TypeIndex.class);
@@ -68,6 +68,12 @@ public class LSMVectorIndexBuilder extends IndexBuilder<TypeIndex> {
    */
   public LSMVectorIndexBuilder withIndexName(final String indexName) {
     this.indexName = indexName;
+    return this;
+  }
+
+  @Override
+  public LSMVectorIndexBuilder withFilePath(String path) {
+    super.withFilePath(path);
     return this;
   }
 
@@ -300,13 +306,5 @@ public class LSMVectorIndexBuilder extends IndexBuilder<TypeIndex> {
 
   public String getIdPropertyName() {
     return idPropertyName;
-  }
-
-  public String getIndexName() {
-    return indexName;
-  }
-
-  public String getFilePath() {
-    return filePath;
   }
 }

@@ -25,6 +25,7 @@ import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.IndexCursor;
@@ -35,11 +36,13 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.LSMVectorIndexBuilder;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.LockManager;
 import io.github.jbellis.jvector.graph.GraphIndexBuilder;
 import io.github.jbellis.jvector.graph.GraphSearcher;
 import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
@@ -76,9 +79,9 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
   // Page header layout constants
   public static final int OFFSET_FREE_CONTENT = 0;  // 4 bytes
-  public static final int OFFSET_NUM_ENTRIES = 4;   // 4 bytes
-  public static final int OFFSET_MUTABLE = 8;       // 1 byte
-  public static final int HEADER_BASE_SIZE = 9;     // offsetFreeContent(4) + numberOfEntries(4) + mutable(1)
+  public static final int OFFSET_NUM_ENTRIES  = 4;   // 4 bytes
+  public static final int OFFSET_MUTABLE      = 8;       // 1 byte
+  public static final int HEADER_BASE_SIZE    = 9;     // offsetFreeContent(4) + numberOfEntries(4) + mutable(1)
 
   private final int                      dimensions;
   private final VectorSimilarityFunction similarityFunction;
@@ -587,7 +590,8 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
    * recalculate distances after the search.
    *
    * @param queryVector The query vector to search for
-   * @param k The number of neighbors to return
+   * @param k           The number of neighbors to return
+   *
    * @return List of pairs containing RID and similarity score
    */
   public List<com.arcadedb.utility.Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k) {
@@ -678,20 +682,20 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
             final float score = nodeScore.score;
             final float distance;
             switch (similarityFunction) {
-              case COSINE:
-                // For cosine, similarity is in [-1, 1], distance is 1 - similarity
-                distance = 1.0f - score;
-                break;
-              case EUCLIDEAN:
-                // For euclidean, the score is already the distance
-                distance = score;
-                break;
-              case DOT_PRODUCT:
-                // For dot product, higher score is better (closer), so negate it
-                distance = -score;
-                break;
-              default:
-                distance = score;
+            case COSINE:
+              // For cosine, similarity is in [-1, 1], distance is 1 - similarity
+              distance = 1.0f - score;
+              break;
+            case EUCLIDEAN:
+              // For euclidean, the score is already the distance
+              distance = score;
+              break;
+            case DOT_PRODUCT:
+              // For dot product, higher score is better (closer), so negate it
+              distance = -score;
+              break;
+            default:
+              distance = score;
             }
             results.add(new com.arcadedb.utility.Pair<>(entry.rid, distance));
           }
@@ -1321,10 +1325,10 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
       throw new IllegalStateException("Cannot replace compacted index because a transaction is active");
 
     final int fileId = getFileId();
-    final com.arcadedb.utility.LockManager.LOCK_STATUS locked =
+    final LockManager.LOCK_STATUS locked =
         database.getTransactionManager().tryLockFile(fileId, 0, Thread.currentThread());
 
-    if (locked == com.arcadedb.utility.LockManager.LOCK_STATUS.NO)
+    if (locked == LockManager.LOCK_STATUS.NO)
       throw new IllegalStateException("Cannot replace compacted index because cannot lock index file " + fileId);
 
     final AtomicInteger lockedNewFileId = new AtomicInteger(-1);
@@ -1333,12 +1337,13 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
       lock.writeLock().lock();
       try {
         // Create new index file with compacted sub-index
-        final String newName = componentName + "_" + System.nanoTime();
-        final String newFilePath = database.getDatabasePath() + File.separator + newName;
+        final int last_ = componentName.lastIndexOf('_');
+        final String newName = componentName.substring(0, last_) + "_" + System.nanoTime();
 
         // Build metadata for new index
         final LSMVectorIndexBuilder builder = new LSMVectorIndexBuilder(database, typeName, propertyNames)
-            .withIndexName(indexName)
+            .withFilePath(database.getDatabasePath() + File.separator + indexName)
+            .withIndexName(newName)
             .withDimensions(dimensions)
             .withSimilarity(similarityFunction.name())
             .withMaxConnections(maxConnections)
@@ -1353,7 +1358,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
         database.getTransactionManager().tryLockFile(newIndex.getFileId(), 0, Thread.currentThread());
         lockedNewFileId.set(newIndex.getFileId());
 
-        final List<com.arcadedb.engine.MutablePage> modifiedPages = new ArrayList<>();
+        final List<MutablePage> modifiedPages = new ArrayList<>();
 
         // Copy remaining mutable pages from old index to new index
         final int pagesToCopy = getTotalPages() - startingFromPage;
@@ -1362,8 +1367,8 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
               .getPage(new PageId(database, fileId, i + startingFromPage), pageSize);
 
           // Copy the entire page content
-          final com.arcadedb.engine.MutablePage newPage =
-              new com.arcadedb.engine.MutablePage(new PageId(database, newIndex.getFileId(), i + 1), pageSize);
+          final MutablePage newPage =
+              new MutablePage(new PageId(database, newIndex.getFileId(), i + 1), pageSize);
 
           final ByteBuffer oldContent = currentPage.getContent();
           oldContent.rewind();
@@ -1378,7 +1383,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
         }
 
         // Update schema with file migration
-        ((com.arcadedb.schema.LocalSchema) database.getSchema()).setMigratedFileId(fileId, newIndex.getFileId());
+        ((LocalSchema) database.getSchema()).setMigratedFileId(fileId, newIndex.getFileId());
         database.getSchema().getEmbedded().saveConfiguration();
 
         LogManager.instance().log(this, Level.INFO,
@@ -1396,7 +1401,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
       if (lockedFile != -1)
         database.getTransactionManager().unlockFile(lockedFile, Thread.currentThread());
 
-      if (locked == com.arcadedb.utility.LockManager.LOCK_STATUS.YES)
+      if (locked == LockManager.LOCK_STATUS.YES)
         database.getTransactionManager().unlockFile(fileId, Thread.currentThread());
     }
   }
