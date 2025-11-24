@@ -1046,6 +1046,10 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   }
 
   @Override
+  public void applyMetadataFromSchema(JSONObject indexJSON) {
+  }
+
+  @Override
   public boolean setStatus(INDEX_STATUS[] expectedStatuses, INDEX_STATUS newStatus) {
     return false;
   }

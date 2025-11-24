@@ -268,11 +268,6 @@ public class RemoteSchema implements Schema {
     throw new UnsupportedOperationException();
   }
 
-  @Override
-  public LSMVectorIndexBuilder buildLSMVectorIndex(String typeName, String[] propertyNames) {
-    throw new UnsupportedOperationException();
-  }
-
   @Deprecated
   @Override
   public TypeBuilder<DocumentType> buildDocumentType() {

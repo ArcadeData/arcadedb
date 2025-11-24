@@ -371,7 +371,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public boolean setStatus(INDEX_STATUS[] expectedStatuses, INDEX_STATUS newStatus) {
+  public void applyMetadataFromSchema(final JSONObject indexJSON) {
+    throw new UnsupportedOperationException("applyMetadataFromSchema");
+  }
+
+  @Override
+  public boolean setStatus(final INDEX_STATUS[] expectedStatuses, final INDEX_STATUS newStatus) {
     return false;
   }
 

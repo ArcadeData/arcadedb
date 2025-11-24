@@ -41,6 +41,8 @@ public interface IndexInternal extends Index {
 
   boolean setStatus(INDEX_STATUS[] expectedStatuses, INDEX_STATUS newStatus);
 
+  void applyMetadataFromSchema(JSONObject indexJSON);
+
   void close();
 
   void drop();
