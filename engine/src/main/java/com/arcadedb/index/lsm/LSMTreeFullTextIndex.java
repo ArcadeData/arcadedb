@@ -36,16 +36,12 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.TokenStream;
-import org.apache.lucene.analysis.en.EnglishAnalyzer;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.atomic.*;
 
 /**
  * Full Text index implementation based on LSM-Tree index.
@@ -236,6 +232,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   @Override
   public boolean setStatus(final INDEX_STATUS[] expectedStatuses, final INDEX_STATUS newStatus) {
     return underlyingIndex.setStatus(expectedStatuses, newStatus);
+  }
+
+  @Override
+  public void applyMetadataFromSchema(final JSONObject indexJSON) {
+    underlyingIndex.applyMetadataFromSchema(indexJSON);
   }
 
   @Override

@@ -115,7 +115,27 @@ public class CreateIndexStatement extends DDLStatement {
 
     final AtomicLong total = new AtomicLong();
 
-    // Handle LSM_VECTOR index creation separately
+    // Use unified buildTypeIndex() API for all index types
+    com.arcadedb.schema.TypeIndexBuilder builder = database.getSchema().buildTypeIndex(typeName.getStringValue(), fields);
+    builder = builder.withType(indexType);  // This may return LSMVectorIndexBuilder for LSM_VECTOR
+
+    // Set index name if provided
+    if (name != null)
+      builder.withIndexName(name.getValue());
+
+    builder.withIgnoreIfExists(ifNotExists);
+    builder.withUnique(unique);
+    builder.withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE);
+    builder.withNullStrategy(nullStrategy);
+    builder.withCallback((document, totalIndexed) -> {
+      total.incrementAndGet();
+      if (totalIndexed % 100000 == 0) {
+        System.out.print(".");
+        System.out.flush();
+      }
+    });
+
+    // Handle vector-specific metadata
     if (indexType == Schema.INDEX_TYPE.LSM_VECTOR) {
       if (metadata == null)
         throw new CommandSQLParsingException("LSM_VECTOR index requires METADATA with dimensions, similarity, maxConnections, and beamWidth");
@@ -123,34 +143,12 @@ public class CreateIndexStatement extends DDLStatement {
       final Map<String, Object> metadataMap = metadata.toMap((Result) null, context);
       final com.arcadedb.serializer.json.JSONObject jsonMetadata = new com.arcadedb.serializer.json.JSONObject(metadataMap);
 
-      final com.arcadedb.schema.LSMVectorIndexBuilder builder = database.getSchema().buildLSMVectorIndex(typeName.getStringValue(), fields);
-      builder.withIndexName(name.getValue());
-      builder.withIgnoreIfExists(ifNotExists);
-      builder.withMetadata(jsonMetadata);
-      builder.withCallback((document, totalIndexed) -> {
-        total.incrementAndGet();
-        if (totalIndexed % 100000 == 0) {
-          System.out.print(".");
-          System.out.flush();
-        }
-      });
-      builder.create();
-    } else {
-      database.getSchema().buildTypeIndex(typeName.getStringValue(), fields)
-          .withType(indexType)
-          .withIgnoreIfExists(ifNotExists)
-          .withUnique(unique)
-          .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE)
-          .withNullStrategy(nullStrategy)
-          .withCallback((document, totalIndexed) -> {
-            total.incrementAndGet();
-
-            if (totalIndexed % 100000 == 0) {
-              System.out.print(".");
-              System.out.flush();
-            }
-          }).create();
+      // Builder is now an LSMVectorIndexBuilder after withType(LSM_VECTOR)
+      final com.arcadedb.schema.LSMVectorIndexBuilder vectorBuilder = (com.arcadedb.schema.LSMVectorIndexBuilder) builder;
+      vectorBuilder.withMetadata(jsonMetadata);
     }
+
+    builder.create();
 
     typeName = prevName;
 

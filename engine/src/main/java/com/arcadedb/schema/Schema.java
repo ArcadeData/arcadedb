@@ -68,8 +68,6 @@ public interface Schema {
 
   VectorIndexBuilder buildVectorIndex();
 
-  LSMVectorIndexBuilder buildLSMVectorIndex(String typeName, String[] propertyNames);
-
   TypeIndex createTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String typeName, String... propertyNames);
 
   /**

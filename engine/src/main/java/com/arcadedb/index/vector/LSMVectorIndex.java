@@ -19,6 +19,7 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.BasePage;
@@ -28,6 +29,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
@@ -40,6 +42,7 @@ import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockManager;
@@ -71,7 +74,7 @@ import java.util.logging.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.index.Index, IndexInternal {
+public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
   public static final  String            FILE_EXT        = "lsmvecidx";
   public static final  int               CURRENT_VERSION = 0;
   public static final  int               DEF_PAGE_SIZE   = 262_144;
@@ -83,15 +86,16 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
   public static final int OFFSET_MUTABLE      = 8;       // 1 byte
   public static final int HEADER_BASE_SIZE    = 9;     // offsetFreeContent(4) + numberOfEntries(4) + mutable(1)
 
-  private final int                      dimensions;
-  private final VectorSimilarityFunction similarityFunction;
-  private final int                      maxConnections;
-  private final int                      beamWidth;
   private final String                   indexName;
-  private final String                   typeName;
-  private final String[]                 propertyNames;
-  private final String                   idPropertyName;
+  protected     LSMVectorIndexComponent  component;
   private final ReentrantReadWriteLock   lock;
+  private       int                      dimensions;
+  private       VectorSimilarityFunction similarityFunction;
+  private       int                      maxConnections;
+  private       int                      beamWidth;
+  private       String                   typeName;
+  private       List<String>             propertyNames;
+  private       String                   idPropertyName;
   private       int                      associatedBucketId;
 
   // Transaction support: pending operations are buffered per transaction
@@ -109,6 +113,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
   private final AtomicInteger           currentMutablePages;
   private final int                     minPagesToScheduleACompaction;
   private       LSMVectorIndexCompacted compactedSubIndex;
+  private       boolean                 valid = true;
 
   /**
    * Represents a vector entry with its RID and vector data
@@ -213,7 +218,8 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
     @Override
     public Component createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id,
         final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
-      return new LSMVectorIndex(database, name, filePath, id, mode, pageSize, version);
+      final LSMVectorIndex index = new LSMVectorIndex(database, name, filePath, id, mode, pageSize, version);
+      return index.component;
     }
   }
 
@@ -221,12 +227,12 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
    * Constructor for creating a new index
    */
   protected LSMVectorIndex(final LSMVectorIndexBuilder builder) throws IOException {
-    super(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(), FILE_EXT, ComponentFile.MODE.READ_WRITE,
-        DEF_PAGE_SIZE, CURRENT_VERSION);
+    LogManager.instance().log(this, Level.WARNING, "DEBUG: LSMVectorIndex constructor called for new index: %s",
+        builder.getIndexName());
 
     this.indexName = builder.getIndexName();
     this.typeName = builder.getTypeName();
-    this.propertyNames = builder.getPropertyNames();
+    this.propertyNames = List.of(builder.getPropertyNames());
     this.dimensions = builder.getDimensions();
     this.similarityFunction = builder.getSimilarityFunction();
     this.maxConnections = builder.getMaxConnections();
@@ -247,6 +253,11 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
         .getValueAsInteger(com.arcadedb.GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
     this.compactedSubIndex = null;
 
+    // Create the component that handles page storage
+    this.component = new LSMVectorIndexComponent(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(),
+        ComponentFile.MODE.READ_WRITE, DEF_PAGE_SIZE);
+    this.component.setMainIndex(this);
+
     initializeGraphIndex();
   }
 
@@ -255,8 +266,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
    */
   protected LSMVectorIndex(final DatabaseInternal database, final String name, final String filePath, final int id,
       final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
-    super(database, name, filePath, id, mode, pageSize, version);
-
+    this.indexName = name;
     this.lock = new ReentrantReadWriteLock();
     this.transactionContexts = new ConcurrentHashMap<>();
     this.vectorRegistry = new ConcurrentHashMap<>();
@@ -265,23 +275,53 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
     this.graphIndexDirty = new AtomicBoolean(false);
     this.associatedBucketId = -1; // Will be set via setMetadata()
 
+    // Create the component that handles page storage
+    this.component = new LSMVectorIndexComponent(database, name, filePath, id, mode, pageSize, version);
+    this.component.setMainIndex(this);
+
     // Initialize compaction fields
-    this.currentMutablePages = new AtomicInteger(getTotalPages());
+    this.currentMutablePages = new AtomicInteger(component.getTotalPages());
     this.minPagesToScheduleACompaction = database.getConfiguration()
         .getValueAsInteger(com.arcadedb.GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
     this.compactedSubIndex = null;
 
-    // Load configuration from JSON metadata file
-    final String metadataPath = filePath.replace("." + FILE_EXT, ".metadata.json");
+    // Load configuration from metadata file or use sensible defaults
+    // Metadata will be applied from schema later via applyMetadataFromSchema() if available
+    JSONObject json = null;
+
+    // Try to read from metadata file if it exists (backward compatibility with non-replicated indexes)
+    String originalFilePath = filePath.replaceAll("\\.[0-9]+\\.[0-9]+\\.v[0-9]+\\." + FILE_EXT + "$", "");
+    originalFilePath = originalFilePath.replaceAll("\\." + FILE_EXT + "$", "");
+    final String metadataPath = originalFilePath + ".metadata.json";
     final File metadataFile = new File(metadataPath);
 
-    if (!metadataFile.exists())
-      throw new IndexException("Metadata file not found for index: " + metadataPath);
+    if (metadataFile.exists()) {
+      try {
+        final String fileContent = FileUtils.readFileAsString(metadataFile);
+        json = new JSONObject(fileContent);
+        LogManager.instance().log(this, Level.FINE, "Loaded vector index metadata from file: %s", metadataPath);
+      } catch (final Exception e) {
+        LogManager.instance()
+            .log(this, Level.WARNING, "Failed to read metadata file %s, using defaults: %s", e, metadataPath, e.getMessage());
+      }
+    }
 
-    final String fileContent = FileUtils.readFileAsString(metadataFile);
-    final JSONObject json = new JSONObject(fileContent);
+    // Use sensible defaults if metadata file doesn't exist
+    // This is normal during schema replication when metadata is embedded in the schema and
+    // will be applied after construction via applyMetadataFromSchema()
+    if (json == null) {
+      LogManager.instance().log(this, Level.FINE,
+          "Metadata file not found for index %s. Using defaults (will be overridden by schema if available).", name);
+      json = new JSONObject();
+      json.put("dimensions", 10);  // Default dimensions
+      json.put("similarityFunction", "COSINE");
+      json.put("maxConnections", 16);
+      json.put("beamWidth", 100);
+      json.put("idPropertyName", "id");
+      json.put("properties", new JSONArray());
+    }
 
-    this.indexName = json.getString("indexName", name);
+    // indexName already set in constructor
     this.typeName = json.getString("typeName", "");
     this.dimensions = json.getInt("dimensions");
     this.similarityFunction = VectorSimilarityFunction.valueOf(json.getString("similarityFunction", "COSINE"));
@@ -290,19 +330,27 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
     this.idPropertyName = json.getString("idPropertyName", "id");
 
     // Load property names
-    final List<String> propList = new ArrayList<>();
-    if (json.has("propertyNames")) {
-      final var jsonArray = json.getJSONArray("propertyNames");
+    this.propertyNames = new ArrayList<>();
+    if (json.has("properties")) {
+      final var jsonArray = json.getJSONArray("properties");
       for (int i = 0; i < jsonArray.length(); i++)
-        propList.add(jsonArray.getString(i));
+        propertyNames.add(jsonArray.getString(i));
     }
-    this.propertyNames = propList.toArray(new String[0]);
 
-    // Load vectors from pages
-    loadVectorsFromPages();
+    // Load vectors from pages - only if this is an existing index file
+    // During replication on replicas, the file may not exist yet and will be created/replicated later
+    try {
+      loadVectorsFromPages();
 
-    // Rebuild graph index
-    initializeGraphIndex();
+      // Rebuild graph index from loaded vectors
+      initializeGraphIndex();
+    } catch (final Exception e) {
+      // If we can't load vectors (e.g., during initial replication), just use empty index
+      // Metadata will be applied from schema and vectors will be populated as data arrives
+      LogManager.instance().log(this, Level.FINE,
+          "Could not load vectors from pages for index %s (may be a new replicated index): %s", name, e.getMessage());
+      this.graphIndexDirty.set(true);
+    }
   }
 
   private void initializeGraphIndex() {
@@ -386,13 +434,18 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
    * Reads from all pages, later entries override earlier ones (LSM merge-on-read).
    */
   private void loadVectorsFromPages() {
+    com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+        "DEBUG: loadVectorsFromPages STARTED: index=%s, totalPages=%d", indexName, getTotalPages());
     try {
       // Read header from page 0
-      final BasePage page0 = database.getTransaction().getPage(new PageId(database, getFileId(), 0), getPageSize());
+      final BasePage page0 = getDatabase().getTransaction().getPage(new PageId(getDatabase(), getFileId(), 0), getPageSize());
       final ByteBuffer buffer0 = page0.getContent();
       buffer0.position(0);
 
       final int storedNextId = buffer0.getInt();
+      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+          "DEBUG: loadVectorsFromPages - page0 storedNextId=%d, index=%s", storedNextId, indexName);
+
       if (storedNextId == 0) {
         LogManager.instance().log(this, Level.FINE, "No vectors to load - empty index: " + indexName);
         return;
@@ -400,6 +453,10 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
       // Read and validate metadata
       final int storedDimensions = buffer0.getInt();
+      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+          "DEBUG: loadVectorsFromPages - storedDimensions=%d, expectedDimensions=%d, index=%s",
+          storedDimensions, dimensions, indexName);
+
       if (storedDimensions != dimensions) {
         throw new IndexException("Dimension mismatch: expected " + dimensions + " but found " + storedDimensions);
       }
@@ -416,8 +473,8 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
       int entriesRead = 0;
 
       for (int pageNum = 1; pageNum < totalPages; pageNum++) {
-        final BasePage currentPage = database.getTransaction().getPage(
-            new PageId(database, getFileId(), pageNum), getPageSize());
+        final BasePage currentPage = getDatabase().getTransaction().getPage(
+            new PageId(getDatabase(), getFileId(), pageNum), getPageSize());
         final ByteBuffer pageBuffer = currentPage.getContent();
         pageBuffer.position(0);
 
@@ -442,7 +499,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
           final int id = pageBuffer.getInt();
           final long position = pageBuffer.getLong();
           final int bucketId = pageBuffer.getInt();
-          final RID rid = new RID(database, bucketId, position);
+          final RID rid = new RID(getDatabase(), bucketId, position);
 
           final float[] vector = new float[dimensions];
           for (int j = 0; j < dimensions; j++) {
@@ -482,9 +539,13 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
    */
   private void persistVectorsDeltaIncremental(final List<Integer> changedVectorIds) {
     try {
+      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+          "DEBUG: persistVectorsDeltaIncremental called: index=%s, changedVectorIds=%d, totalPages=%d",
+          indexName, changedVectorIds.size(), getTotalPages());
+
       // Update metadata in page 0
-      final BasePage page0 = database.getTransaction().getPageToModify(
-          new PageId(database, getFileId(), 0), getPageSize(), false);
+      final BasePage page0 = getDatabase().getTransaction().getPageToModify(
+          new PageId(getDatabase(), getFileId(), 0), getPageSize(), false);
       final ByteBuffer buffer0 = page0.getContent();
       buffer0.position(0);
       buffer0.putInt(nextId.get()); // Update next ID
@@ -513,8 +574,8 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
           continue;
 
         // Get current page
-        BasePage currentPage = database.getTransaction().getPageToModify(
-            new PageId(database, getFileId(), lastPageNum), getPageSize(), false);
+        BasePage currentPage = getDatabase().getTransaction().getPageToModify(
+            new PageId(getDatabase(), getFileId(), lastPageNum), getPageSize(), false);
         ByteBuffer pageBuffer = currentPage.getContent();
 
         // Read page header
@@ -569,8 +630,8 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
    * Page layout: [offsetFreeContent(4)][numberOfEntries(4)][mutable(1)][pointers...]...[entries from tail]
    */
   private BasePage createNewVectorDataPage(final int pageNum) {
-    final PageId pageId = new PageId(database, getFileId(), pageNum);
-    final BasePage page = database.getTransaction().addPage(pageId, getPageSize());
+    final PageId pageId = new PageId(getDatabase(), getFileId(), pageNum);
+    final BasePage page = getDatabase().getTransaction().addPage(pageId, getPageSize());
     final ByteBuffer buffer = page.getContent();
 
     buffer.position(0);
@@ -914,6 +975,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
   @Override
   public void put(final Object[] keys, final RID[] values) {
+
     if (keys == null || keys.length == 0)
       throw new IllegalArgumentException("Keys cannot be null or empty");
 
@@ -940,15 +1002,10 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
     if (txStatus == com.arcadedb.database.TransactionContext.STATUS.BEGUN) {
       // During BEGUN: Register with TransactionIndexContext for file locking and transaction tracking
       // Wrap vector in ComparableVector for TransactionIndexContext's TreeMap
+      // TransactionIndexContext will replay this operation during commit, which will hit the else branch below
       getDatabase().getTransaction()
           .addIndexOperation(this, com.arcadedb.database.TransactionIndexContext.IndexKey.IndexKeyOperation.ADD,
               new Object[] { new ComparableVector(vector) }, rid);
-
-      // Buffer the operation locally for actual processing in onAfterCommit()
-      final long txId = Thread.currentThread().getId();
-      final TransactionVectorContext context = transactionContexts.computeIfAbsent(txId, k -> new TransactionVectorContext());
-      context.operations.put(rid, new TransactionVectorContext.VectorOperation(
-          TransactionVectorContext.OperationType.ADD, vector));
 
     } else {
       // No transaction OR during commit replay: apply immediately
@@ -984,15 +1041,10 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
     if (txStatus == com.arcadedb.database.TransactionContext.STATUS.BEGUN) {
       // During BEGUN: Register with TransactionIndexContext for file locking and transaction tracking
       // Use a dummy ComparableVector since we don't have the vector value for removes
+      // TransactionIndexContext will replay this operation during commit, which will hit the else branch below
       getDatabase().getTransaction()
           .addIndexOperation(this, com.arcadedb.database.TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
               new Object[] { new ComparableVector(new float[dimensions]) }, rid);
-
-      // Buffer the operation locally (used only for cleanup tracking)
-      final long txId = Thread.currentThread().getId();
-      final TransactionVectorContext context = transactionContexts.computeIfAbsent(txId, k -> new TransactionVectorContext());
-      context.operations.put(rid, new TransactionVectorContext.VectorOperation(
-          TransactionVectorContext.OperationType.REMOVE, null));
 
     } else {
       // No transaction OR during commit replay: apply immediately
@@ -1018,38 +1070,53 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
     }
   }
 
-  @Override
   public void onAfterCommit() {
-    // Operations are already handled by TransactionIndexContext.commit()
-    // which calls put()/remove() during commit phases
-    // So we just need to clean up our local context and trigger compaction if needed
-    final long txId = Thread.currentThread().getId();
-    final TransactionVectorContext context = transactionContexts.remove(txId);
-    if (context == null || context.operations.isEmpty())
-      return;
-
-    // Check if compaction should be triggered
+    // Check if compaction should be triggered after commit
+    // Operations are applied immediately during TransactionIndexContext replay (not buffered here)
     if (minPagesToScheduleACompaction > 1 && currentMutablePages.get() >= minPagesToScheduleACompaction) {
       LogManager.instance()
           .log(this, Level.FINE, "Scheduled compaction of vector index '%s' (currentMutablePages=%d totalPages=%d)",
-              null, componentName, currentMutablePages.get(), getTotalPages());
-      ((com.arcadedb.database.async.DatabaseAsyncExecutorImpl) database.async()).compact(this);
+              null, getComponentName(), currentMutablePages.get(), getTotalPages());
+      ((com.arcadedb.database.async.DatabaseAsyncExecutorImpl) getDatabase().async()).compact(this);
     }
   }
 
   public void onAfterRollback() {
-    // Discard the transaction context
-    final long txId = Thread.currentThread().getId();
-    transactionContexts.remove(txId);
+    // Nothing to do - operations are not buffered locally
+    // TransactionIndexContext handles rollback
   }
 
   @Override
   public long countEntries() {
-    lock.readLock().lock();
+    lock.writeLock().lock();
     try {
-      return vectorRegistry.values().stream().filter(v -> !v.deleted).count();
+      // Check if we need to reload vectors from pages
+      // This handles the case where pages were replicated but vectorRegistry wasn't updated
+      final int totalPages = getTotalPages();
+      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+          "DEBUG: countEntries called: index=%s, totalPages=%d, registrySize=%d",
+          indexName, totalPages, vectorRegistry.size());
+
+      if (totalPages > 1 && vectorRegistry.isEmpty()) {
+        // Pages exist but registry is empty - reload from pages
+        com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+            "DEBUG: Lazy loading vectors from pages: index=%s", indexName);
+        try {
+          loadVectorsFromPages();
+          initializeGraphIndex();
+          com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+              "DEBUG: After reload: index=%s, registrySize=%d", indexName, vectorRegistry.size());
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING, "Failed to reload vectors from pages: %s", e.getMessage());
+        }
+      }
+
+      final long count = vectorRegistry.values().stream().filter(v -> !v.deleted).count();
+      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+          "DEBUG: countEntries returning: index=%s, count=%d", indexName, count);
+      return count;
     } finally {
-      lock.readLock().unlock();
+      lock.writeLock().unlock();
     }
   }
 
@@ -1065,17 +1132,33 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
   @Override
   public List<String> getPropertyNames() {
-    return Arrays.asList(propertyNames);
+    return propertyNames;
   }
 
   @Override
   public List<Integer> getFileIds() {
-    return Collections.singletonList(getFileId());
+    return Collections.singletonList(component.getFileId());
   }
 
   @Override
   public int getPageSize() {
-    return DEF_PAGE_SIZE;
+    return component.getPageSize();
+  }
+
+  public int getTotalPages() {
+    return component.getTotalPages();
+  }
+
+  public int getFileId() {
+    return component.getFileId();
+  }
+
+  public DatabaseInternal getDatabase() {
+    return component.getDatabase();
+  }
+
+  public String getComponentName() {
+    return component.getName();
   }
 
   @Override
@@ -1109,7 +1192,7 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
   @Override
   public String getMostRecentFileName() {
-    return filePath;
+    return indexName;
   }
 
   @Override
@@ -1167,15 +1250,44 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
   @Override
   public boolean compact() throws IOException, InterruptedException {
-    return LSMVectorIndexCompactor.compact(this);
+    // CHECK IF THIS IS A REPLICATED DATABASE AND WRAP COMPACTION IN FILE CHANGE TRACKING
+    // USE REFLECTION TO AVOID HARD DEPENDENCY ON SERVER MODULE
+    final DatabaseInternal db = getDatabase();
+    final DatabaseInternal wrapped = db.getWrappedDatabaseInstance();
+    if (wrapped != db && wrapped.getClass().getName()
+        .equals("com.arcadedb.server.ha.ReplicatedDatabase")) {
+      // THIS IS A REPLICATED DATABASE, USE THE WRAPPER'S COMPACTION METHOD
+      try {
+        // USE REFLECTION TO CALL THE METHOD - MATCH THE EXACT PARAMETER TYPE
+        final java.lang.reflect.Method compactMethod =
+            wrapped.getClass().getMethod("compactIndexInTransaction", com.arcadedb.index.Index.class);
+        return (Boolean) compactMethod.invoke(wrapped, this);
+      } catch (final Exception e) {
+        // LOG ERROR AND FALLBACK TO DIRECT COMPACTION
+        LogManager.instance().log(this, Level.WARNING,
+            "Failed to call compactIndexInTransaction on replicated database, falling back to direct compaction: %s",
+            e.getMessage());
+        return LSMVectorIndexCompactor.compact(this);
+      }
+    } else {
+      return LSMVectorIndexCompactor.compact(this);
+    }
   }
 
   @Override
   public JSONObject toJSON() {
+    // Store complete vector index metadata in schema JSON for replication.
+    // This single source of truth is used both for schema persistence and distributed replication.
     final JSONObject json = new JSONObject();
+
+    // Add required fields for schema loading (matching LSMTreeIndex pattern)
+    json.put("type", getType());
+    json.put("bucket", getDatabase().getSchema().getBucketById(getAssociatedBucketId()).getName());
+
+    // Add vector-specific metadata
     json.put("indexName", indexName);
     json.put("typeName", typeName);
-    json.put("propertyNames", propertyNames);
+    json.put("properties", propertyNames);
     json.put("dimensions", dimensions);
     json.put("similarityFunction", similarityFunction.name());
     json.put("maxConnections", maxConnections);
@@ -1185,19 +1297,61 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
     return json;
   }
 
+  /**
+   * Applies metadata from the schema JSON to this vector index.
+   * Called by LocalSchema.load() after the index is created to ensure metadata
+   * from the central schema overrides any defaults or file-based values.
+   * Particularly important during replication when metadata comes from the
+   * replicated schema JSON rather than separate .metadata.json files.
+   *
+   * @param indexJSON The complete index JSON from the schema containing all configuration
+   */
+  @Override
+  public void applyMetadataFromSchema(final JSONObject indexJSON) {
+    if (indexJSON == null)
+      return;
+
+    final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy =
+        LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(
+            indexJSON.getString("nullStrategy", LSMTreeIndexAbstract.NULL_STRATEGY.ERROR.name())
+        );
+
+    setNullStrategy(nullStrategy);
+
+    if (indexJSON.has("typeName"))
+      this.typeName = indexJSON.getString("typeName");
+    if (indexJSON.has("properties")) {
+      final var jsonArray = indexJSON.getJSONArray("properties");
+      this.propertyNames = new ArrayList<>();
+      for (int i = 0; i < jsonArray.length(); i++)
+        propertyNames.add(jsonArray.getString(i));
+    }
+
+    // Apply all available metadata fields from schema JSON (single source of truth)
+    if (indexJSON.has("dimensions"))
+      this.dimensions = indexJSON.getInt("dimensions");
+    if (indexJSON.has("similarityFunction"))
+      this.similarityFunction = VectorSimilarityFunction.valueOf(indexJSON.getString("similarityFunction"));
+    if (indexJSON.has("maxConnections"))
+      this.maxConnections = indexJSON.getInt("maxConnections");
+    if (indexJSON.has("beamWidth"))
+      this.beamWidth = indexJSON.getInt("beamWidth");
+    if (indexJSON.has("idPropertyName"))
+      this.idPropertyName = indexJSON.getString("idPropertyName");
+
+    LogManager.instance().log(this, Level.FINE,
+        "Applied metadata from schema to vector index: %s (dimensions=%d)", indexName, this.dimensions);
+  }
+
   @Override
   public void close() {
     lock.writeLock().lock();
     try {
-      // Save metadata
-      final String metadataPath = filePath.replace("." + FILE_EXT, ".metadata.json");
-      try (final FileWriter writer = new FileWriter(metadataPath)) {
-        writer.write(toJSON().toString(2));
-      } catch (final IOException e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error saving metadata for index: " + indexName, e);
-      }
+      // NOTE: Metadata is now embedded in the schema JSON via toJSON() and is automatically
+      // replicated with the schema. We don't write a separate .metadata.json file anymore
+      // to avoid path transformation issues during replication.
 
-      super.close();
+      component.close();
     } finally {
       lock.writeLock().unlock();
     }
@@ -1212,18 +1366,18 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
       transactionContexts.clear();
 
       // Delete index files
-      final File indexFile = new File(filePath);
+      final File indexFile = new File(component.getFilePath());
       if (indexFile.exists())
         indexFile.delete();
 
-      final File metadataFile = new File(filePath.replace("." + FILE_EXT, ".metadata.json"));
-      if (metadataFile.exists())
-        metadataFile.delete();
+      // NOTE: Metadata is now embedded in the schema JSON via toJSON() and is automatically
+      // deleted when the schema is updated. We no longer need to delete separate .metadata.json files.
 
       // Close the component
       close();
     } finally {
       lock.writeLock().unlock();
+      valid = false;
     }
   }
 
@@ -1247,20 +1401,100 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
 
   @Override
   public void setMetadata(final String typeName, final String[] propertyNames, final int associatedBucketId) {
-    // Store the associated bucket ID - needed for transaction file locking
+    checkIsValid();
+    this.typeName = typeName;
+    this.propertyNames = List.of(propertyNames);
     this.associatedBucketId = associatedBucketId;
+  }
+
+  public void onAfterSchemaLoad() {
+    // Vector indexes use page-based replication like LSMTreeIndex
+    // When index pages are modified on the leader, they are automatically replicated to replicas
+    // No need to rebuild on replicas - just wait for page replication
+    // The vectorRegistry will be populated as pages arrive from the leader
   }
 
   @Override
   public long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {
-    // Vector index is built incrementally as documents are added
-    // Return the current number of vectors in the index
-    return vectorRegistry.size();
+    lock.writeLock().lock();
+    try {
+      if (status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE)) {
+        try {
+          final AtomicInteger total = new AtomicInteger();
+          final long LOG_INTERVAL = 10000; // Log every 10K records
+          final long startTime = System.currentTimeMillis();
+
+          if (propertyNames == null || propertyNames.isEmpty())
+            throw new IndexException("Cannot rebuild vector index '" + indexName + "' because property names are missing");
+
+          LogManager.instance().log(this, Level.INFO, "Building vector index '%s' on %d properties...", indexName,
+              propertyNames.size());
+
+          final DatabaseInternal db = getDatabase();
+
+          // Check if we need to start a transaction
+          final boolean startedTransaction =
+              db.getTransaction().getStatus() != com.arcadedb.database.TransactionContext.STATUS.BEGUN;
+          if (startedTransaction)
+            db.getWrappedDatabaseInstance().begin();
+
+          try {
+            // Scan the bucket and index all documents
+            db.scanBucket(db.getSchema().getBucketById(associatedBucketId).getName(), record -> {
+              db.getIndexer().addToIndex(LSMVectorIndex.this, record.getIdentity(), (Document) record);
+              total.incrementAndGet();
+
+              // Periodic progress logging
+              if (total.get() % LOG_INTERVAL == 0) {
+                final long elapsed = System.currentTimeMillis() - startTime;
+                final double rate = total.get() / (elapsed / 1000.0);
+                LogManager.instance()
+                    .log(this, Level.INFO, "Building vector index '%s': processed %d records (%.0f records/sec)...",
+                        indexName, total.get(), rate);
+              }
+
+              if (total.get() % buildIndexBatchSize == 0) {
+                // Commit in batches
+                db.getWrappedDatabaseInstance().commit();
+                db.getWrappedDatabaseInstance().begin();
+              }
+
+              if (callback != null)
+                callback.onDocumentIndexed((Document) record, total.get());
+
+              return true;
+            });
+
+            // Final commit if we started a transaction
+            if (startedTransaction)
+              db.getWrappedDatabaseInstance().commit();
+
+            // Completion logging
+            final long elapsed = System.currentTimeMillis() - startTime;
+            LogManager.instance().log(this, Level.INFO, "Completed building vector index '%s': processed %d records in %dms",
+                indexName, total.get(), elapsed);
+
+            return total.get();
+          } catch (final Exception e) {
+            // Rollback if we started a transaction
+            if (startedTransaction && db.getTransaction().getStatus() == com.arcadedb.database.TransactionContext.STATUS.BEGUN)
+              db.getWrappedDatabaseInstance().rollback();
+            throw e;
+          }
+
+        } finally {
+          status.set(INDEX_STATUS.AVAILABLE);
+        }
+      } else
+        throw new NeedRetryException("Error building vector index '" + indexName + "' because it is not available");
+    } finally {
+      lock.writeLock().unlock();
+    }
   }
 
   @Override
   public PaginatedComponent getComponent() {
-    return this;
+    return component;
   }
 
   @Override
@@ -1321,12 +1555,12 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
   protected int splitIndex(final int startingFromPage, final LSMVectorIndexCompacted compactedIndex)
       throws IOException, InterruptedException {
 
-    if (database.isTransactionActive())
+    if (getDatabase().isTransactionActive())
       throw new IllegalStateException("Cannot replace compacted index because a transaction is active");
 
     final int fileId = getFileId();
     final LockManager.LOCK_STATUS locked =
-        database.getTransactionManager().tryLockFile(fileId, 0, Thread.currentThread());
+        getDatabase().getTransactionManager().tryLockFile(fileId, 0, Thread.currentThread());
 
     if (locked == LockManager.LOCK_STATUS.NO)
       throw new IllegalStateException("Cannot replace compacted index because cannot lock index file " + fileId);
@@ -1337,12 +1571,13 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
       lock.writeLock().lock();
       try {
         // Create new index file with compacted sub-index
-        final int last_ = componentName.lastIndexOf('_');
-        final String newName = componentName.substring(0, last_) + "_" + System.nanoTime();
+        final int last_ = getComponentName().lastIndexOf('_');
+        final String newName = getComponentName().substring(0, last_) + "_" + System.nanoTime();
 
         // Build metadata for new index
-        final LSMVectorIndexBuilder builder = new LSMVectorIndexBuilder(database, typeName, propertyNames)
-            .withFilePath(database.getDatabasePath() + File.separator + indexName)
+        final LSMVectorIndexBuilder builder = new LSMVectorIndexBuilder(getDatabase(), typeName,
+            propertyNames.toArray(new String[0]))
+            .withFilePath(getDatabase().getDatabasePath() + File.separator + indexName)
             .withIndexName(newName)
             .withDimensions(dimensions)
             .withSimilarity(similarityFunction.name())
@@ -1352,10 +1587,10 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
         // Create the new index with same configuration
         final LSMVectorIndex newIndex = new LSMVectorIndex(builder);
         newIndex.setSubIndex(compactedIndex);
-        database.getSchema().getEmbedded().registerFile(newIndex);
+        getDatabase().getSchema().getEmbedded().registerFile(newIndex.component);
 
         // Lock new file
-        database.getTransactionManager().tryLockFile(newIndex.getFileId(), 0, Thread.currentThread());
+        getDatabase().getTransactionManager().tryLockFile(newIndex.getFileId(), 0, Thread.currentThread());
         lockedNewFileId.set(newIndex.getFileId());
 
         final List<MutablePage> modifiedPages = new ArrayList<>();
@@ -1363,32 +1598,32 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
         // Copy remaining mutable pages from old index to new index
         final int pagesToCopy = getTotalPages() - startingFromPage;
         for (int i = 0; i < pagesToCopy; i++) {
-          final BasePage currentPage = database.getTransaction()
-              .getPage(new PageId(database, fileId, i + startingFromPage), pageSize);
+          final BasePage currentPage = getDatabase().getTransaction()
+              .getPage(new PageId(getDatabase(), fileId, i + startingFromPage), getPageSize());
 
           // Copy the entire page content
           final MutablePage newPage =
-              new MutablePage(new PageId(database, newIndex.getFileId(), i + 1), pageSize);
+              new MutablePage(new PageId(getDatabase(), newIndex.getFileId(), i + 1), getPageSize());
 
           final ByteBuffer oldContent = currentPage.getContent();
           oldContent.rewind();
           newPage.getContent().put(oldContent);
 
-          modifiedPages.add(database.getPageManager().updatePageVersion(newPage, true));
+          modifiedPages.add(getDatabase().getPageManager().updatePageVersion(newPage, true));
         }
 
         // Write all pages
         if (!modifiedPages.isEmpty()) {
-          database.getPageManager().writePages(modifiedPages, false);
+          getDatabase().getPageManager().writePages(modifiedPages, false);
         }
 
         // Update schema with file migration
-        ((LocalSchema) database.getSchema()).setMigratedFileId(fileId, newIndex.getFileId());
-        database.getSchema().getEmbedded().saveConfiguration();
+        ((LocalSchema) getDatabase().getSchema()).setMigratedFileId(fileId, newIndex.getFileId());
+        getDatabase().getSchema().getEmbedded().saveConfiguration();
 
         LogManager.instance().log(this, Level.INFO,
             "Successfully split vector index '%s': old fileId=%d, new fileId=%d, pages copied=%d",
-            null, componentName, fileId, newIndex.getFileId(), pagesToCopy);
+            null, getComponentName(), fileId, newIndex.getFileId(), pagesToCopy);
 
         return newIndex.getFileId();
 
@@ -1399,10 +1634,15 @@ public class LSMVectorIndex extends PaginatedComponent implements com.arcadedb.i
     } finally {
       final int lockedFile = lockedNewFileId.get();
       if (lockedFile != -1)
-        database.getTransactionManager().unlockFile(lockedFile, Thread.currentThread());
+        getDatabase().getTransactionManager().unlockFile(lockedFile, Thread.currentThread());
 
       if (locked == LockManager.LOCK_STATUS.YES)
-        database.getTransactionManager().unlockFile(fileId, Thread.currentThread());
+        getDatabase().getTransactionManager().unlockFile(fileId, Thread.currentThread());
     }
+  }
+
+  private void checkIsValid() {
+    if (!valid)
+      throw new IndexException("Index '" + indexName + "' is not valid. Probably has been drop or rebuilt");
   }
 }

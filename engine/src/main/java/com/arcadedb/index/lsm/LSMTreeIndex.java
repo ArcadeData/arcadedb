@@ -144,6 +144,25 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
+  public void applyMetadataFromSchema(final JSONObject indexJSON) {
+    final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy =
+        LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(
+            indexJSON.getString("nullStrategy", LSMTreeIndexAbstract.NULL_STRATEGY.ERROR.name())
+        );
+
+    setNullStrategy(nullStrategy);
+
+    if (indexJSON.has("typeName"))
+      this.typeName = indexJSON.getString("typeName");
+    if (indexJSON.has("properties")) {
+      final var jsonArray = indexJSON.getJSONArray("properties");
+      this.propertyNames = new ArrayList<>();
+      for (int i = 0; i < jsonArray.length(); i++)
+        propertyNames.add(jsonArray.getString(i));
+    }
+  }
+
+  @Override
   public void updateTypeName(final String newTypeName) {
     typeName = newTypeName;
     if (mutable != null) {

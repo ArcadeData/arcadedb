@@ -41,9 +41,7 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class LSMVectorIndexBuilder extends IndexBuilder<TypeIndex> {
-  private final String                   typeName;
-  private final String[]                 propertyNames;
+public class LSMVectorIndexBuilder extends TypeIndexBuilder {
   private       int                      dimensions;
   private       VectorSimilarityFunction similarityFunction = VectorSimilarityFunction.COSINE;
   private       int                      maxConnections     = 16;
@@ -51,10 +49,8 @@ public class LSMVectorIndexBuilder extends IndexBuilder<TypeIndex> {
   private       String                   idPropertyName     = "id";
 
   public LSMVectorIndexBuilder(final DatabaseInternal database, final String typeName, final String[] propertyNames) {
-    super(database, TypeIndex.class);
+    super(database, typeName, propertyNames);
     this.indexType = Schema.INDEX_TYPE.LSM_VECTOR;
-    this.typeName = typeName;
-    this.propertyNames = propertyNames;
     // Generate default index name from type and properties
     this.indexName = typeName + "[" + String.join(",", propertyNames) + "]";
   }
@@ -124,13 +120,8 @@ public class LSMVectorIndexBuilder extends IndexBuilder<TypeIndex> {
             indexName = bucketIndexName;
 
             // Create file path for this bucket's index
-            filePath = database.getDatabasePath() + File.separator +
-                FileUtils.encode(typeName, schema.getEncoding()) + "_" +
-                FileUtils.encode(bucketIndexName, schema.getEncoding()) + "_" +
-                System.nanoTime() + "." +
-                database.getFileManager().newFileId() + ".v" +
-                LSMVectorIndex.CURRENT_VERSION + "." +
-                LSMVectorIndex.FILE_EXT;
+            // PaginatedComponent will append .{fileId}.{pageSize}.v{version}.{ext}, so we just provide the base name
+            filePath = database.getDatabasePath() + File.separator + bucketIndexName;
 
             // Create the index for this bucket
             final LSMVectorIndex index = (LSMVectorIndex) schema.indexFactory.createIndex(this);
@@ -138,12 +129,15 @@ public class LSMVectorIndexBuilder extends IndexBuilder<TypeIndex> {
             // Restore the original indexName for the next iteration
             indexName = savedIndexName;
 
-            // Register with schema
-            schema.registerFile(index);
+            // Register with schema (register the component, not the index wrapper)
+            schema.registerFile(index.getComponent());
             schema.indexMap.put(bucketIndexName, index);
 
             // Register with DocumentType for this specific bucket
             type.addIndexInternal(index, bucket.getFileId(), propertyNames, null);
+
+            // Build the index (this is the critical step that LSMVectorIndexBuilder was missing)
+            index.build(batchSize, callback);
 
             indexes[finalIdx] = index;
 
@@ -179,6 +173,7 @@ public class LSMVectorIndexBuilder extends IndexBuilder<TypeIndex> {
    *
    * @return this builder
    */
+  @Override
   public LSMVectorIndexBuilder withDimensions(final int dimensions) {
     this.dimensions = dimensions;
     return this;
@@ -192,6 +187,7 @@ public class LSMVectorIndexBuilder extends IndexBuilder<TypeIndex> {
    *
    * @return this builder
    */
+  @Override
   public LSMVectorIndexBuilder withSimilarity(final String similarity) {
     try {
       this.similarityFunction = VectorSimilarityFunction.valueOf(similarity.toUpperCase());
@@ -210,6 +206,7 @@ public class LSMVectorIndexBuilder extends IndexBuilder<TypeIndex> {
    *
    * @return this builder
    */
+  @Override
   public LSMVectorIndexBuilder withMaxConnections(final int maxConnections) {
     if (maxConnections < 1)
       throw new IllegalArgumentException("maxConnections must be at least 1");
@@ -226,6 +223,7 @@ public class LSMVectorIndexBuilder extends IndexBuilder<TypeIndex> {
    *
    * @return this builder
    */
+  @Override
   public LSMVectorIndexBuilder withBeamWidth(final int beamWidth) {
     if (beamWidth < 1)
       throw new IllegalArgumentException("beamWidth must be at least 1");
@@ -242,6 +240,7 @@ public class LSMVectorIndexBuilder extends IndexBuilder<TypeIndex> {
    *
    * @return this builder
    */
+  @Override
   public LSMVectorIndexBuilder withIdProperty(final String idPropertyName) {
     this.idPropertyName = idPropertyName;
     return this;
@@ -279,15 +278,7 @@ public class LSMVectorIndexBuilder extends IndexBuilder<TypeIndex> {
     return this;
   }
 
-  // Getters
-  public String getTypeName() {
-    return typeName;
-  }
-
-  public String[] getPropertyNames() {
-    return propertyNames;
-  }
-
+  // Getters (typeName and propertyNames inherited from TypeIndexBuilder)
   public int getDimensions() {
     return dimensions;
   }

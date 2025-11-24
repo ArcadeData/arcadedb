@@ -538,11 +538,6 @@ public class LocalSchema implements Schema {
   }
 
   @Override
-  public LSMVectorIndexBuilder buildLSMVectorIndex(final String typeName, final String[] propertyNames) {
-    return new LSMVectorIndexBuilder(database, typeName, propertyNames);
-  }
-
-  @Override
   public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
       final String... propertyNames) {
     return buildTypeIndex(typeName, propertyNames).withType(indexType).withUnique(unique).create();
@@ -1088,11 +1083,7 @@ public class LocalSchema implements Schema {
 
             IndexInternal index = indexMap.get(indexName);
             if (index != null) {
-              final NULL_STRATEGY nullStrategy = indexJSON.has("nullStrategy") ?
-                  NULL_STRATEGY.valueOf(indexJSON.getString("nullStrategy")) :
-                  NULL_STRATEGY.ERROR;
-
-              index.setNullStrategy(nullStrategy);
+              index.applyMetadataFromSchema(indexJSON);
 
               if (indexJSON.has("type")) {
                 final String configuredIndexType = indexJSON.getString("type");

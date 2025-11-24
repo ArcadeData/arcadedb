@@ -48,6 +48,40 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     this.propertyNames = propertyNames;
   }
 
+  /**
+   * Sets the index type. For LSM_VECTOR indexes, returns an LSMVectorIndexBuilder
+   * to enable vector-specific configuration methods.
+   *
+   * @param indexType the index type
+   * @return appropriate builder for the index type
+   */
+  @Override
+  public TypeIndexBuilder withType(final Schema.INDEX_TYPE indexType) {
+    super.withType(indexType);
+
+    // For vector indexes, return LSMVectorIndexBuilder to enable vector-specific methods
+    if (indexType == Schema.INDEX_TYPE.LSM_VECTOR && !(this instanceof LSMVectorIndexBuilder)) {
+      final LSMVectorIndexBuilder vectorBuilder = new LSMVectorIndexBuilder(database, typeName, propertyNames);
+      // Copy settings from this builder
+      vectorBuilder.withType(indexType);
+      if (this.indexName != null)
+        vectorBuilder.withIndexName(this.indexName);
+      if (this.filePath != null)
+        vectorBuilder.withFilePath(this.filePath);
+      vectorBuilder.withUnique(this.unique);
+      vectorBuilder.withPageSize(this.pageSize);
+      vectorBuilder.withNullStrategy(this.nullStrategy);
+      vectorBuilder.withIgnoreIfExists(this.ignoreIfExists);
+      if (this.callback != null)
+        vectorBuilder.withCallback(this.callback);
+      vectorBuilder.withBatchSize(this.batchSize);
+      vectorBuilder.withMaxAttempts(this.maxAttempts);
+      return vectorBuilder;
+    }
+
+    return this;
+  }
+
   @Override
   public TypeIndex create() {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
@@ -193,5 +227,66 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
   public String[] getPropertyNames() {
     return propertyNames;
+  }
+
+  /**
+   * Sets the number of dimensions for vector indexes.
+   * This method is for LSM_VECTOR indexes. When called on a base TypeIndexBuilder,
+   * it does nothing. Override in LSMVectorIndexBuilder to actually set the dimensions.
+   *
+   * @param dimensions the number of dimensions
+   * @return this builder
+   */
+  public TypeIndexBuilder withDimensions(final int dimensions) {
+    // Base implementation does nothing - LSMVectorIndexBuilder will override
+    return this;
+  }
+
+  /**
+   * Sets the similarity function for vector indexes.
+   * This method is for LSM_VECTOR indexes.
+   *
+   * @param similarity the similarity function name
+   * @return this builder
+   */
+  public TypeIndexBuilder withSimilarity(final String similarity) {
+    // Base implementation does nothing - LSMVectorIndexBuilder will override
+    return this;
+  }
+
+  /**
+   * Sets the maximum connections for vector indexes.
+   * This method is for LSM_VECTOR indexes.
+   *
+   * @param maxConnections the maximum number of connections
+   * @return this builder
+   */
+  public TypeIndexBuilder withMaxConnections(final int maxConnections) {
+    // Base implementation does nothing - LSMVectorIndexBuilder will override
+    return this;
+  }
+
+  /**
+   * Sets the beam width for vector indexes.
+   * This method is for LSM_VECTOR indexes.
+   *
+   * @param beamWidth the beam width
+   * @return this builder
+   */
+  public TypeIndexBuilder withBeamWidth(final int beamWidth) {
+    // Base implementation does nothing - LSMVectorIndexBuilder will override
+    return this;
+  }
+
+  /**
+   * Sets the ID property for vector indexes.
+   * This method is for LSM_VECTOR indexes.
+   *
+   * @param idPropertyName the ID property name
+   * @return this builder
+   */
+  public TypeIndexBuilder withIdProperty(final String idPropertyName) {
+    // Base implementation does nothing - LSMVectorIndexBuilder will override
+    return this;
   }
 }

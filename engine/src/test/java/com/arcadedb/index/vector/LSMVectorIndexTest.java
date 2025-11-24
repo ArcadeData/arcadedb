@@ -21,6 +21,7 @@ package com.arcadedb.index.vector;
 import com.arcadedb.TestHelper;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -110,15 +111,23 @@ public class LSMVectorIndexTest extends TestHelper {
       docType.createProperty("id", Type.STRING);
       docType.createProperty("embedding", Type.ARRAY_OF_FLOATS);
 
-      // Create LSM_VECTOR index programmatically
-      database.getSchema()
-          .buildLSMVectorIndex("VectorDoc", new String[] { "embedding" })
-          .withIndexName("VectorDoc_embedding_idx")
-          .withDimensions(3)
-          .withSimilarity("EUCLIDEAN")
-          .withMaxConnections(8)
-          .withBeamWidth(50)
-          .create();
+      // Create LSM_VECTOR index programmatically using unified API
+      com.arcadedb.schema.TypeIndexBuilder builder = database.getSchema()
+          .buildTypeIndex("VectorDoc", new String[] { "embedding" });
+
+      // withType() returns LSMVectorIndexBuilder for LSM_VECTOR type
+      builder = builder.withType(Schema.INDEX_TYPE.LSM_VECTOR);
+
+      // Set common index properties
+      builder.withIndexName("VectorDoc_embedding_idx");
+
+      // Cast to LSMVectorIndexBuilder to access vector-specific methods
+      final com.arcadedb.schema.LSMVectorIndexBuilder vectorBuilder = (com.arcadedb.schema.LSMVectorIndexBuilder) builder;
+      vectorBuilder.withDimensions(3);
+      vectorBuilder.withSimilarity("EUCLIDEAN");
+      vectorBuilder.withMaxConnections(8);
+      vectorBuilder.withBeamWidth(50);
+      vectorBuilder.create();
     });
 
     // Verify index was created
@@ -761,5 +770,160 @@ public class LSMVectorIndexTest extends TestHelper {
     // Results should be different after updates (graph index reflects new data)
     System.out.println("Results before updates: " + resultsBeforeUpdates.size() +
         ", Results after updates: " + resultsAfterUpdates.size());
+  }
+
+  @Test
+  public void testTransactionRollbackVectorIndexChanges() {
+    // Setup: Create a vector index
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE RollbackDoc");
+      database.command("sql", "CREATE PROPERTY RollbackDoc.id STRING");
+      database.command("sql", "CREATE PROPERTY RollbackDoc.vec ARRAY_OF_FLOATS");
+      database.command("sql", "CREATE INDEX ON RollbackDoc (vec) LSM_VECTOR " +
+          "METADATA {\"dimensions\": 3, \"similarity\": \"COSINE\", \"maxConnections\": 8, \"beamWidth\": 50}");
+    });
+
+    final com.arcadedb.index.TypeIndex typeIndex =
+        (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("RollbackDoc[vec]");
+    Assertions.assertNotNull(typeIndex, "Vector index should be created");
+
+    // Verify index is initially empty
+    Assertions.assertEquals(0, typeIndex.countEntries(), "Index should start empty");
+
+    // Add initial documents to the index
+    database.transaction(() -> {
+      for (int i = 0; i < 5; i++) {
+        final var doc = database.newDocument("RollbackDoc");
+        doc.set("id", "initial_" + i);
+        doc.set("vec", new float[] { (float) i, (float) i + 1, (float) i + 2 });
+        doc.save();
+      }
+    });
+
+    final long initialCount = typeIndex.countEntries();
+    Assertions.assertEquals(5, initialCount, "Index should have 5 entries after initial insert");
+
+    // === ROLLBACK TEST ===
+    // Try to add more documents in a transaction, then roll it back
+    try {
+      database.transaction(() -> {
+        // Add new documents in this transaction
+        for (int i = 0; i < 3; i++) {
+          final var doc = database.newDocument("RollbackDoc");
+          doc.set("id", "rollback_" + i);
+          doc.set("vec", new float[] { (float) (100 + i), (float) (101 + i), (float) (102 + i) });
+          doc.save();
+        }
+
+        // Force a rollback by throwing an exception
+        throw new RuntimeException("Intentional rollback for testing");
+      });
+    } catch (final RuntimeException e) {
+      // Expected - transaction should be rolled back
+      Assertions.assertTrue(e.getMessage().contains("Intentional rollback"), "Should be our rollback exception");
+    }
+
+    // Verify that the rolled-back changes are NOT in the index
+    final long countAfterRollback = typeIndex.countEntries();
+    Assertions.assertEquals(initialCount, countAfterRollback,
+        "Index should still have only " + initialCount + " entries after rollback (rollback_* docs should not be there)");
+
+    // Verify that we can't find the rolled-back vectors
+    database.transaction(() -> {
+      final float[] rollbackVec = { 100.0f, 101.0f, 102.0f }; // Vector that should have been rolled back
+      final IndexCursor cursor = typeIndex.get(new Object[] { rollbackVec }, 10);
+
+      int foundCount = 0;
+      while (cursor.hasNext()) {
+        final var rid = cursor.next();
+        final var doc = rid.asDocument();
+        // We shouldn't find any documents with rollback_* ids
+        final String id = doc.get("id").toString();
+        Assertions.assertFalse(id.startsWith("rollback_"),
+            "Should not find rolled-back vector in index (found doc with id: " + id + ")");
+        foundCount++;
+      }
+
+      // With approximate nearest neighbor search, we might find some initial vectors,
+      // but we should definitely NOT find the exact rolled-back vectors
+      // Just verify we didn't find the specific rollback documents
+    });
+
+    // === COMMIT TEST ===
+    // Now add documents in a transaction that COMMITS successfully
+    database.transaction(() -> {
+      for (int i = 0; i < 2; i++) {
+        final var doc = database.newDocument("RollbackDoc");
+        doc.set("id", "committed_" + i);
+        doc.set("vec", new float[] { (float) (200 + i), (float) (201 + i), (float) (202 + i) });
+        doc.save();
+      }
+    });
+
+    // Verify that the committed changes ARE in the index
+    final long countAfterCommit = typeIndex.countEntries();
+    Assertions.assertEquals(initialCount + 2, countAfterCommit,
+        "Index should have " + (initialCount + 2) + " entries after successful commit");
+
+    // Verify that we CAN find the committed vectors
+    database.transaction(() -> {
+      final float[] committedVec = { 200.0f, 201.0f, 202.0f }; // Vector that was committed
+      final IndexCursor cursor = typeIndex.get(new Object[] { committedVec }, 10);
+
+      boolean found = false;
+      while (cursor.hasNext()) {
+        final var rid = cursor.next();
+        final var doc = rid.asDocument();
+        final String id = doc.get("id").toString();
+        if (id.equals("committed_0")) {
+          found = true;
+          break;
+        }
+      }
+
+      Assertions.assertTrue(found, "Should find the committed vector in index");
+    });
+
+    // === MULTIPLE ROLLBACK TEST ===
+    // Test multiple consecutive rollbacks
+    final long countBeforeMultipleRollbacks = typeIndex.countEntries();
+
+    for (int rollbackRound = 0; rollbackRound < 3; rollbackRound++) {
+      final int round = rollbackRound; // Capture for lambda
+      try {
+        database.transaction(() -> {
+          for (int i = 0; i < 2; i++) {
+            final var doc = database.newDocument("RollbackDoc");
+            doc.set("id", "rollback_round_" + round + "_" + i);
+            doc.set("vec", new float[] { (float) (300 + round), (float) (301 + round), (float) (302 + round) });
+            doc.save();
+          }
+          throw new RuntimeException("Rollback round " + round);
+        });
+      } catch (final RuntimeException e) {
+        // Expected
+      }
+    }
+
+    // After multiple rollbacks, count should not have changed
+    final long countAfterMultipleRollbacks = typeIndex.countEntries();
+    Assertions.assertEquals(countBeforeMultipleRollbacks, countAfterMultipleRollbacks,
+        "Index count should remain unchanged after multiple rollbacks");
+
+    // Verify no rolled-back documents from any round are in the index
+    database.transaction(() -> {
+      for (int rollbackRound = 0; rollbackRound < 3; rollbackRound++) {
+        final float[] rollbackVec = { (float) (300 + rollbackRound), (float) (301 + rollbackRound), (float) (302 + rollbackRound) };
+        final IndexCursor cursor = typeIndex.get(new Object[] { rollbackVec }, 100);
+
+        while (cursor.hasNext()) {
+          final var rid = cursor.next();
+          final var doc = rid.asDocument();
+          final String id = doc.get("id").toString();
+          Assertions.assertFalse(id.startsWith("rollback_round_"),
+              "Should not find rolled-back vectors from any round (found: " + id + ")");
+        }
+      }
+    });
   }
 }
