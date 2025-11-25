@@ -124,15 +124,17 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
     final VertexType v = database.getSchema().buildVertexType().withName("Embedding").withTotalBuckets(1).create();
     v.createProperty("vector", float[].class);
 
-    final String indexName = "Embedding[vector]";
     // USE BUILDER FOR VECTOR INDEXES WITH DIMENSION = 10
-    final com.arcadedb.index.TypeIndex vectorIndex =
-        database.getSchema().buildTypeIndex("Embedding", new String[]{"vector"})
-            .withType(Schema.INDEX_TYPE.LSM_VECTOR)
-            .withDimensions(10)
-            .create();
+    com.arcadedb.schema.TypeIndexBuilder builder =
+        database.getSchema().buildTypeIndex("Embedding", new String[]{"vector"});
+    builder = builder.withType(Schema.INDEX_TYPE.LSM_VECTOR);
 
-    LogManager.instance().log(this, Level.FINE, "Vector index created: %s", indexName);
+    // Cast to LSMVectorIndexBuilder for vector-specific configuration
+    ((com.arcadedb.schema.LSMVectorIndexBuilder) builder).withDimensions(10);
+
+    final com.arcadedb.index.TypeIndex vectorIndex = builder.create();
+
+    LogManager.instance().log(this, Level.FINE, "Vector index created: %s", vectorIndex.getName());
     Assertions.assertNotNull(vectorIndex, "Vector index should be created successfully");
 
     LogManager.instance().log(this, Level.FINE, "Inserting %d records into vector index...", TOTAL_RECORDS);
@@ -162,13 +164,14 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
     Thread.sleep(2000);
 
     // VERIFY THAT VECTOR INDEX DEFINITION IS REPLICATED TO ALL SERVERS
+    final String actualIndexName = vectorIndex.getName();
     testEachServer((serverIndex) -> {
       LogManager.instance().log(this, Level.FINE, "Verifying vector index definition on server %d...", serverIndex);
 
       final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
 
       // Check if the index exists in schema
-      final com.arcadedb.index.Index serverVectorIndex = serverDb.getSchema().getIndexByName(indexName);
+      final com.arcadedb.index.Index serverVectorIndex = serverDb.getSchema().getIndexByName(actualIndexName);
       if (serverVectorIndex == null) {
         // Index not found, check the type's indexes
         final com.arcadedb.schema.DocumentType embeddingType = serverDb.getSchema().getType("Embedding");

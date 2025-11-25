@@ -42,9 +42,7 @@ import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
-import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockManager;
 import io.github.jbellis.jvector.graph.GraphIndexBuilder;
 import io.github.jbellis.jvector.graph.GraphSearcher;
@@ -248,7 +246,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     this.associatedBucketId = -1; // Will be set via setMetadata()
 
     // Initialize compaction fields
-    this.currentMutablePages = new AtomicInteger(1); // Start with page 0
+    this.currentMutablePages = new AtomicInteger(0); // No page0 - start with 0 pages
     this.minPagesToScheduleACompaction = builder.getDatabase().getConfiguration()
         .getValueAsInteger(com.arcadedb.GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
     this.compactedSubIndex = null;
@@ -257,6 +255,9 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     this.component = new LSMVectorIndexComponent(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(),
         ComponentFile.MODE.READ_WRITE, DEF_PAGE_SIZE);
     this.component.setMainIndex(this);
+
+    // Metadata is stored only in schema JSON (via toJSON()), not in pages
+    // No page0 initialization needed - all pages contain only vector data
 
     initializeGraphIndex();
   }
@@ -284,58 +285,6 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     this.minPagesToScheduleACompaction = database.getConfiguration()
         .getValueAsInteger(com.arcadedb.GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
     this.compactedSubIndex = null;
-
-    // Load configuration from metadata file or use sensible defaults
-    // Metadata will be applied from schema later via applyMetadataFromSchema() if available
-    JSONObject json = null;
-
-    // Try to read from metadata file if it exists (backward compatibility with non-replicated indexes)
-    String originalFilePath = filePath.replaceAll("\\.[0-9]+\\.[0-9]+\\.v[0-9]+\\." + FILE_EXT + "$", "");
-    originalFilePath = originalFilePath.replaceAll("\\." + FILE_EXT + "$", "");
-    final String metadataPath = originalFilePath + ".metadata.json";
-    final File metadataFile = new File(metadataPath);
-
-    if (metadataFile.exists()) {
-      try {
-        final String fileContent = FileUtils.readFileAsString(metadataFile);
-        json = new JSONObject(fileContent);
-        LogManager.instance().log(this, Level.FINE, "Loaded vector index metadata from file: %s", metadataPath);
-      } catch (final Exception e) {
-        LogManager.instance()
-            .log(this, Level.WARNING, "Failed to read metadata file %s, using defaults: %s", e, metadataPath, e.getMessage());
-      }
-    }
-
-    // Use sensible defaults if metadata file doesn't exist
-    // This is normal during schema replication when metadata is embedded in the schema and
-    // will be applied after construction via applyMetadataFromSchema()
-    if (json == null) {
-      LogManager.instance().log(this, Level.FINE,
-          "Metadata file not found for index %s. Using defaults (will be overridden by schema if available).", name);
-      json = new JSONObject();
-      json.put("dimensions", 10);  // Default dimensions
-      json.put("similarityFunction", "COSINE");
-      json.put("maxConnections", 16);
-      json.put("beamWidth", 100);
-      json.put("idPropertyName", "id");
-      json.put("properties", new JSONArray());
-    }
-
-    // indexName already set in constructor
-    this.typeName = json.getString("typeName", "");
-    this.dimensions = json.getInt("dimensions");
-    this.similarityFunction = VectorSimilarityFunction.valueOf(json.getString("similarityFunction", "COSINE"));
-    this.maxConnections = json.getInt("maxConnections", 16);
-    this.beamWidth = json.getInt("beamWidth", 100);
-    this.idPropertyName = json.getString("idPropertyName", "id");
-
-    // Load property names
-    this.propertyNames = new ArrayList<>();
-    if (json.has("properties")) {
-      final var jsonArray = json.getJSONArray("properties");
-      for (int i = 0; i < jsonArray.length(); i++)
-        propertyNames.add(jsonArray.getString(i));
-    }
 
     // Load vectors from pages - only if this is an existing index file
     // During replication on replicas, the file may not exist yet and will be created/replicated later
@@ -437,42 +386,18 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
         "DEBUG: loadVectorsFromPages STARTED: index=%s, totalPages=%d", indexName, getTotalPages());
     try {
-      // Read header from page 0
-      final BasePage page0 = getDatabase().getTransaction().getPage(new PageId(getDatabase(), getFileId(), 0), getPageSize());
-      final ByteBuffer buffer0 = page0.getContent();
-      buffer0.position(0);
+      // NOTE: All metadata (dimensions, similarityFunction, maxConnections, beamWidth) comes from schema JSON
+      // via applyMetadataFromSchema(). Pages contain only vector data, no metadata.
 
-      final int storedNextId = buffer0.getInt();
-      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
-          "DEBUG: loadVectorsFromPages - page0 storedNextId=%d, index=%s", storedNextId, indexName);
-
-      if (storedNextId == 0) {
-        LogManager.instance().log(this, Level.FINE, "No vectors to load - empty index: " + indexName);
-        return;
-      }
-
-      // Read and validate metadata
-      final int storedDimensions = buffer0.getInt();
-      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
-          "DEBUG: loadVectorsFromPages - storedDimensions=%d, expectedDimensions=%d, index=%s",
-          storedDimensions, dimensions, indexName);
-
-      if (storedDimensions != dimensions) {
-        throw new IndexException("Dimension mismatch: expected " + dimensions + " but found " + storedDimensions);
-      }
-
-      // Skip similarity, maxConnections, beamWidth - already set from constructor
-      buffer0.getInt();
-      buffer0.getInt();
-      buffer0.getInt();
-
-      nextId.set(storedNextId);
-
-      // Read all data pages (1 onwards) in LSM style
+      // Read all data pages (starting from page 0) in LSM style
       final int totalPages = getTotalPages();
       int entriesRead = 0;
+      int maxVectorId = -1; // Track max ID to compute nextId
 
-      for (int pageNum = 1; pageNum < totalPages; pageNum++) {
+      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+          "DEBUG: loadVectorsFromPages STARTED: index=%s, totalPages=%d", indexName, totalPages);
+
+      for (int pageNum = 0; pageNum < totalPages; pageNum++) {
         final BasePage currentPage = getDatabase().getTransaction().getPage(
             new PageId(getDatabase(), getFileId(), pageNum), getPageSize());
         final ByteBuffer pageBuffer = currentPage.getContent();
@@ -508,6 +433,10 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
           final boolean deleted = pageBuffer.get() == 1;
 
+          // Track max vector ID to compute nextId
+          if (id > maxVectorId)
+            maxVectorId = id;
+
           // Add/update in registry (LSM style: later entries override earlier ones)
           final VectorEntry entry = new VectorEntry(id, rid, vector);
           entry.deleted = deleted;
@@ -516,9 +445,12 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
         }
       }
 
+      // Compute nextId from the maximum vector ID found + 1
+      nextId.set(maxVectorId + 1);
+
       LogManager.instance().log(this, Level.INFO,
           "Loaded " + vectorRegistry.size() + " unique vectors (" + entriesRead + " total entries) from " +
-              (totalPages - 1) + " pages for index: " + indexName);
+              totalPages + " pages for index: " + indexName + ", nextId=" + nextId.get());
 
       // Rebuild the graph index with loaded non-deleted vectors
       if (!vectorRegistry.isEmpty()) {
@@ -543,16 +475,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
           "DEBUG: persistVectorsDeltaIncremental called: index=%s, changedVectorIds=%d, totalPages=%d",
           indexName, changedVectorIds.size(), getTotalPages());
 
-      // Update metadata in page 0
-      final BasePage page0 = getDatabase().getTransaction().getPageToModify(
-          new PageId(getDatabase(), getFileId(), 0), getPageSize(), false);
-      final ByteBuffer buffer0 = page0.getContent();
-      buffer0.position(0);
-      buffer0.putInt(nextId.get()); // Update next ID
-      buffer0.putInt(dimensions);
-      buffer0.putInt(similarityFunction.ordinal());
-      buffer0.putInt(maxConnections);
-      buffer0.putInt(beamWidth);
+      // NO page0 writes needed! Metadata is stored in schema JSON, nextId is computed from max vector ID during load
 
       if (changedVectorIds.isEmpty())
         return;
@@ -560,10 +483,10 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       // Calculate entry size: id(4) + position(8) + bucketId(4) + vector(dimensions*4) + deleted(1)
       final int entrySize = 4 + 8 + 4 + (dimensions * 4) + 1;
 
-      // Get or create the last mutable page
+      // Get or create the last mutable page (pages start from 0 now - no page0 metadata)
       int lastPageNum = getTotalPages() - 1;
-      if (lastPageNum < 1) {
-        lastPageNum = 1;
+      if (lastPageNum < 0) {
+        lastPageNum = 0;
         createNewVectorDataPage(lastPageNum);
       }
 
