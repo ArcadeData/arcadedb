@@ -73,9 +73,9 @@ public class LSMVectorIndexComponent extends PaginatedComponent {
       final ComponentFile.MODE mode, final int pageSize) throws IOException {
     super(database, name, filePath, FILE_EXT, mode, pageSize, CURRENT_VERSION);
 
-    // Initialize page 0 for new indexes (like LSMTreeIndexMutable does)
+    // No page0 initialization needed - all pages contain only vector data
+    // Metadata is stored in schema JSON only
     database.checkTransactionIsActive(database.isAutoTransaction());
-    initializePage0();
   }
 
   /**
@@ -156,27 +156,5 @@ public class LSMVectorIndexComponent extends PaginatedComponent {
    */
   public String getFilePath() {
     return filePath;
-  }
-
-  /**
-   * Initialize page 0 with metadata header.
-   * Page 0 contains: nextId(4) + dimensions(4) + similarityFunction(4) + maxConnections(4) + beamWidth(4)
-   * This is called when creating a new index to set up the metadata page.
-   */
-  private void initializePage0() throws IOException {
-    final PageId pageId = new PageId(database, getFileId(), 0);
-    final MutablePage page0 = database.isTransactionActive() ?
-        database.getTransaction().addPage(pageId, getPageSize()) :
-        new MutablePage(pageId, getPageSize());
-
-    final ByteBuffer buffer = page0.getContent();
-    buffer.position(0);
-
-    // Initialize metadata with defaults (will be overwritten by LSMVectorIndex)
-    buffer.putInt(0);  // nextId = 0
-    buffer.putInt(0);  // dimensions (placeholder)
-    buffer.putInt(0);  // similarityFunction (placeholder)
-    buffer.putInt(0);  // maxConnections (placeholder)
-    buffer.putInt(0);  // beamWidth (placeholder)
   }
 }
