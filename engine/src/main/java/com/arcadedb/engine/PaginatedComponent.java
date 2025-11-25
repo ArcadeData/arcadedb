@@ -123,6 +123,7 @@ public abstract class PaginatedComponent extends Component {
         throw new IndexException(
             "Cannot rename temporary index file '" + file.getFilePath() + "' to '" + newFileName + "' (exists=" + (new File(
                 file.getFilePath()).exists()) + ")", e);
+      }
     }
   }
 }
