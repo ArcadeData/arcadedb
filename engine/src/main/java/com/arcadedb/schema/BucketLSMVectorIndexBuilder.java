@@ -121,6 +121,7 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
     return this;
   }
 
+  @Override
   public BucketLSMVectorIndexBuilder withMetadata(final IndexMetadata metadata) {
     if (metadata instanceof LSMVectorIndexMetadata v) {
       this.dimensions = v.dimensions;
