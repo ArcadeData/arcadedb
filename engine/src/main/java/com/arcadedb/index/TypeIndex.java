@@ -26,6 +26,7 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
@@ -46,6 +47,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   private final DocumentType        type;
   private       boolean             valid            = true;
   private       IndexInternal       associatedIndex;
+  private       IndexMetadata       metadata;
 
   public TypeIndex(final String logicName, final DocumentType type) {
     this.logicName = logicName;
@@ -366,12 +368,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public void setMetadata(final String name, final String[] propertyNames, final int associatedBucketId) {
+  public void setMetadata(IndexMetadata metadata) {
     throw new UnsupportedOperationException("setMetadata");
   }
 
   @Override
-  public void applyMetadataFromSchema(final JSONObject indexJSON) {
+  public void setMetadata(final JSONObject indexJSON) {
     throw new UnsupportedOperationException("applyMetadataFromSchema");
   }
 
@@ -509,5 +511,9 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     if (indexesOnBuckets.isEmpty())
       throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
     return indexesOnBuckets.get(0);
+  }
+
+  public IndexMetadata getMetadata() {
+    return metadata;
   }
 }

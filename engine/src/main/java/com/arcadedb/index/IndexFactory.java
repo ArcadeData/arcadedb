@@ -29,7 +29,7 @@ public class IndexFactory {
     map.put(type, handler);
   }
 
-  public IndexInternal createIndex(final IndexBuilder builder) {
+  public IndexInternal createIndex(final IndexBuilder<?> builder) {
     final String indexType = builder.getIndexType().name();
     final IndexFactoryHandler handler = map.get(indexType);
 

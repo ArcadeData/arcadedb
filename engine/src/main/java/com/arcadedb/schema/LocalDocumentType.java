@@ -880,7 +880,9 @@ public class LocalDocumentType implements DocumentType {
 
   protected void addIndexInternal(final IndexInternal index, final int bucketId, final String[] propertyNames,
       TypeIndex propIndex) {
-    index.setMetadata(name, propertyNames, bucketId);
+    index.getMetadata().typeName = name;
+    index.getMetadata().propertyNames = List.of(propertyNames);
+    index.getMetadata().associatedBucketId = bucketId;
 
     final List<IndexInternal> list = bucketIndexesByBucket.computeIfAbsent(bucketId, k -> new ArrayList<>());
     list.add(index);
@@ -949,7 +951,8 @@ public class LocalDocumentType implements DocumentType {
         for (TypeIndex idx : existentIndexes) {
           schema.createBucketIndex(this, idx.getKeyTypes(), bucket, name, idx.getType(), idx.isUnique(), idx.getPageSize(),
               idx.getNullStrategy(), null, idx.getPropertyNames().toArray(new String[idx.getPropertyNames().size()]), idx,
-              IndexBuilder.BUILD_BATCH_SIZE);
+              IndexBuilder.BUILD_BATCH_SIZE,
+              idx.getMetadata());
         }
       });
     }
@@ -1163,7 +1166,8 @@ public class LocalDocumentType implements DocumentType {
                     schema.createBucketIndex(this, index.getKeyTypes(), bucket, name, index.getType(), index.isUnique(),
                         LSMTreeIndexAbstract.DEF_PAGE_SIZE, index.getNullStrategy(), null,
                         index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]), index,
-                        IndexBuilder.BUILD_BATCH_SIZE);
+                        IndexBuilder.BUILD_BATCH_SIZE,
+                        index.getMetadata());
                 }
               }
             }

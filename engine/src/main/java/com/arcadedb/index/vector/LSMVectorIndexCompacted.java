@@ -49,16 +49,16 @@ import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class LSMVectorIndexCompacted extends PaginatedComponent {
-  public static final  String FILE_EXT        = "vcidx";
-  public static final  int    CURRENT_VERSION = 1;
+  public static final  String FILE_EXT         = "vcidx";
+  public static final  int    CURRENT_VERSION  = 1;
   private static final int    PAGE_HEADER_SIZE = 4 + 4 + 1 + 4; // offsetFree + count + mutable + series
 
-  protected final LSMVectorIndex              mainIndex;
-  protected final int                         dimensions;
-  protected final VectorSimilarityFunction    similarityFunction;
-  protected final int                         maxConnections;
-  protected final int                         beamWidth;
-  protected final int                         entrySize;
+  protected final LSMVectorIndex           mainIndex;
+  protected final int                      dimensions;
+  protected final VectorSimilarityFunction similarityFunction;
+  protected final int                      maxConnections;
+  protected final int                      beamWidth;
+  protected final int                      entrySize;
 
   /**
    * Called at creation time for compaction.
@@ -104,16 +104,22 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
     }
   }
 
+  @Override
+  public Object getMainComponent() {
+    return mainIndex;
+  }
+
   /**
    * Appends a vector entry during compaction.
    * Handles page overflow by creating new pages as needed.
    *
-   * @param currentPage               The current page being written to (or null to create new)
+   * @param currentPage                 The current page being written to (or null to create new)
    * @param compactedPageNumberOfSeries Counter for page series numbering
-   * @param vectorId                  The vector ID
-   * @param rid                       The record ID
-   * @param vector                    The vector data
-   * @param deleted                   Whether this entry is deleted
+   * @param vectorId                    The vector ID
+   * @param rid                         The record ID
+   * @param vector                      The vector data
+   * @param deleted                     Whether this entry is deleted
+   *
    * @return List of new pages created (may be empty if existing page had space)
    */
   public List<MutablePage> appendDuringCompaction(MutablePage currentPage,
@@ -332,10 +338,10 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
    * Simple vector entry class for returning data.
    */
   public static class VectorEntry {
-    public final int       id;
-    public final RID       rid;
-    public final float[]   vector;
-    public boolean         deleted;
+    public final int     id;
+    public final RID     rid;
+    public final float[] vector;
+    public       boolean deleted;
 
     public VectorEntry(final int id, final RID rid, final float[] vector) {
       this.id = id;

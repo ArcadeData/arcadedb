@@ -62,9 +62,8 @@ import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   public enum NULL_STRATEGY {ERROR, SKIP}
 
-  public static final    int    DEF_PAGE_SIZE = 262_144;
-  public final           RID    REMOVED_ENTRY_RID;
-  protected static final String TEMP_EXT      = "temp_";
+  public static final int DEF_PAGE_SIZE = 262_144;
+  public final        RID REMOVED_ENTRY_RID;
 
   protected static final LSMTreeIndexCompacted.LookupResult LOWER     = new LSMTreeIndexCompacted.LookupResult(false, true, 0,
       null);
@@ -190,24 +189,6 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
   public boolean isDeletedEntry(final RID rid) {
     return rid.getBucketId() < 0;
-  }
-
-  public void removeTempSuffix() {
-    final String fileName = file.getFilePath();
-
-    final int extPos = fileName.lastIndexOf('.');
-    if (fileName.substring(extPos + 1).startsWith(TEMP_EXT)) {
-      final String newFileName = fileName.substring(0, extPos) + "." + fileName.substring(extPos + TEMP_EXT.length() + 1);
-
-      try {
-        file.rename(newFileName);
-        database.getFileManager().renameFile(fileName, newFileName);
-      } catch (final IOException e) {
-        throw new IndexException(
-            "Cannot rename index file '" + file.getFilePath() + "' into temp file '" + newFileName + "' (exists=" + (new File(
-                file.getFilePath()).exists()) + ")", e);
-      }
-    }
   }
 
   public void drop() throws IOException {
@@ -561,7 +542,8 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       for (int i = 0; i < keys.length; ++i)
         if (keys[i] == null)
           throw new IllegalArgumentException(
-              "Indexed key " + mainIndex.getTypeName() + mainIndex.propertyNames + " cannot be NULL (" + Arrays.toString(keys)
+              "Indexed key " + mainIndex.getTypeName() + mainIndex.getPropertyNames() + " cannot be NULL (" + Arrays.toString(
+                  keys)
                   + ")");
   }
 

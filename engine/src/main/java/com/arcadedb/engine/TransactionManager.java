@@ -25,6 +25,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.LockManager;
 
@@ -364,8 +365,13 @@ public class TransactionManager {
         database.getPageManager().removePageFromCache(modifiedPage.pageId);
 
         final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileById(txPage.fileId);
-        if (component != null)
+        if (component != null) {
           component.updatePageCount(modifiedPage.pageId.getPageNumber() + 1);
+
+          final Object mainComponent = component.getMainComponent();
+          if (mainComponent instanceof LSMVectorIndex idx)
+            idx.markIndexDirty();
+        }
 
         if (file.getFileId() == dictionaryId)
           involveDictionary = true;
