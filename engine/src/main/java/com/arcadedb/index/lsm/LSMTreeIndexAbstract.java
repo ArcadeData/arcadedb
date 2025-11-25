@@ -64,7 +64,6 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
   public static final    int    DEF_PAGE_SIZE = 262_144;
   public final           RID    REMOVED_ENTRY_RID;
-  protected static final String TEMP_EXT      = "temp_";
 
   protected static final LSMTreeIndexCompacted.LookupResult LOWER     = new LSMTreeIndexCompacted.LookupResult(false, true, 0,
       null);
