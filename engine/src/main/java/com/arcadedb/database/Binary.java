@@ -467,7 +467,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
 
   @Override
   public float getFloat() {
-    checkForFetching(4);
+    checkForFetching(FLOAT_SERIALIZED_SIZE);
     return buffer.getFloat();
   }
 
