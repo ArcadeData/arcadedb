@@ -1,9 +1,3 @@
-package com.arcadedb.schema;
-
-import com.arcadedb.serializer.json.JSONObject;
-
-import java.util.*;
-
 /*
  * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
@@ -18,7 +12,16 @@ import java.util.*;
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
  */
+package com.arcadedb.schema;
+
+import com.arcadedb.serializer.json.JSONObject;
+
+import java.util.*;
+
 public class IndexMetadata {
   public String       typeName;
   public List<String> propertyNames;
