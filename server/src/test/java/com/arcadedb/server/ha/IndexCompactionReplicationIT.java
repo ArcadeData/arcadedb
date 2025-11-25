@@ -191,7 +191,6 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
    * correctly stored in schema JSON and replicated to all replicas.
    */
   @Test
-  @Disabled
   public void lsmVectorCompactionReplication() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
 
@@ -226,6 +225,15 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
         }
       }
     });
+
+    // GET THE INDEX AND TRIGGER COMPACTION ON LEADER
+    LogManager.instance().log(this, Level.FINE, "Triggering compaction on index '%s' on leader...", vectorIndex.getName());
+    final com.arcadedb.index.TypeIndex index = (com.arcadedb.index.TypeIndex) database.getSchema()
+        .getIndexByName(vectorIndex.getName());
+    index.scheduleCompaction();
+    final boolean compacted = index.compact();
+    LogManager.instance().log(this, Level.FINE, "Compaction result: %b", compacted);
+    // Compaction might return false if the index doesn't need compaction, which is OK for this test
 
     LogManager.instance().log(this, Level.FINE, "Verifying vector index on leader...");
     final long entriesOnLeader = vectorIndex.countEntries();

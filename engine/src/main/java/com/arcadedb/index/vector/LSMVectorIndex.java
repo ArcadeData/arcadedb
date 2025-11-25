@@ -1104,13 +1104,15 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
   @Override
   public boolean scheduleCompaction() {
+    checkIsValid();
+    if (getDatabase().getPageManager().isPageFlushingSuspended(getDatabase()))
+      return false;
     return status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.COMPACTION_SCHEDULED);
   }
 
   @Override
   public boolean isCompacting() {
-    final INDEX_STATUS currentStatus = status.get();
-    return currentStatus == INDEX_STATUS.COMPACTION_SCHEDULED || currentStatus == INDEX_STATUS.COMPACTION_IN_PROGRESS;
+    return status.get() == INDEX_STATUS.COMPACTION_IN_PROGRESS;
   }
 
   @Override

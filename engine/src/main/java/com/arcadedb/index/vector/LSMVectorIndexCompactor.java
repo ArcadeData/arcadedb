@@ -52,10 +52,6 @@ public class LSMVectorIndexCompactor {
    * @return true if compaction was performed, false otherwise
    */
   public static boolean compact(final LSMVectorIndex mainIndex) throws IOException, InterruptedException {
-    if (!mainIndex.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.COMPACTION_SCHEDULED },
-        IndexInternal.INDEX_STATUS.COMPACTION_IN_PROGRESS))
-      return false;
-
     final DatabaseInternal database = mainIndex.getDatabase();
     final int totalPages = mainIndex.getTotalPages();
 
@@ -64,7 +60,7 @@ public class LSMVectorIndexCompactor {
             mainIndex.getName(), totalPages, mainIndex.getCurrentMutablePages());
 
     try {
-      if (totalPages < 2) {
+      if (totalPages < 1) {
         // Nothing to compact (only metadata page)
         mainIndex.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.COMPACTION_IN_PROGRESS },
             IndexInternal.INDEX_STATUS.AVAILABLE);
