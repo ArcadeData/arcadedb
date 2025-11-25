@@ -117,6 +117,80 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
    * correctly stored in schema JSON and replicated to all replicas.
    */
   @Test
+  public void lsmVectorReplication() throws Exception {
+    final Database database = getServerDatabase(0, getDatabaseName());
+
+    // CREATE SCHEMA WITH VECTOR INDEX (use 1 bucket for simpler replication testing)
+    final VertexType v = database.getSchema().buildVertexType().withName("Embedding").withTotalBuckets(1).create();
+    v.createProperty("vector", float[].class);
+
+    // USE BUILDER FOR VECTOR INDEXES WITH DIMENSION = 10
+    final TypeLSMVectorIndexBuilder builder = database.getSchema().buildTypeIndex("Embedding", new String[] { "vector" })
+        .withLSMVectorType();
+
+    builder.withDimensions(10);
+
+    final com.arcadedb.index.TypeIndex vectorIndex = builder.create();
+
+    LogManager.instance().log(this, Level.FINE, "Vector index created: %s", vectorIndex.getName());
+    Assertions.assertNotNull(vectorIndex, "Vector index should be created successfully");
+
+    LogManager.instance().log(this, Level.FINE, "Inserting %d records into vector index...", TOTAL_RECORDS);
+    // INSERT VECTOR RECORDS IN BATCHES
+    database.transaction(() -> {
+      for (int i = 0; i < TOTAL_RECORDS; i++) {
+        final float[] vector = new float[10];
+        for (int j = 0; j < vector.length; j++)
+          vector[j] = (i + j) % 100f;
+
+        database.newVertex("Embedding").set("vector", vector).save();
+
+        if (i % TX_CHUNK == 0) {
+          database.commit();
+          database.begin();
+        }
+      }
+    });
+
+    LogManager.instance().log(this, Level.FINE, "Verifying vector index on leader...");
+    final long entriesOnLeader = vectorIndex.countEntries();
+    LogManager.instance().log(this, Level.FINE, "Vector index contains %d entries on leader", entriesOnLeader);
+    Assertions.assertTrue(entriesOnLeader > 0, "Vector index should contain entries after inserting records");
+
+    // WAIT FOR REPLICATION TO COMPLETE
+    LogManager.instance().log(this, Level.FINE, "Waiting for replication...");
+    Thread.sleep(2000);
+
+    // VERIFY THAT VECTOR INDEX DEFINITION IS REPLICATED TO ALL SERVERS
+    final String actualIndexName = vectorIndex.getName();
+    testEachServer((serverIndex) -> {
+      LogManager.instance().log(this, Level.FINE, "Verifying vector index definition on server %d...", serverIndex);
+
+      final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
+
+      // Check if the index exists in schema
+      final com.arcadedb.index.Index serverVectorIndex = serverDb.getSchema().getIndexByName(actualIndexName);
+      if (serverVectorIndex == null) {
+        // Index not found, check the type's indexes
+        final com.arcadedb.schema.DocumentType embeddingType = serverDb.getSchema().getType("Embedding");
+        LogManager.instance().log(this, Level.WARNING, "Vector index not found on server %d. Type has %d indexes", serverIndex,
+            embeddingType.getAllIndexes(false).size());
+      }
+      Assertions.assertNotNull(serverVectorIndex, "Vector index should be replicated to server " + serverIndex);
+
+      final long entriesOnReplica = serverVectorIndex.countEntries();
+      Assertions.assertEquals(entriesOnLeader, entriesOnReplica);
+    });
+
+    LogManager.instance().log(this, Level.FINE, "LSM Vector index replication test PASSED");
+  }
+
+  /**
+   * Test that LSM Vector indexes are properly created and replicated to all replicas.
+   * This test verifies that vector index definitions with complete metadata are
+   * correctly stored in schema JSON and replicated to all replicas.
+   */
+  @Test
   @Disabled
   public void lsmVectorCompactionReplication() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());

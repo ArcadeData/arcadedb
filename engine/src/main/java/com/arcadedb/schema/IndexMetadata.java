@@ -33,6 +33,6 @@ public class IndexMetadata {
   public void fromJSON(final JSONObject metadata) {
     typeName = metadata.getString("typeName");
     propertyNames = metadata.getJSONArray("properties").toListOfStrings();
-    associatedBucketId = metadata.getInt("associatedBucketId");
+    associatedBucketId = metadata.getInt("associatedBucketId", -1);
   }
 }
