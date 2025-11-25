@@ -53,6 +53,21 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
   }
 
   @Override
+  public IndexBuilder<Index> withType(Schema.INDEX_TYPE indexType) {
+    if (indexType == Schema.INDEX_TYPE.LSM_VECTOR && !(this instanceof BucketLSMVectorIndexBuilder))
+      return new BucketLSMVectorIndexBuilder(this);
+    return super.withType(indexType);
+  }
+
+  public String[] getPropertyNames() {
+    return propertyNames;
+  }
+
+  public String getTypeName() {
+    return typeName;
+  }
+
+  @Override
   public Index create() {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
@@ -62,22 +77,20 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
 
     try {
       for (int i = 0; i < totalThreads; i++) {
-        ((DatabaseAsyncExecutorImpl) database.async()).scheduleTask(i, new DatabaseAsyncExecuteAlone(semaphoreAfterFinish,
-            () -> {
-              try {
-                semaphoreToStart.countDown();
-                semaphoreAfterFinish.await(Long.MAX_VALUE, TimeUnit.MILLISECONDS);
-              } catch (InterruptedException e) {
-                // SHUTDOWN IN PROGRESS
-              }
-            }), true, 100);
+        ((DatabaseAsyncExecutorImpl) database.async()).scheduleTask(i, new DatabaseAsyncExecuteAlone(semaphoreAfterFinish, () -> {
+          try {
+            semaphoreToStart.countDown();
+            semaphoreAfterFinish.await(Long.MAX_VALUE, TimeUnit.MILLISECONDS);
+          } catch (InterruptedException e) {
+            // SHUTDOWN IN PROGRESS
+          }
+        }), true, 100);
       }
 
       final LocalSchema schema = database.getSchema().getEmbedded();
 
       if (propertyNames.length == 0)
-        throw new DatabaseMetadataException(
-            "Cannot create index on type '" + typeName + "' because there are no property defined");
+        throw new DatabaseMetadataException("Cannot create index on type '" + typeName + "' because there are no property defined");
 
       final LocalDocumentType type = schema.getType(typeName);
 
@@ -107,10 +120,8 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
             }
           }
 
-          final Index index = schema.createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize,
-              nullStrategy,
-              callback, propertyNames, null,
-              batchSize);
+          final Index index = schema.createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy,
+              callback, propertyNames, null, batchSize, metadata);
           result1.set(index);
 
           schema.saveConfiguration();
