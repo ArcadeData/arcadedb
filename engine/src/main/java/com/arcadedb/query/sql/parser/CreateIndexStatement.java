@@ -30,14 +30,11 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.concurrent.atomic.*;
+import java.util.stream.*;
 
 public class CreateIndexStatement extends DDLStatement {
 
@@ -59,11 +56,16 @@ public class CreateIndexStatement extends DDLStatement {
   public void validate() throws CommandSQLParsingException {
     final String typeAsString = type.getStringValue().toUpperCase();
     switch (typeAsString) {
-    case "FULL_TEXT" -> {}
-    case "UNIQUE" -> {}
-    case "NOTUNIQUE" -> {}
-    case "HNSW" -> {}
-    case "LSM_VECTOR" -> {}
+    case "FULL_TEXT" -> {
+    }
+    case "UNIQUE" -> {
+    }
+    case "NOTUNIQUE" -> {
+    }
+    case "HNSW" -> {
+    }
+    case "LSM_VECTOR" -> {
+    }
     default -> throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
     }
   }
@@ -138,13 +140,14 @@ public class CreateIndexStatement extends DDLStatement {
     // Handle vector-specific metadata
     if (indexType == Schema.INDEX_TYPE.LSM_VECTOR) {
       if (metadata == null)
-        throw new CommandSQLParsingException("LSM_VECTOR index requires METADATA with dimensions, similarity, maxConnections, and beamWidth");
+        throw new CommandSQLParsingException(
+            "LSM_VECTOR index requires METADATA with dimensions, similarity, maxConnections, and beamWidth");
 
       final Map<String, Object> metadataMap = metadata.toMap((Result) null, context);
       final com.arcadedb.serializer.json.JSONObject jsonMetadata = new com.arcadedb.serializer.json.JSONObject(metadataMap);
 
       // Builder is now an LSMVectorIndexBuilder after withType(LSM_VECTOR)
-      final com.arcadedb.schema.LSMVectorIndexBuilder vectorBuilder = (com.arcadedb.schema.LSMVectorIndexBuilder) builder;
+      final TypeLSMVectorIndexBuilder vectorBuilder = builder.withLSMVectorType();
       vectorBuilder.withMetadata(jsonMetadata);
     }
 

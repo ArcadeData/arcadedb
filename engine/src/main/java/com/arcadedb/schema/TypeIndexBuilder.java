@@ -30,8 +30,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.security.SecurityDatabaseUser;
 
-import java.util.Arrays;
-import java.util.List;
+import java.util.*;
 
 /**
  * Builder class for type indexes.
@@ -39,13 +38,11 @@ import java.util.List;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
-  final String   typeName;
-  final String[] propertyNames;
+  public IndexMetadata metadata;
 
   protected TypeIndexBuilder(final DatabaseInternal database, final String typeName, final String[] propertyNames) {
     super(database, TypeIndex.class);
-    this.typeName = typeName;
-    this.propertyNames = propertyNames;
+    this.metadata = new IndexMetadata(typeName, propertyNames, -1);
   }
 
   /**
@@ -53,32 +50,14 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
    * to enable vector-specific configuration methods.
    *
    * @param indexType the index type
+   *
    * @return appropriate builder for the index type
    */
   @Override
   public TypeIndexBuilder withType(final Schema.INDEX_TYPE indexType) {
+    if (indexType == Schema.INDEX_TYPE.LSM_VECTOR && !(this instanceof TypeLSMVectorIndexBuilder))
+      return new TypeLSMVectorIndexBuilder(this);
     super.withType(indexType);
-
-    // For vector indexes, return LSMVectorIndexBuilder to enable vector-specific methods
-    if (indexType == Schema.INDEX_TYPE.LSM_VECTOR && !(this instanceof LSMVectorIndexBuilder)) {
-      final LSMVectorIndexBuilder vectorBuilder = new LSMVectorIndexBuilder(database, typeName, propertyNames);
-      // Copy settings from this builder
-      vectorBuilder.withType(indexType);
-      if (this.indexName != null)
-        vectorBuilder.withIndexName(this.indexName);
-      if (this.filePath != null)
-        vectorBuilder.withFilePath(this.filePath);
-      vectorBuilder.withUnique(this.unique);
-      vectorBuilder.withPageSize(this.pageSize);
-      vectorBuilder.withNullStrategy(this.nullStrategy);
-      vectorBuilder.withIgnoreIfExists(this.ignoreIfExists);
-      if (this.callback != null)
-        vectorBuilder.withCallback(this.callback);
-      vectorBuilder.withBatchSize(this.batchSize);
-      vectorBuilder.withMaxAttempts(this.maxAttempts);
-      return vectorBuilder;
-    }
-
     return this;
   }
 
@@ -90,37 +69,36 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       throw new NeedRetryException("Cannot create a new index while asynchronous tasks are running");
 
     final LocalSchema schema = database.getSchema().getEmbedded();
-    if (ignoreIfExists) {
-      final DocumentType type = schema.getType(typeName);
-      final TypeIndex index = type.getPolymorphicIndexByProperties(propertyNames);
-      if (index != null) {
-        if (index.getNullStrategy() != null && index.getNullStrategy() == null ||//
-            index.isUnique() != unique) {
+
+    final LocalDocumentType type = schema.getType(metadata.typeName);
+    final TypeIndex existingTypeIndex = type.getPolymorphicIndexByProperties(metadata.propertyNames);
+
+    if (existingTypeIndex != null) {
+      if (ignoreIfExists) {
+        if (existingTypeIndex.getNullStrategy() != null && existingTypeIndex.getNullStrategy() == null ||//
+            existingTypeIndex.isUnique() != unique) {
           // DIFFERENT, DROP AND RECREATE IT
-          index.drop();
+          existingTypeIndex.drop();
         } else
-          return index;
-      }
+          return existingTypeIndex;
+      } else
+        throw new IllegalArgumentException(
+            "Found the existent index '" + existingTypeIndex.getName() + "' defined on the properties '" + Arrays.asList(
+                metadata.propertyNames) + "' for type '" + metadata.typeName + "'");
     }
 
     if (indexType == null)
-      throw new DatabaseMetadataException("Cannot create index on type '" + typeName + "' because indexType was not specified");
-    if (propertyNames.length == 0)
-      throw new DatabaseMetadataException("Cannot create index on type '" + typeName + "' because there are no property defined");
-
-    final LocalDocumentType type = schema.getType(typeName);
-
-    final TypeIndex index = type.getPolymorphicIndexByProperties(propertyNames);
-    if (index != null)
-      throw new IllegalArgumentException(
-          "Found the existent index '" + index.getName() + "' defined on the properties '" + Arrays.asList(propertyNames)
-              + "' for type '" + typeName + "'");
+      throw new DatabaseMetadataException(
+          "Cannot create index on type '" + metadata.typeName + "' because indexType was not specified");
+    if (metadata.propertyNames.isEmpty())
+      throw new DatabaseMetadataException(
+          "Cannot create index on type '" + metadata.typeName + "' because there are no property defined");
 
     // CHECK ALL THE PROPERTIES EXIST
-    final Type[] keyTypes = new Type[propertyNames.length];
+    final Type[] keyTypes = new Type[metadata.propertyNames.size()];
     int i = 0;
 
-    for (final String propertyName : propertyNames) {
+    for (final String propertyName : metadata.propertyNames) {
       if (type instanceof LocalEdgeType && ("@out".equals(propertyName) || "@in".equals(propertyName))) {
         keyTypes[i++] = Type.LINK;
       } else {
@@ -149,8 +127,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
             // For nested paths with BY ITEM, the root must be a LIST
             if (isByItem && property.getType() != Type.LIST) {
               throw new SchemaException(
-                  "Cannot create index with BY ITEM on nested property path '" + typeName + "." + actualPropertyName +
-                  "' because the root property '" + rootPropertyName + "' is not a LIST type (found: " + property.getType() + ")");
+                  "Cannot create index with BY ITEM on nested property path '" + metadata.typeName + "." + actualPropertyName
+                      + "' because the root property '" + rootPropertyName + "' is not a LIST type (found: " + property.getType()
+                      + ")");
             }
 
             // For nested properties, we'll use STRING as the key type since we can't validate the nested structure at schema definition time
@@ -163,14 +142,14 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         // If we still don't have a property, it doesn't exist
         if (property == null) {
           throw new SchemaException(
-              "Cannot create the index on type '" + typeName + "." + actualPropertyName + "' because the property does not exist");
+              "Cannot create the index on type '" + metadata.typeName + "." + actualPropertyName
+                  + "' because the property does not exist");
         }
 
         // Validate BY ITEM is only used with LIST type
         if (isByItem && property.getType() != Type.LIST) {
-          throw new SchemaException(
-              "Cannot create index with BY ITEM on property '" + typeName + "." + actualPropertyName +
-              "' because it is not a LIST type (found: " + property.getType() + ")");
+          throw new SchemaException("Cannot create index with BY ITEM on property '" + metadata.typeName + "." + actualPropertyName
+              + "' because it is not a LIST type (found: " + property.getType() + ")");
         }
 
         // For BY ITEM on LIST, the key type should be STRING (since list items are indexed individually)
@@ -193,8 +172,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
           database.transaction(() -> {
 
             final LocalBucket bucket = (LocalBucket) buckets.get(finalIdx);
-            indexes[finalIdx] = schema.createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize,
-                nullStrategy, callback, propertyNames, null, batchSize);
+
+            indexes[finalIdx] = createBucketIndex(schema, type, keyTypes, bucket);
 
           }, false, maxAttempts, null, (error) -> {
             for (int j = 0; j < indexes.length; j++) {
@@ -210,83 +189,29 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         return null;
       });
 
-      return type.getPolymorphicIndexByProperties(propertyNames);
+      return type.getPolymorphicIndexByProperties(metadata.propertyNames);
     } catch (final NeedRetryException e) {
-      schema.dropIndex(typeName + Arrays.toString(propertyNames));
+      schema.dropIndex(metadata.typeName + metadata.propertyNames);
       throw e;
     } catch (final Throwable e) {
-      schema.dropIndex(typeName + Arrays.toString(propertyNames));
-      throw new IndexException("Error on creating index on type '" + typeName + "', properties " + Arrays.toString(propertyNames),
+      schema.dropIndex(metadata.typeName + metadata.propertyNames);
+      throw new IndexException("Error on creating index on type '" + metadata.typeName + "', properties " + metadata.propertyNames,
           e);
     }
   }
 
+  protected Index createBucketIndex(final LocalSchema schema, final LocalDocumentType type, final Type[] keyTypes,
+      final LocalBucket bucket) {
+    return schema.createBucketIndex(type, keyTypes, bucket, metadata.typeName, indexType, unique, pageSize, nullStrategy, callback,
+        metadata.propertyNames.toArray(new String[0]), null, batchSize,
+        metadata);
+  }
+
   public String getTypeName() {
-    return typeName;
+    return metadata.typeName;
   }
 
   public String[] getPropertyNames() {
-    return propertyNames;
-  }
-
-  /**
-   * Sets the number of dimensions for vector indexes.
-   * This method is for LSM_VECTOR indexes. When called on a base TypeIndexBuilder,
-   * it does nothing. Override in LSMVectorIndexBuilder to actually set the dimensions.
-   *
-   * @param dimensions the number of dimensions
-   * @return this builder
-   */
-  public TypeIndexBuilder withDimensions(final int dimensions) {
-    // Base implementation does nothing - LSMVectorIndexBuilder will override
-    return this;
-  }
-
-  /**
-   * Sets the similarity function for vector indexes.
-   * This method is for LSM_VECTOR indexes.
-   *
-   * @param similarity the similarity function name
-   * @return this builder
-   */
-  public TypeIndexBuilder withSimilarity(final String similarity) {
-    // Base implementation does nothing - LSMVectorIndexBuilder will override
-    return this;
-  }
-
-  /**
-   * Sets the maximum connections for vector indexes.
-   * This method is for LSM_VECTOR indexes.
-   *
-   * @param maxConnections the maximum number of connections
-   * @return this builder
-   */
-  public TypeIndexBuilder withMaxConnections(final int maxConnections) {
-    // Base implementation does nothing - LSMVectorIndexBuilder will override
-    return this;
-  }
-
-  /**
-   * Sets the beam width for vector indexes.
-   * This method is for LSM_VECTOR indexes.
-   *
-   * @param beamWidth the beam width
-   * @return this builder
-   */
-  public TypeIndexBuilder withBeamWidth(final int beamWidth) {
-    // Base implementation does nothing - LSMVectorIndexBuilder will override
-    return this;
-  }
-
-  /**
-   * Sets the ID property for vector indexes.
-   * This method is for LSM_VECTOR indexes.
-   *
-   * @param idPropertyName the ID property name
-   * @return this builder
-   */
-  public TypeIndexBuilder withIdProperty(final String idPropertyName) {
-    // Base implementation does nothing - LSMVectorIndexBuilder will override
-    return this;
+    return metadata.propertyNames.toArray(new String[0]);
   }
 }

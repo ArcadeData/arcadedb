@@ -19,7 +19,6 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.RID;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
@@ -28,12 +27,9 @@ import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.IndexException;
-import com.arcadedb.log.LogManager;
 
 import java.io.*;
 import java.nio.*;
-import java.util.*;
-import java.util.logging.*;
 
 /**
  * PaginatedComponent for LSM-based vector index storage.
@@ -42,10 +38,10 @@ import java.util.logging.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class LSMVectorIndexComponent extends PaginatedComponent {
-  public static final  String FILE_EXT        = "lsmvecidx";
-  public static final  int    CURRENT_VERSION = 0;
-  public static final  int    DEF_PAGE_SIZE   = 262_144;
+public class LSMVectorIndexMutable extends PaginatedComponent {
+  public static final String FILE_EXT        = "lsmvecidx";
+  public static final int    CURRENT_VERSION = 0;
+  public static final int    DEF_PAGE_SIZE   = 262_144;
 
   // Page header layout constants
   public static final int OFFSET_FREE_CONTENT = 0;  // 4 bytes
@@ -62,26 +58,31 @@ public class LSMVectorIndexComponent extends PaginatedComponent {
     @Override
     public Component createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id,
         final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
-      return new LSMVectorIndexComponent(database, name, filePath, id, mode, pageSize, version);
+      return new LSMVectorIndexMutable(database, name, filePath, id, mode, pageSize, version);
     }
   }
 
   /**
    * Constructor for creating a new component
    */
-  protected LSMVectorIndexComponent(final DatabaseInternal database, final String name, final String filePath,
+  protected LSMVectorIndexMutable(final DatabaseInternal database, final String name, final String filePath,
       final ComponentFile.MODE mode, final int pageSize) throws IOException {
     super(database, name, filePath, FILE_EXT, mode, pageSize, CURRENT_VERSION);
+  }
 
-    // No page0 initialization needed - all pages contain only vector data
-    // Metadata is stored in schema JSON only
+  /**
+   * Constructor for splitting an existing component (during compaction)
+   */
+  protected LSMVectorIndexMutable(final DatabaseInternal database, final String name, final String filePath,
+      final ComponentFile.MODE mode, final int pageSize, final String ext) throws IOException {
+    super(database, name, filePath, ext, mode, pageSize, CURRENT_VERSION);
     database.checkTransactionIsActive(database.isAutoTransaction());
   }
 
   /**
    * Constructor for loading an existing component
    */
-  protected LSMVectorIndexComponent(final DatabaseInternal database, final String name, final String filePath, final int id,
+  protected LSMVectorIndexMutable(final DatabaseInternal database, final String name, final String filePath, final int id,
       final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
   }

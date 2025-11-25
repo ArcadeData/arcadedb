@@ -37,6 +37,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.distance.DistanceFunctionFactory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.IndexBuilder;
+import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VectorIndexBuilder;
@@ -1042,11 +1043,16 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
   }
 
   @Override
-  public void setMetadata(final String name, final String[] propertyNames, final int associatedBucketId) {
+  public IndexMetadata getMetadata() {
+    return null;
   }
 
   @Override
-  public void applyMetadataFromSchema(JSONObject indexJSON) {
+  public void setMetadata(IndexMetadata metadata) {
+  }
+
+  @Override
+  public void setMetadata(JSONObject indexJSON) {
   }
 
   @Override

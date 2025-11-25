@@ -21,8 +21,8 @@ package com.arcadedb.index.vector;
 import com.arcadedb.TestHelper;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -112,22 +112,18 @@ public class LSMVectorIndexTest extends TestHelper {
       docType.createProperty("embedding", Type.ARRAY_OF_FLOATS);
 
       // Create LSM_VECTOR index programmatically using unified API
-      com.arcadedb.schema.TypeIndexBuilder builder = database.getSchema()
-          .buildTypeIndex("VectorDoc", new String[] { "embedding" });
-
-      // withType() returns LSMVectorIndexBuilder for LSM_VECTOR type
-      builder = builder.withType(Schema.INDEX_TYPE.LSM_VECTOR);
+      TypeLSMVectorIndexBuilder builder = database.getSchema()
+          .buildTypeIndex("VectorDoc", new String[] { "embedding" }).withLSMVectorType();
 
       // Set common index properties
       builder.withIndexName("VectorDoc_embedding_idx");
 
       // Cast to LSMVectorIndexBuilder to access vector-specific methods
-      final com.arcadedb.schema.LSMVectorIndexBuilder vectorBuilder = (com.arcadedb.schema.LSMVectorIndexBuilder) builder;
-      vectorBuilder.withDimensions(3);
-      vectorBuilder.withSimilarity("EUCLIDEAN");
-      vectorBuilder.withMaxConnections(8);
-      vectorBuilder.withBeamWidth(50);
-      vectorBuilder.create();
+      builder.withDimensions(3);
+      builder.withSimilarity("EUCLIDEAN");
+      builder.withMaxConnections(8);
+      builder.withBeamWidth(50);
+      builder.create();
     });
 
     // Verify index was created

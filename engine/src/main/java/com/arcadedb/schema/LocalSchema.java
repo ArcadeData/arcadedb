@@ -48,7 +48,6 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeFullTextIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
-import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
@@ -1083,7 +1082,7 @@ public class LocalSchema implements Schema {
 
             IndexInternal index = indexMap.get(indexName);
             if (index != null) {
-              index.applyMetadataFromSchema(indexJSON);
+              index.setMetadata(indexJSON);
 
               if (indexJSON.has("type")) {
                 final String configuredIndexType = indexJSON.getString("type");
@@ -1388,7 +1387,8 @@ public class LocalSchema implements Schema {
       final Index.BuildIndexCallback callback,
       final String[] propertyNames,
       final TypeIndex propIndex,
-      final int batchSize) {
+      final int batchSize,
+      final IndexMetadata metadata) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     if (bucket == null)
@@ -1408,7 +1408,8 @@ public class LocalSchema implements Schema {
         .withPageSize(pageSize)
         .withNullStrategy(nullStrategy)
         .withCallback(callback)
-        .withIndexName(indexName);
+        .withIndexName(indexName)
+        .withMetadata(metadata);
 
     final IndexInternal index = indexFactory.createIndex(builder);
 

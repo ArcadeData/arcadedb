@@ -48,6 +48,7 @@ public class LSMVectorIndexCompactor {
    * Merges multiple mutable pages into compacted pages with deduplication.
    *
    * @param mainIndex The vector index to compact
+   *
    * @return true if compaction was performed, false otherwise
    */
   public static boolean compact(final LSMVectorIndex mainIndex) throws IOException, InterruptedException {
@@ -105,9 +106,9 @@ public class LSMVectorIndexCompactor {
 
       // Atomically replace the old index with new one containing compacted data
       if (entriesCompacted > 0) {
-        final int newFileId = mainIndex.splitIndex(lastImmutablePage + 1, compactedIndex);
+        final LSMVectorIndexMutable newMutable = mainIndex.splitIndex(lastImmutablePage + 1, compactedIndex);
         LogManager.instance()
-            .log(mainIndex, Level.INFO, "Atomic replacement completed: new fileId=%d", null, newFileId);
+            .log(mainIndex, Level.INFO, "Atomic replacement completed: new fileId=%d", null, newMutable.getFileId());
       }
 
       mainIndex.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.COMPACTION_IN_PROGRESS },
@@ -287,10 +288,10 @@ public class LSMVectorIndexCompactor {
    * Temporary data structure for vector entries during compaction.
    */
   private static class VectorEntryData {
-    final int       id;
-    final RID       rid;
-    final float[]   vector;
-    final boolean   deleted;
+    final int     id;
+    final RID     rid;
+    final float[] vector;
+    final boolean deleted;
 
     VectorEntryData(final int id, final RID rid, final float[] vector, final boolean deleted) {
       this.id = id;

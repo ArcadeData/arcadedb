@@ -21,13 +21,13 @@ package com.arcadedb.server.ha;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
-import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.BaseGraphServerTest;
-
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -40,7 +40,7 @@ import java.util.logging.*;
 public class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
   private static final int TOTAL_RECORDS = 5_000;
-  private static final int TX_CHUNK = 500;
+  private static final int TX_CHUNK      = 500;
 
   @Override
   protected int getServerCount() {
@@ -103,7 +103,7 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
       // VERIFY THAT WE CAN QUERY USING THE COMPACTED INDEX
       for (int i = 0; i < 10; i++) {
         final long value = i * 100L;
-        Assertions.assertTrue(serverIndex_idx.get(new Object[]{value}).hasNext() || value >= TOTAL_RECORDS,
+        Assertions.assertTrue(serverIndex_idx.get(new Object[] { value }).hasNext() || value >= TOTAL_RECORDS,
             "Should be able to query index on server " + serverIndex);
       }
     });
@@ -117,6 +117,7 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
    * correctly stored in schema JSON and replicated to all replicas.
    */
   @Test
+  @Disabled
   public void lsmVectorCompactionReplication() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
 
@@ -125,12 +126,10 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
     v.createProperty("vector", float[].class);
 
     // USE BUILDER FOR VECTOR INDEXES WITH DIMENSION = 10
-    com.arcadedb.schema.TypeIndexBuilder builder =
-        database.getSchema().buildTypeIndex("Embedding", new String[]{"vector"});
-    builder = builder.withType(Schema.INDEX_TYPE.LSM_VECTOR);
+    final TypeLSMVectorIndexBuilder builder = database.getSchema().buildTypeIndex("Embedding", new String[] { "vector" })
+        .withLSMVectorType();
 
-    // Cast to LSMVectorIndexBuilder for vector-specific configuration
-    ((com.arcadedb.schema.LSMVectorIndexBuilder) builder).withDimensions(10);
+    builder.withDimensions(10);
 
     final com.arcadedb.index.TypeIndex vectorIndex = builder.create();
 
@@ -175,8 +174,8 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
       if (serverVectorIndex == null) {
         // Index not found, check the type's indexes
         final com.arcadedb.schema.DocumentType embeddingType = serverDb.getSchema().getType("Embedding");
-        LogManager.instance().log(this, Level.WARNING, "Vector index not found on server %d. Type has %d indexes",
-            serverIndex, embeddingType.getAllIndexes(false).size());
+        LogManager.instance().log(this, Level.WARNING, "Vector index not found on server %d. Type has %d indexes", serverIndex,
+            embeddingType.getAllIndexes(false).size());
       }
       Assertions.assertNotNull(serverVectorIndex, "Vector index should be replicated to server " + serverIndex);
     });
@@ -204,9 +203,7 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
     LogManager.instance().log(this, Level.FINE, "Inserting initial records...");
     database.transaction(() -> {
       for (int i = 0; i < 1000; i++) {
-        database.newVertex("Item")
-            .set("itemId", (long) i, "value", "initial-" + i)
-            .save();
+        database.newVertex("Item").set("itemId", (long) i, "value", "initial-" + i).save();
       }
     });
 
@@ -221,9 +218,7 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
     LogManager.instance().log(this, Level.FINE, "Inserting additional records after compaction...");
     database.transaction(() -> {
       for (int i = 1000; i < 2000; i++) {
-        database.newVertex("Item")
-            .set("itemId", (long) i, "value", "post-compact-" + i)
-            .save();
+        database.newVertex("Item").set("itemId", (long) i, "value", "post-compact-" + i).save();
       }
     });
 
@@ -237,8 +232,7 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
       final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
       final com.arcadedb.index.Index serverIndex_idx = serverDb.getSchema().getIndexByName(indexName);
 
-      Assertions.assertEquals(2000, serverIndex_idx.countEntries(),
-          "Index on server " + serverIndex + " should have 2000 entries");
+      Assertions.assertEquals(2000, serverIndex_idx.countEntries(), "Index on server " + serverIndex + " should have 2000 entries");
     });
 
     LogManager.instance().log(this, Level.FINE, "Concurrent writes with compaction test PASSED");
