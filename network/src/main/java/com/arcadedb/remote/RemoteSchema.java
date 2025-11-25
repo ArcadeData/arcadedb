@@ -33,7 +33,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.BucketIndexBuilder;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.LSMVectorIndexBuilder;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.ManualIndexBuilder;
 import com.arcadedb.schema.Schema;

@@ -42,6 +42,7 @@ public abstract class IndexBuilder<T extends Index> {
   Type[]                             keyTypes;
   int                                batchSize      = BUILD_BATCH_SIZE;
   int                                maxAttempts    = 1;
+  IndexMetadata                      metadata;
 
   protected IndexBuilder(final DatabaseInternal database, final Class<? extends Index> indexImplementation) {
     this.database = database;
@@ -53,6 +54,13 @@ public abstract class IndexBuilder<T extends Index> {
   public IndexBuilder<T> withType(final Schema.INDEX_TYPE indexType) {
     this.indexType = indexType;
     return this;
+  }
+
+  public TypeLSMVectorIndexBuilder withLSMVectorType() {
+    if (this instanceof TypeLSMVectorIndexBuilder v)
+      return v;
+
+    return new TypeLSMVectorIndexBuilder((TypeIndexBuilder) this);
   }
 
   public IndexBuilder<T> withUnique(final boolean unique) {
@@ -120,6 +128,10 @@ public abstract class IndexBuilder<T extends Index> {
     return keyTypes;
   }
 
+  public IndexMetadata getMetadata() {
+    return metadata;
+  }
+
   public IndexBuilder<T> withIndexName(final String indexName) {
     this.indexName = indexName;
     return this;
@@ -142,6 +154,11 @@ public abstract class IndexBuilder<T extends Index> {
 
   public IndexBuilder<T> withMaxAttempts(final int maxAttempts) {
     this.maxAttempts = maxAttempts;
+    return this;
+  }
+
+  public IndexBuilder<T> withMetadata(final IndexMetadata metadata) {
+    this.metadata = metadata;
     return this;
   }
 }

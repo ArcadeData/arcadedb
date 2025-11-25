@@ -98,6 +98,10 @@ public abstract class BasePage {
     return this.content.getInt(PAGE_HEADER_SIZE + index);
   }
 
+  public float readFloat(final int index) {
+    return this.content.getFloat(PAGE_HEADER_SIZE + index);
+  }
+
   public long readUnsignedInt(final int index) {
     return (long) this.content.getInt(PAGE_HEADER_SIZE + index) & 0xffffffffL;
   }
