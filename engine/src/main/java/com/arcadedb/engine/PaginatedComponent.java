@@ -121,9 +121,8 @@ public abstract class PaginatedComponent extends Component {
         database.getFileManager().renameFile(fileName, newFileName);
       } catch (final IOException e) {
         throw new IndexException(
-            "Cannot rename index file '" + file.getFilePath() + "' into temp file '" + newFileName + "' (exists=" + (new File(
+            "Cannot rename temporary index file '" + file.getFilePath() + "' to '" + newFileName + "' (exists=" + (new File(
                 file.getFilePath()).exists()) + ")", e);
-      }
     }
   }
 
