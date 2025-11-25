@@ -1303,6 +1303,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     return metadata;
   }
 
+  @Override
   public void setMetadata(final IndexMetadata metadata) {
     checkIsValid();
     this.metadata = (LSMVectorIndexMetadata) metadata;
