@@ -20,31 +20,19 @@ import java.util.*;
  * limitations under the License.
  */
 public class IndexMetadata {
-  private String       typeName;
-  private List<String> propertyNames;
-  private int          associatedBucketId;
+  public String       typeName;
+  public List<String> propertyNames;
+  public int          associatedBucketId;
 
   public IndexMetadata(final String typeName, final String[] propertyNames, final int bucketId) {
     this.typeName = typeName;
-    this.propertyNames = propertyNames != null ? Collections.unmodifiableList(List.of(propertyNames)) : Collections.unmodifiableList(List.of());
+    this.propertyNames = propertyNames != null ? List.of(propertyNames) : List.of();
     this.associatedBucketId = bucketId;
   }
 
   public void fromJSON(final JSONObject metadata) {
     typeName = metadata.getString("typeName");
-    propertyNames = Collections.unmodifiableList(metadata.getJSONArray("properties").toListOfStrings());
+    propertyNames = metadata.getJSONArray("properties").toListOfStrings();
     associatedBucketId = metadata.getInt("associatedBucketId", -1);
-  }
-
-  public String getTypeName() {
-    return typeName;
-  }
-
-  public List<String> getPropertyNames() {
-    return propertyNames;
-  }
-
-  public int getAssociatedBucketId() {
-    return associatedBucketId;
   }
 }
