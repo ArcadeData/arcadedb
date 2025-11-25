@@ -142,6 +142,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     return metadata;
   }
 
+  @Override
   public void setMetadata(final IndexMetadata metadata) {
     checkIsValid();
     this.metadata = metadata;
