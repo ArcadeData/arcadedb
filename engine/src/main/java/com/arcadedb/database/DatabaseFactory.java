@@ -57,7 +57,6 @@ public class DatabaseFactory implements AutoCloseable {
 
   public boolean exists() {
     boolean exists = new File(databasePath + File.separator + LocalSchema.SCHEMA_FILE_NAME).exists();
-    System.out.println("exists = " + exists);
     if (!exists)
       exists = new File(databasePath + File.separator + LocalSchema.SCHEMA_PREV_FILE_NAME).exists();
     return exists;
