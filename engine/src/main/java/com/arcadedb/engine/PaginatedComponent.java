@@ -33,10 +33,10 @@ import java.util.concurrent.atomic.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public abstract class PaginatedComponent extends Component {
-  public static final String                 TEMP_EXT  = "temp_";
-  protected final     PaginatedComponentFile file;
-  protected final     int                    pageSize;
-  protected final     AtomicInteger          pageCount = new AtomicInteger();
+  protected static final String                 TEMP_EXT  = "temp_";
+  protected final        PaginatedComponentFile file;
+  protected final        int                    pageSize;
+  protected final        AtomicInteger          pageCount = new AtomicInteger();
 
   protected PaginatedComponent(final DatabaseInternal database, final String name, final String filePath, final String ext,
       final ComponentFile.MODE mode,
@@ -123,7 +123,7 @@ public abstract class PaginatedComponent extends Component {
         throw new IndexException(
             "Cannot rename temporary index file '" + file.getFilePath() + "' to '" + newFileName + "' (exists=" + (new File(
                 file.getFilePath()).exists()) + ")", e);
+      }
     }
   }
-
 }

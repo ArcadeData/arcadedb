@@ -418,10 +418,10 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_LIST: {
-      if (value instanceof Collection) {
-        final Collection<Object> list = (Collection<Object>) value;
+      switch (value) {
+      case Collection<?> list -> {
         content.putUnsignedNumber(list.size());
-        for (final Iterator<Object> it = list.iterator(); it.hasNext(); ) {
+        for (final Iterator<Object> it = (Iterator<Object>) list.iterator(); it.hasNext(); ) {
           final Object entryValue = it.next();
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue, null);
           if (entryType == -1) {
@@ -435,7 +435,8 @@ public class BinarySerializer {
           content.putByte(entryType);
           serializeValue(database, content, entryType, entryValue);
         }
-      } else if (value instanceof Object[] array) {
+      }
+      case Object[] array -> {
         content.putUnsignedNumber(array.length);
         for (final Object entryValue : array) {
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue, null);
@@ -449,14 +450,14 @@ public class BinarySerializer {
           content.putByte(entryType);
           serializeValue(database, content, entryType, entryValue);
         }
-      } else if (value instanceof Iterable iter) {
-        final List list = new ArrayList();
-        for (final Iterator it = iter.iterator(); it.hasNext(); )
-          list.add(it.next());
+      }
+      case Iterable<?> iter -> {
+        final List<Object> list = new ArrayList<>();
+        for (Object o : iter)
+          list.add(o);
 
         content.putUnsignedNumber(list.size());
-        for (final Iterator it = list.iterator(); it.hasNext(); ) {
-          final Object entryValue = it.next();
+        for (final Object entryValue : list) {
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue, null);
           if (entryType == -1) {
             LogManager.instance()
@@ -468,7 +469,9 @@ public class BinarySerializer {
           content.putByte(entryType);
           serializeValue(database, content, entryType, entryValue);
         }
-      } else {// ARRAY
+      }
+      default -> {
+        // ARRAY
         final int length = Array.getLength(value);
         content.putUnsignedNumber(length);
         for (int i = 0; i < length; ++i) {
@@ -491,6 +494,7 @@ public class BinarySerializer {
                 "Error on serializing array value for element " + i + " = '" + entryValue + "'");
           }
         }
+      }
       }
       break;
     }
@@ -839,17 +843,17 @@ public class BinarySerializer {
     return header;
   }
 
-  public Class getDateImplementation() {
+  public Class<?> getDateImplementation() {
     return dateImplementation;
   }
 
   public void setDateImplementation(final Object dateImplementation) throws ClassNotFoundException {
-    this.dateImplementation = dateImplementation instanceof Class c ?
+    this.dateImplementation = dateImplementation instanceof Class<?> c ?
         c :
         Class.forName(dateImplementation.toString());
   }
 
-  public Class getDateTimeImplementation() {
+  public Class<?> getDateTimeImplementation() {
     return dateTimeImplementation;
   }
 
