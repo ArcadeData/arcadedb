@@ -118,6 +118,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
     return this;
   }
 
+  @Override
   public TypeLSMVectorIndexBuilder withMetadata(IndexMetadata metadata) {
     this.metadata = (LSMVectorIndexMetadata) metadata;
     return this;
