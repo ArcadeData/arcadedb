@@ -29,6 +29,7 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     super(typeName, propertyNames, bucketId);
   }
 
+  @Override
   public void fromJSON(final JSONObject metadata) {
     super.fromJSON(metadata);
 
