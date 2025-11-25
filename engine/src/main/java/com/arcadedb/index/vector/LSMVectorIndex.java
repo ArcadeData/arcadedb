@@ -558,7 +558,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     page.writeInt(pos, 0);              // numberOfEntries = 0
     pos += TrackableBinary.INT_SERIALIZED_SIZE;
 
-    page.writeInt(pos, (byte) 1);          // mutable = 1 (page is actively being written to)
+    page.writeByte(pos, (byte) 1);         // mutable = 1 (page is actively being written to)
 
     // Track mutable pages for compaction trigger
     currentMutablePages.incrementAndGet();
