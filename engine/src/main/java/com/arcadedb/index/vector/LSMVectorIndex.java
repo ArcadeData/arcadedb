@@ -332,7 +332,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       LogManager.instance().log(this, Level.FINE,
           "Could not load vectors from pages for index %s (may be a new replicated index): %s", name, e.getMessage());
     }
-  }
+    }
 
   /**
    * Discovers and loads the compacted sub-index file if it exists.
@@ -351,7 +351,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       if (lastUnderscore == -1) {
         // No underscore in name - no compacted file expected
         return null;
-      }
+  }
 
       final String namePrefix = componentName.substring(0, lastUnderscore);
 

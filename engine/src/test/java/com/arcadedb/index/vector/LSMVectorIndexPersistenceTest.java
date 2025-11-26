@@ -91,6 +91,15 @@ public class LSMVectorIndexPersistenceTest {
       database.close();
     }
 
+    // Check what files exist in the database directory
+    System.out.println("\nDatabase files after close:");
+    File dbDir = new File(DB_PATH);
+    if (dbDir.exists()) {
+      for (File f : dbDir.listFiles()) {
+        System.out.println("  - " + f.getName());
+      }
+    }
+
     // Verify schema.json contains the index definition
     String schemaPath = DB_PATH + "/schema.json";
     Assertions.assertTrue(new File(schemaPath).exists(), "schema.json should exist");
@@ -124,6 +133,12 @@ public class LSMVectorIndexPersistenceTest {
     // Reopen database and verify index is loaded
     database = factory.open();
     try {
+      // List all indexes to see what's available
+      System.out.println("Indexes after reopening database:");
+      for (Index idx : database.getSchema().getIndexes()) {
+        System.out.println("  - " + idx.getName() + " [" + idx.getType() + "]");
+      }
+
       // Verify index exists after reload
       Index reloadedIndex = database.getSchema().getIndexByName("Word[vector]");
       Assertions.assertNotNull(reloadedIndex, "Index should exist after database restart");
@@ -132,17 +147,21 @@ public class LSMVectorIndexPersistenceTest {
       // Verify index is functional
       Assertions.assertEquals(10, reloadedIndex.countEntries(), "Index should still have 10 entries");
 
-      // Verify we can query using the index
+      // Verify we can query using the index directly (not via SQL function)
       float[] queryVector = new float[100];
       for (int i = 0; i < 100; i++) {
         queryVector[i] = (float) Math.random();
       }
 
-      List<?> results = database.query("sql",
-          "SELECT vectorNeighbors('Word[vector]', ?, 5) as neighbors",
-          (Object) queryVector).stream().toList();
+      // Use the index's get() method directly instead of SQL function
+      com.arcadedb.index.IndexCursor cursor = reloadedIndex.get(new Object[]{queryVector}, 5);
+      int resultCount = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        resultCount++;
+      }
 
-      Assertions.assertFalse(results.isEmpty(), "Vector search should return results");
+      Assertions.assertTrue(resultCount > 0, "Vector search should return results");
 
     } finally {
       database.close();

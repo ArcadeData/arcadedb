@@ -94,6 +94,17 @@ public class LSMVectorIndexMutable extends PaginatedComponent {
   }
 
   /**
+   * Called after schema is loaded. Delegates to main index to load vectors from pages
+   * after metadata has been populated from schema.json.
+   */
+  @Override
+  public void onAfterSchemaLoad() {
+    if (mainIndex != null) {
+      mainIndex.loadVectorsAfterSchemaLoad();
+    }
+  }
+
+  /**
    * Creates a new vector data page with LSM-style header.
    * Returns a MutablePage ready for writing entries.
    */
