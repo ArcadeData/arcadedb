@@ -213,8 +213,12 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     @Override
     public Component createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id,
         final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
-      final LSMVectorIndex index = new LSMVectorIndex(database, name, filePath, id, mode, pageSize, version);
-      return index.mutable;
+      // Check if this is a compacted index file (created during compaction)
+      if (filePath.endsWith(LSMVectorIndexCompacted.FILE_EXT))
+        return new LSMVectorIndexCompacted(null, database, name, filePath, id, mode, pageSize, version);
+
+      // Otherwise, load as main mutable index
+      return new LSMVectorIndex(database, name, filePath, id, mode, pageSize, version).mutable;
     }
   }
 
@@ -1134,6 +1138,15 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
         // Write deletion tombstone at tail
         final int entryOffset = offsetFreeContent - entrySize;
+
+        // Validate entryOffset is within page bounds
+        if (entryOffset < 0 || entryOffset >= getPageSize()) {
+          LogManager.instance()
+              .log(this, Level.SEVERE,
+                  "Invalid entryOffset=%d (pageSize=%d, offsetFreeContent=%d, entrySize=%d, numberOfEntries=%d, pageNum=%d)",
+                  null, entryOffset, getPageSize(), offsetFreeContent, entrySize, numberOfEntries, lastPageNum);
+          throw new IndexException("Invalid entry offset: " + entryOffset + " (page size: " + getPageSize() + ")");
+        }
 
         currentPageBuffer.position(entryOffset);
 
