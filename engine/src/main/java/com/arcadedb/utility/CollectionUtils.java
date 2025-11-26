@@ -159,56 +159,56 @@ public class CollectionUtils {
     if (componentType.isPrimitive()) {
       if (componentType == float.class) {
         final float[] floatArray = (float[]) array;
-        final List<Float> list = new java.util.ArrayList<>(floatArray.length);
+        final List<Float> list = new ArrayList<>(floatArray.length);
         for (float f : floatArray) {
           list.add(f);
         }
         return list;
       } else if (componentType == int.class) {
         final int[] intArray = (int[]) array;
-        final List<Integer> list = new java.util.ArrayList<>(intArray.length);
+        final List<Integer> list = new ArrayList<>(intArray.length);
         for (int i : intArray) {
           list.add(i);
         }
         return list;
       } else if (componentType == double.class) {
         final double[] doubleArray = (double[]) array;
-        final List<Double> list = new java.util.ArrayList<>(doubleArray.length);
+        final List<Double> list = new ArrayList<>(doubleArray.length);
         for (double d : doubleArray) {
           list.add(d);
         }
         return list;
       } else if (componentType == long.class) {
         final long[] longArray = (long[]) array;
-        final List<Long> list = new java.util.ArrayList<>(longArray.length);
+        final List<Long> list = new ArrayList<>(longArray.length);
         for (long l : longArray) {
           list.add(l);
         }
         return list;
       } else if (componentType == boolean.class) {
         final boolean[] boolArray = (boolean[]) array;
-        final List<Boolean> list = new java.util.ArrayList<>(boolArray.length);
+        final List<Boolean> list = new ArrayList<>(boolArray.length);
         for (boolean b : boolArray) {
           list.add(b);
         }
         return list;
       } else if (componentType == byte.class) {
         final byte[] byteArray = (byte[]) array;
-        final List<Byte> list = new java.util.ArrayList<>(byteArray.length);
+        final List<Byte> list = new ArrayList<>(byteArray.length);
         for (byte b : byteArray) {
           list.add(b);
         }
         return list;
       } else if (componentType == char.class) {
         final char[] charArray = (char[]) array;
-        final List<Character> list = new java.util.ArrayList<>(charArray.length);
+        final List<Character> list = new ArrayList<>(charArray.length);
         for (char c : charArray) {
           list.add(c);
         }
         return list;
       } else if (componentType == short.class) {
         final short[] shortArray = (short[]) array;
-        final List<Short> list = new java.util.ArrayList<>(shortArray.length);
+        final List<Short> list = new ArrayList<>(shortArray.length);
         for (short s : shortArray) {
           list.add(s);
         }
