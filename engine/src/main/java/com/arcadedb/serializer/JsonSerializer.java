@@ -40,21 +40,32 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
-import java.time.temporal.*;
-import java.util.*;
-import java.util.logging.*;
+import java.time.temporal.ChronoUnit;
+import java.time.temporal.Temporal;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.logging.Level;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
 import static com.arcadedb.schema.Property.IN_PROPERTY;
 import static com.arcadedb.schema.Property.OUT_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.schema.Property.TYPE_PROPERTY;
+import static com.arcadedb.utility.CollectionUtils.arrayToList;
 
 public class JsonSerializer {
-  private boolean useCollectionSize         = false;
-  private boolean includeVertexEdges        = true;
-  private boolean useVertexEdgeSize         = true;
-  private boolean useCollectionSizeForEdges = true;
+  private boolean  useCollectionSize         = false;
+  private boolean  includeVertexEdges        = true;
+  private boolean  useVertexEdgeSize         = true;
+  private boolean  useCollectionSizeForEdges = true;
   private Database database;
 
   JsonSerializer() {
@@ -392,7 +403,8 @@ public class JsonSerializer {
           v.fromJSON((JSONObject) value);
           value = v;
         } else if (type != null) {
-          final MutableEmbeddedDocument embeddedDocument = ((DatabaseInternal) database).newEmbeddedDocument(null, embeddedTypeName);
+          final MutableEmbeddedDocument embeddedDocument = ((DatabaseInternal) database).newEmbeddedDocument(null,
+              embeddedTypeName);
           embeddedDocument.fromJSON((JSONObject) value);
           value = embeddedDocument;
         }
@@ -448,79 +460,4 @@ public class JsonSerializer {
     return value;
   }
 
-  /**
-   * Converts any array (including primitive arrays) to a List.
-   * Handles the special case of primitive arrays which cannot be cast to Object[].
-   */
-  private List<?> arrayToList(final Object array) {
-    if (!array.getClass().isArray()) {
-      throw new IllegalArgumentException("Input must be an array");
-    }
-
-    final Class<?> componentType = array.getClass().getComponentType();
-
-    // Handle primitive arrays specially
-    if (componentType.isPrimitive()) {
-      if (componentType == float.class) {
-        final float[] floatArray = (float[]) array;
-        final List<Float> list = new ArrayList<>(floatArray.length);
-        for (float f : floatArray) {
-          list.add(f);
-        }
-        return list;
-      } else if (componentType == int.class) {
-        final int[] intArray = (int[]) array;
-        final List<Integer> list = new ArrayList<>(intArray.length);
-        for (int i : intArray) {
-          list.add(i);
-        }
-        return list;
-      } else if (componentType == double.class) {
-        final double[] doubleArray = (double[]) array;
-        final List<Double> list = new ArrayList<>(doubleArray.length);
-        for (double d : doubleArray) {
-          list.add(d);
-        }
-        return list;
-      } else if (componentType == long.class) {
-        final long[] longArray = (long[]) array;
-        final List<Long> list = new ArrayList<>(longArray.length);
-        for (long l : longArray) {
-          list.add(l);
-        }
-        return list;
-      } else if (componentType == boolean.class) {
-        final boolean[] boolArray = (boolean[]) array;
-        final List<Boolean> list = new ArrayList<>(boolArray.length);
-        for (boolean b : boolArray) {
-          list.add(b);
-        }
-        return list;
-      } else if (componentType == byte.class) {
-        final byte[] byteArray = (byte[]) array;
-        final List<Byte> list = new ArrayList<>(byteArray.length);
-        for (byte b : byteArray) {
-          list.add(b);
-        }
-        return list;
-      } else if (componentType == char.class) {
-        final char[] charArray = (char[]) array;
-        final List<Character> list = new ArrayList<>(charArray.length);
-        for (char c : charArray) {
-          list.add(c);
-        }
-        return list;
-      } else if (componentType == short.class) {
-        final short[] shortArray = (short[]) array;
-        final List<Short> list = new ArrayList<>(shortArray.length);
-        for (short s : shortArray) {
-          list.add(s);
-        }
-        return list;
-      }
-    }
-
-    // For object arrays, use List.of
-    return List.of((Object[]) array);
-  }
 }
