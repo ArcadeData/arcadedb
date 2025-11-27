@@ -110,6 +110,22 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
   }
 
   /**
+   * Result of appending a vector entry during compaction.
+   * Contains both the pages modified and the physical location where the entry was written.
+   */
+  public static class CompactionAppendResult {
+    public final List<MutablePage> newPages;
+    public final int pageNumber;
+    public final int offset;
+
+    public CompactionAppendResult(final List<MutablePage> newPages, final int pageNumber, final int offset) {
+      this.newPages = newPages;
+      this.pageNumber = pageNumber;
+      this.offset = offset;
+    }
+  }
+
+  /**
    * Appends a vector entry during compaction.
    * Handles page overflow by creating new pages as needed.
    *
@@ -120,9 +136,9 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
    * @param vector                      The vector data
    * @param deleted                     Whether this entry is deleted
    *
-   * @return List of new pages created (may be empty if existing page had space)
+   * @return CompactionAppendResult containing new pages and write location (pageNum, offset)
    */
-  public List<MutablePage> appendDuringCompaction(MutablePage currentPage,
+  public CompactionAppendResult appendDuringCompaction(MutablePage currentPage,
       final AtomicInteger compactedPageNumberOfSeries, final int vectorId, final RID rid, final float[] vector,
       final boolean deleted) throws IOException, InterruptedException {
 
@@ -193,7 +209,8 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
     currentPage.writeInt(0, offsetFreeContent);
     currentPage.writeInt(4, numberOfEntries);
 
-    return newPages;
+    // Return the new pages and the location where this entry was written
+    return new CompactionAppendResult(newPages, pageNum, entryOffset);
   }
 
   /**
