@@ -105,11 +105,11 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     MUTABLE     // OnHeapGraphIndex - in memory, accepting incremental updates
   }
 
-  private volatile GraphState                graphState;
-  private volatile ImmutableGraphIndex       graphIndex;        // Current graph (OnHeap or OnDisk)
-  private volatile int[]                     ordinalToVectorId; // Maps graph ordinals to vector IDs
-  private final    VectorLocationIndex       vectorIndex;       // Lightweight pointer index
-  private final    AtomicInteger             nextId;
+  private volatile GraphState                    graphState;
+  private volatile ImmutableGraphIndex           graphIndex;        // Current graph (OnHeap or OnDisk)
+  private volatile int[]                         ordinalToVectorId; // Maps graph ordinals to vector IDs
+  private final    VectorLocationIndex           vectorIndex;       // Lightweight pointer index
+  private final    AtomicInteger                 nextId;
   private final    AtomicReference<INDEX_STATUS> status;
 
   // TODO Phase 4 (FUTURE): Graph persistence to disk
@@ -118,7 +118,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
   // Issue: Creating PaginatedComponents within transactions causes file registration issues during commit
   // Solution needed: Proper integration with schema's component registration lifecycle
   private /* final */ LSMVectorIndexGraphFile graphFile; // Made nullable - not used currently
-  private final    AtomicInteger             mutationsSinceSerialize;
+  private final       AtomicInteger           mutationsSinceSerialize;
 
   // Thresholds for graph state transitions
   // Phase 5+: Set to 100 for good balance between performance and freshness
@@ -213,7 +213,8 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     final int     pageNum;
     final int     pageOffset;
 
-    VectorEntryForGraphBuild(final int vectorId, final RID rid, final boolean isCompacted, final int pageNum, final int pageOffset) {
+    VectorEntryForGraphBuild(final int vectorId, final RID rid, final boolean isCompacted, final int pageNum,
+        final int pageOffset) {
       this.vectorId = vectorId;
       this.rid = rid;
       this.isCompacted = isCompacted;
@@ -473,13 +474,13 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       //   LogManager.instance().log(this, Level.INFO,
       //       "Graph will be lazy-loaded from disk for index: " + indexName);
       // } else {
-        // No persisted graph - build now for new indexes
-        lock.writeLock().lock();
-        try {
-          buildGraphFromScratch();
-        } finally {
-          lock.writeLock().unlock();
-        }
+      // No persisted graph - build now for new indexes
+      lock.writeLock().lock();
+      try {
+        buildGraphFromScratch();
+      } finally {
+        lock.writeLock().unlock();
+      }
       // }
     }
   }
@@ -769,7 +770,6 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     }
   }
 
-
   /**
    * Rebuild the graph if mutation threshold reached (Phase 5+: Periodic Rebuilds).
    * Rebuilds every N mutations to amortize cost over many operations.
@@ -881,7 +881,8 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       nextId.set(maxVectorId + 1);
 
       LogManager.instance().log(this, Level.INFO,
-          "Loaded " + vectorIndex.size() + " vector locations (" + entriesRead + " total entries) for index: " + indexName + ", nextId=" + nextId.get());
+          "Loaded " + vectorIndex.size() + " vector locations (" + entriesRead + " total entries) for index: " + indexName
+              + ", nextId=" + nextId.get());
 
       // Initialize the graph index with loaded non-deleted vectors
       if (vectorIndex.size() > 0) {
@@ -896,9 +897,11 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
   /**
    * Load vector location metadata from a specific file's pages.
-   * @param fileId The file ID to load from
-   * @param totalPages The number of pages in that file
+   *
+   * @param fileId      The file ID to load from
+   * @param totalPages  The number of pages in that file
    * @param isCompacted True if loading from compacted file, false if from mutable file
+   *
    * @return Number of entries read
    */
   private int loadVectorsFromFile(final int fileId, final int totalPages, final boolean isCompacted) {
@@ -956,7 +959,6 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
     return entriesRead;
   }
-
 
   /**
    * DEPRECATED: Old method that used vectorRegistry.
@@ -1507,8 +1509,11 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
         // Increment mutation counter
         mutationsSinceSerialize.incrementAndGet();
 
-        // Trigger rebuild if threshold reached
-        rebuildGraphIfNeeded();
+        // DON'T trigger rebuild during transaction commit - defer until query time
+        // rebuildGraphIfNeeded() calls buildGraphFromScratch() which clears vectorIndex and
+        // tries to reload from pages, but pages aren't visible yet during commit phase
+        // The graph will be rebuilt on the next query via ensureGraphAvailable() / get()
+        // rebuildGraphIfNeeded();
       } finally {
         lock.writeLock().unlock();
       }
@@ -1561,9 +1566,6 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
           // Increment mutation counter (count number of deletions)
           mutationsSinceSerialize.addAndGet(deletedIds.size());
-
-          // Trigger rebuild if threshold reached
-          rebuildGraphIfNeeded();
         }
       } finally {
         lock.writeLock().unlock();
@@ -1582,55 +1584,11 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     }
   }
 
-  public void onAfterRollback() {
-    // Nothing to do - operations are not buffered locally
-    // TransactionIndexContext handles rollback
-  }
-
   @Override
   public long countEntries() {
-    lock.writeLock().lock();
-    try {
-      // ALWAYS count from pages for consistency across leader/replica
-      // This ensures identical counts regardless of in-memory vectorIndex state
-      long count = 0;
-
-      // Count from compacted sub-index if exists
-      if (compactedSubIndex != null) {
-        final int compactedPages = compactedSubIndex.getTotalPages();
-        for (int pageNum = 0; pageNum < compactedPages; pageNum++) {
-          try {
-            final PageId pageId = new PageId(getDatabase(), compactedSubIndex.getFileId(), pageNum);
-            final var page = getDatabase().getPageManager().getImmutablePage(pageId, getPageSize(), false, false);
-            if (page != null) {
-              final int numberOfEntries = page.readInt(OFFSET_NUM_ENTRIES);
-              count += numberOfEntries;
-            }
-          } catch (final Exception e) {
-            // Skip problematic pages
-          }
-        }
-      }
-
-      // Count from mutable index
-      final int mutablePages = getTotalPages();
-      for (int pageNum = 0; pageNum < mutablePages; pageNum++) {
-        try {
-          final PageId pageId = new PageId(getDatabase(), getFileId(), pageNum);
-          final var page = getDatabase().getPageManager().getImmutablePage(pageId, getPageSize(), false, false);
-          if (page != null) {
-            final int numberOfEntries = page.readInt(OFFSET_NUM_ENTRIES);
-            count += numberOfEntries;
-          }
-        } catch (final Exception e) {
-          // Skip problematic pages
-        }
-      }
-
-      return count;
-    } finally {
-      lock.writeLock().unlock();
-    }
+    // Use vectorIndex which already applies LSM merge-on-read semantics
+    // (latest entry for each RID, filtering out deleted entries)
+    return vectorIndex.getActiveCount();
   }
 
   @Override
@@ -1677,10 +1635,6 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
   @Override
   public IndexInternal getAssociatedIndex() {
     return null;
-  }
-
-  public void setAssociatedIndex(final IndexInternal index) {
-    // Not applicable for this index type
   }
 
   @Override
@@ -2148,7 +2102,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
    * Apply a replicated page update to VectorLocationIndex.
    * Called by TransactionManager.applyChanges() during HA replication to keep
    * in-memory VectorLocationIndex synchronized with replicated pages.
-   *
+   * <p>
    * This ensures replicas don't have stale VectorLocationIndex that causes offset mismatches.
    *
    * @param page The page that was just replicated and written
