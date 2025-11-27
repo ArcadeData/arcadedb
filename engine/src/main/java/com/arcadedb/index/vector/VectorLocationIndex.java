@@ -20,22 +20,22 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.database.RID;
 
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.IntStream;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.stream.*;
 
 /**
  * Lightweight index that stores only vector location metadata (page number, offset, RID)
  * instead of the full vector data. This dramatically reduces memory usage:
  * ~20 bytes per vector vs ~3KB for a 768-dimension vector.
- *
+ * <p>
  * Used by LSMVectorIndex to implement lazy-loading of vectors from disk pages.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class VectorLocationIndex {
   private final ConcurrentHashMap<Integer, VectorLocation> locations;
-  private final AtomicInteger                               nextId;
+  private final AtomicInteger                              nextId;
 
   /**
    * Represents the physical location of a vector on disk.
@@ -48,7 +48,8 @@ public class VectorLocationIndex {
     public final RID     rid;          // 12 bytes - document RID (bucketId + position)
     public final boolean deleted;      // 1 byte - LSM tombstone flag
 
-    public VectorLocation(final boolean isCompacted, final int pageNum, final int pageOffset, final RID rid, final boolean deleted) {
+    public VectorLocation(final boolean isCompacted, final int pageNum, final int pageOffset, final RID rid,
+        final boolean deleted) {
       this.isCompacted = isCompacted;
       this.pageNum = pageNum;
       this.pageOffset = pageOffset;
@@ -74,6 +75,7 @@ public class VectorLocationIndex {
    * @param pageNum     The page number where the vector is stored
    * @param pageOffset  The offset within the page
    * @param rid         The document RID
+   *
    * @return The assigned vector ID
    */
   public int addVector(final boolean isCompacted, final int pageNum, final int pageOffset, final RID rid) {
@@ -93,7 +95,8 @@ public class VectorLocationIndex {
    * @param rid         The document RID
    * @param deleted     Whether this vector is deleted (LSM tombstone)
    */
-  public void addOrUpdate(final int id, final boolean isCompacted, final int pageNum, final int pageOffset, final RID rid, final boolean deleted) {
+  public void addOrUpdate(final int id, final boolean isCompacted, final int pageNum, final int pageOffset, final RID rid,
+      final boolean deleted) {
     locations.put(id, new VectorLocation(isCompacted, pageNum, pageOffset, rid, deleted));
 
     // Update nextId if this ID is higher than current
@@ -109,6 +112,7 @@ public class VectorLocationIndex {
    * Get the location metadata for a vector by ID.
    *
    * @param vectorId The vector ID
+   *
    * @return The location metadata, or null if not found
    */
   public VectorLocation getLocation(final int vectorId) {
