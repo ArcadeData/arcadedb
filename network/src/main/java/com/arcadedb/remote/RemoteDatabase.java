@@ -65,6 +65,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   private final RemoteSchema                         schema                    = new RemoteSchema(this);
   private       boolean                              open                      = true;
   private       RemoteTransactionExplicitLock        explicitLock;
+  private       int                                  cachedHashCode            = 0;
 
   public RemoteDatabase(final String server, final int port, final String databaseName, final String userName,
       final String userPassword) {
@@ -165,6 +166,13 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       throw new IllegalArgumentException("Type is null");
 
     return new RemoteMutableDocument(this, typeName);
+  }
+
+  @Override
+  public int hashCode() {
+    if (cachedHashCode == 0 && getDatabasePath() != null)
+      cachedHashCode = getDatabasePath().hashCode();
+    return cachedHashCode;
   }
 
   @Override
