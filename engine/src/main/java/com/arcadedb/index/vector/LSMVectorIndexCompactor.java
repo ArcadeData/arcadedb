@@ -105,6 +105,25 @@ public class LSMVectorIndexCompactor {
         final LSMVectorIndexMutable newMutable = mainIndex.splitIndex(lastImmutablePage + 1, compactedIndex);
         LogManager.instance()
             .log(mainIndex, Level.INFO, "Atomic replacement completed: new fileId=%d", null, newMutable.getFileId());
+
+        // CRITICAL: Reload VectorLocationIndex from new file structure after compaction
+        // After splitIndex, the file structure has changed:
+        // - Compacted vectors are in the compacted sub-index
+        // - Remaining mutable pages are renumbered in the new mutable file
+        // - VectorLocationIndex must be refreshed to reflect new page numbers and offsets
+        LogManager.instance().log(mainIndex, Level.INFO,
+            "Reloading VectorLocationIndex after compaction (old size: %d)", null,
+            mainIndex.getVectorIndex().size());
+
+        database.transaction(() -> {
+          mainIndex.getVectorIndex().clear();
+          mainIndex.loadVectorsFromPagesAfterCompaction();
+          mainIndex.rebuildGraphAfterCompaction();
+        }, true, 0);
+
+        LogManager.instance().log(mainIndex, Level.INFO,
+            "VectorLocationIndex reloaded after compaction (new size: %d)", null,
+            mainIndex.getVectorIndex().size());
       }
 
       mainIndex.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.COMPACTION_IN_PROGRESS },
@@ -257,13 +276,24 @@ public class LSMVectorIndexCompactor {
         continue;
 
       // Write to compacted index
-      final List<MutablePage> newPages = compactedIndex.appendDuringCompaction(currentPage, compactedPageSeries,
-          entry.id, entry.rid, entry.vector, entry.deleted);
+      final LSMVectorIndexCompacted.CompactionAppendResult result = compactedIndex.appendDuringCompaction(
+          currentPage, compactedPageSeries, entry.id, entry.rid, entry.vector, entry.deleted);
 
-      if (!newPages.isEmpty()) {
+      if (!result.newPages.isEmpty()) {
         // New page(s) were created
-        currentPage = newPages.get(newPages.size() - 1); // Use the last created page
+        currentPage = result.newPages.get(result.newPages.size() - 1); // Use the last created page
       }
+
+      // POINTER MIGRATION: Update VectorLocationIndex with new location in compacted file
+      // This ensures each server's VectorLocationIndex matches its own physical file structure
+      mainIndex.getVectorIndex().addOrUpdate(
+          entry.id,                    // vectorId
+          true,                        // isCompacted = true (this vector is now in the compacted file)
+          result.pageNumber,           // new page number in compacted file
+          result.offset,               // new offset within that page
+          entry.rid,                   // document RID
+          false                        // deleted = false (we already skipped deleted entries)
+      );
 
       entriesWritten++;
     }

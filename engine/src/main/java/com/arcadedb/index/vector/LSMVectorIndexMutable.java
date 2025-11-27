@@ -80,6 +80,13 @@ public class LSMVectorIndexMutable extends PaginatedComponent {
   }
 
   /**
+   * Get the main index with proper typing.
+   */
+  public LSMVectorIndex getMainIndex() {
+    return mainIndex;
+  }
+
+  /**
    * Set the main index reference (called after construction)
    */
   public void setMainIndex(final LSMVectorIndex mainIndex) {
@@ -96,13 +103,11 @@ public class LSMVectorIndexMutable extends PaginatedComponent {
         database.getTransaction().addPage(pageId, getPageSize()) :
         new MutablePage(pageId, getPageSize());
 
-    final ByteBuffer pageBuffer = currentPage.getContent();
-    pageBuffer.position(0);
-
-    // Write initial header
-    pageBuffer.putInt(OFFSET_FREE_CONTENT, getPageSize()); // offsetFreeContent starts at end
-    pageBuffer.putInt(OFFSET_NUM_ENTRIES, 0);              // numberOfEntries = 0
-    pageBuffer.put(OFFSET_MUTABLE, (byte) 1);              // mutable = 1 (page is being written to)
+    // IMPORTANT: Use MutablePage.writeInt/writeByte which account for PAGE_HEADER_SIZE offset
+    // This ensures consistency with BasePage.readInt/readByte used elsewhere
+    currentPage.writeInt(OFFSET_FREE_CONTENT, currentPage.getMaxContentSize()); // offsetFreeContent starts at max content size
+    currentPage.writeInt(OFFSET_NUM_ENTRIES, 0);              // numberOfEntries = 0
+    currentPage.writeByte(OFFSET_MUTABLE, (byte) 1);          // mutable = 1 (page is being written to)
 
     return currentPage;
   }
