@@ -59,7 +59,7 @@ public class LSMVectorIndexMutable extends PaginatedComponent {
 
   /**
    * Constructor for splitting an existing component (during compaction)
-   */
+     */
   protected LSMVectorIndexMutable(final DatabaseInternal database, final String name, final String filePath,
       final ComponentFile.MODE mode, final int pageSize, final String ext) throws IOException {
     super(database, name, filePath, ext, mode, pageSize, CURRENT_VERSION);
@@ -99,9 +99,9 @@ public class LSMVectorIndexMutable extends PaginatedComponent {
    */
   @Override
   public void onAfterSchemaLoad() {
-    if (mainIndex != null) {
-      mainIndex.loadVectorsAfterSchemaLoad();
-    }
+//    if (mainIndex != null) {
+//      mainIndex.loadVectorsAfterSchemaLoad();
+//    }
   }
 
   /**
