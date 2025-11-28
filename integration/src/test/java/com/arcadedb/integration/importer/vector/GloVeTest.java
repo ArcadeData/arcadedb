@@ -20,9 +20,9 @@ package com.arcadedb.integration.importer.vector;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
@@ -58,8 +58,8 @@ public class GloVeTest {
     final DatabaseFactory factory = new DatabaseFactory("glovedb");
 
     // TODO: REMOVE THIS
-    if (factory.exists())
-      factory.open().drop();
+//    if (factory.exists())
+//      factory.open().drop();
 
     if (factory.exists()) {
       database = factory.open();
@@ -90,7 +90,7 @@ public class GloVeTest {
       System.exit(1);
     }
 
-    final LSMVectorIndex persistentIndex = (LSMVectorIndex) database.getSchema().getIndexByName("Word[vector]");
+    final TypeIndex persistentIndex = (TypeIndex) database.getSchema().getIndexByName("Word[vector]");
 
     try {
 
@@ -142,7 +142,7 @@ public class GloVeTest {
               }
             } else {
               database.begin();
-              approximateResults = persistentIndex.findNeighborsFromVector(input, k);
+              approximateResults = ((LSMVectorIndex) persistentIndex.getIndexesOnBuckets()[0]).findNeighborsFromVector(input, k);
               database.rollback();
             }
 
