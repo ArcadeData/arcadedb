@@ -687,6 +687,9 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
           }
         } catch (final Exception e) {
           // Skip problematic pages
+          LogManager.instance().log(this, Level.WARNING,
+              "Error reading compacted page %d during graph build: %s", null,
+              pageNum, e.getMessage());
         }
       }
     }
@@ -751,6 +754,9 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
         }
       } catch (final Exception e) {
         // Skip problematic pages
+        LogManager.instance().log(this, Level.WARNING,
+            "Error reading mutable page %d during graph build: %s", null,
+            pageNum, e.getMessage());
       }
     }
 
@@ -821,6 +827,11 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
         // Phase 5+: Graph is built, will track mutations and rebuild periodically
         this.graphState = GraphState.IMMUTABLE;
         LogManager.instance().log(this, Level.INFO, "JVector graph index built successfully");
+      } catch (final AssertionError e) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "JVector assertion failed during graph build (dimensions=%d, vectors=%d): %s",
+            metadata.dimensions, vectors.size(), e.getMessage());
+        throw e;
       }
 
       // Persist graph to disk
