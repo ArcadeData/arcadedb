@@ -184,8 +184,6 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
           });
         }
 
-        schema.saveConfiguration();
-
         return null;
       });
 
