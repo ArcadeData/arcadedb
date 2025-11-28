@@ -19,6 +19,8 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.Component;
+import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
@@ -56,6 +58,17 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
 
   private LSMVectorIndex mainIndex;
   private long           totalGraphBytes;
+
+  /**
+   * Factory handler for loading graph files from disk during schema initialization.
+   */
+  public static class PaginatedComponentFactoryHandler implements ComponentFactory.PaginatedComponentFactoryHandler {
+    @Override
+    public Component createOnLoad(final DatabaseInternal database, final String name, final String filePath,
+        final int id, final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
+      return new LSMVectorIndexGraphFile(database, name, filePath, id, mode, pageSize, version);
+    }
+  }
 
   /**
    * Constructor for creating a new graph file

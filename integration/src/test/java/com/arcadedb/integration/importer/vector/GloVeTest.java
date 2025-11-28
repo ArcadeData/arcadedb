@@ -57,8 +57,8 @@ public class GloVeTest {
     final DatabaseFactory factory = new DatabaseFactory("glovedb");
 
     // TODO: REMOVE THIS
-//    if (factory.exists())
-//      factory.open().drop();
+    if (factory.exists())
+      factory.open().drop();
 
     if (factory.exists()) {
       database = factory.open();

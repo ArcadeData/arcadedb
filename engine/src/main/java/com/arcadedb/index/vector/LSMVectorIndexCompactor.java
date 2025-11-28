@@ -215,44 +215,77 @@ public class LSMVectorIndexCompactor {
     int totalEntriesRead = 0;
 
     for (int pageNum = startPage; pageNum < startPage + pagesToCompact && pageNum <= endPage; pageNum++) {
-      final BasePage page = database.getTransaction().getPage(new PageId(database, mainIndex.getFileId(), pageNum),
-          pageSize);
-      final ByteBuffer buffer = page.getContent();
+      try {
+        final BasePage page = database.getTransaction().getPage(new PageId(database, mainIndex.getFileId(), pageNum),
+            pageSize);
+        final ByteBuffer buffer = page.getContent();
 
-      // Read page header
-      final int offsetFreeContent = buffer.getInt(LSMVectorIndex.OFFSET_FREE_CONTENT);
-      final int numberOfEntries = buffer.getInt(LSMVectorIndex.OFFSET_NUM_ENTRIES);
-      final byte mutable = buffer.get(LSMVectorIndex.OFFSET_MUTABLE); // Read mutable flag (for validation)
+        // Read page header
+        final int offsetFreeContent = buffer.getInt(LSMVectorIndex.OFFSET_FREE_CONTENT);
+        final int numberOfEntries = buffer.getInt(LSMVectorIndex.OFFSET_NUM_ENTRIES);
+        final byte mutable = buffer.get(LSMVectorIndex.OFFSET_MUTABLE); // Read mutable flag (for validation)
 
-      if (numberOfEntries == 0)
-        continue;
+        if (numberOfEntries == 0)
+          continue;
 
-      // Read pointer table (starts at HEADER_BASE_SIZE offset)
-      final int[] pointers = new int[numberOfEntries];
-      for (int i = 0; i < numberOfEntries; i++) {
-        pointers[i] = buffer.getInt(LSMVectorIndex.HEADER_BASE_SIZE + (i * 4));
-      }
-
-      // Read entries
-      for (int i = 0; i < numberOfEntries; i++) {
-        buffer.position(pointers[i]);
-
-        final int id = buffer.getInt();
-        final long position = buffer.getLong();
-        final int bucketId = buffer.getInt();
-        final RID rid = new RID(database, bucketId, position);
-
-        final float[] vector = new float[dimensions];
-        for (int j = 0; j < dimensions; j++) {
-          vector[j] = buffer.getFloat();
+        // Validate numberOfEntries is reasonable (not corrupted)
+        final int headerSize = LSMVectorIndex.HEADER_BASE_SIZE + (numberOfEntries * 4);
+        final int maxEntriesPerPage = (pageSize - LSMVectorIndex.HEADER_BASE_SIZE) / (entrySize + 4); // +4 for pointer
+        if (numberOfEntries < 0 || numberOfEntries > maxEntriesPerPage || headerSize > pageSize) {
+          LogManager.instance().log(mainIndex, Level.WARNING,
+              "Skipping corrupted page %d: invalid numberOfEntries=%d (max=%d)",
+              pageNum, numberOfEntries, maxEntriesPerPage);
+          continue;
         }
 
-        final boolean deleted = buffer.get() == 1;
+        // Validate offsetFreeContent is within page bounds
+        if (offsetFreeContent < headerSize || offsetFreeContent > pageSize) {
+          LogManager.instance().log(mainIndex, Level.WARNING,
+              "Skipping corrupted page %d: invalid offsetFreeContent=%d (pageSize=%d, headerSize=%d)",
+              pageNum, offsetFreeContent, pageSize, headerSize);
+          continue;
+        }
 
-        // Last write wins: later pages override earlier entries
-        final VectorEntryData entry = new VectorEntryData(id, rid, vector, deleted);
-        vectorMap.put(id, entry);
-        totalEntriesRead++;
+        // Read pointer table (starts at HEADER_BASE_SIZE offset)
+        final int[] pointers = new int[numberOfEntries];
+        for (int i = 0; i < numberOfEntries; i++) {
+          pointers[i] = buffer.getInt(LSMVectorIndex.HEADER_BASE_SIZE + (i * 4));
+        }
+
+        // Read entries with validation
+        for (int i = 0; i < numberOfEntries; i++) {
+          // Validate pointer is within page bounds
+          final int pointer = pointers[i];
+          if (pointer < headerSize || pointer + entrySize > pageSize) {
+            LogManager.instance().log(mainIndex, Level.WARNING,
+                "Skipping corrupted entry %d in page %d: invalid pointer=%d (pageSize=%d, entrySize=%d)",
+                i, pageNum, pointer, pageSize, entrySize);
+            continue;
+          }
+
+          buffer.position(pointer);
+
+          final int id = buffer.getInt();
+          final long position = buffer.getLong();
+          final int bucketId = buffer.getInt();
+          final RID rid = new RID(database, bucketId, position);
+
+          final float[] vector = new float[dimensions];
+          for (int j = 0; j < dimensions; j++) {
+            vector[j] = buffer.getFloat();
+          }
+
+          final boolean deleted = buffer.get() == 1;
+
+          // Last write wins: later pages override earlier entries
+          final VectorEntryData entry = new VectorEntryData(id, rid, vector, deleted);
+          vectorMap.put(id, entry);
+          totalEntriesRead++;
+        }
+      } catch (final Exception e) {
+        // Page is corrupted or unreadable, log warning and skip
+        LogManager.instance().log(mainIndex, Level.WARNING,
+            "Skipping corrupted page %d during compaction: %s", pageNum, e.getMessage());
       }
     }
 

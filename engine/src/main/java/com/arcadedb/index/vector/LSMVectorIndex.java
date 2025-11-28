@@ -29,9 +29,9 @@ import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
-import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TimeoutException;
@@ -55,7 +55,6 @@ import com.arcadedb.utility.LockManager;
 import io.github.jbellis.jvector.graph.GraphIndexBuilder;
 import io.github.jbellis.jvector.graph.GraphSearcher;
 import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
-import io.github.jbellis.jvector.graph.OnHeapGraphIndex;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.SearchResult;
 import io.github.jbellis.jvector.graph.similarity.BuildScoreProvider;
@@ -68,7 +67,6 @@ import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 import java.io.*;
 import java.nio.*;
 import java.util.*;
-import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.concurrent.locks.*;
 import java.util.logging.*;
@@ -112,13 +110,10 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
   private final    AtomicInteger                 nextId;
   private final    AtomicReference<INDEX_STATUS> status;
 
-  // TODO Phase 4 (FUTURE): Graph persistence to disk
-  // Graph file for persistent storage - currently disabled due to PaginatedComponent registration complexity
-  // When enabled, this would allow persisting the graph topology to disk and reloading without rebuild
-  // Issue: Creating PaginatedComponents within transactions causes file registration issues during commit
-  // Solution needed: Proper integration with schema's component registration lifecycle
-  private /* final */ LSMVectorIndexGraphFile graphFile; // Made nullable - not used currently
-  private final       AtomicInteger           mutationsSinceSerialize;
+  // Graph file for persistent storage of graph topology
+  // Allows lazy-loading graph from disk and avoiding expensive rebuilds
+  private final LSMVectorIndexGraphFile graphFile;
+  private final AtomicInteger           mutationsSinceSerialize;
 
   // Thresholds for graph state transitions
   // Phase 5+: Set to 100 for good balance between performance and freshness
@@ -131,29 +126,6 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
   private final int                     minPagesToScheduleACompaction;
   private       LSMVectorIndexCompacted compactedSubIndex;
   private       boolean                 valid = true;
-
-  // VectorEntry removed - replaced by VectorLocationIndex.VectorLocation (much lighter weight)
-
-  /**
-   * Transaction-specific context for buffering vector operations
-   */
-  private static class TransactionVectorContext {
-    final Map<RID, VectorOperation> operations = new ConcurrentHashMap<>();
-
-    enum OperationType {
-      ADD, REMOVE
-    }
-
-    static class VectorOperation {
-      final OperationType type;
-      final float[]       vector;
-
-      VectorOperation(final OperationType type, final float[] vector) {
-        this.type = type;
-        this.vector = vector;
-      }
-    }
-  }
 
   /**
    * Comparable wrapper for float[] to use in transaction tracking.
@@ -283,9 +255,12 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       this.mutable = new LSMVectorIndexMutable(database, indexName, filePath, mode, pageSize);
       this.mutable.setMainIndex(this);
 
-      // TODO Phase 4 (FUTURE): Initialize graph file component here
-      // Currently disabled - graph persistence requires proper PaginatedComponent registration
-      this.graphFile = null;
+      // Create graph file component (same timing as mutable - outside transaction)
+      final String graphFileName = indexName + "_vecgraph";
+      final String graphFilePath = filePath + "_vecgraph";
+      this.graphFile = new LSMVectorIndexGraphFile(database, graphFileName, graphFilePath, mode, pageSize);
+      this.graphFile.setMainIndex(this);
+      database.getSchema().getEmbedded().registerFile(this.graphFile);
 
       initializeGraphIndex();
     } catch (final IOException e) {
@@ -315,9 +290,11 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     this.mutable = new LSMVectorIndexMutable(database, name, filePath, id, mode, pageSize, version);
     this.mutable.setMainIndex(this);
 
-    // TODO Phase 4 (FUTURE): Load graph file component here
-    // Currently disabled - graph persistence requires proper PaginatedComponent registration
-    this.graphFile = null;
+    // Discover and load graph file if it exists
+    this.graphFile = discoverAndLoadGraphFile();
+    if (this.graphFile != null) {
+      this.graphFile.setMainIndex(this);
+    }
 
     // Initialize compaction fields
     this.currentMutablePages = new AtomicInteger(mutable.getTotalPages());
@@ -461,6 +438,62 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
   }
 
   /**
+   * Discovers and loads the graph file if it exists.
+   * Called during index loading to reconnect with persisted graph topology.
+   *
+   * @return The loaded graph file, or null if none found
+   */
+  private LSMVectorIndexGraphFile discoverAndLoadGraphFile() {
+    try {
+      final DatabaseInternal database = getDatabase();
+      final String expectedGraphFileName = mutable.getName() + "_vecgraph";
+
+      // Check if already loaded in schema
+      for (int i = 0; i < 1000; i++) {
+        try {
+          final Component comp = database.getSchema().getFileByIdIfExists(i);
+          if (comp instanceof LSMVectorIndexGraphFile && comp.getName().equals(expectedGraphFileName)) {
+            LogManager.instance().log(this, Level.INFO,
+                "Found existing graph file in schema: %s (fileId=%d)",
+                comp.getName(), comp.getFileId());
+            return (LSMVectorIndexGraphFile) comp;
+          }
+        } catch (final Exception e) {
+          // File ID doesn't exist, continue
+        }
+      }
+
+      // Look for ComponentFile in FileManager
+      for (final ComponentFile file : database.getFileManager().getFiles()) {
+        if (LSMVectorIndexGraphFile.FILE_EXT.equals(file.getFileExtension()) &&
+            file.getComponentName().equals(expectedGraphFileName)) {
+
+          final int pageSize = file instanceof com.arcadedb.engine.PaginatedComponentFile ?
+              ((com.arcadedb.engine.PaginatedComponentFile) file).getPageSize() : mutable.getPageSize();
+
+          final LSMVectorIndexGraphFile graphFile = new LSMVectorIndexGraphFile(
+              database, file.getComponentName(), file.getFilePath(), file.getFileId(),
+              database.getMode(), pageSize, file.getVersion());
+
+          database.getSchema().getEmbedded().registerFile(graphFile);
+
+          LogManager.instance().log(this, Level.INFO,
+              "Discovered and loaded graph file: %s (fileId=%d)",
+              graphFile.getName(), graphFile.getFileId());
+
+          return graphFile;
+        }
+      }
+
+      return null;
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Error discovering graph file for %s: %s", indexName, e.getMessage());
+      return null;
+    }
+  }
+
+  /**
    * Initialize graph index - called during index creation/loading.
    * For new indexes, builds graph immediately. For loaded indexes, graph is lazy-loaded on first search.
    */
@@ -468,12 +501,13 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     // For newly created indexes (during constructor), build graph immediately
     // For loaded indexes, graph will be lazy-loaded on first search via ensureGraphAvailable()
     if (vectorIndex.size() > 0 && graphState == GraphState.LOADING) {
-      // TODO Phase 4 (FUTURE): Check if we can load from disk
-      // if (graphFile != null && graphFile.hasPersistedGraph()) {
-      //   // Will lazy-load on first search
-      //   LogManager.instance().log(this, Level.INFO,
-      //       "Graph will be lazy-loaded from disk for index: " + indexName);
-      // } else {
+      // Check if we can lazy-load from persisted graph
+      if (graphFile != null && graphFile.hasPersistedGraph()) {
+        LogManager.instance().log(this, Level.INFO,
+            "Graph will be lazy-loaded from disk for index: %s", indexName);
+        return;
+      }
+
       // No persisted graph - build now for new indexes
       lock.writeLock().lock();
       try {
@@ -481,7 +515,6 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       } finally {
         lock.writeLock().unlock();
       }
-      // }
     }
   }
 
@@ -499,21 +532,31 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       if (graphState != GraphState.LOADING)
         return;
 
-      // TODO Phase 4 (FUTURE): Try to load persisted graph from disk
-      // if (graphFile != null && graphFile.hasPersistedGraph()) {
-      //   try {
-      //     this.graphIndex = graphFile.loadGraph();
-      //     this.graphState = GraphState.IMMUTABLE;
-      //     LogManager.instance().log(this, Level.INFO,
-      //         "Loaded graph from disk for index: " + indexName);
-      //     return;
-      //   } catch (final Exception e) {
-      //     LogManager.instance().log(this, Level.WARNING,
-      //         "Failed to load graph from disk, will rebuild: " + e.getMessage());
-      //   }
-      // }
+      // Try to load persisted graph from disk
+      if (graphFile != null && graphFile.hasPersistedGraph()) {
+        try {
+          this.graphIndex = graphFile.loadGraph();
+          this.graphState = GraphState.IMMUTABLE;
 
-      // No persisted graph - build from scratch
+          // Rebuild ordinalToVectorId from vectorIndex
+          this.ordinalToVectorId = vectorIndex.getAllVectorIds()
+              .filter(id -> {
+                final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(id);
+                return loc != null && !loc.deleted;
+              })
+              .sorted()
+              .toArray();
+
+          LogManager.instance().log(this, Level.INFO,
+              "Loaded graph from disk for index: %s", indexName);
+          return;
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Failed to load graph for %s, will rebuild: %s", indexName, e.getMessage());
+        }
+      }
+
+      // No persisted graph or load failed - build from scratch
       buildGraphFromScratch();
 
     } finally {
@@ -541,17 +584,14 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
         sizeBefore, sizeAfter);
 
     // Try building graph, with one retry if we detect VectorLocationIndex corruption
-    buildGraphFromScratchWithRetry(false);
+    buildGraphFromScratchWithRetry();
   }
 
   /**
    * Internal implementation of buildGraphFromScratch.
    * Always reads directly from pages to avoid race conditions with concurrent VectorLocationIndex modifications.
    */
-  private void buildGraphFromScratchWithRetry(final boolean isRetry) {
-    // Note: isRetry parameter kept for API compatibility but no longer used.
-    // We always read directly from pages which eliminates the need for retry logic.
-
+  private void buildGraphFromScratchWithRetry() {
     // CRITICAL FIX: Collect vectors DIRECTLY from pages instead of from vectorIndex.
     // This avoids race conditions where concurrent replication adds entries to vectorIndex
     // that don't yet exist on disk pages. We iterate pages and read what's actually persisted.
@@ -757,12 +797,21 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
         LogManager.instance().log(this, Level.INFO, "JVector graph index built successfully");
       }
 
-      // TODO Phase 4 (FUTURE): Persist graph to disk
-      // graphFile.writeGraph(graphIndex, vectors);
+      // Persist graph to disk
+      if (graphFile != null) {
+        try {
+          graphFile.writeGraph(graphIndex, vectors);
+          LogManager.instance().log(this, Level.INFO,
+              "Persisted graph to disk for index: " + indexName);
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Failed to persist graph for %s: %s", indexName, e.getMessage());
+        }
+      }
       this.mutationsSinceSerialize.set(0);
 
       LogManager.instance().log(this, Level.INFO,
-          "Built graph (in-memory) for index: " + indexName);
+          "Built graph for index: " + indexName);
 
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error building graph from scratch", e);
@@ -958,17 +1007,6 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     }
 
     return entriesRead;
-  }
-
-  /**
-   * DEPRECATED: Old method that used vectorRegistry.
-   * Replaced by persistVectorWithLocation() and persistDeletionTombstones().
-   * Kept for reference during migration - will be removed in future phases.
-   */
-  @Deprecated
-  private void persistVectorsDeltaIncremental(final List<Integer> changedVectorIds) {
-    throw new UnsupportedOperationException(
-        "persistVectorsDeltaIncremental is deprecated - use persistVectorWithLocation or persistDeletionTombstones");
   }
 
   /**
@@ -1574,14 +1612,18 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
   }
 
   public void onAfterCommit() {
+    // DISABLED: Compaction for vector indexes is currently disabled
+    // Vector indexes don't benefit much from compaction since vectors are rarely updated
+    // Re-enable once compaction properly handles uninitialized pages
+
     // Check if compaction should be triggered after commit
     // Operations are applied immediately during TransactionIndexContext replay (not buffered here)
-    if (minPagesToScheduleACompaction > 1 && currentMutablePages.get() >= minPagesToScheduleACompaction) {
-      LogManager.instance()
-          .log(this, Level.FINE, "Scheduled compaction of vector index '%s' (currentMutablePages=%d totalPages=%d)",
-              null, getComponentName(), currentMutablePages.get(), getTotalPages());
-      ((com.arcadedb.database.async.DatabaseAsyncExecutorImpl) getDatabase().async()).compact(this);
-    }
+    // if (minPagesToScheduleACompaction > 1 && currentMutablePages.get() >= minPagesToScheduleACompaction) {
+    //   LogManager.instance()
+    //       .log(this, Level.FINE, "Scheduled compaction of vector index '%s' (currentMutablePages=%d totalPages=%d)",
+    //           null, getComponentName(), currentMutablePages.get(), getTotalPages());
+    //   ((com.arcadedb.database.async.DatabaseAsyncExecutorImpl) getDatabase().async()).compact(this);
+    // }
   }
 
   @Override
@@ -1812,6 +1854,16 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       // to avoid path transformation issues during replication.
 
       mutable.close();
+
+      // Close graph file
+      if (graphFile != null) {
+        try {
+          graphFile.close();
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Error closing graph file: %s", e.getMessage());
+        }
+      }
     } finally {
       lock.writeLock().unlock();
     }
@@ -1829,6 +1881,13 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       final File indexFile = new File(mutable.getFilePath());
       if (indexFile.exists())
         indexFile.delete();
+
+      // Delete graph file if it exists
+      if (graphFile != null) {
+        final File graphIndexFile = graphFile.getOSFile();
+        if (graphIndexFile.exists())
+          graphIndexFile.delete();
+      }
 
       // NOTE: Metadata is now embedded in the schema JSON via toJSON() and is automatically
       // deleted when the schema is updated. We no longer need to delete separate .metadata.json files.
