@@ -53,6 +53,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.index.vector.LSMVectorIndexGraphFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
@@ -137,6 +138,8 @@ public class LocalSchema implements Schema {
         new LSMTreeIndex.PaginatedComponentFactoryHandlerNotUnique());
     componentFactory.registerComponent(HnswVectorIndex.FILE_EXT, new HnswVectorIndex.PaginatedComponentFactoryHandlerUnique());
     componentFactory.registerComponent(LSMVectorIndex.FILE_EXT, new LSMVectorIndex.PaginatedComponentFactoryHandlerUnique());
+    componentFactory.registerComponent(LSMVectorIndexGraphFile.FILE_EXT,
+        new LSMVectorIndexGraphFile.PaginatedComponentFactoryHandler());
 
     indexFactory.register(INDEX_TYPE.LSM_TREE.name(), new LSMTreeIndex.IndexFactoryHandler());
     indexFactory.register(INDEX_TYPE.FULL_TEXT.name(), new LSMTreeFullTextIndex.IndexFactoryHandler());
