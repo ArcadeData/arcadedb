@@ -62,7 +62,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       final JsonGraphSerializer serializerImpl = JsonGraphSerializer
           .createJsonGraphSerializer()
           .setExpandVertexEdges(false);
-      serializerImpl.setUseCollectionSize(false).setUseCollectionSizeForEdges(true);
+      serializerImpl.setUseCollectionSize(false)
+          .setUseCollectionSizeForEdges(true);
 
       final Set<RID> includedVertices = new HashSet<>();
       final Set<RID> includedEdges = new HashSet<>();

@@ -29,6 +29,8 @@ import java.math.*;
 import java.time.temporal.*;
 import java.util.*;
 
+import static com.arcadedb.utility.CollectionUtils.arrayToList;
+
 public class BinaryComparator {
   public int compare(final Object value1, final byte type1, final Object value2, final byte type2) {
     if (value1 == null) {
@@ -345,8 +347,8 @@ public class BinaryComparator {
     case BinaryTypes.TYPE_LIST: {
       switch (type2) {
       case BinaryTypes.TYPE_LIST:
-        final List v1 = value1.getClass().isArray() ? Arrays.asList((Object[]) value1) : (List) value1;
-        final List v2 = value2.getClass().isArray() ? Arrays.asList((Object[]) value2) : (List) value2;
+        final List v1 = value1.getClass().isArray() ? arrayToList(value1) : (List) value1;
+        final List v2 = value2.getClass().isArray() ? arrayToList(value2) : (List) value2;
 
         return CollectionUtils.compare(v1, v2);
       }
@@ -472,4 +474,5 @@ public class BinaryComparator {
   public static int compareBytes(final byte[] buffer1, final byte[] buffer2) {
     return UnsignedBytesComparator.BEST_COMPARATOR.compare(buffer1, buffer2);
   }
+
 }

@@ -142,4 +142,82 @@ public class CollectionUtils {
     }
     return Collections.unmodifiableList(result);
   }
+
+
+  /**
+   * Converts any array (including primitive arrays) to a List.
+   * Handles the special case of primitive arrays which cannot be cast to Object[].
+   */
+  public static List<?> arrayToList(final Object array) {
+    if (!array.getClass().isArray()) {
+      throw new IllegalArgumentException("Input must be an array");
+    }
+
+    final Class<?> componentType = array.getClass().getComponentType();
+
+    // Handle primitive arrays specially
+    if (componentType.isPrimitive()) {
+      if (componentType == float.class) {
+        final float[] floatArray = (float[]) array;
+        final List<Float> list = new ArrayList<>(floatArray.length);
+        for (float f : floatArray) {
+          list.add(f);
+        }
+        return list;
+      } else if (componentType == int.class) {
+        final int[] intArray = (int[]) array;
+        final List<Integer> list = new ArrayList<>(intArray.length);
+        for (int i : intArray) {
+          list.add(i);
+        }
+        return list;
+      } else if (componentType == double.class) {
+        final double[] doubleArray = (double[]) array;
+        final List<Double> list = new ArrayList<>(doubleArray.length);
+        for (double d : doubleArray) {
+          list.add(d);
+        }
+        return list;
+      } else if (componentType == long.class) {
+        final long[] longArray = (long[]) array;
+        final List<Long> list = new ArrayList<>(longArray.length);
+        for (long l : longArray) {
+          list.add(l);
+        }
+        return list;
+      } else if (componentType == boolean.class) {
+        final boolean[] boolArray = (boolean[]) array;
+        final List<Boolean> list = new ArrayList<>(boolArray.length);
+        for (boolean b : boolArray) {
+          list.add(b);
+        }
+        return list;
+      } else if (componentType == byte.class) {
+        final byte[] byteArray = (byte[]) array;
+        final List<Byte> list = new ArrayList<>(byteArray.length);
+        for (byte b : byteArray) {
+          list.add(b);
+        }
+        return list;
+      } else if (componentType == char.class) {
+        final char[] charArray = (char[]) array;
+        final List<Character> list = new ArrayList<>(charArray.length);
+        for (char c : charArray) {
+          list.add(c);
+        }
+        return list;
+      } else if (componentType == short.class) {
+        final short[] shortArray = (short[]) array;
+        final List<Short> list = new ArrayList<>(shortArray.length);
+        for (short s : shortArray) {
+          list.add(s);
+        }
+        return list;
+      }
+    }
+
+    // For object arrays, use Arrays.asList
+    return java.util.Arrays.asList((Object[]) array);
+  }
+
 }

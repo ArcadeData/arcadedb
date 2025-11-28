@@ -164,7 +164,7 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
 
     if (availableSpace < entrySize) {
       // NO SPACE LEFT, CREATE A NEW PAGE AND FLUSH CURRENT ONE (NO WAL)
-      database.getPageManager().updatePageVersion(currentPage, true);
+      // During compaction, pages are created fresh and don't need version tracking
       database.getPageManager().writePages(List.of(currentPage), true);
 
       currentPage = createNewPage(compactedPageNumberOfSeries.getAndIncrement());
