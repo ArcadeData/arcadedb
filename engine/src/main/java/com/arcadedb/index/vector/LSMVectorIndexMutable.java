@@ -63,7 +63,8 @@ public class LSMVectorIndexMutable extends PaginatedComponent {
   protected LSMVectorIndexMutable(final DatabaseInternal database, final String name, final String filePath,
       final ComponentFile.MODE mode, final int pageSize, final String ext) throws IOException {
     super(database, name, filePath, ext, mode, pageSize, CURRENT_VERSION);
-    database.checkTransactionIsActive(database.isAutoTransaction());
+    // Don't check for active transaction here - file creation doesn't require it
+    // Transaction is required when writing pages, which happens in the compactor's transaction block
   }
 
   /**
@@ -91,6 +92,17 @@ public class LSMVectorIndexMutable extends PaginatedComponent {
    */
   public void setMainIndex(final LSMVectorIndex mainIndex) {
     this.mainIndex = mainIndex;
+  }
+
+  /**
+   * Called after schema is loaded. Delegates to main index to load vectors from pages
+   * after metadata has been populated from schema.json.
+   */
+  @Override
+  public void onAfterSchemaLoad() {
+    if (mainIndex != null) {
+      mainIndex.loadVectorsAfterSchemaLoad();
+    }
   }
 
   /**

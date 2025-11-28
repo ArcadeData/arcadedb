@@ -40,21 +40,32 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
-import java.time.temporal.*;
-import java.util.*;
-import java.util.logging.*;
+import java.time.temporal.ChronoUnit;
+import java.time.temporal.Temporal;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.logging.Level;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
 import static com.arcadedb.schema.Property.IN_PROPERTY;
 import static com.arcadedb.schema.Property.OUT_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.schema.Property.TYPE_PROPERTY;
+import static com.arcadedb.utility.CollectionUtils.arrayToList;
 
 public class JsonSerializer {
-  private boolean useCollectionSize         = false;
-  private boolean includeVertexEdges        = true;
-  private boolean useVertexEdgeSize         = true;
-  private boolean useCollectionSizeForEdges = true;
+  private boolean  useCollectionSize         = false;
+  private boolean  includeVertexEdges        = true;
+  private boolean  useVertexEdgeSize         = true;
+  private boolean  useCollectionSizeForEdges = true;
   private Database database;
 
   JsonSerializer() {
@@ -391,7 +402,8 @@ public class JsonSerializer {
           v.fromJSON((JSONObject) value);
           value = v;
         } else if (type != null) {
-          final MutableEmbeddedDocument embeddedDocument = ((DatabaseInternal) database).newEmbeddedDocument(null, embeddedTypeName);
+          final MutableEmbeddedDocument embeddedDocument = ((DatabaseInternal) database).newEmbeddedDocument(null,
+              embeddedTypeName);
           embeddedDocument.fromJSON((JSONObject) value);
           value = embeddedDocument;
         }
@@ -440,10 +452,11 @@ public class JsonSerializer {
     else if (value instanceof Map)
       value = serializeMap(database, (Map<Object, Object>) value);
     else if (value.getClass().isArray())
-      value = serializeCollection(database, List.of((Object[]) value), null);
+      value = serializeCollection(database, arrayToList(value), null);
 
     value = convertNonNumbers(value);
 
     return value;
   }
+
 }
