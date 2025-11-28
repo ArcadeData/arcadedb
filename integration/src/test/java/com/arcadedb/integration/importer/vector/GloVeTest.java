@@ -28,6 +28,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.Pair;
+import org.assertj.core.api.Assertions;
 
 import java.io.*;
 import java.util.*;
@@ -143,6 +144,7 @@ public class GloVeTest {
             } else {
               database.begin();
               approximateResults = ((LSMVectorIndex) persistentIndex.getIndexesOnBuckets()[0]).findNeighborsFromVector(input, k);
+              Assertions.assertThat(approximateResults.size()).isNotEqualTo(0);
               database.rollback();
             }
 
