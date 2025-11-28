@@ -14,11 +14,11 @@
 # limitations under the License.
 #
 
-FROM eclipse-temurin:21-alpine@sha256:df8ce8302ed2ed1690ef490c633981b07e752b373b5fdf796960fb2eb0d640ea
-
+#FROM eclipse-temurin:21-alpine@sha256:df8ce8302ed2ed1690ef490c633981b07e752b373b5fdf796960fb2eb0d640ea
+FROM amazoncorretto:25-alpine3.22@sha256:807ea3c4000a052986cd1e7097a883f9cd7a6e527f73841f462e3d04851b8835
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 
-ENV JAVA_OPTS="-XX:+UseZGC -XX:+ZGenerational"
+ENV JAVA_OPTS="-XX:+UseZGC -XX:+ZGenerational -XX:+UseCompactObjectHeaders"
 
 ENV ARCADEDB_OPTS_MEMORY="-Xms2G -Xmx2G"
 
