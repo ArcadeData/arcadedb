@@ -49,12 +49,22 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
-import java.lang.reflect.*;
-import java.math.*;
-import java.time.*;
-import java.time.temporal.*;
-import java.util.*;
-import java.util.logging.*;
+import java.lang.reflect.Array;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Date;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.logging.Level;
 
 /**
  * Default serializer implementation.
