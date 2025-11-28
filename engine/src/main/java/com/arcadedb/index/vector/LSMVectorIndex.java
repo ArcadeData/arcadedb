@@ -318,21 +318,43 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
           "No compacted sub-index found for index: %s", null, name);
     }
 
-    // Load vectors from pages - only if this is an existing index file
-    // During replication on replicas, the file may not exist yet and will be created/replicated later
-    try {
-      loadVectorsFromPages();
+    // DON'T load vectors here - metadata.dimensions is still -1 at this point!
+    // Vector loading is deferred until after schema loads metadata via onAfterSchemaLoad() hook.
+    // See loadVectorsAfterSchemaLoad() method which is called by LSMVectorIndexMutable.onAfterSchemaLoad()
+    }
 
-      // Rebuild graph index from loaded vectors
-      initializeGraphIndex();
-    } catch (final Exception e) {
-      // If we can't load vectors (e.g., during initial replication), just use empty index
-      // Metadata will be applied from schema and vectors will be populated as data arrives
-      // Graph will remain in LOADING state and be built on first search via ensureGraphAvailable()
+  /**
+   * Load vectors from pages after schema has loaded metadata.
+   * Called by LSMVectorIndexMutable.onAfterSchemaLoad() after dimensions are set from schema.json.
+   */
+  public void loadVectorsAfterSchemaLoad() {
+    // Only load vectors if we have valid metadata (dimensions > 0) and pages exist
+    if (metadata.dimensions > 0 && mutable.getTotalPages() > 0) {
+      try {
+        LogManager.instance().log(this, Level.INFO,
+            "Loading vectors for index %s after schema load (dimensions=%d, pages=%d)",
+            indexName, metadata.dimensions, mutable.getTotalPages());
+
+        loadVectorsFromPages();
+
+        // Rebuild graph index from loaded vectors
+        initializeGraphIndex();
+
+        LogManager.instance().log(this, Level.INFO,
+            "Successfully loaded %d vectors for index %s",
+            vectorIndex.size(), indexName);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Could not load vectors from pages for index %s: %s",
+            indexName, e.getMessage());
+        this.graphState = GraphState.LOADING;
+      }
+    } else {
       LogManager.instance().log(this, Level.FINE,
-          "Could not load vectors from pages for index %s (may be a new replicated index): %s", name, e.getMessage());
+          "Skipping vector load for index %s (dimensions=%d, pages=%d)",
+          indexName, metadata.dimensions, mutable.getTotalPages());
     }
-    }
+  }
 
   /**
    * Discovers and loads the compacted sub-index file if it exists.
@@ -425,8 +447,8 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
           this, database, compactedName, compactedPath,
           compactedFileId, database.getMode(), pageSize, version);
 
-      // Register with schema
-      database.getSchema().getEmbedded().registerFile(compactedIndex);
+      // NOTE: Do NOT register with schema here - the file is already registered by LocalSchema.load()
+      // when it scans the database directory. Registering twice causes "File with id already exists" error.
 
       LogManager.instance().log(this, Level.WARNING,
           "Discovered and loaded compacted sub-index: %s (fileId=%d, pages=%d)",
@@ -1889,10 +1911,49 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       vectorIndex.clear();
       ordinalToVectorId = new int[0];
 
-      // Delete index files
-      final File indexFile = new File(mutable.getFilePath());
-      if (indexFile.exists())
-        indexFile.delete();
+      final DatabaseInternal db = mutable != null ? mutable.getDatabase() : null;
+
+      // Drop compacted sub-index if it exists
+      if (compactedSubIndex != null) {
+        try {
+          final int compactedFileId = compactedSubIndex.getFileId();
+          if (db != null && db.isOpen()) {
+            db.getPageManager().deleteFile(db, compactedFileId);
+            db.getFileManager().dropFile(compactedFileId);
+            db.getSchema().getEmbedded().removeFile(compactedFileId);
+          } else {
+            final File compactedFile = compactedSubIndex.getOSFile();
+            if (compactedFile != null && compactedFile.exists() && !compactedFile.delete()) {
+              LogManager.instance().log(this, Level.WARNING,
+                  "Error deleting compacted index file '%s'", compactedFile.getPath());
+            }
+          }
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Error dropping compacted sub-index for '%s': %s", indexName, e.getMessage());
+        }
+      }
+
+      // Drop the mutable component (this properly deletes the physical file)
+      if (mutable != null) {
+        try {
+          final int mutableFileId = mutable.getFileId();
+          if (db != null && db.isOpen()) {
+            db.getPageManager().deleteFile(db, mutableFileId);
+            db.getFileManager().dropFile(mutableFileId);
+            db.getSchema().getEmbedded().removeFile(mutableFileId);
+          } else {
+            final File mutableFile = mutable.getOSFile();
+            if (mutableFile != null && mutableFile.exists() && !mutableFile.delete()) {
+              LogManager.instance().log(this, Level.WARNING,
+                  "Error deleting mutable index file '%s'", mutableFile.getPath());
+            }
+          }
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Error dropping mutable component for '%s': %s", indexName, e.getMessage());
+        }
+      }
 
       // Delete graph file if it exists
       if (graphFile != null) {
