@@ -21,8 +21,9 @@ package com.arcadedb.integration.importer.vector;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
-import com.arcadedb.index.vector.HnswVectorIndex;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -82,13 +83,14 @@ public class GloVeTest {
       long end = System.currentTimeMillis();
       long duration = end - start;
 
-      LogManager.instance().log(this, Level.SEVERE, "Creating index took %d millis which is %d minutes.%n", duration, MILLISECONDS.toMinutes(duration));
+      LogManager.instance().log(this, Level.SEVERE, "Creating index took %d millis which is %d minutes.%n", duration,
+          MILLISECONDS.toMinutes(duration));
 
       database.close();
       System.exit(1);
     }
 
-    final HnswVectorIndex persistentIndex = (HnswVectorIndex) database.getSchema().getIndexByName("Word[name,vector]");
+    final LSMVectorIndex persistentIndex = (LSMVectorIndex) database.getSchema().getIndexByName("Word[vector]");
 
     try {
 
@@ -96,7 +98,8 @@ public class GloVeTest {
 
       final Random random = new Random();
 
-      final ExecutorService executor = new ThreadPoolExecutor(PARALLEL_LEVEL, PARALLEL_LEVEL, 5, TimeUnit.SECONDS, new SynchronousQueue(),
+      final ExecutorService executor = new ThreadPoolExecutor(PARALLEL_LEVEL, PARALLEL_LEVEL, 5, TimeUnit.SECONDS,
+          new SynchronousQueue(),
           new ThreadPoolExecutor.CallerRunsPolicy());
 
       final AtomicLong totalSearchTime = new AtomicLong();
@@ -104,23 +107,24 @@ public class GloVeTest {
       final long begin = System.currentTimeMillis();
       final AtomicLong lastStats = new AtomicLong();
 
-      final List<String> words = new ArrayList<>();
+      final List<float[]> embeddings = new ArrayList<>();
       for (Iterator<Record> it = database.iterateType("Word", true); it.hasNext(); )
-        words.add(it.next().asVertex().getString("name"));
+        embeddings.add((float[]) it.next().asVertex().get("vector"));
 
       for (int cycle = 0; ; ++cycle) {
         final int currentCycle = cycle;
 
         executor.submit(() -> {
           try {
-            final int randomWord = random.nextInt(words.size());
-            String input = words.get(randomWord);
+            final int randomWord = random.nextInt(embeddings.size());
+            final float[] input = embeddings.get(randomWord);
 
             final long startWord = System.currentTimeMillis();
 
-            final List<Pair<Identifiable, Float>> approximateResults;
+            final List<Pair<RID, Float>> approximateResults;
             if (USE_SQL) {
-              final ResultSet resultSet = database.query("sql", "select vectorNeighbors('Word[name,vector]', ?,?) as neighbors", input, k);
+              final ResultSet resultSet = database.query("sql", "select vectorNeighbors('Word[vector]', ?,?) as neighbors", input,
+                  k);
               if (resultSet.hasNext()) {
                 approximateResults = new ArrayList<>();
                 while (resultSet.hasNext()) {
@@ -128,7 +132,8 @@ public class GloVeTest {
                   final List<Map<String, Object>> neighbors = row.getProperty("neighbors");
 
                   for (Map<String, Object> neighbor : neighbors)
-                    approximateResults.add(new Pair<>((Identifiable) neighbor.get("vertex"), ((Number) neighbor.get("distance")).floatValue()));
+                    approximateResults.add(
+                        new Pair<>((RID) neighbor.get("vertex"), ((Number) neighbor.get("distance")).floatValue()));
                 }
 
               } else {
@@ -148,7 +153,7 @@ public class GloVeTest {
             totalSearchTime.addAndGet(delta);
 
             final Map<String, Float> results = new LinkedHashMap<>();
-            for (Pair<Identifiable, Float> result : approximateResults)
+            for (Pair<RID, Float> result : approximateResults)
               results.put(result.getFirst().asVertex().getString("name"), result.getSecond());
 
 //            LogManager.instance()
@@ -158,7 +163,8 @@ public class GloVeTest {
 
             if (now - lastStats.get() >= 1000) {
               LogManager.instance()
-                  .log(this, Level.SEVERE, "STATS: %d searched words, avg %dms per single word, total throughput %.2f words/sec", totalSearchTime.get(),
+                  .log(this, Level.SEVERE, "STATS: %d searched words, avg %dms per single word, total throughput %.2f words/sec",
+                      totalSearchTime.get(),
                       totalSearchTime.get() / totalHits.get(), throughput);
               lastStats.set(now);
             }

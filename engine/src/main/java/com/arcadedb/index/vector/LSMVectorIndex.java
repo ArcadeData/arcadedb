@@ -933,10 +933,9 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
           "Loaded " + vectorIndex.size() + " vector locations (" + entriesRead + " total entries) for index: " + indexName
               + ", nextId=" + nextId.get());
 
-      // Initialize the graph index with loaded non-deleted vectors
-      if (vectorIndex.size() > 0) {
-        initializeGraphIndex();
-      }
+      // NOTE: Do NOT call initializeGraphIndex() here - it would cause infinite recursion
+      // because buildGraphFromScratch() calls loadVectorsFromPages()
+      // Graph initialization is handled separately by the constructor and ensureGraphAvailable()
 
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error loading vectors from pages", e);

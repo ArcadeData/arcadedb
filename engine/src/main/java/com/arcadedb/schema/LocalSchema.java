@@ -53,7 +53,6 @@ import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
-import com.arcadedb.index.vector.LSMVectorIndexGraphFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
@@ -138,8 +137,7 @@ public class LocalSchema implements Schema {
         new LSMTreeIndex.PaginatedComponentFactoryHandlerNotUnique());
     componentFactory.registerComponent(HnswVectorIndex.FILE_EXT, new HnswVectorIndex.PaginatedComponentFactoryHandlerUnique());
     componentFactory.registerComponent(LSMVectorIndex.FILE_EXT, new LSMVectorIndex.PaginatedComponentFactoryHandlerUnique());
-    componentFactory.registerComponent(LSMVectorIndexGraphFile.FILE_EXT,
-        new LSMVectorIndexGraphFile.PaginatedComponentFactoryHandler());
+    // Note: LSMVectorIndexGraphFile is NOT registered here - it's a sub-component discovered by its parent LSMVectorIndex
 
     indexFactory.register(INDEX_TYPE.LSM_TREE.name(), new LSMTreeIndex.IndexFactoryHandler());
     indexFactory.register(INDEX_TYPE.FULL_TEXT.name(), new LSMTreeFullTextIndex.IndexFactoryHandler());
@@ -620,6 +618,20 @@ public class LocalSchema implements Schema {
   }
 
   public void close() {
+    // Save dirty configuration before clearing everything
+    if (dirtyConfiguration) {
+      try {
+        // Force save even if transaction is active - this is the last chance to save
+        LogManager.instance().log(this, Level.INFO, "Saving dirty schema configuration before close");
+        versionSerial.incrementAndGet();
+        update(toJSON());
+        dirtyConfiguration = false;
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error saving schema configuration during close: %s", e,
+            e.getMessage());
+      }
+    }
+
     writeStatisticsFile();
     files.clear();
     types.clear();

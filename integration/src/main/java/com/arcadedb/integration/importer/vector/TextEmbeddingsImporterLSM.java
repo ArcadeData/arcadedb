@@ -118,33 +118,31 @@ public class TextEmbeddingsImporterLSM {
       };
 
       // Create vertex type and LSM_VECTOR index
-      database.transaction(() -> {
-        // Check if type exists first
-        if (!database.getSchema().existsType(settings.vertexTypeName)) {
-          database.command("sql", "CREATE VERTEX TYPE " + settings.vertexTypeName);
-        }
+      // Check if type exists first
+      if (!database.getSchema().existsType(settings.vertexTypeName)) {
+        database.command("sql", "CREATE VERTEX TYPE " + settings.vertexTypeName);
+      }
 
-        // Create properties
-        final var type = database.getSchema().getType(settings.vertexTypeName);
-        if (!type.existsProperty(idPropertyName)) {
-          database.command("sql", "CREATE PROPERTY " + settings.vertexTypeName + "." + idPropertyName + " STRING");
-        }
-        if (!type.existsProperty(vectorPropertyName)) {
-          database.command("sql", "CREATE PROPERTY " + settings.vertexTypeName + "." + vectorPropertyName + " ARRAY_OF_FLOATS");
-        }
+      // Create properties
+      final var type = database.getSchema().getType(settings.vertexTypeName);
+      if (!type.existsProperty(idPropertyName)) {
+        database.command("sql", "CREATE PROPERTY " + settings.vertexTypeName + "." + idPropertyName + " STRING");
+      }
+      if (!type.existsProperty(vectorPropertyName)) {
+        database.command("sql", "CREATE PROPERTY " + settings.vertexTypeName + "." + vectorPropertyName + " ARRAY_OF_FLOATS");
+      }
 
-        // Create LSM_VECTOR index
-        final String indexName = settings.vertexTypeName + "[" + vectorPropertyName + "]";
-        try {
-          database.getSchema().getIndexByName(indexName);
-          // Index already exists
-        } catch (final Exception e) {
-          // Index doesn't exist, create it
-          database.command("sql", "CREATE INDEX ON " + settings.vertexTypeName + " (" + vectorPropertyName + ") LSM_VECTOR " +
-              "METADATA {dimensions: " + dimensions + ", similarity: '" + normalizedSimilarity + "', " +
-              "maxConnections: " + maxConnections + ", beamWidth: " + beamWidth + ", idPropertyName: '" + idPropertyName + "'}");
-        }
-      });
+      // Create LSM_VECTOR index
+      final String indexName = settings.vertexTypeName + "[" + vectorPropertyName + "]";
+      try {
+        database.getSchema().getIndexByName(indexName);
+        // Index already exists
+      } catch (final Exception e) {
+        // Index doesn't exist, create it
+        database.command("sql", "CREATE INDEX ON " + settings.vertexTypeName + " (" + vectorPropertyName + ") LSM_VECTOR " +
+            "METADATA {dimensions: " + dimensions + ", similarity: '" + normalizedSimilarity + "', " +
+            "maxConnections: " + maxConnections + ", beamWidth: " + beamWidth + ", idPropertyName: '" + idPropertyName + "'}");
+      }
 
       logger.logLine(2, "- Created schema and LSM_VECTOR index");
 
