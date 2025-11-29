@@ -142,10 +142,9 @@ public class GloVeTest {
                 return;
               }
             } else {
-              database.begin();
+              // Vector searches are read-only, no transaction needed
               approximateResults = ((LSMVectorIndex) persistentIndex.getIndexesOnBuckets()[0]).findNeighborsFromVector(input, k);
               Assertions.assertThat(approximateResults.size()).isNotEqualTo(0);
-              database.rollback();
             }
 
             final long now = System.currentTimeMillis();

@@ -266,6 +266,10 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       this.graphFile.setMainIndex(this);
       database.getSchema().getEmbedded().registerFile(this.graphFile);
 
+      LogManager.instance().log(this, Level.FINE,
+          "Created LSMVectorIndex: indexName=%s, vectorFileId=%d, graphFileId=%d",
+          indexName, mutable.getFileId(), graphFile.getFileId());
+
       initializeGraphIndex();
     } catch (final IOException e) {
       throw new IndexException("Error on creating index '" + name + "'", e);
@@ -321,7 +325,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     // DON'T load vectors here - metadata.dimensions is still -1 at this point!
     // Vector loading is deferred until after schema loads metadata via onAfterSchemaLoad() hook.
     // See loadVectorsAfterSchemaLoad() method which is called by LSMVectorIndexMutable.onAfterSchemaLoad()
-    }
+  }
 
   /**
    * Load vectors from pages after schema has loaded metadata.
@@ -332,16 +336,15 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     if (metadata.dimensions > 0 && mutable.getTotalPages() > 0) {
       try {
         LogManager.instance().log(this, Level.INFO,
-            "Loading vectors for index %s after schema load (dimensions=%d, pages=%d)",
-            indexName, metadata.dimensions, mutable.getTotalPages());
+            "Loading vectors for index %s after schema load (dimensions=%d, pages=%d, fileId=%d)",
+            indexName, metadata.dimensions, mutable.getTotalPages(), mutable.getFileId());
 
         loadVectorsFromPages();
 
-        // Rebuild graph index from loaded vectors
-        initializeGraphIndex();
-
+        // Graph will be lazy-loaded on first search via ensureGraphAvailable()
+        // Don't build it here - causes deadlock during database load when PageManager isn't fully ready
         LogManager.instance().log(this, Level.INFO,
-            "Successfully loaded %d vectors for index %s",
+            "Successfully loaded %d vector locations for index %s (graph will be lazy-loaded on first search)",
             vectorIndex.size(), indexName);
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING,
@@ -373,7 +376,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       if (lastUnderscore == -1) {
         // No underscore in name - no compacted file expected
         return null;
-  }
+      }
 
       final String namePrefix = componentName.substring(0, lastUnderscore);
 
@@ -535,12 +538,12 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       }
 
       // No persisted graph - build now for new indexes
-      lock.writeLock().lock();
-      try {
-        buildGraphFromScratch();
-      } finally {
-        lock.writeLock().unlock();
-      }
+      LogManager.instance().log(this, Level.INFO,
+          "Building graph from scratch for index: %s", indexName);
+
+      // NOTE: buildGraphFromScratch() manages locking internally
+      // Don't hold lock here - JVector uses parallel threads during graph build
+      buildGraphFromScratch();
     }
   }
 
@@ -550,13 +553,13 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
    */
   private void ensureGraphAvailable() {
     if (graphState != GraphState.LOADING)
-      return; // Graph already available
+      return; // Graph already available or being built
 
     lock.writeLock().lock();
     try {
       // Double-check after acquiring lock
       if (graphState != GraphState.LOADING)
-        return;
+        return; // Another thread already started building
 
       // Try to load persisted graph from disk
       if (graphFile != null && graphFile.hasPersistedGraph()) {
@@ -582,12 +585,12 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
         }
       }
 
-      // No persisted graph or load failed - build from scratch
-      buildGraphFromScratch();
-
     } finally {
       lock.writeLock().unlock();
     }
+
+    // No persisted graph or load failed - build from scratch
+    buildGraphFromScratch();
   }
 
   /**
@@ -595,21 +598,8 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
    * After building, persists the graph to disk and transitions to IMMUTABLE state.
    */
   private void buildGraphFromScratch() {
-    // This method assumes write lock is already held by caller
-
-    // IMPORTANT: Always reload VectorLocationIndex from pages before building graph.
-    // This ensures we only use offsets that are actually valid on disk.
-    // The in-memory VectorLocationIndex might have entries from uncommitted transactions
-    // or entries that were added before the page was flushed.
-    final int sizeBefore = vectorIndex.size();
-    vectorIndex.clear();
-    loadVectorsFromPages();
-    final int sizeAfter = vectorIndex.size();
-    LogManager.instance().log(this, Level.FINE,
-        "buildGraphFromScratch: cleared vectorIndex (was %d), reloaded from pages (now %d)", null,
-        sizeBefore, sizeAfter);
-
-    // Try building graph, with one retry if we detect VectorLocationIndex corruption
+    // buildGraphFromScratchWithRetry() reads pages directly and rebuilds vectorIndex
+    // No need to reload here - just call the retry logic directly
     buildGraphFromScratchWithRetry();
   }
 
@@ -773,37 +763,65 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
           totalEntriesRead, filteredDeletedVectors, filteredZeroVectors, activeVectorIds.length);
     }
 
-    // Update vectorIndex to match what we found on pages (sync it with disk state)
-    // This ensures vectorIndex is consistent with the graph we're about to build
-    vectorIndex.clear();
-    for (final VectorEntryForGraphBuild entry : ridToLatestVector.values()) {
-      vectorIndex.addOrUpdate(entry.vectorId, entry.isCompacted, entry.pageNum, entry.pageOffset, entry.rid, false);
-    }
-
-    this.ordinalToVectorId = activeVectorIds;
-
-    if (activeVectorIds.length == 0) {
-      this.graphIndex = null;
-      this.graphState = GraphState.IMMUTABLE;
-      LogManager.instance().log(this, Level.INFO,
-          "No vectors to index, graph is null for index: " + indexName);
-      return;
-    }
-
+    // Acquire write lock for updating vectorIndex and preparing build
+    lock.writeLock().lock();
+    final RandomAccessVectorValues vectors;
+    final int[] finalActiveVectorIds;
     try {
+      // Update vectorIndex to match what we found on pages (sync it with disk state)
+      // This ensures vectorIndex is consistent with the graph we're about to build
+      vectorIndex.clear();
+      for (final VectorEntryForGraphBuild entry : ridToLatestVector.values()) {
+        vectorIndex.addOrUpdate(entry.vectorId, entry.isCompacted, entry.pageNum, entry.pageOffset, entry.rid, false);
+      }
+
+      this.ordinalToVectorId = activeVectorIds;
+      finalActiveVectorIds = activeVectorIds;
+
+      if (activeVectorIds.length == 0) {
+        this.graphIndex = null;
+        this.graphState = GraphState.IMMUTABLE;
+        LogManager.instance().log(this, Level.INFO,
+            "No vectors to index, graph is null for index: " + indexName);
+        return;
+      }
+
+      // Create a SNAPSHOT of vectorIndex for JVector to use safely
+      // This prevents race conditions where vectorIndex gets cleared while graph is building
+      final Map<Integer, VectorLocationIndex.VectorLocation> vectorLocationSnapshot = new HashMap<>();
+      for (int vectorId : activeVectorIds) {
+        final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
+        if (loc != null && !loc.deleted) {
+          vectorLocationSnapshot.put(vectorId, loc);
+        }
+      }
+
       // Create lazy-loading vector values (reads from pages on-demand)
       final int compactedFileId = (compactedSubIndex != null) ? compactedSubIndex.getFileId() : -1;
-      final RandomAccessVectorValues vectors = new ArcadePageVectorValues(
+
+      LogManager.instance().log(this, Level.INFO,
+          "Creating ArcadePageVectorValues: snapshotSize=%d, ordinalToVectorIdLength=%d",
+          vectorLocationSnapshot.size(), activeVectorIds.length);
+
+      // CRITICAL: Use snapshot instead of shared vectorIndex to prevent race conditions
+      vectors = new ArcadePageVectorValues(
           getDatabase(),
           getFileId(),
           compactedFileId,
           getPageSize(),
           metadata.dimensions,
-          vectorIndex,
-          ordinalToVectorId
+          vectorLocationSnapshot,  // Use immutable snapshot
+          finalActiveVectorIds
       );
 
-      // Build the graph index using JVector 4.0 API
+      // Mark that graph building is in progress to prevent new inserts
+      this.graphState = GraphState.MUTABLE;
+    } finally {
+      lock.writeLock().unlock();
+    }
+
+    try {
+      // Build the graph index using JVector 4.0 API (WITHOUT holding our lock - JVector uses parallel threads)
       LogManager.instance().log(this, Level.INFO,
           "Building JVector graph index with " + vectors.size() + " vectors for index: " + indexName);
 
@@ -811,7 +829,8 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       final BuildScoreProvider scoreProvider =
           BuildScoreProvider.randomAccessScoreProvider(vectors, metadata.similarityFunction);
 
-      // Build the graph index
+      // Build the graph index (parallel operation - no lock held)
+      final ImmutableGraphIndex builtGraph;
       try (final GraphIndexBuilder builder = new GraphIndexBuilder(
           scoreProvider,
           metadata.dimensions,
@@ -822,16 +841,22 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
           false,           // no distance transform
           true)) {         // enable concurrent updates
 
-        this.graphIndex = builder.build(vectors);
-
-        // Phase 5+: Graph is built, will track mutations and rebuild periodically
-        this.graphState = GraphState.IMMUTABLE;
+        builtGraph = builder.build(vectors);
         LogManager.instance().log(this, Level.INFO, "JVector graph index built successfully");
       } catch (final AssertionError e) {
         LogManager.instance().log(this, Level.SEVERE,
             "JVector assertion failed during graph build (dimensions=%d, vectors=%d): %s",
             metadata.dimensions, vectors.size(), e.getMessage());
         throw e;
+      }
+
+      // Reacquire write lock to update graph state
+      lock.writeLock().lock();
+      try {
+        this.graphIndex = builtGraph;
+        this.graphState = GraphState.IMMUTABLE;
+      } finally {
+        lock.writeLock().unlock();
       }
 
       // Persist graph to disk
@@ -878,54 +903,6 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error rebuilding graph after mutations", e);
       // Don't throw - allow operations to continue, will retry on next threshold
-    }
-  }
-
-  /**
-   * Serialize the current mutable graph to disk if mutation threshold reached.
-   * Transitions from MUTABLE to IMMUTABLE state.
-   * NOTE: Currently disabled (Phase 4 - Graph Persistence not implemented yet)
-   */
-  private void serializeGraphIfNeeded() {
-    if (graphState != GraphState.MUTABLE)
-      return; // Nothing to serialize
-
-    if (mutationsSinceSerialize.get() < MUTATIONS_BEFORE_SERIALIZE)
-      return; // Not enough mutations yet
-
-    lock.writeLock().lock();
-    try {
-      // Double-check after acquiring lock
-      if (graphState != GraphState.MUTABLE || mutationsSinceSerialize.get() < MUTATIONS_BEFORE_SERIALIZE)
-        return;
-
-      LogManager.instance().log(this, Level.INFO,
-          "Serializing graph after " + mutationsSinceSerialize.get() + " mutations for index: " + indexName);
-
-      // TODO Phase 4 (FUTURE): Serialize graph to disk
-      // final RandomAccessVectorValues vectors = new ArcadePageVectorValues(
-      //     getDatabase(),
-      //     getFileId(),
-      //     getPageSize(),
-      //     metadata.dimensions,
-      //     vectorIndex,
-      //     ordinalToVectorId
-      // );
-      // graphFile.writeGraph(graphIndex, vectors);
-      // this.graphIndex = graphFile.loadGraph();
-
-      // For now, just keep graph in memory
-      this.graphState = GraphState.IMMUTABLE;
-      this.mutationsSinceSerialize.set(0);
-
-      LogManager.instance().log(this, Level.INFO,
-          "Graph kept in memory (serialization disabled) for index: " + indexName);
-
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error serializing graph", e);
-      // Don't throw - continue with mutable graph
-    } finally {
-      lock.writeLock().unlock();
     }
   }
 
@@ -991,11 +968,18 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
    */
   private int loadVectorsFromFile(final int fileId, final int totalPages, final boolean isCompacted) {
     int entriesRead = 0;
+    int pagesWithEntries = 0;
 
     for (int pageNum = 0; pageNum < totalPages; pageNum++) {
       try {
-        final BasePage currentPage = getDatabase().getTransaction().getPage(
-            new PageId(getDatabase(), fileId, pageNum), getPageSize());
+        // Use getImmutablePage to read directly from disk, not from transaction cache
+        final BasePage currentPage = getDatabase().getPageManager().getImmutablePage(
+            new PageId(getDatabase(), fileId, pageNum), getPageSize(), false, false);
+
+        if (currentPage == null) {
+          LogManager.instance().log(this, Level.FINE, "Page %d in file %d does not exist", null, pageNum, fileId);
+          continue;
+        }
 
         // Read page header
         final int offsetFreeContent = currentPage.readInt(OFFSET_FREE_CONTENT);
@@ -1003,6 +987,8 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
         if (numberOfEntries == 0)
           continue; // Empty page
+
+        pagesWithEntries++;
 
         // Read pointer table (starts at HEADER_BASE_SIZE offset)
         final int[] pointers = new int[numberOfEntries];
@@ -1067,7 +1053,10 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       MutablePage currentPage = getDatabase().getTransaction().getPageToModify(
           new PageId(getDatabase(), getFileId(), lastPageNum), getPageSize(), false);
 
-      // Read page header
+      // Get trackable buffer for writing entry data
+      TrackableBinary currentPageBuffer = currentPage.getTrackable();
+
+      // Read page header using MutablePage methods (consistent with writeInt used for updates)
       int offsetFreeContent = currentPage.readInt(OFFSET_FREE_CONTENT);
       int numberOfEntries = currentPage.readInt(OFFSET_NUM_ENTRIES);
 
@@ -1075,15 +1064,14 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       final int headerSize = HEADER_BASE_SIZE + ((numberOfEntries + 1) * 4); // base header + pointers
       final int availableSpace = offsetFreeContent - headerSize;
 
-      final TrackableBinary currentPageBuffer = currentPage.getTrackable();
-
       if (availableSpace < entrySize) {
         // Page is full, mark it as immutable before creating a new page
         currentPageBuffer.putByte(OFFSET_MUTABLE, (byte) 0); // mutable = 0
 
         lastPageNum++;
         currentPage = createNewVectorDataPage(lastPageNum);
-        offsetFreeContent = currentPage.readInt(OFFSET_FREE_CONTENT);
+        currentPageBuffer = currentPage.getTrackable(); // Update buffer reference
+        offsetFreeContent = currentPageBuffer.getInt(OFFSET_FREE_CONTENT);
         numberOfEntries = 0;
       }
 
@@ -1101,13 +1089,13 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       currentPageBuffer.putByte((byte) 0); // not deleted
 
       // Add pointer to entry in header
-      currentPageBuffer.putInt(HEADER_BASE_SIZE + (numberOfEntries * 4), entryOffset);
+      currentPage.writeInt(HEADER_BASE_SIZE + (numberOfEntries * 4), entryOffset);
 
       // Update page header
       numberOfEntries++;
       offsetFreeContent = entryOffset;
-      currentPageBuffer.putInt(OFFSET_FREE_CONTENT, offsetFreeContent);
-      currentPageBuffer.putInt(OFFSET_NUM_ENTRIES, numberOfEntries);
+      currentPage.writeInt(OFFSET_FREE_CONTENT, offsetFreeContent);
+      currentPage.writeInt(OFFSET_NUM_ENTRIES, numberOfEntries);
 
       // Add location to vectorIndex (isCompacted=false since this is a new write to mutable file)
       vectorIndex.addOrUpdate(id, false, lastPageNum, entryOffset, rid, false);
@@ -1251,6 +1239,9 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     if (queryVector.length != metadata.dimensions)
       throw new IllegalArgumentException(
           "Query vector dimension " + queryVector.length + " does not match index dimension " + metadata.dimensions);
+
+    // Ensure graph is available (lazy-load from disk if needed, or build if not persisted)
+    ensureGraphAvailable();
 
     boolean readLockHeld = false;
     lock.readLock().lock();
@@ -2017,6 +2008,8 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
   @Override
   public long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {
+    final long totalRecords;
+
     lock.writeLock().lock();
     try {
       if (status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE)) {
@@ -2075,7 +2068,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
             LogManager.instance().log(this, Level.INFO, "Completed building vector index '%s': processed %d records in %dms",
                 indexName, total.get(), elapsed);
 
-            return total.get();
+            totalRecords = total.get();
           } catch (final Exception e) {
             // Rollback if we started a transaction
             if (startedTransaction && db.getTransaction().getStatus() == com.arcadedb.database.TransactionContext.STATUS.BEGUN)
@@ -2091,6 +2084,22 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     } finally {
       lock.writeLock().unlock();
     }
+
+    // After index build completes, build and persist the graph
+    // This ensures the graph is ready for searches and persisted for fast restart
+    if (vectorIndex.size() > 0 && graphState == GraphState.LOADING) {
+      LogManager.instance().log(this, Level.INFO,
+          "Building graph after index build for: " + indexName);
+      try {
+        buildGraphFromScratch();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Failed to build graph after index build: " + e.getMessage(), e);
+        // Don't fail the whole index build if graph building fails
+      }
+    }
+
+    return totalRecords;
   }
 
   @Override

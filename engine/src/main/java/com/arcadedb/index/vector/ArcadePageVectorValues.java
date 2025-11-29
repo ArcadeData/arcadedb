@@ -41,14 +41,16 @@ import java.io.IOException;
 public class ArcadePageVectorValues implements RandomAccessVectorValues {
   private static final VectorTypeSupport vts = VectorizationProvider.getInstance().getVectorTypeSupport();
 
-  private final DatabaseInternal      database;
-  private final int                   mutableFileId;
-  private final int                   compactedFileId;
-  private final int                   pageSize;
-  private final int                   dimensions;
-  private final VectorLocationIndex   vectorIndex;
-  private final int[]                 ordinalToVectorId;
+  private final DatabaseInternal                                                database;
+  private final int                                                             mutableFileId;
+  private final int                                                             compactedFileId;
+  private final int                                                             pageSize;
+  private final int                                                             dimensions;
+  private final VectorLocationIndex                                             vectorIndex;      // Used for live reads
+  private final java.util.Map<Integer, VectorLocationIndex.VectorLocation>     vectorSnapshot;   // Used for graph building
+  private final int[]                                                           ordinalToVectorId;
 
+  // Constructor for live reads (uses shared vectorIndex)
   public ArcadePageVectorValues(final DatabaseInternal database, final int mutableFileId, final int compactedFileId, final int pageSize,
       final int dimensions, final VectorLocationIndex vectorIndex, final int[] ordinalToVectorId) {
     this.database = database;
@@ -57,6 +59,20 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     this.pageSize = pageSize;
     this.dimensions = dimensions;
     this.vectorIndex = vectorIndex;
+    this.vectorSnapshot = null;
+    this.ordinalToVectorId = ordinalToVectorId;
+  }
+
+  // Constructor for graph building (uses immutable snapshot)
+  public ArcadePageVectorValues(final DatabaseInternal database, final int mutableFileId, final int compactedFileId, final int pageSize,
+      final int dimensions, final java.util.Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot, final int[] ordinalToVectorId) {
+    this.database = database;
+    this.mutableFileId = mutableFileId;
+    this.compactedFileId = compactedFileId;
+    this.pageSize = pageSize;
+    this.dimensions = dimensions;
+    this.vectorIndex = null;
+    this.vectorSnapshot = vectorSnapshot;
     this.ordinalToVectorId = ordinalToVectorId;
   }
 
@@ -72,14 +88,23 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
 
   @Override
   public VectorFloat<?> getVector(final int ordinal) {
-    if (ordinal < 0 || ordinalToVectorId == null || ordinal >= ordinalToVectorId.length)
+    if (ordinal < 0 || ordinalToVectorId == null || ordinal >= ordinalToVectorId.length) {
       return null;
+    }
 
     final int vectorId = ordinalToVectorId[ordinal];
-    final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
 
-    if (loc == null || loc.deleted)
+    // Use snapshot if available (during graph building), otherwise use live vectorIndex
+    final VectorLocationIndex.VectorLocation loc;
+    if (vectorSnapshot != null) {
+      loc = vectorSnapshot.get(vectorId);
+    } else {
+      loc = vectorIndex.getLocation(vectorId);
+    }
+
+    if (loc == null || loc.deleted) {
       return null;
+    }
 
     try {
       // Read vector from page (cached by PageManager) without requiring transaction context
