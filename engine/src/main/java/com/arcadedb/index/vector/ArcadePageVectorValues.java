@@ -153,6 +153,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
         return null; // Zero vectors cause NaN in cosine similarity
       }
 
+      // Return a VectorFloat that signals to JVector this is valid
       return vts.createFloatVector(vector);
 
     } catch (final Exception e) {
