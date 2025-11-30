@@ -754,48 +754,31 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       }
 
       // Create a SNAPSHOT of vectorIndex for JVector to use safely
-      // CRITICAL: Must filter out deleted/missing documents - JVector can't handle null vectors
       final String vectorProp = metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
           metadata.propertyNames.get(0) : "vector";
 
       final Map<Integer, VectorLocationIndex.VectorLocation> vectorLocationSnapshot = new HashMap<>();
-      final java.util.List<Integer> validVectorIds = new java.util.ArrayList<>();
-
-      // Filter: Only include vectors whose documents exist and have vector property
       for (int vectorId : activeVectorIds) {
         final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
         if (loc != null && !loc.deleted) {
-          // Quick check: Does document exist and have vector property?
-          try {
-            final com.arcadedb.database.Record rec = getDatabase().lookupByRID(loc.rid, false);
-            if (rec instanceof com.arcadedb.database.Document) {
-              if (((com.arcadedb.database.Document) rec).get(vectorProp) instanceof float[]) {
-                vectorLocationSnapshot.put(vectorId, loc);
-                validVectorIds.add(vectorId);
-              }
-            }
-          } catch (final Exception e) {
-            // Document deleted or inaccessible - skip
-          }
+          vectorLocationSnapshot.put(vectorId, loc);
         }
       }
 
-      final int[] filteredVectorIds = validVectorIds.stream().mapToInt(Integer::intValue).toArray();
-      this.ordinalToVectorId = filteredVectorIds;
-      finalActiveVectorIds = filteredVectorIds;
+      this.ordinalToVectorId = activeVectorIds;
+      finalActiveVectorIds = activeVectorIds;
 
-      if (filteredVectorIds.length == 0) {
+      if (activeVectorIds.length == 0) {
         this.graphIndex = null;
         this.graphState = GraphState.IMMUTABLE;
         LogManager.instance().log(this, Level.INFO,
-            "No valid vectors (filtered %d -> 0), graph is null for index: %s",
-            activeVectorIds.length, indexName);
+            "No vectors to index, graph is null for index: " + indexName);
         return;
       }
 
       LogManager.instance().log(this, Level.INFO,
-          "Building graph: filtered %d -> %d valid vectors, property='%s'",
-          activeVectorIds.length, filteredVectorIds.length, vectorProp);
+          "Building graph with %d vectors using property '%s' (cache enabled for performance)",
+          activeVectorIds.length, vectorProp);
 
       // Create lazy-loading vector values that reads vectors from documents
       vectors = new ArcadePageVectorValues(
@@ -1866,16 +1849,29 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
   public void close() {
     // Build and persist graph if it hasn't been built yet
     // This ensures the graph is available on next database open (fast restart)
+    LogManager.instance().log(this, Level.SEVERE,
+        "LSMVectorIndex.close() called: vectorIndexSize=%d, graphState=%s",
+        vectorIndex.size(), graphState);
+
     if (vectorIndex.size() > 0 && graphState == GraphState.LOADING) {
       try {
-        LogManager.instance().log(this, Level.INFO,
-            "Building graph before close for index: " + indexName);
+        LogManager.instance().log(this, Level.SEVERE,
+            "Building graph before close for index: %s (this may take 1-2 minutes for large datasets)",
+            indexName);
+        final long startTime = System.currentTimeMillis();
         buildGraphFromScratch();
+        final long elapsed = System.currentTimeMillis() - startTime;
+        LogManager.instance().log(this, Level.SEVERE,
+            "Graph building completed in %d seconds", elapsed / 1000);
       } catch (final Exception e) {
-        LogManager.instance().log(this, Level.WARNING,
+        LogManager.instance().log(this, Level.SEVERE,
             "Failed to build graph before close: " + e.getMessage(), e);
         // Don't fail close if graph building fails
       }
+    } else {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Skipping graph build on close: vectorIndexSize=%d, graphState=%s",
+          vectorIndex.size(), graphState);
     }
 
     lock.writeLock().lock();
