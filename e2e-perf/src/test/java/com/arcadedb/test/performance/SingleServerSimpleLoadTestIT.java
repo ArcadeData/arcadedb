@@ -21,11 +21,15 @@ package com.arcadedb.test.performance;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
+import io.micrometer.core.instrument.Metrics;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 import java.io.IOException;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -37,7 +41,7 @@ public class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
   @ParameterizedTest
   @EnumSource(DatabaseWrapper.Protocol.class)
     //to eneable only one protocol use the following annotation
-    //@EnumSource(value = DatabaseWrapper.Protocol.class, names = "GRPC")
+//    @EnumSource(value = DatabaseWrapper.Protocol.class, names = "HTTP")
   void singleServerLoadTest(DatabaseWrapper.Protocol protocol) throws InterruptedException, IOException {
 
     createArcadeContainer("arcade", "none", "none", "any", false, network);
@@ -54,8 +58,9 @@ public class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
 
     int expectedUsersCount = numOfUsers * numOfThreads;
     int expectedPhotoCount = expectedUsersCount * numOfPhotos;
-
+    LocalDateTime startedAt = LocalDateTime.now();
     logger.info("Creating {} users using {} threads", expectedUsersCount, numOfThreads);
+
     ExecutorService executor = Executors.newFixedThreadPool(numOfThreads);
     for (int i = 0; i < numOfThreads; i++) {
       // Each thread will create users and photos
@@ -79,6 +84,14 @@ public class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
         Thread.currentThread().interrupt();
       }
     }
+
+    LocalDateTime finishedAt = LocalDateTime.now();
+    logger.info("Finishing at {}", DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(finishedAt));
+    logger.info("Total time: {} minutes", Duration.between(startedAt, finishedAt).toMinutes());
+
+    Metrics.globalRegistry.getMeters().forEach(meter -> {
+      logger.info("Meter: {} - {}", meter.getId().getName(), meter.measure());
+    });
 
     db.assertThatUserCountIs(expectedUsersCount);
     db.assertThatPhotoCountIs(expectedPhotoCount);
