@@ -42,35 +42,29 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   private static final VectorTypeSupport vts = VectorizationProvider.getInstance().getVectorTypeSupport();
 
   private final DatabaseInternal                                                database;
-  private final int                                                             mutableFileId;
-  private final int                                                             compactedFileId;
-  private final int                                                             pageSize;
   private final int                                                             dimensions;
+  private final String                                                          vectorPropertyName;
   private final VectorLocationIndex                                             vectorIndex;      // Used for live reads
   private final java.util.Map<Integer, VectorLocationIndex.VectorLocation>     vectorSnapshot;   // Used for graph building
   private final int[]                                                           ordinalToVectorId;
 
   // Constructor for live reads (uses shared vectorIndex)
-  public ArcadePageVectorValues(final DatabaseInternal database, final int mutableFileId, final int compactedFileId, final int pageSize,
-      final int dimensions, final VectorLocationIndex vectorIndex, final int[] ordinalToVectorId) {
+  public ArcadePageVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
+      final VectorLocationIndex vectorIndex, final int[] ordinalToVectorId) {
     this.database = database;
-    this.mutableFileId = mutableFileId;
-    this.compactedFileId = compactedFileId;
-    this.pageSize = pageSize;
     this.dimensions = dimensions;
+    this.vectorPropertyName = vectorPropertyName;
     this.vectorIndex = vectorIndex;
     this.vectorSnapshot = null;
     this.ordinalToVectorId = ordinalToVectorId;
   }
 
   // Constructor for graph building (uses immutable snapshot)
-  public ArcadePageVectorValues(final DatabaseInternal database, final int mutableFileId, final int compactedFileId, final int pageSize,
-      final int dimensions, final java.util.Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot, final int[] ordinalToVectorId) {
+  public ArcadePageVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
+      final java.util.Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot, final int[] ordinalToVectorId) {
     this.database = database;
-    this.mutableFileId = mutableFileId;
-    this.compactedFileId = compactedFileId;
-    this.pageSize = pageSize;
     this.dimensions = dimensions;
+    this.vectorPropertyName = vectorPropertyName;
     this.vectorIndex = null;
     this.vectorSnapshot = vectorSnapshot;
     this.ordinalToVectorId = ordinalToVectorId;
@@ -107,29 +101,44 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     }
 
     try {
-      // Read vector from page (cached by PageManager) without requiring transaction context
-      // This is safe because we're only reading, and PageManager handles its own locking
-      // IMPORTANT: Use correct fileId based on whether vector is in mutable or compacted file
-      final int actualFileId = loc.isCompacted ? compactedFileId : mutableFileId;
-      final BasePage page;
-      try {
-        page = database.getPageManager().getImmutablePage(
-            new PageId(database, actualFileId, loc.pageNum), pageSize, false, false);
-      } catch (final IllegalArgumentException e) {
-        // Page doesn't exist (may have been compacted or deleted)
-        // This should not happen if buildGraphFromScratch() properly validated pages
-        com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
-            "Vector %d references non-existent page %d (isCompacted=%b, ordinal=%d)", vectorId, loc.pageNum, loc.isCompacted, ordinal);
-        throw new RuntimeException("Vector " + vectorId + " references non-existent page " + loc.pageNum + " (isCompacted=" + loc.isCompacted + ")", e);
+      // NEW APPROACH: Read vector from document property (not from index pages!)
+      // This eliminates 400+ bytes of redundant storage per entry
+      final com.arcadedb.database.Record record = database.lookupByRID(loc.rid, false);
+      if (record == null) {
+        return null; // Document deleted
       }
 
-      if (page == null) {
-        com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
-            "Vector %d has null page %d (ordinal=%d)", vectorId, loc.pageNum, ordinal);
-        throw new RuntimeException("Vector " + vectorId + " has null page " + loc.pageNum);
+      if (!(record instanceof com.arcadedb.database.Document)) {
+        return null; // Not a document
       }
 
-      final float[] vector = readVectorFromPage(page, loc.pageOffset, dimensions);
+      final com.arcadedb.database.Document doc = (com.arcadedb.database.Document) record;
+      final Object vectorObj = doc.get(vectorPropertyName);
+      if (vectorObj == null) {
+        // Log the first few failures to help debug
+        if (ordinal < 5) {
+          com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.SEVERE,
+              "Vector property '%s' not found in document %s (ordinal=%d). Available properties: %s",
+              vectorPropertyName, loc.rid, ordinal, doc.getPropertyNames());
+        }
+        return null; // Property not found
+      }
+
+      if (!(vectorObj instanceof float[])) {
+        com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+            "Vector property '%s' is not float[] (type=%s, RID=%s)",
+            vectorPropertyName, vectorObj.getClass().getName(), loc.rid);
+        return null;
+      }
+
+      final float[] vector = (float[]) vectorObj;
+
+      if (vector.length != dimensions) {
+        com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+            "Vector dimension mismatch: expected %d, got %d (RID=%s)",
+            dimensions, vector.length, loc.rid);
+        return null;
+      }
 
       // Safety check: Validate vector is not all zeros (would cause NaN in cosine similarity)
       boolean hasNonZero = false;
@@ -141,46 +150,18 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
       }
 
       if (!hasNonZero) {
-        // Zero vectors cause NaN in cosine similarity
-        // This should have been filtered during buildGraphFromScratch(), but if we encounter one:
-        // 1. It might be due to replication lag or concurrent modifications
-        // 2. It might be deleted/tombstone data that wasn't filtered properly
-        // Log at WARNING level since this indicates potential data integrity issue
-        com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
-            "Skipping zero vector %d (ordinal=%d, pageNum=%d, offset=%d) - may be deleted or corrupted data",
-            vectorId, ordinal, loc.pageNum, loc.pageOffset);
-        // Throw exception to fail fast and identify the root cause
-        throw new RuntimeException(
-            "Zero vector encountered: vectorId=" + vectorId + ", ordinal=" + ordinal + ", page=" + loc.pageNum + ", offset="
-                + loc.pageOffset);
+        return null; // Zero vectors cause NaN in cosine similarity
       }
 
       return vts.createFloatVector(vector);
 
-    } catch (final IOException e) {
-      throw new RuntimeException("Error reading vector at ordinal " + ordinal + " (vectorId=" + vectorId + ")", e);
+    } catch (final Exception e) {
+      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+          "Error reading vector from document (ordinal=%d, RID=%s): %s", ordinal, loc.rid, e.getMessage());
+      return null;
     }
   }
 
-  /**
-   * Read a vector from a specific offset in a page.
-   * Vector entry format: id(4) + position(8) + bucketId(4) + vector(dimensions*4) + deleted(1)
-   */
-  private float[] readVectorFromPage(final BasePage page, final int offset, final int dims) {
-    int pos = offset;
-
-    // Skip: id(4) + position(8) + bucketId(4)
-    pos += Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE;
-
-    // Read vector data
-    final float[] vector = new float[dims];
-    for (int i = 0; i < dims; i++) {
-      vector[i] = page.readFloat(pos);
-      pos += Binary.FLOAT_SERIALIZED_SIZE;
-    }
-
-    return vector;
-  }
 
   @Override
   public boolean isValueShared() {

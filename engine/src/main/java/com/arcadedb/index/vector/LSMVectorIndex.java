@@ -648,15 +648,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
             pos += Binary.INT_SERIALIZED_SIZE;
             final RID rid = new RID(getDatabase(), bucketId, position);
 
-            // Check for zero vector
-            boolean hasNonZero = false;
-            for (int j = 0; j < metadata.dimensions; j++) {
-              final float val = page.readFloat(pos);
-              pos += Binary.FLOAT_SERIALIZED_SIZE;
-              if (val != 0.0f)
-                hasNonZero = true;
-            }
-
+            // NEW FORMAT: Read deleted flag (no vector bytes stored!)
             final boolean deleted = page.readByte(pos) == 1;
             totalEntriesRead++;
 
@@ -664,11 +656,8 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
               filteredDeletedVectors++;
               continue;
             }
-            if (!hasNonZero) {
-              filteredZeroVectors++;
-              continue;
-            }
 
+            // Note: Zero vector check will be done when loading from document during graph build
             // Keep latest (highest ID) vector for each RID
             final VectorEntryForGraphBuild existing = ridToLatestVector.get(rid);
             if (existing == null || vectorId > existing.vectorId) {
@@ -715,15 +704,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
           pos += Binary.INT_SERIALIZED_SIZE;
           final RID rid = new RID(getDatabase(), bucketId, position);
 
-          // Check for zero vector
-          boolean hasNonZero = false;
-          for (int j = 0; j < metadata.dimensions; j++) {
-            final float val = page.readFloat(pos);
-            pos += Binary.FLOAT_SERIALIZED_SIZE;
-            if (val != 0.0f)
-              hasNonZero = true;
-          }
-
+          // NEW FORMAT: Read deleted flag (no vector bytes stored!)
           final boolean deleted = page.readByte(pos) == 1;
           totalEntriesRead++;
 
@@ -731,11 +712,8 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
             filteredDeletedVectors++;
             continue;
           }
-          if (!hasNonZero) {
-            filteredZeroVectors++;
-            continue;
-          }
 
+          // Note: Zero vector check will be done when loading from document during graph build
           // Keep latest (highest ID) vector for each RID (mutable entries override compacted)
           final VectorEntryForGraphBuild existing = ridToLatestVector.get(rid);
           if (existing == null || vectorId > existing.vectorId) {
@@ -775,41 +753,57 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
         vectorIndex.addOrUpdate(entry.vectorId, entry.isCompacted, entry.pageNum, entry.pageOffset, entry.rid, false);
       }
 
-      this.ordinalToVectorId = activeVectorIds;
-      finalActiveVectorIds = activeVectorIds;
-
-      if (activeVectorIds.length == 0) {
-        this.graphIndex = null;
-        this.graphState = GraphState.IMMUTABLE;
-        LogManager.instance().log(this, Level.INFO,
-            "No vectors to index, graph is null for index: " + indexName);
-        return;
-      }
-
       // Create a SNAPSHOT of vectorIndex for JVector to use safely
       // This prevents race conditions where vectorIndex gets cleared while graph is building
+      // IMPORTANT: Only include vectors whose documents still exist (filter out deleted documents)
+      final String vectorProp = metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
+          metadata.propertyNames.get(0) : "vector";
+
       final Map<Integer, VectorLocationIndex.VectorLocation> vectorLocationSnapshot = new HashMap<>();
+      final java.util.List<Integer> validVectorIds = new java.util.ArrayList<>();
+
       for (int vectorId : activeVectorIds) {
         final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
         if (loc != null && !loc.deleted) {
-          vectorLocationSnapshot.put(vectorId, loc);
+          // Verify document still exists before adding to snapshot
+          try {
+            final com.arcadedb.database.Record record = getDatabase().lookupByRID(loc.rid, false);
+            if (record != null) {
+              final Object vecObj = ((com.arcadedb.database.Document) record).get(vectorProp);
+              if (vecObj instanceof float[]) {
+                vectorLocationSnapshot.put(vectorId, loc);
+                validVectorIds.add(vectorId);
+              }
+            }
+          } catch (final Exception e) {
+            // Document doesn't exist or can't be read - skip it
+          }
         }
       }
 
-      // Create lazy-loading vector values (reads from pages on-demand)
-      final int compactedFileId = (compactedSubIndex != null) ? compactedSubIndex.getFileId() : -1;
+      // Use only the valid vector IDs (documents that exist)
+      final int[] filteredActiveVectorIds = validVectorIds.stream().mapToInt(Integer::intValue).toArray();
+      this.ordinalToVectorId = filteredActiveVectorIds;
+      finalActiveVectorIds = filteredActiveVectorIds;
+
+      if (filteredActiveVectorIds.length == 0) {
+        this.graphIndex = null;
+        this.graphState = GraphState.IMMUTABLE;
+        LogManager.instance().log(this, Level.INFO,
+            "No valid vectors to index (filtered %d -> %d), graph is null for index: %s",
+            activeVectorIds.length, filteredActiveVectorIds.length, indexName);
+        return;
+      }
 
       LogManager.instance().log(this, Level.INFO,
-          "Creating ArcadePageVectorValues: snapshotSize=%d, ordinalToVectorIdLength=%d",
-          vectorLocationSnapshot.size(), activeVectorIds.length);
+          "Filtered vectors: %d total -> %d valid (documents exist), property='%s'",
+          activeVectorIds.length, filteredActiveVectorIds.length, vectorProp);
 
-      // CRITICAL: Use snapshot instead of shared vectorIndex to prevent race conditions
+      // Create lazy-loading vector values that reads vectors from documents
       vectors = new ArcadePageVectorValues(
           getDatabase(),
-          getFileId(),
-          compactedFileId,
-          getPageSize(),
           metadata.dimensions,
+          vectorProp,
           vectorLocationSnapshot,  // Use immutable snapshot
           finalActiveVectorIds
       );
@@ -1011,9 +1005,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
           final RID rid = new RID(getDatabase(), bucketId, position);
 
-          // SKIP vector data (don't read into memory!) - just advance position
-          pos += metadata.dimensions * Binary.FLOAT_SERIALIZED_SIZE;
-
+          // NEW FORMAT: No vector bytes stored, just read deleted flag
           final boolean deleted = currentPage.readByte(pos) == 1;
 
           // Store ONLY location metadata (LSM style: later entries override earlier ones)
@@ -1037,10 +1029,9 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
    */
   private void persistVectorWithLocation(final int id, final RID rid, final float[] vector) {
     try {
-      // Calculate entry size: id(4) + position(8) + bucketId(4) + vector(dimensions*4) + deleted(1)
-      final int entrySize =
-          Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + (metadata.dimensions
-              * Binary.FLOAT_SERIALIZED_SIZE) + Binary.BYTE_SERIALIZED_SIZE;
+      // NEW FORMAT: Store only ordinal + RID + deleted (vectors read from documents)
+      // Entry size: ordinal(4) + position(8) + bucketId(4) + deleted(1) = 17 bytes
+      final int entrySize = Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + Binary.BYTE_SERIALIZED_SIZE;
 
       // Get or create the last mutable page
       int lastPageNum = getTotalPages() - 1;
@@ -1080,12 +1071,10 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
       currentPageBuffer.position(entryOffset);
 
-      currentPageBuffer.putInt(id);
+      // Write only: ordinal, RID, deleted (no vector bytes!)
+      currentPageBuffer.putInt(id);  // This will become ordinal
       currentPageBuffer.putLong(rid.getPosition());
       currentPageBuffer.putInt(rid.getBucketId());
-      for (int i = 0; i < metadata.dimensions; i++)
-        currentPageBuffer.putFloat(vector[i]);
-
       currentPageBuffer.putByte((byte) 0); // not deleted
 
       // Add pointer to entry in header
@@ -1115,10 +1104,8 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       if (deletedIds.isEmpty())
         return;
 
-      // Calculate entry size: id(4) + position(8) + bucketId(4) + vector(dimensions*4) + deleted(1)
-      final int entrySize =
-          Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + (metadata.dimensions
-              * Binary.FLOAT_SERIALIZED_SIZE) + Binary.BYTE_SERIALIZED_SIZE;
+      // NEW FORMAT: Entry size: ordinal(4) + position(8) + bucketId(4) + deleted(1) = 17 bytes
+      final int entrySize = Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + Binary.BYTE_SERIALIZED_SIZE;
 
       // Get or create the last mutable page
       int lastPageNum = getTotalPages() - 1;
@@ -1171,17 +1158,11 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
         currentPageBuffer.position(entryOffset);
 
-        // Write header (id, RID)
-        currentPageBuffer.putInt(vectorId);
+        // Write deletion entry: ordinal, RID, deleted=1 (no vector bytes!)
+        currentPageBuffer.putInt(vectorId);  // This will become ordinal
         currentPageBuffer.putLong(loc.rid.getPosition());
         currentPageBuffer.putInt(loc.rid.getBucketId());
-
-        // Write zeros for vector data (not needed for tombstone, but maintains format)
-        for (int i = 0; i < metadata.dimensions; i++)
-          currentPageBuffer.putFloat(0.0f);
-
-        // Mark as deleted
-        currentPageBuffer.putByte((byte) 1);
+        currentPageBuffer.putByte((byte) 1); // Mark as deleted
 
         // Add pointer to entry in header
         currentPageBuffer.putInt(HEADER_BASE_SIZE + (numberOfEntries * 4), entryOffset);
@@ -1277,13 +1258,14 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
 
       // Create lazy-loading RandomAccessVectorValues
-      final int compactedFileId = (compactedSubIndex != null) ? compactedSubIndex.getFileId() : -1;
+      // Vector property name is the first property in the index
+      final String vectorProp = metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
+          metadata.propertyNames.get(0) : "vector";
+
       final RandomAccessVectorValues vectors = new ArcadePageVectorValues(
           getDatabase(),
-          getFileId(),
-          compactedFileId,
-          getPageSize(),
           metadata.dimensions,
+          vectorProp,
           vectorIndex,
           ordinalToVectorId
       );
@@ -1436,13 +1418,14 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
         final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
 
         // Create lazy-loading RandomAccessVectorValues
-        final int compactedFileId = (compactedSubIndex != null) ? compactedSubIndex.getFileId() : -1;
+        // Vector property name is the first property in the index
+        final String vectorProp = metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
+            metadata.propertyNames.get(0) : "vector";
+
         final RandomAccessVectorValues vectors = new ArcadePageVectorValues(
             getDatabase(),
-            getFileId(),
-            compactedFileId,
-            getPageSize(),
             metadata.dimensions,
+            vectorProp,
             vectorIndex,
             ordinalToVectorId
         );
@@ -2300,9 +2283,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
         final RID rid = new RID(getDatabase(), bucketId, position);
 
-        // Skip vector data
-        pos += metadata.dimensions * Binary.FLOAT_SERIALIZED_SIZE;
-
+        // NEW FORMAT: No vector data to skip, just read deleted flag
         final boolean deleted = page.readByte(pos) == 1;
 
         // Update VectorLocationIndex with this entry's location
