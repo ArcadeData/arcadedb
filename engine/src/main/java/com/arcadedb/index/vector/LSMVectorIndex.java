@@ -754,50 +754,48 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       }
 
       // Create a SNAPSHOT of vectorIndex for JVector to use safely
-      // This prevents race conditions where vectorIndex gets cleared while graph is building
-      // IMPORTANT: Only include vectors whose documents still exist (filter out deleted documents)
+      // CRITICAL: Must filter out deleted/missing documents - JVector can't handle null vectors
       final String vectorProp = metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
           metadata.propertyNames.get(0) : "vector";
 
       final Map<Integer, VectorLocationIndex.VectorLocation> vectorLocationSnapshot = new HashMap<>();
       final java.util.List<Integer> validVectorIds = new java.util.ArrayList<>();
 
+      // Filter: Only include vectors whose documents exist and have vector property
       for (int vectorId : activeVectorIds) {
         final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
         if (loc != null && !loc.deleted) {
-          // Verify document still exists before adding to snapshot
+          // Quick check: Does document exist and have vector property?
           try {
-            final com.arcadedb.database.Record record = getDatabase().lookupByRID(loc.rid, false);
-            if (record != null) {
-              final Object vecObj = ((com.arcadedb.database.Document) record).get(vectorProp);
-              if (vecObj instanceof float[]) {
+            final com.arcadedb.database.Record rec = getDatabase().lookupByRID(loc.rid, false);
+            if (rec instanceof com.arcadedb.database.Document) {
+              if (((com.arcadedb.database.Document) rec).get(vectorProp) instanceof float[]) {
                 vectorLocationSnapshot.put(vectorId, loc);
                 validVectorIds.add(vectorId);
               }
             }
           } catch (final Exception e) {
-            // Document doesn't exist or can't be read - skip it
+            // Document deleted or inaccessible - skip
           }
         }
       }
 
-      // Use only the valid vector IDs (documents that exist)
-      final int[] filteredActiveVectorIds = validVectorIds.stream().mapToInt(Integer::intValue).toArray();
-      this.ordinalToVectorId = filteredActiveVectorIds;
-      finalActiveVectorIds = filteredActiveVectorIds;
+      final int[] filteredVectorIds = validVectorIds.stream().mapToInt(Integer::intValue).toArray();
+      this.ordinalToVectorId = filteredVectorIds;
+      finalActiveVectorIds = filteredVectorIds;
 
-      if (filteredActiveVectorIds.length == 0) {
+      if (filteredVectorIds.length == 0) {
         this.graphIndex = null;
         this.graphState = GraphState.IMMUTABLE;
         LogManager.instance().log(this, Level.INFO,
-            "No valid vectors to index (filtered %d -> %d), graph is null for index: %s",
-            activeVectorIds.length, filteredActiveVectorIds.length, indexName);
+            "No valid vectors (filtered %d -> 0), graph is null for index: %s",
+            activeVectorIds.length, indexName);
         return;
       }
 
       LogManager.instance().log(this, Level.INFO,
-          "Filtered vectors: %d total -> %d valid (documents exist), property='%s'",
-          activeVectorIds.length, filteredActiveVectorIds.length, vectorProp);
+          "Building graph: filtered %d -> %d valid vectors, property='%s'",
+          activeVectorIds.length, filteredVectorIds.length, vectorProp);
 
       // Create lazy-loading vector values that reads vectors from documents
       vectors = new ArcadePageVectorValues(
@@ -1866,6 +1864,20 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
   @Override
   public void close() {
+    // Build and persist graph if it hasn't been built yet
+    // This ensures the graph is available on next database open (fast restart)
+    if (vectorIndex.size() > 0 && graphState == GraphState.LOADING) {
+      try {
+        LogManager.instance().log(this, Level.INFO,
+            "Building graph before close for index: " + indexName);
+        buildGraphFromScratch();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Failed to build graph before close: " + e.getMessage(), e);
+        // Don't fail close if graph building fails
+      }
+    }
+
     lock.writeLock().lock();
     try {
       // NOTE: Metadata is now embedded in the schema JSON via toJSON() and is automatically
