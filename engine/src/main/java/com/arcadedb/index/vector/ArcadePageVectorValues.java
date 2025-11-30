@@ -48,7 +48,10 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   private final java.util.Map<Integer, VectorLocationIndex.VectorLocation>     vectorSnapshot;   // Used for graph building
   private final int[]                                                           ordinalToVectorId;
 
-  // Constructor for live reads (uses shared vectorIndex)
+  // Cache for graph building - dramatically speeds up repeated vector access
+  private final java.util.concurrent.ConcurrentHashMap<Integer, VectorFloat<?>> vectorCache;
+
+  // Constructor for live reads (uses shared vectorIndex, no cache needed)
   public ArcadePageVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
       final VectorLocationIndex vectorIndex, final int[] ordinalToVectorId) {
     this.database = database;
@@ -57,9 +60,10 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     this.vectorIndex = vectorIndex;
     this.vectorSnapshot = null;
     this.ordinalToVectorId = ordinalToVectorId;
+    this.vectorCache = null; // No cache for live reads (search only reads each vector once)
   }
 
-  // Constructor for graph building (uses immutable snapshot)
+  // Constructor for graph building (uses immutable snapshot + cache for performance)
   public ArcadePageVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
       final java.util.Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot, final int[] ordinalToVectorId) {
     this.database = database;
@@ -68,6 +72,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     this.vectorIndex = null;
     this.vectorSnapshot = vectorSnapshot;
     this.ordinalToVectorId = ordinalToVectorId;
+    this.vectorCache = new java.util.concurrent.ConcurrentHashMap<>(); // Cache for graph building (vectors accessed many times)
   }
 
   @Override
@@ -87,6 +92,14 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     }
 
     final int vectorId = ordinalToVectorId[ordinal];
+
+    // Check cache first (for graph building - dramatically speeds up repeated access)
+    if (vectorCache != null) {
+      final VectorFloat<?> cached = vectorCache.get(vectorId);
+      if (cached != null) {
+        return cached;
+      }
+    }
 
     // Use snapshot if available (during graph building), otherwise use live vectorIndex
     final VectorLocationIndex.VectorLocation loc;
@@ -153,8 +166,14 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
         return null; // Zero vectors cause NaN in cosine similarity
       }
 
-      // Return a VectorFloat that signals to JVector this is valid
-      return vts.createFloatVector(vector);
+      final VectorFloat<?> result = vts.createFloatVector(vector);
+
+      // Cache the result if caching is enabled (for graph building performance)
+      if (vectorCache != null) {
+        vectorCache.put(vectorId, result);
+      }
+
+      return result;
 
     } catch (final Exception e) {
       com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
