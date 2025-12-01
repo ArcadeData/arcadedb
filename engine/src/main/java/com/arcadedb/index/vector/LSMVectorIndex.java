@@ -723,8 +723,10 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       } catch (final Exception e) {
         // Skip problematic pages
         LogManager.instance().log(this, Level.WARNING,
-            "Error reading mutable page %d during graph build: %s", null,
-            pageNum, e.getMessage());
+            "Error reading mutable page %d during graph build: %s - %s", null,
+            pageNum, e.getClass().getSimpleName(), e.getMessage());
+        if (LogManager.instance().isDebugEnabled())
+          e.printStackTrace();
       }
     }
 
@@ -746,11 +748,31 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     final RandomAccessVectorValues vectors;
     final int[] finalActiveVectorIds;
     try {
-      // Update vectorIndex to match what we found on pages (sync it with disk state)
-      // This ensures vectorIndex is consistent with the graph we're about to build
-      vectorIndex.clear();
-      for (final VectorEntryForGraphBuild entry : ridToLatestVector.values()) {
-        vectorIndex.addOrUpdate(entry.vectorId, entry.isCompacted, entry.pageNum, entry.pageOffset, entry.rid, false);
+      // CRITICAL: If we couldn't read any entries from pages (e.g., during database close),
+      // DON'T clear vectorIndex - use what's already in memory!
+      final int[] vectorIds;
+      if (!ridToLatestVector.isEmpty()) {
+        // Update vectorIndex to match what we found on pages (sync it with disk state)
+        // This ensures vectorIndex is consistent with the graph we're about to build
+        vectorIndex.clear();
+        for (final VectorEntryForGraphBuild entry : ridToLatestVector.values()) {
+          vectorIndex.addOrUpdate(entry.vectorId, entry.isCompacted, entry.pageNum, entry.pageOffset, entry.rid, false);
+        }
+        vectorIds = activeVectorIds; // Use vector IDs from pages
+      } else {
+        LogManager.instance().log(this, Level.SEVERE,
+            "FALLBACK: Could not read vectors from pages (database closing), using existing vectorIndex with %d entries",
+            vectorIndex.size());
+        // Build vector IDs from existing vectorIndex
+        vectorIds = vectorIndex.getAllVectorIds()
+            .filter(id -> {
+              final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(id);
+              return loc != null && !loc.deleted;
+            })
+            .sorted()
+            .toArray();
+        LogManager.instance().log(this, Level.SEVERE,
+            "FALLBACK: Built %d active vector IDs from in-memory vectorIndex", vectorIds.length);
       }
 
       // Create a SNAPSHOT of vectorIndex for JVector to use safely
@@ -758,17 +780,17 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
           metadata.propertyNames.get(0) : "vector";
 
       final Map<Integer, VectorLocationIndex.VectorLocation> vectorLocationSnapshot = new HashMap<>();
-      for (int vectorId : activeVectorIds) {
+      for (int vectorId : vectorIds) {
         final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
         if (loc != null && !loc.deleted) {
           vectorLocationSnapshot.put(vectorId, loc);
         }
       }
 
-      this.ordinalToVectorId = activeVectorIds;
-      finalActiveVectorIds = activeVectorIds;
+      this.ordinalToVectorId = vectorIds;
+      finalActiveVectorIds = vectorIds;
 
-      if (activeVectorIds.length == 0) {
+      if (vectorIds.length == 0) {
         this.graphIndex = null;
         this.graphState = GraphState.IMMUTABLE;
         LogManager.instance().log(this, Level.INFO,
@@ -778,7 +800,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
       LogManager.instance().log(this, Level.INFO,
           "Building graph with %d vectors using property '%s' (cache enabled for performance)",
-          activeVectorIds.length, vectorProp);
+          vectorIds.length, vectorProp);
 
       // Create lazy-loading vector values that reads vectors from documents
       vectors = new ArcadePageVectorValues(
@@ -834,16 +856,46 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
         lock.writeLock().unlock();
       }
 
-      // Persist graph to disk
+      // Persist graph to disk IMMEDIATELY in its own transaction
+      // This ensures the graph is available on next database open (fast restart)
       if (graphFile != null) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "PERSIST: About to persist graph to disk for index: %s (nodes=%d)", indexName, graphIndex.getIdUpperBound());
+
+        // Start a dedicated transaction for graph persistence
+        final boolean startedTransaction = !getDatabase().isTransactionActive();
+        if (startedTransaction)
+          getDatabase().begin();
+
         try {
           graphFile.writeGraph(graphIndex, vectors);
-          LogManager.instance().log(this, Level.INFO,
-              "Persisted graph to disk for index: " + indexName);
+
+          // Commit the transaction to persist graph pages
+          if (startedTransaction) {
+            getDatabase().commit();
+            LogManager.instance().log(this, Level.SEVERE,
+                "PERSIST: Graph persisted and committed for index: %s", indexName);
+          } else {
+            LogManager.instance().log(this, Level.SEVERE,
+                "PERSIST: Graph persisted (transaction managed by caller) for index: %s", indexName);
+          }
         } catch (final Exception e) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Failed to persist graph for %s: %s", indexName, e.getMessage());
+          // Rollback on error
+          if (startedTransaction) {
+            try {
+              getDatabase().rollback();
+            } catch (final Exception rollbackEx) {
+              // Ignore rollback errors
+            }
+          }
+          LogManager.instance().log(this, Level.SEVERE,
+              "PERSIST: Failed to persist graph for %s: %s - %s", indexName, e.getClass().getSimpleName(), e.getMessage());
+          e.printStackTrace();
+          // Don't throw - allow the index to continue working, just won't have persisted graph
         }
+      } else {
+        LogManager.instance().log(this, Level.SEVERE,
+            "PERSIST: graphFile is NULL, cannot persist graph for index: %s", indexName);
       }
       this.mutationsSinceSerialize.set(0);
 
@@ -1012,7 +1064,8 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
     try {
       // NEW FORMAT: Store only ordinal + RID + deleted (vectors read from documents)
       // Entry size: ordinal(4) + position(8) + bucketId(4) + deleted(1) = 17 bytes
-      final int entrySize = Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + Binary.BYTE_SERIALIZED_SIZE;
+      final int entrySize =
+          Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + Binary.BYTE_SERIALIZED_SIZE;
 
       // Get or create the last mutable page
       int lastPageNum = getTotalPages() - 1;
@@ -1086,7 +1139,8 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
         return;
 
       // NEW FORMAT: Entry size: ordinal(4) + position(8) + bucketId(4) + deleted(1) = 17 bytes
-      final int entrySize = Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + Binary.BYTE_SERIALIZED_SIZE;
+      final int entrySize =
+          Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + Binary.BYTE_SERIALIZED_SIZE;
 
       // Get or create the last mutable page
       int lastPageNum = getTotalPages() - 1;
@@ -1847,53 +1901,56 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
   @Override
   public void close() {
-    // Build and persist graph if it hasn't been built yet
-    // This ensures the graph is available on next database open (fast restart)
-    LogManager.instance().log(this, Level.SEVERE,
-        "LSMVectorIndex.close() called: vectorIndexSize=%d, graphState=%s",
-        vectorIndex.size(), graphState);
+    if (status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE)) {
 
-    // Build graph if it's in LOADING (never built) or MUTABLE (has pending changes) state
-    if (vectorIndex.size() > 0 && (graphState == GraphState.LOADING || graphState == GraphState.MUTABLE)) {
-      try {
-        LogManager.instance().log(this, Level.SEVERE,
-            "Building graph before close for index: %s (this may take 1-2 minutes for large datasets)",
-            indexName);
-        final long startTime = System.currentTimeMillis();
-        buildGraphFromScratch();
-        final long elapsed = System.currentTimeMillis() - startTime;
-        LogManager.instance().log(this, Level.SEVERE,
-            "Graph building completed in %d seconds", elapsed / 1000);
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE,
-            "Failed to build graph before close: " + e.getMessage(), e);
-        // Don't fail close if graph building fails
-      }
-    } else {
+      // Build and persist graph if it hasn't been built yet
+      // This ensures the graph is available on next database open (fast restart)
       LogManager.instance().log(this, Level.SEVERE,
-          "Skipping graph build on close: vectorIndexSize=%d, graphState=%s",
+          "LSMVectorIndex.close() called: vectorIndexSize=%d, graphState=%s",
           vectorIndex.size(), graphState);
-    }
 
-    lock.writeLock().lock();
-    try {
-      // NOTE: Metadata is now embedded in the schema JSON via toJSON() and is automatically
-      // replicated with the schema. We don't write a separate .metadata.json file anymore
-      // to avoid path transformation issues during replication.
-
-      mutable.close();
-
-      // Close graph file
-      if (graphFile != null) {
+      // Build graph if it's in LOADING (never built) or MUTABLE (has pending changes) state
+      if (vectorIndex.size() > 0 && (graphState == GraphState.LOADING || graphState == GraphState.MUTABLE)) {
         try {
-          graphFile.close();
+          LogManager.instance().log(this, Level.SEVERE,
+              "Building graph before close for index: %s (this may take 1-2 minutes for large datasets)",
+              indexName);
+          final long startTime = System.currentTimeMillis();
+          buildGraphFromScratch();
+          final long elapsed = System.currentTimeMillis() - startTime;
+          LogManager.instance().log(this, Level.SEVERE,
+              "Graph building completed in %d seconds", elapsed / 1000);
         } catch (final Exception e) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Error closing graph file: %s", e.getMessage());
+          LogManager.instance().log(this, Level.SEVERE,
+              "Failed to build graph before close: " + e.getMessage(), e);
+          // Don't fail close if graph building fails
         }
+      } else {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Skipping graph build on close: vectorIndexSize=%d, graphState=%s",
+            vectorIndex.size(), graphState);
       }
-    } finally {
-      lock.writeLock().unlock();
+
+      lock.writeLock().lock();
+      try {
+        // NOTE: Metadata is now embedded in the schema JSON via toJSON() and is automatically
+        // replicated with the schema. We don't write a separate .metadata.json file anymore
+        // to avoid path transformation issues during replication.
+
+        mutable.close();
+
+        // Close graph file
+        if (graphFile != null) {
+          try {
+            graphFile.close();
+          } catch (final Exception e) {
+            LogManager.instance().log(this, Level.WARNING,
+                "Error closing graph file: %s", e.getMessage());
+          }
+        }
+      } finally {
+        lock.writeLock().unlock();
+      }
     }
   }
 
