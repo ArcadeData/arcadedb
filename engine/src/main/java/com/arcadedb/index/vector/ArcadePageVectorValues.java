@@ -18,22 +18,18 @@
  */
 package com.arcadedb.index.vector;
 
-import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.BasePage;
-import com.arcadedb.engine.PageId;
+import com.arcadedb.exception.RecordNotFoundException;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 
-import java.io.IOException;
-
 /**
  * Implements JVector's RandomAccessVectorValues interface with lazy-loading from ArcadeDB pages.
  * Vectors are read from disk on-demand rather than being stored in memory, dramatically reducing
  * RAM usage while leveraging ArcadeDB's PageManager cache for performance.
- *
+ * <p>
  * Thread-safe for concurrent reads (each thread gets its own page references from PageManager).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -41,12 +37,12 @@ import java.io.IOException;
 public class ArcadePageVectorValues implements RandomAccessVectorValues {
   private static final VectorTypeSupport vts = VectorizationProvider.getInstance().getVectorTypeSupport();
 
-  private final DatabaseInternal                                                database;
-  private final int                                                             dimensions;
-  private final String                                                          vectorPropertyName;
-  private final VectorLocationIndex                                             vectorIndex;      // Used for live reads
-  private final java.util.Map<Integer, VectorLocationIndex.VectorLocation>     vectorSnapshot;   // Used for graph building
-  private final int[]                                                           ordinalToVectorId;
+  private final DatabaseInternal                                           database;
+  private final int                                                        dimensions;
+  private final String                                                     vectorPropertyName;
+  private final VectorLocationIndex                                        vectorIndex;      // Used for live reads
+  private final java.util.Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot;   // Used for graph building
+  private final int[]                                                      ordinalToVectorId;
 
   // Cache for graph building - dramatically speeds up repeated vector access
   private final java.util.concurrent.ConcurrentHashMap<Integer, VectorFloat<?>> vectorCache;
@@ -87,43 +83,32 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
 
   @Override
   public VectorFloat<?> getVector(final int ordinal) {
-    if (ordinal < 0 || ordinalToVectorId == null || ordinal >= ordinalToVectorId.length) {
+    if (ordinal < 0 || ordinalToVectorId == null || ordinal >= ordinalToVectorId.length)
       return null;
-    }
 
     final int vectorId = ordinalToVectorId[ordinal];
 
     // Check cache first (for graph building - dramatically speeds up repeated access)
     if (vectorCache != null) {
       final VectorFloat<?> cached = vectorCache.get(vectorId);
-      if (cached != null) {
+      if (cached != null)
         return cached;
-      }
     }
 
     // Use snapshot if available (during graph building), otherwise use live vectorIndex
     final VectorLocationIndex.VectorLocation loc;
-    if (vectorSnapshot != null) {
+    if (vectorSnapshot != null)
       loc = vectorSnapshot.get(vectorId);
-    } else {
+    else if (vectorIndex != null)
       loc = vectorIndex.getLocation(vectorId);
-    }
+    else
+      loc = null;
 
-    if (loc == null || loc.deleted) {
+    if (loc == null || loc.deleted)
       return null;
-    }
 
     try {
-      // NEW APPROACH: Read vector from document property (not from index pages!)
-      // This eliminates 400+ bytes of redundant storage per entry
       final com.arcadedb.database.Record record = database.lookupByRID(loc.rid, false);
-      if (record == null) {
-        return null; // Document deleted
-      }
-
-      if (!(record instanceof com.arcadedb.database.Document)) {
-        return null; // Not a document
-      }
 
       final com.arcadedb.database.Document doc = (com.arcadedb.database.Document) record;
       final Object vectorObj = doc.get(vectorPropertyName);
@@ -137,14 +122,12 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
         return null; // Property not found
       }
 
-      if (!(vectorObj instanceof float[])) {
+      if (!(vectorObj instanceof float[] vector)) {
         com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
             "Vector property '%s' is not float[] (type=%s, RID=%s)",
             vectorPropertyName, vectorObj.getClass().getName(), loc.rid);
         return null;
       }
-
-      final float[] vector = (float[]) vectorObj;
 
       if (vector.length != dimensions) {
         com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
@@ -155,33 +138,33 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
 
       // Safety check: Validate vector is not all zeros (would cause NaN in cosine similarity)
       boolean hasNonZero = false;
-      for (int i = 0; i < vector.length; i++) {
-        if (vector[i] != 0.0f) {
+      for (float v : vector) {
+        if (v != 0.0f) {
           hasNonZero = true;
           break;
         }
       }
 
-      if (!hasNonZero) {
+      if (!hasNonZero)
         return null; // Zero vectors cause NaN in cosine similarity
-      }
 
       final VectorFloat<?> result = vts.createFloatVector(vector);
 
       // Cache the result if caching is enabled (for graph building performance)
-      if (vectorCache != null) {
+      if (vectorCache != null)
         vectorCache.put(vectorId, result);
-      }
 
       return result;
 
+    } catch (final RecordNotFoundException e) {
+      // DELETED RECORD
+      return null;
     } catch (final Exception e) {
       com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
           "Error reading vector from document (ordinal=%d, RID=%s): %s", ordinal, loc.rid, e.getMessage());
       return null;
     }
   }
-
 
   @Override
   public boolean isValueShared() {
