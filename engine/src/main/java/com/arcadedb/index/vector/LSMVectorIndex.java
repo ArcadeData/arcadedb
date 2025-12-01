@@ -128,6 +128,18 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
   private       LSMVectorIndexCompacted compactedSubIndex;
   private       boolean                 valid = true;
 
+  public interface GraphBuildCallback {
+    /**
+     * Called periodically during graph index construction.
+     *
+     * @param phase          Current phase: "validating", "building", or "persisting"
+     * @param processedNodes Number of unique nodes processed so far
+     * @param totalNodes     Total number of nodes to process
+     * @param vectorAccesses Total number of vector accesses (getVector calls)
+     */
+    void onGraphBuildProgress(String phase, int processedNodes, int totalNodes, long vectorAccesses);
+  }
+
   /**
    * Comparable wrapper for float[] to use in transaction tracking.
    * Vectors are compared by their hash code for uniqueness in the transaction map.
@@ -584,16 +596,27 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
    * After building, persists the graph to disk and transitions to IMMUTABLE state.
    */
   private void buildGraphFromScratch() {
+    buildGraphFromScratch(null);
+  }
+
+  /**
+   * Build graph from scratch with optional progress callback.
+   *
+   * @param graphCallback Optional callback for graph build progress
+   */
+  private void buildGraphFromScratch(final GraphBuildCallback graphCallback) {
     // buildGraphFromScratchWithRetry() reads pages directly and rebuilds vectorIndex
     // No need to reload here - just call the retry logic directly
-    buildGraphFromScratchWithRetry();
+    buildGraphFromScratchWithRetry(graphCallback);
   }
 
   /**
    * Internal implementation of buildGraphFromScratch.
    * Always reads directly from pages to avoid race conditions with concurrent VectorLocationIndex modifications.
+   *
+   * @param graphCallback Optional callback for graph build progress
    */
-  private void buildGraphFromScratchWithRetry() {
+  private void buildGraphFromScratchWithRetry(final GraphBuildCallback graphCallback) {
     // CRITICAL FIX: Collect vectors DIRECTLY from pages instead of from vectorIndex.
     // This avoids race conditions where concurrent replication adds entries to vectorIndex
     // that don't yet exist on disk pages. We iterate pages and read what's actually persisted.
@@ -763,13 +786,18 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
       // Create a SNAPSHOT of vectorIndex for JVector to use safely
       final String vectorProp = metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
-          metadata.propertyNames.getFirst() : "vector";
+          metadata.propertyNames.get(0) : "vector";
 
       // CRITICAL FIX: Validate vectors before building graph to filter out deleted documents
       // When a document is deleted, getVector() returns null which breaks JVector index building
       final Map<Integer, VectorLocationIndex.VectorLocation> vectorLocationSnapshot = new HashMap<>();
       final List<Integer> validVectorIds = new ArrayList<>();
       int skippedDeletedDocs = 0;
+
+      // Progress tracking for validation phase
+      final int totalVectorsToValidate = vectorIds.length;
+      int validatedCount = 0;
+      final long VALIDATION_PROGRESS_INTERVAL = 1000;
 
       for (int vectorId : vectorIds) {
         final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
@@ -803,6 +831,17 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
             skippedDeletedDocs++;
           }
         }
+
+        // Report validation progress
+        validatedCount++;
+        if (graphCallback != null && validatedCount % VALIDATION_PROGRESS_INTERVAL == 0) {
+          graphCallback.onGraphBuildProgress("validating", validatedCount, totalVectorsToValidate, 0);
+        }
+      }
+
+      // Final validation progress report
+      if (graphCallback != null && validatedCount > 0) {
+        graphCallback.onGraphBuildProgress("validating", validatedCount, totalVectorsToValidate, 0);
       }
 
       if (skippedDeletedDocs > 0) {
@@ -863,7 +902,52 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
           false,           // no distance transform
           true)) {         // enable concurrent updates
 
-        builtGraph = builder.build(vectors);
+        // Start progress monitoring thread if callback provided
+        final Thread progressMonitor;
+        final AtomicBoolean buildComplete = new AtomicBoolean(false);
+        if (graphCallback != null) {
+          final int totalNodes = vectors.size();
+          progressMonitor = new Thread(() -> {
+            try {
+              while (!buildComplete.get()) {
+                // Poll JVector's internal state
+                final int nodesAdded = builder.getGraph().getIdUpperBound();
+                final int insertsInProgress = builder.insertsInProgress();
+
+                // Report progress
+                graphCallback.onGraphBuildProgress("building", nodesAdded, totalNodes,
+                    nodesAdded + insertsInProgress);
+
+                // Sleep briefly before next poll
+                Thread.sleep(100); // Poll every 100ms
+              }
+            } catch (final InterruptedException e) {
+              Thread.currentThread().interrupt();
+            } catch (final Exception e) {
+              LogManager.instance().log(this, Level.WARNING,
+                  "Error in graph build progress monitor: " + e.getMessage());
+            }
+          }, "JVector-Progress-Monitor-" + indexName);
+          progressMonitor.setDaemon(true);
+          progressMonitor.start();
+        } else {
+          progressMonitor = null;
+        }
+
+        try {
+          builtGraph = builder.build(vectors);
+        } finally {
+          // Stop progress monitoring
+          buildComplete.set(true);
+          if (progressMonitor != null) {
+            try {
+              progressMonitor.join(1000); // Wait up to 1 second for clean shutdown
+            } catch (final InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+          }
+        }
+
         LogManager.instance().log(this, Level.INFO, "JVector graph index built successfully");
       } catch (final AssertionError e) {
         LogManager.instance().log(this, Level.SEVERE,
@@ -884,8 +968,14 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       // Persist graph to disk IMMEDIATELY in its own transaction
       // This ensures the graph is available on next database open (fast restart)
       if (graphFile != null) {
-        LogManager.instance().log(this, Level.SEVERE,
-            "PERSIST: About to persist graph to disk for index: %s (nodes=%d)", indexName, graphIndex.getIdUpperBound());
+        final int totalNodes = graphIndex.getIdUpperBound();
+        LogManager.instance().log(this, Level.FINE,
+            "Writing vector graph to disk for index: %s (nodes=%d)", indexName, totalNodes);
+
+        // Report persistence phase start
+        if (graphCallback != null) {
+          graphCallback.onGraphBuildProgress("persisting", 0, totalNodes, 0);
+        }
 
         // Start a dedicated transaction for graph persistence
         final boolean startedTransaction = !getDatabase().isTransactionActive();
@@ -895,14 +985,19 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
         try {
           graphFile.writeGraph(graphIndex, vectors);
 
+          // Report persistence completion
+          if (graphCallback != null) {
+            graphCallback.onGraphBuildProgress("persisting", totalNodes, totalNodes, 0);
+          }
+
           // Commit the transaction to persist graph pages
           if (startedTransaction) {
             getDatabase().commit();
-            LogManager.instance().log(this, Level.SEVERE,
-                "PERSIST: Graph persisted and committed for index: %s", indexName);
+            LogManager.instance().log(this, Level.FINE,
+                "Vector graph persisted and committed for index: %s", indexName);
           } else {
-            LogManager.instance().log(this, Level.SEVERE,
-                "PERSIST: Graph persisted (transaction managed by caller) for index: %s", indexName);
+            LogManager.instance().log(this, Level.FINE,
+                "Vector graph persisted (transaction managed by caller) for index: %s", indexName);
           }
         } catch (final Exception e) {
           // Rollback on error
@@ -2066,6 +2161,19 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
   @Override
   public long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {
+    return build(buildIndexBatchSize, callback, null);
+  }
+
+  /**
+   * Build the vector index with optional graph building progress callback.
+   *
+   * @param buildIndexBatchSize Batch size for committing during index build
+   * @param callback            Callback for document indexing progress
+   * @param graphCallback       Callback for graph building progress
+   *
+   * @return Total number of records indexed
+   */
+  public long build(final int buildIndexBatchSize, final BuildIndexCallback callback, final GraphBuildCallback graphCallback) {
     final long totalRecords;
 
     lock.writeLock().lock();
@@ -2149,7 +2257,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       LogManager.instance().log(this, Level.INFO,
           "Building graph after index build for: " + indexName);
       try {
-        buildGraphFromScratch();
+        buildGraphFromScratch(graphCallback);
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING,
             "Failed to build graph after index build: " + e.getMessage(), e);
