@@ -27,7 +27,6 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.IndexException;
 
 import java.io.*;
-import java.nio.*;
 
 /**
  * PaginatedComponent for LSM-based vector index storage.
@@ -37,7 +36,7 @@ import java.nio.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class LSMVectorIndexMutable extends PaginatedComponent {
-  public static final String FILE_EXT        = "lsmvecidx";
+  public static final String FILE_EXT        = LSMVectorIndex.FILE_EXT;
   public static final int    CURRENT_VERSION = 0;
   public static final int    DEF_PAGE_SIZE   = 262_144;
 

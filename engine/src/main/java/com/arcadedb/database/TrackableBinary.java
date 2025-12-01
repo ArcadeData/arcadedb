@@ -22,6 +22,11 @@ import com.arcadedb.engine.TrackableContent;
 
 import java.nio.*;
 
+/**
+ * Binary extension that tracks changes to optimize page writing.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class TrackableBinary extends Binary implements TrackableContent {
   private final TrackableContent derivedFrom;
 
