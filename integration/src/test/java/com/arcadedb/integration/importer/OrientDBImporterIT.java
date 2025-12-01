@@ -36,7 +36,7 @@ import java.net.URL;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class OrientDBImporterIT {
+public class OrientDBImporterIT {
 
   private final static String DATABASE_PATH = "target/databases/oriendb-imported";
 
