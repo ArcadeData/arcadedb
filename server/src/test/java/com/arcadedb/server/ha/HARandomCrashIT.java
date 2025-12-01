@@ -58,7 +58,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
   @Test
   @Override
-  public void testReplication() {
+  public void replication() {
     checkDatabases();
 
     final Timer timer = new Timer();

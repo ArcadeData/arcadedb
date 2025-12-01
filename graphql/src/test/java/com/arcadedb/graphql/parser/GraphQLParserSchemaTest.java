@@ -50,47 +50,49 @@ class GraphQLParserSchemaTest {
 
   @Test
   void errorInvalidCharacters() {
-    assertThatThrownBy(() -> final Document ast = GraphQLParser.parse("""
-          type Query {
-            bookById(id: String): Book
-            bookByName(name: String): Book { id name pageCount authors }
-          }
+    assertThatThrownBy(() -> GraphQLParser.parse("""
+        type Query {
+          bookById(id: String): Book
+          bookByName(name: String): Book { id name pageCount authors }
+        }
 
-          type Book {
-            id: String
-            name: String
-            pageCount: Int
-            authors: [Author] @relationship(type: "IS_AUTHOR_OF", direction: IN)
-          }
+        type Book {
+          id: String
+          name: String
+          pageCount: Int
+          authors: [Author] @relationship(type: "IS_AUTHOR_OF", direction: IN)
+        }
 
-          type Author {
-            id: String
-            firstName: String
-            lastName: String
-            wrote: [Book] @relationship(type: "IS_AUTHOR_OF", direction: OUT)
-          } dsfjsd fjsdkjf sdk""")).isInstanceOf(ParseException.class);
+        type Author {
+          id: String
+          firstName: String
+          lastName: String
+          wrote: [Book] @relationship(type: "IS_AUTHOR_OF", direction: OUT)
+        } dsfjsd fjsdkjf sdk"""))
+        .isInstanceOf(ParseException.class);
   }
 
   @Test
   void errorInvalidCharactersWithDirective() {
-    assertThatThrownBy(() -> final Document ast = GraphQLParser.parse("""
-          type Query {
-            bookById(id: String): Book
-            bookByName(name: String): Book @sql(statement: "select from Book where name = :name", a = 3 ) { id name pageCount authors }
-          }
+    assertThatThrownBy(() -> GraphQLParser.parse("""
+        type Query {
+          bookById(id: String): Book
+          bookByName(name: String): Book @sql(statement: "select from Book where name = :name", a = 3 ) { id name pageCount authors }
+        }
 
-          type Book {
-            id: String
-            name: String
-            pageCount: Int
-            authors: [Author] @relationship(type: "IS_AUTHOR_OF", direction: IN)
-          }
+        type Book {
+          id: String
+          name: String
+          pageCount: Int
+          authors: [Author] @relationship(type: "IS_AUTHOR_OF", direction: IN)
+        }
 
-          type Author {
-            id: String
-            firstName: String
-            lastName: String
-            wrote: [Book] @relationship(type: "IS_AUTHOR_OF", direction: OUT)
-          } dsfjsd fjsdkjf sdk""")).isInstanceOf(ParseException.class);
+        type Author {
+          id: String
+          firstName: String
+          lastName: String
+          wrote: [Book] @relationship(type: "IS_AUTHOR_OF", direction: OUT)
+        } dsfjsd fjsdkjf sdk"""))
+        .isInstanceOf(ParseException.class);
   }
 }

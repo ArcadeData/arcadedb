@@ -47,7 +47,7 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
 
   @Test
   public void testReplication() throws Exception {
-    super.testReplication();
+    super.replication();
 
     for (int i = 0; i < getServerCount(); i++) {
       databases[i] = getServer(i).getDatabase(getDatabaseName());
