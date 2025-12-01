@@ -30,6 +30,7 @@ import io.github.jbellis.jvector.disk.RandomAccessWriter;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndexWriter;
+import io.github.jbellis.jvector.graph.disk.feature.InlineVectors;
 
 import java.io.IOException;
 
@@ -129,8 +130,10 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
 
       // Write graph topology WITHOUT inline vectors
       // Vectors will be read on-demand from ArcadeDB documents (no duplication)
+      // NOTE: JVector 4.0+ requires a vector feature for dimension info, but we don't write vector data
       try (final OnDiskGraphIndexWriter indexWriter = new OnDiskGraphIndexWriter.Builder(graph, writer)
               .withStartOffset(0)
+              .with(new InlineVectors(vectors.dimension()))
               .build()) {
         // Write header
         indexWriter.writeHeader(graph.getView());
