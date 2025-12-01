@@ -34,6 +34,7 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
@@ -779,18 +780,57 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
       final String vectorProp = metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
           metadata.propertyNames.get(0) : "vector";
 
+      // CRITICAL FIX: Validate vectors before building graph to filter out deleted documents
+      // When a document is deleted, getVector() returns null which breaks JVector index building
       final Map<Integer, VectorLocationIndex.VectorLocation> vectorLocationSnapshot = new HashMap<>();
+      final List<Integer> validVectorIds = new ArrayList<>();
+      int skippedDeletedDocs = 0;
+
       for (int vectorId : vectorIds) {
         final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
         if (loc != null && !loc.deleted) {
-          vectorLocationSnapshot.put(vectorId, loc);
+          // Validate that the document still exists and has a valid vector
+          try {
+            final com.arcadedb.database.Record record = getDatabase().lookupByRID(loc.rid, false);
+            if (record != null) {
+              final com.arcadedb.database.Document doc = (com.arcadedb.database.Document) record;
+              final Object vectorObj = doc.get(vectorProp);
+              if (vectorObj instanceof float[] vector && vector.length == metadata.dimensions) {
+                // Validate vector is not all zeros (would cause NaN in cosine similarity)
+                boolean hasNonZero = false;
+                for (float v : vector) {
+                  if (v != 0.0f) {
+                    hasNonZero = true;
+                    break;
+                  }
+                }
+                if (hasNonZero) {
+                  vectorLocationSnapshot.put(vectorId, loc);
+                  validVectorIds.add(vectorId);
+                }
+              }
+            }
+          } catch (final RecordNotFoundException e) {
+            // Document was deleted - skip this vector
+            skippedDeletedDocs++;
+          } catch (final Exception e) {
+            // Other errors - skip this vector
+            skippedDeletedDocs++;
+          }
         }
       }
 
-      this.ordinalToVectorId = vectorIds;
-      finalActiveVectorIds = vectorIds;
+      if (skippedDeletedDocs > 0) {
+        LogManager.instance().log(this, Level.INFO,
+            "Filtered out %d vectors with deleted/invalid documents during graph build", skippedDeletedDocs);
+      }
 
-      if (vectorIds.length == 0) {
+      // Use validated vector IDs instead of unfiltered ones
+      final int[] filteredVectorIds = validVectorIds.stream().mapToInt(Integer::intValue).toArray();
+      this.ordinalToVectorId = filteredVectorIds;
+      finalActiveVectorIds = filteredVectorIds;
+
+      if (filteredVectorIds.length == 0) {
         this.graphIndex = null;
         this.graphState = GraphState.IMMUTABLE;
         LogManager.instance().log(this, Level.INFO,
@@ -800,7 +840,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
       LogManager.instance().log(this, Level.INFO,
           "Building graph with %d vectors using property '%s' (cache enabled for performance)",
-          vectorIds.length, vectorProp);
+          filteredVectorIds.length, vectorProp);
 
       // Create lazy-loading vector values that reads vectors from documents
       vectors = new ArcadePageVectorValues(
