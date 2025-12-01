@@ -1945,28 +1945,24 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
       // Build and persist graph if it hasn't been built yet
       // This ensures the graph is available on next database open (fast restart)
-      LogManager.instance().log(this, Level.SEVERE,
-          "LSMVectorIndex.close() called: vectorIndexSize=%d, graphState=%s",
-          vectorIndex.size(), graphState);
-
       // Build graph if it's in LOADING (never built) or MUTABLE (has pending changes) state
       if (vectorIndex.size() > 0 && (graphState == GraphState.LOADING || graphState == GraphState.MUTABLE)) {
         try {
-          LogManager.instance().log(this, Level.SEVERE,
+          LogManager.instance().log(this, Level.FINE,
               "Building graph before close for index: %s (this may take 1-2 minutes for large datasets)",
               indexName);
           final long startTime = System.currentTimeMillis();
           buildGraphFromScratch();
           final long elapsed = System.currentTimeMillis() - startTime;
-          LogManager.instance().log(this, Level.SEVERE,
+          LogManager.instance().log(this, Level.FINE,
               "Graph building completed in %d seconds", elapsed / 1000);
         } catch (final Exception e) {
-          LogManager.instance().log(this, Level.SEVERE,
+          LogManager.instance().log(this, Level.FINE,
               "Failed to build graph before close: " + e.getMessage(), e);
           // Don't fail close if graph building fails
         }
       } else {
-        LogManager.instance().log(this, Level.SEVERE,
+        LogManager.instance().log(this, Level.FINE,
             "Skipping graph build on close: vectorIndexSize=%d, graphState=%s",
             vectorIndex.size(), graphState);
       }
