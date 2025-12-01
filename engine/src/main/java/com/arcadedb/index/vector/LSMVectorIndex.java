@@ -1853,7 +1853,8 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
         "LSMVectorIndex.close() called: vectorIndexSize=%d, graphState=%s",
         vectorIndex.size(), graphState);
 
-    if (vectorIndex.size() > 0 && graphState == GraphState.LOADING) {
+    // Build graph if it's in LOADING (never built) or MUTABLE (has pending changes) state
+    if (vectorIndex.size() > 0 && (graphState == GraphState.LOADING || graphState == GraphState.MUTABLE)) {
       try {
         LogManager.instance().log(this, Level.SEVERE,
             "Building graph before close for index: %s (this may take 1-2 minutes for large datasets)",
