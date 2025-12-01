@@ -51,6 +51,7 @@ import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
+import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
@@ -81,33 +82,14 @@ import com.arcadedb.utility.LockException;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.RWLockContext;
 
-  import java.io.File;
-import java.io.IOException;
-import java.io.RandomAccessFile;
-import java.nio.channels.ClosedChannelException;
-import java.nio.channels.FileChannel;
-import java.nio.channels.FileLock;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Random;
-import java.util.Set;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
-import java.util.logging.Level;
+import java.io.*;
+import java.nio.channels.*;
+import java.nio.file.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.concurrent.locks.*;
+import java.util.logging.*;
 
 /**
  * Local implementation of {@link Database}. It is based on files opened on the local file system.
@@ -1712,6 +1694,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       } catch (final Throwable e) {
         LogManager.instance()
             .log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database '%s'", e, name);
+      }
+    }
+
+    // CLOSE ALL INDEXES WHILE THE DATABASE IS STILL OPEN TO AVOID "FILE CLOSED" ERRORS
+    for (Index idx : schema.getIndexes()) {
+      try {
+        ((IndexInternal) idx).close();
+      } catch (Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error closing index %s: %s", e, idx.getName(), e.getMessage());
       }
     }
 

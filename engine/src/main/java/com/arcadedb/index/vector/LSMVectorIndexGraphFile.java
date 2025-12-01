@@ -104,31 +104,39 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
   /**
    * Write a graph to pages using JVector's serialization format.
    * This persists an in-memory graph to disk for later loading as OnDiskGraphIndex.
+   *
+   * IMPORTANT:
+   * - This writes ONLY the graph topology (no vectors)
+   * - Vectors are read on-demand from ArcadeDB documents via ArcadePageVectorValues
+   * - MUST be called within an active transaction
+   * - Caller is responsible for committing the transaction
    */
   public void writeGraph(final io.github.jbellis.jvector.graph.ImmutableGraphIndex graph,
                           final RandomAccessVectorValues vectors) throws IOException {
 
-    database.checkTransactionIsActive(false);
+    if (!database.isTransactionActive())
+      throw new IllegalStateException("writeGraph() must be called within an active transaction");
 
     try {
-      // Create writer that writes to our pages
+      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.INFO,
+          "Starting graph write: %d nodes", graph.getIdUpperBound());
+
+      // Write metadata to page 0 FIRST (reserves page 0)
+      writeMetadata();
+
+      // Create writer that writes to our pages (starting from page 1)
       final RandomAccessWriter writer = new ArcadePageGraphWriter(database, getFileId(), getPageSize());
 
-      // Use JVector's OnDiskGraphIndexWriter with inline vectors
-      // This stores vectors in the graph file for simplicity (Phase 3)
-      // TODO: Optimize in future to use separated vectors stored only in our pages
-      final io.github.jbellis.jvector.graph.disk.feature.InlineVectors inlineVectors =
-          new io.github.jbellis.jvector.graph.disk.feature.InlineVectors(graph.getDimension());
-
+      // Write graph topology WITHOUT inline vectors
+      // Vectors will be read on-demand from ArcadeDB documents (no duplication)
       try (final OnDiskGraphIndexWriter indexWriter = new OnDiskGraphIndexWriter.Builder(graph, writer)
               .withStartOffset(0)
-              .with(inlineVectors)
               .build()) {
         // Write header
         indexWriter.writeHeader(graph.getView());
 
-        // Write graph topology with inline vectors
-        indexWriter.writeInline(graph.size(), java.util.Map.of());
+        // Write graph topology only (no inline vectors or other features)
+        indexWriter.write(java.util.Map.of());
 
         // Get final size
         this.totalGraphBytes = writer.position();
@@ -136,14 +144,17 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
 
       writer.close();
 
-      // Write metadata to page 0
+      // Update metadata with final size
       writeMetadata();
 
       com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.INFO,
-          "Wrote graph to disk: %d nodes, %d bytes, %d pages",
+          "Graph written to pages: %d nodes, %d bytes, %d pages (topology only, vectors in documents)",
           graph.getIdUpperBound(), totalGraphBytes, getTotalPages());
 
     } catch (final Exception e) {
+      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.SEVERE,
+          "Error writing graph to pages: %s", e.getMessage());
+      e.printStackTrace();
       throw new IndexException("Error writing graph to pages", e);
     }
   }
