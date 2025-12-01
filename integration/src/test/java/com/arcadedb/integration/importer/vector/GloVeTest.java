@@ -44,7 +44,7 @@ import static java.util.concurrent.TimeUnit.*;
  */
 public class GloVeTest {
   private final static int     PARALLEL_LEVEL = 8;
-  private static final String  FILE_NAME      = "/Users/luca/Downloads/test.glove.twitter.27B.100d.txt";
+  private static final String  FILE_NAME      = "/Users/luca/Downloads/glove.twitter.27B.100d.txt";
   private              boolean USE_SQL        = false;
 
   public static void main(String[] args) {
@@ -88,6 +88,37 @@ public class GloVeTest {
           MILLISECONDS.toMinutes(duration));
 
       LogManager.instance().log(this, Level.SEVERE, "Building vector index...");
+
+      // Get the LSMVectorIndex from the bucket
+      final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Word[vector]");
+      final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
+
+      // Build with callbacks
+      lsmIndex.build(
+          100000, // batch size
+          (doc, total) -> {
+            if (total % 10000 == 0) {
+              LogManager.instance().log(this, Level.SEVERE, "Indexed " + total + " documents...");
+            }
+          },
+          (phase, processedNodes, totalNodes, vecAccesses) -> {
+            switch (phase) {
+            case "validating":
+              LogManager.instance().log(this, Level.SEVERE, "Validating vectors: %d / %d", processedNodes, totalNodes);
+              break;
+            case "building":
+              LogManager.instance().log(this, Level.SEVERE, "Building graph: %d unique nodes accessed, %d total vector accesses",
+                  processedNodes, vecAccesses);
+              break;
+            case "persisting":
+              LogManager.instance().log(this, Level.SEVERE, "Persisting graph: %d / %d nodes", processedNodes, totalNodes);
+              break;
+            default:
+              LogManager.instance().log(this, Level.SEVERE, "Unknown phase: %d / %d nodes", processedNodes, totalNodes);
+              break;
+            }
+          }
+      );
 
       database.close();
       System.exit(1);
