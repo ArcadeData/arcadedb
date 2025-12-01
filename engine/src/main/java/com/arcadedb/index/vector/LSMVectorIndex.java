@@ -476,22 +476,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
   private LSMVectorIndexGraphFile discoverAndLoadGraphFile() {
     try {
       final DatabaseInternal database = getDatabase();
-      final String expectedGraphFileName = mutable.getName() + "_vecgraph";
-
-      // Check if already loaded in schema
-      for (int i = 0; i < 1000; i++) {
-        try {
-          final Component comp = database.getSchema().getFileByIdIfExists(i);
-          if (comp instanceof LSMVectorIndexGraphFile && comp.getName().equals(expectedGraphFileName)) {
-            LogManager.instance().log(this, Level.INFO,
-                "Found existing graph file in schema: %s (fileId=%d)",
-                comp.getName(), comp.getFileId());
-            return (LSMVectorIndexGraphFile) comp;
-          }
-        } catch (final Exception e) {
-          // File ID doesn't exist, continue
-        }
-      }
+      final String expectedGraphFileName = mutable.getName() + "_" + LSMVectorIndexGraphFile.FILE_EXT;
 
       // Look for ComponentFile in FileManager
       for (final ComponentFile file : database.getFileManager().getFiles()) {
@@ -778,7 +763,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
       // Create a SNAPSHOT of vectorIndex for JVector to use safely
       final String vectorProp = metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
-          metadata.propertyNames.get(0) : "vector";
+          metadata.propertyNames.getFirst() : "vector";
 
       // CRITICAL FIX: Validate vectors before building graph to filter out deleted documents
       // When a document is deleted, getVector() returns null which breaks JVector index building
@@ -1954,11 +1939,9 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
           final long startTime = System.currentTimeMillis();
           buildGraphFromScratch();
           final long elapsed = System.currentTimeMillis() - startTime;
-          LogManager.instance().log(this, Level.FINE,
-              "Graph building completed in %d seconds", elapsed / 1000);
+          LogManager.instance().log(this, Level.FINE, "Graph building completed in %d seconds", elapsed / 1000);
         } catch (final Exception e) {
-          LogManager.instance().log(this, Level.FINE,
-              "Failed to build graph before close: " + e.getMessage(), e);
+          LogManager.instance().log(this, Level.FINE, "Failed to build graph before close: " + e.getMessage(), e);
           // Don't fail close if graph building fails
         }
       } else {
@@ -1974,16 +1957,6 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
         // to avoid path transformation issues during replication.
 
         mutable.close();
-
-        // Close graph file
-        if (graphFile != null) {
-          try {
-            graphFile.close();
-          } catch (final Exception e) {
-            LogManager.instance().log(this, Level.WARNING,
-                "Error closing graph file: %s", e.getMessage());
-          }
-        }
       } finally {
         lock.writeLock().unlock();
       }

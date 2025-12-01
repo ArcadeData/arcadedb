@@ -59,6 +59,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.index.vector.LSMVectorIndexGraphFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QueryEngineManager;
@@ -109,7 +110,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT,
       LSMTreeIndexCompacted.UNIQUE_INDEX_EXT,
       HnswVectorIndex.FILE_EXT,
-      LSMVectorIndex.FILE_EXT);
+      LSMVectorIndex.FILE_EXT,
+      LSMVectorIndexGraphFile.FILE_EXT);
   public final         AtomicLong                                indexCompactions                     = new AtomicLong();
   protected final      String                                    name;
   protected final      ComponentFile.MODE                        mode;

@@ -19,6 +19,7 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import io.github.jbellis.jvector.disk.RandomAccessWriter;
@@ -29,7 +30,7 @@ import java.util.zip.CRC32;
 /**
  * Implements JVector's RandomAccessWriter interface for writing graph topology to ArcadeDB pages.
  * This allows persisting OnHeapGraphIndex to disk pages for later loading as OnDiskGraphIndex.
- *
+ * <p>
  * NOT thread-safe: Should be used by a single thread during graph serialization.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -43,16 +44,16 @@ public class ArcadePageGraphWriter implements RandomAccessWriter {
   private final int              usablePageSize; // pageSize - header
 
   // Current state
-  private long        currentPosition;  // Logical position in the graph data
-  private MutablePage currentPage;
-  private int         currentPageNum;
-  private final CRC32 crc32;
+  private       long        currentPosition;  // Logical position in the graph data
+  private       MutablePage currentPage;
+  private       int         currentPageNum;
+  private final CRC32       crc32;
 
   public ArcadePageGraphWriter(final DatabaseInternal database, final int fileId, final int pageSize) {
     this.database = database;
     this.fileId = fileId;
     this.pageSize = pageSize;
-    this.usablePageSize = pageSize - GRAPH_PAGE_HEADER_SIZE;
+    this.usablePageSize = pageSize - BasePage.PAGE_HEADER_SIZE - GRAPH_PAGE_HEADER_SIZE;
     this.currentPosition = 0;
     this.currentPageNum = -1;
     this.crc32 = new CRC32();

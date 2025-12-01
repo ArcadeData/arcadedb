@@ -20,6 +20,11 @@ package com.arcadedb.engine;
 
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
+/**
+ * Tracks binary changes and returns the modified range.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 @ExcludeFromJacocoGeneratedReport
 public interface TrackableContent {
   int[] getModifiedRange();
