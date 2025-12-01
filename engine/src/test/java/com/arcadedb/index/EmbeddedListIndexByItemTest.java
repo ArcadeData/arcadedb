@@ -45,7 +45,7 @@ public class EmbeddedListIndexByItemTest extends TestHelper {
   }
 
   @Test
-  public void testEmbeddedPropertyIndexByItem() {
+  void embeddedPropertyIndexByItem() {
     // This should work but currently doesn't - it's the main issue to fix
     database.transaction(() -> {
       // Attempt to create an index on tags.id (nested property in list of embedded documents)

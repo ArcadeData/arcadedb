@@ -28,14 +28,14 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class MatchResultTest extends TestHelper {
+class MatchResultTest extends TestHelper {
 
   /**
    * MATCH query with NOT pattern fails to return unique vertices
    * https://github.com/ArcadeData/arcadedb/issues/1689
    */
   @Test
-  public void testIssue1689() {
+  void issue1689() {
     database.transaction(() -> database.command("sqlscript", """
         CREATE VERTEX TYPE Person IF NOT EXISTS;
         CREATE PROPERTY Person.role IF NOT EXISTS STRING;

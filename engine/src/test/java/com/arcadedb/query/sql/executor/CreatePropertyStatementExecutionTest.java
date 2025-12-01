@@ -31,19 +31,19 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
-public class CreatePropertyStatementExecutionTest extends TestHelper {
+class CreatePropertyStatementExecutionTest extends TestHelper {
   private static final String PROP_NAME     = "name";
   private static final String PROP_DIVISION = "division";
   private static final String PROP_OFFICERS = "officers";
   private static final String PROP_ID       = "id";
 
   @Test
-  public void testBasicCreateProperty() {
+  void basicCreateProperty() {
     database.command("sql", "create document type testBasicCreateProperty").close();
     database.command("sql", "CREATE property testBasicCreateProperty.name STRING").close();
 
@@ -55,7 +55,7 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCreateMandatoryPropertyWithEmbeddedType() {
+  void createMandatoryPropertyWithEmbeddedType() {
     database.command("sql", "create document type testCreateMandatoryPropertyWithEmbeddedType").close();
     database.command("sql", "CREATE Property testCreateMandatoryPropertyWithEmbeddedType.officers LIST").close();
 
@@ -67,7 +67,7 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCreateUnsafePropertyWithEmbeddedType() {
+  void createUnsafePropertyWithEmbeddedType() {
     database.command("sql", "create document type testCreateUnsafePropertyWithEmbeddedType").close();
     database.command("sql", "CREATE Property testCreateUnsafePropertyWithEmbeddedType.officers LIST").close();
 
@@ -79,7 +79,7 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testExtraSpaces() {
+  void extraSpaces() {
     database.command("sql", "create document type testExtraSpaces").close();
     database.command("sql", "CREATE PROPERTY testExtraSpaces.id INTEGER  ").close();
 
@@ -91,18 +91,15 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInvalidAttributeName() {
-    try {
+  void invalidAttributeName() {
+    assertThatThrownBy(() -> {
       database.command("sql", "create document type CommandExecutionException").close();
       database.command("sql", "CREATE PROPERTY CommandExecutionException.id INTEGER (MANDATORY, INVALID, NOTNULL)  UNSAFE").close();
-      fail("Expected CommandSQLParsingException");
-    } catch (final CommandSQLParsingException e) {
-      // OK
-    }
+    }).isInstanceOf(CommandSQLParsingException.class);
   }
 
   @Test
-  public void testLinkedTypeConstraint() {
+  void linkedTypeConstraint() {
     database.command("sql", "create document type Invoice").close();
     database.command("sql", "create document type Product").close();
     database.command("sql", "CREATE PROPERTY Invoice.products LIST of Product").close();
@@ -151,51 +148,26 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
       validInvoice[0].save();
     });
 
-    try {
-      database.transaction(() -> {
-        database.newDocument("Invoice").set("products",//
-            List.of(database.newDocument("Invoice").save())).save();
-      });
-      fail("");
-    } catch (ValidationException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> database.transaction(() -> {
+      database.newDocument("Invoice").set("products",//
+        List.of(database.newDocument("Invoice").save())).save();
+    })).isInstanceOf(ValidationException.class);
 
-    try {
-      validInvoice[0].set("tags", List.of(3, "hard to close")).save();
-      fail("");
-    } catch (ValidationException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> validInvoice[0].set("tags", List.of(3, "hard to close")).save()).isInstanceOf(ValidationException.class);
 
-    try {
-      validInvoice[0].set("settings", Map.of("test", 10F)).save();
-      fail("");
-    } catch (ValidationException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> validInvoice[0].set("settings", Map.of("test", 10F)).save()).isInstanceOf(ValidationException.class);
 
-    try {
-      database.transaction(() -> {
-        validInvoice[0].set("mainProduct", database.newDocument("Invoice").save()).save();
-      });
-      fail("");
-    } catch (ValidationException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> database.transaction(() -> {
+      validInvoice[0].set("mainProduct", database.newDocument("Invoice").save()).save();
+    })).isInstanceOf(ValidationException.class);
 
-    try {
-      database.transaction(() -> {
-        validInvoice[0].newEmbeddedDocument("Invoice", "embedded").save();
-      });
-      fail("");
-    } catch (ValidationException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> database.transaction(() -> {
+      validInvoice[0].newEmbeddedDocument("Invoice", "embedded").save();
+    })).isInstanceOf(ValidationException.class);
   }
 
   @Test
-  public void testIfNotExists() {
+  void ifNotExists() {
     database.command("sql", "create document type testIfNotExists").close();
     database.command("sql", "CREATE property testIfNotExists.name if not exists STRING").close();
 
@@ -215,7 +187,7 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  void testCreateHiddenProperty() {
+  void createHiddenProperty() {
     // due to https://github.com/ArcadeData/arcadedb/issues/2378 hidden properties are supported in thhe schema, but not in the
     // database
     database.command("sql", "create vertex type testHiddenProperty").close();

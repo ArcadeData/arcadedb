@@ -24,10 +24,10 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
-public class GremlinServerSecurityTest extends AbstractGremlinServerIT {
+class GremlinServerSecurityTest extends AbstractGremlinServerIT {
 
   @Test
-  public void getAllVertices() {
+  void getAllVertices() {
     try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", "test")) {
       fail("Expected security exception");
     } catch (final SecurityException e) {

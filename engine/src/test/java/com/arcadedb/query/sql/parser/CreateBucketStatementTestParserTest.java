@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class CreateBucketStatementTestParserTest extends AbstractParserTest {
+class CreateBucketStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("CREATE BUCKET Foo");
     checkRightSyntax("create bucket Foo");
     checkRightSyntax("CREATE Bucket Foo if not exists");

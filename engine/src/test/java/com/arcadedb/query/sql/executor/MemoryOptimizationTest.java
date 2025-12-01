@@ -30,10 +30,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * These optimizations ensure that only necessary field values are stored in memory
  * rather than entire Result objects, significantly reducing memory footprint.
  */
-public class MemoryOptimizationTest extends TestHelper {
+class MemoryOptimizationTest extends TestHelper {
 
   @Test
-  public void testDistinctWithWideTable() {
+  void distinctWithWideTable() {
     // Create a table with many columns (simulating a wide table scenario)
     database.transaction(() -> {
       final DocumentType wideTable = database.getSchema().createDocumentType("WideTable");
@@ -78,7 +78,7 @@ public class MemoryOptimizationTest extends TestHelper {
   }
 
   @Test
-  public void testGroupByWithWideTable() {
+  void groupByWithWideTable() {
     // Create a table with many columns
     database.transaction(() -> {
       if (!database.getSchema().existsType("WideTableGroupBy")) {
@@ -131,7 +131,7 @@ public class MemoryOptimizationTest extends TestHelper {
   }
 
   @Test
-  public void testGroupByWithoutAggregates() {
+  void groupByWithoutAggregates() {
     // Test the specific case where GROUP BY is used without aggregate functions
     // This was previously not optimized and would keep full records in memory
     database.transaction(() -> {
@@ -174,7 +174,7 @@ public class MemoryOptimizationTest extends TestHelper {
   }
 
   @Test
-  public void testDistinctWithProjection() {
+  void distinctWithProjection() {
     // Test DISTINCT on projected results (not on full documents)
     database.transaction(() -> {
       if (!database.getSchema().existsType("DistinctProjection")) {
@@ -226,7 +226,7 @@ public class MemoryOptimizationTest extends TestHelper {
   }
 
   @Test
-  public void testDistinctOnElements() {
+  void distinctOnElements() {
     // Test DISTINCT on elements (using RID-based deduplication)
     // This should continue to use the efficient RID-based approach
     database.transaction(() -> {

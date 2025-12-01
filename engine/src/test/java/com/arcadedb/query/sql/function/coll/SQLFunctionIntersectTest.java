@@ -31,10 +31,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class SQLFunctionIntersectTest {
+class SQLFunctionIntersectTest {
 
   @Test
-  public void intersectInline() {
+  void intersectInline() {
     final SQLFunctionIntersect function = new SQLFunctionIntersect();
 
     final List<Integer> coll1 = Arrays.asList(1, 1, 2, 3, 4, 5, 5, 6, 7, 9, 0, 1, 1, 1);
@@ -47,7 +47,7 @@ public class SQLFunctionIntersectTest {
   }
 
   @Test
-  public void intersectNotInline() {
+  void intersectNotInline() {
     final SQLFunctionIntersect function = new SQLFunctionIntersect();
 
     final List<Integer> coll1 = Arrays.asList(1, 1, 2, 3, 4, 5, 5, 6, 7, 9, 0, 1, 1, 1);

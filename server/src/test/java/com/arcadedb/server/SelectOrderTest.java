@@ -47,11 +47,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * From Issue https://github.com/ArcadeData/arcadedb/issues/741
  */
-public class SelectOrderTest {
+class SelectOrderTest {
   static final String DATABASE_NAME = "SelectOrderTest";
 
   @Test
-  public void testRIDOrdering() {
+  void ridOrdering() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
 
@@ -173,7 +173,7 @@ public class SelectOrderTest {
   }
 
   @Test
-  public void testLocalDateTimeOrderBy() {
+  void localDateTimeOrderBy() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
 
@@ -278,7 +278,7 @@ public class SelectOrderTest {
   }
 
   @Test
-  public void testRIDOrderingDesc() {
+  void ridOrderingDesc() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
 
@@ -319,7 +319,7 @@ public class SelectOrderTest {
   }
 
   @BeforeEach
-  public void beginTests() {
+  void beginTests() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
     FileUtils.deleteRecursively(new File(rootPath + "/databases"));
@@ -328,7 +328,7 @@ public class SelectOrderTest {
   }
 
   @AfterEach
-  public void endTests() {
+  void endTests() {
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();
   }

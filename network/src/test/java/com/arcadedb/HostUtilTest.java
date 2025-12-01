@@ -26,9 +26,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class HostUtilTest {
+class HostUtilTest {
   @Test
-  public void testIPv4() {
+  void iPv4() {
     final String[] parts = HostUtil.parseHostAddress("10.33.5.22", HostUtil.CLIENT_DEFAULT_PORT);
     assertThat(parts.length).isEqualTo(2);
     assertThat(parts[0]).isEqualTo("10.33.5.22");
@@ -36,7 +36,7 @@ public class HostUtilTest {
   }
 
   @Test
-  public void testIPv4WithPort() {
+  void iPv4WithPort() {
     final String[] parts = HostUtil.parseHostAddress("10.33.5.22:33", HostUtil.CLIENT_DEFAULT_PORT);
     assertThat(parts.length).isEqualTo(2);
     assertThat(parts[0]).isEqualTo("10.33.5.22");
@@ -44,7 +44,7 @@ public class HostUtilTest {
   }
 
   @Test
-  public void testIPv6() {
+  void iPv6() {
     final String[] parts = HostUtil.parseHostAddress("fe80:0:0:0:250:56ff:fe9a:6990", HostUtil.CLIENT_DEFAULT_PORT);
     assertThat(parts.length).isEqualTo(2);
     assertThat(parts[0]).isEqualTo("fe80:0:0:0:250:56ff:fe9a:6990");
@@ -52,7 +52,7 @@ public class HostUtilTest {
   }
 
   @Test
-  public void testIPv6WithPort() {
+  void iPv6WithPort() {
     final String[] parts = HostUtil.parseHostAddress("fe80:0:0:0:250:56ff:fe9a:6990:22", HostUtil.CLIENT_DEFAULT_PORT);
     assertThat(parts.length).isEqualTo(2);
     assertThat(parts[0]).isEqualTo("fe80:0:0:0:250:56ff:fe9a:6990");

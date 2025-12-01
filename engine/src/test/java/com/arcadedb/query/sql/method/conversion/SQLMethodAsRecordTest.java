@@ -35,13 +35,13 @@ class SQLMethodAsRecordTest extends TestHelper {
   }
 
   @Test
-  void testNulIsReturnedAsNull() {
+  void nulIsReturnedAsNull() {
     final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
-  void testFromString() {
+  void fromString() {
     database.transaction(() -> {
       final MutableDocument doc = database.newDocument("Doc").save();
 
@@ -52,7 +52,7 @@ class SQLMethodAsRecordTest extends TestHelper {
   }
 
   @Test
-  void testFromRID() {
+  void fromRID() {
     database.transaction(() -> {
       final MutableDocument doc = database.newDocument("Doc").save();
 
@@ -63,13 +63,13 @@ class SQLMethodAsRecordTest extends TestHelper {
   }
 
   @Test
-  void testFromInvalidString() {
+  void fromInvalidString() {
     final Object result = method.execute("INVALID", null, null, null);
     assertThat(result).isEqualTo(null);
   }
 
   @Test
-  void testNotStringAsNull() {
+  void notStringAsNull() {
     final Object result = method.execute(10, null, null, null);
     assertThat(result).isEqualTo(null);
   }

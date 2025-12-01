@@ -27,10 +27,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * original @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdatabase.com)
  * Ported by @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class MoveVertexStatementExecutionTest extends TestHelper {
+class MoveVertexStatementExecutionTest extends TestHelper {
 
   @Test
-  public void testMoveVertex() {
+  void moveVertex() {
     String vertexClassName1 = "testMoveVertexV1";
     String vertexClassName2 = "testMoveVertexV2";
     String edgeClassName = "testMoveVertexE";
@@ -81,7 +81,7 @@ public class MoveVertexStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testMoveVertexBatch() {
+  void moveVertexBatch() {
     String vertexClassName1 = "testMoveVertexBatchV1";
     String vertexClassName2 = "testMoveVertexBatchV2";
     String edgeClassName = "testMoveVertexBatchE";

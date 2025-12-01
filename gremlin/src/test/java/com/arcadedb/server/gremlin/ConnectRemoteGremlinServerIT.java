@@ -37,11 +37,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Manual test against a Gremlin Server.
  */
-public class ConnectRemoteGremlinServerIT {
+class ConnectRemoteGremlinServerIT {
 
   @Disabled
   @Test
-  public void getAllVertices() {
+  void getAllVertices() {
     final GraphTraversalSource g = traversal();
 
     g.addV().property("myProp", "some value").next(); // creates the vertex

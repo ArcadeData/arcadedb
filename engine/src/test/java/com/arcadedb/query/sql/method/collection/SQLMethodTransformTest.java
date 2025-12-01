@@ -79,13 +79,13 @@ class SQLMethodTransformTest {
   }
 
   @Test
-  void testNulIReturnedAsNull() {
+  void nulIReturnedAsNull() {
     final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
-  void testToLowerCase() {
+  void toLowerCase() {
     final BasicCommandContext context = getMockedContext();
 
     final Object result = method.execute(Set.of("A", "B"), null, context, new String[] { "toLowerCase" });
@@ -100,7 +100,7 @@ class SQLMethodTransformTest {
   }
 
   @Test
-  void testToUpperCase() {
+  void toUpperCase() {
     final BasicCommandContext context = getMockedContext();
 
     final Object result = method.execute(Set.of("A", "b"), null, context, new String[] { "toUpperCase" });
@@ -115,7 +115,7 @@ class SQLMethodTransformTest {
   }
 
   @Test
-  void testChain() {
+  void chain() {
     final BasicCommandContext context = getMockedContext();
 
     final Object result = method.execute(Set.of(" AA ", " bb "), null, context, new String[] { "trim", "toUpperCase" });

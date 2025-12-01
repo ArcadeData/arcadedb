@@ -38,16 +38,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOfType;
 
-public class TransactionBucketTest extends TestHelper {
+class TransactionBucketTest extends TestHelper {
   private static final int TOT = 10000;
 
   @Test
-  public void testPopulate() {
+  void populate() {
     // EMPTY METHOD
   }
 
   @Test
-  public void testScan() {
+  void scan() {
     final AtomicInteger total = new AtomicInteger();
 
     database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, 1);
@@ -75,7 +75,7 @@ public class TransactionBucketTest extends TestHelper {
   }
 
   @Test
-  public void testIterator() {
+  void iterator() {
     final AtomicInteger total = new AtomicInteger();
 
     database.begin();
@@ -105,7 +105,7 @@ public class TransactionBucketTest extends TestHelper {
   }
 
   @Test
-  public void testLookupAllRecordsByRID() {
+  void lookupAllRecordsByRID() {
     final AtomicInteger total = new AtomicInteger();
 
     database.begin();
@@ -133,7 +133,7 @@ public class TransactionBucketTest extends TestHelper {
   }
 
   @Test
-  public void testDeleteAllRecordsReuseSpace() {
+  void deleteAllRecordsReuseSpace() {
     final AtomicInteger total = new AtomicInteger();
 
     database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, 1);
@@ -160,7 +160,7 @@ public class TransactionBucketTest extends TestHelper {
   }
 
   @Test
-  public void testDeleteFail() {
+  void deleteFail() {
     reopenDatabaseInReadOnlyMode();
 
     assertThatExceptionOfType(DatabaseIsReadOnlyException.class).isThrownBy(() -> {
@@ -178,7 +178,7 @@ public class TransactionBucketTest extends TestHelper {
   }
 
   @Test
-  public void testIteratorOnEdges() {
+  void iteratorOnEdges() {
     final AtomicInteger total = new AtomicInteger();
 
     database.begin();
@@ -206,7 +206,7 @@ public class TransactionBucketTest extends TestHelper {
   }
 
   @Test
-  public void testScanOnEdges() {
+  void scanOnEdges() {
     database.begin();
 
     database.getSchema().createVertexType("testIteratorOnEdges_Vertex");
@@ -232,7 +232,7 @@ public class TransactionBucketTest extends TestHelper {
   }
 
   @Test
-  public void testScanOnEdgesAfterTx() {
+  void scanOnEdgesAfterTx() {
     database.transaction(() -> {
       database.getSchema().createVertexType("testIteratorOnEdges_Vertex");
       database.getSchema().createEdgeType("testIteratorOnEdges_Edge");

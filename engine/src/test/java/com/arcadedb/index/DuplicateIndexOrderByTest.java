@@ -37,10 +37,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Test case to reproduce the issue where SQL index returns too many entries when used with ORDER BY.
  * The issue occurs when an indexed property is used in both projection and ORDER BY clauses.
  */
-public class DuplicateIndexOrderByTest extends TestHelper {
+class DuplicateIndexOrderByTest extends TestHelper {
 
   @Test
-  public void testDuplicateKeyIndexWithOrderBy() {
+  void duplicateKeyIndexWithOrderBy() {
     database.transaction(() -> {
       // Create a document type
       final DocumentType metadataType = database.getSchema().createDocumentType("metadata");

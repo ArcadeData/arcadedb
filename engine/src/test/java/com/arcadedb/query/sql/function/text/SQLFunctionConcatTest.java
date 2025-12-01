@@ -30,12 +30,12 @@ class SQLFunctionConcatTest {
   private SQLFunctionConcat function;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     function = new SQLFunctionConcat();
   }
 
   @Test
-  public void testConcatSingleField() {
+  void concatSingleField() {
     function.execute(null, null, null, new Object[] { "Hello" }, null);
     function.execute(null, null, null, new Object[] { "World" }, null);
     Object result = function.getResult();
@@ -43,7 +43,7 @@ class SQLFunctionConcatTest {
   }
 
   @Test
-  public void testConcatWithDelimiter() {
+  void concatWithDelimiter() {
     function.execute(null, null, null, new Object[] { "Hello", " " }, null);
     function.execute(null, null, null, new Object[] { "World", " " }, null);
     Object result = function.getResult();
@@ -51,13 +51,13 @@ class SQLFunctionConcatTest {
   }
 
   @Test
-  public void testConcatEmpty() {
+  void concatEmpty() {
     Object result = function.getResult();
     assertThat(result).isNull();
   }
 
   @Test
-  public void testConcatWithNullValues() {
+  void concatWithNullValues() {
     function.execute(null, null, null, new Object[] { null, " " }, null);
     function.execute(null, null, null, new Object[] { "World", " " }, null);
     Object result = function.getResult();
@@ -65,7 +65,7 @@ class SQLFunctionConcatTest {
   }
 
   @Test
-  public void testQuery() throws Exception {
+  void query() throws Exception {
     TestHelper.executeInNewDatabase("SQLFunctionConcat", (db) -> {
       setUpDatabase(db);
       ResultSet result = db.query("sql", "select concat(name, ' ') as concat from Person");

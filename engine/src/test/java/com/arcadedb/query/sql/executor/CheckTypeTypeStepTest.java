@@ -25,13 +25,13 @@ import com.arcadedb.schema.DocumentType;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.*;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThat;
 
-public class CheckTypeTypeStepTest {
+class CheckTypeTypeStepTest {
 
   @Test
-  public void shouldCheckSubclasses() throws Exception {
+  void shouldCheckSubclasses() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
@@ -45,7 +45,7 @@ public class CheckTypeTypeStepTest {
   }
 
   @Test
-  public void shouldCheckOneType() throws Exception {
+  void shouldCheckOneType() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
@@ -58,19 +58,14 @@ public class CheckTypeTypeStepTest {
   }
 
   @Test
-  public void shouldThrowExceptionWhenClassIsNotParent() throws Exception {
-    try {
-      TestHelper.executeInNewDatabase((db) -> {
-        final BasicCommandContext context = new BasicCommandContext();
-        context.setDatabase(db);
-        final CheckTypeTypeStep step = new CheckTypeTypeStep(TestHelper.createRandomType(db).getName(),
-            TestHelper.createRandomType(db).getName(), context);
+  void shouldThrowExceptionWhenClassIsNotParent() throws Exception {
+    assertThatThrownBy(() -> TestHelper.executeInNewDatabase((db) -> {
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase(db);
+      final CheckTypeTypeStep step = new CheckTypeTypeStep(TestHelper.createRandomType(db).getName(),
+        TestHelper.createRandomType(db).getName(), context);
 
-        step.syncPull(context, 20);
-      });
-      fail("Expected CommandExecutionException");
-    } catch (final CommandExecutionException e) {
-      // OK
-    }
+      step.syncPull(context, 20);
+    })).isInstanceOf(CommandExecutionException.class);
   }
 }

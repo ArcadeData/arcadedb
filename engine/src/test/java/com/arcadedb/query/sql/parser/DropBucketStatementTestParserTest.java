@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class DropBucketStatementTestParserTest extends AbstractParserTest {
+class DropBucketStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("DROP BUCKET Foo");
     checkRightSyntax("drop bucket Foo");
     checkRightSyntax("DROP BUCKET 14");

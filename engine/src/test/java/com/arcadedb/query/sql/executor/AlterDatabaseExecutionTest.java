@@ -27,9 +27,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class AlterDatabaseExecutionTest extends TestHelper {
+class AlterDatabaseExecutionTest extends TestHelper {
   @Test
-  public void testBasicCreateProperty() {
+  void basicCreateProperty() {
     final int defPageSize = ((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue());
     assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE)).isEqualTo(defPageSize);
 

@@ -37,9 +37,9 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class MultipleDatabasesTest extends TestHelper {
+class MultipleDatabasesTest extends TestHelper {
   @Test
-  public void testMovingRecordsAcrossDatabases() {
+  void movingRecordsAcrossDatabases() {
     final DatabaseInternal database2 = (DatabaseInternal) new DatabaseFactory(getDatabasePath() + "2").create();
     final DatabaseInternal database3 = (DatabaseInternal) new DatabaseFactory(getDatabasePath() + "3").create();
 
@@ -107,7 +107,7 @@ public class MultipleDatabasesTest extends TestHelper {
   }
 
   @Test
-  public void testErrorMultipleDatabaseInstancesSamePath() {
+  void errorMultipleDatabaseInstancesSamePath() {
     assertThatThrownBy(() -> new DatabaseFactory(getDatabasePath()).open())
         .isInstanceOf(DatabaseOperationException.class);
   }

@@ -28,9 +28,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
-public class BeginStatementExecutionTest {
+class BeginStatementExecutionTest {
   @Test
-  public void testBegin() throws Exception {
+  void begin() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
       assertThat(db.isTransactionActive()).isTrue();
       final ResultSet result = db.command("sql", "begin");

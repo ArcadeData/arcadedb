@@ -28,29 +28,29 @@ import java.util.Iterator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class SQLFunctionUUIDTest {
+class SQLFunctionUUIDTest {
 
   private SQLFunctionUUID uuid;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     uuid = new SQLFunctionUUID();
   }
 
   @Test
-  public void testEmpty() {
+  void empty() {
     final Object result = uuid.getResult();
     assertThat(result).isNull();
   }
 
   @Test
-  public void testResult() {
+  void result() {
     final String result = (String) uuid.execute(null, null, null, null, null);
     assertThat(result).isNotNull();
   }
 
   @Test
-  public void testQuery() throws Exception {
+  void query() throws Exception {
     TestHelper.executeInNewDatabase("SQLFunctionUUIDTest", (db) -> {
       final ResultSet result = db.query("sql", "select uuid() as uuid");
       assertThat((Iterator<? extends Result>) result).isNotNull();

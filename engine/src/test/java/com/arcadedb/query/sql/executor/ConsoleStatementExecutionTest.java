@@ -31,10 +31,10 @@ import static org.assertj.core.api.Assertions.fail;
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdatabase.com)
  */
-public class ConsoleStatementExecutionTest extends TestHelper {
+class ConsoleStatementExecutionTest extends TestHelper {
 
   @Test
-  public void testError() {
+  void error() {
     ResultSet result = database.command("sqlscript", "console.`error` 'foo bar'");
     assertThat(Optional.ofNullable(result)).isNotNull();
     assertThat(result.hasNext()).isTrue();
@@ -45,7 +45,7 @@ public class ConsoleStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testLog() {
+  void log() {
     ResultSet result = database.command("sqlscript", "console.log 'foo bar'");
     assertThat(Optional.ofNullable(result)).isNotNull();
     assertThat(result.hasNext()).isTrue();
@@ -56,7 +56,7 @@ public class ConsoleStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInvalidLevel() {
+  void invalidLevel() {
     try {
       database.command("sqlscript", "console.bla 'foo bar'");
       fail("");

@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.*;
 /**
  * From Issue https://github.com/ArcadeData/arcadedb/issues/839
  */
-public class OrderByTest {
+class OrderByTest {
 
   @BeforeEach
   void setUp() {
@@ -54,7 +54,7 @@ public class OrderByTest {
   }
 
   @Test
-  public void testLocalDateTimeOrderBy() {
+  void localDateTimeOrderBy() {
     DatabaseFactory databaseFactory = new DatabaseFactory("databases/OrderByTest");
 
     if (databaseFactory.exists())

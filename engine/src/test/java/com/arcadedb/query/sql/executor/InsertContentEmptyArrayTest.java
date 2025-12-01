@@ -44,7 +44,7 @@ public class InsertContentEmptyArrayTest extends TestHelper {
   }
 
   @Test
-  public void testInsertContentWithEmptyArray() {
+  void insertContentWithEmptyArray() {
     final String className = "DataCollectionEntity";
     database.getSchema().createDocumentType(className);
 
@@ -75,7 +75,7 @@ public class InsertContentEmptyArrayTest extends TestHelper {
   }
 
   @Test
-  public void testInsertContentWithMultipleEmptyArrays() {
+  void insertContentWithMultipleEmptyArrays() {
     final String className = "TestMultipleEmptyArrays";
     database.getSchema().createDocumentType(className);
 
@@ -111,7 +111,7 @@ public class InsertContentEmptyArrayTest extends TestHelper {
   }
 
   @Test
-  public void testInsertContentWithNestedEmptyArrays() {
+  void insertContentWithNestedEmptyArrays() {
     final String className = "TestNestedEmptyArrays";
     database.getSchema().createDocumentType(className);
 
@@ -143,7 +143,7 @@ public class InsertContentEmptyArrayTest extends TestHelper {
   }
 
   @Test
-  public void testInsertContentWithEmptyArrayAsParameter() {
+  void insertContentWithEmptyArrayAsParameter() {
     final String className = "TestEmptyArrayParam";
     database.getSchema().createDocumentType(className);
 
@@ -179,7 +179,7 @@ public class InsertContentEmptyArrayTest extends TestHelper {
   }
 
   @Test
-  public void testInsertContentWithOnlyEmptyArray() {
+  void insertContentWithOnlyEmptyArray() {
     final String className = "TestOnlyEmptyArray";
     database.getSchema().createDocumentType(className);
 
@@ -200,7 +200,7 @@ public class InsertContentEmptyArrayTest extends TestHelper {
   }
 
   @Test
-  public void testInsertContentArrayOfArraysWithEmpty() {
+  void insertContentArrayOfArraysWithEmpty() {
     final String className = "TestArrayOfArrays";
     database.getSchema().createDocumentType(className);
 
@@ -243,7 +243,7 @@ public class InsertContentEmptyArrayTest extends TestHelper {
   }
 
   @Test
-  public void testInsertContentQueryAndRetrieve() {
+  void insertContentQueryAndRetrieve() {
     final String className = "TestQueryRetrieve";
     database.getSchema().createDocumentType(className);
 

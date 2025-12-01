@@ -29,10 +29,10 @@ import java.util.Set;
 /**
  * Created by luigidellaquila on 26/07/16.
  */
-public class ParallelExecStepTest {
+class ParallelExecStepTest {
 
   @Test
-  public void test() throws Exception {
+  void test() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
       final CommandContext ctx = new BasicCommandContext();
       final List<InternalExecutionPlan> subPlans = new ArrayList<>();

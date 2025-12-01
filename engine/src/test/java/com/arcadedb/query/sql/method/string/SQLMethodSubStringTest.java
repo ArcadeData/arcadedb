@@ -30,17 +30,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Michael MacFadden
  */
-public class SQLMethodSubStringTest {
+class SQLMethodSubStringTest {
 
   private SQLMethodSubString function;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     function = new SQLMethodSubString();
   }
 
   @Test
-  public void testRange() {
+  void range() {
 
     Object result = function.execute("foobar", null, null, new Object[] { 1, 3 });
     assertThat("foobar".substring(1, 3)).isEqualTo(result);
@@ -65,7 +65,7 @@ public class SQLMethodSubStringTest {
   }
 
   @Test
-  public void testFrom() {
+  void from() {
     Object result = function.execute("foobar", null, null, new Object[] { 1 });
     assertThat("foobar".substring(1)).isEqualTo(result);
 
@@ -83,7 +83,7 @@ public class SQLMethodSubStringTest {
   }
 
   @Test
-  public void testNull() {
+  void testNull() {
 
     final Object result = function.execute(null, null, null, null);
     assertThat(result).isNull();

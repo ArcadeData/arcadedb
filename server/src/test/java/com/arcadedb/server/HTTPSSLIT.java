@@ -54,7 +54,7 @@ public class HTTPSSLIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void testServerInfo() throws Exception {
+  void serverInfo() throws Exception {
     testEachServer((serverIndex) -> {
       final ContextConfiguration configuration = getServer(serverIndex).getConfiguration();
 

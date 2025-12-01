@@ -55,7 +55,7 @@ public class ServerDatabaseSqlScriptIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void executeSqlScript() {
+  void executeSqlScript() {
     for (int i = 0; i < getServerCount(); i++) {
       final Database database = getServer(i).getDatabase(getDatabaseName());
 

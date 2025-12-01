@@ -49,7 +49,7 @@ public class ListIndexByItemTest extends TestHelper {
   }
 
   @Test
-  public void testSimpleListIndexByItem() {
+  void simpleListIndexByItem() {
     // Test indexing primitive values in a list
     database.transaction(() -> {
       database.command("sql", "CREATE INDEX ON SimpleListDoc (tags BY ITEM) NOTUNIQUE");
@@ -96,7 +96,7 @@ public class ListIndexByItemTest extends TestHelper {
   }
 
   @Test
-  public void testListIndexByItemUpdate() {
+  void listIndexByItemUpdate() {
     // Test that index is updated when list items are added/removed
     database.transaction(() -> {
       database.command("sql", "CREATE INDEX ON SimpleListDoc (tags BY ITEM) NOTUNIQUE");
@@ -137,7 +137,7 @@ public class ListIndexByItemTest extends TestHelper {
   }
 
   @Test
-  public void testNestedListIndexByItem() {
+  void nestedListIndexByItem() {
     // Test indexing nested property in a list using dot notation
     // Simplified version using maps instead of embedded documents for ease of testing
     database.transaction(() -> {
@@ -177,7 +177,7 @@ public class ListIndexByItemTest extends TestHelper {
   }
 
   @Test
-  public void testListIndexByItemDelete() {
+  void listIndexByItemDelete() {
     // Test that index entries are removed when documents are deleted
     database.transaction(() -> {
       database.command("sql", "CREATE INDEX ON SimpleListDoc (tags BY ITEM) NOTUNIQUE");
@@ -212,7 +212,7 @@ public class ListIndexByItemTest extends TestHelper {
   }
 
   @Test
-  public void testEmptyListIndexByItem() {
+  void emptyListIndexByItem() {
     // Test behavior with empty lists
     database.transaction(() -> {
       database.command("sql", "CREATE INDEX ON SimpleListDoc (tags BY ITEM) NOTUNIQUE");
@@ -237,7 +237,7 @@ public class ListIndexByItemTest extends TestHelper {
   }
 
   @Test
-  public void testNullListIndexByItem() {
+  void nullListIndexByItem() {
     // Test behavior with null lists
     database.transaction(() -> {
       database.command("sql", "CREATE INDEX  ON SimpleListDoc (tags BY ITEM) NOTUNIQUE");
@@ -262,7 +262,7 @@ public class ListIndexByItemTest extends TestHelper {
   }
 
   @Test
-  public void testListIndexByItemUpdateWithEqualitySearch() {
+  void listIndexByItemUpdateWithEqualitySearch() {
     // Test that searching for old values returns no results after update
     // Uses equality operator (=) instead of CONTAINS to verify index is properly updated
     database.transaction(() -> {
@@ -325,7 +325,7 @@ public class ListIndexByItemTest extends TestHelper {
   }
 
   @Test
-  public void testSimpleListIndexByItemFullTextSearch() {
+  void simpleListIndexByItemFullTextSearch() {
     // Test indexing primitive values in a list
     database.transaction(() -> {
       database.command("sql", "CREATE INDEX ON SimpleListDoc (tags BY ITEM) FULL_TEXT");
@@ -367,7 +367,7 @@ public class ListIndexByItemTest extends TestHelper {
   }
 
   @Test
-  public void testListIndexByItemLikeSearch() {
+  void listIndexByItemLikeSearch() {
     // Test indexing primitive values in a list
     database.transaction(() -> {
       database.command("sql", "CREATE INDEX ON SimpleListDoc (tags BY ITEM) NOTUNIQUE");

@@ -26,14 +26,14 @@ import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class DropBucketStatementExecutionTest extends TestHelper {
+class DropBucketStatementExecutionTest extends TestHelper {
   @Test
-  public void testDropBucketWithExistentType() {
+  void dropBucketWithExistentType() {
     final String className = "testPlain";
     final Schema schema = database.getSchema();
     schema.createDocumentType(className);
@@ -41,12 +41,7 @@ public class DropBucketStatementExecutionTest extends TestHelper {
     assertThat(schema.getType(className)).isNotNull();
 
     for (Bucket bucket : database.getSchema().getType(className).getBuckets(false)) {
-      try {
-        database.command("sql", "drop bucket " + bucket.getName());
-        fail("");
-      } catch (CommandExecutionException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> database.command("sql", "drop bucket " + bucket.getName())).isInstanceOf(CommandExecutionException.class);
 
       database.command("sql", "alter type " + className + " bucket -" + bucket.getName());
 

@@ -34,13 +34,13 @@ import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class PageManagerStressTest {
+class PageManagerStressTest {
   private static final int    TOT       = 1_000_000;
   private static final String TYPE_NAME = "Device";
 
   @Test
   @Disabled
-  public void stressPageManagerFlush() {
+  void stressPageManagerFlush() {
     PerformanceTest.clean("low-ram");
 
     final int parallel = 2;

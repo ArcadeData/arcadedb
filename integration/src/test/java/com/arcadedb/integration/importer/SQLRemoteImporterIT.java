@@ -28,9 +28,9 @@ import java.io.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class SQLRemoteImporterIT {
+class SQLRemoteImporterIT {
   @Test
-  public void importOrientDB() {
+  void importOrientDB() {
     FileUtils.deleteRecursively(new File("./target/databases/importedFromOrientDB"));
 
     try (final Database database = new DatabaseFactory("./target/databases/importedFromOrientDB").create()) {

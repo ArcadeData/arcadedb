@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class ProfileParserTestStatementTest extends AbstractParserTest {
+class ProfileParserTestStatementTest extends AbstractParserTest {
 
   @Test
-  public void test() {
+  void test() {
     checkRightSyntax("profile select from V");
     checkRightSyntax("profile MATCH {as:v, type:V} RETURN $elements");
     checkRightSyntax("profile UPDATE V SET name = 'foo'");

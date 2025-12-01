@@ -32,11 +32,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
-public class TruncateClassStatementExecutionTest extends TestHelper {
+class TruncateClassStatementExecutionTest extends TestHelper {
 
   @SuppressWarnings("unchecked")
   @Test
-  public void testTruncateClass() {
+  void truncateClass() {
     database.begin();
 
     final Schema schema = database.getSchema();
@@ -70,7 +70,7 @@ public class TruncateClassStatementExecutionTest extends TestHelper {
 
 
   @Test
-  public void testTruncateVertexClassSubclasses() {
+  void truncateVertexClassSubclasses() {
     database.begin();
     database.command("sql", "create document type TestTruncateVertexClassSuperclass");
     database.command("sql", "create document type TestTruncateVertexClassSubclass extends TestTruncateVertexClassSuperclass");
@@ -101,7 +101,7 @@ public class TruncateClassStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testTruncateVertexClassSubclassesWithIndex() {
+  void truncateVertexClassSubclassesWithIndex() {
     database.begin();
     database.command("sql", "create document type TestTruncateVertexClassSuperclassWithIndex");
     database.command("sql", "create property TestTruncateVertexClassSuperclassWithIndex.name STRING");
@@ -119,7 +119,7 @@ public class TruncateClassStatementExecutionTest extends TestHelper {
 
   @SuppressWarnings("unchecked")
   @Test
-  public void testTruncateClassWithCommandCache() {
+  void truncateClassWithCommandCache() {
     database.begin();
 
     final Schema schema = database.getSchema();

@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class QueryAndIndexesTest extends TestHelper {
+class QueryAndIndexesTest extends TestHelper {
   private static final int TOT = 10000;
 
   @Override
@@ -57,7 +57,7 @@ public class QueryAndIndexesTest extends TestHelper {
   }
 
   @Test
-  public void testEqualsFiltering() {
+  void equalsFiltering() {
 
     database.transaction(() -> {
       final Map<String, Object> params = new HashMap<>();
@@ -86,7 +86,7 @@ public class QueryAndIndexesTest extends TestHelper {
   }
 
   @Test
-  public void testPartialMatchingFiltering() {
+  void partialMatchingFiltering() {
 
     database.transaction(() -> {
       final var params = Map.of(":name", "Jay", ":surname", "Miner123");

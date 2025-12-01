@@ -45,7 +45,7 @@ public class RedisWTest extends BaseGraphServerTest {
   private static final int TOTAL_PERSISTENT = 1_000;
 
   @Test
-  public void testRAMCommands() {
+  void ramCommands() {
     final Jedis jedis = new Jedis("localhost", DEF_PORT);
 
     // PING
@@ -126,7 +126,7 @@ public class RedisWTest extends BaseGraphServerTest {
   }
 
   @Test
-  public void testPersistentCommands() {
+  void persistentCommands() {
     final Jedis jedis = new Jedis("localhost", DEF_PORT);
 
     final Database database = getServerDatabase(0, getDatabaseName());
@@ -243,7 +243,7 @@ public class RedisWTest extends BaseGraphServerTest {
   }
 
   @Test
-  public void testCommandNotSupported() {
+  void commandNotSupported() {
     final Jedis jedis = new Jedis("localhost", DEF_PORT);
     try {
       jedis.aclList();

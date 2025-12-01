@@ -40,7 +40,7 @@ public class TypeEventsTest extends TestHelper {
   }
 
   @Test
-  public void testBeforeCreate() {
+  void beforeCreate() {
     final AtomicInteger counter = new AtomicInteger();
     final BeforeRecordCreateListener listener = record -> {
       counter.incrementAndGet();
@@ -70,7 +70,7 @@ public class TypeEventsTest extends TestHelper {
   }
 
   @Test
-  public void testAfterCreate() {
+  void afterCreate() {
     final AtomicInteger counter = new AtomicInteger();
     final AfterRecordCreateListener listener = record -> counter.incrementAndGet();
 
@@ -97,7 +97,7 @@ public class TypeEventsTest extends TestHelper {
   }
 
   @Test
-  public void testBeforeUpdate() {
+  void beforeUpdate() {
     final AtomicInteger counter = new AtomicInteger();
     final BeforeRecordUpdateListener listener = record -> {
       counter.incrementAndGet();
@@ -138,7 +138,7 @@ public class TypeEventsTest extends TestHelper {
   }
 
   @Test
-  public void testAfterUpdate() {
+  void afterUpdate() {
     final AtomicInteger counter = new AtomicInteger();
     final AfterRecordUpdateListener listener = record -> counter.incrementAndGet();
 
@@ -165,7 +165,7 @@ public class TypeEventsTest extends TestHelper {
   }
 
   @Test
-  public void testBeforeDelete() {
+  void beforeDelete() {
     final AtomicInteger counter = new AtomicInteger();
     final BeforeRecordDeleteListener listener = record -> {
       counter.incrementAndGet();
@@ -207,7 +207,7 @@ public class TypeEventsTest extends TestHelper {
   }
 
   @Test
-  public void testAfterDelete() {
+  void afterDelete() {
     final AtomicInteger counter = new AtomicInteger();
     final AfterRecordDeleteListener listener = record -> counter.incrementAndGet();
 

@@ -89,7 +89,7 @@ public class MongoDBServerTest extends BaseGraphServerTest {
   }
 
   @Test
-  public void testSimpleInsertQuery() {
+  void simpleInsertQuery() {
     assertThat(collection.countDocuments()).isEqualTo(10);
     assertThat(stripMetadata(collection.find().first())).isEqualTo(obj);
     assertThat(stripMetadata(collection.find(BsonDocument.parse("{ name: \"Jay\" } ")).first())).isEqualTo(obj);
@@ -111,7 +111,7 @@ public class MongoDBServerTest extends BaseGraphServerTest {
   }
 
   @Test
-  public void testOrderBy() {
+  void orderBy() {
     int i = 0;
     for (final MongoCursor<Document> it = collection.find(BsonDocument.parse(
             "{ $and: [ { name: { $eq: 'Jay' } }, { lastName: { $exists: true } }, { lastName: { $eq: 'Miner' } }, { lastName: { $ne: 'Miner22' } } ], $orderBy: { id: 1 } }"))

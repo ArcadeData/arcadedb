@@ -35,9 +35,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class AlterPropertyExecutionTest extends TestHelper {
+class AlterPropertyExecutionTest extends TestHelper {
   @Test
-  public void sqlAlterPropertyCustom() {
+  void sqlAlterPropertyCustom() {
     database.command("sql", "CREATE VERTEX TYPE Car");
     assertThat(database.getSchema().getType("Car").getSuperTypes().isEmpty()).isTrue();
 
@@ -79,7 +79,7 @@ public class AlterPropertyExecutionTest extends TestHelper {
   }
 
   @Test
-  public void sqlAlterPropertyDefault() {
+  void sqlAlterPropertyDefault() {
     database.command("sql", "CREATE VERTEX TYPE Vehicle");
     database.command("sql", "CREATE PROPERTY Vehicle.id STRING");
     database.command("sql", "ALTER PROPERTY Vehicle.id DEFAULT \"12345\"");
@@ -143,7 +143,7 @@ public class AlterPropertyExecutionTest extends TestHelper {
   }
 
   @Test
-  public void sqlAlterPropertyDefaultFunctions() {
+  void sqlAlterPropertyDefaultFunctions() {
     database.command("sql", "CREATE VERTEX TYPE Log");
     assertThat(database.getSchema().getType("Log").getSuperTypes().isEmpty()).isTrue();
 

@@ -26,8 +26,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.sql.SQLException;
-
 import static org.assertj.core.api.Assertions.assertThat;
 
 class TomcatConnectionPoolPostgresWJdbcIT extends BaseGraphServerTest {
@@ -85,7 +83,7 @@ class TomcatConnectionPoolPostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void testConnectionFromPool() throws SQLException {
+  void connectionFromPool() throws Exception {
 
     try (var conn = datasource.getConnection()) {
       conn.setAutoCommit(false);

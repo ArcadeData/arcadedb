@@ -29,17 +29,17 @@ import java.time.Duration;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class SQLFunctionDurationTest {
+class SQLFunctionDurationTest {
 
   private SQLFunctionDuration function;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     function = new SQLFunctionDuration();
   }
 
   @Test
-  public void testDurationWithValidParameters() throws Exception {
+  void durationWithValidParameters() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
       db.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
       db.command("sql", "alter database `arcadedb.dateImplementation` `java.time.LocalDate`");
@@ -57,7 +57,7 @@ public class SQLFunctionDurationTest {
   }
 
   @Test
-  public void testDurationWithInvalidAmount() {
+  void durationWithInvalidAmount() {
 
     assertThatThrownBy(() -> function.execute(null, null, null, new Object[] { "invalid", "SECONDS" }, null)).isInstanceOf(
         IllegalArgumentException.class).hasMessageContaining("invalid");
@@ -65,13 +65,13 @@ public class SQLFunctionDurationTest {
   }
 
   @Test
-  public void testDurationWithInvalidTimeUnit() {
+  void durationWithInvalidTimeUnit() {
     assertThatThrownBy(() -> function.execute(null, null, null, new Object[] { 5, "INVALID_UNIT" }, null)).isInstanceOf(
         SerializationException.class).hasMessageContaining("Unsupported datetime precision 'INVALID_UNIT'");
   }
 
   @Test
-  public void testDurationWithIncorrectNumberOfParameters() {
+  void durationWithIncorrectNumberOfParameters() {
     assertThatThrownBy(() -> function.execute(null, null, null, new Object[] { 5 }, null)).isInstanceOf(
         IllegalArgumentException.class).hasMessageContaining("duration() function expected 2 parameters: amount and time-unit");
   }

@@ -29,8 +29,7 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.*;
 
 public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();
@@ -70,12 +69,7 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
 
   @Test
   public void testReplication() throws Exception {
-    try {
-      super.testReplication();
-      fail("Replication is supposed to fail without enough online servers");
-    } catch (final QuorumNotReachedException e) {
-      // CATCH IT
-    }
+    assertThatThrownBy(() -> super.testReplication()).isInstanceOf(QuorumNotReachedException.class);
   }
 
   protected int[] getServerToCheck() {

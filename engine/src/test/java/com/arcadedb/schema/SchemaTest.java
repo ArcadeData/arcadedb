@@ -28,10 +28,10 @@ import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class SchemaTest extends TestHelper {
+class SchemaTest extends TestHelper {
 
   @Test
-  public void tesSchemaSettings() {
+  void tesSchemaSettings() {
     database.transaction(() -> {
       final ZoneId zoneId = database.getSchema().getZoneId();
       assertThat(zoneId).isNotNull();
@@ -61,7 +61,7 @@ public class SchemaTest extends TestHelper {
   }
 
   @Test
-  public void testRenameDocument() {
+  void renameDocument() {
     final DocumentType type = database.getSchema().createDocumentType("Doc1");
     type.createProperty("id", Type.STRING);
     type.createProperty("total", Type.DOUBLE);
@@ -85,7 +85,7 @@ public class SchemaTest extends TestHelper {
   }
 
   @Test
-  public void testRenameVertexAndEdges() {
+  void renameVertexAndEdges() {
     final VertexType type = database.getSchema().createVertexType("V1");
     type.createProperty("id", Type.STRING);
     type.createProperty("total", Type.DOUBLE);
@@ -121,7 +121,7 @@ public class SchemaTest extends TestHelper {
   }
 
   @Test
-  public void testAliases() {
+  void aliases() {
     final VertexType type = database.getSchema().createVertexType("V1");
     type.createProperty("id", Type.STRING);
     type.createProperty("total", Type.DOUBLE);
@@ -172,7 +172,7 @@ public class SchemaTest extends TestHelper {
   }
 
   @Test
-  public void testAliasesViaSQl() {
+  void aliasesViaSQl() {
     final VertexType type = database.getSchema().createVertexType("V1");
     type.createProperty("id", Type.STRING);
     type.createProperty("total", Type.DOUBLE);

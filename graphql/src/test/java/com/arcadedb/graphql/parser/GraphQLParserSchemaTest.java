@@ -21,11 +21,11 @@ package com.arcadedb.graphql.parser;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class GraphQLParserSchemaTest {
+class GraphQLParserSchemaTest {
   @Test
-  public void testTypes() throws ParseException {
+  void types() throws Exception {
 
     final Document ast = GraphQLParser.parse("""
         type Query {
@@ -49,9 +49,8 @@ public class GraphQLParserSchemaTest {
   }
 
   @Test
-  public void errorInvalidCharacters() {
-    try {
-      final Document ast = GraphQLParser.parse("""
+  void errorInvalidCharacters() {
+    assertThatThrownBy(() -> final Document ast = GraphQLParser.parse("""
           type Query {
             bookById(id: String): Book
             bookByName(name: String): Book { id name pageCount authors }
@@ -69,17 +68,12 @@ public class GraphQLParserSchemaTest {
             firstName: String
             lastName: String
             wrote: [Book] @relationship(type: "IS_AUTHOR_OF", direction: OUT)
-          } dsfjsd fjsdkjf sdk""");
-      fail(ast.treeToString(""));
-    } catch (final ParseException e) {
-      // EXPECTED
-    }
+          } dsfjsd fjsdkjf sdk""")).isInstanceOf(ParseException.class);
   }
 
   @Test
-  public void errorInvalidCharactersWithDirective() {
-    try {
-      final Document ast = GraphQLParser.parse("""
+  void errorInvalidCharactersWithDirective() {
+    assertThatThrownBy(() -> final Document ast = GraphQLParser.parse("""
           type Query {
             bookById(id: String): Book
             bookByName(name: String): Book @sql(statement: "select from Book where name = :name", a = 3 ) { id name pageCount authors }
@@ -97,10 +91,6 @@ public class GraphQLParserSchemaTest {
             firstName: String
             lastName: String
             wrote: [Book] @relationship(type: "IS_AUTHOR_OF", direction: OUT)
-          } dsfjsd fjsdkjf sdk""");
-      fail(ast.treeToString(""));
-    } catch (final ParseException e) {
-      // EXPECTED
-    }
+          } dsfjsd fjsdkjf sdk""")).isInstanceOf(ParseException.class);
   }
 }

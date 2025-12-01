@@ -34,7 +34,6 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
-import java.io.IOException;
 import java.net.URL;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
@@ -45,13 +44,13 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class Neo4jImporterIT {
+class Neo4jImporterIT {
   private final static String DATABASE_PATH = "target/databases/neo4j-imported";
 
   @Test
-  public void testImportNeo4jDirectOK() throws IOException {
+  void importNeo4jDirectOK() throws Exception {
     final File databaseDirectory = new File(DATABASE_PATH);
 
     try {
@@ -102,19 +101,15 @@ public class Neo4jImporterIT {
   }
 
   @Test
-  public void testImportNoFile() throws IOException {
+  void importNoFile() throws Exception {
     final URL inputFile = Neo4jImporterIT.class.getClassLoader().getResource("neo4j-export-mini.jsonl");
     final Neo4jImporter importer = new Neo4jImporter(("-i " + inputFile.getFile() + "2 -d " + DATABASE_PATH + " -o").split(" "));
-    try {
-      importer.run();
-      fail("Expected File Not Found Exception");
-    } catch (final IllegalArgumentException e) {
-    }
+    assertThatThrownBy(() -> importer.run()).isInstanceOf(IllegalArgumentException.class);
     assertThat(importer.isError()).isTrue();
   }
 
   @Test
-  public void testConcurrentCompact() throws IOException, InterruptedException {
+  void concurrentCompact() throws Exception {
     final File databaseDirectory = new File(DATABASE_PATH);
 
     final int TOTAL = 100_000;
@@ -221,7 +216,7 @@ public class Neo4jImporterIT {
   }
 
   @Test
-  public void testImportNeo4jMultiTypes() throws IOException {
+  void importNeo4jMultiTypes() throws Exception {
     final File databaseDirectory = new File(DATABASE_PATH);
 
     try {

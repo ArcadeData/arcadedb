@@ -35,17 +35,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Michael MacFadden
  */
-public class SQLMethodAsSetTest {
+class SQLMethodAsSetTest {
 
   private SQLMethod function;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     function = new SQLMethodAsSet();
   }
 
   @Test
-  public void testSet() {
+  void set() {
     // The expected behavior is to return the set itself.
     final HashSet<Object> aSet = new HashSet<Object>();
     aSet.add(1);
@@ -55,14 +55,14 @@ public class SQLMethodAsSetTest {
   }
 
   @Test
-  public void testNull() {
+  void testNull() {
     // The expected behavior is to return an empty set.
     final Object result = function.execute(null, null, null, null);
     assertThat(new HashSet<Object>()).isEqualTo(result);
   }
 
   @Test
-  public void testCollection() {
+  void collection() {
     // The expected behavior is to return a set with all of the elements
     // of the collection in it.
     final ArrayList<Object> aCollection = new ArrayList<Object>();
@@ -77,7 +77,7 @@ public class SQLMethodAsSetTest {
   }
 
   @Test
-  public void testIterable() {
+  void iterable() {
     // The expected behavior is to return a set with all of the elements
     // of the iterable in it.
     final ArrayList<Object> values = new ArrayList<Object>();
@@ -95,7 +95,7 @@ public class SQLMethodAsSetTest {
   }
 
   @Test
-  public void testIterator() {
+  void iterator() {
     // The expected behavior is to return a set with all of the elements
     // of the iterator in it.
     final ArrayList<Object> values = new ArrayList<Object>();
@@ -113,7 +113,7 @@ public class SQLMethodAsSetTest {
   }
 
   @Test
-  public void testDocument() {
+  void document() {
     // The expected behavior is to return a set with only the single
     // ODocument in it.
     final MutableDocument doc = new MutableDocument(null, new LocalVertexType(null, "Test"), null) {
@@ -131,7 +131,7 @@ public class SQLMethodAsSetTest {
   }
 
   @Test
-  public void testOtherSingleValue() {
+  void otherSingleValue() {
     // The expected behavior is to return a set with only the single
     // element in it.
 

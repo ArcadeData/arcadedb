@@ -26,11 +26,11 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class TxGraphTest extends TestHelper {
+class TxGraphTest extends TestHelper {
   protected static final String DB_PATH = "target/databases/graph";
 
   @Test
-  public void testEdgeChunkIsLoadedFromCurrentTx() {
+  void edgeChunkIsLoadedFromCurrentTx() {
     database.setReadYourWrites(false);
     database.getSchema().createVertexType("Supplier");
     database.getSchema().createVertexType("Good");

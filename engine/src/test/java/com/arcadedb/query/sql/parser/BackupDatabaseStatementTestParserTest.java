@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class BackupDatabaseStatementTestParserTest extends AbstractParserTest {
+class BackupDatabaseStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("BACKUP DATABASE http://www.foo.bar");
     checkRightSyntax("backup database http://www.foo.bar");
     checkRightSyntax("BACKUP DATABASE https://www.foo.bar");

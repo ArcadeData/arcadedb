@@ -34,8 +34,7 @@ import org.junit.jupiter.api.TestInstance;
 
 import java.util.*;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Regression tests that exercise ONLY the gRPC Remote database client.
@@ -53,7 +52,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Disabled
-public class RemoteGrpcDatabaseRegressionTest {
+class RemoteGrpcDatabaseRegressionTest {
 
   // -------- Config (env overrides supported) --------
 
@@ -165,9 +164,9 @@ public class RemoteGrpcDatabaseRegressionTest {
     InsertSummary s1 = grpc.insertBulkAsListOfMaps(opts, rows, 60_000);
     grpc.commit();
 
-    assertEquals(3, s1.getInserted(), "first insert should insert 3");
-    assertEquals(0, s1.getUpdated(), "first insert should not update");
-    assertEquals(3, countAll(TYPE), "row count after first insert");
+    assertThat(s1.getInserted()).as("first insert should insert 3").isEqualTo(3);
+    assertThat(s1.getUpdated()).as("first insert should not update").isEqualTo(0);
+    assertThat(countAll(TYPE)).as("row count after first insert").isEqualTo(3);
 
     // Re-insert with one changed record (r2) to force an update-on-conflict
     rows.set(1, row("r2", "beta-UPDATED", 22));
@@ -176,16 +175,16 @@ public class RemoteGrpcDatabaseRegressionTest {
     InsertSummary s2 = grpc.insertBulkAsListOfMaps(opts, rows, 60_000);
     grpc.commit();
 
-    assertEquals(0, s2.getInserted(), "second insert should not insert new rows");
-    assertTrue(s2.getUpdated() >= 1, "should update at least 1 row on conflict");
-    assertEquals(3, countAll(TYPE), "row count unchanged after upsert");
+    assertThat(s2.getInserted()).as("second insert should not insert new rows").isEqualTo(0);
+    assertThat(s2.getUpdated() >= 1).as("should update at least 1 row on conflict").isTrue();
+    assertThat(countAll(TYPE)).as("row count unchanged after upsert").isEqualTo(3);
 
     // Verify the updated record
     try (ResultSet rs = grpc.query("sql", "SELECT from `" + TYPE + "` WHERE id = :id", Map.of("id", "r2"))) {
-      assertTrue(rs.hasNext(), "record r2 must exist");
+      assertThat(rs.hasNext()).as("record r2 must exist").isTrue();
       Result r = rs.next();
-      assertEquals("beta-UPDATED", r.<String>getProperty("name"));
-      assertEquals(22, r.<Number>getProperty("n").intValue());
+      assertThat(r.<String>getProperty("name")).isEqualTo("beta-UPDATED");
+      assertThat(r.<Number>getProperty("n").intValue()).isEqualTo(22);
     }
   }
 
@@ -197,13 +196,13 @@ public class RemoteGrpcDatabaseRegressionTest {
     grpc.command("sql", "INSERT INTO `" + TYPE + "` set id = :id, name = :name, n = :n", Map.of("id", "x1", "name", "one", "n", 1));
     grpc.command("sql", "INSERT INTO `" + TYPE + "` set id = :id, name = :name, n = :n", Map.of("id", "x2", "name", "two", "n", 2));
 
-    assertEquals(2, countAll(TYPE), "two rows inserted");
+    assertThat(countAll(TYPE)).as("two rows inserted").isEqualTo(2);
 
     // Read
     try (ResultSet rs = grpc.query("sql", "SELECT from `" + TYPE + "` WHERE id = :id", Map.of("id", "x1"))) {
-      assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       Result r = rs.next();
-      assertEquals("one", r.<String>getProperty("name"));
+      assertThat(r.<String>getProperty("name")).isEqualTo("one");
     }
 
     // Update
@@ -214,13 +213,13 @@ public class RemoteGrpcDatabaseRegressionTest {
 
     try (ResultSet rs = grpc.query("sql", "SELECT from `" + TYPE + "` WHERE id = :id", Map.of("id", "x1"))) {
       Result r = rs.next();
-      assertEquals("ONE!", r.<String>getProperty("name"));
-      assertEquals(11, r.<Number>getProperty("n").intValue());
+      assertThat(r.<String>getProperty("name")).isEqualTo("ONE!");
+      assertThat(r.<Number>getProperty("n").intValue()).isEqualTo(11);
     }
 
     // Delete
     grpc.command("sql", "DELETE FROM `" + TYPE + "` WHERE id = :id", Map.of("id", "x2"));
-    assertEquals(1, countAll(TYPE), "one row remains after delete");
+    assertThat(countAll(TYPE)).as("one row remains after delete").isEqualTo(1);
   }
 
   @Test
@@ -234,14 +233,14 @@ public class RemoteGrpcDatabaseRegressionTest {
     grpc.command("sql", "INSERT INTO `" + TYPE + "` set id = :id, name = :name, n = :n",
         Map.of("id", "tx1", "name", "temp", "n", 99));
     grpc.rollback();
-    assertEquals(before, countAll(TYPE), "rollback must revert insert");
+    assertThat(countAll(TYPE)).as("rollback must revert insert").isEqualTo(before);
 
     // Commit path
     grpc.begin();
     grpc.command("sql", "INSERT INTO `" + TYPE + "` set id = :id, name = :name, n = :n",
         Map.of("id", "tx2", "name", "persisted", "n", 100));
     grpc.commit();
-    assertEquals(before + 1, countAll(TYPE), "commit must persist insert");
+    assertThat(countAll(TYPE)).as("commit must persist insert").isEqualTo(before + 1);
   }
 
   @Test
@@ -251,25 +250,25 @@ public class RemoteGrpcDatabaseRegressionTest {
 
     try (ResultSet rs = grpc.query("sql", "SELECT FROM schema:types WHERE name = :name", Map.of("name", TYPE))) {
 
-      assertTrue(rs.hasNext(), "schema:types should contain our test type");
+      assertThat(rs.hasNext()).as("schema:types should contain our test type").isTrue();
 
       Result r = rs.next();
 
       Object propsObj = r.getProperty("properties");
 
-      assertTrue(propsObj instanceof List<?>, "properties must be a List");
+      assertThat(propsObj).as("properties must be a List").isInstanceOf(List.class);
 
       List<?> props = (List<?>) propsObj;
-      assertTrue(!props.isEmpty(), "properties list should not be empty");
+      assertThat(props.isEmpty()).as("properties list should not be empty").isFalse();
 
       Object first = props.get(0);
-      assertTrue(first instanceof Map<?, ?>, "each property is expected to be a Map");
+      assertThat(first).as("each property is expected to be a Map").isInstanceOf(Map.class);
 
       Map<?, ?> p0 = (Map<?, ?>) first;
 
       // Spot-check expected keys
-      assertTrue(p0.containsKey("name"), "property map must have 'name'");
-      assertTrue(p0.containsKey("type"), "property map must have 'type'");
+      assertThat(p0.containsKey("name")).as("property map must have 'name'").isTrue();
+      assertThat(p0.containsKey("type")).as("property map must have 'type'").isTrue();
     }
   }
 
@@ -290,21 +289,21 @@ public class RemoteGrpcDatabaseRegressionTest {
         Map.of("id", recId, "name", "with-audit", "n", 1, "audit", audit));
 
     try (ResultSet rs = grpc.query("sql", "SELECT FROM `" + TYPE + "` WHERE id = :id", Map.of("id", recId))) {
-      assertTrue(rs.hasNext(), "inserted record should be queriable");
+      assertThat(rs.hasNext()).as("inserted record should be queriable").isTrue();
       Result r = rs.next();
       Object auditObj = r.getProperty("_auditMetadata");
-      assertTrue(auditObj instanceof Map<?, ?>, "_auditMetadata must be a Map");
+      assertThat(auditObj).as("_auditMetadata must be a Map").isInstanceOf(Map.class);
       @SuppressWarnings("unchecked")
       Map<String, Object> m = (Map<String, Object>) auditObj;
 
       Object cd = m.get("createdDate");
       Object md = m.get("lastModifiedDate");
-      assertTrue(cd instanceof Number, "createdDate must be numeric");
-      assertTrue(md instanceof Number, "lastModifiedDate must be numeric");
-      assertEquals(1720225210408L, ((Number) cd).longValue(), "createdDate must be precise long");
-      assertEquals(1741795459718L, ((Number) md).longValue(), "lastModifiedDate must be precise long");
-      assertEquals("service-account-empower-platform-admin", m.get("createdByUser"));
-      assertEquals("service-account-empower-platform-admin", m.get("lastModifiedByUser"));
+      assertThat(cd).as("createdDate must be numeric").isInstanceOf(Number.class);
+      assertThat(md).as("lastModifiedDate must be numeric").isInstanceOf(Number.class);
+      assertThat(((Number) cd).longValue()).as("createdDate must be precise long").isEqualTo(1720225210408L);
+      assertThat(((Number) md).longValue()).as("lastModifiedDate must be precise long").isEqualTo(1741795459718L);
+      assertThat(m.get("createdByUser")).isEqualTo("service-account-empower-platform-admin");
+      assertThat(m.get("lastModifiedByUser")).isEqualTo("service-account-empower-platform-admin");
     }
   }
 }

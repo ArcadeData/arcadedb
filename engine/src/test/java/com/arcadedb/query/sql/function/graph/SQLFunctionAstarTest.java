@@ -34,9 +34,9 @@ import java.util.stream.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /*
- * @author Saeed Tabrizi (saeed a_t  nowcando.com)
- */
-public class SQLFunctionAstarTest {
+* @author Saeed Tabrizi (saeed a_t  nowcando.com)
+*/
+class SQLFunctionAstarTest {
   private static int dbCounter = 0;
 
   private MutableVertex    v0;
@@ -180,7 +180,7 @@ public class SQLFunctionAstarTest {
   }
 
   @Test
-  public void test1Execute() throws Exception {
+  void test1Execute() throws Exception {
     TestHelper.executeInNewDatabase("test1Execute", (graph) -> {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();
@@ -205,7 +205,7 @@ public class SQLFunctionAstarTest {
   }
 
   @Test
-  public void test2Execute() throws Exception {
+  void test2Execute() throws Exception {
     TestHelper.executeInNewDatabase("test1Execute", (graph) -> {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();
@@ -228,7 +228,7 @@ public class SQLFunctionAstarTest {
   }
 
   @Test
-  public void test3Execute() throws Exception {
+  void test3Execute() throws Exception {
     TestHelper.executeInNewDatabase("test1Execute", (graph) -> {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();
@@ -253,7 +253,7 @@ public class SQLFunctionAstarTest {
   }
 
   @Test
-  public void test4Execute() throws Exception {
+  void test4Execute() throws Exception {
     TestHelper.executeInNewDatabase("test1Execute", (graph) -> {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();
@@ -278,7 +278,7 @@ public class SQLFunctionAstarTest {
   }
 
   @Test
-  public void test5Execute() throws Exception {
+  void test5Execute() throws Exception {
     TestHelper.executeInNewDatabase("test1Execute", (graph) -> {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();
@@ -303,7 +303,7 @@ public class SQLFunctionAstarTest {
   }
 
   @Test
-  public void test6Execute() throws Exception {
+  void test6Execute() throws Exception {
     TestHelper.executeInNewDatabase("test1Execute", (graph) -> {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();
@@ -331,7 +331,7 @@ public class SQLFunctionAstarTest {
   }
 
   @Test
-  public void test7Execute() throws Exception {
+  void test7Execute() throws Exception {
     TestHelper.executeInNewDatabase("test1Execute", (graph) -> {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();
@@ -360,7 +360,7 @@ public class SQLFunctionAstarTest {
   }
 
   @Test
-  public void test8Execute() throws Exception {
+  void test8Execute() throws Exception {
     TestHelper.executeInNewDatabase("test1Execute", (graph) -> {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();
@@ -389,7 +389,7 @@ public class SQLFunctionAstarTest {
   }
 
   @Test
-  public void test9Execute() throws Exception {
+  void test9Execute() throws Exception {
     TestHelper.executeInNewDatabase("test1Execute", (graph) -> {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();
@@ -416,7 +416,7 @@ public class SQLFunctionAstarTest {
   }
 
   @Test
-  public void testSql() throws Exception {
+  void sql() throws Exception {
     TestHelper.executeInNewDatabase("test1Execute", (graph) -> {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();

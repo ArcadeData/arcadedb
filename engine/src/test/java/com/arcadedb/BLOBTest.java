@@ -38,7 +38,7 @@ public class BLOBTest extends TestHelper {
   }
 
   @Test
-  public void testWriteAndRead() {
+  void writeAndRead() {
     database.transaction(() -> {
       final MutableDocument blob = database.newDocument("Blob");
       blob.set("binary", "This is a test".getBytes());

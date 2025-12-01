@@ -32,9 +32,9 @@ import java.util.Iterator;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class DictionaryTest extends TestHelper {
+class DictionaryTest extends TestHelper {
   @Test
-  public void updateName() {
+  void updateName() {
     database.transaction(() -> {
       assertThat(database.getSchema().existsType("V")).isFalse();
 
@@ -104,7 +104,7 @@ public class DictionaryTest extends TestHelper {
   }
 
   @Test
-  public void namesClash() {
+  void namesClash() {
     database.getSchema().getOrCreateVertexType("Babylonia");
 
     for (int i = 0; i < 10; i++) {
@@ -133,7 +133,7 @@ public class DictionaryTest extends TestHelper {
   }
 
   @Test
-  public void namesClashPropertyCreatedOnSchemaBefore() {
+  void namesClashPropertyCreatedOnSchemaBefore() {
     final VertexType babylonia = database.getSchema().getOrCreateVertexType("Babylonia");
 
     for (int i = 0; i < 10; i++) {
@@ -166,7 +166,7 @@ public class DictionaryTest extends TestHelper {
   }
 
   @Test
-  public void namesClashPropertyCreatedOnSchemaSameTx() {
+  void namesClashPropertyCreatedOnSchemaSameTx() {
     final VertexType babylonia = database.getSchema().getOrCreateVertexType("Babylonia");
 
     for (int i = 0; i < 10; i++) {
@@ -199,7 +199,7 @@ public class DictionaryTest extends TestHelper {
   }
 
   @Test
-  public void namesClashPropertyCreatedOnSchemaSubTx() {
+  void namesClashPropertyCreatedOnSchemaSubTx() {
     final VertexType babylonia = database.getSchema().getOrCreateVertexType("Babylonia");
 
     for (int i = 0; i < 10; i++) {

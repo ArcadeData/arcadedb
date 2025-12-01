@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.InstanceOfAssertFactories.LIST;
 
-public class FunctionTest extends TestHelper {
+class FunctionTest extends TestHelper {
   private static final int TOT = 10000;
 
   @Override
@@ -52,7 +52,7 @@ public class FunctionTest extends TestHelper {
   }
 
   @Test
-  public void testCountFunction() {
+  void countFunction() {
     database.transaction(() -> {
       final Map<String, Object> params = new HashMap<>();
       params.put(":id", 10);
@@ -71,7 +71,7 @@ public class FunctionTest extends TestHelper {
   }
 
   @Test
-  public void testIfEvalFunction() {
+  void ifEvalFunction() {
     database.transaction(() -> {
       final ResultSet rs = database.command("SQL", "SELECT id, if( eval( 'id > 3' ), 'high', 'low') as value FROM V");
 
@@ -91,7 +91,7 @@ public class FunctionTest extends TestHelper {
   }
 
   @Test
-  public void testIfFunction() {
+  void ifFunction() {
     database.transaction(() -> {
       final ResultSet rs = database.command("SQL", "SELECT id, if( ( id > 3 ), 'high', 'low') as value FROM V");
 
@@ -111,7 +111,7 @@ public class FunctionTest extends TestHelper {
   }
 
   @Test
-  public void testAvgFunction() {
+  void avgFunction() {
     database.transaction(() -> {
       final Map<String, Object> params = new HashMap<>();
       params.put(":id", 10);
@@ -130,7 +130,7 @@ public class FunctionTest extends TestHelper {
   }
 
   @Test
-  public void testMaxFunction() {
+  void maxFunction() {
     database.transaction(() -> {
       final Map<String, Object> params = new HashMap<>();
       final ResultSet rs = database.command("SQL", "SELECT max(id) as max FROM V", params);
@@ -148,7 +148,7 @@ public class FunctionTest extends TestHelper {
   }
 
   @Test
-  public void testMinFunction() {
+  void minFunction() {
     database.transaction(() -> {
       final Map<String, Object> params = new HashMap<>();
       final ResultSet rs = database.command("SQL", "SELECT min(id) as min FROM V", params);
@@ -166,7 +166,7 @@ public class FunctionTest extends TestHelper {
   }
 
   @Test
-  public void testAllFunctionsHaveSyntax() {
+  void allFunctionsHaveSyntax() {
     final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
     for (final String name : sqlEngine.getFunctionFactory().getFunctionNames()) {
       assertThat(sqlEngine.getFunction(name).getName()).isNotNull();
@@ -178,7 +178,7 @@ public class FunctionTest extends TestHelper {
    * Issue https://github.com/ArcadeData/arcadedb/issues/1037
    */
   @Test
-  public void testTypeOnAggregations() {
+  void typeOnAggregations() {
     database.transaction(() -> {
       database.command("sqlscript",
           """
@@ -204,7 +204,7 @@ public class FunctionTest extends TestHelper {
   }
 
   @Test
-  public void testFunctionDate() {
+  void functionDate() {
     database.transaction(() -> {
       ResultSet rs = database.query("SQL", "SELECT date(\"2023-03-04\",\"yyyy-MM-dd\") as date");
       assertThat((Object) rs.nextIfAvailable().getProperty("date")).isNotNull();

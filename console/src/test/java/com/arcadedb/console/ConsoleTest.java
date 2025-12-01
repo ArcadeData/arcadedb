@@ -43,15 +43,15 @@ import java.text.*;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class ConsoleTest {
+class ConsoleTest {
   private static final String  DB_NAME = "console";
   private static       Console console;
   private static       String  absoluteDBPath;
 
   @BeforeEach
-  public void populate() throws IOException {
+  void populate() throws IOException {
     File dbFile = new File("./target/databases");
     absoluteDBPath = dbFile.getAbsolutePath().replace('\\', '/');
     FileUtils.deleteRecursively(dbFile);
@@ -61,7 +61,7 @@ public class ConsoleTest {
   }
 
   @AfterEach
-  public void drop() throws IOException {
+  void drop() throws IOException {
     console.close();
     TestServerHelper.checkActiveDatabases();
     assertThat(console.parse("drop database " + DB_NAME + "; close", false)).isTrue();
@@ -69,71 +69,66 @@ public class ConsoleTest {
   }
 
   @Test
-  @DisabledOnOs({ OS.WINDOWS })
-  public void testDropCreateWithLocalUrl() throws IOException {
+  @DisabledOnOs({OS.WINDOWS})
+  void dropCreateWithLocalUrl() throws Exception {
     String localUrl = "local:/" + absoluteDBPath + "/" + DB_NAME;
     assertThat(console.parse("drop database " + localUrl + "; close", false)).isTrue();
     assertThat(console.parse("create database " + localUrl + "; close", false)).isTrue();
   }
 
   @Test
-  public void testNull() throws IOException {
+  void testNull() throws Exception {
     assertThat(console.parse(null)).isTrue();
   }
 
   @Test
-  public void testEmpty() throws IOException {
+  void empty() throws Exception {
     assertThat(console.parse("")).isTrue();
   }
 
   @Test
-  public void testEmpty2() throws IOException {
+  void empty2() throws Exception {
     assertThat(console.parse(" ")).isTrue();
   }
 
   @Test
-  public void testEmpty3() throws IOException {
+  void empty3() throws Exception {
     assertThat(console.parse(";")).isTrue();
   }
 
   @Test
-  public void testComment() throws IOException {
+  void comment() throws Exception {
     assertThat(console.parse("-- This is a comment;")).isTrue();
   }
 
   @Test
-  public void testListDatabases() throws IOException {
+  void listDatabases() throws Exception {
     assertThat(console.parse("list databases;")).isTrue();
   }
 
   @Test
-  public void testConnect() throws IOException {
+  void connect() throws Exception {
     assertThat(console.parse("connect " + DB_NAME + ";info types")).isTrue();
   }
 
   @Test
-  @DisabledOnOs({ OS.WINDOWS })
-  public void testLocalConnect() throws IOException {
+  @DisabledOnOs({OS.WINDOWS})
+  void localConnect() throws Exception {
     assertThat(console.parse("connect local:/" + absoluteDBPath + "/" + DB_NAME + ";info types", false)).isTrue();
   }
 
   @Test
-  public void testSetVerbose() throws IOException {
-    try {
-      console.parse("set verbose = 2; close; connect " + DB_NAME + "XX");
-      fail("");
-    } catch (final DatabaseOperationException e) {
-      // EXPECTED
-    }
+  void setVerbose() throws Exception {
+    assertThatThrownBy(() -> console.parse("set verbose = 2; close; connect " + DB_NAME + "XX")).isInstanceOf(DatabaseOperationException.class);
   }
 
   @Test
-  public void testSetLanguage() throws IOException {
+  void setLanguage() throws Exception {
     console.parse("connect " + DB_NAME + ";set language = sql; select 1");
   }
 
   @Test
-  public void testCreateClass() throws IOException {
+  void createClass() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
     assertThat(console.parse("create document type Person")).isTrue();
 
@@ -148,7 +143,7 @@ public class ConsoleTest {
   }
 
   @Test
-  public void testInsertAndSelectRecord() throws IOException {
+  void insertAndSelectRecord() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
     assertThat(console.parse("create document type Person")).isTrue();
     assertThat(console.parse("insert into Person set name = 'Jay', lastname='Miner'")).isTrue();
@@ -160,7 +155,7 @@ public class ConsoleTest {
   }
 
   @Test
-  public void testInsertAndRollback() throws IOException {
+  void insertAndRollback() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
     assertThat(console.parse("begin")).isTrue();
     assertThat(console.parse("create document type Person")).isTrue();
@@ -174,7 +169,7 @@ public class ConsoleTest {
   }
 
   @Test
-  public void testHelp() throws IOException {
+  void help() throws Exception {
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(output -> buffer.append(output));
     assertThat(console.parse("?")).isTrue();
@@ -182,18 +177,13 @@ public class ConsoleTest {
   }
 
   @Test
-  public void testInfoError() throws IOException {
+  void infoError() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
-    try {
-      assertThat(console.parse("info blablabla")).isTrue();
-      fail("");
-    } catch (final ConsoleException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> assertThat(console.parse("info blablabla")).isTrue()).isInstanceOf(ConsoleException.class);
   }
 
   @Test
-  public void testAllRecordTypes() throws IOException {
+  void allRecordTypes() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
     assertThat(console.parse("create document type D")).isTrue();
     assertThat(console.parse("create vertex type V")).isTrue();
@@ -219,7 +209,7 @@ public class ConsoleTest {
    * Issue https://github.com/ArcadeData/arcadedb/issues/691
    */
   @Test
-  public void testNotStringProperties() throws IOException {
+  void notStringProperties() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
     assertThat(console.parse("CREATE VERTEX TYPE v")).isTrue();
     assertThat(console.parse("CREATE PROPERTY v.s STRING")).isTrue();
@@ -236,25 +226,15 @@ public class ConsoleTest {
   }
 
   @Test
-  public void testUserMgmtLocalError() throws IOException {
+  void userMgmtLocalError() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
-    try {
-      assertThat(console.parse("create user albert identified by einstein")).isTrue();
-      fail("local connection allowed user creation");
-    } catch (final Exception e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> assertThat(console.parse("create user albert identified by einstein")).isTrue()).isInstanceOf(Exception.class);
 
-    try {
-      assertThat(console.parse("drop user jack")).isTrue();
-      fail("local connection allowed user deletion");
-    } catch (final Exception e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> assertThat(console.parse("drop user jack")).isTrue()).isInstanceOf(Exception.class);
   }
 
   @Test
-  public void testImportNeo4jConsoleOK() throws IOException {
+  void importNeo4jConsoleOK() throws Exception {
     final String DATABASE_PATH = "testNeo4j";
 
     FileUtils.deleteRecursively(new File("databases/" + DATABASE_PATH));
@@ -296,7 +276,7 @@ public class ConsoleTest {
   }
 
   @Test
-  public void testImportCSVConsoleOK() throws IOException {
+  void importCSVConsoleOK() throws Exception {
     final String DATABASE_PATH = "testCSV";
 
     FileUtils.deleteRecursively(new File("databases/" + DATABASE_PATH));
@@ -339,7 +319,7 @@ public class ConsoleTest {
   }
 
   @Test
-  public void testNullValues() throws IOException {
+  void nullValues() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
     assertThat(console.parse("create document type Person")).isTrue();
     assertThat(console.parse("insert into Person set name = 'Jay', lastname='Miner', nothing = null")).isTrue();
@@ -369,7 +349,7 @@ public class ConsoleTest {
    * Issue https://github.com/ArcadeData/arcadedb/issues/726
    */
   @Test
-  public void testProjectionOrder() throws IOException {
+  void projectionOrder() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
     assertThat(console.parse("create document type Order")).isTrue();
     assertThat(console.parse(
@@ -398,7 +378,7 @@ public class ConsoleTest {
   }
 
   @Test
-  public void testAsyncMode() throws IOException {
+  void asyncMode() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
     assertThat(console.parse("create document type D")).isTrue();
     assertThat(console.parse("create vertex type V")).isTrue();
@@ -421,7 +401,7 @@ public class ConsoleTest {
   }
 
   @Test
-  public void testBatchMode() throws IOException {
+  void batchMode() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
     assertThat(console.parse("create document type D")).isTrue();
     assertThat(console.parse("create vertex type V")).isTrue();
@@ -444,7 +424,7 @@ public class ConsoleTest {
   }
 
   @Test
-  public void testLoad() throws IOException {
+  void load() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
     assertThat(console.parse("load " + new File("src/test/resources/console-batch.sql").toString().replace('\\', '/'))).isTrue();
 
@@ -460,7 +440,7 @@ public class ConsoleTest {
   }
 
   @Test
-  public void testCustomPropertyInSchema() throws IOException {
+  void customPropertyInSchema() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
     assertThat(console.parse("CREATE DOCUMENT TYPE doc;")).isTrue();
     assertThat(console.parse("CREATE PROPERTY doc.prop STRING;")).isTrue();
@@ -478,7 +458,7 @@ public class ConsoleTest {
    * Test case for https://github.com/ArcadeData/arcadedb/issues/885
    */
   @Test
-  public void testNotNullProperties() throws IOException {
+  void notNullProperties() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
     assertThat(console.parse("CREATE DOCUMENT TYPE doc;")).isTrue();
     assertThat(console.parse("CREATE PROPERTY doc.prop STRING (notnull);")).isTrue();
@@ -500,7 +480,7 @@ public class ConsoleTest {
    * Issue https://github.com/ArcadeData/arcadedb/issues/958
    */
   @Test
-  public void testPercentWildcardInQuery() throws IOException {
+  void percentWildcardInQuery() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
     assertThat(console.parse("create document type Person")).isTrue();
     assertThat(console.parse("insert into Person set name = 'Jay', lastname='Miner', nothing = null")).isTrue();
@@ -526,7 +506,7 @@ public class ConsoleTest {
    * Issue https://github.com/ArcadeData/arcadedb/issues/1760
    */
   @Test
-  public void testDuplicateEntries() throws IOException {
+  void duplicateEntries() throws Exception {
     FileUtils.deleteRecursively(new File("./target/databases/duptest"));
     assertThat(console.parse("create database duptest")).isTrue();
 

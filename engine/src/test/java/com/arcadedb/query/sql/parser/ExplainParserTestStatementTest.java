@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class ExplainParserTestStatementTest extends AbstractParserTest {
+class ExplainParserTestStatementTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax(
         "EXPLAIN SELECT FROM Foo WHERE name = 'bar' and surname in (select surname from Baz)");
     checkRightSyntax(

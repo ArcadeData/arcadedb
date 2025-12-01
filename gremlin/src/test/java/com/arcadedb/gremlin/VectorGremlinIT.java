@@ -34,9 +34,9 @@ import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class VectorGremlinIT {
+class VectorGremlinIT {
   @Test
-  public void importDocuments() {
+  void importDocuments() {
     final String databasePath = "target/databases/test-glove";
 
     FileUtils.deleteRecursively(new File(databasePath));

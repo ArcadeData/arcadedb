@@ -27,16 +27,16 @@ import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class SQLMethodValuesTest {
+class SQLMethodValuesTest {
   private SQLMethod function;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     function = new SQLMethodValues();
   }
 
   @Test
-  public void testWithResult() {
+  void withResult() {
 
     final ResultInternal resultInternal = new ResultInternal();
     resultInternal.setProperty("name", "Foo");

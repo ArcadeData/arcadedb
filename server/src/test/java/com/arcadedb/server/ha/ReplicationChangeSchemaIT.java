@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
-public class ReplicationChangeSchemaIT extends ReplicationServerIT {
+class ReplicationChangeSchemaIT extends ReplicationServerIT {
   private final Database[]          databases   = new Database[getServerCount()];
   private final Map<String, String> schemaFiles = new LinkedHashMap<>(getServerCount());
 

@@ -43,7 +43,7 @@ public class Issue2774IndexByItemTest extends TestHelper {
   }
 
   @Test
-  public void testContainsAnyUsesIndex() {
+  void containsAnyUsesIndex() {
     // This test verifies that CONTAINSANY already uses the BY-ITEM index (baseline test)
     database.transaction(() -> {
       String explain = database.query("sql",
@@ -63,7 +63,7 @@ public class Issue2774IndexByItemTest extends TestHelper {
   }
 
   @Test
-  public void testContainsUsesIndex() {
+  void containsUsesIndex() {
     // BUG: CONTAINS operator should use BY-ITEM index but currently does not
     database.transaction(() -> {
       String explain = database.query("sql",
@@ -83,7 +83,7 @@ public class Issue2774IndexByItemTest extends TestHelper {
   }
 
   @Test
-  public void testInOperatorUsesIndex() {
+  void inOperatorUsesIndex() {
     // BUG: IN operator with inverted syntax should use BY-ITEM index but currently does not
     database.transaction(() -> {
       String explain = database.query("sql",
@@ -103,7 +103,7 @@ public class Issue2774IndexByItemTest extends TestHelper {
   }
 
   @Test
-  public void testContainsAllUsesIndex() {
+  void containsAllUsesIndex() {
     // BUG: CONTAINSALL operator should use BY-ITEM index but currently does not
     database.transaction(() -> {
       String explain = database.query("sql",
@@ -123,7 +123,7 @@ public class Issue2774IndexByItemTest extends TestHelper {
   }
 
   @Test
-  public void testContainsAllMultipleValuesUsesIndex() {
+  void containsAllMultipleValuesUsesIndex() {
     // Test CONTAINSALL with multiple values
     database.transaction(() -> {
       String explain = database.query("sql",
@@ -143,7 +143,7 @@ public class Issue2774IndexByItemTest extends TestHelper {
   }
 
   @Test
-  public void testIndexUsageWithMultipleDocuments() {
+  void indexUsageWithMultipleDocuments() {
     // Insert more documents to ensure index is used even with larger datasets
     database.transaction(() -> {
       database.command("sql", "INSERT INTO doc SET nums = [4,5,6]");

@@ -27,7 +27,7 @@ import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOfType;
 
 /**
@@ -37,23 +37,13 @@ class DatabaseFactoryTest extends TestHelper {
 
   @Test
   void invalidFactories() {
-    try {
-      new DatabaseFactory(null);
-      fail("");
-    } catch (final IllegalArgumentException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> new DatabaseFactory(null)).isInstanceOf(IllegalArgumentException.class);
 
-    try {
-      new DatabaseFactory("");
-      fail("");
-    } catch (final IllegalArgumentException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> new DatabaseFactory("")).isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
-  void testGetterSetter() {
+  void getterSetter() {
     final DatabaseFactory f = new DatabaseFactory("test/");
     f.setAutoTransaction(true);
     assertThat(f.getContextConfiguration()).isNotNull();
@@ -68,7 +58,7 @@ class DatabaseFactoryTest extends TestHelper {
   }
 
   @Test
-  void testDatabaseRegistration() {
+  void databaseRegistration() {
     final DatabaseFactory f = new DatabaseFactory("test");
     final Database db = f.create();
 
@@ -81,7 +71,7 @@ class DatabaseFactoryTest extends TestHelper {
   }
 
   @Test
-  void testDatabaseRegistrationWithDifferentPathTypes() {
+  void databaseRegistrationWithDifferentPathTypes() {
     final DatabaseFactory f = new DatabaseFactory("target/path/to/database");
     final Database db = f.exists() ? f.open() : f.create();
 
@@ -96,7 +86,7 @@ class DatabaseFactoryTest extends TestHelper {
 
   @Test
   @EnabledOnOs(OS.WINDOWS)
-  void testDuplicatedDatabaseCreationWithDifferentPathTypes() {
+  void duplicatedDatabaseCreationWithDifferentPathTypes() {
     final DatabaseFactory f1 = new DatabaseFactory("path/to/database");
     final Database db = f1.create();
 

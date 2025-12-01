@@ -30,9 +30,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
-public class TraverseStatementExecutionTest extends TestHelper {
+class TraverseStatementExecutionTest extends TestHelper {
   @Test
-  public void testPlainTraverse() {
+  void plainTraverse() {
     database.transaction(() -> {
       final String classPrefix = "testPlainTraverse_";
       database.getSchema().createVertexType(classPrefix + "V");
@@ -65,7 +65,7 @@ public class TraverseStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testWithDepth() {
+  void withDepth() {
     database.transaction(() -> {
       final String classPrefix = "testWithDepth_";
       database.getSchema().createVertexType(classPrefix + "V");
@@ -99,7 +99,7 @@ public class TraverseStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testMaxDepth() {
+  void maxDepth() {
     database.transaction(() -> {
       final String classPrefix = "testMaxDepth";
       database.getSchema().createVertexType(classPrefix + "V");
@@ -143,7 +143,7 @@ public class TraverseStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testBreadthFirst() {
+  void breadthFirst() {
     database.transaction(() -> {
       final String classPrefix = "testBreadthFirst_";
       database.getSchema().createVertexType(classPrefix + "V");
@@ -177,7 +177,7 @@ public class TraverseStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testTraverseInBatchTx() {
+  void traverseInBatchTx() {
     database.transaction(() -> {
       String script = """
           drop type testTraverseInBatchTx_V if exists unsafe;
@@ -202,7 +202,7 @@ public class TraverseStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testTraverseFromRID() {
+  void traverseFromRID() {
     database.command("sql", "CREATE VERTEX TYPE TVtx IF NOT EXISTS");
     database.command("sql", "CREATE EDGE TYPE TEdg IF NOT EXISTS");
 

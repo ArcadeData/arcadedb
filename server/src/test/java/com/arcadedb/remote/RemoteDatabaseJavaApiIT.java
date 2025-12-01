@@ -40,7 +40,7 @@ import static com.arcadedb.graph.Vertex.DIRECTION.IN;
 import static com.arcadedb.graph.Vertex.DIRECTION.OUT;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
+class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
   private static final String DATABASE_NAME = "remote-database";
 
   @Override
@@ -92,7 +92,7 @@ public class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void test2() {
+  void test2() {
     final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
@@ -126,7 +126,7 @@ public class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void testExplicitLock() {
+  void explicitLock() {
     final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 

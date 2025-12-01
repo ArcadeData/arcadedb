@@ -43,7 +43,7 @@ public class CompoundConditionIndexTest extends TestHelper {
   }
 
   @Test
-  public void testCompoundConditionWithSeparateIndexQueries() {
+  void compoundConditionWithSeparateIndexQueries() {
     database.transaction(() -> {
       database.command("sql", "INSERT INTO Photo SET id = 1, tags = [{'@type':'Tag', 'id': 100, 'name': 'Apple Inc'}]");
       database.command("sql", "INSERT INTO Photo SET id = 2, tags = [{'@type':'Tag', 'id': 100, 'name': 'Other'}]");

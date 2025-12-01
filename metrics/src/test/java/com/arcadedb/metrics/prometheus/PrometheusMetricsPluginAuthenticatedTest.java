@@ -23,7 +23,6 @@ import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.net.Authenticator;
 import java.net.PasswordAuthentication;
 import java.net.URI;
@@ -50,7 +49,7 @@ class PrometheusMetricsPluginAuthenticatedTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testPrometheusEndpoint() throws IOException, InterruptedException {
+  void prometheusEndpoint() throws Exception {
     HttpClient client = HttpClient.newBuilder()
         .authenticator(new Authenticator() {
           @Override

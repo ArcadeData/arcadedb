@@ -46,7 +46,7 @@ public class EmbeddedListIndexDebugTest extends TestHelper {
   }
 
   @Test
-  public void testIndexPopulation() {
+  void indexPopulation() {
     // Create the index
     database.transaction(() -> {
       database.command("sql", "CREATE INDEX ON Photo (`tags.id` BY ITEM) NOTUNIQUE");

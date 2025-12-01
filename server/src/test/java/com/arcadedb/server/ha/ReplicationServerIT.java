@@ -61,7 +61,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void testReplication() throws Exception {
+  public void replication() throws Exception {
     testReplication(0);
   }
 

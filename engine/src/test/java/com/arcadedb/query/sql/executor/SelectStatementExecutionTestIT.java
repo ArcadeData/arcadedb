@@ -34,7 +34,7 @@ public class SelectStatementExecutionTestIT extends TestHelper {
   }
 
   @Test
-  public void stressTest() {
+  void stressTest() {
     final String className = "stressTestNew";
     database.getSchema().createDocumentType(className);
     for (int i = 0; i < 1000000; i++) {

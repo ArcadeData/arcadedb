@@ -32,13 +32,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class LocalGremlinFactoryIT {
+class LocalGremlinFactoryIT {
   private static final String DATABASE_NAME = "local-database-factory";
 
   @Test
-  public void okPoolRelease() {
+  void okPoolRelease() {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withLocal(DATABASE_NAME)) {
       for (int i = 0; i < 1_000; i++) {
         final ArcadeGraph instance = pool.get();
@@ -51,26 +51,21 @@ public class LocalGremlinFactoryIT {
   }
 
   @Test
-  public void errorPoolRelease() {
+  void errorPoolRelease() {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withLocal(DATABASE_NAME)) {
       for (int i = 0; i < pool.getMaxInstances(); i++) {
         final ArcadeGraph instance = pool.get();
         assertThat(instance).isNotNull();
       }
 
-      try {
-        pool.get();
-        fail("");
-      } catch (IllegalArgumentException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> pool.get()).isInstanceOf(IllegalArgumentException.class);
 
       assertThat(pool.getTotalInstancesCreated()).isEqualTo(pool.getMaxInstances());
     }
   }
 
   @BeforeAll
-  public static void beginTest() {
+  static void beginTest() {
     try (DatabaseFactory factory = new DatabaseFactory(DATABASE_NAME)) {
       if (!factory.exists())
         factory.create().close();
@@ -78,7 +73,7 @@ public class LocalGremlinFactoryIT {
   }
 
   @AfterAll
-  public static void endTest() {
+  static void endTest() {
     DatabaseFactory.getActiveDatabaseInstances().stream().map(d -> {
       d.drop();
       return null;

@@ -30,7 +30,7 @@ import java.io.*;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public abstract class BaseGraphTest extends TestHelper {
   protected static final String VERTEX1_TYPE_NAME = "V1";
@@ -80,18 +80,8 @@ public abstract class BaseGraphTest extends TestHelper {
 
     assertThat(v3.asVertex()).isEqualTo(v3);
     assertThat(v3.asVertex(true)).isEqualTo(v3);
-    try {
-      assertThat(v3.asEdge()).isNotNull();
-      fail("");
-    } catch (final ClassCastException e) {
-      // EXPECTED
-    }
-    try {
-      assertThat(v3.asEdge(true)).isNotNull();
-      fail("");
-    } catch (final ClassCastException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> assertThat(v3.asEdge()).isNotNull()).isInstanceOf(ClassCastException.class);
+    assertThatThrownBy(() -> assertThat(v3.asEdge(true)).isNotNull()).isInstanceOf(ClassCastException.class);
 
     final Map<String, Object> params = new HashMap<>();
     params.put("name", "E2");
@@ -104,18 +94,8 @@ public abstract class BaseGraphTest extends TestHelper {
     assertThat(e2.asEdge()).isEqualTo(e2);
     assertThat(e2.asEdge(true)).isEqualTo(e2);
 
-    try {
-      assertThat(e2.asVertex()).isNotNull();
-      fail("");
-    } catch (final ClassCastException e) {
-      // EXPECTED
-    }
-    try {
-      assertThat(e2.asVertex(true)).isNotNull();
-      fail("");
-    } catch (final ClassCastException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> assertThat(e2.asVertex()).isNotNull()).isInstanceOf(ClassCastException.class);
+    assertThatThrownBy(() -> assertThat(e2.asVertex(true)).isNotNull()).isInstanceOf(ClassCastException.class);
 
     final ImmutableLightEdge e3 = v1.newLightEdge(EDGE2_TYPE_NAME, v3);
     assertThat(v1).isEqualTo(e3.getOut());

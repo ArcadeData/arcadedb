@@ -33,7 +33,7 @@ import java.util.*;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class JSONSerializerTest extends TestHelper {
+class JSONSerializerTest extends TestHelper {
 
   private JsonSerializer jsonSerializer;
   private DocumentType   testType;
@@ -56,7 +56,7 @@ public class JSONSerializerTest extends TestHelper {
   }
 
   @Test
-  void testComplexDocumentJsonSerialization() {
+  void complexDocumentJsonSerialization() {
     database.transaction(() -> {
 
       MutableVertex document = database.newVertex("AnotherType")
@@ -92,7 +92,7 @@ public class JSONSerializerTest extends TestHelper {
   }
 
   @Test
-  void testMap2json() {
+  void map2json() {
     Map<String, Object> map = new HashMap<>();
     map.put("key1", "value1");
     map.put("key2", 123);
@@ -104,7 +104,7 @@ public class JSONSerializerTest extends TestHelper {
   }
 
   @Test
-  void testJson2map() {
+  void json2map() {
     JSONObject json = new JSONObject();
     json.put("key1", "value1");
     json.put("key2", 123);
@@ -116,7 +116,7 @@ public class JSONSerializerTest extends TestHelper {
   }
 
   @Test
-  void testConvertToJSONType() {
+  void convertToJSONType() {
     Map<String, Object> map = new HashMap<>();
     map.put("key1", "value1");
     map.put("key2", 123);
@@ -130,7 +130,7 @@ public class JSONSerializerTest extends TestHelper {
   }
 
   @Test
-  void testConvertFromJSONType() {
+  void convertFromJSONType() {
     JSONObject json = new JSONObject();
     json.put("key1", "value1");
     json.put("key2", 123);

@@ -26,10 +26,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
-public class IfStatementExecutionTest extends TestHelper {
+class IfStatementExecutionTest extends TestHelper {
 
   @Test
-  public void testPositive() {
+  void positive() {
     final ResultSet results = database.command("sql", "if(1=1){ select 1 as a; }");
     assertThat(results.hasNext()).isTrue();
     final Result result = results.next();
@@ -39,14 +39,14 @@ public class IfStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testNegative() {
+  void negative() {
     final ResultSet results = database.command("sql", "if(1=2){ select 1 as a; }");
     assertThat(results.hasNext()).isFalse();
     results.close();
   }
 
   @Test
-  public void testIfReturn() {
+  void ifReturn() {
     final ResultSet results = database.command("sql", "if(1=1){ return 'yes'; }");
     assertThat(results.hasNext()).isTrue();
     assertThat(results.next().<String>getProperty("value")).isEqualTo("yes");

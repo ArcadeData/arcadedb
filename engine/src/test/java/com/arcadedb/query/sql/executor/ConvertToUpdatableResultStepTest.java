@@ -30,14 +30,14 @@ import java.util.*;
 
 import static org.assertj.core.api.Assertions.*;
 
-public class ConvertToUpdatableResultStepTest {
+class ConvertToUpdatableResultStepTest {
 
   private static final String         STRING_PROPERTY  = "stringPropertyName";
   private static final String         INTEGER_PROPERTY = "integerPropertyName";
   private final        List<Document> documents        = new ArrayList<>();
 
   @Test
-  public void shouldConvertUpdatableResult() throws Exception {
+  void shouldConvertUpdatableResult() throws Exception {
     TestHelper.executeInNewDatabase((database) -> {
       final String type = TestHelper.createRandomType(database).getName();
 

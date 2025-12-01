@@ -44,11 +44,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * From Issue https://github.com/ArcadeData/arcadedb/issues/741
  */
-public class CompositeIndexTest {
+class CompositeIndexTest {
   static final String DATABASE_NAME = "SelectOrderTest";
 
   @Test
-  public void testWhereAfterUpdate() {
+  void whereAfterUpdate() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
 
@@ -133,7 +133,7 @@ public class CompositeIndexTest {
   }
 
   @BeforeEach
-  public void beginTests() {
+  void beginTests() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
     FileUtils.deleteRecursively(new File(rootPath + "/databases"));
@@ -142,7 +142,7 @@ public class CompositeIndexTest {
   }
 
   @AfterEach
-  public void endTests() {
+  void endTests() {
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();
   }

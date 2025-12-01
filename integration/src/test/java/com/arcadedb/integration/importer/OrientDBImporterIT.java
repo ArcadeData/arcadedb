@@ -36,7 +36,7 @@ import java.net.URL;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class OrientDBImporterIT {
+class OrientDBImporterIT {
 
   private final static String DATABASE_PATH = "target/databases/oriendb-imported";
 
@@ -49,7 +49,7 @@ public class OrientDBImporterIT {
   }
 
   @Test
-  public void testImportOK() throws Exception {
+  void importOK() throws Exception {
     final File databaseDirectory = new File(DATABASE_PATH);
 
     final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
@@ -86,7 +86,7 @@ public class OrientDBImporterIT {
   }
 
   @Test
-  public void testImportNoFile() throws Exception {
+  void importNoFile() throws Exception {
     final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
     final OrientDBImporter importer = new OrientDBImporter(
         ("-i " + inputFile.getFile() + "2 -d " + DATABASE_PATH + " -s -o").split(" "));

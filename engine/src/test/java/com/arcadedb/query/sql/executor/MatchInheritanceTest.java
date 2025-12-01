@@ -25,7 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class MatchInheritanceTest extends TestHelper {
   @Test
-  public void testInheritance() {
+  void inheritance() {
     ResultSet result = null;
 
     result = database.command("SQL", "SELECT FROM Services");

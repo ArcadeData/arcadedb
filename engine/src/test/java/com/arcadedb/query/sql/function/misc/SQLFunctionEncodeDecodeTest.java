@@ -28,31 +28,31 @@ import java.util.Iterator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class SQLFunctionEncodeDecodeTest {
+class SQLFunctionEncodeDecodeTest {
 
   private SQLFunctionEncode encode;
   private SQLFunctionDecode decode;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     encode = new SQLFunctionEncode();
     decode = new SQLFunctionDecode();
   }
 
   @Test
-  public void testEmpty() {
+  void empty() {
     final Object result = encode.getResult();
     assertThat(result).isNull();
   }
 
   @Test
-  public void testResult() {
+  void result() {
     final String result = (String) encode.execute(null, null, null, new Object[] { "abc123", "base64" }, null);
     assertThat(result).isNotNull();
   }
 
   @Test
-  public void testQuery() throws Exception {
+  void query() throws Exception {
     TestHelper.executeInNewDatabase("SQLFunctionEncodeTest", (db) -> {
       final ResultSet result = db.query("sql", "select decode( encode('abc123', 'base64'), 'base64' ).asString() as encode");
       assertThat((Iterator<? extends Result>) result).isNotNull();

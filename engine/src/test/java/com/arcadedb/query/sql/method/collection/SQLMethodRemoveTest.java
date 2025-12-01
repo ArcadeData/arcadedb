@@ -32,7 +32,7 @@ class SQLMethodRemoveTest {
   private SQLMethod method;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     method = new SQLMethodRemove();
   }
 
@@ -43,14 +43,14 @@ class SQLMethodRemoveTest {
   }
 
   @Test
-  void testRemoveSingleValueFromList() {
+  void removeSingleValueFromList() {
     final List<String> numbers = new ArrayList<>(List.of("one", "one", "two", "three"));
     final List<String> result = (List<String>) method.execute(numbers, null, null, new Object[] { "one" });
     assertThat(result).contains("one", "two", "three");
   }
 
   @Test
-  void testRemoveFromListWithVariableInContext() {
+  void removeFromListWithVariableInContext() {
     final List<String> numbers = new ArrayList<>(List.of("one", "two", "three"));
     final CommandContext context = new BasicCommandContext();
     context.setVariable("name", "one");

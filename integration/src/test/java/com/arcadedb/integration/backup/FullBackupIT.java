@@ -40,21 +40,20 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.io.IOException;
 import java.net.URL;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class FullBackupIT {
+class FullBackupIT {
   private final static String DATABASE_PATH     = "target/databases/performance";
   private final static String FILE              = "target/arcadedb-backup.zip";
   private final        File   restoredDirectory = new File(DATABASE_PATH + "_restored");
   private final        File   file              = new File(FILE);
 
   @Test
-  public void testFullBackupCommandLineOK() throws Exception {
+  void fullBackupCommandLineOK() throws Exception {
     final Database importedDatabase = importDatabase();
     importedDatabase.close();
 
@@ -73,8 +72,9 @@ public class FullBackupIT {
     }
     TestHelper.checkActiveDatabases();
   }
+
   @Test
-  public void testEncryptedFullBackupCommandLineOK() throws Exception {
+  void encryptedFullBackupCommandLineOK() throws Exception {
     final Database importedDatabase = importDatabase();
     importedDatabase.close();
 
@@ -95,7 +95,7 @@ public class FullBackupIT {
   }
 
   @Test
-  public void testFullBackupAPIOK() throws Exception {
+  void fullBackupAPIOK() throws Exception {
     try (final Database importedDatabase = importDatabase()) {
 
       new Backup(importedDatabase, FILE).backupDatabase();
@@ -121,7 +121,7 @@ public class FullBackupIT {
    * each backup file is restored and tested the number of vertices is mod (%) 500, so no inconsistent backup has been taken (each transaction is 500 vertices).
    */
   @Test
-  public void testFullBackupConcurrency() throws Exception {
+  void fullBackupConcurrency() throws Exception {
     final int concurrentThreads = Math.min(Runtime.getRuntime().availableProcessors() - 1, 4);
 
     final ConsoleLogger logger = new ConsoleLogger(1);
@@ -216,26 +216,20 @@ public class FullBackupIT {
   }
 
   @Test
-  public void testFormatError() {
-    try {
+  void formatError() {
+    assertThatThrownBy(() -> {
       emptyDatabase().close();
       new Backup(("-f " + FILE + " -d " + DATABASE_PATH + " -o -format unknown").split(" ")).backupDatabase();
-      fail("");
-    } catch (final BackupException e) {
-      // EXPECTED
-    }
+    }).isInstanceOf(BackupException.class);
   }
 
   @Test
-  public void testFileCannotBeOverwrittenError() throws IOException {
-    try {
+  void fileCannotBeOverwrittenError() throws Exception {
+    assertThatThrownBy(() -> {
       emptyDatabase().close();
       new File(FILE).createNewFile();
       new Backup(("-f " + FILE + " -d " + DATABASE_PATH).split(" ")).backupDatabase();
-      fail("");
-    } catch (final BackupException e) {
-      // EXPECTED
-    }
+    }).isInstanceOf(BackupException.class);
   }
 
   private Database importDatabase() throws Exception {
@@ -256,7 +250,7 @@ public class FullBackupIT {
 
   @BeforeEach
   @AfterEach
-  public void beforeTests() {
+  void beforeTests() {
     FileUtils.deleteRecursively(new File(DATABASE_PATH));
     FileUtils.deleteRecursively(new File(DATABASE_PATH + "_restored"));
     if (file.exists())

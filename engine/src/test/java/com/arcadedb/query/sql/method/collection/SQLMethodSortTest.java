@@ -35,7 +35,7 @@ class SQLMethodSortTest {
   }
 
   @Test
-  void testSortedList() {
+  void sortedList() {
     final List<Number> listin = List.of(1, 2, 3);
     final Object result = method.execute(listin, null, null, null);
     assertThat(result).isInstanceOf(List.class);
@@ -43,7 +43,7 @@ class SQLMethodSortTest {
   }
 
   @Test
-  void testReverseSortedList() {
+  void reverseSortedList() {
     final List<Number> listin = List.of(3, 2, 1);
     final Object result = method.execute(listin, null, null, new Boolean[] { false });
     assertThat(result).isInstanceOf(List.class);
@@ -51,7 +51,7 @@ class SQLMethodSortTest {
   }
 
   @Test
-  void testUnsortedList() {
+  void unsortedList() {
     final List<Number> listin = List.of(3, 2, 1);
     final List<Number> listout = List.of(1, 2, 3);
     final Object result = method.execute(listin, null, null, null);
@@ -60,7 +60,7 @@ class SQLMethodSortTest {
   }
 
   @Test
-  void testCharacterList() {
+  void characterList() {
     final List<String> listin = List.of("z", "A", "b");
     final List<String> listout = List.of("A", "b", "z");
     final Object result = method.execute(listin, null, null, null);
@@ -69,7 +69,7 @@ class SQLMethodSortTest {
   }
 
   @Test
-  void testWordList() {
+  void wordList() {
     final List<String> listin = List.of("z1", "z2", "a");
     final List<String> listout = List.of("a", "z1", "z2");
     final Object result = method.execute(listin, null, null, null);
@@ -78,7 +78,7 @@ class SQLMethodSortTest {
   }
 
   @Test
-  void testDoubleList() {
+  void doubleList() {
     final List<Number> listin = List.of(3.0, 2.2, 0.0001);
     final List<Number> listout = List.of(0.0001, 2.2, 3.0);
     final Object result = method.execute(listin, null, null, null);
@@ -87,7 +87,7 @@ class SQLMethodSortTest {
   }
 
   @Test
-  void testScalar() {
+  void scalar() {
     final Integer listin = 3;
     final Integer listout = 3;
     final Object result = method.execute(listin, null, null, null);

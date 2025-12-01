@@ -25,9 +25,9 @@ import java.io.*;
 import static com.arcadedb.GlobalConfiguration.TEST;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class ConfigurationTest {
+class ConfigurationTest {
   @Test
-  public void testGlobalExport2Json() {
+  void globalExport2Json() {
     assertThat(TEST.getValueAsBoolean()).isFalse();
     final String json = GlobalConfiguration.toJSON();
     TEST.setValue(true);
@@ -37,7 +37,7 @@ public class ConfigurationTest {
   }
 
   @Test
-  public void testContextExport2Json() {
+  void contextExport2Json() {
     final ContextConfiguration cfg = new ContextConfiguration();
     cfg.setValue(TEST, false);
     assertThat(cfg.getValueAsBoolean(TEST)).isFalse();
@@ -49,7 +49,7 @@ public class ConfigurationTest {
   }
 
   @Test
-  public void testDump() {
+  void dump() {
     final ByteArrayOutputStream out = new ByteArrayOutputStream();
     GlobalConfiguration.dumpConfiguration(new PrintStream(out));
     assertThat(out.size() > 0).isTrue();

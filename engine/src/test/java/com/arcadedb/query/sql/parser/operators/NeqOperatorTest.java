@@ -29,9 +29,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
-public class NeqOperatorTest {
+class NeqOperatorTest {
   @Test
-  public void test() {
+  void test() {
     final NeqOperator op = new NeqOperator(-1);
     assertThat(op.execute(null, null, 1)).isTrue();
     assertThat(op.execute(null, 1, null)).isTrue();

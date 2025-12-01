@@ -28,9 +28,9 @@ import static org.assertj.core.api.Assertions.*;
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
-public class ProfileStatementExecutionTest {
+class ProfileStatementExecutionTest {
   @Test
-  public void testProfile() throws Exception {
+  void profile() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
       db.getSchema().createDocumentType("testProfile");
       db.command("sql", "insert into testProfile set name ='foo'");

@@ -55,7 +55,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   // ==================== HTML Documentation Endpoint Tests ====================
 
   @Test
-  void testDocsEndpointIsAccessible() throws Exception {
+  void docsEndpointIsAccessible() throws Exception {
     // Test that the OpenAPI docs endpoint exists and returns 200
     HttpRequest request = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/docs"))
@@ -72,7 +72,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testDocsEndpointReturnsHtmlContentType() throws Exception {
+  void docsEndpointReturnsHtmlContentType() throws Exception {
     // Test that the docs endpoint returns HTML content type
     HttpRequest request = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/docs"))
@@ -89,7 +89,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testDocsEndpointContainsSwaggerUiInitialization() throws Exception {
+  void docsEndpointContainsSwaggerUiInitialization() throws Exception {
     // Test that HTML contains Swagger UI initialization code
     HttpRequest request = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/docs"))
@@ -111,7 +111,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testDocsEndpointReferencesCorrectOpenApiSpecUrl() throws Exception {
+  void docsEndpointReferencesCorrectOpenApiSpecUrl() throws Exception {
     // Test that HTML references the correct OpenAPI spec URL
     HttpRequest request = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/docs"))
@@ -130,7 +130,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
 
   @Test
   @Disabled
-  void testDocsEndpointIncludesNecessaryJavaScriptReferences() throws Exception {
+  void docsEndpointIncludesNecessaryJavaScriptReferences() throws Exception {
     // Test that HTML includes necessary JavaScript references from studio module
     HttpRequest request = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/docs"))
@@ -153,7 +153,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
 
   @Test
   @Disabled
-  void testDocsEndpointIncludesNecessaryCssReferences() throws Exception {
+  void docsEndpointIncludesNecessaryCssReferences() throws Exception {
     // Test that HTML includes necessary CSS references from studio module
     HttpRequest request = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/docs"))
@@ -171,7 +171,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testDocsEndpointIncludesPageTitle() throws Exception {
+  void docsEndpointIncludesPageTitle() throws Exception {
     // Test that HTML has a proper page title
     HttpRequest request = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/docs"))
@@ -193,7 +193,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testDocsEndpointIsValidHtml() throws Exception {
+  void docsEndpointIsValidHtml() throws Exception {
     // Test that the response is valid HTML structure
     HttpRequest request = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/docs"))
@@ -231,7 +231,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   // ==================== Integration Tests ====================
 
   @Test
-  void testSwaggerUiCanLoadOpenApiSpec() throws Exception {
+  void swaggerUiCanLoadOpenApiSpec() throws Exception {
     // Test that the OpenAPI spec referenced in the docs page is accessible
     // First, get the docs page
     HttpRequest docsRequest = HttpRequest.newBuilder()
@@ -267,7 +267,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testAuthenticationConfigurationInSwaggerUi() throws Exception {
+  void authenticationConfigurationInSwaggerUi() throws Exception {
     // Test that HTML includes authentication configuration
     HttpRequest request = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/docs"))
@@ -290,7 +290,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testDocsEndpointDisplaysAllExpectedElements() throws Exception {
+  void docsEndpointDisplaysAllExpectedElements() throws Exception {
     // Test that the documentation page has all expected UI elements
     HttpRequest request = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/docs"))
@@ -319,7 +319,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testDocsEndpointWithoutAuthenticationReturnsUnauthorized() throws Exception {
+  void docsEndpointWithoutAuthenticationReturnsUnauthorized() throws Exception {
     // Test that accessing docs without authentication returns 401
     HttpRequest request = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/docs"))
@@ -334,7 +334,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testDocsHandlerClassExists() {
+  void docsHandlerClassExists() {
     // This test verifies that the OpenApiDocsHandler class exists
     try {
       Class<?> handlerClass = Class.forName("com.arcadedb.server.http.handler.OpenApiDocsHandler");
@@ -349,7 +349,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testDocsEndpointSupportsHeadRequest() throws Exception {
+  void docsEndpointSupportsHeadRequest() throws Exception {
     // Test that the docs endpoint supports HEAD requests
     HttpRequest request = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/docs"))
@@ -372,7 +372,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testDocsEndpointCharsetIsUtf8() throws Exception {
+  void docsEndpointCharsetIsUtf8() throws Exception {
     // Test that the docs endpoint specifies UTF-8 charset
     HttpRequest request = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/docs"))

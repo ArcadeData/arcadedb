@@ -32,15 +32,14 @@ import org.junit.jupiter.api.Test;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URL;
 import java.util.zip.GZIPInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class JsonlExporterIT {
+class JsonlExporterIT {
   private final static String DATABASE_PATH = "target/databases/performance";
   private final static String FILE          = "target/arcadedb-export.jsonl.tgz";
 
@@ -50,13 +49,13 @@ public class JsonlExporterIT {
 
   @BeforeEach
   @AfterEach
-  public void beforeTests() {
+  void beforeTests() {
     TestHelper.checkActiveDatabases();
     FileUtils.deleteRecursively(new File(DATABASE_PATH));
   }
 
   @Test
-  public void testExportOK() throws Exception {
+  void exportOK() throws Exception {
     final File databaseDirectory = new File(DATABASE_PATH);
 
     final File file = new File(FILE);
@@ -89,26 +88,20 @@ public class JsonlExporterIT {
   }
 
   @Test
-  public void testFormatError() {
-    try {
+  void formatError() {
+    assertThatThrownBy(() -> {
       emptyDatabase().close();
       new Exporter(("-f " + FILE + " -d " + DATABASE_PATH + " -o -format unknown").split(" ")).exportDatabase();
-      fail("");
-    } catch (final ExportException e) {
-      // EXPECTED
-    }
+    }).isInstanceOf(ExportException.class);
   }
 
   @Test
-  public void testFileCannotBeOverwrittenError() throws IOException {
-    try {
+  void fileCannotBeOverwrittenError() throws Exception {
+    assertThatThrownBy(() -> {
       emptyDatabase().close();
       new File(FILE).createNewFile();
       new Exporter(("-f " + FILE + " -d " + DATABASE_PATH + " -format jsonl").split(" ")).exportDatabase();
-      fail("");
-    } catch (final ExportException e) {
-      // EXPECTED
-    }
+    }).isInstanceOf(ExportException.class);
   }
 
 }

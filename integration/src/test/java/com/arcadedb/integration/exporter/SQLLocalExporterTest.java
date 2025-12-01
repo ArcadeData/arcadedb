@@ -41,13 +41,13 @@ public class SQLLocalExporterTest {
 
   @BeforeEach
   @AfterEach
-  public void beforeTests() {
+  void beforeTests() {
     TestHelper.checkActiveDatabases();
     FileUtils.deleteRecursively(new File(DATABASE_PATH));
   }
 
   @Test
-  public void importAndExportDatabase() {
+  void importAndExportDatabase() {
     final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
 
     try (final Database database = new DatabaseFactory("databases/importedFromOrientDB").create()) {
@@ -75,7 +75,7 @@ public class SQLLocalExporterTest {
   }
 
   @Test
-  public void importAndExportPartialDatabase() {
+  void importAndExportPartialDatabase() {
     final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
 
     try (final Database database = new DatabaseFactory("databases/importedFromOrientDB").create()) {

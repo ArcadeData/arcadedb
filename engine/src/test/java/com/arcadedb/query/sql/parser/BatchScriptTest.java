@@ -26,10 +26,10 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.fail;
 
-public class BatchScriptTest {
+class BatchScriptTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("begin;select from foo; return bar;");
     checkRightSyntax("begin;\nselect from foo;\n return bar;");
     checkRightSyntax("begin;\nselect from foo;/*foo bar*/ return bar;");

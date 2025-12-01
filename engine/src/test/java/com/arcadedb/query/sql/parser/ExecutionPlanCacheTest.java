@@ -29,10 +29,10 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class ExecutionPlanCacheTest {
+class ExecutionPlanCacheTest {
 
   @Test
-  public void testCacheInvalidation1() throws InterruptedException {
+  void cacheInvalidation1() throws Exception {
     final String testName = "testCacheInvalidation1";
 
     final DatabaseInternal db = (DatabaseInternal) new DatabaseFactory("ExecutionPlanCacheTest").create();

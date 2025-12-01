@@ -30,9 +30,9 @@ import static org.assertj.core.api.Assertions.fail;
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
-public class LtOperatorTest {
+class LtOperatorTest {
   @Test
-  public void test() {
+  void test() {
     final LtOperator op = new LtOperator(-1);
     assertThat(op.execute(null, 1, 1)).isFalse();
     assertThat(op.execute(null, 1, 0)).isFalse();
