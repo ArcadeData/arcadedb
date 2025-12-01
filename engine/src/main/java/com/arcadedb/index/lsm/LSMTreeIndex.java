@@ -317,8 +317,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
           mutable.close();
         return null;
       });
-    } else
-      throw new NeedRetryException("Error on closing index '" + name + "' because not available");
+    }
   }
 
   public void drop() {
