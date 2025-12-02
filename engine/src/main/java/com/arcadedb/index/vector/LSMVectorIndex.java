@@ -346,10 +346,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Called by LSMVectorIndexMutable.onAfterSchemaLoad() after dimensions are set from schema.json.
    */
   public void loadVectorsAfterSchemaLoad() {
+    LogManager.instance().log(this, Level.SEVERE,
+        "loadVectorsAfterSchemaLoad called for index %s: dimensions=%d, mutablePages=%d, hasGraphFile=%s",
+        indexName, metadata.dimensions, mutable.getTotalPages(), graphFile != null);
+
     // Only load vectors if we have valid metadata (dimensions > 0) and pages exist
     if (metadata.dimensions > 0 && mutable.getTotalPages() > 0) {
       try {
-        LogManager.instance().log(this, Level.INFO,
+        LogManager.instance().log(this, Level.SEVERE,
             "Loading vectors for index %s after schema load (dimensions=%d, pages=%d, fileId=%d)",
             indexName, metadata.dimensions, mutable.getTotalPages(), mutable.getFileId());
 
@@ -357,7 +361,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         // Graph will be lazy-loaded on first search via ensureGraphAvailable()
         // Don't build it here - causes deadlock during database load when PageManager isn't fully ready
-        LogManager.instance().log(this, Level.INFO,
+        LogManager.instance().log(this, Level.SEVERE,
             "Successfully loaded %d vector locations for index %s (graph will be lazy-loaded on first search)",
             vectorIndex.size(), indexName);
       } catch (final Exception e) {
@@ -367,7 +371,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         this.graphState = GraphState.LOADING;
       }
     } else {
-      LogManager.instance().log(this, Level.FINE,
+      LogManager.instance().log(this, Level.SEVERE,
           "Skipping vector load for index %s (dimensions=%d, pages=%d)",
           indexName, metadata.dimensions, mutable.getTotalPages());
     }
@@ -402,7 +406,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           if (comp instanceof LSMVectorIndexCompacted) {
             final String compName = comp.getName();
             if (compName.startsWith(namePrefix + "_") && !compName.equals(componentName)) {
-              LogManager.instance().log(this, Level.INFO,
+              LogManager.instance().log(this, Level.SEVERE,
                   "Found existing compacted sub-index in schema: %s (fileId=%d)",
                   compName, comp.getFileId());
               return (LSMVectorIndexCompacted) comp;
@@ -576,7 +580,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
               .toArray();
 
           LogManager.instance().log(this, Level.INFO,
-              "Loaded graph from disk for index: %s", indexName);
+              "Loaded graph from disk for index: %s, graphSize=%d, ordinalToVectorIdLength=%d, vectorIndexSize=%d",
+              indexName, graphIndex != null ? graphIndex.size() : 0, ordinalToVectorId.length, vectorIndex.size());
           return;
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.WARNING,
@@ -1093,7 +1098,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       LogManager.instance().log(this, Level.INFO,
           "Loaded " + vectorIndex.size() + " vector locations (" + entriesRead + " total entries) for index: " + indexName
-              + ", nextId=" + nextId.get());
+              + ", nextId=" + nextId.get() + ", fileId=" + getFileId() + ", totalPages=" + getTotalPages() +
+              (compactedSubIndex != null ? ", compactedFileId=" + compactedSubIndex.getFileId() + ", compactedPages=" + compactedSubIndex.getTotalPages() : ""));
 
       // NOTE: Do NOT call initializeGraphIndex() here - it would cause infinite recursion
       // because buildGraphFromScratch() calls loadVectorsFromPages()
@@ -1117,6 +1123,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private int loadVectorsFromFile(final int fileId, final int totalPages, final boolean isCompacted) {
     int entriesRead = 0;
     int pagesWithEntries = 0;
+
+    LogManager.instance().log(this, Level.INFO,
+        "loadVectorsFromFile: fileId=%d, totalPages=%d, isCompacted=%s",
+        fileId, totalPages, isCompacted);
 
     for (int pageNum = 0; pageNum < totalPages; pageNum++) {
       try {
@@ -1406,9 +1416,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
       }
 
-      if (graphIndex == null || vectorIndex.size() == 0) {
+      if (graphIndex == null || vectorIndex.size() == 0)
         return Collections.emptyList();
-      }
+
 
       // Convert query vector to VectorFloat
       final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
@@ -1416,7 +1426,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Create lazy-loading RandomAccessVectorValues
       // Vector property name is the first property in the index
       final String vectorProp = metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
-          metadata.propertyNames.get(0) : "vector";
+          metadata.propertyNames.getFirst() : "vector";
 
       final RandomAccessVectorValues vectors = new ArcadePageVectorValues(
           getDatabase(),
@@ -1436,8 +1446,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
           Bits.ALL
       );
 
+      LogManager.instance().log(this, Level.INFO,
+          "GraphSearcher returned %d nodes, graphSize=%d, vectorsSize=%d, ordinalToVectorIdLength=%d",
+          searchResult.getNodes().length, graphIndex.size(), vectors.size(), ordinalToVectorId.length);
+
       // Extract RIDs and scores from search results using ordinal mapping
       final List<com.arcadedb.utility.Pair<RID, Float>> results = new ArrayList<>();
+      int skippedOutOfBounds = 0;
+      int skippedDeletedOrNull = 0;
       for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
         final int ordinal = nodeScore.node;
         if (ordinal >= 0 && ordinal < ordinalToVectorId.length) {
@@ -1459,11 +1475,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
               default -> score;
             };
             results.add(new com.arcadedb.utility.Pair<>(loc.rid, distance));
+          } else {
+            skippedDeletedOrNull++;
           }
+        } else {
+          skippedOutOfBounds++;
         }
       }
 
-      LogManager.instance().log(this, Level.FINE, "Vector search returned " + results.size() + " results");
+      LogManager.instance().log(this, Level.INFO,
+          "Vector search returned %d results (skipped: %d out of bounds, %d deleted/null)",
+          results.size(), skippedOutOfBounds, skippedDeletedOrNull);
       return results;
 
     } catch (final Exception e) {

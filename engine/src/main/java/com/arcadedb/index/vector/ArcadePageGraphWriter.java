@@ -18,14 +18,17 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
+import com.arcadedb.log.LogManager;
 import io.github.jbellis.jvector.disk.RandomAccessWriter;
 
-import java.io.IOException;
-import java.util.zip.CRC32;
+import java.io.*;
+import java.util.logging.*;
+import java.util.zip.*;
 
 /**
  * Implements JVector's RandomAccessWriter interface for writing graph topology to ArcadeDB pages.
@@ -36,12 +39,10 @@ import java.util.zip.CRC32;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ArcadePageGraphWriter implements RandomAccessWriter {
-  private static final int GRAPH_PAGE_HEADER_SIZE = 16; // Reserved space per page
-
   private final DatabaseInternal database;
   private final int              fileId;
   private final int              pageSize;
-  private final int              usablePageSize; // pageSize - header
+  private final int              usablePageSize; // pageSize - BasePage.PAGE_HEADER_SIZE
 
   // Current state
   private       long        currentPosition;  // Logical position in the graph data
@@ -53,7 +54,7 @@ public class ArcadePageGraphWriter implements RandomAccessWriter {
     this.database = database;
     this.fileId = fileId;
     this.pageSize = pageSize;
-    this.usablePageSize = pageSize - BasePage.PAGE_HEADER_SIZE - GRAPH_PAGE_HEADER_SIZE;
+    this.usablePageSize = pageSize - BasePage.PAGE_HEADER_SIZE;
     this.currentPosition = 0;
     this.currentPageNum = -1;
     this.crc32 = new CRC32();
@@ -66,8 +67,13 @@ public class ArcadePageGraphWriter implements RandomAccessWriter {
 
     this.currentPosition = position;
 
-    // Calculate which page contains this position
-    final int pageNum = (int) (position / usablePageSize);
+    int pageNum = (int) (position / pageSize);
+    final int pageOffset = (int) (position % pageSize);
+
+    if (pageOffset >= usablePageSize) {
+      ++pageNum;
+      currentPosition = (long) pageNum * pageSize;
+    }
 
     // Load page if not already loaded
     ensurePageLoaded(pageNum);
@@ -80,10 +86,13 @@ public class ArcadePageGraphWriter implements RandomAccessWriter {
 
   @Override
   public void writeInt(final int value) throws IOException {
-    ensureAvailable(4);
-    final int pageOffset = (int) (currentPosition % usablePageSize);
-    currentPage.writeInt(GRAPH_PAGE_HEADER_SIZE + pageOffset, value);
-    currentPosition += 4;
+    final int pageOffset = ensureAvailable(Binary.INT_SERIALIZED_SIZE);
+
+    currentPage.writeInt(pageOffset, value);
+    LogManager.instance()
+        .log(this, Level.SEVERE, "Wrote int %d at page %d offset %d", value, currentPage.getPageId().getPageNumber(), pageOffset);
+
+    updatePosition(Binary.INT_SERIALIZED_SIZE);
 
     // Update checksum
     crc32.update((value >>> 24) & 0xFF);
@@ -94,10 +103,14 @@ public class ArcadePageGraphWriter implements RandomAccessWriter {
 
   @Override
   public void writeLong(final long value) throws IOException {
-    ensureAvailable(8);
-    final int pageOffset = (int) (currentPosition % usablePageSize);
-    currentPage.writeLong(GRAPH_PAGE_HEADER_SIZE + pageOffset, value);
-    currentPosition += 8;
+    final int pageOffset = ensureAvailable(Binary.LONG_SERIALIZED_SIZE);
+
+    currentPage.writeLong(pageOffset, value);
+
+    LogManager.instance()
+        .log(this, Level.SEVERE, "Wrote long %d at page %d offset %d", value, currentPage.getPageId().getPageNumber(), pageOffset);
+
+    updatePosition(Binary.LONG_SERIALIZED_SIZE);
 
     // Update checksum
     for (int i = 7; i >= 0; i--)
@@ -105,21 +118,62 @@ public class ArcadePageGraphWriter implements RandomAccessWriter {
   }
 
   @Override
+  public void writeShort(final int value) throws IOException {
+    final int pageOffset = ensureAvailable(Binary.SHORT_SERIALIZED_SIZE);
+
+    currentPage.writeShort(pageOffset, (short) value);
+    LogManager.instance()
+        .log(this, Level.SEVERE, "Wrote short %d at page %d offset %d", value, currentPage.getPageId().getPageNumber(), pageOffset);
+    updatePosition(Binary.SHORT_SERIALIZED_SIZE);
+
+    crc32.update((value >>> 8) & 0xFF);
+    crc32.update(value & 0xFF);
+  }
+
+  @Override
   public void writeFloat(final float value) throws IOException {
-    writeInt(Float.floatToRawIntBits(value));
+    final int pageOffset = ensureAvailable(Binary.FLOAT_SERIALIZED_SIZE);
+
+    currentPage.writeFloat(pageOffset, value);
+    LogManager.instance()
+        .log(this, Level.SEVERE, "Wrote float %d at page %d offset %d", value, currentPage.getPageId().getPageNumber(), pageOffset);
+
+    updatePosition(Binary.FLOAT_SERIALIZED_SIZE);
+
+    // Update checksum
+    final int intBits = Float.floatToRawIntBits(value);
+    crc32.update((intBits >>> 24) & 0xFF);
+    crc32.update((intBits >>> 16) & 0xFF);
+    crc32.update((intBits >>> 8) & 0xFF);
+    crc32.update(intBits & 0xFF);
   }
 
   @Override
   public void writeDouble(final double value) throws IOException {
-    writeLong(Double.doubleToRawLongBits(value));
+    final int pageOffset = ensureAvailable(Binary.DOUBLE_SERIALIZED_SIZE);
+
+    currentPage.writeDouble(pageOffset, value);
+    LogManager.instance()
+        .log(this, Level.SEVERE, "Wrote double %d at page %d offset %d", value, currentPage.getPageId().getPageNumber(),
+            pageOffset);
+
+    updatePosition(Binary.DOUBLE_SERIALIZED_SIZE);
+
+    // Update checksum
+    final long longBits = Double.doubleToRawLongBits(value);
+    for (int i = 7; i >= 0; i--)
+      crc32.update((int) ((longBits >>> (i * 8)) & 0xFF));
   }
 
   @Override
   public void write(final int b) throws IOException {
-    ensureAvailable(1);
-    final int pageOffset = (int) (currentPosition % usablePageSize);
-    currentPage.writeByte(GRAPH_PAGE_HEADER_SIZE + pageOffset, (byte) b);
-    currentPosition += 1;
+    final int pageOffset = ensureAvailable(Binary.BYTE_SERIALIZED_SIZE);
+
+    currentPage.writeByte(pageOffset, (byte) b);
+    LogManager.instance()
+        .log(this, Level.SEVERE, "Wrote byte %d at page %d offset %d", b, currentPage.getPageId().getPageNumber(), pageOffset);
+
+    updatePosition(Binary.BYTE_SERIALIZED_SIZE);
     crc32.update(b);
   }
 
@@ -130,41 +184,40 @@ public class ArcadePageGraphWriter implements RandomAccessWriter {
 
   @Override
   public void write(final byte[] bytes, int offset, int length) throws IOException {
+    LogManager.instance()
+        .log(this, Level.SEVERE, "Wrote bytes %d at page %d offset %d", bytes.length, currentPage.getPageId().getPageNumber(),
+            offset);
+
     while (length > 0) {
-      final int pageOffset = (int) (currentPosition % usablePageSize);
+      int pageNum = (int) (currentPosition / usablePageSize);
+      int pageOffset = (int) (currentPosition % pageSize);
+
       final int availableInPage = usablePageSize - pageOffset;
+      if (availableInPage <= 0) {
+        // MOVE TO THE NEXT PAGE
+        ++pageNum;
+        pageOffset = 0;
+        currentPosition = (long) pageNum * pageSize;
+      }
+
       final int toWrite = Math.min(length, availableInPage);
 
-      // Ensure current page is loaded
-      final int pageNum = (int) (currentPosition / usablePageSize);
       ensurePageLoaded(pageNum);
 
       // Write to current page
-      final int pageDataOffset = GRAPH_PAGE_HEADER_SIZE + pageOffset;
-      currentPage.writeByteArray(pageDataOffset, bytes, offset, toWrite);
+      currentPage.writeByteArray(pageOffset, bytes, offset, toWrite);
 
       // Update checksum
       crc32.update(bytes, offset, toWrite);
 
       offset += toWrite;
-      currentPosition += toWrite;
+      updatePosition(toWrite);
       length -= toWrite;
 
       // If we need to write more data, it will go to the next page
       if (length > 0)
         currentPageNum = -1; // Force new page on next write
     }
-  }
-
-  @Override
-  public void writeShort(final int value) throws IOException {
-    ensureAvailable(2);
-    final int pageOffset = (int) (currentPosition % usablePageSize);
-    currentPage.writeShort(GRAPH_PAGE_HEADER_SIZE + pageOffset, (short) value);
-    currentPosition += 2;
-
-    crc32.update((value >>> 8) & 0xFF);
-    crc32.update(value & 0xFF);
   }
 
   @Override
@@ -236,26 +289,34 @@ public class ArcadePageGraphWriter implements RandomAccessWriter {
         throw new IOException("Failed to get/create page: " + pageId);
 
       currentPageNum = pageNum;
-
-      // Initialize page header if this is a new page
-      if (currentPage.readInt(0) == 0) {
-        currentPage.writeInt(0, pageNum);    // Page number
-        currentPage.writeLong(4, 0L);         // Reserved
-        currentPage.writeInt(12, 0);          // Reserved
-      }
     }
   }
 
-  private void ensureAvailable(final int bytes) throws IOException {
-    // Check if write would cross page boundary
-    final int pageOffset = (int) (currentPosition % usablePageSize);
+  private int ensureAvailable(final int bytes) throws IOException {
+    int pageNum = (int) (currentPosition / pageSize);
+    int pageOffset = (int) (currentPosition % pageSize);
+
     if (pageOffset + bytes > usablePageSize) {
-      // Write crosses page boundary - need to handle manually
-      throw new IOException("Primitive write crossing page boundary not supported");
+      ++pageNum;
+      currentPosition = (long) pageNum * pageSize;
+      pageOffset = 0;
     }
 
-    // Ensure page is loaded
-    final int pageNum = (int) (currentPosition / usablePageSize);
     ensurePageLoaded(pageNum);
+    return pageOffset;
+  }
+
+  private void updatePosition(final int bytesRead) throws IOException {
+    int pageNum = (int) (currentPosition / pageSize);
+    final int pageOffset = (int) (currentPosition % pageSize);
+
+    currentPosition += bytesRead;
+
+    if (pageOffset + bytesRead >= usablePageSize) {
+      // MOVE TO THE NEXT PAGE
+      ++pageNum;
+      ensurePageLoaded(pageNum);
+      currentPosition = (long) pageNum * pageSize;
+    }
   }
 }

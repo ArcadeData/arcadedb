@@ -274,6 +274,12 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   }
 
   @Override
+  public void putDouble(final int index, final double value) {
+    checkForAllocation(index, DOUBLE_SERIALIZED_SIZE);
+    buffer.putDouble(index, value);
+  }
+
+  @Override
   public int putString(final int index, final String value) {
     return putBytes(index, value.getBytes(DatabaseFactory.getDefaultCharset()));
   }
