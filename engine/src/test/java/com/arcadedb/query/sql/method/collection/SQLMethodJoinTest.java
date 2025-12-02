@@ -39,40 +39,40 @@ class SQLMethodJoinTest {
     }
 
     @Test
-    void testNullValue() {
+    void nullValue() {
         Object result = method.execute(null, null, null, null);
         assertThat(result).isNull();
     }
 
     @Test
-    void testJoinEmptyList() {
+    void joinEmptyList() {
         final Object result = method.execute(Collections.emptyList(), null, null, null);
         assertThat(result).isInstanceOf(String.class);
         assertThat(result).isEqualTo("");
     }
 
     @Test
-    void testJoinAnInteger() {
+    void joinAnInteger() {
         final Object result = method.execute(10, null, null, null);
         assertThat(result).isInstanceOf(String.class);
         assertThat(result).isEqualTo("10");
     }
 
     @Test
-    void testJoinByDefaultSeparator() {
+    void joinByDefaultSeparator() {
         final Object result = method.execute(List.of("first", "second"), null, null, null);
         assertThat(result).isInstanceOf(String.class);
         assertThat(result).isEqualTo("first,second");
     }
 
     @Test
-    void testJoinByDefaultSeparatorWithNullParams() {
+    void joinByDefaultSeparatorWithNullParams() {
         Object result = method.execute(List.of("first", "second"), null, null, new Object[]{null});
         assertThat(result).isEqualTo("first,second");
     }
 
     @Test
-    void testJoinByProvidedSeparator() {
+    void joinByProvidedSeparator() {
         final Object result = method.execute(List.of("first", "second"), null, null, new String[]{";"});
         assertThat(result).isInstanceOf(String.class);
         assertThat(result).isEqualTo("first;second");

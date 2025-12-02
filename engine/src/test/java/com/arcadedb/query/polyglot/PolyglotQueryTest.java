@@ -36,16 +36,16 @@ import java.util.concurrent.TimeoutException;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
-public class PolyglotQueryTest extends TestHelper {
+class PolyglotQueryTest extends TestHelper {
   @Test
-  public void testSum() {
+  void sum() {
     final ResultSet result = database.command("js", "3 + 5");
     assertThat(result.hasNext()).isTrue();
     assertThat((Integer) result.next().getProperty("value")).isEqualTo(8);
   }
 
   @Test
-  public void testDatabaseQuery() {
+  void databaseQuery() {
     database.transaction(() -> {
       database.getSchema().createVertexType("Product");
       database.newVertex("Product").set("name", "Amiga 1200", "price", 900).save();
@@ -60,7 +60,7 @@ public class PolyglotQueryTest extends TestHelper {
   }
 
   @Test
-  public void testSandbox() {
+  void sandbox() {
     // BY DEFAULT NO JAVA PACKAGES ARE ACCESSIBLE
     try {
       final ResultSet result = database.command("js", "let BigDecimal = Java.type('java.math.BigDecimal'); new BigDecimal(1)");
@@ -84,7 +84,7 @@ public class PolyglotQueryTest extends TestHelper {
   }
 
   @Test
-  public void testSandboxSystem() {
+  void sandboxSystem() {
     // BY DEFAULT NO JAVA PACKAGES ARE ACCESSIBLE
     try {
       final ResultSet result = database.command("js", "let System = Java.type('java.lang.System'); System.exit(1)");
@@ -98,7 +98,7 @@ public class PolyglotQueryTest extends TestHelper {
   }
 
   @Test
-  public void testTimeout() {
+  void timeout() {
     GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT.setValue(2000);
     try {
       database.command("js", "while(true);");
@@ -112,7 +112,7 @@ public class PolyglotQueryTest extends TestHelper {
   }
 
   @Test
-  public void testAnalyzeQuery() {
+  void analyzeQuery() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("js").analyze("3 + 5");
     assertThat(analyzed.isDDL()).isFalse();
     assertThat(analyzed.isIdempotent()).isFalse();

@@ -32,7 +32,7 @@ import java.util.logging.*;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class HTTP2ServersCreateReplicatedDatabaseIT extends BaseGraphServerTest {
+class HTTP2ServersCreateReplicatedDatabaseIT extends BaseGraphServerTest {
   @Override
   protected int getServerCount() {
     return 2;
@@ -44,7 +44,7 @@ public class HTTP2ServersCreateReplicatedDatabaseIT extends BaseGraphServerTest 
   }
 
   @Test
-  public void testCreateReplicatedDatabase() throws Exception {
+  void createReplicatedDatabase() throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
         "http://127.0.0.1:248" + 0 + "/api/v1/server").openConnection();
 

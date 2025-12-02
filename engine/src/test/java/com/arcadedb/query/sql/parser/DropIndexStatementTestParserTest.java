@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class DropIndexStatementTestParserTest extends AbstractParserTest {
+class DropIndexStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("DROP INDEX *");
     checkRightSyntax("DROP INDEX Foo");
     checkRightSyntax("drop index Foo");

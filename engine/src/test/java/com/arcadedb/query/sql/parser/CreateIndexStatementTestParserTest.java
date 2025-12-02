@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class CreateIndexStatementTestParserTest extends AbstractParserTest {
+class CreateIndexStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("create index `OUser.name` UNIQUE ENGINE LSM");
     checkRightSyntax("create index `OUser.name` UNIQUE engine LSM");
     checkRightSyntax("create index `OUser.name` IF NOT EXISTS UNIQUE engine LSM");

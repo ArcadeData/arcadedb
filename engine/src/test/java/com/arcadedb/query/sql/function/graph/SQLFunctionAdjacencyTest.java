@@ -33,13 +33,13 @@ import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class SQLFunctionAdjacencyTest {
+class SQLFunctionAdjacencyTest {
 
   private final Map<Integer, MutableVertex> vertices = new HashMap<>();
   private final Map<Integer, MutableEdge>   edges    = new HashMap<>();
 
   @Test
-  public void testOutE() throws Exception {
+  void outE() throws Exception {
     TestHelper.executeInNewDatabase("testOutE", (graph) -> {
       setUpDatabase(graph);
 
@@ -61,7 +61,7 @@ public class SQLFunctionAdjacencyTest {
   }
 
   @Test
-  public void testInE() throws Exception {
+  void inE() throws Exception {
     TestHelper.executeInNewDatabase("testInE", (graph) -> {
       setUpDatabase(graph);
 
@@ -82,7 +82,7 @@ public class SQLFunctionAdjacencyTest {
   }
 
   @Test
-  public void testBothE() throws Exception {
+  void bothE() throws Exception {
     TestHelper.executeInNewDatabase("testBothE", (graph) -> {
       setUpDatabase(graph);
 
@@ -105,7 +105,7 @@ public class SQLFunctionAdjacencyTest {
   }
 
   @Test
-  public void testBoth() throws Exception {
+  void both() throws Exception {
     TestHelper.executeInNewDatabase("testBoth", (graph) -> {
       setUpDatabase(graph);
 
@@ -128,7 +128,7 @@ public class SQLFunctionAdjacencyTest {
   }
 
   @Test
-  public void testOut() throws Exception {
+  void out() throws Exception {
     TestHelper.executeInNewDatabase("testOut", (graph) -> {
       setUpDatabase(graph);
 
@@ -150,7 +150,7 @@ public class SQLFunctionAdjacencyTest {
   }
 
   @Test
-  public void testIn() throws Exception {
+  void in() throws Exception {
     TestHelper.executeInNewDatabase("testIn", (graph) -> {
       setUpDatabase(graph);
 
@@ -171,7 +171,7 @@ public class SQLFunctionAdjacencyTest {
   }
 
   @Test
-  public void testOutV() throws Exception {
+  void outV() throws Exception {
     TestHelper.executeInNewDatabase("testOutV", (graph) -> {
       setUpDatabase(graph);
 
@@ -183,7 +183,7 @@ public class SQLFunctionAdjacencyTest {
   }
 
   @Test
-  public void testInV() throws Exception {
+  void inV() throws Exception {
     TestHelper.executeInNewDatabase("testInV", (graph) -> {
       setUpDatabase(graph);
 
@@ -195,7 +195,7 @@ public class SQLFunctionAdjacencyTest {
   }
 
   @Test
-  public void testBothV() throws Exception {
+  void bothV() throws Exception {
     TestHelper.executeInNewDatabase("testBothV", (graph) -> {
       setUpDatabase(graph);
 

@@ -66,7 +66,7 @@ public class TypeConversionTest extends TestHelper {
   }
 
   @Test
-  public void testNoConversion() {
+  void noConversion() {
     database.transaction(() -> {
       final MutableDocument doc = database.newDocument("ConversionTest");
 
@@ -109,7 +109,7 @@ public class TypeConversionTest extends TestHelper {
   }
 
   @Test
-  public void testConversionDecimals() {
+  void conversionDecimals() {
     database.transaction(() -> {
       final MutableDocument doc = database.newDocument("ConversionTest");
 
@@ -138,7 +138,7 @@ public class TypeConversionTest extends TestHelper {
   }
 
   @Test
-  public void testConversionDates() {
+  void conversionDates() {
     database.transaction(() -> {
       final MutableDocument doc = database.newDocument("ConversionTest");
 
@@ -177,7 +177,7 @@ public class TypeConversionTest extends TestHelper {
   }
 
   @Test
-  public void testDateAndDateTimeSettingsAreSavedInDatabase() {
+  void dateAndDateTimeSettingsAreSavedInDatabase() {
     database.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
     database.command("sql", "alter database `arcadedb.dateImplementation` `java.time.LocalDate`");
 
@@ -199,7 +199,7 @@ public class TypeConversionTest extends TestHelper {
   }
 
   @Test
-  public void testLocalDateTime() throws ClassNotFoundException {
+  void localDateTime() throws Exception {
     ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(LocalDateTime.class);
 
     final LocalDateTime localDateTime = LocalDateTime.now();
@@ -270,7 +270,7 @@ public class TypeConversionTest extends TestHelper {
   }
 
   @Test
-  public void testSQL() throws ClassNotFoundException {
+  void sql() throws Exception {
     final LocalDateTime localDateTime = LocalDateTime.now();
 
     database.command("sql", "alter database dateTimeImplementation `java.time.LocalDateTime`");
@@ -299,7 +299,7 @@ public class TypeConversionTest extends TestHelper {
   }
 
   @Test
-  public void testCalendar() throws ClassNotFoundException {
+  void calendar() throws Exception {
     ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(Calendar.class);
 
     final Calendar calendar = Calendar.getInstance();
@@ -322,7 +322,7 @@ public class TypeConversionTest extends TestHelper {
   }
 
   @Test
-  public void testLocalDate() throws ClassNotFoundException {
+  void localDate() throws Exception {
     ((DatabaseInternal) database).getSerializer().setDateImplementation(LocalDate.class);
 
     final LocalDate localDate = LocalDate.now();
@@ -345,7 +345,7 @@ public class TypeConversionTest extends TestHelper {
   }
 
   @Test
-  public void testZonedDateTime() throws ClassNotFoundException {
+  void zonedDateTime() throws Exception {
     ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(ZonedDateTime.class);
 
     final ZonedDateTime zonedDateTime = ZonedDateTime.now();
@@ -399,7 +399,7 @@ public class TypeConversionTest extends TestHelper {
   }
 
   @Test
-  public void testInstant() throws ClassNotFoundException {
+  void instant() throws Exception {
     ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(Instant.class);
 
     final Instant instant = Instant.now();
@@ -450,7 +450,7 @@ public class TypeConversionTest extends TestHelper {
   }
 
   @Test
-  public void testConversion() {
+  void conversion() {
     assertThat(DateUtils.convertTimestamp(10_000_000_000L, ChronoUnit.NANOS, ChronoUnit.SECONDS)).isEqualTo(10);
     assertThat(DateUtils.convertTimestamp(10_000_000_000L, ChronoUnit.NANOS, ChronoUnit.MILLIS)).isEqualTo(10_000);
     assertThat(DateUtils.convertTimestamp(10_000_000_000L, ChronoUnit.NANOS, ChronoUnit.MICROS)).isEqualTo(10_000_000);
@@ -474,7 +474,7 @@ public class TypeConversionTest extends TestHelper {
 
   @Test
   @DisabledOnOs(OS.WINDOWS)
-  public void testSQLMath() {
+  void sqlMath() {
 
     database.command("sql", "alter database dateTimeImplementation `java.time.LocalDateTime`");
     try {

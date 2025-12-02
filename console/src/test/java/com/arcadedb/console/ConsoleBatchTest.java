@@ -34,9 +34,9 @@ import java.io.IOException;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class ConsoleBatchTest {
+class ConsoleBatchTest {
   @Test
-  public void batchMode() throws IOException {
+  void batchMode() throws Exception {
     Console.execute(new String[] { "-b", "create database console; create vertex type ConsoleOnlyVertex;" });
     final Database db = new DatabaseFactory("./target/databases/console").open();
     assertThat(db.getSchema().existsType("ConsoleOnlyVertex")).isTrue();
@@ -44,7 +44,7 @@ public class ConsoleBatchTest {
   }
 
   @Test
-  public void batchModeWithError() throws IOException {
+  void batchModeWithError() throws Exception {
     // This should fail
     assertThatThrownBy(() -> Console.execute(
         new String[] { "-b", """
@@ -61,7 +61,7 @@ public class ConsoleBatchTest {
   }
 
   @Test
-  public void batchModeWithFailAtEnd() throws IOException {
+  void batchModeWithFailAtEnd() throws Exception {
     // Error is only printed out
     Console.execute(
         new String[] { "-b", "-fae", """
@@ -77,7 +77,7 @@ public class ConsoleBatchTest {
   }
 
   @Test
-  public void interactiveMode() throws IOException {
+  void interactiveMode() throws Exception {
     Console.execute(new String[] { "create database console; create vertex type ConsoleOnlyVertex;exit" });
     final Database db = new DatabaseFactory("./target/databases/console").open();
     assertThat(db.getSchema().existsType("ConsoleOnlyVertex")).isTrue();
@@ -85,7 +85,7 @@ public class ConsoleBatchTest {
   }
 
   @Test
-  public void swallowSettings() throws IOException {
+  void swallowSettings() throws Exception {
     FileUtils.deleteRecursively(new File("./console"));
     Console.execute(new String[] { "-Darcadedb.server.databaseDirectory=.",
         "create database console; create vertex type ConsoleOnlyVertex;exit;" });
@@ -96,13 +96,13 @@ public class ConsoleBatchTest {
   }
 
   @BeforeEach
-  public void cleanup() throws IOException {
+  void cleanup() throws IOException {
     FileUtils.deleteRecursively(new File("./target/databases"));
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
   }
 
   @AfterEach
-  public void endTests() {
+  void endTests() {
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();
   }

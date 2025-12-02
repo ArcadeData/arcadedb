@@ -25,13 +25,11 @@ import com.arcadedb.server.security.ServerSecurityException;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-
 import static com.arcadedb.engine.ComponentFile.MODE.READ_WRITE;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class ServerDefaultDatabasesIT extends BaseGraphServerTest {
+class ServerDefaultDatabasesIT extends BaseGraphServerTest {
 
   @Override
   protected boolean isCreateDatabases() {
@@ -47,7 +45,7 @@ public class ServerDefaultDatabasesIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void checkDefaultDatabases() throws IOException {
+  void checkDefaultDatabases() throws Exception {
     getServer(0).getSecurity().authenticate("albert", "einstein", null);
     getServer(0).getSecurity().authenticate("albert", "einstein", "Universe");
     getServer(0).getSecurity().authenticate("Jay", "Miner", null);
@@ -57,26 +55,11 @@ public class ServerDefaultDatabasesIT extends BaseGraphServerTest {
     getServer(0).getSecurity().authenticate("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS, null);
     getServer(0).getSecurity().authenticate("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS, "Amiga");
 
-    try {
-      getServer(0).getSecurity().authenticate("albert", "einstein", "Amiga");
-      fail("");
-    } catch (final ServerSecurityException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> getServer(0).getSecurity().authenticate("albert", "einstein", "Amiga")).isInstanceOf(ServerSecurityException.class);
 
-    try {
-      getServer(0).getSecurity().authenticate("Jack", "Tramiel", "Universe");
-      fail("");
-    } catch (final ServerSecurityException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> getServer(0).getSecurity().authenticate("Jack", "Tramiel", "Universe")).isInstanceOf(ServerSecurityException.class);
 
-    try {
-      getServer(0).getSecurity().authenticate("Jack", "Tramiel", "RandomName");
-      fail("");
-    } catch (final ServerSecurityException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> getServer(0).getSecurity().authenticate("Jack", "Tramiel", "RandomName")).isInstanceOf(ServerSecurityException.class);
 
     assertThat(getServer(0).existsDatabase("Universe")).isTrue();
     assertThat(getServer(0).existsDatabase("Amiga")).isTrue();

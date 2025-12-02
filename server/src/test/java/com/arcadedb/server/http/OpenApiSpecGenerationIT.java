@@ -70,7 +70,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   private final HttpClient client = HttpClient.newHttpClient();
 
   @Test
-  void testOpenApiSpecEndpointIsAccessible() throws Exception {
+  void openApiSpecEndpointIsAccessible() throws Exception {
     // Test that the OpenAPI spec endpoint exists and returns valid JSON
     HttpRequest request = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/openapi.json"))
@@ -97,7 +97,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testOpenApiSpecIsValidOpenApi30Format() throws Exception {
+  void openApiSpecIsValidOpenApi30Format() throws Exception {
     // Retrieve the OpenAPI spec
     String specContent = getOpenApiSpec();
 
@@ -139,7 +139,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testOpenApiSpecIncludesAllExpectedEndpoints() throws Exception {
+  void openApiSpecIncludesAllExpectedEndpoints() throws Exception {
     // Retrieve and parse the OpenAPI spec
     String specContent = getOpenApiSpec();
     OpenAPI openAPI = new OpenAPIV3Parser().readContents(specContent).getOpenAPI();
@@ -198,7 +198,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testOpenApiSpecIncludesProperRequestResponseModels() throws Exception {
+  void openApiSpecIncludesProperRequestResponseModels() throws Exception {
     // Retrieve and parse the OpenAPI spec
     String specContent = getOpenApiSpec();
     OpenAPI openAPI = new OpenAPIV3Parser().readContents(specContent).getOpenAPI();
@@ -248,7 +248,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testOpenApiSpecIncludesSecurityInformation() throws Exception {
+  void openApiSpecIncludesSecurityInformation() throws Exception {
     // Retrieve and parse the OpenAPI spec
     String specContent = getOpenApiSpec();
     OpenAPI openAPI = new OpenAPIV3Parser().readContents(specContent).getOpenAPI();
@@ -270,7 +270,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testOpenApiSpecGeneratorClassExists() {
+  void openApiSpecGeneratorClassExists() {
     // This test verifies that the OpenApiSpecGenerator class can be instantiated
     // The class requires an HttpServer instance which we get from the test server
     try {
@@ -305,7 +305,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testOpenApiHandlerClassExists() {
+  void openApiHandlerClassExists() {
     // This test verifies that the OpenApiHandler class can be instantiated
     // This will fail until we implement the class
     try {

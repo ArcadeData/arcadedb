@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class DropPropertyStatementTestParserTest extends AbstractParserTest {
+class DropPropertyStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("DROP PROPERTY Foo.bar");
     checkRightSyntax("drop property Foo.bar");
     checkRightSyntax("drop property `Foo bar`.`bar baz`");
@@ -36,7 +36,7 @@ public class DropPropertyStatementTestParserTest extends AbstractParserTest {
   }
 
   @Test
-  public void testIfExists() {
+  void ifExists() {
     checkRightSyntax("DROP PROPERTY Foo.bar if exists");
     checkRightSyntax("DROP PROPERTY Foo.bar IF EXISTS");
     checkRightSyntax("DROP PROPERTY Foo.bar if exists force");

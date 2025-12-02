@@ -48,7 +48,7 @@ class SQLMethodSplitTest {
   }
 
   @Test
-  void testSplitByComma() {
+  void splitByComma() {
     //null separator
     final Object result = method.execute("first,second", null, null, new Object[] { "," });
     assertThat(result).isInstanceOf(String[].class);

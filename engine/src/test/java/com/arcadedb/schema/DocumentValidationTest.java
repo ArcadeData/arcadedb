@@ -42,10 +42,10 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class DocumentValidationTest extends TestHelper {
+class DocumentValidationTest extends TestHelper {
 
   @Test
-  public void testReadOnly() {
+  void readOnly() {
     final DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
     embeddedClazz.createProperty("int", Type.INTEGER).setReadonly(true);
 
@@ -120,7 +120,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testRequiredValidationAPI() {
+  void requiredValidationAPI() {
     final DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
     embeddedClazz.createProperty("int", Type.INTEGER).setMandatory(true);
 
@@ -195,7 +195,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testDefaultValueIsSetWithSQL() {
+  void defaultValueIsSetWithSQL() {
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
 
     database.command("sql", "create property Validation.long LONG (default 1)");
@@ -216,7 +216,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testDefaultNotNullValueIsSetWithSQL() {
+  void defaultNotNullValueIsSetWithSQL() {
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
 
     database.command("sql", "create property Validation.string STRING (notnull, default \"1\")");
@@ -231,7 +231,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testDefaultNotNullMandatoryValueIsSetWithSQL() {
+  void defaultNotNullMandatoryValueIsSetWithSQL() {
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
 
     database.command("sql", "create property Validation.string STRING (mandatory true, notnull true, default \"Hi\")");
@@ -258,7 +258,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testRequiredValidationSQL() {
+  void requiredValidationSQL() {
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
 
     database.command("sql", "create property Validation.int INTEGER (mandatory true)");
@@ -274,7 +274,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testRequiredValidationEdge() {
+  void requiredValidationEdge() {
     database.getSchema().createVertexType("V");
     database.getSchema().createEdgeType("E");
 
@@ -292,7 +292,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testRequiredValidationEdgeSQL() {
+  void requiredValidationEdgeSQL() {
     database.getSchema().createVertexType("V");
     database.getSchema().createEdgeType("E");
 
@@ -321,7 +321,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testValidationNotValidEmbedded() {
+  void validationNotValidEmbedded() {
     final DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
     embeddedClazz.createProperty("int", Type.INTEGER).setMandatory(true);
 
@@ -342,7 +342,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testValidationNotValidEmbeddedList() {
+  void validationNotValidEmbeddedList() {
     final DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
     embeddedClazz.createProperty("int", Type.INTEGER).setMandatory(true);
     embeddedClazz.createProperty("long", Type.LONG).setMandatory(true);
@@ -372,7 +372,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testValidationNotValidEmbeddedMap() {
+  void validationNotValidEmbeddedMap() {
     final DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
     embeddedClazz.createProperty("int", Type.INTEGER).setMandatory(true);
     embeddedClazz.createProperty("long", Type.LONG).setMandatory(true);
@@ -403,7 +403,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testMaxValidation() {
+  void maxValidation() {
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
     clazz.createProperty("int", Type.INTEGER).setMax("11");
     clazz.createProperty("long", Type.LONG).setMax("11");
@@ -470,7 +470,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testMinValidation() {
+  void minValidation() {
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
     clazz.createProperty("int", Type.INTEGER).setMin("11");
     clazz.createProperty("long", Type.LONG).setMin("11");
@@ -536,7 +536,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testNotNullValidation() {
+  void notNullValidation() {
     database.getSchema().createDocumentType("EmbeddedValidation");
 
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
@@ -594,7 +594,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testNotNullSave() {
+  void notNullSave() {
     database.getSchema().createDocumentType("EmbeddedValidation");
 
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
@@ -654,7 +654,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testRegExpValidation() {
+  void regExpValidation() {
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType("Validation");
     clazz.getOrCreateProperty("string", Type.STRING).setRegexp("[^Z]*");
 
@@ -666,7 +666,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testRegExpValidationFromSQL() {
+  void regExpValidationFromSQL() {
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType("Validation");
 
     database.command("sql", "create property Validation.anychars string (regexp '.*')");
@@ -684,7 +684,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testPropertyMetadataAreSavedAndReloadded() {
+  void propertyMetadataAreSavedAndReloadded() {
     database.getSchema().createDocumentType("EmbeddedValidation");
 
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
@@ -713,7 +713,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testMinMaxNotApplicable() {
+  void minMaxNotApplicable() {
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType("Validation");
     assertThatThrownBy(() -> clazz.createProperty("invString", Type.STRING).setMin("-1"))
         .isInstanceOf(IllegalArgumentException.class);
@@ -723,7 +723,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testEmbeddedDocumentConversion() {
+  void embeddedDocumentConversion() {
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType("Validation");
     MutableDocument v = clazz.newRecord();
     v.set("embedded", Map.of("value", 300, Property.TYPE_PROPERTY, "Validation"));

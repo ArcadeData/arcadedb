@@ -36,9 +36,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Fail.fail;
 
-public class ExplicitLockingTransactionTest extends TestHelper {
+class ExplicitLockingTransactionTest extends TestHelper {
   @Test
-  public void testExplicitLockType() {
+  void explicitLockType() {
     final Database db = database;
 
     final int TOT = 100;
@@ -117,7 +117,7 @@ public class ExplicitLockingTransactionTest extends TestHelper {
   }
 
   @Test
-  public void testExplicitLockBucket() {
+  void explicitLockBucket() {
     final Database db = database;
 
     final int TOT = 100;
@@ -196,7 +196,7 @@ public class ExplicitLockingTransactionTest extends TestHelper {
   }
 
   @Test
-  public void testExplicitLockTypeSQL() {
+  void explicitLockTypeSQL() {
     final Database db = database;
 
     final int TOT = 100;
@@ -275,7 +275,7 @@ public class ExplicitLockingTransactionTest extends TestHelper {
   }
 
   @Test
-  public void testExplicitLockBucketSQL() {
+  void explicitLockBucketSQL() {
     final Database db = database;
 
     final int TOT = 100;
@@ -354,7 +354,7 @@ public class ExplicitLockingTransactionTest extends TestHelper {
   }
 
   @Test
-  public void testErrorOnExplicitLock() {
+  void errorOnExplicitLock() {
     final Database db = database;
 
     database.getSchema().getOrCreateVertexType("Node");

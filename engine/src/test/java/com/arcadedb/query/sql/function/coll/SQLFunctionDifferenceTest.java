@@ -32,10 +32,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author edegtyarenko
  * @since 11.10.12 14:40
  */
-public class SQLFunctionDifferenceTest {
+class SQLFunctionDifferenceTest {
 
   @Test
-  public void testExecute() {
+  void execute() {
     final SQLFunctionDifference function = new SQLFunctionDifference();
 
     List<List<Object>> incomes = Arrays.asList(Arrays.asList(1, 2, 3, 4, 5, 1), Arrays.asList(3, 5, 6, 7, 0, 1, 3, 3, 6),

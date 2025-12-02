@@ -26,10 +26,10 @@ import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class TestVertexDelete extends TestHelper {
+class TestVertexDelete extends TestHelper {
 
   @Test
-  public void testFullEdgeDeletion() {
+  void fullEdgeDeletion() {
     createSchema(database);
     for (int i = 0; i < 100; i++) {
       List<Vertex> vlist = new ArrayList<>();

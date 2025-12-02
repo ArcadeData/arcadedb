@@ -36,24 +36,24 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Michael MacFadden
  */
-public class SQLMethodAsListTest {
+class SQLMethodAsListTest {
 
   private SQLMethod function;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     function = new SQLMethodAsList();
   }
 
   @Test
-  public void testNull() {
+  void testNull() {
     // The expected behavior is to return an empty list.
     final Object result = function.execute(null, null, null, null);
     assertThat(new ArrayList<Object>()).isEqualTo(result);
   }
 
   @Test
-  public void testList() {
+  void list() {
     // The expected behavior is to return the list itself.
     final ArrayList<Object> aList = new ArrayList<Object>();
     aList.add(1);
@@ -63,7 +63,7 @@ public class SQLMethodAsListTest {
   }
 
   @Test
-  public void testCollection() {
+  void collection() {
     // The expected behavior is to return a list with all of the elements
     // of the collection in it.
     final Set<Object> aCollection = new LinkedHashSet<Object>();
@@ -79,7 +79,7 @@ public class SQLMethodAsListTest {
   }
 
   @Test
-  public void testIterable() {
+  void iterable() {
     // The expected behavior is to return a list with all the elements
     // of the iterable in it, in order of the collections iterator.
     final ArrayList<Object> expected = new ArrayList<Object>();
@@ -94,7 +94,7 @@ public class SQLMethodAsListTest {
   }
 
   @Test
-  public void testIterator() {
+  void iterator() {
     // The expected behavior is to return a list with all the elements
     // of the iterator in it, in order of the iterator.
     final ArrayList<Object> expected = new ArrayList<Object>();
@@ -109,7 +109,7 @@ public class SQLMethodAsListTest {
   }
 
   @Test
-  public void testDocument() {
+  void document() {
     // The expected behavior is to return a list with only the single
     // Document in it.
 
@@ -129,7 +129,7 @@ public class SQLMethodAsListTest {
   }
 
   @Test
-  public void testOtherSingleValue() {
+  void otherSingleValue() {
     // The expected behavior is to return a list with only the single
     // element in it.
 

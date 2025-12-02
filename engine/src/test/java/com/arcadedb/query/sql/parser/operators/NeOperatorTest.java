@@ -29,9 +29,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
-public class NeOperatorTest {
+class NeOperatorTest {
   @Test
-  public void test() {
+  void test() {
     final NeOperator op = new NeOperator(-1);
 
     assertThat(op.execute(null, null, 1)).isTrue();

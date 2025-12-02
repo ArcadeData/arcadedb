@@ -32,10 +32,10 @@ import java.io.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class JavaBinarySerializerTest extends TestHelper {
+class JavaBinarySerializerTest extends TestHelper {
 
   @Test
-  public void testDocumentTransient() throws IOException, ClassNotFoundException {
+  void documentTransient() throws Exception {
     final DocumentType type = database.getSchema().createDocumentType("Doc");
     type.createProperty("id", Type.LONG);
 
@@ -59,7 +59,7 @@ public class JavaBinarySerializerTest extends TestHelper {
   }
 
   @Test
-  public void testDocumentPersistent() throws IOException, ClassNotFoundException {
+  void documentPersistent() throws Exception {
     final DocumentType type = database.getSchema().createDocumentType("Doc");
     type.createProperty("id", Type.LONG);
 
@@ -86,7 +86,7 @@ public class JavaBinarySerializerTest extends TestHelper {
   }
 
   @Test
-  public void testVertexTransient() throws IOException, ClassNotFoundException {
+  void vertexTransient() throws Exception {
     final VertexType type = database.getSchema().createVertexType("Doc");
     type.createProperty("id", Type.LONG);
 
@@ -110,7 +110,7 @@ public class JavaBinarySerializerTest extends TestHelper {
   }
 
   @Test
-  public void testVertexPersistent() throws IOException, ClassNotFoundException {
+  void vertexPersistent() throws Exception {
     final VertexType type = database.getSchema().createVertexType("Doc");
     database.getSchema().createEdgeType("Edge");
     type.createProperty("id", Type.LONG);
@@ -143,7 +143,7 @@ public class JavaBinarySerializerTest extends TestHelper {
   }
 
   @Test
-  public void testEdgePersistent() throws IOException, ClassNotFoundException {
+  void edgePersistent() throws Exception {
     database.getSchema().createVertexType("Doc");
     final EdgeType type = database.getSchema().createEdgeType("Edge");
 

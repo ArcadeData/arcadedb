@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class ReturnParserTestStatementTest extends AbstractParserTest {
+class ReturnParserTestStatementTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("RETURN");
     checkRightSyntax("return");
     checkRightSyntax("RETURN 1");

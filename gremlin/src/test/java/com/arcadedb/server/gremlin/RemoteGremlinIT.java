@@ -31,10 +31,10 @@ import static org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__.in;
 import static org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__.select;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class RemoteGremlinIT extends AbstractGremlinServerIT {
+class RemoteGremlinIT extends AbstractGremlinServerIT {
 
   @Test
-  public void insert() throws Exception {
+  void insert() throws Exception {
     testEachServer((serverIndex) -> {
       assertThat(
           new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
@@ -66,7 +66,7 @@ public class RemoteGremlinIT extends AbstractGremlinServerIT {
   }
 
   @Test
-  public void dropVertex() throws Exception {
+  void dropVertex() throws Exception {
     testEachServer((serverIndex) -> {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, getDatabaseName(), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);

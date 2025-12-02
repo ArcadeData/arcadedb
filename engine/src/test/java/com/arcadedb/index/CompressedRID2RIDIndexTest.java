@@ -24,11 +24,11 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class CompressedRID2RIDIndexTest extends TestHelper {
+class CompressedRID2RIDIndexTest extends TestHelper {
   private static final int TOT = 10_000_000;
 
   @Test
-  public void testIndexPutAndGet() throws ClassNotFoundException {
+  void indexPutAndGet() throws Exception {
     final CompressedRID2RIDIndex index = new CompressedRID2RIDIndex(database, TOT, TOT);
 
     for (int i = 0; i < TOT; i++)

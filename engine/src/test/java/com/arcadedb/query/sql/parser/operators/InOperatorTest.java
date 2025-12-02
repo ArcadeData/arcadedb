@@ -28,9 +28,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
-public class InOperatorTest {
+class InOperatorTest {
   @Test
-  public void test() {
+  void test() {
     final InOperator op = new InOperator(-1);
 
     assertThat(op.execute(null, null, null)).isFalse();
@@ -52,7 +52,7 @@ public class InOperatorTest {
   }
 
   @Test
-  public void issue1785() {
+  void issue1785() {
     final InOperator op = new InOperator(-1);
 
     final List<Object> nullList = new ArrayList<>();

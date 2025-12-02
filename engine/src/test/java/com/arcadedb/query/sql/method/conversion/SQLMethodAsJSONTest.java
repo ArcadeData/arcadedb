@@ -25,7 +25,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SQLMethodAsJSONTest {
 
@@ -43,26 +43,22 @@ class SQLMethodAsJSONTest {
   }
 
   @Test
-  void testEmptyJsonIsReturned() {
+  void emptyJsonIsReturned() {
     final Object result = method.execute("", null, null, null);
     assertThat(result instanceof JSONObject).isTrue();
     assertThat(((JSONObject) result).isEmpty()).isTrue();
   }
 
   @Test
-  void testStringIsReturnedAsString() {
+  void stringIsReturnedAsString() {
     final Object result = method.execute(new JSONObject().put("name", "robot").toString(), null, null, null);
     assertThat(result instanceof JSONObject).isTrue();
     assertThat(((JSONObject) result).getString("name")).isEqualTo("robot");
   }
 
   @Test
-  void testErrorJsonParsing() {
-    try {
-      final Object result = method.execute("{\"name\"]", null, null, null);
-      fail("");
-    } catch (JSONException e) {
-      //EXPECTED
-    }
+  void errorJsonParsing() {
+    assertThatThrownBy(() -> method.execute("{\"name\"]", null, null, null))
+        .isInstanceOf(JSONException.class);
   }
 }

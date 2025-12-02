@@ -112,7 +112,7 @@ public class CompositeIndexUpdateTest {
   }
 
   @Test
-  public void testWhereAfterAsyncInsert() {
+  void whereAfterAsyncInsert() {
     final int PARALLEL_LEVEL = 6;
     final String DATABASE_NAME = "test";
     final int TOTAL_ORDERS = 7;
@@ -317,12 +317,12 @@ public class CompositeIndexUpdateTest {
   }
 
   @BeforeEach
-  public void cleanup() {
+  void cleanup() {
     FileUtils.deleteRecursively(new File("./target/databases/"));
   }
 
   @AfterEach
-  public void endTests() {
+  void endTests() {
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();
   }

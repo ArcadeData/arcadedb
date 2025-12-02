@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class ExportDatabaseStatementTestParserTest extends AbstractParserTest {
+class ExportDatabaseStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("EXPORT DATABASE http://www.foo.bar");
     checkRightSyntax("export database http://www.foo.bar");
     checkRightSyntax("EXPORT DATABASE https://www.foo.bar");

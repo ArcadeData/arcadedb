@@ -34,10 +34,10 @@ import java.time.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class RemoteSafeCloseDatabaseIT {
+class RemoteSafeCloseDatabaseIT {
 
   @Test
-  public void testCreateDatabaseThenStartAndStopServer() {
+  void createDatabaseThenStartAndStopServer() {
     final String DATABASE_NAME = "test";
     final int PARALLEL_LEVEL = 6;
     try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/" + DATABASE_NAME)) {
@@ -78,7 +78,7 @@ public class RemoteSafeCloseDatabaseIT {
   }
 
   @AfterEach
-  public void endTests() {
+  void endTests() {
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();
   }

@@ -30,10 +30,10 @@ import static org.assertj.core.api.Assertions.fail;
 /**
  * Created by luigidellaquila on 02/07/15.
  */
-public class ProjectionTest {
+class ProjectionTest {
 
   @Test
-  public void testIsExpand() throws ParseException {
+  void isExpand() throws Exception {
     final SqlParser parser = getParserFor("select expand(foo)  from V");
     final SelectStatement stm = (SelectStatement) parser.Parse();
     assertThat(stm.getProjection().isExpand()).isTrue();
@@ -48,7 +48,7 @@ public class ProjectionTest {
   }
 
   @Test
-  public void testValidate() throws ParseException {
+  void validate() throws Exception {
     final SqlParser parser = getParserFor("select expand(foo)  from V");
     final SelectStatement stm = (SelectStatement) parser.Parse();
     stm.getProjection().validate();

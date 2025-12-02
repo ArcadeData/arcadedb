@@ -43,7 +43,7 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
-  public void testQueryOnDeprecated() {
+  void queryOnDeprecated() {
     String script = """
         begin;
         let $a = select from foo;
@@ -56,7 +56,7 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
-  public void testQuery() {
+  void query() {
     String script = """
         begin;
         let $a = select from foo;
@@ -68,7 +68,7 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
-  public void testTx() {
+  void tx() {
     String script = """
         begin isolation REPEATABLE_READ;
         let $a = insert into V set test = 'sql script test';
@@ -81,7 +81,7 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
-  public void testReturnExpanded() {
+  void returnExpanded() {
     database.transaction(() -> {
       String script = """
           let $a = insert into V set test = 'sql script test';
@@ -101,7 +101,7 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
-  public void testSleep() {
+  void sleep() {
     long begin = System.currentTimeMillis();
 
     database.command("SQLScript", "sleep 500");
@@ -137,7 +137,7 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
-  public void testReturnObject() {
+  void returnObject() {
     ResultSet result = database.command("SQLScript", "return [{ a: 'b' }]");
 
     assertThat(Optional.ofNullable(result)).isNotNull();
@@ -147,7 +147,7 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
-  public void testIncrementAndLet() {
+  void incrementAndLet() {
     database.transaction(() -> {
       database.getSchema().createDocumentType("TestCounter");
 
@@ -165,7 +165,7 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
-  public void testIf1() {
+  void if1() {
     String script = """
         let $a = select 1 as one;
         if($a[0].one = 1){
@@ -180,7 +180,7 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
-  public void testIf2() {
+  void if2() {
     String script = """
         let $a = select 1 as one;
         if ($a[0].one = 1) {
@@ -195,7 +195,7 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
-  public void testIf3() {
+  void if3() {
 
     String script = """
         let $a = select 1 as one;
@@ -210,7 +210,7 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
-  public void testNestedIf2() {
+  void nestedIf2() {
     String script = """
         let $a = select 1 as one;
         if ($a[0].one = 1) {
@@ -228,7 +228,7 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
-  public void testNestedIf3() {
+  void nestedIf3() {
     String script = """
         let $a = select 1 as one;
         if ($a[0].one = 'zz') {
@@ -246,7 +246,7 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
-  public void testIfRealQuery() {
+  void ifRealQuery() {
     String script = """
         let $a = select from foo;
         if ($a is not null and $a.size() = 3 ){
@@ -261,7 +261,7 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
-  public void testIfMultipleStatements() {
+  void ifMultipleStatements() {
     String script = """
         let $a = select 1 as one;
         -- this is a comment
@@ -278,13 +278,13 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
-  public void testSemicolonInString() {
+  void semicolonInString() {
     // testing parsing problem
     ResultSet qResult = database.command("SQLScript", "let $a = select 'foo ; bar' as one\n");
   }
 
   @Test
-  public void testQuotedRegex() {
+  void quotedRegex() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE QuotedRegex2");
       String batch = "INSERT INTO QuotedRegex2 SET regexp=\"'';\"";
@@ -301,7 +301,7 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
-  public void testParameters1() {
+  void parameters1() {
     String className = "testParameters1";
     database.getSchema().createVertexType(className);
     database.getSchema().createEdgeType("E");
@@ -329,7 +329,7 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
-  public void testPositionalParameters() {
+  void positionalParameters() {
     String className = "testPositionalParameters";
     database.getSchema().createVertexType(className);
     database.getSchema().createEdgeType("E");
@@ -353,7 +353,7 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
-  public void testInsertJsonNewLines() {
+  void insertJsonNewLines() {
     database.transaction(() -> {
       database.getSchema().createDocumentType("doc");
 

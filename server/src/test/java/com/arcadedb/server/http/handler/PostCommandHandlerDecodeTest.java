@@ -23,10 +23,10 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class PostCommandHandlerDecodeTest extends BaseGraphServerTest {
+class PostCommandHandlerDecodeTest extends BaseGraphServerTest {
 
   @Test
-  void testJavaScriptFunctionWithLogicalAndOperatorViaHTTP() throws Exception {
+  void javaScriptFunctionWithLogicalAndOperatorViaHTTP() throws Exception {
     executeCommand(0, "sql",
         "DEFINE FUNCTION Test.getMatchRating \"return 1==1 && 0==0\" LANGUAGE js");
 
@@ -37,7 +37,7 @@ public class PostCommandHandlerDecodeTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testJavaScriptFunctionWithLogicalAndOperatorDirectCommand() {
+  void javaScriptFunctionWithLogicalAndOperatorDirectCommand() {
     getServer(0).getDatabase(getDatabaseName()).command("sql",
         "DEFINE FUNCTION Test.getMatchRating2 \"return 1==1 && 0==0\" LANGUAGE js");
 
@@ -48,7 +48,7 @@ public class PostCommandHandlerDecodeTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testDecodeMethodCorrectlyHandlesHtmlEntities() {
+  void decodeMethodCorrectlyHandlesHtmlEntities() {
     final var handler = new PostCommandHandler(getServer(0).getHttpServer()) {
       public String testDecode(final String command) {
         return decode(command);

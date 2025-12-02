@@ -33,14 +33,14 @@ import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.*;
 
-public class HTTPGraphConcurrentIT extends BaseGraphServerTest {
+class HTTPGraphConcurrentIT extends BaseGraphServerTest {
   @Override
   protected int getServerCount() {
     return 3;
   }
 
   @Test
-  public void testOneEdgePerTxMultiThreads() throws Exception {
+  void oneEdgePerTxMultiThreads() throws Exception {
     testEachServer((serverIndex) -> {
       executeCommand(serverIndex, "sqlscript",
           "create vertex type Photos" + serverIndex + ";create vertex type Users" + serverIndex + ";create edge type HasUploaded"

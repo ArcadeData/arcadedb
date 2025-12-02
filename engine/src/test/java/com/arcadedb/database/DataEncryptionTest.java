@@ -19,11 +19,7 @@
 package com.arcadedb.database;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import java.security.NoSuchAlgorithmException;
-import java.security.spec.InvalidKeySpecException;
 import java.util.concurrent.atomic.AtomicReference;
-
-import javax.crypto.NoSuchPaddingException;
 
 import org.junit.jupiter.api.Test;
 
@@ -41,7 +37,7 @@ class DataEncryptionTest extends TestHelper {
   String salt = "salt";
 
   @Test
-  void dataIsEncrypted() throws NoSuchAlgorithmException, InvalidKeySpecException, NoSuchPaddingException {
+  void dataIsEncrypted() throws Exception {
     database.setDataEncryption(DefaultDataEncryption.useDefaults(DefaultDataEncryption.getSecretKeyFromPasswordUsingDefaults(password, salt)));
 
     database.command("sql", "create vertex type Person");

@@ -29,7 +29,7 @@ import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class BackupDatabaseTest extends TestHelper {
+class BackupDatabaseTest extends TestHelper {
 
   @BeforeEach
   void setUp() {
@@ -37,7 +37,7 @@ public class BackupDatabaseTest extends TestHelper {
   }
 
   @Test
-  public void testBackup() {
+  void backup() {
     ResultSet resultSet = database.command("sql", "backup database file://test-backup.zip ");
 
     Result result = resultSet.next();
@@ -46,7 +46,7 @@ public class BackupDatabaseTest extends TestHelper {
   }
 
   @Test
-  public void testBackupEncryption() {
+  void backupEncryption() {
     ResultSet resultSet = database.command("sql", "backup database file://test-backup.zip with encryptionKey = 'SuperSecretKey'");
 
     Result result = resultSet.next();

@@ -52,7 +52,7 @@ public class CountFromIndexStepTest {
   }
 
   @Test
-  public void shouldCountRecordsOfIndex() throws Exception {
+  void shouldCountRecordsOfIndex() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
       final DocumentType clazz = TestHelper.createRandomType(db);
       clazz.createProperty(PROPERTY_NAME, Type.STRING);

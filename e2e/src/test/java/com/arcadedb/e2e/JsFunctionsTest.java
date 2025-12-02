@@ -27,7 +27,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class JsFunctionsTest extends ArcadeContainerTemplate {
+class JsFunctionsTest extends ArcadeContainerTemplate {
   private RemoteDatabase database;
 
   @BeforeEach
@@ -66,7 +66,7 @@ public class JsFunctionsTest extends ArcadeContainerTemplate {
   }
 
   @Test
-  void testStringObjectAsInput() {
+  void stringObjectAsInput() {
 
     database.command("sql", """
         DEFINE FUNCTION Test.lowercase "return a.toLowerCase()" PARAMETERS [a] LANGUAGE js;

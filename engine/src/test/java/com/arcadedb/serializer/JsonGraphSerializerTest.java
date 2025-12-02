@@ -53,7 +53,7 @@ class JsonGraphSerializerTest extends TestHelper {
   }
 
   @Test
-  void testSerializeEdge() {
+  void serializeEdge() {
 
     String json = jsonGraphSerializer.serializeGraphElement(edge).toString();
 
@@ -70,7 +70,7 @@ class JsonGraphSerializerTest extends TestHelper {
   }
 
   @Test
-  void testSerializeEdgeWithoutMetadata() {
+  void serializeEdgeWithoutMetadata() {
     jsonGraphSerializer.setIncludeMetadata(false);
 
     String json = jsonGraphSerializer.serializeGraphElement(edge).toString();

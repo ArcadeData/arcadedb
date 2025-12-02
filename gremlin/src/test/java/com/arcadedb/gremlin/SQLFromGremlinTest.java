@@ -32,9 +32,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class SQLFromGremlinTest {
+class SQLFromGremlinTest {
   @Test
-  public void testSQL()  {
+  void sql()  {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testsql");
     try {
 
@@ -68,7 +68,7 @@ public class SQLFromGremlinTest {
 
   @BeforeEach
   @AfterEach
-  public void clean() {
+  void clean() {
     FileUtils.deleteRecursively(new File("./target/testsql"));
   }
 }

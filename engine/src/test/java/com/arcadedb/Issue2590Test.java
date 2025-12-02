@@ -40,7 +40,7 @@ public class Issue2590Test extends TestHelper {
   }
 
   @Test
-  void testDatabaseUpdateToNullThenToDuplicate() {
+  void databaseUpdateToNullThenToDuplicate() {
     // Create vertex type with unique field
     database.command("sql", "CREATE VERTEX TYPE NullRemoteTest");
     database.command("sql", "CREATE PROPERTY NullRemoteTest.licenseKey STRING");
@@ -65,7 +65,7 @@ public class Issue2590Test extends TestHelper {
   }
 
   @Test
-  public void testUniqueConstraintOnUpdate() {
+  void uniqueConstraintOnUpdate() {
     // Create vertex type with unique field
     final VertexType vertexType = database.getSchema().createVertexType("TestVertex");
     vertexType.createProperty("uniqueField", Type.STRING);
@@ -104,7 +104,7 @@ public class Issue2590Test extends TestHelper {
   }
 
   @Test
-  public void testValidUpdateToNonDuplicateValue() {
+  void validUpdateToNonDuplicateValue() {
     // Create vertex type with unique field
     final VertexType vertexType = database.getSchema().createVertexType("TestVertex3");
     vertexType.createProperty("uniqueField", Type.STRING);

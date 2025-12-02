@@ -29,9 +29,9 @@ import static org.assertj.core.api.Assertions.fail;
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
-public class LeOperatorTest {
+class LeOperatorTest {
   @Test
-  public void test() {
+  void test() {
     final LeOperator op = new LeOperator(-1);
     assertThat(op.execute(null, 1, 1)).isTrue();
     assertThat(op.execute(null, 1, 0)).isFalse();

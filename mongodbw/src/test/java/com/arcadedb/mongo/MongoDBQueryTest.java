@@ -32,12 +32,12 @@ import java.io.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class MongoDBQueryTest {
+class MongoDBQueryTest {
 
   private Database database;
 
   @BeforeEach
-  public void beginTest() {
+  void beginTest() {
     FileUtils.deleteRecursively(new File("./target/databases/graph"));
 
     database = new DatabaseFactory("./target/databases/graph").create();
@@ -51,7 +51,7 @@ public class MongoDBQueryTest {
   }
 
   @AfterEach
-  public void endTest() {
+  void endTest() {
     if (database != null) {
       if (database.isTransactionActive())
         database.rollback();
@@ -60,7 +60,7 @@ public class MongoDBQueryTest {
   }
 
   @Test
-  public void testOrderBy() {
+  void orderBy() {
     int i = 0;
     for (final ResultSet resultset = database.query("mongo",
         "{ collection: 'MongoDBCollection', query: { $and: [ { name: { $eq: 'Jay' } }, { lastName: { $exists: true } }, { lastName: { $eq: 'Miner' } }, { lastName: { $ne: 'Miner22' } } ], $orderBy: { id: 1 } } }"); resultset.hasNext(); ++i) {

@@ -55,13 +55,13 @@ import java.util.logging.Level;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class LSMTreeIndexTest extends TestHelper {
+class LSMTreeIndexTest extends TestHelper {
   private static final int    TOT       = 100000;
   private static final String TYPE_NAME = "V";
   private static final int    PAGE_SIZE = 20000;
 
   @Test
-  public void testGet() {
+  void get() {
     database.transaction(() -> {
       int total = 0;
 
@@ -88,7 +88,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testGetAsRange() {
+  void getAsRange() {
     database.transaction(() -> {
 
       final Index[] indexes = database.getSchema().getIndexes();
@@ -130,7 +130,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testRangeFromHead() {
+  void rangeFromHead() {
     database.transaction(() -> {
 
       final Index[] indexes = database.getSchema().getIndexes();
@@ -208,7 +208,7 @@ public class LSMTreeIndexTest extends TestHelper {
 //  }
 
   @Test
-  public void testRemoveKeys() {
+  void removeKeys() {
     database.transaction(() -> {
       int total = 0;
 
@@ -287,7 +287,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testRemoveEntries() {
+  void removeEntries() {
     database.transaction(() -> {
       int total = 0;
 
@@ -368,7 +368,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testRemoveEntriesMultipleTimes() {
+  void removeEntriesMultipleTimes() {
     database.transaction(() -> {
       int total = 0;
 
@@ -412,7 +412,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testRemoveAndPutEntries() {
+  void removeAndPutEntries() {
     //database.getConfiguration().setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 0); // DISABLE COMPACTION
 
     database.transaction(() -> {
@@ -473,7 +473,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testChangePrimaryKeySameTx() {
+  void changePrimaryKeySameTx() {
     database.transaction(() -> {
       for (int i = 0; i < 1000; ++i) {
         final IndexCursor cursor = database.lookupByKey(TYPE_NAME, "id", i);
@@ -486,7 +486,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testDeleteCreateSameKeySameTx() {
+  void deleteCreateSameKeySameTx() {
     database.transaction(() -> {
       for (int i = 0; i < 1000; ++i) {
         final IndexCursor cursor = database.lookupByKey(TYPE_NAME, "id", i);
@@ -511,7 +511,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testUpdateKeys() {
+  void updateKeys() {
     database.transaction(() -> {
       int total = 0;
 
@@ -592,7 +592,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testPutDuplicates() {
+  void putDuplicates() {
     database.transaction(() -> {
       int total = 0;
 
@@ -627,7 +627,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexAscending() {
+  void scanIndexAscending() {
     database.transaction(() -> {
 
       // Wait for the index to be compacted using awaitility
@@ -689,7 +689,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexDescending() {
+  void scanIndexDescending() {
     database.transaction(() -> {
 
       // Wait for the index to be compacted using awaitility
@@ -751,7 +751,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexAscendingPartialInclusive() {
+  void scanIndexAscendingPartialInclusive() {
     database.transaction(() -> {
       int total = 0;
 
@@ -786,7 +786,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexAscendingPartialExclusive() {
+  void scanIndexAscendingPartialExclusive() {
     database.transaction(() -> {
       int total = 0;
 
@@ -821,7 +821,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexDescendingPartialInclusive() {
+  void scanIndexDescendingPartialInclusive() {
     database.transaction(() -> {
       int total = 0;
 
@@ -855,7 +855,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexDescendingPartialExclusive() {
+  void scanIndexDescendingPartialExclusive() {
     database.transaction(() -> {
       int total = 0;
 
@@ -889,7 +889,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeInclusive2Inclusive() {
+  void scanIndexRangeInclusive2Inclusive() {
     database.transaction(() -> {
       int total = 0;
 
@@ -928,7 +928,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeInclusive2Exclusive() {
+  void scanIndexRangeInclusive2Exclusive() {
     database.transaction(() -> {
       int total = 0;
 
@@ -967,7 +967,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeExclusive2Inclusive() {
+  void scanIndexRangeExclusive2Inclusive() {
     database.transaction(() -> {
       int total = 0;
 
@@ -1006,7 +1006,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeExclusive2Exclusive() {
+  void scanIndexRangeExclusive2Exclusive() {
     database.transaction(() -> {
       int total = 0;
 
@@ -1046,7 +1046,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
   @Test
   @Tag("slow")
-  public void testUniqueConcurrentWithIndexesCompaction() throws InterruptedException {
+  void uniqueConcurrentWithIndexesCompaction() throws Exception {
     database.begin();
     final long startingWith = database.countType(TYPE_NAME, true);
 
@@ -1224,7 +1224,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testBuildWithLogging() {
+  void buildWithLogging() {
     // Test that the build method logs progress messages
     final List<String> logMessages = new ArrayList<>();
 

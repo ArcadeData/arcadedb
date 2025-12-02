@@ -38,14 +38,14 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class HTTP2ServersIT extends BaseGraphServerTest {
+class HTTP2ServersIT extends BaseGraphServerTest {
   @Override
   protected int getServerCount() {
     return 2;
   }
 
   @Test
-  public void testServerInfo() throws Exception {
+  void serverInfo() throws Exception {
     testEachServer((serverIndex) -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/server?mode=cluster").openConnection();
@@ -66,7 +66,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void propagationOfSchema() throws Exception {
+  void propagationOfSchema() throws Exception {
     testEachServer((serverIndex) -> {
       // CREATE THE SCHEMA ON BOTH SERVER, ONE TYPE PER SERVER
       final String response = command(serverIndex, "create vertex type VertexType" + serverIndex);
@@ -95,7 +95,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void checkQuery() throws Exception {
+  void checkQuery() throws Exception {
     testEachServer((serverIndex) -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
@@ -119,7 +119,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void checkDeleteGraphElements() throws Exception {
+  void checkDeleteGraphElements() throws Exception {
 
     // Wait for initial synchronization of all servers
     for (int i = 0; i < getServerCount(); i++) {
@@ -254,7 +254,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void testHAConfiguration() {
+  void hAConfiguration() {
     for (ArcadeDBServer server : getServers()) {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);

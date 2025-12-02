@@ -41,14 +41,14 @@ import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class MVCCTest extends TestHelper {
+class MVCCTest extends TestHelper {
   private static final int CYCLES      = 3;
   private static final int TOT_ACCOUNT = 10000;
   private static final int TOT_TX      = 100;
   private static final int PARALLEL    = 4;
 
   @Test
-  public void testMVCC() {
+  void mvcc() {
     for (int i = 0; i < CYCLES; ++i) {
       createSchema();
 
@@ -113,7 +113,7 @@ public class MVCCTest extends TestHelper {
   }
 
   @Test
-  public void testNoConflictOnUpdateTx() {
+  void noConflictOnUpdateTx() {
     for (int i = 0; i < CYCLES; ++i) {
       createSchema();
 

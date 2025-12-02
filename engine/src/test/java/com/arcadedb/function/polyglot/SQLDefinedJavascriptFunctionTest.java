@@ -24,25 +24,25 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class SQLDefinedJavascriptFunctionTest extends TestHelper {
+class SQLDefinedJavascriptFunctionTest extends TestHelper {
   @Test
-  public void testEmbeddedFunction() {
+  void embeddedFunction() {
     registerFunctions();
     final Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(3, 5);
     assertThat(result).isEqualTo(8);
   }
 
   @Test
-  public void testCallFromSQL() {
+  void callFromSQL() {
     registerFunctions();
     final ResultSet result = database.command("sql", "select `math.sum`(?,?) as result", 3, 5);
     assertThat((Integer) result.next().getProperty("result")).isEqualTo(8);
   }
 
   @Test
-  public void testReuseSameQueryEngine() {
+  void reuseSameQueryEngine() {
     registerFunctions();
 
     Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(3, 5);
@@ -59,18 +59,13 @@ public class SQLDefinedJavascriptFunctionTest extends TestHelper {
   }
 
   @Test
-  public void testRedefineFunction() {
+  void redefineFunction() {
     registerFunctions();
 
     Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(100, 50);
     assertThat(result).isEqualTo(150);
 
-    try {
-      database.getSchema().getFunctionLibrary("math").registerFunction(new JavascriptFunctionDefinition("sum", "return a - b;", "a", "b"));
-      fail("");
-    } catch (final IllegalArgumentException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> database.getSchema().getFunctionLibrary("math").registerFunction(new JavascriptFunctionDefinition("sum", "return a - b;", "a", "b"))).isInstanceOf(IllegalArgumentException.class);
 
     database.getSchema().getFunctionLibrary("math").unregisterFunction("sum");
     database.getSchema().getFunctionLibrary("math").registerFunction(new JavascriptFunctionDefinition("sum", "return a - b;", "a", "b"));

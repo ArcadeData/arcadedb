@@ -26,9 +26,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
-public class SleepStatementExecutionTest extends TestHelper {
+class SleepStatementExecutionTest extends TestHelper {
   @Test
-  public void testBasic() {
+  void basic() {
     final long begin = System.currentTimeMillis();
     final ResultSet result = database.command("sql", "sleep 1000");
     assertThat(System.currentTimeMillis() - begin >= 1000).isTrue();

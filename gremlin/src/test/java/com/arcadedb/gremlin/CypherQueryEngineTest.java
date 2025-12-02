@@ -44,11 +44,11 @@ import static com.arcadedb.schema.Property.CAT_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class CypherQueryEngineTest {
+class CypherQueryEngineTest {
   private static final String DB_PATH = "./target/testsql";
 
   @Test
-  public void verifyProjectionWithCollectFunction() {
+  void verifyProjectionWithCollectFunction() {
     final Configuration config = new BaseConfiguration();
     config.setProperty(ArcadeGraph.CONFIG_DIRECTORY, DB_PATH);
 
@@ -104,7 +104,7 @@ public class CypherQueryEngineTest {
    * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/383">...</a>
    */
   @Test
-  public void returnPath() {
+  void returnPath() {
     final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
     try (final BasicDatabase database = graph.getDatabase()) {
       database.transaction(() -> {
@@ -134,7 +134,7 @@ public class CypherQueryEngineTest {
    * Test inheritance in Cypher (and therefore in Gremlin). Issue https://github.com/ArcadeData/arcadedb/issues/384.
    */
   @Test
-  public void inheritance() {
+  void inheritance() {
     final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
     try (final BasicDatabase database = graph.getDatabase()) {
       database.transaction(() -> {
@@ -161,7 +161,7 @@ public class CypherQueryEngineTest {
    * Test null results are returned as null instead of `  cypher.null`. Issue https://github.com/ArcadeData/arcadedb/issues/804.
    */
   @Test
-  public void testNullReturn() {
+  void nullReturn() {
     final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
     try (final BasicDatabase database = graph.getDatabase()) {
       database.transaction(() -> {
@@ -181,7 +181,7 @@ public class CypherQueryEngineTest {
    * Cypher columns are returned in the wrong order. Issue https://github.com/ArcadeData/arcadedb/issues/818.
    */
   @Test
-  public void testReturnOrder() {
+  void returnOrder() {
     final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
     try (final BasicDatabase database = graph.getDatabase()) {
       database.transaction(() -> {
@@ -203,7 +203,7 @@ public class CypherQueryEngineTest {
 
   @BeforeEach
   @AfterEach
-  public void clean() {
+  void clean() {
     FileUtils.deleteRecursively(new File(DB_PATH));
   }
 }

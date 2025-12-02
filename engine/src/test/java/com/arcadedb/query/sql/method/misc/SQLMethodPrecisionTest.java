@@ -31,7 +31,7 @@ import java.util.Date;
 import java.util.concurrent.Callable;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SQLMethodPrecisionTest {
   private SQLMethod method;
@@ -42,17 +42,12 @@ class SQLMethodPrecisionTest {
   }
 
   @Test
-  void testRequiredArgs() {
-    try {
-      method.execute(null, null, null, new Object[] { null });
-      fail("");
-    } catch (IllegalArgumentException e) {
-      // EXPECTED
-    }
+  void requiredArgs() {
+    assertThatThrownBy(() -> method.execute(null, null, null, new Object[]{null})).isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
-  void testLocalDateTime() throws Exception {
+  void localDateTime() throws Exception {
     testPrecision("microsecond", LocalDateTime::now);
     testPrecision("microseconds", LocalDateTime::now);
     testPrecision("millisecond", LocalDateTime::now);
@@ -60,13 +55,13 @@ class SQLMethodPrecisionTest {
   }
 
   @Test
-  void testZonedDateTime() throws Exception {
+  void zonedDateTime() throws Exception {
     testPrecision("microsecond", ZonedDateTime::now);
     testPrecision("millisecond", ZonedDateTime::now);
   }
 
   @Test
-  void testInstant() throws Exception {
+  void instant() throws Exception {
     testPrecision("microsecond", () -> new NanoClock().instant());
     testPrecision("microseconds", () -> new NanoClock().instant());
     testPrecision("millisecond", () -> new NanoClock().instant());
@@ -76,7 +71,7 @@ class SQLMethodPrecisionTest {
   }
 
   @Test
-  void testDate() {
+  void date() {
     final Date now = new Date();
     Object result = method.execute(now, null, null, new String[] { "millisecond" });
     assertThat(result).isInstanceOf(Date.class);

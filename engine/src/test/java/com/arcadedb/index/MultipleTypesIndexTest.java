@@ -32,12 +32,12 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class MultipleTypesIndexTest extends TestHelper {
+class MultipleTypesIndexTest extends TestHelper {
   private static final int    TOT       = 100000;
   private static final String TYPE_NAME = "Profile";
 
   @Test
-  public void testCollection() {
+  void collection() {
     database.transaction(() -> {
       final Index index = database.getSchema().getIndexByName(TYPE_NAME + "[keywords]");
 
@@ -78,7 +78,7 @@ public class MultipleTypesIndexTest extends TestHelper {
   }
 
   @Test
-  public void testNullItemInCollection() {
+  void nullItemInCollection() {
     database.transaction(() -> {
       final Index index = database.getSchema().getIndexByName(TYPE_NAME + "[keywords]");
 
@@ -102,7 +102,7 @@ public class MultipleTypesIndexTest extends TestHelper {
 
   // Issue https://github.com/ArcadeData/arcadedb/issues/812
   @Test
-  public void testUpdateCompositeKeyIndex() {
+  void updateCompositeKeyIndex() {
     VertexType type = database.getSchema().createVertexType("IndexedVertex");
     type.createProperty("counter", Type.INTEGER);
     type.createProperty("status", Type.STRING);

@@ -42,7 +42,7 @@ public class DeleteStatementTest extends TestHelper {
   }
 
   @Test
-  public void deleteFromSubqueryWithWhereTest() {
+  void deleteFromSubqueryWithWhereTest() {
     database.command("sql", "create document type Foo");
     database.command("sql", "create document type Bar");
     final MutableDocument doc1 = database.newDocument("Foo").set("k", "key1");
@@ -73,7 +73,7 @@ public class DeleteStatementTest extends TestHelper {
   }
 
   @Test
-  public void testDeleteWithMultipleOrConditions() {
+  void deleteWithMultipleOrConditions() {
     // Reproduction test for issue #  2695
     // DELETE with multiple OR conditions should delete all matching records
     database.command("sql", "create vertex type Duct");
@@ -133,7 +133,7 @@ public class DeleteStatementTest extends TestHelper {
   }
 
   @Test
-  public void testDeleteWithMultipleOrConditionsAndIndex() {
+  void deleteWithMultipleOrConditionsAndIndex() {
     // Test for issue #2695 with indexed property
     // Ensures the fix works when some OR branches can use indexes
     database.command("sql", "create document type Product");
@@ -177,7 +177,7 @@ public class DeleteStatementTest extends TestHelper {
   }
 
   @Test
-  void testDeleteWithMultipleOrAndMultipleIndexes() {
+  void deleteWithMultipleOrAndMultipleIndexes() {
     database.command("sqlscript", """
         CREATE VERTEX TYPE duct;
         CREATE PROPERTY duct.id STRING;

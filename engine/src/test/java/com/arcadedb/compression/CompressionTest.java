@@ -23,9 +23,9 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class CompressionTest {
+class CompressionTest {
   @Test
-  public void testCompression() {
+  void compression() {
     final Binary buffer = new Binary("This is a test about compression".getBytes());
 
     final Binary compressed = CompressionFactory.getDefault().compress(buffer);
@@ -35,7 +35,7 @@ public class CompressionTest {
   }
 
   @Test
-  public void testEmptyCompression() {
+  void emptyCompression() {
     final Binary buffer = new Binary();
 
     final Binary compressed = CompressionFactory.getDefault().compress(buffer);

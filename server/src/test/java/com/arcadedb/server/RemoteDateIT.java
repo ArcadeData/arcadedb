@@ -45,9 +45,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class RemoteDateIT {
+class RemoteDateIT {
   @Test
-  public void testDateTimeMicros1() {
+  void dateTimeMicros1() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
 
@@ -104,7 +104,7 @@ public class RemoteDateIT {
   }
 
   @BeforeEach
-  public void beginTest() {
+  void beginTest() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
     DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/remotedate");
@@ -113,7 +113,7 @@ public class RemoteDateIT {
   }
 
   @AfterEach
-  public void endTests() {
+  void endTests() {
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();
   }

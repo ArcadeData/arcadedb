@@ -35,7 +35,7 @@ import java.time.format.DateTimeFormatter;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class TestInsertAndSelectWithThreadBucketSelectionStrategy {
+class TestInsertAndSelectWithThreadBucketSelectionStrategy {
 
   @BeforeEach
   void setUp() {
@@ -50,7 +50,7 @@ public class TestInsertAndSelectWithThreadBucketSelectionStrategy {
   }
 
   @Test
-  public void testInsertAndSelectWithThreadBucketSelectionStrategy() {
+  void insertAndSelectWithThreadBucketSelectionStrategy() {
     try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/test")) {
       if (databaseFactory.exists())
         databaseFactory.open().drop();

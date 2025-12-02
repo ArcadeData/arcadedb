@@ -27,9 +27,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
-public class ILikeOperatorTest {
+class ILikeOperatorTest {
   @Test
-  public void test() {
+  void test() {
     final ILikeOperator op = new ILikeOperator(-1);
     assertThat(op.execute(null, "FOOBAR", "%ooba%")).isTrue();
     assertThat(op.execute(null, "FOOBAR", "%oo%")).isTrue();
@@ -46,7 +46,7 @@ public class ILikeOperatorTest {
   }
 
   @Test
-  public void replaceSpecialCharacters() {
+  void replaceSpecialCharacters() {
     assertThat(QueryHelper.convertForRegExp("\\[]{}()|*+$^.?%")).isEqualTo("(?s)\\\\\\[\\]\\{\\}\\(\\)\\|\\*\\+\\$\\^\\...*");
   }
 }

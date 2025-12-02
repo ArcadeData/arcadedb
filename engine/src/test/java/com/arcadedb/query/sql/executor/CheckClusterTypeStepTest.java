@@ -25,16 +25,16 @@ import com.arcadedb.schema.DocumentType;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.*;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThat;
 
-public class CheckClusterTypeStepTest {
+class CheckClusterTypeStepTest {
 
   private static final String CLASS_CLUSTER_NAME = "ClassClusterName";
   private static final String CLUSTER_NAME       = "ClusterName";
 
   @Test
-  public void shouldCheckClusterType() throws Exception {
+  void shouldCheckClusterType() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
       final DocumentType clazz = (db.getSchema().createDocumentType(CLASS_CLUSTER_NAME)
           .addBucket(db.getSchema().createBucket(CLASS_CLUSTER_NAME)));
@@ -49,19 +49,14 @@ public class CheckClusterTypeStepTest {
   }
 
   @Test
-  public void shouldThrowExceptionWhenClusterIsWrong() throws Exception {
-    try {
-      TestHelper.executeInNewDatabase((db) -> {
-        db.getSchema().createBucket(CLUSTER_NAME);
-        final BasicCommandContext context = new BasicCommandContext();
-        context.setDatabase(db);
-        final CheckClusterTypeStep step = new CheckClusterTypeStep(CLUSTER_NAME, TestHelper.createRandomType(db).getName(), context);
+  void shouldThrowExceptionWhenClusterIsWrong() throws Exception {
+    assertThatThrownBy(() -> TestHelper.executeInNewDatabase((db) -> {
+      db.getSchema().createBucket(CLUSTER_NAME);
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase(db);
+      final CheckClusterTypeStep step = new CheckClusterTypeStep(CLUSTER_NAME, TestHelper.createRandomType(db).getName(), context);
 
-        step.syncPull(context, 20);
-      });
-      fail("Expected CommandExecutionException");
-    } catch (final CommandExecutionException e) {
-      // OK
-    }
+      step.syncPull(context, 20);
+    })).isInstanceOf(CommandExecutionException.class);
   }
 }

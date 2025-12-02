@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class ConcurrentWriteTest {
+class ConcurrentWriteTest {
   private static final int           TOTAL                = 10_000;
   private static final int           BATCH_TX             = 1;
   private static final int           BUCKETS              = 3;
@@ -44,19 +44,19 @@ public class ConcurrentWriteTest {
   private              Database      database;
 
   @AfterEach
-  public void endTest() {
+  void endTest() {
     database.drop();
   }
 
   @BeforeEach
-  public void beginTest() {
+  void beginTest() {
     if (new DatabaseFactory(DATABASE_NAME).exists())
       new DatabaseFactory(DATABASE_NAME).open().drop();
     database = new DatabaseFactory(DATABASE_NAME).create();
   }
 
   @Test
-  public void checkConcurrentInsertWithHighConcurrencyOnSamePage() {
+  void checkConcurrentInsertWithHighConcurrencyOnSamePage() {
     database.command("sql", "create vertex type User buckets " + BUCKETS);
     database.command("sql", "create property User.id long");
     database.command("sql", "alter type User BucketSelectionStrategy `thread`");

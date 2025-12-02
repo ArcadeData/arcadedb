@@ -29,9 +29,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luca Garulli
  */
-public class NullSafeEqualsCompareOperatorTest {
+class NullSafeEqualsCompareOperatorTest {
   @Test
-  public void test() {
+  void test() {
     final NullSafeEqualsCompareOperator op = new NullSafeEqualsCompareOperator(-1);
 
     assertThat(op.execute(null, null, 1)).isFalse();

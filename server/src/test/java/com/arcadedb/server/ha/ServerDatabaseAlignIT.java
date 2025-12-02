@@ -59,7 +59,7 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void alignNotNecessary() throws InterruptedException {
+  void alignNotNecessary() throws Exception {
     final Database database = getServer(0).getDatabase(getDatabaseName());
 
     database.transaction(() -> {
@@ -84,7 +84,7 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void alignNecessary() throws InterruptedException {
+  void alignNecessary() throws Exception {
     final DatabaseInternal database = ((DatabaseInternal) getServer(0).getDatabase(getDatabaseName())).getEmbedded().getEmbedded();
 
     // EXPLICIT TX ON THE UNDERLYING DATABASE IS THE ONLY WAY TO BYPASS REPLICATED DATABASE

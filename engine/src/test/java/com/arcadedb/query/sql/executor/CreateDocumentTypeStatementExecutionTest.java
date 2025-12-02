@@ -30,9 +30,9 @@ import static org.assertj.core.api.Assertions.*;
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
-public class CreateDocumentTypeStatementExecutionTest {
+class CreateDocumentTypeStatementExecutionTest {
   @Test
-  public void testPlain() throws Exception {
+  void plain() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
       final String className = "testPlain";
       final ResultSet result = db.command("sql", "create document type " + className);
@@ -44,7 +44,7 @@ public class CreateDocumentTypeStatementExecutionTest {
   }
 
   @Test
-  public void testClusters() throws Exception {
+  void clusters() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
       final String className = "testClusters";
       final ResultSet result = db.command("sql", "create document type " + className + " buckets 32");
@@ -57,7 +57,7 @@ public class CreateDocumentTypeStatementExecutionTest {
   }
 
   @Test
-  public void testIfNotExists() throws Exception {
+  void ifNotExists() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
       final String className = "testIfNotExists";
       ResultSet result = db.command("sql", "create document type " + className + " if not exists");

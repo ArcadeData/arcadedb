@@ -71,7 +71,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testBackupDatabase() throws Exception {
+  void backupDatabase() throws Exception {
     try (var conn = getConnection()) {
       try (var st = conn.createStatement()) {
         ResultSet backupDatabase = st.executeQuery("{sql}BACKUP DATABASE");
@@ -91,7 +91,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void testTypeNotExistsErrorManagement() throws Exception {
+  void typeNotExistsErrorManagement() throws Exception {
     try (var conn = getConnection()) {
       try (var st = conn.createStatement()) {
         assertThatThrownBy(() -> st.executeQuery("SELECT * FROM V"))
@@ -101,7 +101,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void testParsingErrorMgmt() throws Exception {
+  void parsingErrorMgmt() throws Exception {
     try (var conn = getConnection()) {
       try (var st = conn.createStatement()) {
         assertThatThrownBy(() -> st.executeQuery("SELECT 'abc \\u30 def';"))
@@ -112,7 +112,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testGremlinQuery() throws Exception {
+  void gremlinQuery() throws Exception {
     try (var conn = getConnection()) {
       conn.setAutoCommit(false);
       try (var st = conn.createStatement()) {
@@ -131,7 +131,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testSelectSchemaTypes() throws SQLException, ClassNotFoundException {
+  void selectSchemaTypes() throws Exception {
     try (var conn = getConnection()) {
       try (var st = conn.createStatement()) {
 
@@ -149,7 +149,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testScript() throws Exception {
+  void script() throws Exception {
     try (var conn = getConnection()) {
       conn.setAutoCommit(false);
       try (var st = conn.createStatement()) {
@@ -178,7 +178,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void queryVertices() throws Exception {
+  void queryVertices() throws Exception {
     final int TOTAL = 1;
     final long now = System.currentTimeMillis();
 
@@ -270,7 +270,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void queryTransaction() throws Exception {
+  void queryTransaction() throws Exception {
     try (final Connection conn = getConnection()) {
       conn.setAutoCommit(false);
       try (var st = conn.createStatement()) {
@@ -312,7 +312,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testCypher() throws Exception {
+  void cypher() throws Exception {
     try (final Connection conn = getConnection()) {
       conn.setAutoCommit(false);
 
@@ -353,7 +353,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
    * @throws Exception
    */
   @Test
-  public void showTxIsolationLevel() throws Exception {
+  void showTxIsolationLevel() throws Exception {
     try (final Connection conn = getConnection()) {
       try (var st = conn.createStatement()) {
         try (var rs = st.executeQuery("SHOW TRANSACTION ISOLATION LEVEL")) {
@@ -364,7 +364,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void testISODateFormat() throws Exception {
+  void isoDateFormat() throws Exception {
     try (final Connection conn = getConnection()) {
       try (var st = conn.createStatement()) {
         st.execute("SET datestyle TO 'ISO'");
@@ -374,7 +374,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
 
   @Test
   @Disabled
-  public void testWaitForConnectionFromExternal() throws InterruptedException {
+  void waitForConnectionFromExternal() throws Exception {
     Thread.sleep(1000000);
   }
 
@@ -394,7 +394,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @Test
-  void createSchemaWithSqlScript() throws SQLException, ClassNotFoundException {
+  void createSchemaWithSqlScript() throws Exception {
     try (var conn = getConnection()) {
       try (var st = conn.createStatement()) {
 
@@ -532,9 +532,9 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @ParameterizedTest
-//  @ValueSource(classes = { Boolean.class, Double.class, Integer.class, String.class })
-  @ValueSource(classes = { String.class })
-  public void testReturnArray(Class<?> typeToTest) throws Exception {
+  //  @ValueSource(classes = { Boolean.class, Double.class, Integer.class, String.class })
+  @ValueSource(classes = {String.class})
+  void returnArray(Class<?> typeToTest) throws Exception {
     try (var conn = getConnection()) {
       conn.setAutoCommit(true);
 
@@ -577,7 +577,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testFloatMapping() throws SQLException, ClassNotFoundException {
+  void floatMapping() throws Exception {
     try (Connection conn = getConnection()) {
       Statement stmt = conn.createStatement();
 
@@ -595,7 +595,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testNullValuesMapping() throws SQLException, ClassNotFoundException {
+  void nullValuesMapping() throws Exception {
     try (var conn = getConnection()) {
       var stmt = conn.createStatement();
 
@@ -661,7 +661,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
 
   @Disabled("Pending fix verification")
   @Test
-  void testCypherWithArrayParameterInClause() throws Exception {
+  void cypherWithArrayParameterInClause() throws Exception {
     try (var conn = getConnection()) {
       try (var st = conn.createStatement()) {
         st.execute("create vertex type CHUNK");

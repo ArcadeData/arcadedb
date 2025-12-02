@@ -29,9 +29,9 @@ import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class BucketSQLTest extends TestHelper {
+class BucketSQLTest extends TestHelper {
   @Test
-  public void testPopulate() {
+  void populate() {
     // CALL POPULATE
   }
 

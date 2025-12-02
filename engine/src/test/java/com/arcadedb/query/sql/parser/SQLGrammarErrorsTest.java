@@ -11,7 +11,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class SQLGrammarErrorsTest {
 
   @Test
-  void testSQLGrammarErrors() {
+  void sqlGrammarErrors() {
     StatementCache cache = new StatementCache(null, 100);
 
     // Test case 1: Duplicate AND operators

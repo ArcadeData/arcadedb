@@ -25,11 +25,11 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /*
- * @author Luca Garulli (l.garulli@arcadedata.com)
- */
-public class SQLMathTest {
+* @author Luca Garulli (l.garulli@arcadedata.com)
+*/
+class SQLMathTest {
   @Test
-  public void testSum() throws Exception {
+  void sum() throws Exception {
     TestHelper.executeInNewDatabase("sql-math", (graph) -> {
       try (final ResultSet rs = graph.query("sql", "select (1+1+1) as math")) {
         assertThat(rs.next().<Integer>getProperty("math")).isEqualTo(3);

@@ -32,7 +32,7 @@ class SQLMethodRemoveAllTest {
   private SQLMethod method;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     method = new SQLMethodRemoveAll();
   }
 
@@ -43,14 +43,14 @@ class SQLMethodRemoveAllTest {
   }
 
   @Test
-  void testRemoveMultipleValuesFromList() {
+  void removeMultipleValuesFromList() {
     final List<String> numbers = new ArrayList<>(List.of("one", "one", "two", "three", "one"));
     final List<String> result = (List<String>) method.execute(numbers, null, null, new Object[] { "one" });
     assertThat(result).contains("two", "three");
   }
 
   @Test
-  void testRemoveMultipleValuesWithVariableInContext() {
+  void removeMultipleValuesWithVariableInContext() {
     final List<String> numbers = new ArrayList<>(List.of("one", "one", "two", "three", "one"));
     final CommandContext context = new BasicCommandContext();
     context.setVariable("name", "one");

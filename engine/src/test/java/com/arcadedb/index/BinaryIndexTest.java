@@ -27,10 +27,10 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
-public class BinaryIndexTest extends TestHelper {
+class BinaryIndexTest extends TestHelper {
 
   @Test
-  public void testBinaryIndexInsertAndLookup() {
+  void binaryIndexInsertAndLookup() {
     database.transaction(() -> {
       if (database.getSchema().existsType("vt"))
         database.getSchema().dropType("vt");
@@ -70,7 +70,7 @@ public class BinaryIndexTest extends TestHelper {
   }
 
   @Test
-  public void testBinaryIndexAfterReopen() {
+  void binaryIndexAfterReopen() {
     database.transaction(() -> {
       if (database.getSchema().existsType("vt"))
         database.getSchema().dropType("vt");

@@ -27,9 +27,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Created by luigidellaquila on 04/11/16.
  */
-public class ResultSetTest {
+class ResultSetTest {
   @Test
-  public void testResultStream() {
+  void resultStream() {
     final InternalResultSet rs = new InternalResultSet();
     for (int i = 0; i < 10; i++) {
       final ResultInternal item = new ResultInternal();
@@ -42,7 +42,7 @@ public class ResultSetTest {
   }
 
   @Test
-  public void testResultEmptyVertexStream() {
+  void resultEmptyVertexStream() {
     final InternalResultSet rs = new InternalResultSet();
     for (int i = 0; i < 10; i++) {
       final ResultInternal item = new ResultInternal();
@@ -54,7 +54,7 @@ public class ResultSetTest {
   }
 
   @Test
-  public void testResultEdgeVertexStream() {
+  void resultEdgeVertexStream() {
     final InternalResultSet rs = new InternalResultSet();
     for (int i = 0; i < 10; i++) {
       final ResultInternal item = new ResultInternal();
@@ -66,7 +66,7 @@ public class ResultSetTest {
   }
 
   @Test
-  public void testResultConversion() {
+  void resultConversion() {
     final ResultInternal item = new ResultInternal();
     item.setProperty("int", 10);
     item.setProperty("long", 10L);

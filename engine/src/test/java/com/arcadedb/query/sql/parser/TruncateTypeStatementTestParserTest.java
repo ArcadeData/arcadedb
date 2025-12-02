@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class TruncateTypeStatementTestParserTest extends AbstractParserTest {
+class TruncateTypeStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("TRUNCATE TYPE Foo");
     checkRightSyntax("truncate type Foo");
     checkRightSyntax("TRUNCATE TYPE Foo polymorphic");

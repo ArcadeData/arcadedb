@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.fail;
  *
  * @author Luca
  */
-public class LSMTreeIndexCompactionTest extends TestHelper {
+class LSMTreeIndexCompactionTest extends TestHelper {
   private static final int    TOT               = 50_000;
   private static final int    INDEX_PAGE_SIZE   = 64 * 1024; // 64K
   private static final int    COMPACTION_RAM_MB = 1; // 1MB
@@ -52,7 +52,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
   private static final String TYPE_NAME         = "Device";
 
   @Test
-  public void testCompaction() throws InterruptedException {
+  void testCompaction() throws Exception {
     try {
       GlobalConfiguration.INDEX_COMPACTION_RAM_MB.setValue(COMPACTION_RAM_MB);
       GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(0);

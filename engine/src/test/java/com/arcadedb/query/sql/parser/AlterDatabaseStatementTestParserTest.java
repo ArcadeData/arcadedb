@@ -21,10 +21,10 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.Test;
 
-public class AlterDatabaseStatementTestParserTest extends AbstractParserTest {
+class AlterDatabaseStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("ALTER DATABASE `arcadedb.bucketDefaultPageSize` 262144");
     checkRightSyntax("alter database `arcadedb.bucketDefaultPageSize` 262144");
     checkRightSyntax("alter database `"+ GlobalConfiguration.DATE_TIME_FORMAT.getKey() +"` 'yyyy-MM-dd HH:mm:ss.SSS'");

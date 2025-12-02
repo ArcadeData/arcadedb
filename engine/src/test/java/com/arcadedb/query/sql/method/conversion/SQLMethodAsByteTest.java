@@ -33,20 +33,20 @@ class SQLMethodAsByteTest {
   }
 
   @Test
-  void testNulIsReturnedAsNull() {
+  void nulIsReturnedAsNull() {
     final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
-  void testLongToByte() {
+  void longToByte() {
     final Object result = method.execute(10L, null, null, null);
     assertThat(result).isInstanceOf(Byte.class);
     assertThat(result).isEqualTo((byte) 10);
   }
 
   @Test
-  void testStringToByte() {
+  void stringToByte() {
     final Object result = method.execute("10", null, null, null);
     assertThat(result).isInstanceOf(Byte.class);
     assertThat(result).isEqualTo((byte) 10);

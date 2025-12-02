@@ -28,7 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class MultiValueTest {
   @Test
-  void testMultivaluesClasses() {
+  void multivaluesClasses() {
     assertThat(MultiValue.isMultiValue(Map.class)).isTrue();
     assertThat(MultiValue.isMultiValue(List.class)).isTrue();
     assertThat(MultiValue.isMultiValue(Set.class)).isTrue();
@@ -40,7 +40,7 @@ class MultiValueTest {
   }
 
   @Test
-  void testMultivaluesObjects() {
+  void multivaluesObjects() {
     assertThat(MultiValue.isMultiValue(Map.of())).isTrue();
     assertThat(MultiValue.isMultiValue(List.of())).isTrue();
     assertThat(MultiValue.isMultiValue(Set.of())).isTrue();
@@ -52,7 +52,7 @@ class MultiValueTest {
   }
 
   @Test
-  void testMultivaluesSize() {
+  void multivaluesSize() {
 
     assertThat(MultiValue.getSize(null)).isEqualTo(0);
     assertThat(MultiValue.getSize("single")).isEqualTo(0);

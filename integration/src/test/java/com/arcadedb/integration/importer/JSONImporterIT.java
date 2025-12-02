@@ -31,22 +31,21 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.io.IOException;
 import java.util.Iterator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
-public class JSONImporterIT {
+class JSONImporterIT {
 
   @BeforeEach
   @AfterEach
-  public void beforeTests() {
+  void beforeTests() {
     TestHelper.checkActiveDatabases();
   }
 
   @Test
-  public void importSingleObject() throws IOException {
+  void importSingleObject() throws Exception {
     final String databasePath = "target/databases/test-import-graph";
 
     Importer importer = new Importer(
@@ -68,7 +67,7 @@ public class JSONImporterIT {
   }
 
   @Test
-  public void importTwoObjects() throws IOException {
+  void importTwoObjects() throws Exception {
     final String databasePath = "target/databases/test-import-graph";
 
     Importer importer = new Importer(("-url file://src/test/resources/importer-two-objects.json -database " + databasePath
@@ -82,7 +81,7 @@ public class JSONImporterIT {
   }
 
   @Test
-  public void importEmployees() throws IOException {
+  void importEmployees() throws Exception {
     final String databasePath = "target/databases/test-import-graph";
 
     final String mapping = """

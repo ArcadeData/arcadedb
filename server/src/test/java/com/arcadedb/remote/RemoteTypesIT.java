@@ -28,7 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.time.*;
 import java.time.temporal.*;
 
-public class RemoteTypesIT extends BaseGraphServerTest {
+class RemoteTypesIT extends BaseGraphServerTest {
   private static final String DATABASE_NAME = "remote-database";
 
   @Override
@@ -37,7 +37,7 @@ public class RemoteTypesIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void documentType() throws Exception {
+  void documentType() throws Exception {
     testEachServer((serverIndex) -> {
       final RemoteDatabase db = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);

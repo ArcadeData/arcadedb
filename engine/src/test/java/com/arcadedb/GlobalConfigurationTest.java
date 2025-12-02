@@ -21,11 +21,11 @@ package com.arcadedb;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class GlobalConfigurationTest extends TestHelper {
+class GlobalConfigurationTest extends TestHelper {
   @Test
-  public void testServerMode() {
+  void serverMode() {
     final String original = GlobalConfiguration.SERVER_MODE.getValueAsString();
 
     GlobalConfiguration.SERVER_MODE.setValue("development");
@@ -37,32 +37,22 @@ public class GlobalConfigurationTest extends TestHelper {
     GlobalConfiguration.SERVER_MODE.setValue("production");
     assertThat(GlobalConfiguration.SERVER_MODE.getValueAsString()).isEqualTo("production");
 
-    try {
-      GlobalConfiguration.SERVER_MODE.setValue("notvalid");
-      fail("");
-    } catch (final IllegalArgumentException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> GlobalConfiguration.SERVER_MODE.setValue("notvalid")).isInstanceOf(IllegalArgumentException.class);
 
     GlobalConfiguration.SERVER_MODE.setValue(original);
   }
 
   @Test
-  public void testTypeConversion() {
+  void typeConversion() {
     final int original = GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.getValueAsInteger();
 
-    try {
-      GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.setValue("notvalid");
-      fail("");
-    } catch (final NumberFormatException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.setValue("notvalid")).isInstanceOf(NumberFormatException.class);
 
     GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.setValue(original);
   }
 
   @Test
-  public void testDefaultValue() {
+  void defaultValue() {
     GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.reset();
     final int original = GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.getValueAsInteger();
 

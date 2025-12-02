@@ -41,7 +41,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
   private static final String DATABASE_NAME = "graph";
 
   @Test
-  public void simpleTx() throws Exception {
+  void simpleTx() throws Exception {
     testEachServer((serverIndex) -> {
       // BEGIN
       HttpURLConnection connection = (HttpURLConnection) new URL(
@@ -165,7 +165,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void checkUnique() throws Exception {
+  void checkUnique() throws Exception {
     testEachServer((serverIndex) -> {
       // BEGIN
       final HttpURLConnection connection = (HttpURLConnection) new URL(
@@ -258,7 +258,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void errorMissingIsolationLevel() throws Exception {
+  void errorMissingIsolationLevel() throws Exception {
     testEachServer((serverIndex) -> {
       // BEGIN
       final HttpURLConnection connection = (HttpURLConnection) new URL(

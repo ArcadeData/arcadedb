@@ -26,7 +26,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
-import java.io.IOException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -34,12 +33,12 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-public class SingleServerLoadTestIT extends ContainersTestTemplate {
+class SingleServerLoadTestIT extends ContainersTestTemplate {
 
   @DisplayName("Single server load test")
   @ParameterizedTest
   @EnumSource(DatabaseWrapper.Protocol.class)
-  void singleServerLoadTest(DatabaseWrapper.Protocol protocol) throws InterruptedException, IOException {
+  void singleServerLoadTest(DatabaseWrapper.Protocol protocol) throws Exception {
 
     createArcadeContainer("arcade", "none", "none", "any", false, network);
     ServerWrapper server = startContainers().getFirst();

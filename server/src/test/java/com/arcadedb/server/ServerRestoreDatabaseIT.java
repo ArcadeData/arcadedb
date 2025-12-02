@@ -93,7 +93,7 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void defaultDatabases() {
+  void defaultDatabases() {
     getServer(0).getSecurity().authenticate("albert", "einstein", "graph");
     final Database database = getServer(0).getDatabase("graph");
     assertThat(database.countType("testDoc", true)).isEqualTo(1);

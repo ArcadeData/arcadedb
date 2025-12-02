@@ -25,9 +25,9 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class ReusingSpaceTest extends TestHelper {
+class ReusingSpaceTest extends TestHelper {
   @Test
-  public void testAddAndDeleteLatest() {
+  void addAndDeleteLatest() {
     final Database db = database;
 
     try {

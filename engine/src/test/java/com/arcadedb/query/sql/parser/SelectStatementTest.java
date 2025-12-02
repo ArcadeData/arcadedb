@@ -25,10 +25,9 @@ import org.junit.jupiter.api.Test;
 import java.io.*;
 import java.util.*;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.*;
 
-public class SelectStatementTest {
+class SelectStatementTest {
 
   protected SimpleNode checkRightSyntax(final String query) {
     final SimpleNode result = checkSyntax(query, true);
@@ -69,7 +68,7 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testParserSimpleSelect1() {
+  void parserSimpleSelect1() {
     final SimpleNode stm = checkRightSyntax("select from Foo");
     assertThat(stm instanceof SelectStatement).isTrue();
     final SelectStatement select = (SelectStatement) stm;
@@ -79,7 +78,7 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testParserSimpleSelect2() {
+  void parserSimpleSelect2() {
     final SimpleNode stm = checkRightSyntax("select bar from Foo");
     assertThat(stm instanceof SelectStatement).isTrue();
     final SelectStatement select = (SelectStatement) stm;
@@ -91,7 +90,7 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testComments() {
+  void comments() {
     checkRightSyntax("select from Foo");
 
     checkRightSyntax("select /* aaa bbb ccc*/from Foo");
@@ -113,7 +112,7 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testSimpleSelect() {
+  void simpleSelect() {
     checkRightSyntax("select from Foo");
     checkRightSyntax("select * from Foo");
 
@@ -124,7 +123,7 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testUnwind() {
+  void unwind() {
     checkRightSyntax("select from Foo unwind foo");
     checkRightSyntax("select from Foo unwind foo, bar");
     checkRightSyntax("select from Foo where foo = 1 unwind foo, bar");
@@ -133,14 +132,14 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testSubSelect() {
+  void subSelect() {
     checkRightSyntax("select from (select from Foo)");
 
     checkWrongSyntax("select from select from foo");
   }
 
   @Test
-  public void testSimpleSelectWhere() {
+  void simpleSelectWhere() {
     checkRightSyntax("select from Foo where name = 'foo'");
     checkRightSyntax("select * from Foo where name = 'foo'");
 
@@ -158,35 +157,35 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testIn() {
+  void in() {
     final SimpleNode result = checkRightSyntax("select count(*) from OFunction where name in [\"a\"]");
     assertThat(result instanceof SelectStatement).isTrue();
 
   }
 
   @Test
-  public void testNotIn() {
+  void notIn() {
     final SimpleNode result = checkRightSyntax("select count(*) from OFunction where name not in [\"a\"]");
     assertThat(result instanceof Statement).isTrue();
 
   }
 
   @Test
-  public void testMath1() {
+  void math1() {
     final SimpleNode result = checkRightSyntax("" + "select * from sqlSelectIndexReuseTestClass where prop1 = 1 + 1");
     assertThat(result instanceof SelectStatement).isTrue();
 
   }
 
   @Test
-  public void testMath2() {
+  void math2() {
     final SimpleNode result = checkRightSyntax("" + "select * from sqlSelectIndexReuseTestClass where prop1 = foo + 1");
     assertThat(result instanceof SelectStatement).isTrue();
 
   }
 
   @Test
-  public void testMath5() {
+  void math5() {
     final SimpleNode result = checkRightSyntax("" + "select * from sqlSelectIndexReuseTestClass where prop1 = foo + 1 * bar - 5");
 
     assertThat(result instanceof SelectStatement).isTrue();
@@ -194,7 +193,7 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testContainsWithCondition() {
+  void containsWithCondition() {
     final SimpleNode result = checkRightSyntax("select from Profile where customReferences.values() CONTAINS 'a'");
 
     assertThat(result instanceof SelectStatement).isTrue();
@@ -202,7 +201,7 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testNamedParam() {
+  void namedParam() {
     final SimpleNode result = checkRightSyntax("select from JavaComplexTestClass where enumField = :enumItem");
 
     assertThat(result instanceof SelectStatement).isTrue();
@@ -210,28 +209,28 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testBoolean() {
+  void testBoolean() {
     final SimpleNode result = checkRightSyntax("select from Foo where bar = true");
     assertThat(result instanceof SelectStatement).isTrue();
 
   }
 
   @Test
-  public void testDottedAtField() {
+  void dottedAtField() {
     final SimpleNode result = checkRightSyntax("select from City where country.@type = 'Country'");
     assertThat(result instanceof SelectStatement).isTrue();
 
   }
 
   @Test
-  public void testQuotedFieldNameFrom() {
+  void quotedFieldNameFrom() {
     final SimpleNode result = checkRightSyntax("select `from` from City where country.@type = 'Country'");
     assertThat(result instanceof SelectStatement).isTrue();
 
   }
 
   @Test
-  public void testQuotedTargetName() {
+  void quotedTargetName() {
     checkRightSyntax("select from `edge`");
     checkRightSyntax("select from `from`");
     checkRightSyntax("select from `vertex`");
@@ -239,43 +238,43 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testQuotedFieldName() {
+  void quotedFieldName() {
     checkRightSyntax("select `foo` from City where country.@type = 'Country'");
   }
 
   @Test
-  public void testLongDotted() {
+  void longDotted() {
     final SimpleNode result = checkRightSyntax("select from Profile where location.city.country.name = 'Spain'");
     assertThat(result instanceof SelectStatement).isTrue();
 
   }
 
   @Test
-  public void testInIsNotAReservedWord() {
+  void inIsNotAReservedWord() {
     final SimpleNode result = checkRightSyntax("select count(*) from TRVertex where in.type() not in [\"LINKSET\"] ");
     assertThat(result instanceof SelectStatement).isTrue();
 
   }
 
   @Test
-  public void testSelectFunction() {
+  void selectFunction() {
     final SimpleNode result = checkRightSyntax("select max(1,2,7,0,-2,3), 'pluto'");
     assertThat(result instanceof SelectWithoutTargetStatement).isTrue();
   }
 
   @Test
-  public void testEscape1() {
+  void escape1() {
     final SimpleNode result = checkRightSyntax("select from bucket:internal where \"\\u005C\\u005C\" = \"\\u005C\\u005C\" ");
     assertThat(result instanceof SelectStatement).isTrue();
   }
 
   @Test
-  public void testWildcardSuffix() {
+  void wildcardSuffix() {
     checkRightSyntax("select foo.* from bar ");
   }
 
   @Test
-  public void testEmptyCollection() {
+  void emptyCollection() {
     final String query = "select from bar where name not in :param1";
     final SqlParser osql = getParserFor(query);
     try {
@@ -293,44 +292,39 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testEscape2() {
-    try {
-      checkWrongSyntax("select from bucket:internal where \"\\u005C\" = \"\\u005C\" ");
-      fail("");
-    } catch (final Error e) {
-      // EXPECTED
-    }
+  void escape2() {
+    assertThatThrownBy(() -> checkWrongSyntax("select from bucket:internal where \"\\u005C\" = \"\\u005C\" ")).isInstanceOf(Error.class);
   }
 
   @Test
-  public void testSpatial() {
+  void spatial() {
     checkRightSyntax(
         "select *,$distance from Place where [latitude,longitude,$spatial] NEAR [41.893056,12.482778,{\"maxDistance\": 0.5}]");
     checkRightSyntax("select * from Place where [latitude,longitude] WITHIN [[51.507222,-0.1275],[55.507222,-0.1275]]");
   }
 
   @Test
-  public void testSubConditions() {
+  void subConditions() {
     checkRightSyntax(
         "SELECT @rid as rid, localName FROM Person WHERE ( 'milano' IN out('lives').localName OR 'roma' IN out('lives').localName ) ORDER BY age ASC");
   }
 
   @Test
-  public void testRecordAttributes() {
+  void recordAttributes() {
     // issue #4430
     checkRightSyntax("SELECT @this, @rid, @rid_id, @rid_pos, @type, @props, @out, @in from V");
     checkRightSyntax("SELECT @THIS, @RID, @RID_ID, @RID_POS, @TYPE, @PROPS, @OUT, @IN from V");
   }
 
   @Test
-  public void testDoubleEquals() {
+  void doubleEquals() {
     // issue #4413
     checkRightSyntax("SELECT from V where name = 'foo'");
     checkRightSyntax("SELECT from V where name == 'foo'");
   }
 
   @Test
-  public void testMatches() {
+  void matches() {
 
     checkRightSyntax("select from Person where name matches 'a'");
 
@@ -338,15 +332,15 @@ public class SelectStatementTest {
         "select from Person where name matches '(?i)(^\\\\Qname1\\\\E$)|(^\\\\Qname2\\\\E$)|(^\\\\Qname3\\\\E$)' and age=30");
   }
 
-  @Test
   // issue #3718
-  public void testComplexTarget1() {
+  @Test
+  void complexTarget1() {
     checkRightSyntax("SELECT $e FROM [#1:1,#1:2] LET $e = (SELECT FROM $current.prop1)");
     checkRightSyntax("SELECT $e FROM [#1:1,#1:2] let $e = (SELECT FROM (SELECT FROM $parent.$current))");
   }
 
   @Test
-  public void testEval() {
+  void eval() {
     checkRightSyntax("""
           select  sum(weight) , f.name as name from (
               select weight, if(eval("out.name = 'one'"),out,in) as f  from (
@@ -357,39 +351,39 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testNewLine() {
+  void newLine() {
     checkRightSyntax("INSERT INTO Country SET name=\"one\\ntwo\" RETURN @rid");
   }
 
   @Test
-  public void testJsonWithUrl() {
+  void jsonWithUrl() {
     checkRightSyntax("insert into V content { \"url\": \"http://www.google.com\" } ");
   }
 
   @Test
-  public void testJsonArrayWithUrl() {
+  void jsonArrayWithUrl() {
     checkRightSyntax("insert into V content [{ \"url\": \"http://www.google.com\" }, { \"url\": \"http://www.tesla.com\" }] ");
   }
 
   @Test
-  public void testGroupBy() {
+  void groupBy() {
     // issue #4245
     checkRightSyntax("select in.name from (  \n" + "select expand(outE()) from V\n" + ")\n" + "group by in.name");
   }
 
   @Test
-  public void testInputParams() {
+  void inputParams() {
     checkRightSyntax("select from foo where name like  '%'+ :param1 + '%'");
     checkRightSyntax("select from foo where name like  'aaa'+ :param1 + 'a'");
   }
 
   @Test
-  public void testBucketList() {
+  void bucketList() {
     checkRightSyntax("select from bucket:[foo,bar]");
   }
 
   @Test
-  public void checkOrderBySyntax() {
+  void checkOrderBySyntax() {
     checkRightSyntax("select from test order by something ");
     checkRightSyntax("select from test order by something, somethingElse ");
     checkRightSyntax("select from test order by something asc, somethingElse desc");
@@ -406,7 +400,7 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testBacktick() {
+  void backtick() {
     checkRightSyntax("select `foo` from foo where `foo` = 'bar'");
     checkRightSyntax("select `SELECT` from foo where `SELECT` = 'bar'");
     checkRightSyntax("select `TRAVERSE` from foo where `TRAVERSE` = 'bar'");
@@ -528,13 +522,13 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testReturn() {
+  void testReturn() {
     checkRightSyntax("select from ouser timeout 1 exception");
     checkRightSyntax("select from ouser timeout 1 return");
   }
 
   @Test
-  public void testFlatten() {
+  void flatten() {
     final SelectStatement stm = (SelectStatement) checkRightSyntax("select from ouser where name = 'foo'");
     final List<AndBlock> flattened = stm.whereClause.flatten();
     assertThat(((BinaryCondition) flattened.getFirst().subBlocks.getFirst()).left.isBaseIdentifier()).isTrue();
@@ -546,7 +540,7 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testFlattenOrCondition() {
+  void flattenOrCondition() {
     SelectStatement stm = (SelectStatement) checkRightSyntax(
         "select from Chat let users = in('HasChat'), brain = out('CreatedFromAssistant') where #22:1 IN $brain AND ( contextVariables['local:fin'] = '7:106514432' OR @rid = '#7:106514432')");
     List<AndBlock> flattened = stm.whereClause.flatten();
@@ -554,37 +548,37 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testParamWithMatches() {
+  void paramWithMatches() {
     // issue #5229
     checkRightSyntax("select from Person where name matches :param1");
   }
 
   @Test
-  public void testInstanceOfE() {
+  void instanceOfE() {
     // issue #5212
     checkRightSyntax("select from Friend where @type instanceof 'E'");
   }
 
   @Test
-  public void testSelectFromBucketNumber() {
+  void selectFromBucketNumber() {
     checkRightSyntax("select from bucket:12");
   }
 
   @Test
-  public void testReservedWordsAsNamedParams() {
+  void reservedWordsAsNamedParams() {
     // issue #5493
     checkRightSyntax("select from V limit :limit");
   }
 
   @Test
-  public void testJsonQuoting() {
+  void jsonQuoting() {
     // issue #5911
     checkRightSyntax("SELECT '\\/\\/'");
     checkRightSyntax("SELECT \"\\/\\/\"");
   }
 
   @Test
-  public void testSkipLimitInQueryWithNoTarget() {
+  void skipLimitInQueryWithNoTarget() {
     // issue #5589
     checkRightSyntax("""
         SELECT eval('$TotalListsQuery[0].Count') AS TotalLists
@@ -598,19 +592,19 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testSkipLimitAnyOrder() {
+  void skipLimitAnyOrder() {
     // issue #5589
     checkRightSyntax("SELECT FROM ContactList SKIP 10 LIMIT 1");
     checkRightSyntax("SELECT FROM ContactList LIMIT 1 SKIP 10 ");
   }
 
   @Test
-  public void testQuotedBacktick() {
+  void quotedBacktick() {
     checkRightSyntax("SELECT \"\" as `bla\\`bla` from foo");
   }
 
   @Test
-  public void testParamConcat() {
+  void paramConcat() {
     // issue #6049
     checkRightSyntax("Select * From ACNodeAuthentication where acNodeID like ? ");
     checkRightSyntax("Select * From ACNodeAuthentication where acNodeID like ? + '%'");
@@ -618,23 +612,23 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testAppendParams() {
+  void appendParams() {
     checkRightSyntax("select from User where Account.Name like :name + '%'");
   }
 
   @Test
-  public void testLetMatch() {
+  void letMatch() {
     checkRightSyntax("select $a let $a = (MATCH {type:Foo, as:bar, where:(name = 'foo')} return $elements)");
   }
 
   @Test
-  public void testDistinct() {
+  void distinct() {
     checkRightSyntax("select distinct(foo) from V");
     checkRightSyntax("select distinct foo, bar, baz from V");
   }
 
   @Test
-  public void testRange() {
+  void range() {
     checkRightSyntax("select foo[1..5] from V");
     checkRightSyntax("select foo[1...5] from V");
     checkRightSyntax("select foo[?..?] from V");
@@ -645,19 +639,19 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testRidString() {
+  void ridString() {
     checkRightSyntax("select \"@rid\" as v from V");
     checkRightSyntax("select {\"@rid\": \"#12:0\"} as v from V");
     //System.out.println(stm2);
   }
 
   @Test
-  public void testFromAsNamedParam() {
+  void fromAsNamedParam() {
     checkRightSyntax("select from V where fromDate = :from");
   }
 
   @Test
-  public void testNestedProjections() {
+  void nestedProjections() {
     checkRightSyntax("select foo:{*} from V");
     checkRightSyntax("select foo:{name, surname, address:{*}} from V");
     checkRightSyntax("select foo:{!name} from V");
@@ -667,7 +661,7 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testCollectionFilteringByValue() {
+  void collectionFilteringByValue() {
     checkRightSyntax("select foo[= 'foo'] from V");
     checkRightSyntax("select foo[like '%foo'] from V");
     checkRightSyntax("select foo[> 2] from V");
@@ -683,14 +677,14 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testContainsAny() {
+  void containsAny() {
     checkRightSyntax("select from V WHERE foo containsany ['foo', 'bar']");
     checkRightSyntax("select from V WHERE foo CONTAINSANY ['foo', 'bar']");
     checkWrongSyntax("select from V WHERE foo CONTAINSANY ");
   }
 
   @Test
-  public void testQueryIndex() {
+  void queryIndex() {
     checkRightSyntax("select from index:foo WHERE key = 'foo'");
     checkRightSyntax("select from index:foo WHERE key = ['foo', 'bar']");
     checkRightSyntax("select from index:foo WHERE key > 10");
@@ -699,7 +693,7 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testSelectExpressionParsingBug() {
+  void selectExpressionParsingBug() {
     // These work correctly - SELECT with space before parentheses
     checkRightSyntax("SELECT (1+1)");
     checkRightSyntax("SELECT (1+2)");

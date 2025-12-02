@@ -23,10 +23,10 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class DropBucketTest extends TestHelper {
+class DropBucketTest extends TestHelper {
 
   @Test
-  public void createDropCluster() {
+  void createDropCluster() {
     database.getSchema().createBucket("test");
     assertThat(database.getSchema().getBucketByName("test")).isNotNull();
     database.getSchema().dropBucket("test");

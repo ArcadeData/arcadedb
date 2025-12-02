@@ -31,9 +31,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class JSONTest extends TestHelper {
+class JSONTest extends TestHelper {
   @Test
-  public void testDates() {
+  void dates() {
     JSONObject json = new JSONObject()
         .put("date", new Date())
         .put("dateTime", LocalDateTime.now())
@@ -44,7 +44,7 @@ public class JSONTest extends TestHelper {
   }
 
   @Test
-  public void testLists() {
+  void lists() {
     JSONObject json = new JSONObject().put("list", List.of(1, 2, 3));
     final String serialized = json.toString();
     JSONObject deserialized = new JSONObject(serialized);
@@ -52,7 +52,7 @@ public class JSONTest extends TestHelper {
   }
 
   @Test
-  public void testListsOfLists() {
+  void listsOfLists() {
     final List<List<Integer>> list = List.of(List.of(1, 2, 3), List.of(7, 8, 9));
     JSONObject json = new JSONObject().put("list", list);
     final String serialized = json.toString();
@@ -61,7 +61,7 @@ public class JSONTest extends TestHelper {
   }
 
   @Test
-  public void testDatesWithFormat() {
+  void datesWithFormat() {
     JSONObject json = new JSONObject()
         .setDateFormat(database.getSchema().getDateFormat())
         .setDateTimeFormat(database.getSchema().getDateTimeFormat())
@@ -76,7 +76,7 @@ public class JSONTest extends TestHelper {
   }
 
   @Test
-  public void testEmbeddedMaps() {
+  void embeddedMaps() {
     final Map<String, Object> map = new HashMap<>();
     map.put("first", 1);
     map.put("2nd", 2);
@@ -89,7 +89,7 @@ public class JSONTest extends TestHelper {
   }
 
   @Test
-  public void testMalformedTrailingCommas() {
+  void malformedTrailingCommas() {
     JSONObject json = new JSONObject("{'array':[1,2,3,]}");
     assertThat(json.getJSONArray("array").length()).isEqualTo(4);
 
@@ -101,7 +101,7 @@ public class JSONTest extends TestHelper {
   }
 
   @Test
-  public void testNaN() {
+  void naN() {
     final JSONObject json = new JSONObject()
         .put("a", 10)
         .put("nan", Double.NaN)
@@ -125,7 +125,7 @@ public class JSONTest extends TestHelper {
   }
 
   @Test
-  void testMixedTypes() {
+  void mixedTypes() {
     JSONObject json = new JSONObject()
         .put("int", 10)
         .put("float", 10.5f)
@@ -164,7 +164,7 @@ public class JSONTest extends TestHelper {
   }
 
   @Test
-  public void testExpressions() {
+  void expressions() {
     final Map<String, Object> map = new HashMap<>();
     map.put("first", 1);
     map.put("second", new JSONArray().put(3).put(5));
@@ -178,7 +178,7 @@ public class JSONTest extends TestHelper {
   }
 
   @Test
-  public void testNestedExpression() {
+  void nestedExpression() {
     final String schema = """
           {
           "presentation": {

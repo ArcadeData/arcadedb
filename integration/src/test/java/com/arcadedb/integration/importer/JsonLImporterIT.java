@@ -37,7 +37,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class JsonLImporterIT {
+class JsonLImporterIT {
 
   private final static String DATABASE_PATH = "target/databases/arcadedb-jsonl-importer";
 
@@ -50,7 +50,7 @@ public class JsonLImporterIT {
   }
 
   @Test
-  void testImportDatabaseProgrammatically() {
+  void importDatabaseProgrammatically() {
     var databaseDirectory = new File(DATABASE_PATH);
 
     var inputFile = getClass().getClassLoader().getResource("arcadedb-export.jsonl.tgz");
@@ -66,7 +66,7 @@ public class JsonLImporterIT {
   }
 
   @Test
-  void testImportDatabaseBySql() {
+  void importDatabaseBySql() {
 
     var databaseDirectory = new File(DATABASE_PATH);
 

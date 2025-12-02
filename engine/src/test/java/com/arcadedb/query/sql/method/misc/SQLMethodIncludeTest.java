@@ -37,7 +37,7 @@ class SQLMethodIncludeTest {
   }
 
   @Test
-  void testFieldValue() {
+  void fieldValue() {
 
     final ResultInternal resultInternal = new ResultInternal();
     resultInternal.setProperty("name", "Foo");

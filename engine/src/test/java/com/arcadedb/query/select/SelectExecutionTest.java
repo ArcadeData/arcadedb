@@ -25,6 +25,8 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -33,7 +35,6 @@ import java.util.stream.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -75,7 +76,7 @@ public class SelectExecutionTest extends TestHelper {
   }
 
   @Test
-  public void okFromBuckets() {
+  void okFromBuckets() {
     {
       final SelectCompiled select = database.select().fromBuckets(
               database.getSchema().getType("Vertex").getBuckets(true).stream().map(Bucket::getName).collect(Collectors.toList())
@@ -100,7 +101,7 @@ public class SelectExecutionTest extends TestHelper {
   }
 
   @Test
-  public void okAnd() {
+  void okAnd() {
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
@@ -139,7 +140,7 @@ public class SelectExecutionTest extends TestHelper {
   }
 
   @Test
-  public void okOr() {
+  void okOr() {
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
@@ -175,7 +176,7 @@ public class SelectExecutionTest extends TestHelper {
   }
 
   @Test
-  public void okAndOr() {
+  void okAndOr() {
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
@@ -204,7 +205,7 @@ public class SelectExecutionTest extends TestHelper {
   }
 
   @Test
-  public void okLimit() {
+  void okLimit() {
     final SelectCompiled select = database.select().fromType("Vertex")//
         .where().property("id").lt().value(10)//
         .and().property("name").eq().value("John").limit(10).compile();
@@ -219,7 +220,7 @@ public class SelectExecutionTest extends TestHelper {
   }
 
   @Test
-  public void okSkip() {
+  void okSkip() {
     SelectCompiled select = database.select().fromType("Vertex")//
         .where().property("id").lt().value(10)//
         .and().property("name").eq().value("John").skip(10).compile();
@@ -258,7 +259,7 @@ public class SelectExecutionTest extends TestHelper {
   }
 
   @Test
-  public void okUpdate() {
+  void okUpdate() {
     database.transaction(() -> {
       database.select().fromType("Vertex")//
           .where().property("id").lt().value(10)//
@@ -270,11 +271,11 @@ public class SelectExecutionTest extends TestHelper {
     database.select().fromType("Vertex")//
         .where().property("id").lt().value(10)//
         .and().property("name").eq().value("John").limit(10).vertices()
-        .forEachRemaining(r -> assertTrue(r.getInteger("id") < 10 && r.getBoolean("modified")));
+        .forEachRemaining(r -> assertThat(r.getInteger("id") < 10 && r.getBoolean("modified")).isTrue());
   }
 
   @Test
-  public void errorTimeout() {
+  void errorTimeout() {
     {
       expectingException(() -> {
         final SelectIterator<Vertex> iter = database.select().fromType("Vertex")//
@@ -299,7 +300,7 @@ public class SelectExecutionTest extends TestHelper {
   }
 
   @Test
-  public void okNeq() {
+  void okNeq() {
     final SelectCompiled select = database.select().fromType("Vertex")//
         .where().property("id").neq().parameter("value").compile();
 
@@ -308,7 +309,7 @@ public class SelectExecutionTest extends TestHelper {
       final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
       final List<Vertex> list = result.toList();
       assertThat(list.size()).isEqualTo(99);
-      list.forEach(r -> assertTrue(r.getInteger("id") != finalI));
+      list.forEach(r -> Assertions.assertThat(finalI).isNotSameAs(r.getInteger("id")));
     }
   }
 
@@ -317,7 +318,7 @@ public class SelectExecutionTest extends TestHelper {
    * different threads.
    */
   @Test
-  public void okParallel() {
+  void okParallel() {
     database.getSchema().createVertexType("Parallel");
     database.transaction(() -> {
       for (int i = 0; i < 1_000_000; i++) {
@@ -342,7 +343,7 @@ public class SelectExecutionTest extends TestHelper {
   }
 
   @Test
-  public void okLike() {
+  void okLike() {
     final SelectCompiled select = database.select()
         .fromType("Vertex")//
         .where()
@@ -353,12 +354,12 @@ public class SelectExecutionTest extends TestHelper {
       final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
       final List<Vertex> list = result.toList();
       assertThat(list.size()).isEqualTo(100);
-      list.forEach(r -> assertTrue(r.getString("name").startsWith("J")));
+      list.forEach(r -> assertThat(r.getString("name").startsWith("J")).isTrue());
     }
   }
 
   @Test
-  public void okILike() {
+  void okILike() {
     final SelectCompiled select = database.select().fromType("Vertex")//
         .where().property("name").ilike().value("j%").compile();
 
@@ -366,12 +367,12 @@ public class SelectExecutionTest extends TestHelper {
       final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
       final List<Vertex> list = result.toList();
       assertThat(list.size()).isEqualTo(100);
-      list.forEach(r -> assertTrue(r.getString("name").startsWith("J")));
+      list.forEach(r -> assertThat(r.getString("name").startsWith("J")).isTrue());
     }
   }
 
   @Test
-  public void errorMissingParameter() {
+  void errorMissingParameter() {
     expectingException(() -> {
       database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
@@ -380,14 +381,14 @@ public class SelectExecutionTest extends TestHelper {
   }
 
   @Test
-  public void okReuse() {
+  void okReuse() {
     final SelectCompiled select = database.select().fromType("Vertex").where().property("id").eq().parameter("value").compile();
     for (int i = 0; i < 100; i++)
       assertThat(select.parameter("value", i).vertices().nextOrNull().getInteger("id")).isEqualTo(i);
   }
 
   @Test
-  public void okJSON() {
+  void okJSON() {
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//

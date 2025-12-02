@@ -33,55 +33,55 @@ class SQLMethodTrimPrefixTest {
   }
 
   @Test
-  void testAllNullPreservation() {
+  void allNullPreservation() {
     final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
-  void testBaseNullPreservation() {
+  void baseNullPreservation() {
     final Object result = method.execute(null, null, null, new Object[] {"Bye"});
     assertThat(result).isNull();
   }
 
   @Test
-  void testArgNullPreservation() {
+  void argNullPreservation() {
     final Object result = method.execute("Hello World", null, null, null);
     assertThat(result).isEqualTo("Hello World");
   }
 
   @Test
-  void testIdentity() {
+  void identity() {
     final Object result = method.execute("Hello World", null, null, new Object[] {"Bye"});
     assertThat(result).isEqualTo("Hello World");
   }
 
   @Test
-  void testTrim() {
+  void trim() {
     final Object result = method.execute("Hello World", null, null, new Object[] {"Hello"});
     assertThat(result).isEqualTo(" World");
   }
 
   @Test
-  void testFull() {
+  void full() {
     final Object result = method.execute("Hello World", null, null, new Object[] {"Hello World"});
     assertThat(result).isEqualTo("");
   }
 
   @Test
-  void testEmptyArg() {
+  void emptyArg() {
     final Object result = method.execute("Hello World", null, null, new Object[] {""});
     assertThat(result).isEqualTo("Hello World");
   }
 
   @Test
-  void testEmptyBase() {
+  void emptyBase() {
     final Object result = method.execute("", null, null, new Object[] {"Bye"});
     assertThat(result).isEqualTo("");
   }
 
   @Test
-  void testNonString() {
+  void nonString() {
     final Object result = method.execute(123, null, null, new Object[] {"Bye"});
     assertThat(result).isEqualTo("123");
   }

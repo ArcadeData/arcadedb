@@ -26,7 +26,7 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
-public class ReplicationServerWriteAgainstReplicaIT extends ReplicationServerIT {
+class ReplicationServerWriteAgainstReplicaIT extends ReplicationServerIT {
   @Test
   public void testReplication() {
     // Ensure all servers are fully connected and synchronized before writing against replica
