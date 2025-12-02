@@ -22,7 +22,6 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
-import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.IndexException;
@@ -40,12 +39,9 @@ import java.util.logging.Level;
  * PaginatedComponent for storing JVector graph topology in ArcadeDB pages.
  * This allows OnDiskGraphIndex to lazy-load graph data from disk instead of keeping it all in RAM.
  * <p>
- * Page 0 contains metadata about the graph:
- * - Total size in bytes
- * - Number of nodes
- * - Version info
- * <p>
- * Pages 1+ contain the raw graph topology data as written by JVector's OnDiskGraphIndexWriter.
+ * Graph data is written directly starting from page 0 (no metadata page needed).
+ * JVector's format is self-describing and contains all necessary metadata internally.
+ * Total size is computed on-demand from the file's page count.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -53,14 +49,10 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
   public static final String FILE_EXT        = "vecgraph";
   public static final int    CURRENT_VERSION = 0;
 
-  // Page 0 metadata layout
-  private static final int OFFSET_TOTAL_BYTES = 0;  // 8 bytes: total graph data size
-  private static final int OFFSET_NUM_NODES   = 8;  // 4 bytes: number of nodes
-  private static final int OFFSET_ENTRY_NODE  = 12; // 4 bytes: entry point node ID
-  private static final int METADATA_SIZE      = 16;
+  // Graph data starts at page 0 (no metadata page needed)
+  // totalGraphBytes is computed from file size - JVector format is self-describing
 
   private LSMVectorIndex mainIndex;
-  private long           totalGraphBytes;
 
   /**
    * Factory handler for loading graph files from disk during schema initialization.
@@ -79,7 +71,6 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
   protected LSMVectorIndexGraphFile(final DatabaseInternal database, final String name, final String filePath,
       final ComponentFile.MODE mode, final int pageSize) throws IOException {
     super(database, name, filePath, FILE_EXT, mode, pageSize, CURRENT_VERSION);
-    this.totalGraphBytes = 0;
   }
 
   /**
@@ -88,7 +79,6 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
   protected LSMVectorIndexGraphFile(final DatabaseInternal database, final String name, final String filePath, final int id,
       final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
-    loadMetadata();
   }
 
   @Override
@@ -100,8 +90,17 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
     this.mainIndex = mainIndex;
   }
 
-  public long getTotalBytes() {
-    return totalGraphBytes;
+  private long computeTotalGraphBytes() throws IOException {
+    final int totalPages = getTotalPages();
+    if (totalPages == 0)
+      return 0;
+
+    // Load last page to get actual content size from 4-byte offset
+    final int lastPageId = totalPages - 1;
+
+    final var lastPage = database.getPageManager()
+        .getImmutablePage(new PageId(database, fileId, lastPageId), pageSize, false, false);
+    return (long) pageSize * (totalPages - 1L) + lastPage.getContentSize();
   }
 
   /**
@@ -113,9 +112,10 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
    * - Vectors are read on-demand from ArcadeDB documents via ArcadePageVectorValues
    * - MUST be called within an active transaction
    * - Caller is responsible for committing the transaction
+   * - Graph data starts at page 0 (no metadata page needed - JVector format is self-describing)
    */
   public void writeGraph(final io.github.jbellis.jvector.graph.ImmutableGraphIndex graph,
-      final RandomAccessVectorValues vectors) throws IOException {
+      final RandomAccessVectorValues vectors) {
 
     if (!database.isTransactionActive())
       throw new IllegalStateException("writeGraph() must be called within an active transaction");
@@ -124,10 +124,7 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
       LogManager.instance().log(this, Level.INFO,
           "Starting graph write: %d nodes", graph.getIdUpperBound());
 
-      // Write metadata to page 0 FIRST (reserves page 0)
-      writeMetadata();
-
-      // Create writer that writes to our pages (starting from page 1)
+      // Create writer that writes to our pages (starting from page 0)
       final RandomAccessWriter writer = new ArcadePageGraphWriter(database, getFileId(), getPageSize());
 
       // Write graph topology WITHOUT inline vectors
@@ -142,19 +139,15 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
 
         // Write graph topology only (no inline vectors or other features)
         indexWriter.write(java.util.Map.of());
-
-        // Get final size
-        this.totalGraphBytes = writer.position();
       }
 
       writer.close();
 
-      // Update metadata with final size
-      writeMetadata();
+      final long totalBytes = writer.position();
 
       LogManager.instance().log(this, Level.INFO,
           "Graph written to pages: %d nodes, %d bytes, %d pages (topology only, vectors in documents)",
-          graph.getIdUpperBound(), totalGraphBytes, getTotalPages());
+          graph.getIdUpperBound(), totalBytes, getTotalPages());
 
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE,
@@ -168,19 +161,21 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
    * Load a graph from pages as OnDiskGraphIndex for lazy-loading.
    */
   public OnDiskGraphIndex loadGraph() throws IOException {
-    if (getTotalPages() == 0 || totalGraphBytes == 0)
+    final long totalBytes = computeTotalGraphBytes();
+    if (getTotalPages() == 0 || totalBytes == 0)
       return null;
 
     try {
       // Create reader supplier for lazy-loading
       final ArcadePageReaderSupplier supplier =
-          new ArcadePageReaderSupplier(database, getFileId(), getPageSize(), totalGraphBytes);
+          new ArcadePageReaderSupplier(database, getFileId(), getPageSize(), totalBytes);
 
       // Load graph using JVector's OnDiskGraphIndex
       final OnDiskGraphIndex graph = OnDiskGraphIndex.load(supplier);
 
-      LogManager.instance().log(this, Level.INFO, "Loaded graph from disk: %d nodes, %d bytes",
-          graph.getIdUpperBound(), totalGraphBytes);
+      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.INFO,
+          "Loaded graph from disk: %d nodes, %d bytes (%d pages)",
+          graph.getIdUpperBound(), totalBytes, getTotalPages());
 
       return graph;
 
@@ -193,31 +188,6 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
    * Check if a persisted graph exists
    */
   public boolean hasPersistedGraph() {
-    return getTotalPages() > 0 && totalGraphBytes > 0;
-  }
-
-  private void writeMetadata() throws IOException {
-    final PageId pageId = new PageId(database, getFileId(), 0);
-    final MutablePage page = database.getTransaction().addPage(pageId, getPageSize());
-
-    page.writeLong(OFFSET_TOTAL_BYTES, totalGraphBytes);  // Total bytes
-    page.writeInt(OFFSET_NUM_NODES, 0);                    // Placeholder for num nodes
-    page.writeInt(OFFSET_ENTRY_NODE, 0);                   // Placeholder for entry node
-  }
-
-  private void loadMetadata() throws IOException {
-    if (getTotalPages() == 0) {
-      this.totalGraphBytes = 0;
-      return;
-    }
-
-    final PageId pageId = new PageId(database, getFileId(), 0);
-    final var page = database.getPageManager().getImmutablePage(pageId, getPageSize(), false, false);
-
-    if (page != null) {
-      this.totalGraphBytes = page.readLong(OFFSET_TOTAL_BYTES);
-    } else {
-      this.totalGraphBytes = 0;
-    }
+    return getTotalPages() > 0;
   }
 }

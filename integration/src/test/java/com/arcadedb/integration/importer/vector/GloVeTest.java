@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
@@ -44,7 +45,7 @@ import static java.util.concurrent.TimeUnit.*;
  */
 public class GloVeTest {
   private final static int     PARALLEL_LEVEL = 8;
-  private static final String  FILE_NAME      = "/Users/frank/Downloads/glove.twitter.27B/glove.twitter.27B.100d.txt";
+  private static final String  FILE_NAME      = "/Users/luca/Downloads/test.glove.twitter.27B.100d.txt";
   private              boolean USE_SQL        = false;
 
   public static void main(String[] args) {
@@ -141,23 +142,35 @@ public class GloVeTest {
       final long begin = System.currentTimeMillis();
       final AtomicLong lastStats = new AtomicLong();
 
+      LogManager.instance().log(this, Level.SEVERE, "Loaded words embeddings from database...");
+
+      final List<String> words = new ArrayList<>();
       final List<float[]> embeddings = new ArrayList<>();
-      for (Iterator<Record> it = database.iterateType("Word", true); it.hasNext(); )
-        embeddings.add((float[]) it.next().asVertex().get("vector"));
+      for (Iterator<Record> it = database.iterateType("Word", true); it.hasNext(); ) {
+        final Vertex v = it.next().asVertex();
+        words.add(v.getString("name"));
+        embeddings.add((float[]) v.get("vector"));
+      }
+
+      LogManager.instance().log(this, Level.SEVERE, "Loaded %d embeddings", embeddings.size());
 
       for (int cycle = 0; ; ++cycle) {
         final int currentCycle = cycle;
 
         executor.submit(() -> {
           try {
-            final int randomWord = random.nextInt(embeddings.size());
-            final float[] input = embeddings.get(randomWord);
+            //final int randomWordIndex = random.nextInt(embeddings.size());
+            final int randomWordIndex = currentCycle >= words.size() ? 0 : currentCycle;
+
+            final String wordToSearch = words.get(randomWordIndex);
+            final float[] embeddingsToSearch = embeddings.get(randomWordIndex);
 
             final long startWord = System.currentTimeMillis();
 
             final List<Pair<RID, Float>> approximateResults;
             if (USE_SQL) {
-              final ResultSet resultSet = database.query("sql", "select vectorNeighbors('Word[vector]', ?,?) as neighbors", input,
+              final ResultSet resultSet = database.query("sql", "select vectorNeighbors('Word[vector]', ?,?) as neighbors",
+                  embeddingsToSearch,
                   k);
               if (resultSet.hasNext()) {
                 approximateResults = new ArrayList<>();
@@ -171,12 +184,13 @@ public class GloVeTest {
                 }
 
               } else {
-                LogManager.instance().log(this, Level.SEVERE, "Not Found %s", input);
+                LogManager.instance().log(this, Level.SEVERE, "Not Found %s", embeddingsToSearch);
                 return;
               }
             } else {
               // Vector searches are read-only, no transaction needed
-              approximateResults = ((LSMVectorIndex) persistentIndex.getIndexesOnBuckets()[0]).findNeighborsFromVector(input, k);
+              approximateResults = ((LSMVectorIndex) persistentIndex.getIndexesOnBuckets()[0]).findNeighborsFromVector(
+                  embeddingsToSearch, k);
               Assertions.assertThat(approximateResults.size()).isNotEqualTo(0);
             }
 
@@ -197,8 +211,10 @@ public class GloVeTest {
 
             if (now - lastStats.get() >= 1000) {
               LogManager.instance()
-                  .log(this, Level.SEVERE, "STATS: %d searched words, avg %dms per single word, total throughput %.2f words/sec",
+                  .log(this, Level.SEVERE,
+                      "STATS: %d searched words, (last %s -> found %d), avg %dms per single word, total throughput %.2f words/sec",
                       totalSearchTime.get(),
+                      wordToSearch, approximateResults.size(),
                       totalSearchTime.get() / totalHits.get(), throughput);
               lastStats.set(now);
             }

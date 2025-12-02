@@ -60,6 +60,8 @@ public interface BinaryStructure {
 
   void putFloat(float value);
 
+  void putDouble(int index, double value);
+
   int putString(int index, String value);
 
   int putString(String value);
