@@ -20,7 +20,6 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.log.LogManager;
 import io.github.jbellis.jvector.disk.RandomAccessReader;
@@ -37,62 +36,22 @@ import java.util.logging.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class ArcadePageGraphReader implements RandomAccessReader {
-  private final DatabaseInternal database;
-  private final int              fileId;
-  private final int              pageSize;
-  private final long             totalBytes;  // Total graph data size
-  private final int              usablePageSize; // pageSize - BasePage.PAGE_HEADER_SIZE
-
-  // Current state
-  private long     currentPosition;  // Logical position in the graph data
-  private BasePage currentPage;
-  private int      currentPageNum;
-
+public class ArcadePageGraphReader extends ArcadePageGraphFile implements RandomAccessReader {
   public ArcadePageGraphReader(final DatabaseInternal database, final int fileId, final int pageSize, final long totalBytes) {
-    this.database = database;
-    this.fileId = fileId;
-    this.pageSize = pageSize;
-    this.totalBytes = totalBytes;
-    this.usablePageSize = pageSize - BasePage.PAGE_HEADER_SIZE;
-    this.currentPosition = 0;
-    this.currentPageNum = -1;
+    super(database, fileId, pageSize, totalBytes);
   }
 
   @Override
   public void seek(final long position) throws IOException {
-    if (position < 0 || position > totalBytes)
+    if (position > totalBytes)
       throw new IOException("Invalid seek position: " + position + " (length=" + totalBytes + ")");
 
-    this.currentPosition = position;
-
-    int pageNum = (int) (position / pageSize);
-    final int pageOffset = (int) (position % pageSize);
-
-    if (pageOffset >= usablePageSize) {
-      ++pageNum;
-      currentPosition = (long) pageNum * pageSize;
-    }
-
-    // Load page if not already loaded
-    ensurePageLoaded(pageNum);
-  }
-
-  @Override
-  public long getPosition() {
-    return currentPosition;
-  }
-
-  @Override
-  public long length() {
-    return totalBytes;
+    super.seek(position);
   }
 
   @Override
   public int readInt() throws IOException {
-    ensureAvailable(Binary.INT_SERIALIZED_SIZE);
-
-    final int pageOffset = (int) (currentPosition % pageSize);
+    final int pageOffset = ensureAvailable(Binary.INT_SERIALIZED_SIZE);
 
     final int value = currentPage.readInt(pageOffset);
 
@@ -191,7 +150,8 @@ public class ArcadePageGraphReader implements RandomAccessReader {
     }
   }
 
-  private void ensurePageLoaded(final int pageNum) throws IOException {
+  @Override
+  protected void ensurePageLoaded(final int pageNum) throws IOException {
     if (pageNum != currentPageNum) {
       final PageId pageId = new PageId(database, fileId, pageNum);
       // Use PageManager directly to avoid transaction context issues
@@ -204,37 +164,11 @@ public class ArcadePageGraphReader implements RandomAccessReader {
     }
   }
 
-  private void ensureAvailable(final int bytes) throws IOException {
+  @Override
+  protected int ensureAvailable(final int bytes) throws IOException {
     if (currentPosition + bytes > totalBytes)
       throw new IOException("Read beyond end of graph data");
 
-    int pageNum = (int) (currentPosition / pageSize);
-    final int pageOffset = (int) (currentPosition % pageSize);
-
-    if (pageOffset + bytes > usablePageSize) {
-      ++pageNum;
-      currentPosition = (long) pageNum * pageSize;
-    }
-    ensurePageLoaded(pageNum);
-  }
-
-  @Override
-  public void close() {
-    // No-op: pages are managed by PageManager
-    currentPage = null;
-  }
-
-  private void updatePosition(final int bytesRead) throws IOException {
-    int pageNum = (int) (currentPosition / pageSize);
-    final int pageOffset = (int) (currentPosition % pageSize);
-
-    currentPosition += bytesRead;
-
-    if (pageOffset + bytesRead >= usablePageSize) {
-      // MOVE TO THE NEXT PAGE
-      ++pageNum;
-      ensurePageLoaded(pageNum);
-      currentPosition = (long) pageNum * pageSize;
-    }
+    return super.ensureAvailable(bytes);
   }
 }

@@ -20,13 +20,8 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.IndexException;
-import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.vector.LSMVectorIndex;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
-
-import java.util.logging.Level;
 
 /**
  * Builder class for lsm vector indexes.

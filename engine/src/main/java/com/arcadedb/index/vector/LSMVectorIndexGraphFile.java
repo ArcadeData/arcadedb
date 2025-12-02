@@ -30,10 +30,14 @@ import io.github.jbellis.jvector.disk.RandomAccessWriter;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndexWriter;
+import io.github.jbellis.jvector.graph.disk.feature.Feature;
+import io.github.jbellis.jvector.graph.disk.feature.FeatureId;
 import io.github.jbellis.jvector.graph.disk.feature.InlineVectors;
+import io.github.jbellis.jvector.graph.disk.feature.SeparatedVectors;
 
-import java.io.IOException;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.function.*;
+import java.util.logging.*;
 
 /**
  * PaginatedComponent for storing JVector graph topology in ArcadeDB pages.
@@ -132,13 +136,18 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
       // NOTE: JVector 4.0+ requires a vector feature for dimension info, but we don't write vector data
       try (final OnDiskGraphIndexWriter indexWriter = new OnDiskGraphIndexWriter.Builder(graph, writer)
           .withStartOffset(0)
-          .with(new InlineVectors(vectors.dimension()))
+          .with(new SeparatedVectors(graph.getDimension(), 0))
           .build()) {
         // Write header
         indexWriter.writeHeader(graph.getView());
 
         // Write graph topology only (no inline vectors or other features)
-        indexWriter.write(java.util.Map.of());
+        indexWriter.write(java.util.Map.of(FeatureId.SEPARATED_VECTORS, new IntFunction<Feature.State>() {
+          @Override
+          public InlineVectors.State apply(int value) {
+            return new InlineVectors.State(null);
+          }
+        }));
       }
 
       writer.close();
