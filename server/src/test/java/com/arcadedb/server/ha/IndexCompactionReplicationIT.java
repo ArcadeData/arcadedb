@@ -21,6 +21,7 @@ package com.arcadedb.server.ha;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
@@ -81,7 +82,7 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
     // GET THE INDEX AND TRIGGER COMPACTION ON LEADER
     LogManager.instance().log(this, Level.FINE, "Triggering compaction on index '%s' on leader...", indexName);
-    final com.arcadedb.index.TypeIndex index = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName(indexName);
+    final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName(indexName);
     final boolean compacted = index.compact();
     LogManager.instance().log(this, Level.FINE, "Compaction result: %b", compacted);
     // Compaction might return false if the index doesn't need compaction, which is OK for this test
@@ -129,7 +130,7 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
     builder.withDimensions(10);
 
-    final com.arcadedb.index.TypeIndex vectorIndex = builder.create();
+    final TypeIndex vectorIndex = builder.create();
 
     LogManager.instance().log(this, Level.FINE, "Vector index created: %s", vectorIndex.getName());
     assertThat(vectorIndex).as("Vector index should be created successfully").isNotNull();
@@ -203,7 +204,7 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
     builder.withDimensions(10);
 
-    final com.arcadedb.index.TypeIndex vectorIndex = builder.create();
+    final TypeIndex vectorIndex = builder.create();
 
     LogManager.instance().log(this, Level.FINE, "Vector index created: %s", vectorIndex.getName());
     assertThat(vectorIndex).as("Vector index should be created successfully").isNotNull();
@@ -227,7 +228,7 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
     // GET THE INDEX AND TRIGGER COMPACTION ON LEADER
     LogManager.instance().log(this, Level.FINE, "Triggering compaction on index '%s' on leader...", vectorIndex.getName());
-    final com.arcadedb.index.TypeIndex index = (com.arcadedb.index.TypeIndex) database.getSchema()
+    final TypeIndex index = (TypeIndex) database.getSchema()
         .getIndexByName(vectorIndex.getName());
     index.scheduleCompaction();
     final boolean compacted = index.compact();
@@ -290,7 +291,7 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
     // TRIGGER COMPACTION
     LogManager.instance().log(this, Level.FINE, "Triggering compaction while records exist...");
-    final com.arcadedb.index.TypeIndex index = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName(indexName);
+    final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName(indexName);
     final boolean compacted = index.compact();
     LogManager.instance().log(this, Level.FINE, "Compaction result: %b", compacted);
     // Compaction might return false if the index doesn't need compaction, which is OK

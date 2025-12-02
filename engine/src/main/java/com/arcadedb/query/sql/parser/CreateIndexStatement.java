@@ -63,16 +63,10 @@ public class CreateIndexStatement extends DDLStatement {
   public void validate() throws CommandSQLParsingException {
     final String typeAsString = type.getStringValue().toUpperCase();
     switch (typeAsString) {
-    case "FULL_TEXT" -> {
-    }
-    case "UNIQUE" -> {
-    }
-    case "NOTUNIQUE" -> {
-    }
-    case "HNSW" -> {
-    }
-    case "LSM_VECTOR" -> {
-    }
+    case "FULL_TEXT" -> {}
+    case "UNIQUE" -> {}
+    case "NOTUNIQUE" -> {}
+    case "LSM_VECTOR" -> {}
     default -> throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
     }
   }

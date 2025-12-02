@@ -39,6 +39,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -80,7 +81,7 @@ import java.util.logging.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
+public class LSMVectorIndex implements Index, IndexInternal {
   public static final  String            FILE_EXT        = "lsmvecidx";
   public static final  int               CURRENT_VERSION = 0;
   public static final  int               DEF_PAGE_SIZE   = 262_144;
@@ -150,7 +151,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
 
     ComparableVector(final float[] vector) {
       this.vector = vector;
-      this.hashCode = java.util.Arrays.hashCode(vector);
+      this.hashCode = Arrays.hashCode(vector);
     }
 
     @Override
@@ -178,7 +179,7 @@ public class LSMVectorIndex implements com.arcadedb.index.Index, IndexInternal {
         return true;
       if (!(o instanceof ComparableVector other))
         return false;
-      return java.util.Arrays.equals(vector, other.vector);
+      return Arrays.equals(vector, other.vector);
     }
 
     @Override
