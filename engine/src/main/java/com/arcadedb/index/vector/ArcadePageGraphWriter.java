@@ -20,7 +20,6 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.log.LogManager;
@@ -38,45 +37,12 @@ import java.util.zip.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class ArcadePageGraphWriter implements RandomAccessWriter {
-  private final DatabaseInternal database;
-  private final int              fileId;
-  private final int              pageSize;
-  private final int              usablePageSize; // pageSize - BasePage.PAGE_HEADER_SIZE
-
-  // Current state
-  private       long        currentPosition;  // Logical position in the graph data
-  private       MutablePage currentPage;
-  private       int         currentPageNum;
-  private final CRC32       crc32;
+public class ArcadePageGraphWriter extends ArcadePageGraphFile implements RandomAccessWriter {
+  private final CRC32 crc32;
 
   public ArcadePageGraphWriter(final DatabaseInternal database, final int fileId, final int pageSize) {
-    this.database = database;
-    this.fileId = fileId;
-    this.pageSize = pageSize;
-    this.usablePageSize = pageSize - BasePage.PAGE_HEADER_SIZE;
-    this.currentPosition = 0;
-    this.currentPageNum = -1;
+    super(database, fileId, pageSize, 0L);
     this.crc32 = new CRC32();
-  }
-
-  @Override
-  public void seek(final long position) throws IOException {
-    if (position < 0)
-      throw new IOException("Invalid seek position: " + position);
-
-    this.currentPosition = position;
-
-    int pageNum = (int) (position / pageSize);
-    final int pageOffset = (int) (position % pageSize);
-
-    if (pageOffset >= usablePageSize) {
-      ++pageNum;
-      currentPosition = (long) pageNum * pageSize;
-    }
-
-    // Load page if not already loaded
-    ensurePageLoaded(pageNum);
   }
 
   @Override
@@ -88,7 +54,7 @@ public class ArcadePageGraphWriter implements RandomAccessWriter {
   public void writeInt(final int value) throws IOException {
     final int pageOffset = ensureAvailable(Binary.INT_SERIALIZED_SIZE);
 
-    currentPage.writeInt(pageOffset, value);
+    ((MutablePage) currentPage).writeInt(pageOffset, value);
     LogManager.instance()
         .log(this, Level.SEVERE, "Wrote int %d at page %d offset %d", value, currentPage.getPageId().getPageNumber(), pageOffset);
 
@@ -105,7 +71,7 @@ public class ArcadePageGraphWriter implements RandomAccessWriter {
   public void writeLong(final long value) throws IOException {
     final int pageOffset = ensureAvailable(Binary.LONG_SERIALIZED_SIZE);
 
-    currentPage.writeLong(pageOffset, value);
+    ((MutablePage) currentPage).writeLong(pageOffset, value);
 
     LogManager.instance()
         .log(this, Level.SEVERE, "Wrote long %d at page %d offset %d", value, currentPage.getPageId().getPageNumber(), pageOffset);
@@ -121,7 +87,7 @@ public class ArcadePageGraphWriter implements RandomAccessWriter {
   public void writeShort(final int value) throws IOException {
     final int pageOffset = ensureAvailable(Binary.SHORT_SERIALIZED_SIZE);
 
-    currentPage.writeShort(pageOffset, (short) value);
+    ((MutablePage) currentPage).writeShort(pageOffset, (short) value);
     LogManager.instance()
         .log(this, Level.SEVERE, "Wrote short %d at page %d offset %d", value, currentPage.getPageId().getPageNumber(), pageOffset);
     updatePosition(Binary.SHORT_SERIALIZED_SIZE);
@@ -132,27 +98,27 @@ public class ArcadePageGraphWriter implements RandomAccessWriter {
 
   @Override
   public void writeFloat(final float value) throws IOException {
-    final int pageOffset = ensureAvailable(Binary.FLOAT_SERIALIZED_SIZE);
-
-    currentPage.writeFloat(pageOffset, value);
-    LogManager.instance()
-        .log(this, Level.SEVERE, "Wrote float %d at page %d offset %d", value, currentPage.getPageId().getPageNumber(), pageOffset);
-
-    updatePosition(Binary.FLOAT_SERIALIZED_SIZE);
-
-    // Update checksum
-    final int intBits = Float.floatToRawIntBits(value);
-    crc32.update((intBits >>> 24) & 0xFF);
-    crc32.update((intBits >>> 16) & 0xFF);
-    crc32.update((intBits >>> 8) & 0xFF);
-    crc32.update(intBits & 0xFF);
+//    final int pageOffset = ensureAvailable(Binary.FLOAT_SERIALIZED_SIZE);
+//
+//    ((MutablePage) currentPage).writeFloat(pageOffset, value);
+//    LogManager.instance()
+//        .log(this, Level.SEVERE, "Wrote float %d at page %d offset %d", value, currentPage.getPageId().getPageNumber(), pageOffset);
+//
+//    updatePosition(Binary.FLOAT_SERIALIZED_SIZE);
+//
+//    // Update checksum
+//    final int intBits = Float.floatToRawIntBits(value);
+//    crc32.update((intBits >>> 24) & 0xFF);
+//    crc32.update((intBits >>> 16) & 0xFF);
+//    crc32.update((intBits >>> 8) & 0xFF);
+//    crc32.update(intBits & 0xFF);
   }
 
   @Override
   public void writeDouble(final double value) throws IOException {
     final int pageOffset = ensureAvailable(Binary.DOUBLE_SERIALIZED_SIZE);
 
-    currentPage.writeDouble(pageOffset, value);
+    ((MutablePage) currentPage).writeDouble(pageOffset, value);
     LogManager.instance()
         .log(this, Level.SEVERE, "Wrote double %d at page %d offset %d", value, currentPage.getPageId().getPageNumber(),
             pageOffset);
@@ -169,7 +135,7 @@ public class ArcadePageGraphWriter implements RandomAccessWriter {
   public void write(final int b) throws IOException {
     final int pageOffset = ensureAvailable(Binary.BYTE_SERIALIZED_SIZE);
 
-    currentPage.writeByte(pageOffset, (byte) b);
+    ((MutablePage) currentPage).writeByte(pageOffset, (byte) b);
     LogManager.instance()
         .log(this, Level.SEVERE, "Wrote byte %d at page %d offset %d", b, currentPage.getPageId().getPageNumber(), pageOffset);
 
@@ -205,7 +171,7 @@ public class ArcadePageGraphWriter implements RandomAccessWriter {
       ensurePageLoaded(pageNum);
 
       // Write to current page
-      currentPage.writeByteArray(pageOffset, bytes, offset, toWrite);
+      ((MutablePage) currentPage).writeByteArray(pageOffset, bytes, offset, toWrite);
 
       // Update checksum
       crc32.update(bytes, offset, toWrite);
@@ -267,12 +233,7 @@ public class ArcadePageGraphWriter implements RandomAccessWriter {
   }
 
   @Override
-  public void close() {
-    // No-op: pages are managed by PageManager
-    currentPage = null;
-  }
-
-  private void ensurePageLoaded(final int pageNum) throws IOException {
+  protected void ensurePageLoaded(final int pageNum) throws IOException {
     if (pageNum != currentPageNum) {
       final PageId pageId = new PageId(database, fileId, pageNum);
 
@@ -289,34 +250,6 @@ public class ArcadePageGraphWriter implements RandomAccessWriter {
         throw new IOException("Failed to get/create page: " + pageId);
 
       currentPageNum = pageNum;
-    }
-  }
-
-  private int ensureAvailable(final int bytes) throws IOException {
-    int pageNum = (int) (currentPosition / pageSize);
-    int pageOffset = (int) (currentPosition % pageSize);
-
-    if (pageOffset + bytes > usablePageSize) {
-      ++pageNum;
-      currentPosition = (long) pageNum * pageSize;
-      pageOffset = 0;
-    }
-
-    ensurePageLoaded(pageNum);
-    return pageOffset;
-  }
-
-  private void updatePosition(final int bytesRead) throws IOException {
-    int pageNum = (int) (currentPosition / pageSize);
-    final int pageOffset = (int) (currentPosition % pageSize);
-
-    currentPosition += bytesRead;
-
-    if (pageOffset + bytesRead >= usablePageSize) {
-      // MOVE TO THE NEXT PAGE
-      ++pageNum;
-      ensurePageLoaded(pageNum);
-      currentPosition = (long) pageNum * pageSize;
     }
   }
 }

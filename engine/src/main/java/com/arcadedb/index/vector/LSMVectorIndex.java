@@ -1179,7 +1179,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
       } catch (final Exception e) {
         // Page might not exist, skip
-        LogManager.instance().log(this, Level.FINE, "Skipping page %d in file %d: %s", null,
+        LogManager.instance().log(this, Level.SEVERE, "Skipping page %d in file %d: %s", null,
             pageNum, fileId, e.getMessage());
       }
     }
@@ -2059,7 +2059,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final long elapsed = System.currentTimeMillis() - startTime;
           LogManager.instance().log(this, Level.FINE, "Graph building completed in %d seconds", elapsed / 1000);
         } catch (final Exception e) {
-          LogManager.instance().log(this, Level.FINE, "Failed to build graph before close: " + e.getMessage(), e);
+          LogManager.instance().log(this, Level.SEVERE, "Failed to build graph before close: " + e.getMessage(), e);
           // Don't fail close if graph building fails
         }
       } else {
