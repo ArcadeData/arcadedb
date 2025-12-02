@@ -9,10 +9,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Tests the specific case where Object[] arrays (including empty ones)
  * should be properly serialized as JSON arrays instead of string representations.
  */
-public class JSONObjectArrayFixTest {
+class JSONObjectArrayFixTest {
 
   @Test
-  public void testEmptyObjectArraySerialization() {
+  void emptyObjectArraySerialization() {
     JSONObject json = new JSONObject();
     Object[] emptyArray = new Object[0];
 
@@ -29,7 +29,7 @@ public class JSONObjectArrayFixTest {
   }
 
   @Test
-  public void testNonEmptyObjectArraySerialization() {
+  void nonEmptyObjectArraySerialization() {
     JSONObject json = new JSONObject();
     Object[] array = new Object[] { "test", 123, true };
 
@@ -46,7 +46,7 @@ public class JSONObjectArrayFixTest {
   }
 
   @Test
-  public void testMixedObjectArraySerialization() {
+  void mixedObjectArraySerialization() {
     JSONObject json = new JSONObject();
     Object[] mixedArray = new Object[] { null, "string", 42, new Object[0] };
 
@@ -62,7 +62,7 @@ public class JSONObjectArrayFixTest {
   }
 
   @Test
-  public void testObjectArrayDeserialization() {
+  void objectArrayDeserialization() {
     // Test round-trip: serialize -> parse -> verify
     JSONObject original = new JSONObject();
     Object[] testArray = new Object[] { "hello", 999, false };

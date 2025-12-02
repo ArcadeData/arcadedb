@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Tests backup command HTTP error handling to ensure failed backups return proper HTTP status codes.
  * This test verifies the fix for issue #2244: Failed backup has non-error HTTP status.
  */
-public class BackupHttpErrorHandlingIT extends BaseGraphServerTest {
+class BackupHttpErrorHandlingIT extends BaseGraphServerTest {
 
   @BeforeEach
   void setUp() throws IOException {
@@ -44,7 +44,7 @@ public class BackupHttpErrorHandlingIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testBackupPermissionDeniedReturns500() throws Exception {
+  void backupPermissionDeniedReturns500() throws Exception {
     // Create a temporary directory that will be made read-only
 
     // Attempt backup to the read-only directory
@@ -74,7 +74,7 @@ public class BackupHttpErrorHandlingIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testBackupInvalidPathReturns500() throws Exception {
+  void backupInvalidPathReturns500() throws Exception {
     // Use an obviously invalid path that doesn't exist
     final String invalidPath = "/this/path/does/not/exist/backup.zip";
 
@@ -101,7 +101,7 @@ public class BackupHttpErrorHandlingIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testBackupSuccessReturns200() throws Exception {
+  void backupSuccessReturns200() throws Exception {
 
     // Ensure directory is writable
 

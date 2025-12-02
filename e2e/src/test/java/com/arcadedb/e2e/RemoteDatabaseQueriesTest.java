@@ -27,7 +27,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class RemoteDatabaseQueriesTest extends ArcadeContainerTemplate {
+class RemoteDatabaseQueriesTest extends ArcadeContainerTemplate {
   private RemoteDatabase database;
 
   @BeforeEach

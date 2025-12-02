@@ -42,7 +42,7 @@ public class SQLFunctionConvertTest {
   }
 
   @Test
-  public void testSQLConversions() throws Exception {
+  void sqlConversions() throws Exception {
     TestHelper.executeInNewDatabase("testSQLConvert", (db) -> db.transaction(() -> {
       db.command("sql", "create document type TestConversion");
 

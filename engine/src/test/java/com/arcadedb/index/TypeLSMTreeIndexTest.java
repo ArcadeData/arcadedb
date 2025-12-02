@@ -54,13 +54,13 @@ import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class TypeLSMTreeIndexTest extends TestHelper {
+class TypeLSMTreeIndexTest extends TestHelper {
   private static final int    TOT       = 100000;
   private static final String TYPE_NAME = "V";
   private static final int    PAGE_SIZE = 20000;
 
   @Test
-  public void testGet() {
+  void get() {
     database.transaction(() -> {
 
       int total = 0;
@@ -85,12 +85,12 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testGetAsRange() {
+  void getAsRange() {
     database.transaction(this::execute);
   }
 
   @Test
-  public void testRangeFromHead() {
+  void rangeFromHead() {
     database.transaction(() -> {
 
       final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
@@ -124,7 +124,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testRangeFromTail() {
+  void rangeFromTail() {
     database.transaction(() -> {
 
       final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
@@ -159,7 +159,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testRangeWithSQL() {
+  void rangeWithSQL() {
     database.transaction(() -> {
       for (int i = 0; i < TOT - 1; ++i) {
         int total = 0;
@@ -184,7 +184,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexAscending() {
+  void scanIndexAscending() {
     database.transaction(() -> {
 
       // Wait for the index to be compacted using awaitility
@@ -231,7 +231,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexDescending() {
+  void scanIndexDescending() {
     database.transaction(() -> {
 
       // Wait for the index to be compacted using awaitility
@@ -276,7 +276,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexAscendingPartialInclusive() {
+  void scanIndexAscendingPartialInclusive() {
     database.transaction(() -> {
 
       int total = 0;
@@ -305,7 +305,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexAscendingPartialExclusive() {
+  void scanIndexAscendingPartialExclusive() {
     database.transaction(() -> {
 
       int total = 0;
@@ -334,7 +334,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexDescendingPartialInclusive() {
+  void scanIndexDescendingPartialInclusive() {
     database.transaction(() -> {
 
       int total = 0;
@@ -362,7 +362,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexDescendingPartialExclusive() {
+  void scanIndexDescendingPartialExclusive() {
     database.transaction(() -> {
 
       int total = 0;
@@ -390,7 +390,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeInclusive2Inclusive() {
+  void scanIndexRangeInclusive2Inclusive() {
     database.transaction(() -> {
 
       int total = 0;
@@ -423,7 +423,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeInclusive2Exclusive() {
+  void scanIndexRangeInclusive2Exclusive() {
     database.transaction(() -> {
 
       int total = 0;
@@ -456,7 +456,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeExclusive2Inclusive() {
+  void scanIndexRangeExclusive2Inclusive() {
     database.transaction(() -> {
 
       int total = 0;
@@ -489,7 +489,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeExclusive2InclusiveInverse() {
+  void scanIndexRangeExclusive2InclusiveInverse() {
     database.transaction(() -> {
 
       int total = 0;
@@ -522,7 +522,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeExclusive2Exclusive() {
+  void scanIndexRangeExclusive2Exclusive() {
     database.transaction(() -> {
 
       int total = 0;
@@ -555,7 +555,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeExclusive2ExclusiveInverse() {
+  void scanIndexRangeExclusive2ExclusiveInverse() {
     database.transaction(() -> {
 
       int total = 0;
@@ -589,7 +589,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
   @Test
   @Tag("slow")
-  public void testUniqueConcurrentWithIndexesCompaction() {
+  void uniqueConcurrentWithIndexesCompaction() {
     GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(0);
 
     database.begin();
@@ -739,7 +739,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testRebuildIndex() {
+  void rebuildIndex() {
     final Index typeIndexBefore = database.getSchema().getIndexByName(TYPE_NAME + "[id]");
     assertThat(typeIndexBefore).isNotNull();
     assertThat(typeIndexBefore.getPropertyNames().size()).isEqualTo(1);
@@ -757,7 +757,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testIndexNameSpecialCharacters() throws InterruptedException {
+  void indexNameSpecialCharacters() throws Exception {
     VertexType type = database.getSchema().createVertexType("This.is:special");
     type.createProperty("other.special:property", Type.STRING);
 
@@ -779,7 +779,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testIndexNameSpecialCharactersUsingSQL() throws InterruptedException {
+  void indexNameSpecialCharactersUsingSQL() throws Exception {
     database.command("sql", "create vertex type `This.is:special`");
     database.command("sql", "create property `This.is:special`.`other.special:property` string");
     database.transaction(() -> {
@@ -804,7 +804,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testSQL() {
+  void sql() {
     final Index typeIndexBefore = database.getSchema().getIndexByName(TYPE_NAME + "[id]");
     assertThat(typeIndexBefore).isNotNull();
     database.command("sql", "create index if not exists on " + TYPE_NAME + " (id) UNIQUE");

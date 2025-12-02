@@ -32,7 +32,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class RemoteSchemaIT extends BaseGraphServerTest {
+class RemoteSchemaIT extends BaseGraphServerTest {
   private static final String DATABASE_NAME = "remote-database";
 
   @Override
@@ -41,7 +41,7 @@ public class RemoteSchemaIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void documentType() throws Exception {
+  void documentType() throws Exception {
     testEachServer((serverIndex) -> {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
@@ -64,7 +64,7 @@ public class RemoteSchemaIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void vertexType() throws Exception {
+  void vertexType() throws Exception {
     testEachServer((serverIndex) -> {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
@@ -108,7 +108,7 @@ public class RemoteSchemaIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void edgeType() throws Exception {
+  void edgeType() throws Exception {
     testEachServer((serverIndex) -> {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);

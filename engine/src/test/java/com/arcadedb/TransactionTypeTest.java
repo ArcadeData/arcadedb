@@ -29,24 +29,23 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
 import java.util.*;
 import java.util.concurrent.atomic.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOfType;
 
-public class TransactionTypeTest extends TestHelper {
+class TransactionTypeTest extends TestHelper {
   private static final int    TOT       = 10000;
   private static final String TYPE_NAME = "V";
 
   @Test
-  public void testPopulate() {
+  void populate() {
     // EMPTY METHOD
   }
 
   @Test
-  public void testScan() {
+  void scan() {
     final AtomicInteger total = new AtomicInteger();
 
     database.begin();
@@ -72,7 +71,7 @@ public class TransactionTypeTest extends TestHelper {
   }
 
   @Test
-  public void testLookupAllRecordsByRID() {
+  void lookupAllRecordsByRID() {
     final AtomicInteger total = new AtomicInteger();
 
     database.begin();
@@ -100,7 +99,7 @@ public class TransactionTypeTest extends TestHelper {
   }
 
   @Test
-  public void testLookupAllRecordsByKey() {
+  void lookupAllRecordsByKey() {
     final AtomicInteger total = new AtomicInteger();
 
     database.begin();
@@ -131,7 +130,7 @@ public class TransactionTypeTest extends TestHelper {
   }
 
   @Test
-  public void testDeleteAllRecordsReuseSpace() throws IOException {
+  void deleteAllRecordsReuseSpace() throws Exception {
     final AtomicInteger total = new AtomicInteger();
 
     database.begin();
@@ -163,7 +162,7 @@ public class TransactionTypeTest extends TestHelper {
   }
 
   @Test
-  public void testDeleteRecordsCheckScanAndIterators() throws IOException {
+  void deleteRecordsCheckScanAndIterators() throws Exception {
     final AtomicInteger total = new AtomicInteger();
 
     database.begin();
@@ -201,7 +200,7 @@ public class TransactionTypeTest extends TestHelper {
   }
 
   @Test
-  public void testPlaceholderOnScanAndIterate() throws IOException {
+  void placeholderOnScanAndIterate() throws Exception {
     final AtomicInteger total = new AtomicInteger();
 
     database.begin();
@@ -239,7 +238,7 @@ public class TransactionTypeTest extends TestHelper {
   }
 
   @Test
-  public void testDeleteFail() {
+  void deleteFail() {
     reopenDatabaseInReadOnlyMode();
 
     assertThatExceptionOfType(DatabaseIsReadOnlyException.class).isThrownBy(() -> {
@@ -258,7 +257,7 @@ public class TransactionTypeTest extends TestHelper {
   }
 
   @Test
-  public void testNestedTx() {
+  void nestedTx() {
     database.transaction(() -> {
       database.newDocument(TYPE_NAME).set("id", -1, "tx", 1).save();
       database.transaction(() -> database.newDocument(TYPE_NAME).set("id", -2, "tx", 2).save());

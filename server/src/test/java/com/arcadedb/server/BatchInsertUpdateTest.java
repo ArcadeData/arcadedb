@@ -46,7 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * From Issue https://github.com/ArcadeData/arcadedb/discussion/1129
  */
-public class BatchInsertUpdateTest {
+class BatchInsertUpdateTest {
   static final String DATABASE_NAME = "BatchInsertUpdateTest";
 
   private class CandidateOrder {
@@ -82,7 +82,7 @@ public class BatchInsertUpdateTest {
   }
 
   @Test
-  public void testBatchAsyncInsertUpdate() {
+  void batchAsyncInsertUpdate() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
 
@@ -204,7 +204,7 @@ public class BatchInsertUpdateTest {
   }
 
   @BeforeEach
-  public void beginTests() {
+  void beginTests() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
     FileUtils.deleteRecursively(new File(rootPath + "/databases"));
@@ -213,7 +213,7 @@ public class BatchInsertUpdateTest {
   }
 
   @AfterEach
-  public void endTests() {
+  void endTests() {
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();
   }

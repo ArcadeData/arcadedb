@@ -31,34 +31,34 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class SQLFunctionRandomIntTest {
+class SQLFunctionRandomIntTest {
   private SQLFunctionRandomInt random;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     random = new SQLFunctionRandomInt();
   }
 
   @Test
-  public void testEmpty() {
+  void empty() {
     final Object result = random.getResult();
     assertThat(result).isNull();
   }
 
   @Test
-  public void testResultWithIntParameter() {
+  void resultWithIntParameter() {
     final Integer result = (Integer) random.execute(null, null, null, new Integer[] { 1000 }, null);
     assertThat(result).isNotNull();
   }
 
   @Test
-  public void testResultWithStringParameter() {
+  void resultWithStringParameter() {
     final Integer result = (Integer) random.execute(null, null, null, new Object[] { "1000" }, null);
     assertThat(result).isNotNull();
   }
 
   @Test
-  public void testQuery() throws Exception {
+  void query() throws Exception {
     TestHelper.executeInNewDatabase("SQLFunctionRandomInt", (db) -> {
       final ResultSet result = db.query("sql", "select randomInt(1000) as random");
       assertThat((Iterator<? extends Result>) result).isNotNull();

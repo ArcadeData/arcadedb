@@ -24,7 +24,6 @@ import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -32,21 +31,23 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 /**
  * Tests that LSM vector indexes persist correctly to schema.json and can be loaded after database restart.
  */
-public class LSMVectorIndexPersistenceTest {
+class LSMVectorIndexPersistenceTest {
   private static final String DB_PATH = "databases/test-vector-persistence";
 
   @AfterEach
-  public void cleanup() {
+  void cleanup() {
     if (new DatabaseFactory(DB_PATH).exists()) {
       new DatabaseFactory(DB_PATH).open().drop();
     }
   }
 
   @Test
-  public void testVectorIndexPersistsToSchemaJson() throws Exception {
+  void vectorIndexPersistsToSchemaJson() throws Exception {
     // Create database and vector index
     DatabaseFactory factory = new DatabaseFactory(DB_PATH);
     if (factory.exists()) {
@@ -67,8 +68,8 @@ public class LSMVectorIndexPersistenceTest {
 
       // Verify index exists
       Index index = database.getSchema().getIndexByName("Word[vector]");
-      Assertions.assertNotNull(index, "Index should exist after creation");
-      Assertions.assertEquals("LSM_VECTOR", index.getType().toString());
+      assertThat(index).as("Index should exist after creation").isNotNull();
+      assertThat(index.getType().toString()).isEqualTo("LSM_VECTOR");
 
       // Add some test data
       database.begin();
@@ -85,7 +86,7 @@ public class LSMVectorIndexPersistenceTest {
       database.commit();
 
       // Verify data was indexed
-      Assertions.assertEquals(10, index.countEntries(), "Index should have 10 entries");
+      assertThat(index.countEntries()).as("Index should have 10 entries").isEqualTo(10);
 
     } finally {
       database.close();
@@ -102,7 +103,7 @@ public class LSMVectorIndexPersistenceTest {
 
     // Verify schema.json contains the index definition
     String schemaPath = DB_PATH + "/schema.json";
-    Assertions.assertTrue(new File(schemaPath).exists(), "schema.json should exist");
+    assertThat(new File(schemaPath).exists()).as("schema.json should exist").isTrue();
 
     String schemaContent = Files.readString(Paths.get(schemaPath));
     JSONObject schema = new JSONObject(schemaContent);
@@ -112,8 +113,7 @@ public class LSMVectorIndexPersistenceTest {
     JSONObject wordType = types.getJSONObject("Word");
     JSONObject indexes = wordType.getJSONObject("indexes");
 
-    Assertions.assertFalse(indexes.isEmpty(),
-        "schema.json should contain index definitions");
+    assertThat(indexes.isEmpty()).as("schema.json should contain index definitions").isFalse();
 
     // Find the LSM_VECTOR index (stored by bucket name, not TypeIndex name)
     JSONObject vectorIndex = null;
@@ -125,10 +125,10 @@ public class LSMVectorIndexPersistenceTest {
       }
     }
 
-    Assertions.assertNotNull(vectorIndex, "schema.json should contain LSM_VECTOR index");
-    Assertions.assertEquals("LSM_VECTOR", vectorIndex.getString("type"));
-    Assertions.assertEquals(100, vectorIndex.getInt("dimensions"));
-    Assertions.assertEquals("COSINE", vectorIndex.getString("similarityFunction"));
+    assertThat(vectorIndex).as("schema.json should contain LSM_VECTOR index").isNotNull();
+    assertThat(vectorIndex.getString("type")).isEqualTo("LSM_VECTOR");
+    assertThat(vectorIndex.getInt("dimensions")).isEqualTo(100);
+    assertThat(vectorIndex.getString("similarityFunction")).isEqualTo("COSINE");
 
     // Reopen database and verify index is loaded
     database = factory.open();
@@ -141,11 +141,11 @@ public class LSMVectorIndexPersistenceTest {
 
       // Verify index exists after reload
       Index reloadedIndex = database.getSchema().getIndexByName("Word[vector]");
-      Assertions.assertNotNull(reloadedIndex, "Index should exist after database restart");
-      Assertions.assertEquals("LSM_VECTOR", reloadedIndex.getType().toString());
+      assertThat(reloadedIndex).as("Index should exist after database restart").isNotNull();
+      assertThat(reloadedIndex.getType().toString()).isEqualTo("LSM_VECTOR");
 
       // Verify index is functional
-      Assertions.assertEquals(10, reloadedIndex.countEntries(), "Index should still have 10 entries");
+      assertThat(reloadedIndex.countEntries()).as("Index should still have 10 entries").isEqualTo(10);
 
       // Verify we can query using the index directly (not via SQL function)
       float[] queryVector = new float[100];
@@ -161,7 +161,7 @@ public class LSMVectorIndexPersistenceTest {
         resultCount++;
       }
 
-      Assertions.assertTrue(resultCount > 0, "Vector search should return results");
+      assertThat(resultCount > 0).as("Vector search should return results").isTrue();
 
     } finally {
       database.close();
@@ -169,7 +169,7 @@ public class LSMVectorIndexPersistenceTest {
   }
 
   @Test
-  public void testVectorIndexPersistsAfterCompaction() throws Exception {
+  void vectorIndexPersistsAfterCompaction() throws Exception {
     // Create database and vector index
     DatabaseFactory factory = new DatabaseFactory(DB_PATH);
     if (factory.exists()) {
@@ -219,9 +219,8 @@ public class LSMVectorIndexPersistenceTest {
     database = factory.open();
     try {
       Index reloadedIndex = database.getSchema().getIndexByName("Word[vector]");
-      Assertions.assertNotNull(reloadedIndex, "Index should exist after compaction and restart");
-      Assertions.assertEquals(100, reloadedIndex.countEntries(),
-          "Index should have all entries after compaction");
+      assertThat(reloadedIndex).as("Index should exist after compaction and restart").isNotNull();
+      assertThat(reloadedIndex.countEntries()).as("Index should have all entries after compaction").isEqualTo(100);
 
     } finally {
       database.close();

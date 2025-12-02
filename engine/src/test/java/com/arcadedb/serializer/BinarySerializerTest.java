@@ -38,10 +38,10 @@ import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class BinarySerializerTest extends TestHelper {
+class BinarySerializerTest extends TestHelper {
 
   @Test
-  public void testVarNumber() {
+  void varNumber() {
     final Binary binary = new Binary();
     binary.putUnsignedNumber(0);
     binary.putUnsignedNumber(3);
@@ -145,7 +145,7 @@ public class BinarySerializerTest extends TestHelper {
   }
 
   @Test
-  public void testLiteralPropertiesInDocument() throws ClassNotFoundException {
+  void literalPropertiesInDocument() throws Exception {
     final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
@@ -195,7 +195,7 @@ public class BinarySerializerTest extends TestHelper {
   }
 
   @Test
-  public void testListPropertiesInDocument() throws ClassNotFoundException {
+  void listPropertiesInDocument() throws Exception {
     final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
@@ -300,7 +300,7 @@ public class BinarySerializerTest extends TestHelper {
   }
 
   @Test
-  public void testArraysOfPrimitive() throws ClassNotFoundException {
+  void arraysOfPrimitive() throws Exception {
     final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
@@ -355,7 +355,7 @@ public class BinarySerializerTest extends TestHelper {
   }
 
   @Test
-  public void testMapPropertiesInDocument() throws ClassNotFoundException {
+  void mapPropertiesInDocument() throws Exception {
     final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
@@ -430,7 +430,7 @@ public class BinarySerializerTest extends TestHelper {
   }
 
   @Test
-  public void testEmbedded() throws ClassNotFoundException {
+  void embedded() throws Exception {
     final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
@@ -467,7 +467,7 @@ public class BinarySerializerTest extends TestHelper {
   }
 
   @Test
-  public void testListOfEmbedded() throws ClassNotFoundException {
+  void listOfEmbedded() throws Exception {
     final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
@@ -514,7 +514,7 @@ public class BinarySerializerTest extends TestHelper {
   }
 
   @Test
-  public void testMapOfEmbedded() throws ClassNotFoundException {
+  void mapOfEmbedded() throws Exception {
     final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {

@@ -42,13 +42,13 @@ class SQLMethodFieldTest extends TestHelper {
   }
 
   @Test
-  void testNulIParamsReturnedAsNull() {
+  void nulIParamsReturnedAsNull() {
     final Object result = method.execute(null, null, null, new Object[] { null });
     assertThat(result).isNull();
   }
 
   @Test
-  void testFieldValueSQL() {
+  void fieldValueSQL() {
     database.transaction(() -> {
       DocumentType type = database.getSchema().buildDocumentType().withName("Test").create();
       type.createProperty("embedded", Type.EMBEDDED);
@@ -65,7 +65,7 @@ class SQLMethodFieldTest extends TestHelper {
 
   }
   @Test
-  void testFieldValue() {
+  void fieldValue() {
     database.transaction(() -> {
       DocumentType type = database.getSchema().buildDocumentType().withName("Test").create();
       type.createProperty("embedded", Type.EMBEDDED);

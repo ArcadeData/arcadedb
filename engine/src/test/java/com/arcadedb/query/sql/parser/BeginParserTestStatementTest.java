@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class BeginParserTestStatementTest extends AbstractParserTest {
+class BeginParserTestStatementTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("BEGIN");
     checkRightSyntax("begin");
 

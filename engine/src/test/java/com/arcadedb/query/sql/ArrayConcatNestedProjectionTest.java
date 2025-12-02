@@ -9,10 +9,10 @@ import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class ArrayConcatNestedProjectionTest extends TestHelper {
+class ArrayConcatNestedProjectionTest extends TestHelper {
 
   @Test
-  public void testArrayConcatWithNestedProjection() {
+  void arrayConcatWithNestedProjection() {
     database.transaction(() -> {
       // Test case from issue: SELECT list({"x":1}):{x} || []
       // This tests array concatenation with nested projection on an aggregate function

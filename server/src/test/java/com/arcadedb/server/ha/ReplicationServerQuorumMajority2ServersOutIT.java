@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
 public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationServerIT {
@@ -70,12 +71,8 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
 
   @Test
   public void testReplication() throws Exception {
-    try {
-      super.testReplication();
-      fail("Replication is supposed to fail without enough online servers");
-    } catch (final QuorumNotReachedException e) {
-      // CATCH IT
-    }
+    assertThatThrownBy(super::replication)
+        .isInstanceOf(QuorumNotReachedException.class);
   }
 
   protected int[] getServerToCheck() {
@@ -86,11 +83,12 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
     final Database db = getServerDatabase(server, getDatabaseName());
     db.begin();
     try {
-      assertThat(1 + getTxs() * getVerticesPerTx() > db.countType(VERTEX1_TYPE_NAME, true)).as("Check for vertex count for server" + server).isTrue();
+      assertThat(1 + (long) getTxs() * getVerticesPerTx() > db.countType(VERTEX1_TYPE_NAME, true))
+          .as("Check for vertex count for server" + server)
+          .isTrue();
 
     } catch (final Exception e) {
-      e.printStackTrace();
-      fail("Error on checking on server" + server);
+      fail("Error on checking on server" + server  , e);
     }
   }
 

@@ -20,12 +20,14 @@ package com.arcadedb.server.ha;
 
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerException;
+
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
-public class HAConfigurationIT extends BaseGraphServerTest {
+class HAConfigurationIT extends BaseGraphServerTest {
   protected int getServerCount() {
     return 3;
   }
@@ -35,11 +37,9 @@ public class HAConfigurationIT extends BaseGraphServerTest {
     return "192.168.0.1:2424,192.168.0.1:2425,localhost:2424";
   }
 
-  public void beginTest() {
-  }
 
   @Test
-  public void testReplication() {
+  void replication() {
     try {
       super.beginTest();
       fail("");

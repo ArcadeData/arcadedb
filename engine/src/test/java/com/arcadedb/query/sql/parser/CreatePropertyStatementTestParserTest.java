@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class CreatePropertyStatementTestParserTest extends AbstractParserTest {
+class CreatePropertyStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("CREATE PROPERTY Foo.bar STRING");
     checkRightSyntax("create property Foo.bar STRING");
 
@@ -39,7 +39,7 @@ public class CreatePropertyStatementTestParserTest extends AbstractParserTest {
   }
 
   @Test
-  public void testIfNotExists() {
+  void ifNotExists() {
     checkRightSyntax("CREATE PROPERTY Foo.bar if not exists STRING");
     checkWrongSyntax("CREATE PROPERTY Foo.bar if exists STRING");
     checkWrongSyntax("CREATE PROPERTY Foo.bar if not exists");

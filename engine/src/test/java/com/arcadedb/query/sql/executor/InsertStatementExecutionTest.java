@@ -28,7 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -39,7 +39,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInsertSet() {
+  void insertSet() {
     final String className = "testInsertSet";
     database.getSchema().createDocumentType(className);
 
@@ -65,7 +65,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInsertValue() {
+  void insertValue() {
     final String className = "testInsertValue";
     database.getSchema().createDocumentType(className);
 
@@ -92,7 +92,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInsertValue2() {
+  void insertValue2() {
     final String className = "testInsertValue2";
     database.getSchema().createDocumentType(className);
 
@@ -126,7 +126,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInsertFromSelect1() {
+  void insertFromSelect1() {
     final String className1 = "testInsertFromSelect1";
     database.getSchema().createDocumentType(className1);
 
@@ -168,7 +168,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInsertFromSelect2() {
+  void insertFromSelect2() {
     final String className1 = "testInsertFromSelect2";
     database.getSchema().createDocumentType(className1);
 
@@ -210,7 +210,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInsertFromSelectRawValue() {
+  void insertFromSelectRawValue() {
     final String className1 = "testInsertFromSelectRawValue";
     database.getSchema().createDocumentType(className1);
 
@@ -226,7 +226,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInsertFromSelectRawValues() {
+  void insertFromSelectRawValues() {
     final String className1 = "testInsertFromSelectRawValues";
     database.getSchema().createDocumentType(className1);
 
@@ -244,7 +244,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testContent() {
+  void content() {
     final String className = "testContent";
     database.getSchema().createDocumentType(className);
 
@@ -271,7 +271,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testContentJsonArray() {
+  void contentJsonArray() {
     final String className = "testContentArray";
     database.getSchema().createDocumentType(className, 1);
 
@@ -309,7 +309,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testContentEmbedded() {
+  void contentEmbedded() {
     final String className = "testContent";
     database.getSchema().createDocumentType(className);
 
@@ -328,7 +328,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testContentWithParam() {
+  void contentWithParam() {
     final String className = "testContentWithParam";
     database.getSchema().createDocumentType(className);
 
@@ -360,7 +360,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testLinkConversion() {
+  void linkConversion() {
     final String className1 = "testLinkConversion1";
     final String className2 = "testLinkConversion2";
 
@@ -388,7 +388,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testLISTConversion() {
+  void listConversion() {
     final String className1 = "testLISTConversion1";
     final String className2 = "testLISTConversion2";
 
@@ -416,7 +416,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testLISTConversion2() {
+  void listConversion2() {
     final String className1 = "testLISTConversion21";
     final String className2 = "testLISTConversion22";
 
@@ -444,7 +444,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInsertReturn() {
+  void insertReturn() {
     final String className = "testInsertReturn";
     database.getSchema().createDocumentType(className);
 
@@ -470,7 +470,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testNestedInsert() {
+  void nestedInsert() {
     final String className = "testNestedInsert";
     database.getSchema().createDocumentType(className);
 
@@ -493,7 +493,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testLinkMapWithSubqueries() {
+  void linkMapWithSubqueries() {
     final String className = "testLinkMapWithSubqueries";
     final String itemclassName = "testLinkMapWithSubqueriesTheItem";
 
@@ -517,7 +517,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testQuotedCharactersInJson() {
+  void quotedCharactersInJson() {
     final String className = "testQuotedCharactersInJson";
 
     database.command("sql", "create document type " + className);
@@ -535,19 +535,14 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInsertEdgeMustFail() {
+  void insertEdgeMustFail() {
     final String className = "testInsertEdge";
     database.getSchema().createEdgeType(className);
-    try {
-      database.command("sql", "insert into " + className + " set `@out` = #1:10, `@in` = #1:11");
-      fail("");
-    } catch (final IllegalArgumentException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> database.command("sql", "insert into " + className + " set `@out` = #1:10, `@in` = #1:11")).isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
-  public void testInsertJsonNewLines() {
+  void insertJsonNewLines() {
     database.getSchema().createDocumentType("doc");
     final ResultSet result = database.command("sql", "INSERT INTO doc CONTENT {\n" + //
         "\"head\" : {\n" + //
@@ -585,7 +580,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInsertEncoding() {
+  void insertEncoding() {
     database.getSchema().createDocumentType("RegInfoDoc");
     final ResultSet result = database.command("sql",
         "insert into RegInfoDoc set payload = \"(Pn/m)*1000kg/kW, with \\\"Pn\\\" being the\\n\\np  and \\\"m\\\" (kg)\"");
@@ -594,7 +589,7 @@ public class InsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInsertFromSelect() {
+  void insertFromSelect() {
     database.command("sqlscript",
         """
         CREATE DOCUMENT TYPE src;

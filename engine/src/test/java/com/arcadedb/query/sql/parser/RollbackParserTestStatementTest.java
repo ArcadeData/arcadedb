@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class RollbackParserTestStatementTest extends AbstractParserTest {
+class RollbackParserTestStatementTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("ROLLBACK");
     checkRightSyntax("rollback");
 

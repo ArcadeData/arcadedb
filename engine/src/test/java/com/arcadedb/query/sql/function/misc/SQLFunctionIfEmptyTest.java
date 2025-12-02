@@ -32,10 +32,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Test for SQLFunctionIfEmpty
  */
-public class SQLFunctionIfEmptyTest extends TestHelper {
+class SQLFunctionIfEmptyTest extends TestHelper {
 
   @Test
-  public void testFunctionInstance() {
+  void functionInstance() {
     SQLFunctionIfEmpty function = new SQLFunctionIfEmpty();
 
     assertThat(function.getName()).isEqualTo("ifempty");
@@ -43,7 +43,7 @@ public class SQLFunctionIfEmptyTest extends TestHelper {
   }
 
   @Test
-  public void testDirectExecution() {
+  void directExecution() {
     SQLFunctionIfEmpty function = new SQLFunctionIfEmpty();
 
     // Case 1: Non-empty string
@@ -84,7 +84,7 @@ public class SQLFunctionIfEmptyTest extends TestHelper {
   }
 
   @Test
-  public void testSQLQueryWithIfEmpty() {
+  void sqlQueryWithIfEmpty() {
     database.transaction(() -> {
       database.command("sql", "create document type TestIfEmpty");
       database.command("sql",
@@ -130,7 +130,7 @@ public class SQLFunctionIfEmptyTest extends TestHelper {
   }
 
   @Test
-  public void testCombinedIfEmptyAndIfNullInSQL() {
+  void combinedIfEmptyAndIfNullInSQL() {
     database.transaction(() -> {
       database.command("sql", "create document type TestCombined");
       database.command("sql", "insert into TestCombined content {'name': 'Test1', 'value': 'Value1'}");

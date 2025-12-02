@@ -26,10 +26,10 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class CSVImporterIT {
+class CSVImporterIT {
 
   @Test
-  public void importDocuments() {
+  void importDocuments() {
     final String databasePath = "target/databases/test-import-documents";
 
     final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
@@ -50,7 +50,7 @@ public class CSVImporterIT {
   }
 
   @Test
-  public void importDocumentsWithBigTextColumns() {
+  void importDocumentsWithBigTextColumns() {
     final String databasePath = "target/databases/test-import-documents";
 
     final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
@@ -81,7 +81,7 @@ public class CSVImporterIT {
   }
 
   @Test
-  public void importGraph() {
+  void importGraph() {
     final String databasePath = "target/databases/test-import-graph";
 
     final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);

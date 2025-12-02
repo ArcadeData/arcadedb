@@ -35,7 +35,7 @@ import java.util.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
-public class RandomTestSingleThread extends TestHelper {
+class RandomTestSingleThread extends TestHelper {
   private static final int CYCLES           = 1500;
   private static final int STARTING_ACCOUNT = 100;
   private static final int PARALLEL         = 4;
@@ -45,7 +45,7 @@ public class RandomTestSingleThread extends TestHelper {
   private final Random     rnd         = new Random();
 
   @Test
-  public void testRandom() {
+  void random() {
     LogManager.instance().log(this, Level.INFO, "Executing " + CYCLES + " transactions");
 
     PerformanceTest.clean();

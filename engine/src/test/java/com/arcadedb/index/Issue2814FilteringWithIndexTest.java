@@ -72,7 +72,7 @@ public class Issue2814FilteringWithIndexTest extends TestHelper {
   }
 
   @Test
-  public void testFilteringBeforeParameterizedUpdate() {
+  void filteringBeforeParameterizedUpdate() {
     // Verify initial state - should find 2 pending children
     database.transaction(() -> {
       ResultSet pending = database.query("sql", "SELECT uid, status FROM Child WHERE status = 'pending'");
@@ -89,7 +89,7 @@ public class Issue2814FilteringWithIndexTest extends TestHelper {
   }
 
   @Test
-  public void testFilteringAfterParameterizedMultiFieldUpdate() {
+  void filteringAfterParameterizedMultiFieldUpdate() {
     // This is the main test for the bug: parameterized multi-field UPDATE breaks index
     database.transaction(() -> {
       // Update c1 with parameterized multi-field UPDATE (including version field)
@@ -158,7 +158,7 @@ public class Issue2814FilteringWithIndexTest extends TestHelper {
   }
 
   @Test
-  public void testFilteringAfterParameterizedSingleFieldUpdate() {
+  void filteringAfterParameterizedSingleFieldUpdate() {
     // Test that single-field parameterized UPDATE works correctly (comparison test)
     database.transaction(() -> {
       // Update c2 with parameterized single-field UPDATE (only status)

@@ -30,11 +30,11 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class LSMTreeIndexCompositeTest extends TestHelper {
+class LSMTreeIndexCompositeTest extends TestHelper {
   private static final int TOT = 100;
 
   @Test
-  public void testGetAbsoluteId() {
+  void getAbsoluteId() {
     database.transaction(() -> {
       final TypeIndex index = database.getSchema().getType("File").getIndexesByProperties("absoluteId").get(0);
       for (int i = 0; i < TOT * TOT; ++i) {
@@ -46,7 +46,7 @@ public class LSMTreeIndexCompositeTest extends TestHelper {
   }
 
   @Test
-  public void testGetRelative() {
+  void getRelative() {
     database.transaction(() -> {
       final TypeIndex index = database.getSchema().getType("File").getIndexesByProperties("directoryId", "fileId").get(0);
       for (int i = 0; i < TOT; ++i) {
@@ -63,7 +63,7 @@ public class LSMTreeIndexCompositeTest extends TestHelper {
   }
 
   @Test
-  public void testPartialNullGet() {
+  void partialNullGet() {
     database.transaction(() -> {
       final TypeIndex index = database.getSchema().getType("File").getIndexesByProperties("directoryId", "fileId").get(0);
       for (int i = 0; i < TOT; ++i) {

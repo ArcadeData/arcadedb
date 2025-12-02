@@ -28,7 +28,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -38,12 +40,12 @@ import static java.util.concurrent.TimeUnit.*;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
-public class ServerSecurityIT {
+class ServerSecurityIT {
 
   private static final String PASSWORD = "dD5ed08c";
 
   @Test
-  void shouldCreateDefaultRootUserAndPersistsSecurityConfigurationFromSetting() throws IOException {
+  void shouldCreateDefaultRootUserAndPersistsSecurityConfigurationFromSetting() throws Exception {
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(PASSWORD);
 
     final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
@@ -65,7 +67,7 @@ public class ServerSecurityIT {
   }
 
   @Test
-  void shouldCreateDefaultRootUserAndPersistsSecurityConfigurationFromUserInput() throws IOException {
+  void shouldCreateDefaultRootUserAndPersistsSecurityConfigurationFromUserInput() throws Exception {
     final Path securityConfPath = Path.of("./target", SecurityUserFileRepository.FILE_NAME);
     Files.deleteIfExists(securityConfPath);
 
@@ -96,7 +98,7 @@ public class ServerSecurityIT {
   }
 
   @Test
-  void shouldLoadProvidedSecurityConfiguration() throws IOException {
+  void shouldLoadProvidedSecurityConfiguration() throws Exception {
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(PASSWORD);
 
     final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
@@ -118,7 +120,7 @@ public class ServerSecurityIT {
   }
 
   @Test
-  void shouldReloadSecurityConfiguration() throws IOException {
+  void shouldReloadSecurityConfiguration() throws Exception {
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(PASSWORD);
 
     final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
@@ -153,7 +155,7 @@ public class ServerSecurityIT {
   }
 
   @Test
-  public void checkPasswordHash() {
+  void checkPasswordHash() {
     final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
     security.startService();
 
@@ -172,7 +174,7 @@ public class ServerSecurityIT {
   }
 
   @BeforeEach
-  public void beforeAll() {
+  void beforeAll() {
     FileUtils.deleteRecursively(new File("./target/config"));
     FileUtils.deleteRecursively(new File("./target/databases"));
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
@@ -181,7 +183,7 @@ public class ServerSecurityIT {
   }
 
   @AfterEach
-  public void afterAll() {
+  void afterAll() {
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
 
     FileUtils.deleteRecursively(new File("./target/config"));

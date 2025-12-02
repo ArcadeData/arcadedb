@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class CheckDatabaseStatementTestParserTest extends AbstractParserTest {
+class CheckDatabaseStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("CHECK DATABASE");
     checkRightSyntax("check database");
     checkRightSyntax("check database type Customer");

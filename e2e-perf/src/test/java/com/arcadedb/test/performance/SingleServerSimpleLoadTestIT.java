@@ -25,20 +25,19 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
-import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-public class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
+class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
 
   @DisplayName("Single server load test")
   @ParameterizedTest
   @EnumSource(DatabaseWrapper.Protocol.class)
     //to eneable only one protocol use the following annotation
     //@EnumSource(value = DatabaseWrapper.Protocol.class, names = "GRPC")
-  void singleServerLoadTest(DatabaseWrapper.Protocol protocol) throws InterruptedException, IOException {
+  void singleServerLoadTest(DatabaseWrapper.Protocol protocol) throws Exception {
 
     createArcadeContainer("arcade", "none", "none", "any", false, network);
 

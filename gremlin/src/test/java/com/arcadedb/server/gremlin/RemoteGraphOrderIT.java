@@ -31,10 +31,10 @@ import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class RemoteGraphOrderIT extends AbstractGremlinServerIT {
+class RemoteGraphOrderIT extends AbstractGremlinServerIT {
 
   @Test
-  public void testOrder() throws Exception {
+  void order() throws Exception {
     testEachServer((serverIndex) -> {
       assertThat(
           new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(

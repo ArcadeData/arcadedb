@@ -25,7 +25,7 @@ import java.io.InputStream;
 
 import static org.assertj.core.api.Assertions.fail;
 
-public class InsertStatementTest {
+class InsertStatementTest {
 
   protected SimpleNode checkRightSyntax(final String query) {
     return checkSyntax(query, true);
@@ -53,7 +53,7 @@ public class InsertStatementTest {
   }
 
   @Test
-  public void testSimpleInsert() {
+  void simpleInsert() {
     checkRightSyntax("insert into Foo (a) values (1)");
     checkRightSyntax("insert into Foo (a) values ('1')");
     checkRightSyntax("insert into Foo (a) values (\"1\")");
@@ -64,7 +64,7 @@ public class InsertStatementTest {
   }
 
   @Test
-  public void testInsertIntoBucket() {
+  void insertIntoBucket() {
     checkRightSyntax(
         "insert into bucket:default (equaledges, name, list) values ('yes', 'square', ['bottom', 'top','left','right'] )");
     checkRightSyntax(
@@ -77,19 +77,19 @@ public class InsertStatementTest {
   }
 
   @Test
-  public void testInsertSelectTimeout() {
+  void insertSelectTimeout() {
     checkRightSyntax("insert into foo return foo select from bar TIMEOUT 10 ");
     checkRightSyntax("insert into foo return foo select from bar TIMEOUT 10 return");
     checkRightSyntax("insert into foo return foo select from bar TIMEOUT 10 exception");
   }
 
   @Test
-  public void testInsertInsert() {
+  void insertInsert() {
     checkRightSyntax("insert into foo set bar = (insert into foo set a = 'foo') ");
   }
 
   @Test
-  public void testInsertEmbeddedDocs() {
+  void insertEmbeddedDocs() {
     checkRightSyntax("""
         INSERT INTO Activity SET user = #14:1, story = #18:2, `like` = {\s
               count: 0,\s
@@ -110,7 +110,7 @@ public class InsertStatementTest {
   }
 
   @Test
-  public void testJsonEscaping() {
+  void jsonEscaping() {
     // issue #5911
     checkRightSyntax("""
         insert into Bookmark content {"data"\
@@ -121,7 +121,7 @@ public class InsertStatementTest {
   }
 
   @Test
-  public void testJsonArrayEscaping() {
+  void jsonArrayEscaping() {
     // issue #5911
     checkRightSyntax("""
         insert into Bookmark content [{"data"\
@@ -131,7 +131,7 @@ public class InsertStatementTest {
   }
 
   @Test
-  public void testSlashInQuery() {
+  void slashInQuery() {
     checkRightSyntax("""
         insert into test content {"node_id": "MFmqvmht//sYYWB8="}""");
     checkRightSyntax("""
@@ -139,7 +139,7 @@ public class InsertStatementTest {
   }
 
   @Test
-  public void testInsertSelectNoTarget() {
+  void insertSelectNoTarget() {
     checkRightSyntax("insert into Bookmark from select #12:0");
     checkRightSyntax("insert into Bookmark from select expand($foo)");
     checkRightSyntax("insert into Bookmark from (select #12:0)");
@@ -147,7 +147,7 @@ public class InsertStatementTest {
   }
 
   @Test
-  public void testInsertJsonNewLines() {
+  void insertJsonNewLines() {
     checkRightSyntax("""
         INSERT INTO doc CONTENT {
         "head" : {

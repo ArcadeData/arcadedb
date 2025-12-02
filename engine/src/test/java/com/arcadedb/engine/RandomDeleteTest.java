@@ -23,20 +23,21 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.MutableVertex;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
-public class RandomDeleteTest {
+import static org.assertj.core.api.Assertions.assertThat;
+
+class RandomDeleteTest {
   private final static int    TOT_RECORDS = 100_000;
   private final static String TYPE        = "Product";
   private static final int    CYCLES      = 3;
 
   @Test
   @Tag("slow")
-  public void testSmallRecords() {
+  void smallRecords() {
     try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/randomDeleteTest")) {
       if (databaseFactory.exists())
         databaseFactory.open().drop();
@@ -47,13 +48,13 @@ public class RandomDeleteTest {
         final List<RID> rids = new ArrayList<>(TOT_RECORDS);
         db.transaction(() -> {
           insert(db, rids);
-          Assertions.assertEquals(TOT_RECORDS, db.countType(TYPE, true));
+          assertThat(db.countType(TYPE, true)).isEqualTo(TOT_RECORDS);
 
           // DELETE FROM 1 TO N
           for (int i = 0; i < TOT_RECORDS; i++)
             db.deleteRecord(rids.get(i).asVertex());
 
-          Assertions.assertEquals(0, db.countType(TYPE, true));
+          assertThat(db.countType(TYPE, true)).isEqualTo(0);
         });
 
         db.transaction(() -> {
@@ -73,7 +74,7 @@ public class RandomDeleteTest {
             }
           }
 
-          Assertions.assertEquals(0, db.countType(TYPE, true));
+          assertThat(db.countType(TYPE, true)).isEqualTo(0);
 
         });
       } finally {
@@ -85,15 +86,15 @@ public class RandomDeleteTest {
 
   private void checkRecords(Database db, List<RID> rids) {
     for (int i = 0; i < rids.size(); i++)
-      Assertions.assertNotNull(rids.get(i).asVertex());
+      assertThat(rids.get(i).asVertex()).isNotNull();
 
     final List<RID> found = new ArrayList<>();
     for (Iterator<Record> it = db.iterateType(TYPE, true); it.hasNext(); )
       found.add(it.next().asVertex().getIdentity());
 
-    Assertions.assertEquals(rids, found);
+    assertThat(found).isEqualTo(rids);
 
-    Assertions.assertEquals(rids.size(), db.countType(TYPE, true));
+    assertThat(db.countType(TYPE, true)).isEqualTo(rids.size());
   }
 
   private static void insert(final Database db, final List<RID> rids) {

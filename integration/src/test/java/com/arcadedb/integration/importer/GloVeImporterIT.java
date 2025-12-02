@@ -35,9 +35,9 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class GloVeImporterIT {
+class GloVeImporterIT {
   @Test
-  public void importDocuments() {
+  void importDocuments() {
     final String databasePath = "target/databases/test-glove";
 
     FileUtils.deleteRecursively(new File(databasePath));
@@ -89,7 +89,7 @@ public class GloVeImporterIT {
   }
 
   @Test
-  public void query() {
+  void query() {
     final String databasePath = "target/databases/test-glove";
 
 

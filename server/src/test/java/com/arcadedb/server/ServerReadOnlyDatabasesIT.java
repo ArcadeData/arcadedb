@@ -22,12 +22,10 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-
 import static com.arcadedb.engine.ComponentFile.MODE.READ_ONLY;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class ServerReadOnlyDatabasesIT extends BaseGraphServerTest {
+class ServerReadOnlyDatabasesIT extends BaseGraphServerTest {
 
   @Override
   protected boolean isCreateDatabases() {
@@ -49,7 +47,7 @@ public class ServerReadOnlyDatabasesIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void checkDefaultDatabases() throws IOException {
+  void checkDefaultDatabases() throws Exception {
     assertThat(getServer(0).existsDatabase("Universe")).isTrue();
     assertThat(getServer(0).existsDatabase("Amiga")).isTrue();
 

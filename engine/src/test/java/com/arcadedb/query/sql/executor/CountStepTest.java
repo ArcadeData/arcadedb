@@ -24,14 +24,14 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-public class CountStepTest {
+class CountStepTest {
 
   private static final String PROPERTY_NAME = "testPropertyName";
   private static final String PROPERTY_VALUE = "testPropertyValue";
   private static final String COUNT_PROPERTY_NAME = "count";
 
   @Test
-  public void shouldCountRecords() {
+  void shouldCountRecords() {
     final CommandContext context = new BasicCommandContext();
     final CountStep step = new CountStep(context);
 

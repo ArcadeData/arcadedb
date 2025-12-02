@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class DefineFunctionStatementTestParserTest extends AbstractParserTest {
+class DefineFunctionStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("DEFINE FUNCTION test.print \"print('\\nTest!')\"");
     checkRightSyntax("DEFINE FUNCTION test.dummy \"return a + b;\" PARAMETERS [a,b]");
     checkRightSyntax("DEFINE FUNCTION users.allUsersButAdmin \"SELECT FROM ouser WHERE name <> 'admin'\" LANGUAGE SQL");

@@ -38,7 +38,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
   private final HttpClient client = HttpClient.newHttpClient();
 
   @Test
-  void testSetDatabaseSettingCommand() throws Exception {
+  void setDatabaseSettingCommand() throws Exception {
 
     HttpResponse<String> response = executeServerCommand("""
         set database setting graph `arcadedb.dateTimeFormat` "yyyy-MM-dd HH:mm:ss.SSS"
@@ -53,7 +53,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
    * Tests that database operations work correctly regardless of command case
    */
   @Test
-  void testOpenDatabaseCaseSensitivityFix() throws Exception {
+  void openDatabaseCaseSensitivityFix() throws Exception {
     // First ensure the database is closed
     executeServerCommand("CLOSE DATABASE graph");
 
@@ -74,7 +74,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
       "OPEN DATABASE graph, open database graph, Open Database graph",
       "CLOSE DATABASE graph, close database graph, Close Database graph"
   })
-  void testDatabaseCommandsCaseSensitivity(String uppercase, String lowercase, String mixedcase) throws Exception {
+  void databaseCommandsCaseSensitivity(String uppercase, String lowercase, String mixedcase) throws Exception {
     // Test uppercase command
     HttpResponse<String> response = executeServerCommand(uppercase);
     assertThat(response.statusCode()).isEqualTo(200);
@@ -96,7 +96,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
    * Test create/drop database commands with different case variations
    */
   @Test
-  void testCreateDropDatabaseCaseSensitivity() throws Exception {
+  void createDropDatabaseCaseSensitivity() throws Exception {
     // Test creating database with different cases
     HttpResponse<String> response = executeServerCommand("CREATE DATABASE testdb");
     assertThat(response.statusCode()).isEqualTo(200);
@@ -122,7 +122,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
    * Test user management commands with different case variations
    */
   @Test
-  void testUserCommandsCaseSensitivity() throws Exception {
+  void userCommandsCaseSensitivity() throws Exception {
     // CREATE USER expects JSON payload format
     HttpResponse<String> response = executeServerCommand("""
         CREATE USER {"name":"testuser","password":"testpass"}
@@ -159,7 +159,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
       "set server setting `server.httpSessionTimeout` 300",
       "Set Server Setting `server.httpSessionTimeout` 300"
   })
-  void testServerSettingCommandsCaseSensitivity(String command) throws Exception {
+  void serverSettingCommandsCaseSensitivity(String command) throws Exception {
     HttpResponse<String> response = executeServerCommand(command);
     assertThat(response.statusCode()).isEqualTo(200);
   }
@@ -173,7 +173,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
       "set database setting graph `arcadedb.dateTimeFormat` 'yyyy-MM-dd'",
       "Set Database Setting graph `arcadedb.dateTimeFormat` 'yyyy-MM-dd'"
   })
-  void testDatabaseSettingCommandsCaseSensitivity(String command) throws Exception {
+  void databaseSettingCommandsCaseSensitivity(String command) throws Exception {
     HttpResponse<String> response = executeServerCommand(command);
     assertThat(response.statusCode()).isEqualTo(200);
   }
@@ -187,7 +187,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
       "get server events",
       "Get Server Events"
   })
-  void testServerInfoCommandsCaseSensitivity(String command) throws Exception {
+  void serverInfoCommandsCaseSensitivity(String command) throws Exception {
     HttpResponse<String> response = executeServerCommand(command);
     assertThat(response.statusCode()).isEqualTo(200);
   }
@@ -197,7 +197,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
    * Note: ALIGN DATABASE executes 'align database' SQL command internally
    */
   @Test
-  void testClusterCommandsCaseSensitivity() throws Exception {
+  void clusterCommandsCaseSensitivity() throws Exception {
     // ALIGN DATABASE command is only available if the database supports it
     // We'll test it but expect it might not be supported in all configurations
     HttpResponse<String> response = executeServerCommand("ALIGN DATABASE graph");
@@ -215,7 +215,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
    * Test commands with extra whitespace to ensure trimming works correctly
    */
   @Test
-  void testCommandsWithExtraWhitespace() throws Exception {
+  void commandsWithExtraWhitespace() throws Exception {
     HttpResponse<String> response = executeServerCommand("  OPEN DATABASE graph  ");
     assertThat(response.statusCode()).isEqualTo(200);
 
@@ -233,7 +233,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
    * Test mixed case commands with various capitalization patterns
    */
   @Test
-  void testMixedCaseCommands() throws Exception {
+  void mixedCaseCommands() throws Exception {
     HttpResponse<String> response = executeServerCommand("oPeN dAtAbAsE graph");
     assertThat(response.statusCode()).isEqualTo(200);
 
@@ -255,7 +255,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
    * Test error scenarios to ensure proper error messages are still returned
    */
   @Test
-  void testInvalidCommandsStillReturnErrors() throws Exception {
+  void invalidCommandsStillReturnErrors() throws Exception {
     // Test invalid command
     HttpResponse<String> response = executeServerCommand("INVALID COMMAND");
     assertThat(response.statusCode()).isEqualTo(400);
@@ -269,7 +269,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
    * Test specific edge cases for command parsing
    */
   @Test
-  void testCommandParsingEdgeCases() throws Exception {
+  void commandParsingEdgeCases() throws Exception {
     // Test what actually happens with malformed commands
     // These tests document the actual behavior rather than guessing
 
@@ -292,7 +292,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
    * Test that case sensitivity fix doesn't break existing functionality
    */
   @Test
-  void testBackwardCompatibility() throws Exception {
+  void backwardCompatibility() throws Exception {
     // Test that all the original patterns still work
     HttpResponse<String> response = executeServerCommand("close database graph");
     assertThat(response.statusCode()).isEqualTo(200);

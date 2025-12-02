@@ -36,9 +36,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Word2VecImporterLSMIT {
+class Word2VecImporterLSMIT {
   @Test
-  public void importDocumentsWithLSMVector() {
+  void importDocumentsWithLSMVector() {
     final String databasePath = "target/databases/test-word2vec-lsm";
 
     FileUtils.deleteRecursively(new File(databasePath));
@@ -90,7 +90,7 @@ public class Word2VecImporterLSMIT {
   }
 
   @Test
-  public void importAndUpdateWithLSMVector() {
+  void importAndUpdateWithLSMVector() {
     final String databasePath = "target/databases/test-word2vec-lsm-update";
 
     FileUtils.deleteRecursively(new File(databasePath));
@@ -154,7 +154,7 @@ public class Word2VecImporterLSMIT {
   }
 
   @Test
-  public void testCompactionAfterImport() {
+  void compactionAfterImport() {
     final String databasePath = "target/databases/test-word2vec-lsm-compact";
 
     FileUtils.deleteRecursively(new File(databasePath));

@@ -29,13 +29,14 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.TestServerHelper;
 
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 import java.util.logging.*;
 
-public class IndexOperations3ServersIT extends BaseGraphServerTest {
+import static org.assertj.core.api.Assertions.assertThat;
+
+class IndexOperations3ServersIT extends BaseGraphServerTest {
 
   private static final int TOTAL_RECORDS = 10_000;
   private static final int TX_CHUNK      = 1_000;
@@ -50,7 +51,7 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void rebuildIndex() throws Exception {
+  void rebuildIndex() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
     final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
     v.createProperty("id", Long.class);
@@ -66,25 +67,22 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
       LogManager.instance()
           .log(this, Level.FINE, "Rebuild index Person[id] on server %s...", getServer(serverIndex).getHA().getServerName());
       final String response1 = command(serverIndex, "rebuild index `Person[id]`");
-      Assertions.assertEquals(TOTAL_RECORDS,
-          new JSONObject(response1).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
+      assertThat(new JSONObject(response1).getJSONArray("result").getJSONObject(0).getLong("totalIndexed")).isEqualTo(TOTAL_RECORDS);
 
       LogManager.instance()
           .log(this, Level.FINE, "Rebuild index Person[uuid] on server %s...", getServer(serverIndex).getHA().getServerName());
       final String response2 = command(serverIndex, "rebuild index `Person[uuid]`");
-      Assertions.assertEquals(TOTAL_RECORDS,
-          new JSONObject(response2).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
+      assertThat(new JSONObject(response2).getJSONArray("result").getJSONObject(0).getLong("totalIndexed")).isEqualTo(TOTAL_RECORDS);
 
       LogManager.instance()
           .log(this, Level.FINE, "Rebuild index * on server %s...", getServer(serverIndex).getHA().getServerName());
       final String response3 = command(serverIndex, "rebuild index *");
-      Assertions.assertEquals(TOTAL_RECORDS * 2,
-          new JSONObject(response3).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
+      assertThat(new JSONObject(response3).getJSONArray("result").getJSONObject(0).getLong("totalIndexed")).isEqualTo(TOTAL_RECORDS * 2);
     });
   }
 
   @Test
-  public void createIndexLater() throws Exception {
+  void createIndexLater() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
     final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
 
@@ -101,25 +99,22 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
       LogManager.instance()
           .log(this, Level.FINE, "Rebuild index Person[id] on server %s...", getServer(serverIndex).getHA().getServerName());
       final String response1 = command(serverIndex, "rebuild index `Person[id]`");
-      Assertions.assertEquals(TOTAL_RECORDS,
-          new JSONObject(response1).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
+      assertThat(new JSONObject(response1).getJSONArray("result").getJSONObject(0).getLong("totalIndexed")).isEqualTo(TOTAL_RECORDS);
 
       LogManager.instance()
           .log(this, Level.FINE, "Rebuild index Person[uuid] on server %s...", getServer(serverIndex).getHA().getServerName());
       final String response2 = command(serverIndex, "rebuild index `Person[uuid]`");
-      Assertions.assertEquals(TOTAL_RECORDS,
-          new JSONObject(response2).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
+      assertThat(new JSONObject(response2).getJSONArray("result").getJSONObject(0).getLong("totalIndexed")).isEqualTo(TOTAL_RECORDS);
 
       LogManager.instance()
           .log(this, Level.FINE, "Rebuild index * on server %s...", getServer(serverIndex).getHA().getServerName());
       final String response3 = command(serverIndex, "rebuild index *");
-      Assertions.assertEquals(TOTAL_RECORDS * 2,
-          new JSONObject(response3).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
+      assertThat(new JSONObject(response3).getJSONArray("result").getJSONObject(0).getLong("totalIndexed")).isEqualTo(TOTAL_RECORDS * 2);
     });
   }
 
   @Test
-  public void createIndexLaterDistributed() throws Exception {
+  void createIndexLaterDistributed() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
     final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
 
@@ -154,7 +149,7 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void createIndexErrorDistributed() throws Exception {
+  void createIndexErrorDistributed() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
     final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
 

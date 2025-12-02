@@ -26,7 +26,7 @@ import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class DDLTest extends TestHelper {
+class DDLTest extends TestHelper {
   @Override
   protected void beginTest() {
 
@@ -38,7 +38,7 @@ public class DDLTest extends TestHelper {
   }
 
   @Test
-  void testDynamicSchemaCreation() {
+  void dynamicSchemaCreation() {
     database.command("sqlscript", """
         BEGIN;
 
@@ -88,7 +88,7 @@ public class DDLTest extends TestHelper {
   }
 
   @Test
-  void testGraphWithSql() {
+  void graphWithSql() {
 
     final int numOfElements = 10;
     //create schema: script

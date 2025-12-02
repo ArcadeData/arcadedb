@@ -23,9 +23,9 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class BloomFilterTest {
+class BloomFilterTest {
   @Test
-  public void testBloomFilter() {
+  void bloomFilter() {
     testValidity(new BufferBloomFilter(new Binary(1024 * 10), 8 * 8, 23), 100);
     testValidity(new BufferBloomFilter(new Binary(1024 * 10), 8 * 8, 23), 1000);
     testValidity(new BufferBloomFilter(new Binary(1024 * 1024), 8 * 8, 23), 100000);

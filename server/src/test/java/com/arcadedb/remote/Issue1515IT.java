@@ -25,7 +25,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class Issue1515IT extends BaseGraphServerTest {
+class Issue1515IT extends BaseGraphServerTest {
 
   protected String getDatabaseName() {
     return "issue1515";

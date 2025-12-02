@@ -29,7 +29,7 @@ class SQLMethodNormalizeTest {
   private SQLMethod method;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     method = new SQLMethodNormalize();
   }
 
@@ -40,20 +40,20 @@ class SQLMethodNormalizeTest {
   }
 
   @Test
-  void testNormalizeWithDefaultNormalizer() {
+  void normalizeWithDefaultNormalizer() {
     final Object result = method.execute("À", null, null, null);
     assertThat(result).isEqualTo("A");
 
   }
 
   @Test
-  void testNormalizeWithNFC() {
+  void normalizeWithNFC() {
     final Object result = method.execute("À", null, null, new Object[] { "NFC" });
     assertThat(result).isEqualTo("À");
   }
 
   @Test
-  void testNormalizeWithNFCAndPattern() {
+  void normalizeWithNFCAndPattern() {
     final Object result = method.execute("À", null, null, new Object[] { "NFC", "" });
     assertThat(result).isEqualTo("À");
   }

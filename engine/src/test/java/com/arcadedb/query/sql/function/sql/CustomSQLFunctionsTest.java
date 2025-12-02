@@ -27,9 +27,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOfType;
 import static org.assertj.core.api.AssertionsForClassTypes.within;
 
-public class CustomSQLFunctionsTest {
+class CustomSQLFunctionsTest {
   @Test
-  public void testRandom() throws Exception {
+  void random() throws Exception {
     TestHelper.executeInNewDatabase("testRandom", (db) -> {
       final ResultSet result = db.query("sql", "select math_random() as random");
       assertThat(result.next().<Double>getProperty("random")).isGreaterThan(0);
@@ -37,7 +37,7 @@ public class CustomSQLFunctionsTest {
   }
 
   @Test
-  public void testLog10() throws Exception {
+  void log10() throws Exception {
     TestHelper.executeInNewDatabase("testRandom", (db) -> {
       final ResultSet result = db.query("sql", "select math_log10(10000) as log10");
       assertThat(result.next().<Double>getProperty("log10")).isCloseTo(4.0, within(0.0001));
@@ -45,7 +45,7 @@ public class CustomSQLFunctionsTest {
   }
 
   @Test
-  public void testAbsInt() throws Exception {
+  void absInt() throws Exception {
     TestHelper.executeInNewDatabase("testRandom", (db) -> {
       final ResultSet result = db.query("sql", "select math_abs(-5) as abs");
       assertThat(result.next().<Integer>getProperty("abs")).isEqualTo(5);
@@ -53,7 +53,7 @@ public class CustomSQLFunctionsTest {
   }
 
   @Test
-  public void testAbsDouble() throws Exception {
+  void absDouble() throws Exception {
     TestHelper.executeInNewDatabase("testRandom", (db) -> {
       final ResultSet result = db.query("sql", "select math_abs(-5.0d) as abs");
       assertThat(result.next().<Double>getProperty("abs")).isEqualTo(5.0);
@@ -61,7 +61,7 @@ public class CustomSQLFunctionsTest {
   }
 
   @Test
-  public void testAbsFloat() throws Exception {
+  void absFloat() throws Exception {
     TestHelper.executeInNewDatabase("testRandom", (db) -> {
       final ResultSet result = db.query("sql", "select math_abs(-5.0f) as abs");
       assertThat(result.next().<Float>getProperty("abs")).isEqualTo(5.0f);
@@ -69,7 +69,7 @@ public class CustomSQLFunctionsTest {
   }
 
   @Test
-  public void testNonExistingFunction() {
+  void nonExistingFunction() {
     assertThatExceptionOfType(CommandParsingException.class).isThrownBy(
         () -> TestHelper.executeInNewDatabase("testRandom", (db) -> {
           final ResultSet result = db.query("sql", "select math_min('boom', 'boom') as boom");

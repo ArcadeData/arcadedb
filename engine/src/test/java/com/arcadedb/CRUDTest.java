@@ -38,7 +38,7 @@ import org.assertj.core.api.Assertions;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class CRUDTest extends TestHelper {
+class CRUDTest extends TestHelper {
   private static final int TOT = ((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()) * 2;
 
   @Override
@@ -47,7 +47,7 @@ public class CRUDTest extends TestHelper {
   }
 
   @Test
-  public void testUpdate() {
+  void update() {
     final Database db = database;
     db.begin();
     try {
@@ -79,7 +79,7 @@ public class CRUDTest extends TestHelper {
 
   @Test
   @Tag("slow")
-  public void testMultiUpdatesOverlap() {
+  void multiUpdatesOverlap() {
     final Database db = database;
 
     try {
@@ -143,7 +143,7 @@ public class CRUDTest extends TestHelper {
   }
 
   @Test
-  public void testUpdateAndDelete() {
+  void updateAndDelete() {
     final Database db = database;
 
     try {
@@ -180,7 +180,7 @@ public class CRUDTest extends TestHelper {
 
   @Test
   @Tag("slow")
-  public void testMultiUpdatesAndDeleteOverlap() {
+  void multiUpdatesAndDeleteOverlap() {
     final Database db = database;
     try {
 

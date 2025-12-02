@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class RebuildIndexStatementTestParserTest extends AbstractParserTest {
+class RebuildIndexStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("REBUILD INDEX *");
     checkRightSyntax("REBUILD INDEX Foo");
     checkRightSyntax("rebuild index Foo");

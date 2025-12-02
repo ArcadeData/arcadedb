@@ -60,9 +60,9 @@ import java.util.logging.Level;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
-public class ACIDTransactionTest extends TestHelper {
+class ACIDTransactionTest extends TestHelper {
   @Test
-  public void testAsyncTX() {
+  void asyncTX() {
     final Database db = database;
 
     db.async().setTransactionSync(WALFile.FlushType.YES_NOMETADATA);
@@ -99,7 +99,7 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   @Test
-  public void testIndexCreationWhileAsyncMustFail() {
+  void indexCreationWhileAsyncMustFail() {
     final Database db = database;
 
     final int TOT = 100;
@@ -140,13 +140,13 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   @Test
-  public void testDatabaseInternals() {
+  void databaseInternals() {
     assertThat(database.getStats()).isNotNull();
     assertThat(database.getCurrentUserName()).isNull();
   }
 
   @Test
-  public void testCrashDuringTx() {
+  void crashDuringTx() {
     final Database db = database;
     db.begin();
     try {
@@ -166,7 +166,7 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   @Test
-  public void testIOExceptionAfterWALIsWritten() {
+  void iOExceptionAfterWALIsWritten() {
     final Database db = database;
     db.begin();
 
@@ -202,7 +202,7 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   @Test
-  public void testAsyncIOExceptionAfterWALIsWrittenLastRecords() {
+  void asyncIOExceptionAfterWALIsWrittenLastRecords() {
     final Database db = database;
 
     final AtomicInteger errors = new AtomicInteger(0);
@@ -256,7 +256,7 @@ public class ACIDTransactionTest extends TestHelper {
 
   @Test
   @Tag("slow")
-  public void testAsyncIOExceptionAfterWALIsWrittenManyRecords() {
+  void asyncIOExceptionAfterWALIsWrittenManyRecords() {
     final Database db = database;
 
     final int TOT = 100000;
@@ -316,7 +316,7 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   @Test
-  public void multiThreadConcurrentTransactions() {
+  void multiThreadConcurrentTransactions() {
     database.transaction(() -> {
       final DocumentType type = database.getSchema().buildDocumentType().withName("Stock").withTotalBuckets(32).create();
       type.createProperty("symbol", Type.STRING);
@@ -398,7 +398,7 @@ public class ACIDTransactionTest extends TestHelper {
 
   @Test
   @Tag("slow")
-  public void testAsyncEdges() {
+  void asyncEdges() {
     final Database db = database;
 
     final int TOT = 10000;
@@ -455,7 +455,7 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   @Test
-  public void testExceptionInsideTransaction() {
+  void exceptionInsideTransaction() {
     final Database db = database;
 
     final int TOT = 100;
@@ -544,7 +544,7 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   @Test
-  public void testDeleteOverwriteCompositeKeyInTx() {
+  void deleteOverwriteCompositeKeyInTx() {
     database.transaction(() ->
         database.command("sqlscript", """
             CREATE VERTEX TYPE zone;

@@ -47,13 +47,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class RemoteQueriesIT {
+class RemoteQueriesIT {
 
   private final static String         DATABASE_NAME = "remotequeries";
   private              ArcadeDBServer arcadeDBServer;
 
   @Test
-  public void testEdgeDirection() {
+  void edgeDirection() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
 
@@ -90,7 +90,7 @@ public class RemoteQueriesIT {
   }
 
   @Test
-  public void testWhereEqualsAfterUpdate() {
+  void whereEqualsAfterUpdate() {
     // create database
     GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);
     GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
@@ -163,7 +163,7 @@ public class RemoteQueriesIT {
   }
 
   @Test
-  public void testLocalDateTimeOrderBy() {
+  void localDateTimeOrderBy() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
 
@@ -217,7 +217,7 @@ public class RemoteQueriesIT {
   }
 
   @BeforeEach
-  public void beginTests() {
+  void beginTests() {
     try (DatabaseFactory databaseFactory = new DatabaseFactory("./databases/" + DATABASE_NAME)) {
       if (databaseFactory.exists())
         databaseFactory.open().drop();
@@ -231,7 +231,7 @@ public class RemoteQueriesIT {
   }
 
   @AfterEach
-  public void afterEach() {
+  void afterEach() {
     if (arcadeDBServer != null)
       arcadeDBServer.stop();
     TestServerHelper.checkActiveDatabases();

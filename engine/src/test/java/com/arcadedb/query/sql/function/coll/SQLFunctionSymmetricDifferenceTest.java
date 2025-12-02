@@ -32,10 +32,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author edegtyarenko
  * @since 11.10.12 14:40
  */
-public class SQLFunctionSymmetricDifferenceTest {
+class SQLFunctionSymmetricDifferenceTest {
 
   @Test
-  public void testOperator() {
+  void operator() {
     final SQLFunctionSymmetricDifference differenceFunction = new SQLFunctionSymmetricDifference();
 
     final List<Object> income = Arrays.asList(1, 2, 3, 1, 4, 5, 2, 2, 1, 1);
@@ -51,7 +51,7 @@ public class SQLFunctionSymmetricDifferenceTest {
   }
 
   @Test
-  public void testExecute() {
+  void execute() {
     final SQLFunctionSymmetricDifference function = new SQLFunctionSymmetricDifference();
 
     final List<List<Object>> incomes = Arrays.asList(Arrays.asList(1, 2, 3, 4, 5, 1), Arrays.asList(3, 5, 6, 7, 0, 1, 3, 3, 6),

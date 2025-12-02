@@ -79,6 +79,7 @@
         <awaitility.version>4.3.0</awaitility.version>
         <mockito-core.version>5.16.0</mockito-core.version>
         <json-path.version>2.10.0</json-path.version>
+        <slf4j.version>2.0.17</slf4j.version>
 
         <skipITs>true</skipITs>
         <skipTests>false</skipTests>

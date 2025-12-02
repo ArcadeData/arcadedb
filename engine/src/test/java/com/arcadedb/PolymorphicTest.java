@@ -23,17 +23,14 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.VertexType;
-
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class PolymorphicTest extends TestHelper {
+class PolymorphicTest extends TestHelper {
 
   @Override
   protected void beginTest() {
@@ -48,11 +45,9 @@ public class PolymorphicTest extends TestHelper {
       final VertexType motorcycle = database.getSchema().buildVertexType().withName("Motorcycle").withTotalBuckets(3).create();
       motorcycle.addSuperType("Vehicle");
 
-      try {
-        motorcycle.createProperty("brand", String.class);
-        fail("Expected to fail by creating the same property name as the parent type");
-      } catch (final SchemaException e) {
-      }
+      assertThatThrownBy(() ->
+          motorcycle.createProperty("brand", String.class))
+          .isInstanceOf(SchemaException.class);
 
       assertThat(database.getSchema().getType("Motorcycle").instanceOf("Vehicle")).isTrue();
 
@@ -115,7 +110,7 @@ public class PolymorphicTest extends TestHelper {
   }
 
   @Test
-  public void count() throws Exception {
+  void count() throws Exception {
     database.begin();
     try {
       // NON POLYMORPHIC COUNTING
@@ -156,7 +151,7 @@ public class PolymorphicTest extends TestHelper {
   }
 
   @Test
-  public void scan() {
+  void scan() {
     database.begin();
     try {
       assertThat(scanAndCountType(database, "Vehicle", false)).isEqualTo(0);
@@ -191,32 +186,26 @@ public class PolymorphicTest extends TestHelper {
    * Issue https://github.com/ArcadeData/arcadedb/issues/1368
    */
   @Test
-  public void testConstraintsInInheritance() {
+  void constraintsInInheritance() {
     database.command("sql", "CREATE VERTEX TYPE V1");
     database.command("sql", "CREATE PROPERTY V1.prop1 STRING (mandatory true)");
     database.command("sql", "CREATE VERTEX TYPE V2 EXTENDS V1");
-    try {
-      database.command("sql",
-          "INSERT INTO V1 SET prop2 = 'test'"); // this throws the exception as expected since I didn't set the mandatory prop1
-      fail("");
-    } catch (ValidationException e) {
-      // EXPECTED
-    }
 
-    try {
-      database.command("sql",
-          "INSERT INTO V2 SET prop2 = 'test'"); // this ignores the constraint on prop1 and insert the record although I didn't set the value
-      fail("");
-    } catch (ValidationException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(
+        () -> database.command("sql", "INSERT INTO V1 SET prop2 = 'test'"))
+        .isInstanceOf(ValidationException.class);
+
+    assertThatThrownBy(
+        () -> database.command("sql", "INSERT INTO V2 SET prop2 = 'test'"))
+        .isInstanceOf(ValidationException.class);
+
   }
 
   /**
    * Issue https://github.com/ArcadeData/arcadedb/issues/1438
    */
   @Test
-  public void testBrokenInheritanceAfterTypeDropLast() {
+  void brokenInheritanceAfterTypeDropLast() {
     assertThat(database.countType("Vehicle", true)).isEqualTo(3);
     database.transaction(() -> {
       database.command("sql", "DELETE FROM Supercar");
@@ -231,7 +220,7 @@ public class PolymorphicTest extends TestHelper {
    * Issue https://github.com/ArcadeData/arcadedb/issues/1438
    */
   @Test
-  public void testBrokenInheritanceAfterTypeDropMiddle() {
+  void brokenInheritanceAfterTypeDropMiddle() {
     assertThat(database.countType("Vehicle", true)).isEqualTo(3);
     database.transaction(() -> {
       database.command("sql", "DELETE FROM Car");
@@ -245,7 +234,7 @@ public class PolymorphicTest extends TestHelper {
    * Issue https://github.com/ArcadeData/arcadedb/issues/1438
    */
   @Test
-  public void testBrokenInheritanceAfterTypeDropFirst() {
+  void brokenInheritanceAfterTypeDropFirst() {
     assertThat(database.countType("Vehicle", true)).isEqualTo(3);
     database.transaction(() -> {
       database.getSchema().dropType("Vehicle");

@@ -29,9 +29,9 @@ import static org.assertj.core.api.Assertions.fail;
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
-public class GeOperatorTest {
+class GeOperatorTest {
   @Test
-  public void test() {
+  void test() {
     final GeOperator op = new GeOperator(-1);
     assertThat(op.execute(null, 1, 1)).isTrue();
     assertThat(op.execute(null, 1, 0)).isTrue();

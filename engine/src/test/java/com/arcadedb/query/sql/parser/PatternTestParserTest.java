@@ -27,10 +27,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
 /** Created by luigidellaquila on 11/10/16. */
-public class PatternTestParserTest extends AbstractParserTest {
+class PatternTestParserTest extends AbstractParserTest {
 
   @Test
-  public void testSimplePattern() {
+  void simplePattern() {
     final String query = "MATCH {as:a, type:Person} return a";
     final SqlParser parser = getParserFor(query);
     try {
@@ -47,7 +47,7 @@ public class PatternTestParserTest extends AbstractParserTest {
   }
 
   @Test
-  public void testCartesianProduct() {
+  void cartesianProduct() {
     final String query = "MATCH {as:a, type:Person}, {as:b, type:Person} return a, b";
     final SqlParser parser = getParserFor(query);
     try {
@@ -77,7 +77,7 @@ public class PatternTestParserTest extends AbstractParserTest {
   }
 
   @Test
-  public void testComplexCartesianProduct() {
+  void complexCartesianProduct() {
     final String query =
         "MATCH {as:a, type:Person}-->{as:b}, {as:c, type:Person}-->{as:d}-->{as:e}, {as:d, type:Foo}-->{as:f} return a, b";
     final SqlParser parser = getParserFor(query);

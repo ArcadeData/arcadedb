@@ -33,13 +33,13 @@ class SQLMethodAsBooleanTest {
   }
 
   @Test
-  void testNulIsReturnedAsNull() {
+  void nulIsReturnedAsNull() {
     final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
-  void testBooleanReturnedAsBoolean() {
+  void booleanReturnedAsBoolean() {
     Object result = method.execute(Boolean.TRUE, null, null, null);
     assertThat(result).isInstanceOf(Boolean.class);
     assertThat(result).isEqualTo(Boolean.TRUE);
@@ -59,7 +59,7 @@ class SQLMethodAsBooleanTest {
   }
 
   @Test
-  void testStringReturnedAsBoolean() {
+  void stringReturnedAsBoolean() {
     Object result = method.execute("true", null, null, null);
     assertThat(result).isInstanceOf(Boolean.class);
     assertThat(result).isEqualTo(Boolean.TRUE);
@@ -70,7 +70,7 @@ class SQLMethodAsBooleanTest {
   }
 
   @Test
-  void testNumberNotEqualsToZeroReturnedAsTrue() {
+  void numberNotEqualsToZeroReturnedAsTrue() {
     Object result = method.execute(10, null, null, null);
     assertThat(result).isInstanceOf(Boolean.class);
     assertThat(result).isEqualTo(Boolean.TRUE);
@@ -81,7 +81,7 @@ class SQLMethodAsBooleanTest {
   }
 
   @Test
-  void testNumberEqualsToZeroReturnedAsFalse() {
+  void numberEqualsToZeroReturnedAsFalse() {
     final Object result = method.execute(0, null, null, null);
     assertThat(result).isInstanceOf(Boolean.class);
     assertThat(result).isEqualTo(Boolean.FALSE);

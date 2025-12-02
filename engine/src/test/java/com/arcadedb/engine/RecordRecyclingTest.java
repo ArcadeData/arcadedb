@@ -35,7 +35,7 @@ import java.util.Collection;
 import static com.arcadedb.schema.LocalSchema.STATISTICS_FILE_NAME;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class RecordRecyclingTest {
+class RecordRecyclingTest {
   private final static int    TOT_RECORDS  = 100_000;
   private final static String VERTEX_TYPE  = "Product";
   private final static String EDGE_TYPE    = "LinkedTo";
@@ -44,7 +44,7 @@ public class RecordRecyclingTest {
 
   @Test
   @Tag("slow")
-  public void testCreateAndDeleteGraph() {
+  void createAndDeleteGraph() {
     GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.setValue("high");
 
     try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/RecordRecyclingTest")) {
@@ -131,7 +131,7 @@ public class RecordRecyclingTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Test
-  public void testEdgeLinkedLists() {
+  void edgeLinkedLists() {
     GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.setValue("high");
 
     try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/RecordRecyclingTest")) {

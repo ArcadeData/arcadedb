@@ -47,7 +47,7 @@ public class ReviewCommentQueriesTest extends TestHelper {
   }
 
   @Test
-  public void testReviewCommentQuery1() {
+  void reviewCommentQuery1() {
     // Query from comment 3474449716: SELECT FROM Photo WHERE tags.id CONTAINS 103
     database.transaction(() -> {
       database.command("sql", "INSERT INTO Photo SET id = 1, tags = [{'@type':'Tag', 'id': 100, 'name': 'Apple Inc'}]");
@@ -70,7 +70,7 @@ public class ReviewCommentQueriesTest extends TestHelper {
   }
 
   @Test
-  public void testReviewCommentQuery2() {
+  void reviewCommentQuery2() {
     // Query from comment 3474449716: SELECT FROM Photo WHERE tags CONTAINS (id=100 and name='Apple Inc')
     database.transaction(() -> {
       database.command("sql", "INSERT INTO Photo SET id = 1, tags = [{'@type':'Tag', 'id': 100, 'name': 'Apple Inc'}]");

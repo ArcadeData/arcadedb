@@ -26,10 +26,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class FastTextVectorImportTest extends com.arcadedb.TestHelper
+class FastTextVectorImportTest extends com.arcadedb.TestHelper
 {
-    @Test
-    public void vectorNeighborsQuery() {
+  @Test
+  void vectorNeighborsQuery() {
         database.command("sql", "import database file://src/test/resources/cc.en.300.small.vec.gz "  //
                 + "with distanceFunction = cosine, m = 16, beamWidth = 100, " //
                 + "vertexType = Word, vectorProperty = vector, idProperty = name" //
@@ -54,8 +54,8 @@ public class FastTextVectorImportTest extends com.arcadedb.TestHelper
         assertThat(total.get()).isEqualTo(10);
     }
 
-    @Test
-    public void parsingLimitEntries() {
+  @Test
+  void parsingLimitEntries() {
         database.command("sql", "import database file://src/test/resources/cc.en.300.small.vec.gz "  //
                 + "with distanceFunction = cosine, m = 16, beamWidth = 100, " //
                 + "vertexType = Word, vectorProperty = vector, idProperty = name, "
@@ -66,8 +66,8 @@ public class FastTextVectorImportTest extends com.arcadedb.TestHelper
         assertThat(database.countType("Word", true)).isEqualTo(100);
     }
 
-    @Test
-    public void testVectorNeighborsFunction() {
+  @Test
+  void vectorNeighborsFunction() {
         database.command("sql", "import database file://src/test/resources/cc.en.300.small.vec.gz "  //
                 + "with distanceFunction = cosine, m = 16, beamWidth = 100, " //
                 + "vertexType = Word, vectorProperty = vector, idProperty = name" //

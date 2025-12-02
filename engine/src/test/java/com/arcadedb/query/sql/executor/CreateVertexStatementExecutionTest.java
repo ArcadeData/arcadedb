@@ -40,7 +40,7 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testVerticesContentJsonArray() {
+  void verticesContentJsonArray() {
     final String className = "testVertexContentArray";
     database.getSchema().buildVertexType().withName(className).withTotalBuckets(1).create();
 
@@ -72,7 +72,7 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInsertSet() {
+  void insertSet() {
     final String className = "testInsertSet";
     final Schema schema = database.getSchema();
     schema.createVertexType(className);
@@ -99,7 +99,7 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInsertSetNoVertex() {
+  void insertSetNoVertex() {
     final String className = "testInsertSetNoVertex";
     final Schema schema = database.getSchema();
     schema.createDocumentType(className);
@@ -114,7 +114,7 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInsertValue() {
+  void insertValue() {
     final String className = "testInsertValue";
     final Schema schema = database.getSchema();
     schema.createVertexType(className);
@@ -142,7 +142,7 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInsertValue2() {
+  void insertValue2() {
     final String className = "testInsertValue2";
     final Schema schema = database.getSchema();
     schema.createVertexType(className);
@@ -177,7 +177,7 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testContent() {
+  void content() {
     final String className = "testContent";
     final Schema schema = database.getSchema();
     schema.createVertexType(className);

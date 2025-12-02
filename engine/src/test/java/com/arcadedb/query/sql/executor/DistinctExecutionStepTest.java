@@ -26,10 +26,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Created by luigidellaquila on 26/07/16.
  */
-public class DistinctExecutionStepTest {
+class DistinctExecutionStepTest {
 
   @Test
-  public void test() {
+  void test() {
     final CommandContext ctx = new BasicCommandContext();
     final DistinctExecutionStep step = new DistinctExecutionStep(ctx);
 

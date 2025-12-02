@@ -43,15 +43,16 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
+import java.io.File;
+import java.util.Iterator;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
-public class ServerProfilingIT {
+class ServerProfilingIT {
   private static       ArcadeDBServer SERVER;
   private static       ServerSecurity SECURITY;
   private final static String         DATABASE_NAME = "ServerProfilingIT";
@@ -138,7 +139,7 @@ public class ServerProfilingIT {
   }
 
   @Test
-  void testMultipleGroupsAnyType() {
+  void multipleGroupsAnyType() {
     SECURITY.createUser(new JSONObject().put("name", "albert").put("password", SECURITY.encodePassword("einstein")).put("databases",
         new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "creator", "reader", "updater", "deleter" }))));
 
@@ -165,7 +166,7 @@ public class ServerProfilingIT {
   }
 
   @Test
-  void testMultipleGroupsSpecificType() throws Throwable {
+  void multipleGroupsSpecificType() throws Throwable {
     SECURITY.createUser(new JSONObject().put("name", "albert").put("password", SECURITY.encodePassword("einstein")).put("databases",
         new JSONObject().put(DATABASE_NAME, new JSONArray(
             new String[] { "creatorOfDocuments", "readerOfDocuments", "updaterOfDocuments", "deleterOfDocuments" }))));
@@ -387,7 +388,7 @@ public class ServerProfilingIT {
   }
 
   @Test
-  void testResultSetLimit() throws Throwable {
+  void resultSetLimit() throws Throwable {
     SECURITY.createUser(new JSONObject().put("name", "albert").put("password", SECURITY.encodePassword("einstein"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "readerOfDocumentsCapped" }))));
 
@@ -440,7 +441,7 @@ public class ServerProfilingIT {
   }
 
   @Test
-  void testReadTimeout() throws Throwable {
+  void readTimeout() throws Throwable {
     SECURITY.createUser(new JSONObject().put("name", "albert").put("password", SECURITY.encodePassword("einstein"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "readerOfDocumentsShortTimeout" }))));
 
@@ -468,23 +469,17 @@ public class ServerProfilingIT {
       expectedSecurityException(() -> database.newVertex("Vertex1").save());
       expectedSecurityException(() -> database.newDocument("Document1").save());
 
-      try {
+      assertThatThrownBy(() -> {
         for (final Iterator<Record> iter = database.iterateType("Document1", true); iter.hasNext(); ) {
           iter.next();
         }
-        fail("");
-      } catch (final TimeoutException e) {
-        // EXPECTED
-      }
+      }).isInstanceOf(TimeoutException.class);
 
-      try {
+      assertThatThrownBy(() -> {
         for (final ResultSet iter = database.query("sql", "select from Document1"); iter.hasNext(); ) {
           iter.next();
         }
-        fail("");
-      } catch (final TimeoutException e) {
-        // EXPECTED
-      }
+      }).isInstanceOf(TimeoutException.class);
 
       // SWITCH TO ROOT TO DROP THE SCHEMA
       setCurrentUser("root", database);
@@ -496,7 +491,7 @@ public class ServerProfilingIT {
   }
 
   @Test
-  void testGroupsReload() throws Throwable {
+  void groupsReload() throws Throwable {
     final File file = new File("./target/config/" + SecurityGroupFileRepository.FILE_NAME);
     assertThat(file.exists()).isTrue();
 
@@ -521,7 +516,7 @@ public class ServerProfilingIT {
   }
 
   @Test
-  public void reloadWhileUsingDatabase() throws Throwable {
+  void reloadWhileUsingDatabase() throws Throwable {
     SECURITY.createUser(new JSONObject().put("name", "albert").put("password", SECURITY.encodePassword("einstein"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "reader", "updater" }))));
 
@@ -593,12 +588,7 @@ public class ServerProfilingIT {
   }
 
   private void expectedSecurityException(final CallableNoReturn callback) throws Throwable {
-    try {
-      callback.call();
-      fail("");
-    } catch (final SecurityException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> callback.call()).isInstanceOf(SecurityException.class);
   }
 
   private void checkJohnUser(final ServerSecurityUser albert) {
@@ -650,7 +640,7 @@ public class ServerProfilingIT {
   }
 
   @BeforeAll
-  public static void beforeAll() {
+  static void beforeAll() {
     FileUtils.deleteRecursively(new File("./target/config"));
     FileUtils.deleteRecursively(new File("./target/databases"));
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue("dD5ed08c");
@@ -666,7 +656,7 @@ public class ServerProfilingIT {
   }
 
   @AfterAll
-  public static void afterAll() {
+  static void afterAll() {
     SERVER.stop();
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
 

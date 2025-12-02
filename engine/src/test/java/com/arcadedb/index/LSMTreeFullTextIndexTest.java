@@ -34,7 +34,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class LSMTreeFullTextIndexTest extends TestHelper {
+class LSMTreeFullTextIndexTest extends TestHelper {
   private static final int    TOT       = 10000;
   private static final int    PAGE_SIZE = LSMTreeIndexAbstract.DEF_PAGE_SIZE;
   private static final String TYPE_NAME = "Doc";
@@ -52,7 +52,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
       """;
 
   @Test
-  public void testFulltextIndexConsistency() {
+  void fulltextIndexConsistency() {
     database.command("sql", "CREATE DOCUMENT TYPE Doc");
     database.command("sql", "CREATE PROPERTY Doc.text STRING");
 
@@ -95,7 +95,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
   }
 
   @Test
-  public void testIndexingComposite() {
+  void indexingComposite() {
     assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 
     final DocumentType type = database.getSchema().buildDocumentType()
@@ -114,7 +114,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
   }
 
   @Test
-  public void testQuery() {
+  void query() {
     database.transaction(() -> {
       assertThat(database.getSchema().existsType("Docs")).isFalse();
 
@@ -166,7 +166,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
   }
 
   @Test
-  public void testNullValuesViaSQL() {
+  void nullValuesViaSQL() {
     assertThatThrownBy(() -> database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE doc");
       database.command("sql", "CREATE PROPERTY doc.str STRING");

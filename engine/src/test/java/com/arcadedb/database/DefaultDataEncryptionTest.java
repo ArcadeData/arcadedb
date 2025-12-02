@@ -24,7 +24,6 @@ import java.nio.ByteBuffer;
 import java.security.NoSuchAlgorithmException;
 import java.security.spec.InvalidKeySpecException;
 
-import javax.crypto.NoSuchPaddingException;
 import javax.crypto.SecretKey;
 
 import org.junit.jupiter.api.BeforeAll;
@@ -38,14 +37,14 @@ class DefaultDataEncryptionTest {
   static SecretKey key;
 
   @BeforeAll
-  public static void beforeAll() throws NoSuchAlgorithmException, InvalidKeySpecException {
+  static void beforeAll() throws NoSuchAlgorithmException, InvalidKeySpecException {
     String password = "password";
     String salt = "salt";
     key = DefaultDataEncryption.getSecretKeyFromPasswordUsingDefaults(password, salt);
   }
 
   @Test
-  void testEncryptionOfString() throws NoSuchAlgorithmException, NoSuchPaddingException {
+  void encryptionOfString() throws Exception {
     var dde = DefaultDataEncryption.useDefaults(key);
     String data = "data";
     byte[] encryptedData = dde.encrypt(data.getBytes());
@@ -54,7 +53,7 @@ class DefaultDataEncryptionTest {
   }
 
   @Test
-  void testEncryptionOfDouble() throws NoSuchAlgorithmException, NoSuchPaddingException {
+  void encryptionOfDouble() throws Exception {
     var dde = DefaultDataEncryption.useDefaults(key);
     double data = 1000000d;
     byte[] encryptedData = dde.encrypt(ByteBuffer.allocate(8).putLong(Double.doubleToLongBits(data)).array());

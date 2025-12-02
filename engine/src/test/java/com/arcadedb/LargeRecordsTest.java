@@ -30,16 +30,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Populate the database with records 3X the page size of buckets.
  */
-public class LargeRecordsTest extends TestHelper {
+class LargeRecordsTest extends TestHelper {
   private static final int TOT = 1000;
 
   @Test
-  public void testPopulate() {
+  void populate() {
     // EMPTY METHOD
   }
 
   @Test
-  public void testScan() {
+  void scan() {
     final AtomicInteger total = new AtomicInteger();
 
     database.begin();

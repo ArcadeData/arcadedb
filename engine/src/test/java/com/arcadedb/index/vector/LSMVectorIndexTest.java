@@ -23,22 +23,23 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests for LSMVectorIndex using JVector.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class LSMVectorIndexTest extends TestHelper {
+class LSMVectorIndexTest extends TestHelper {
 
   private static final int DIMENSIONS = 1024;
 
   @Test
-  public void testCreateIndexViaSQLAndQuery() {
+  void createIndexViaSQLAndQuery() {
     database.transaction(() -> {
       // Create the schema
       database.command("sql", "CREATE VERTEX TYPE VectorVertex IF NOT EXISTS");
@@ -60,12 +61,12 @@ public class LSMVectorIndexTest extends TestHelper {
     // Verify the index was created
     final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
         .getIndexByName("VectorVertex[embedding]");
-    Assertions.assertNotNull(typeIndex, "Index should be created");
+    assertThat(typeIndex).as("Index should be created").isNotNull();
 
     // Get one of the underlying LSMVectorIndex instances to verify configuration
     final LSMVectorIndex index = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
-    Assertions.assertEquals(DIMENSIONS, index.getDimensions(), "Dimensions should be " + DIMENSIONS);
-    Assertions.assertEquals("COSINE", index.getSimilarityFunction().name(), "Similarity should be COSINE");
+    assertThat(index.getDimensions()).as("Dimensions should be " + DIMENSIONS).isEqualTo(DIMENSIONS);
+    assertThat(index.getSimilarityFunction().name()).as("Similarity should be COSINE").isEqualTo("COSINE");
 
     // Insert test data
     database.transaction(() -> {
@@ -94,17 +95,17 @@ public class LSMVectorIndexTest extends TestHelper {
 
       int count = 0;
       while (cursor.hasNext()) {
-        Assertions.assertNotNull(cursor.next());
+        assertThat(cursor.next()).isNotNull();
         count++;
       }
 
-      Assertions.assertTrue(count > 0, "Should find at least one result");
-      Assertions.assertTrue(count <= 10, "Should return at most 10 results");
+      assertThat(count > 0).as("Should find at least one result").isTrue();
+      assertThat(count <= 10).as("Should return at most 10 results").isTrue();
     });
   }
 
   @Test
-  public void testCreateIndexProgrammatically() {
+  void createIndexProgrammatically() {
     database.transaction(() -> {
       // Create document type
       final DocumentType docType = database.getSchema().createDocumentType("VectorDoc");
@@ -130,14 +131,14 @@ public class LSMVectorIndexTest extends TestHelper {
     // Note: TypeIndex is created with default name based on type and properties
     final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
         .getIndexByName("VectorDoc[embedding]");
-    Assertions.assertNotNull(typeIndex);
+    assertThat(typeIndex).isNotNull();
 
     // Get one of the underlying LSMVectorIndex instances to verify configuration
     final LSMVectorIndex index = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
-    Assertions.assertEquals(3, index.getDimensions());
-    Assertions.assertEquals("EUCLIDEAN", index.getSimilarityFunction().name());
-    Assertions.assertEquals(8, index.getMaxConnections());
-    Assertions.assertEquals(50, index.getBeamWidth());
+    assertThat(index.getDimensions()).isEqualTo(3);
+    assertThat(index.getSimilarityFunction().name()).isEqualTo("EUCLIDEAN");
+    assertThat(index.getMaxConnections()).isEqualTo(8);
+    assertThat(index.getBeamWidth()).isEqualTo(50);
 
     // Insert and query
     database.transaction(() -> {
@@ -159,13 +160,13 @@ public class LSMVectorIndexTest extends TestHelper {
         cursor.next();
       }
 
-      Assertions.assertTrue(count > 0);
-      Assertions.assertTrue(count <= DIMENSIONS);
+      assertThat(count > 0).isTrue();
+      assertThat(count <= DIMENSIONS).isTrue();
     });
   }
 
   @Test
-  public void testIndexEntryCount() {
+  void indexEntryCount() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE TestDoc");
       database.command("sql", "CREATE PROPERTY TestDoc.vec ARRAY_OF_FLOATS");
@@ -183,11 +184,11 @@ public class LSMVectorIndexTest extends TestHelper {
 
     final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
         .getIndexByName("TestDoc[vec]");
-    Assertions.assertEquals(50, typeIndex.countEntries());
+    assertThat(typeIndex.countEntries()).isEqualTo(50);
   }
 
   @Test
-  public void testTransactionalIsolation() {
+  void transactionalIsolation() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE TxDoc");
       database.command("sql", "CREATE PROPERTY TxDoc.vec ARRAY_OF_FLOATS");
@@ -203,7 +204,7 @@ public class LSMVectorIndexTest extends TestHelper {
     });
 
     final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("TxDoc[vec]");
-    Assertions.assertEquals(1, typeIndex.countEntries());
+    assertThat(typeIndex.countEntries()).isEqualTo(1);
 
     // Verify transaction rollback doesn't affect committed data
     try {
@@ -220,11 +221,11 @@ public class LSMVectorIndexTest extends TestHelper {
     }
 
     // Should still have only 1 entry
-    Assertions.assertEquals(1, typeIndex.countEntries());
+    assertThat(typeIndex.countEntries()).isEqualTo(1);
   }
 
   @Test
-  public void testLSMAppendOnlySemantics() {
+  void lsmAppendOnlySemantics() {
     // Test LSM append-only: add, remove, add again - last entry should win
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE LSMDoc");
@@ -236,7 +237,7 @@ public class LSMVectorIndexTest extends TestHelper {
 
     final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
         .getIndexByName("LSMDoc[vec]");
-    Assertions.assertNotNull(typeIndex);
+    assertThat(typeIndex).isNotNull();
 
     // Add first version
     final com.arcadedb.database.RID[] docRidHolder = new com.arcadedb.database.RID[1];
@@ -249,7 +250,7 @@ public class LSMVectorIndexTest extends TestHelper {
     });
     final com.arcadedb.database.RID docRid = docRidHolder[0];
 
-    Assertions.assertEquals(1, typeIndex.countEntries());
+    assertThat(typeIndex.countEntries()).isEqualTo(1);
 
     // Query to verify it's there
     database.transaction(() -> {
@@ -260,7 +261,7 @@ public class LSMVectorIndexTest extends TestHelper {
         cursor.next();
         count++;
       }
-      Assertions.assertTrue(count > 0, "Should find the added vector");
+      assertThat(count > 0).as("Should find the added vector").isTrue();
     });
 
     // Update the document (delete old entry, add new entry)
@@ -271,7 +272,7 @@ public class LSMVectorIndexTest extends TestHelper {
     });
 
     // Should still have 1 entry (old marked deleted, new added)
-    Assertions.assertEquals(1, typeIndex.countEntries());
+    assertThat(typeIndex.countEntries()).isEqualTo(1);
 
     // Query with new vector should find it
     database.transaction(() -> {
@@ -282,7 +283,7 @@ public class LSMVectorIndexTest extends TestHelper {
         cursor.next();
         count++;
       }
-      Assertions.assertTrue(count > 0, "Should find the updated vector");
+      assertThat(count > 0).as("Should find the updated vector").isTrue();
     });
 
     // Note: RID stays the same after update, but vector value changed
@@ -296,7 +297,7 @@ public class LSMVectorIndexTest extends TestHelper {
     });
 
     // Should have 0 entries now
-    Assertions.assertEquals(0, typeIndex.countEntries());
+    assertThat(typeIndex.countEntries()).isEqualTo(0);
 
     // Re-add with same RID (simulating LSM append-only where entries accumulate)
     database.transaction(() -> {
@@ -307,11 +308,11 @@ public class LSMVectorIndexTest extends TestHelper {
     });
 
     // Should have 1 entry (the new one)
-    Assertions.assertEquals(1, typeIndex.countEntries());
+    assertThat(typeIndex.countEntries()).isEqualTo(1);
   }
 
   @Test
-  public void testLSMMergeOnReadLastWins() {
+  void lsmMergeOnReadLastWins() {
     // Test that in LSM pages, the last entry for a vector ID wins during merge-on-read
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE MergeDoc");
@@ -334,7 +335,7 @@ public class LSMVectorIndexTest extends TestHelper {
       }
     });
 
-    Assertions.assertEquals(10, typeIndex.countEntries());
+    assertThat(typeIndex.countEntries()).isEqualTo(10);
 
     // Update several documents multiple times (creates multiple page entries in LSM style)
     for (int iteration = 0; iteration < 3; iteration++) {
@@ -351,7 +352,7 @@ public class LSMVectorIndexTest extends TestHelper {
     // Still should have 10 entries (5 updated + 5 unchanged)
     // LSM semantics: last write wins, so even though we wrote multiple times,
     // only the latest version of each vector should be counted
-    Assertions.assertEquals(10, typeIndex.countEntries());
+    assertThat(typeIndex.countEntries()).isEqualTo(10);
 
     // Verify the last values are present (should find vectors with latest iteration values)
     database.transaction(() -> {
@@ -362,7 +363,7 @@ public class LSMVectorIndexTest extends TestHelper {
         cursor.next();
         count++;
       }
-      Assertions.assertTrue(count > 0, "Should find the last updated vector");
+      assertThat(count > 0).as("Should find the last updated vector").isTrue();
     });
 
     // Verify LSM semantics: The index should correctly handle multiple updates to same documents
@@ -371,7 +372,7 @@ public class LSMVectorIndexTest extends TestHelper {
   }
 
   @Test
-  public void testLazyGraphIndexRebuild() {
+  void lazyGraphIndexRebuild() {
     // Test that graph index is only rebuilt when needed (lazy)
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE LazyDoc");
@@ -403,7 +404,7 @@ public class LSMVectorIndexTest extends TestHelper {
         cursor.next();
         count++;
       }
-      Assertions.assertTrue(count > 0, "Should find vectors after lazy rebuild");
+      assertThat(count > 0).as("Should find vectors after lazy rebuild").isTrue();
     });
     final long rebuildTime = System.currentTimeMillis() - startTime;
 
@@ -417,7 +418,7 @@ public class LSMVectorIndexTest extends TestHelper {
         cursor.next();
         count++;
       }
-      Assertions.assertTrue(count > 0, "Should find vectors without rebuild");
+      assertThat(count > 0).as("Should find vectors without rebuild").isTrue();
     });
     final long noRebuildTime = System.currentTimeMillis() - startTime2;
 
@@ -427,7 +428,7 @@ public class LSMVectorIndexTest extends TestHelper {
   }
 
   @Test
-  public void testCompactionTrigger() {
+  void compactionTrigger() {
     // Test that compaction is triggered after reaching the threshold
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE CompactDoc IF NOT EXISTS");
@@ -437,10 +438,10 @@ public class LSMVectorIndexTest extends TestHelper {
     });
 
     final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("CompactDoc[vec]");
-    Assertions.assertNotNull(typeIndex, "Index should exist");
+    assertThat(typeIndex).as("Index should exist").isNotNull();
 
     final var indexes = typeIndex.getIndexesOnBuckets();
-    Assertions.assertTrue(indexes.length > 0, "Should have at least one bucket index");
+    assertThat(indexes.length > 0).as("Should have at least one bucket index").isTrue();
 
     final LSMVectorIndex lsmIndex = (LSMVectorIndex) indexes[0];
     final int initialPages = lsmIndex.getCurrentMutablePages();
@@ -482,12 +483,11 @@ public class LSMVectorIndexTest extends TestHelper {
 //        ", Threshold: " + threshold);
 
     // Verify that compaction would have been triggered
-    Assertions.assertTrue(finalPages >= threshold || initialPages >= threshold,
-        "Should have reached compaction threshold at some point");
+    assertThat(finalPages >= threshold || initialPages >= threshold).as("Should have reached compaction threshold at some point").isTrue();
   }
 
   @Test
-  public void testCompactionMergeMultipleUpdates() {
+  void compactionMergeMultipleUpdates() {
     // Test K-way merge with multiple updates to same vectors
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE MergeDoc IF NOT EXISTS");
@@ -498,7 +498,7 @@ public class LSMVectorIndexTest extends TestHelper {
     });
 
     final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("MergeDoc[vec]");
-    Assertions.assertNotNull(typeIndex, "Index should exist");
+    assertThat(typeIndex).as("Index should exist").isNotNull();
 
     // Add initial vectors
     final List<com.arcadedb.database.RID> rids = new ArrayList<>();
@@ -513,7 +513,7 @@ public class LSMVectorIndexTest extends TestHelper {
     });
 
     final long countAfterInsert = typeIndex.countEntries();
-    Assertions.assertEquals(20, countAfterInsert, "Should have 20 entries after insert");
+    assertThat(countAfterInsert).as("Should have 20 entries after insert").isEqualTo(20);
 
     // Update same vectors multiple times (creates multiple LSM entries)
     for (int iteration = 0; iteration < 5; iteration++) {
@@ -533,8 +533,7 @@ public class LSMVectorIndexTest extends TestHelper {
 
     // Count should still be 20 (no duplicates despite multiple updates)
     final long countAfterUpdates = typeIndex.countEntries();
-    Assertions.assertEquals(20, countAfterUpdates,
-        "Should still have 20 entries after updates (LSM last-write-wins semantics)");
+    assertThat(countAfterUpdates).as("Should still have 20 entries after updates (LSM last-write-wins semantics)").isEqualTo(20);
 
     // Verify we can query the updated vectors
     database.transaction(() -> {
@@ -545,12 +544,12 @@ public class LSMVectorIndexTest extends TestHelper {
         cursor.next();
         count++;
       }
-      Assertions.assertTrue(count > 0, "Should find vectors with updated values");
+      assertThat(count > 0).as("Should find vectors with updated values").isTrue();
     });
   }
 
   @Test
-  public void testCompactionDeletedEntryRemoval() {
+  void compactionDeletedEntryRemoval() {
     // Test that deleted entries are removed during compaction
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE DeleteDoc IF NOT EXISTS");
@@ -561,7 +560,7 @@ public class LSMVectorIndexTest extends TestHelper {
     });
 
     final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("DeleteDoc[vec]");
-    Assertions.assertNotNull(typeIndex, "Index should exist");
+    assertThat(typeIndex).as("Index should exist").isNotNull();
 
     // Add vectors
     final List<com.arcadedb.database.RID> rids = new ArrayList<>();
@@ -575,7 +574,7 @@ public class LSMVectorIndexTest extends TestHelper {
       }
     });
 
-    Assertions.assertEquals(50, typeIndex.countEntries(), "Should have 50 entries");
+    assertThat(typeIndex.countEntries()).as("Should have 50 entries").isEqualTo(50);
 
     // Delete half of the vectors
     database.transaction(() -> {
@@ -586,7 +585,7 @@ public class LSMVectorIndexTest extends TestHelper {
 
     // Count should reflect deletions
     final long countAfterDelete = typeIndex.countEntries();
-    Assertions.assertEquals(25, countAfterDelete, "Should have 25 entries after deleting 25");
+    assertThat(countAfterDelete).as("Should have 25 entries after deleting 25").isEqualTo(25);
 
     // Verify remaining vectors are queryable
     database.transaction(() -> {
@@ -597,7 +596,7 @@ public class LSMVectorIndexTest extends TestHelper {
         cursor.next();
         count++;
       }
-      Assertions.assertTrue(count > 0, "Should find non-deleted vectors");
+      assertThat(count > 0).as("Should find non-deleted vectors").isTrue();
     });
 
     // After compaction, deleted entries should be physically removed
@@ -606,7 +605,7 @@ public class LSMVectorIndexTest extends TestHelper {
   }
 
   @Test
-  public void testCompactionWithConcurrentQueries() throws InterruptedException {
+  void compactionWithConcurrentQueries() throws Exception {
     // Test that queries work correctly during compaction
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE ConcurrentDoc IF NOT EXISTS");
@@ -616,7 +615,7 @@ public class LSMVectorIndexTest extends TestHelper {
     });
 
     final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("ConcurrentDoc[vec]");
-    Assertions.assertNotNull(typeIndex, "Index should exist");
+    assertThat(typeIndex).as("Index should exist").isNotNull();
 
     // Add initial vectors
     database.transaction(() -> {
@@ -629,7 +628,7 @@ public class LSMVectorIndexTest extends TestHelper {
       }
     });
 
-    Assertions.assertEquals(100, typeIndex.countEntries(), "Should have 100 entries");
+    assertThat(typeIndex.countEntries()).as("Should have 100 entries").isEqualTo(100);
 
     // Perform concurrent queries while index is active
     final int numThreads = 5;
@@ -683,13 +682,12 @@ public class LSMVectorIndexTest extends TestHelper {
         ", Failed queries: " + failedQueries.get());
 
     // Most queries should succeed
-    Assertions.assertTrue(successfulQueries.get() > (numThreads * queriesPerThread) / 2,
-        "Most concurrent queries should succeed");
-    Assertions.assertEquals(0, failedQueries.get(), "No queries should fail with exceptions");
+    assertThat(successfulQueries.get() > (numThreads * queriesPerThread) / 2).as("Most concurrent queries should succeed").isTrue();
+    assertThat(failedQueries.get()).as("No queries should fail with exceptions").isEqualTo(0);
   }
 
   @Test
-  public void testGraphIndexCorrectnessAfterCompaction() {
+  void graphIndexCorrectnessAfterCompaction() {
     // Test that graph index is correctly rebuilt after compaction
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE GraphDoc IF NOT EXISTS");
@@ -699,7 +697,7 @@ public class LSMVectorIndexTest extends TestHelper {
     });
 
     final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("GraphDoc[vec]");
-    Assertions.assertNotNull(typeIndex, "Index should exist");
+    assertThat(typeIndex).as("Index should exist").isNotNull();
 
     // Add vectors in a pattern that creates a structure in the graph
     final List<com.arcadedb.database.RID> rids = new ArrayList<>();
@@ -719,7 +717,7 @@ public class LSMVectorIndexTest extends TestHelper {
       }
     });
 
-    Assertions.assertEquals(100, typeIndex.countEntries(), "Should have 100 entries");
+    assertThat(typeIndex.countEntries()).as("Should have 100 entries").isEqualTo(100);
 
     // Query before any updates (graph index initialized)
     final Set<String> resultsBeforeUpdates = new HashSet<>();
@@ -732,7 +730,7 @@ public class LSMVectorIndexTest extends TestHelper {
       }
     });
 
-    Assertions.assertTrue(resultsBeforeUpdates.size() > 0, "Should find results before updates");
+    assertThat(resultsBeforeUpdates.size() > 0).as("Should find results before updates").isTrue();
 
     // Update some vectors (will trigger graph dirty flag)
     database.transaction(() -> {
@@ -760,8 +758,7 @@ public class LSMVectorIndexTest extends TestHelper {
       }
     });
 
-    Assertions.assertTrue(resultsAfterUpdates.size() > 0,
-        "Should find results after updates (graph index rebuilt)");
+    assertThat(resultsAfterUpdates.size() > 0).as("Should find results after updates (graph index rebuilt)").isTrue();
 
     // Results should be different after updates (graph index reflects new data)
     System.out.println("Results before updates: " + resultsBeforeUpdates.size() +
@@ -769,7 +766,7 @@ public class LSMVectorIndexTest extends TestHelper {
   }
 
   @Test
-  public void testTransactionRollbackVectorIndexChanges() {
+  void transactionRollbackVectorIndexChanges() {
     // Setup: Create a vector index
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE RollbackDoc");
@@ -781,10 +778,10 @@ public class LSMVectorIndexTest extends TestHelper {
 
     final com.arcadedb.index.TypeIndex typeIndex =
         (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("RollbackDoc[vec]");
-    Assertions.assertNotNull(typeIndex, "Vector index should be created");
+    assertThat(typeIndex).as("Vector index should be created").isNotNull();
 
     // Verify index is initially empty
-    Assertions.assertEquals(0, typeIndex.countEntries(), "Index should start empty");
+    assertThat(typeIndex.countEntries()).as("Index should start empty").isEqualTo(0);
 
     // Add initial documents to the index
     database.transaction(() -> {
@@ -797,7 +794,7 @@ public class LSMVectorIndexTest extends TestHelper {
     });
 
     final long initialCount = typeIndex.countEntries();
-    Assertions.assertEquals(5, initialCount, "Index should have 5 entries after initial insert");
+    assertThat(initialCount).as("Index should have 5 entries after initial insert").isEqualTo(5);
 
     // === ROLLBACK TEST ===
     // Try to add more documents in a transaction, then roll it back
@@ -816,13 +813,12 @@ public class LSMVectorIndexTest extends TestHelper {
       });
     } catch (final RuntimeException e) {
       // Expected - transaction should be rolled back
-      Assertions.assertTrue(e.getMessage().contains("Intentional rollback"), "Should be our rollback exception");
+      assertThat(e.getMessage().contains("Intentional rollback")).as("Should be our rollback exception").isTrue();
     }
 
     // Verify that the rolled-back changes are NOT in the index
     final long countAfterRollback = typeIndex.countEntries();
-    Assertions.assertEquals(initialCount, countAfterRollback,
-        "Index should still have only " + initialCount + " entries after rollback (rollback_* docs should not be there)");
+    assertThat(countAfterRollback).as("Index should still have only " + initialCount + " entries after rollback (rollback_* docs should not be there)").isEqualTo(initialCount);
 
     // Verify that we can't find the rolled-back vectors
     database.transaction(() -> {
@@ -835,8 +831,7 @@ public class LSMVectorIndexTest extends TestHelper {
         final var doc = rid.asDocument();
         // We shouldn't find any documents with rollback_* ids
         final String id = doc.get("id").toString();
-        Assertions.assertFalse(id.startsWith("rollback_"),
-            "Should not find rolled-back vector in index (found doc with id: " + id + ")");
+        assertThat(id.startsWith("rollback_")).as("Should not find rolled-back vector in index (found doc with id: " + id + ")").isFalse();
         foundCount++;
       }
 
@@ -858,8 +853,7 @@ public class LSMVectorIndexTest extends TestHelper {
 
     // Verify that the committed changes ARE in the index
     final long countAfterCommit = typeIndex.countEntries();
-    Assertions.assertEquals(initialCount + 2, countAfterCommit,
-        "Index should have " + (initialCount + 2) + " entries after successful commit");
+    assertThat(countAfterCommit).as("Index should have " + (initialCount + 2) + " entries after successful commit").isEqualTo(initialCount + 2);
 
     // Verify that we CAN find the committed vectors
     database.transaction(() -> {
@@ -877,7 +871,7 @@ public class LSMVectorIndexTest extends TestHelper {
         }
       }
 
-      Assertions.assertTrue(found, "Should find the committed vector in index");
+      assertThat(found).as("Should find the committed vector in index").isTrue();
     });
 
     // === MULTIPLE ROLLBACK TEST ===
@@ -903,8 +897,7 @@ public class LSMVectorIndexTest extends TestHelper {
 
     // After multiple rollbacks, count should not have changed
     final long countAfterMultipleRollbacks = typeIndex.countEntries();
-    Assertions.assertEquals(countBeforeMultipleRollbacks, countAfterMultipleRollbacks,
-        "Index count should remain unchanged after multiple rollbacks");
+    assertThat(countAfterMultipleRollbacks).as("Index count should remain unchanged after multiple rollbacks").isEqualTo(countBeforeMultipleRollbacks);
 
     // Verify no rolled-back documents from any round are in the index
     database.transaction(() -> {
@@ -916,8 +909,7 @@ public class LSMVectorIndexTest extends TestHelper {
           final var rid = cursor.next();
           final var doc = rid.asDocument();
           final String id = doc.get("id").toString();
-          Assertions.assertFalse(id.startsWith("rollback_round_"),
-              "Should not find rolled-back vectors from any round (found: " + id + ")");
+          assertThat(id.startsWith("rollback_round_")).as("Should not find rolled-back vectors from any round (found: " + id + ")").isFalse();
         }
       }
     });

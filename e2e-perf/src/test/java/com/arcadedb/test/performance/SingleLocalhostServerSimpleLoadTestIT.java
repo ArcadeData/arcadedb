@@ -56,7 +56,7 @@ import java.util.function.Supplier;
  * <p>
  * The test uses a fixed size thread pool to execute operations in parallel.
  */
-public class SingleLocalhostServerSimpleLoadTestIT {
+class SingleLocalhostServerSimpleLoadTestIT {
   protected LoggingMeterRegistry loggingMeterRegistry;
   protected Logger               logger = LoggerFactory.getLogger(getClass());
 
@@ -93,7 +93,7 @@ public class SingleLocalhostServerSimpleLoadTestIT {
   }
 
   @AfterEach
-  public void tearDown() {
+  void tearDown() {
 
     Metrics.removeRegistry(loggingMeterRegistry);
   }
@@ -101,7 +101,7 @@ public class SingleLocalhostServerSimpleLoadTestIT {
   @Test
   @Disabled
   @DisplayName("Single server load test")
-  void singleServerLoadTest() throws InterruptedException, IOException {
+  void singleServerLoadTest() throws Exception {
 
     ServerWrapper server = new ServerWrapper("localhost", 2480, 50051);
     DatabaseWrapper db = new DatabaseWrapper(server, idSupplier);

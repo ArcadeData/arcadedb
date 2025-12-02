@@ -26,11 +26,11 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class BatchTest extends TestHelper {
+class BatchTest extends TestHelper {
   @Test
-  public void testReturnArrayOnDeprecated() {
+  void returnArrayOnDeprecated() {
     database.transaction(() -> {
       final ResultSet rs = database.command("SQLSCRIPT", """
           let a = select 1 as result;
@@ -53,7 +53,7 @@ public class BatchTest extends TestHelper {
   }
 
   @Test
-  public void testReturnArray() {
+  void returnArray() {
     database.transaction(() -> {
       final ResultSet rs = database.command("SQLScript", """
           let a = select 1 as result;
@@ -75,7 +75,7 @@ public class BatchTest extends TestHelper {
   }
 
   @Test
-  public void testWhile() {
+  void testWhile() {
     database.command("sql", "CREATE DOCUMENT TYPE TestWhile");
 
     database.command("sqlscript", """
@@ -95,7 +95,7 @@ public class BatchTest extends TestHelper {
   }
 
   @Test
-  public void testWhileWithReturn() {
+  void whileWithReturn() {
     database.command("sql", "CREATE DOCUMENT TYPE TestWhileWithReturn");
 
     database.transaction(() -> {
@@ -120,7 +120,7 @@ public class BatchTest extends TestHelper {
   }
 
   @Test
-  public void testForeach() {
+  void foreach() {
     database.command("sql", "CREATE DOCUMENT TYPE TestForeach");
 
     database.command("sqlscript", """
@@ -138,7 +138,7 @@ public class BatchTest extends TestHelper {
   }
 
   @Test
-  public void testForeachWithReturn() {
+  void foreachWithReturn() {
     database.command("sql", "CREATE DOCUMENT TYPE TestForeachWithReturn");
 
     database.transaction(() -> {
@@ -165,7 +165,7 @@ public class BatchTest extends TestHelper {
    * Issue https://github.com/ArcadeData/arcadedb/issues/1646
    */
   @Test
-  public void testLetUSeRightScope() {
+  void letUSeRightScope() {
 
     final ResultSet result = database.command("sqlscript", """
         LET $list = [];
@@ -190,7 +190,7 @@ public class BatchTest extends TestHelper {
    * Issue https://github.com/ArcadeData/arcadedb/issues/1647
    */
   @Test
-  public void testBreakInsideForeach() {
+  void breakInsideForeach() {
 
     final ResultSet result = database.command("sqlscript", """
         LET result = "Return statement 0";
@@ -209,7 +209,7 @@ public class BatchTest extends TestHelper {
 
   // Isue https://github.com/ArcadeData/arcadedb/issues/1673
   @Test
-  public void testNestedBreak() {
+  void nestedBreak() {
 
     final ResultSet result = database.command("sqlscript", """
         LET $numbers = [1, 2, 3];
@@ -238,7 +238,7 @@ public class BatchTest extends TestHelper {
   }
 
   @Test
-  public void testForeachResultSet() {
+  void foreachResultSet() {
     database.command("sql", "CREATE DOCUMENT TYPE DocumentType");
     database.transaction(() -> {
       for (int i = 0; i < 100; i++)
@@ -258,7 +258,7 @@ public class BatchTest extends TestHelper {
   }
 
   @Test
-  public void testFromSingleResultReadValueFromField() {
+  void fromSingleResultReadValueFromField() {
     database.command("sql", "CREATE DOCUMENT TYPE DocumentType");
     database.transaction(() -> {
       database.command("sql", "INSERT INTO DocumentType set field = 'aaaa' ");
@@ -274,7 +274,7 @@ public class BatchTest extends TestHelper {
   }
 
   @Test
-  public void testDynamicDocumentTypeName() {
+  void dynamicDocumentTypeName() {
     database.command("sql", "CREATE DOCUMENT TYPE TheDoc");
 
     database.transaction(() -> {
@@ -286,8 +286,9 @@ public class BatchTest extends TestHelper {
 
     assertThat(database.query("sql", "SELECT count() AS value FROM TheDoc").next().<Long>getProperty("value")).isEqualTo(1);
   }
+
   @Test
-  public void testDynamicGraphTypesNames() {
+  void dynamicGraphTypesNames() {
     database.command("sql", "CREATE VERTEX TYPE V1");
     database.command("sql", "CREATE VERTEX TYPE V2");
     database.command("sql", "CREATE EDGE TYPE HasSource");
@@ -327,22 +328,12 @@ public class BatchTest extends TestHelper {
   }
 
   @Test
-  public void testUsingReservedVariableNames() {
-    try {
-      database.command("sqlscript", """
+  void usingReservedVariableNames() {
+    assertThatThrownBy(() -> database.command("sqlscript", """
           FOREACH ($parent IN [1, 2, 3]){
           RETURN;
-          }""");
-      fail("");
-    } catch (CommandSQLParsingException e) {
-      // EXPECTED
-    }
+          }""")).isInstanceOf(CommandSQLParsingException.class);
 
-    try {
-      database.command("sqlscript", "LET parent = 33;");
-      fail("");
-    } catch (CommandSQLParsingException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> database.command("sqlscript", "LET parent = 33;")).isInstanceOf(CommandSQLParsingException.class);
   }
 }

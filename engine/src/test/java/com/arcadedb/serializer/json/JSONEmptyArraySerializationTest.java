@@ -44,10 +44,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  *
  */
-public class JSONEmptyArraySerializationTest extends TestHelper {
+class JSONEmptyArraySerializationTest extends TestHelper {
 
   @Test
-  public void testJSONObjectWithEmptyArrayShouldNotThrow() {
+  void jsonObjectWithEmptyArrayShouldNotThrow() {
     // Test direct JSONObject creation with empty array
     JSONObject json = new JSONObject();
 
@@ -79,7 +79,7 @@ public class JSONEmptyArraySerializationTest extends TestHelper {
   }
 
   @Test
-  public void testJSONObjectFromMapWithEmptyCollections() {
+  void jsonObjectFromMapWithEmptyCollections() {
     // Test creating JSONObject from Map containing empty collections
     Map<String, Object> data = new HashMap<>();
     data.put("attributes", new ArrayList<>());
@@ -109,7 +109,7 @@ public class JSONEmptyArraySerializationTest extends TestHelper {
   }
 
   @Test
-  public void testJSONArrayWithEmptyNestedArrays() {
+  void jsonArrayWithEmptyNestedArrays() {
     // Test JSONArray containing empty arrays
     JSONArray outerArray = new JSONArray();
     outerArray.put(new ArrayList<>());
@@ -131,7 +131,7 @@ public class JSONEmptyArraySerializationTest extends TestHelper {
   }
 
   @Test
-  public void testMixedContentWithEmptyArrays() {
+  void mixedContentWithEmptyArrays() {
     // Test object with mix of empty and non-empty collections
     JSONObject json = new JSONObject();
     json.put("nonEmptyArray", Arrays.asList(1, 2, 3));
@@ -153,7 +153,7 @@ public class JSONEmptyArraySerializationTest extends TestHelper {
   }
 
   @Test
-  public void testEmptyIterableTypes() {
+  void emptyIterableTypes() {
     // Test various types of empty iterables
     JSONObject json = new JSONObject();
 
@@ -180,7 +180,7 @@ public class JSONEmptyArraySerializationTest extends TestHelper {
   }
 
   @Test
-  public void testEmptyCollectionsSerialization() {
+  void emptyCollectionsSerialization() {
     // Test that empty collections serialize correctly to JSON strings
     JSONObject json = new JSONObject();
     json.put("empty", Collections.emptyList());
@@ -195,7 +195,7 @@ public class JSONEmptyArraySerializationTest extends TestHelper {
   }
 
   @Test
-  public void testEmptyArrayToMap() {
+  void emptyArrayToMap() {
     // Test conversion to Map with empty arrays
     JSONObject json = new JSONObject();
     json.put("empty", new ArrayList<>());
@@ -208,7 +208,7 @@ public class JSONEmptyArraySerializationTest extends TestHelper {
   }
 
   @Test
-  public void testEmptyArrayValidation() {
+  void emptyArrayValidation() {
     // Test validation method with empty arrays
     JSONObject json = new JSONObject();
     json.put("empty", new ArrayList<>());

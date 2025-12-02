@@ -236,7 +236,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSimple() {
+  void simple() {
     final ResultSet qResult = database.query("sql", "match {type:Person, as: person} return person");
 
     for (int i = 0; i < 6; i++) {
@@ -251,7 +251,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSimpleWhere() {
+  void simpleWhere() {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person");
 
@@ -268,7 +268,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSimpleLimit() {
+  void simpleLimit() {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit 1");
     assertThat(qResult.hasNext()).isTrue();
@@ -278,7 +278,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSimpleLimit2() {
+  void simpleLimit2() {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit -1");
     for (int i = 0; i < 2; i++) {
@@ -289,7 +289,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSimpleLimit3() {
+  void simpleLimit3() {
 
     final ResultSet qResult = database.query("sql",
         "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit 3");
@@ -301,7 +301,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSimpleUnnamedParams() {
+  void simpleUnnamedParams() {
     final ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = ? or name = ?)} return person",
         "n1", "n2");
 
@@ -318,7 +318,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCommonFriends() {
+  void commonFriends() {
 
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend)");
@@ -331,7 +331,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCommonFriendsPatterns() {
+  void commonFriendsPatterns() {
 
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $patterns)");
@@ -344,7 +344,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testPattens() {
+  void pattens() {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $patterns");
 
@@ -357,7 +357,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testPaths() {
+  void paths() {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $paths");
 
@@ -369,7 +369,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testElements() {
+  void elements() {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $elements");
 
@@ -381,7 +381,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testPathElements() {
+  void pathElements() {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $pathElements");
 
@@ -400,7 +400,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCommonFriendsMatches() {
+  void commonFriendsMatches() {
 
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $matches)");
@@ -413,7 +413,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCommonFriendsArrows() {
+  void commonFriendsArrows() {
 
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend)");
@@ -426,7 +426,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCommonFriendsArrowsPatterns() {
+  void commonFriendsArrowsPatterns() {
 
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return $patterns)");
@@ -439,7 +439,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCommonFriends2() {
+  void commonFriends2() {
 
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend.name as name");
@@ -452,7 +452,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCommonFriends2Arrows() {
+  void commonFriends2Arrows() {
 
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend.name as name");
@@ -465,7 +465,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testReturnMethod() {
+  void returnMethod() {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend.name.toUpperCase(Locale.ENGLISH) as name");
     assertThat(qResult.hasNext()).isTrue();
@@ -476,7 +476,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testReturnMethodArrows() {
+  void returnMethodArrows() {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend.name.toUpperCase(Locale.ENGLISH) as name");
     assertThat(qResult.hasNext()).isTrue();
@@ -487,7 +487,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testReturnExpression() {
+  void returnExpression() {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend.name + ' ' +friend.name as name");
 
@@ -499,7 +499,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testReturnExpressionArrows() {
+  void returnExpressionArrows() {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend.name + ' ' +friend.name as name");
 
@@ -511,7 +511,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testReturnDefaultAlias() {
+  void returnDefaultAlias() {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend.name");
 
@@ -523,7 +523,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testReturnDefaultAliasArrows() {
+  void returnDefaultAliasArrows() {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend.name");
 
@@ -535,7 +535,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFriendsOfFriends() {
+  void friendsOfFriends() {
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.out('Friend').out('Friend'){as:friend} return $matches)");
 
@@ -547,7 +547,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFriendsOfFriendsArrows() {
+  void friendsOfFriendsArrows() {
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend->{}-Friend->{as:friend} return $matches)");
 
@@ -559,7 +559,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFriendsOfFriends2() {
+  void friendsOfFriends2() {
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1'), as: me}.both('Friend').both('Friend'){as:friend, where: ($matched.me != $currentMatch)} return $matches)");
 
@@ -572,7 +572,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFriendsOfFriends2Arrows() {
+  void friendsOfFriends2Arrows() {
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1'), as: me}-Friend-{}-Friend-{as:friend, where: ($matched.me != $currentMatch)} return $matches)");
 
@@ -584,7 +584,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFriendsWithName() {
+  void friendsWithName() {
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1' and 1 + 1 = 2)}.out('Friend'){as:friend, where:(name = 'n2' and 1 + 1 = 2)} return friend)");
 
@@ -595,7 +595,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFriendsWithNameArrows() {
+  void friendsWithNameArrows() {
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1' and 1 + 1 = 2)}-Friend->{as:friend, where:(name = 'n2' and 1 + 1 = 2)} return friend)");
     assertThat(qResult.hasNext()).isTrue();
@@ -605,7 +605,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testWhile() {
+  void testWhile() {
 
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.out('Friend'){as:friend, while: ($depth < 1)} return friend)");
@@ -648,7 +648,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testWhileArrows() {
+  void whileArrows() {
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend->{as:friend, while: ($depth < 1)} return friend)");
     assertThat(size(qResult)).isEqualTo(3);
@@ -671,7 +671,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testMaxDepth() {
+  void maxDepth() {
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.out('Friend'){as:friend, maxDepth: 1, where: ($depth=1) } return friend)");
     assertThat(size(qResult)).isEqualTo(2);
@@ -694,7 +694,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testMaxDepthArrow() {
+  void maxDepthArrow() {
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend->{as:friend, maxDepth: 1, where: ($depth=1) } return friend)");
     assertThat(size(qResult)).isEqualTo(2);
@@ -717,7 +717,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testManager() {
+  void manager() {
     // the manager of a person is the manager of the department that person belongs to.
     // if that department does not have a direct manager, climb up the hierarchy until you find one
     assertThat(getManager("p10").get("name")).isEqualTo("c");
@@ -732,7 +732,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testExpanded() {
+  void expanded() {
     final StringBuilder query = new StringBuilder();
     query.append("select @type from ( ");
     query.append(" select expand(manager) from (");
@@ -798,7 +798,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testManager2() {
+  void manager2() {
     // the manager of a person is the manager of the department that person belongs to.
     // if that department does not have a direct manager, climb up the hierarchy until you find one
 
@@ -856,7 +856,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testManaged() {
+  void managed() {
     // people managed by a manager are people who belong to his department or people who belong to
     // sub-departments without a manager
     final ResultSet managedByA = getManagedBy("a");
@@ -902,7 +902,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testManagedArrows() {
+  void managedArrows() {
     // people managed by a manager are people who belong to his department or people who belong to
     // sub-departments without a manager
     final ResultSet managedByA = getManagedByArrows("a");
@@ -946,7 +946,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testManaged2() {
+  void managed2() {
     // people managed by a manager are people who belong to his department or people who belong to
     // sub-departments without a manager
     final ResultSet managedByA = getManagedBy2("a");
@@ -992,7 +992,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testManaged2Arrows() {
+  void managed2Arrows() {
     // people managed by a manager are people who belong to his department or people who belong to
     // sub-departments without a manager
     final ResultSet managedByA = getManagedBy2Arrows("a");
@@ -1037,7 +1037,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testTriangle1() {
+  void triangle1() {
     final String query = """
         match {type:TriangleV, as: friend1, where: (uid = 0)}
           .out('TriangleE'){as: friend2}
@@ -1055,7 +1055,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testTriangle1Arrows() {
+  void triangle1Arrows() {
     final String query = """
         match {type:TriangleV, as: friend1, where: (uid = 0)} -TriangleE-> {as: friend2} -TriangleE-> {as: friend3},
         {type:TriangleV, as: friend1} -TriangleE-> {as: friend3}
@@ -1071,7 +1071,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testTriangle2Old() {
+  void triangle2Old() {
     final String query = """
         match {type:TriangleV, as: friend1}
           .out('TriangleE'){type:TriangleV, as: friend2, where: (uid = 1)}
@@ -1094,7 +1094,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testTriangle2() {
+  void triangle2() {
     final String query = """
         match {type:TriangleV, as: friend1}
           .out('TriangleE'){type:TriangleV, as: friend2, where: (uid = 1)}
@@ -1119,7 +1119,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testTriangle2Arrows() {
+  void triangle2Arrows() {
     final String query = """
         match {type:TriangleV, as: friend1}
           -TriangleE->{type:TriangleV, as: friend2, where: (uid = 1)}
@@ -1144,7 +1144,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testTriangle3() {
+  void triangle3() {
     final String query = """
         match {type:TriangleV, as: friend1}
           -TriangleE->{as: friend2}
@@ -1162,7 +1162,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testTriangle4() {
+  void triangle4() {
     final String query = """
         match {type:TriangleV, as: friend1}
           .out('TriangleE'){as: friend2, where: (uid = 1)}
@@ -1181,7 +1181,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testTriangle4Arrows() {
+  void triangle4Arrows() {
     final String query = """
         match {type:TriangleV, as: friend1}
           -TriangleE->{as: friend2, where: (uid = 1)}
@@ -1200,7 +1200,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testTriangleWithEdges4() {
+  void triangleWithEdges4() {
     final String query = """
         match {type:TriangleV, as: friend1}
           .outE('TriangleE').inV(){as: friend2, where: (uid = 1)}
@@ -1218,7 +1218,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCartesianProduct() {
+  void cartesianProduct() {
     final String query = """
         match {type:TriangleV, as: friend1, where:(uid = 1)},
         {type:TriangleV, as: friend2, where:(uid = 2 or uid = 3)}
@@ -1237,7 +1237,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testNoPrefetch() {
+  void noPrefetch() {
     final String query = """
         match {type:IndexedVertex, as: one}
         return $patterns
@@ -1256,7 +1256,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCartesianProductLimit() {
+  void cartesianProductLimit() {
     final String query = """
         match {type:TriangleV, as: friend1, where:(uid = 1)},
         {type:TriangleV, as: friend2, where:(uid = 2 or uid = 3)}
@@ -1273,7 +1273,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testArrayNumber() {
+  void arrayNumber() {
     final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1, where: (uid = 0)}");
@@ -1291,7 +1291,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testArraySingleSelectors2() {
+  void arraySingleSelectors2() {
     final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1, where: (uid = 0)}");
@@ -1309,7 +1309,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testArrayRangeSelectors1() {
+  void arrayRangeSelectors1() {
     final StringBuilder query = new StringBuilder();
     query.append("match ");
     query.append("{type:TriangleV, as: friend1, where: (uid = 0)}");
@@ -1328,7 +1328,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testArrayRange2() {
+  void arrayRange2() {
     final String query = """
         match {type:TriangleV, as: friend1, where: (uid = 0)}
         return friend1.out('TriangleE')[0..2] as foo
@@ -1347,7 +1347,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testArrayRange3() {
+  void arrayRange3() {
     final String query = """
         match {type:TriangleV, as: friend1, where: (uid = 0)}
         return friend1.out('TriangleE')[0..3] as foo
@@ -1366,7 +1366,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testConditionInSquareBrackets() {
+  void conditionInSquareBrackets() {
     final String query = """
         match {type:TriangleV, as: friend1, where: (uid = 0)}
         return friend1.out('TriangleE')[uid = 2] as foo
@@ -1387,7 +1387,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testIndexedEdge() {
+  void indexedEdge() {
     final String query = """
         match {type:IndexedVertex, as: one, where: (uid = 0)}
         .out('IndexedEdge'){type:IndexedVertex, as: two, where: (uid = 1)}
@@ -1402,7 +1402,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testIndexedEdgeArrows() {
+  void indexedEdgeArrows() {
     final String query = """
         match {type:IndexedVertex, as: one, where: (uid = 0)}
         -IndexedEdge->{type:IndexedVertex, as: two, where: (uid = 1)}
@@ -1417,7 +1417,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testJson() {
+  void json() {
     final String query = """
         match {type:IndexedVertex, as: one, where: (uid = 0)}
         return {'name':'foo', 'uuid':one.uid}""";
@@ -1434,7 +1434,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testJson2() {
+  void json2() {
     final String query = """
         match {type:IndexedVertex, as: one, where: (uid = 0)}
         return {'name':'foo', 'sub': {'uuid':one.uid}}
@@ -1451,7 +1451,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testJson3() {
+  void json3() {
     final String query = """
         match {type:IndexedVertex, as: one, where: (uid = 0)}
         return {'name':'foo', 'sub': [{'uuid':one.uid}]}
@@ -1469,7 +1469,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testUnique() {
+  void unique() {
     String query = """
         match {type:DiamondV, as: one, where: (uid = 0)}
         .out('DiamondE').out('DiamondE'){as: two}
@@ -1498,7 +1498,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testNotUnique() {
+  void notUnique() {
     String query = """
         match {type:DiamondV, as: one, where: (uid = 0)}.out('DiamondE').out('DiamondE'){as: two}
         return one, two
@@ -1528,7 +1528,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testManagedElements() {
+  void managedElements() {
     final ResultSet managedByB = getManagedElements("b");
 
     final Set<String> expectedNames = new HashSet<String>();
@@ -1564,7 +1564,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testManagedPathElements() {
+  void managedPathElements() {
     final ResultSet managedByB = getManagedPathElements("b");
 
     final Set<String> expectedNames = new HashSet<String>();
@@ -1591,7 +1591,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testOptional() {
+  void optional() {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, as: person} -NonExistingEdge-> {as:b, optional:true} return person, b.name");
 
@@ -1607,7 +1607,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testOptional2() {
+  void optional2() {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, as: person} --> {as:b, optional:true, where:(nonExisting = 12)} return person, b.name");
 
@@ -1623,7 +1623,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testOptional3() {
+  void optional3() {
     final ResultSet qResult = database.query("sql", """
         select friend.name as name, b from (
         match {type:Person, as:a, where:(name = 'n1' and 1 + 1 = 2)}.out('Friend'){as:friend, where:(name = 'n2' and 1 + 1 = 2)},
@@ -1639,7 +1639,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testOrderByAsc() {
+  void orderByAsc() {
     database.command("sql", "CREATE vertex type testOrderByAsc ");
 
     database.command("sql", "CREATE VERTEX testOrderByAsc SET name = 'bbb'");
@@ -1662,7 +1662,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testOrderByDesc() {
+  void orderByDesc() {
     database.command("sql", "CREATE vertex type testOrderByDesc");
 
     database.command("sql", "CREATE VERTEX testOrderByDesc SET name = 'bbb'");
@@ -1686,7 +1686,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testNestedProjections() {
+  void nestedProjections() {
     final String clazz = "testNestedProjections";
     database.command("sql", "CREATE vertex type " + clazz + " ");
 
@@ -1705,7 +1705,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testNestedProjectionsStar() {
+  void nestedProjectionsStar() {
     final String clazz = "testNestedProjectionsStar";
     database.command("sql", "CREATE vertex type " + clazz + " ");
 
@@ -1731,7 +1731,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testExpand() {
+  void expand() {
     final String clazz = "testExpand";
     database.command("sql", "CREATE vertex type " + clazz + " ");
 
@@ -1754,7 +1754,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testAggregate() {
+  void aggregate() {
     final String clazz = "testAggregate";
     database.command("sql", "CREATE vertex type " + clazz);
 
@@ -1784,7 +1784,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testOrderByOutOfProjAsc() {
+  void orderByOutOfProjAsc() {
     final String clazz = "testOrderByOutOfProjAsc";
     database.command("sql", "CREATE vertex type " + clazz);
 
@@ -1807,7 +1807,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testOrderByOutOfProjDesc() {
+  void orderByOutOfProjDesc() {
     final String clazz = "testOrderByOutOfProjDesc";
     database.command("sql", "CREATE vertex type " + clazz);
 
@@ -1831,7 +1831,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testUnwind() {
+  void unwind() {
     final String clazz = "testUnwind";
     database.command("sql", "CREATE vertex type " + clazz);
 
@@ -1855,7 +1855,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSkip() {
+  void skip() {
     final String clazz = "testSkip";
     database.command("sql", "CREATE vertex type " + clazz);
 
@@ -1882,7 +1882,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testDepthAlias() {
+  void depthAlias() {
     final String clazz = "testDepthAlias";
     database.command("sql", "CREATE vertex type " + clazz);
 
@@ -1935,7 +1935,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testPathAlias() {
+  void pathAlias() {
     final String clazz = "testPathAlias";
     database.command("sql", "CREATE vertex type " + clazz);
 
@@ -1989,7 +1989,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testBucketTarget() {
+  void bucketTarget() {
     final String clazz = "testBucketTarget";
     database.command("SQL", "CREATE vertex type " + clazz).close();
     database.command("SQL", "CREATE property " + clazz + ".name STRING").close();
@@ -2079,7 +2079,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testNegativePattern() {
+  void negativePattern() {
     final String clazz = "testNegativePattern";
     database.command("SQL", "CREATE vertex type " + clazz).close();
 
@@ -2111,7 +2111,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testNegativePattern2() {
+  void negativePattern2() {
     final String clazz = "testNegativePattern2";
     database.command("SQL", "CREATE vertex type " + clazz).close();
 
@@ -2142,7 +2142,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testNegativePattern3() {
+  void negativePattern3() {
     final String clazz = "testNegativePattern3";
     database.command("SQL", "CREATE vertex type " + clazz).close();
 
@@ -2175,7 +2175,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testPathTraversal() {
+  void pathTraversal() {
     final String clazz = "testPathTraversal";
     database.command("SQL", "CREATE vertex type " + clazz).close();
 
@@ -2238,7 +2238,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testQuotedClassName() {
+  void quotedClassName() {
     final String className = "testQuotedClassName";
     database.command("sql", "CREATE vertex type " + className);
     database.command("sql", "CREATE VERTEX " + className + " SET name = 'a'");
@@ -2251,7 +2251,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testMatchInSubQuery() {
+  void matchInSubQuery() {
     try (final ResultSet rs = database.query("SQL", "SELECT $a LET $a=(MATCH{type:Person,as:Person_0}RETURN expand(Person_0))")) {
       assertThat(rs.stream().count()).isEqualTo(1L);
     }

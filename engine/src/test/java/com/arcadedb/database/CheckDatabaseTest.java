@@ -43,13 +43,13 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class CheckDatabaseTest extends TestHelper {
+class CheckDatabaseTest extends TestHelper {
 
   private static final int           TOTAL = 10_000;
   private              MutableVertex root;
 
   @Test
-  public void checkDatabase() {
+  void checkDatabase() {
     final ResultSet result = database.command("sql", "check database");
     assertThat(result.hasNext()).isTrue();
     while (result.hasNext()) {
@@ -63,7 +63,7 @@ public class CheckDatabaseTest extends TestHelper {
   }
 
   @Test
-  public void checkTypes() {
+  void checkTypes() {
     ResultSet result = database.command("sql", "check database type Person");
     assertThat(result.hasNext()).isTrue();
     while (result.hasNext()) {
@@ -89,7 +89,7 @@ public class CheckDatabaseTest extends TestHelper {
   }
 
   @Test
-  public void checkRegularDeleteEdges() {
+  void checkRegularDeleteEdges() {
     database.transaction(() -> database.command("sql", "delete from Knows"));
 
     final ResultSet result = database.command("sql", "check database");
@@ -111,7 +111,7 @@ public class CheckDatabaseTest extends TestHelper {
   }
 
   @Test
-  public void checkBrokenDeletedEdges() {
+  void checkBrokenDeletedEdges() {
     final AtomicReference<RID> deletedEdge = new AtomicReference<>();
 
     database.transaction(() -> {
@@ -189,7 +189,7 @@ public class CheckDatabaseTest extends TestHelper {
   }
 
   @Test
-  public void checkBrokenDeletedVertex() {
+  void checkBrokenDeletedVertex() {
     database.transaction(() -> {
       // DELETE THE VERTEX AT LOW LEVEL
       database.getSchema().getBucketById(root.getIdentity().getBucketId()).deleteRecord(root.getIdentity());
@@ -245,7 +245,7 @@ public class CheckDatabaseTest extends TestHelper {
   }
 
   @Test
-  public void checkBrokenPage() {
+  void checkBrokenPage() {
     database.transaction(() -> {
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(root.getIdentity().bucketId);
 

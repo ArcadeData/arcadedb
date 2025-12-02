@@ -21,23 +21,25 @@ package com.arcadedb.server.ha;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.BaseGraphServerTest;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 import java.util.logging.*;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 /**
  * Integration tests for LSM index compaction replication in distributed mode.
  * Verifies that index compaction is properly tracked and replicated to all replicas.
  */
-public class IndexCompactionReplicationIT extends BaseGraphServerTest {
+class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
   private static final int TOTAL_RECORDS = 5_000;
   private static final int TX_CHUNK      = 500;
@@ -63,7 +65,7 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
    * and verifies that the compacted index is consistent across all servers.
    */
   @Test
-  public void lsmTreeCompactionReplication() throws Exception {
+  void lsmTreeCompactionReplication() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
 
     // CREATE SCHEMA WITH INDEX
@@ -80,7 +82,7 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
     // GET THE INDEX AND TRIGGER COMPACTION ON LEADER
     LogManager.instance().log(this, Level.FINE, "Triggering compaction on index '%s' on leader...", indexName);
-    final com.arcadedb.index.TypeIndex index = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName(indexName);
+    final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName(indexName);
     final boolean compacted = index.compact();
     LogManager.instance().log(this, Level.FINE, "Compaction result: %b", compacted);
     // Compaction might return false if the index doesn't need compaction, which is OK for this test
@@ -97,14 +99,12 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
       final com.arcadedb.index.Index serverIndex_idx = serverDb.getSchema().getIndexByName(indexName);
 
       // VERIFY THAT INDEX IS FUNCTIONAL AND CONTAINS ALL ENTRIES
-      Assertions.assertEquals(TOTAL_RECORDS, serverIndex_idx.countEntries(),
-          "Index on server " + serverIndex + " should contain " + TOTAL_RECORDS + " entries after compaction");
+      assertThat(serverIndex_idx.countEntries()).as("Index on server " + serverIndex + " should contain " + TOTAL_RECORDS + " entries after compaction").isEqualTo(TOTAL_RECORDS);
 
       // VERIFY THAT WE CAN QUERY USING THE COMPACTED INDEX
       for (int i = 0; i < 10; i++) {
         final long value = i * 100L;
-        Assertions.assertTrue(serverIndex_idx.get(new Object[] { value }).hasNext() || value >= TOTAL_RECORDS,
-            "Should be able to query index on server " + serverIndex);
+        assertThat(serverIndex_idx.get(new Object[]{value}).hasNext() || value >= TOTAL_RECORDS).as("Should be able to query index on server " + serverIndex).isTrue();
       }
     });
 
@@ -117,7 +117,7 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
    * correctly stored in schema JSON and replicated to all replicas.
    */
   @Test
-  public void lsmVectorReplication() throws Exception {
+  void lsmVectorReplication() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
 
     // CREATE SCHEMA WITH VECTOR INDEX (use 1 bucket for simpler replication testing)
@@ -130,10 +130,10 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
     builder.withDimensions(10);
 
-    final com.arcadedb.index.TypeIndex vectorIndex = builder.create();
+    final TypeIndex vectorIndex = builder.create();
 
     LogManager.instance().log(this, Level.FINE, "Vector index created: %s", vectorIndex.getName());
-    Assertions.assertNotNull(vectorIndex, "Vector index should be created successfully");
+    assertThat(vectorIndex).as("Vector index should be created successfully").isNotNull();
 
     LogManager.instance().log(this, Level.FINE, "Inserting %d records into vector index...", TOTAL_RECORDS);
     // INSERT VECTOR RECORDS IN BATCHES
@@ -155,7 +155,7 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
     LogManager.instance().log(this, Level.FINE, "Verifying vector index on leader...");
     final long entriesOnLeader = vectorIndex.countEntries();
     LogManager.instance().log(this, Level.FINE, "Vector index contains %d entries on leader", entriesOnLeader);
-    Assertions.assertTrue(entriesOnLeader > 0, "Vector index should contain entries after inserting records");
+    assertThat(entriesOnLeader > 0).as("Vector index should contain entries after inserting records").isTrue();
 
     // WAIT FOR REPLICATION TO COMPLETE
     LogManager.instance().log(this, Level.FINE, "Waiting for replication...");
@@ -176,10 +176,10 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
         LogManager.instance().log(this, Level.WARNING, "Vector index not found on server %d. Type has %d indexes", serverIndex,
             embeddingType.getAllIndexes(false).size());
       }
-      Assertions.assertNotNull(serverVectorIndex, "Vector index should be replicated to server " + serverIndex);
+      assertThat(serverVectorIndex).as("Vector index should be replicated to server " + serverIndex).isNotNull();
 
       final long entriesOnReplica = serverVectorIndex.countEntries();
-      Assertions.assertEquals(entriesOnLeader, entriesOnReplica);
+      assertThat(entriesOnReplica).isEqualTo(entriesOnLeader);
     });
 
     LogManager.instance().log(this, Level.FINE, "LSM Vector index replication test PASSED");
@@ -191,7 +191,7 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
    * correctly stored in schema JSON and replicated to all replicas.
    */
   @Test
-  public void lsmVectorCompactionReplication() throws Exception {
+  void lsmVectorCompactionReplication() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
 
     // CREATE SCHEMA WITH VECTOR INDEX (use 1 bucket for simpler replication testing)
@@ -204,10 +204,10 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
     builder.withDimensions(10);
 
-    final com.arcadedb.index.TypeIndex vectorIndex = builder.create();
+    final TypeIndex vectorIndex = builder.create();
 
     LogManager.instance().log(this, Level.FINE, "Vector index created: %s", vectorIndex.getName());
-    Assertions.assertNotNull(vectorIndex, "Vector index should be created successfully");
+    assertThat(vectorIndex).as("Vector index should be created successfully").isNotNull();
 
     LogManager.instance().log(this, Level.FINE, "Inserting %d records into vector index...", TOTAL_RECORDS);
     // INSERT VECTOR RECORDS IN BATCHES
@@ -228,7 +228,7 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
     // GET THE INDEX AND TRIGGER COMPACTION ON LEADER
     LogManager.instance().log(this, Level.FINE, "Triggering compaction on index '%s' on leader...", vectorIndex.getName());
-    final com.arcadedb.index.TypeIndex index = (com.arcadedb.index.TypeIndex) database.getSchema()
+    final TypeIndex index = (TypeIndex) database.getSchema()
         .getIndexByName(vectorIndex.getName());
     index.scheduleCompaction();
     final boolean compacted = index.compact();
@@ -238,7 +238,7 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
     LogManager.instance().log(this, Level.FINE, "Verifying vector index on leader...");
     final long entriesOnLeader = vectorIndex.countEntries();
     LogManager.instance().log(this, Level.FINE, "Vector index contains %d entries on leader", entriesOnLeader);
-    Assertions.assertTrue(entriesOnLeader > 0, "Vector index should contain entries after inserting records");
+    assertThat(entriesOnLeader > 0).as("Vector index should contain entries after inserting records").isTrue();
 
     // WAIT FOR REPLICATION TO COMPLETE
     LogManager.instance().log(this, Level.FINE, "Waiting for replication...");
@@ -259,7 +259,7 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
         LogManager.instance().log(this, Level.WARNING, "Vector index not found on server %d. Type has %d indexes", serverIndex,
             embeddingType.getAllIndexes(false).size());
       }
-      Assertions.assertNotNull(serverVectorIndex, "Vector index should be replicated to server " + serverIndex);
+      assertThat(serverVectorIndex).as("Vector index should be replicated to server " + serverIndex).isNotNull();
     });
 
     LogManager.instance().log(this, Level.FINE, "LSM Vector index replication test PASSED");
@@ -271,7 +271,7 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
    * on replicas (eventual consistency scenario).
    */
   @Test
-  public void compactionReplicationWithConcurrentWrites() throws Exception {
+  void compactionReplicationWithConcurrentWrites() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
 
     // CREATE SCHEMA WITH INDEX
@@ -291,7 +291,7 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
     // TRIGGER COMPACTION
     LogManager.instance().log(this, Level.FINE, "Triggering compaction while records exist...");
-    final com.arcadedb.index.TypeIndex index = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName(indexName);
+    final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName(indexName);
     final boolean compacted = index.compact();
     LogManager.instance().log(this, Level.FINE, "Compaction result: %b", compacted);
     // Compaction might return false if the index doesn't need compaction, which is OK
@@ -314,7 +314,7 @@ public class IndexCompactionReplicationIT extends BaseGraphServerTest {
       final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
       final com.arcadedb.index.Index serverIndex_idx = serverDb.getSchema().getIndexByName(indexName);
 
-      Assertions.assertEquals(2000, serverIndex_idx.countEntries(), "Index on server " + serverIndex + " should have 2000 entries");
+      assertThat(serverIndex_idx.countEntries()).as("Index on server " + serverIndex + " should have 2000 entries").isEqualTo(2000);
     });
 
     LogManager.instance().log(this, Level.FINE, "Concurrent writes with compaction test PASSED");

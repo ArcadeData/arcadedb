@@ -33,43 +33,43 @@ class SQLMethodCapitalizeTest {
   }
 
   @Test
-  void testNullReturnedAsNull() {
+  void nullReturnedAsNull() {
     final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
-  void testCapitalizeEmpty() {
+  void capitalizeEmpty() {
     final Object result = method.execute("", null, null, null);
     assertThat(result).isEqualTo("");
   }
 
   @Test
-  void testCapitalizeIdentical() {
+  void capitalizeIdentical() {
     final Object result = method.execute("Capitalize This", null, null, null);
     assertThat(result).isEqualTo("Capitalize This");
   }
 
   @Test
-  void testCapitalizeLower() {
+  void capitalizeLower() {
     final Object result = method.execute("capitalize this", null, null, null);
     assertThat(result).isEqualTo("Capitalize This");
   }
 
   @Test
-  void testCapitalizeUpper() {
+  void capitalizeUpper() {
     final Object result = method.execute("CAPITALIZE THIS", null, null, null);
     assertThat(result).isEqualTo("Capitalize This");
   }
 
   @Test
-  void testCapitalizeSingle() {
+  void capitalizeSingle() {
     final Object result = method.execute("c t", null, null, null);
     assertThat(result).isEqualTo("C T");
   }
 
   @Test
-  void testCapitalizeNumbers() {
+  void capitalizeNumbers() {
     final Object result = method.execute("111 222", null, null, null);
     assertThat(result).isEqualTo("111 222");
   }

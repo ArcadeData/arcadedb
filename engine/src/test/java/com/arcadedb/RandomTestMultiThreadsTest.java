@@ -42,7 +42,7 @@ import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class RandomTestMultiThreadsTest extends TestHelper {
+class RandomTestMultiThreadsTest extends TestHelper {
   private static final int CYCLES           = 10000;
   private static final int STARTING_ACCOUNT = 10000;
   private static final int BUCKETS          = 4;
@@ -60,7 +60,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
   @Test
   @Tag("slow")
-  public void testRandom() {
+  void random() {
     GlobalConfiguration.COMMIT_LOCK_TIMEOUT.setValue(10_000);
 
     LogManager.instance().log(this, Level.SEVERE, "Executing " + CYCLES + " transactions with %d workers", WORKERS);

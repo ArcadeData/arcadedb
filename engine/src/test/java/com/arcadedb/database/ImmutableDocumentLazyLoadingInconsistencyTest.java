@@ -82,7 +82,7 @@ public class ImmutableDocumentLazyLoadingInconsistencyTest extends TestHelper {
   }
 
   @Test
-  public void testLazyLoadingConsistencyWithSecurityException() {
+  void lazyLoadingConsistencyWithSecurityException() {
     database.transaction(() -> {
       // Create a document with both public and secret properties
       final MutableDocument doc = database.newDocument("SecurityTest");
@@ -128,7 +128,7 @@ public class ImmutableDocumentLazyLoadingInconsistencyTest extends TestHelper {
   }
 
   @Test
-  public void testLazyLoadingConsistencyWithoutSecurityException() {
+  void lazyLoadingConsistencyWithoutSecurityException() {
     database.transaction(() -> {
       // Create a document
       final MutableDocument doc = database.newDocument("SecurityTest");
@@ -173,7 +173,7 @@ public class ImmutableDocumentLazyLoadingInconsistencyTest extends TestHelper {
   }
 
   @Test
-  public void testConsistentExceptionTypesInLazyLoading() {
+  void consistentExceptionTypesInLazyLoading() {
     database.transaction(() -> {
       // Create a document
       final MutableDocument doc = database.newDocument("SecurityTest");

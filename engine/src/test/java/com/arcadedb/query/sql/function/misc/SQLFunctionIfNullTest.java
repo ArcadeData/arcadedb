@@ -27,10 +27,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Test for SQLFunctionIfNull
  */
-public class SQLFunctionIfNullTest extends TestHelper {
+class SQLFunctionIfNullTest extends TestHelper {
 
   @Test
-  public void testFunctionInstance() {
+  void functionInstance() {
     SQLFunctionIfNull function = new SQLFunctionIfNull();
 
     assertThat(function.getName()).isEqualTo("ifnull");
@@ -39,7 +39,7 @@ public class SQLFunctionIfNullTest extends TestHelper {
   }
 
   @Test
-  public void testDirectExecution() {
+  void directExecution() {
     SQLFunctionIfNull function = new SQLFunctionIfNull();
 
     // Case 1: Non-null value with 2 parameters
@@ -60,7 +60,7 @@ public class SQLFunctionIfNullTest extends TestHelper {
   }
 
   @Test
-  public void testSQLQueryWithIfNull() {
+  void sqlQueryWithIfNull() {
     database.transaction(() -> {
       database.command("sql", "create document type TestType");
       database.command("sql", "insert into TestType content {'name': 'Test1', 'description': 'Description 1'}");
@@ -106,7 +106,7 @@ public class SQLFunctionIfNullTest extends TestHelper {
   }
 
   @Test
-  public void testNestedIfNullInSQL() {
+  void nestedIfNullInSQL() {
     database.transaction(() -> {
       database.command("sql", "create document type TestNested");
       database.command("sql", "insert into TestNested content {'name': 'Test1', 'field1': 'Value1', 'field2': 'Value2'}");

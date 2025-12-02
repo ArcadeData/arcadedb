@@ -25,7 +25,7 @@ import java.io.InputStream;
 
 import static org.assertj.core.api.Assertions.fail;
 
-public class CreateVertexStatementTest {
+class CreateVertexStatementTest {
 
   protected SimpleNode checkRightSyntax(final String query) {
     return checkSyntax(query, true);
@@ -53,7 +53,7 @@ public class CreateVertexStatementTest {
   }
 
   @Test
-  public void testSimpleCreate() {
+  void simpleCreate() {
     checkRightSyntax("create vertex");
     checkRightSyntax("create vertex V");
     checkRightSyntax("create vertex x bucket t");
@@ -70,7 +70,7 @@ public class CreateVertexStatementTest {
   }
 
   @Test
-  public void testSimpleCreateSet() {
+  void simpleCreateSet() {
     checkRightSyntax("create vertex Foo set a = 1");
     checkRightSyntax("create vertex Foo set a = '1'");
     checkRightSyntax("create vertex Foo set a = \"1\"");
@@ -79,20 +79,20 @@ public class CreateVertexStatementTest {
   }
 
   @Test
-  public void testEmptyArrayCreate() {
+  void emptyArrayCreate() {
     checkRightSyntax("create vertex Foo set a = 'foo'");
     checkRightSyntax("create vertex Foo set a = []");
     //    checkRightSyntax("create vertex Foo set a = [ ]");
   }
 
   @Test
-  public void testEmptyMapCreate() {
+  void emptyMapCreate() {
     checkRightSyntax("create vertex Foo set a = {}");
     checkRightSyntax("create vertex Foo SET a = { }");
   }
 
   @Test
-  public void testInsertIntoBucket() {
+  void insertIntoBucket() {
     checkRightSyntax(
         "create vertex bucket:default (equaledges, name, list) values ('yes', 'square', ['bottom', 'top','left','right'] )");
   }

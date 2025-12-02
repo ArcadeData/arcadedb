@@ -23,19 +23,19 @@ import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONObject;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOfType;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class AlterTypeExecutionTest extends TestHelper {
+class AlterTypeExecutionTest extends TestHelper {
   @Test
-  public void sqlAlterTypeInheritanceUsing() {
+  void sqlAlterTypeInheritanceUsing() {
     database.command("sql", "CREATE VERTEX TYPE Car");
 
     assertThat(database.getSchema().getType("Car").getSuperTypes().isEmpty()).isTrue();
@@ -79,7 +79,7 @@ public class AlterTypeExecutionTest extends TestHelper {
   }
 
   @Test
-  public void sqlAlterTypeBucketSelectionStrategy() {
+  void sqlAlterTypeBucketSelectionStrategy() {
     database.command("sql", "CREATE VERTEX TYPE Account");
     database.command("sql", "CREATE PROPERTY Account.id string");
     database.command("sql", "CREATE INDEX ON Account(id) UNIQUE");
@@ -91,7 +91,7 @@ public class AlterTypeExecutionTest extends TestHelper {
   }
 
   @Test
-  public void sqlAlterTypeCustom() {
+  void sqlAlterTypeCustom() {
     database.command("sql", "CREATE VERTEX TYPE Suv");
 
     database.command("sql", "ALTER TYPE Suv CUSTOM description = 'test'");
@@ -111,7 +111,7 @@ public class AlterTypeExecutionTest extends TestHelper {
   }
 
   @Test
-  public void sqlAlterTypeName() {
+  void sqlAlterTypeName() {
     database.command("sql", "CREATE VERTEX TYPE Mpv");
     database.command("sql", "CREATE PROPERTY Mpv.engine_number string");
     database.command("sql", "CREATE INDEX ON Mpv(engine_number) UNIQUE");
@@ -120,28 +120,29 @@ public class AlterTypeExecutionTest extends TestHelper {
     database.getSchema().getType("Mpv").newRecord().set("vehicle_model", "Blista Compact").set("engine_number", "456").save();
     database.commit();
 
-    Assertions.assertThrows(Exception.class, () -> {
-      database.begin();
-      database.getSchema().getType("Mpv").newRecord().set("vehicle_model", "Maibatsu Monstrosity").set("engine_number", "456")
+    database.begin();
+
+    database.getSchema().getType("Mpv").newRecord().set("vehicle_model", "Maibatsu Monstrosity").set("engine_number", "456")
           .save();
-      database.commit();
-    });
+
+    assertThatExceptionOfType(Exception.class).isThrownBy(() ->
+      database.commit());
 
     database.command("sql", "ALTER TYPE Mpv NAME Sedan");
-    Assertions.assertNotNull(database.getSchema().getType("Sedan"));
+    assertThat(database.getSchema().getType("Sedan")).isNotNull();
     // Assertions.assertNull fails, hence the use of database.command()
     ResultSet result = database.command("sql", "SELECT FROM schema:types");
-    Assertions.assertFalse(result.stream().anyMatch(x -> x.getProperty("name").equals("Mpv")));
+    assertThat(result.stream().anyMatch(x -> x.getProperty("name").equals("Mpv"))).isFalse();
 
     database.begin();
     database.getSchema().getType("Sedan").newRecord().set("engine_number", "123").set("vehicle_model", "Diablo Stallion").save();
     database.commit();
 
-    Assertions.assertThrows(Exception.class, () -> {
-      database.begin();
-      // insert a record with the same engine_number
-      database.getSchema().getType("Sedan").newRecord().set("engine_number", "123").set("vehicle_model", "Cartel Cruiser").save();
-      database.commit();
-    });
+    database.begin();
+
+    database.getSchema().getType("Sedan").newRecord().set("engine_number", "123").set("vehicle_model", "Cartel Cruiser").save();
+
+    assertThatExceptionOfType(Exception.class).isThrownBy(() ->
+      database.commit());
   }
 }

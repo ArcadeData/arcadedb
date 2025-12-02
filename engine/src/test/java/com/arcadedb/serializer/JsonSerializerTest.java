@@ -30,7 +30,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class JsonSerializerTest extends TestHelper {
+class JsonSerializerTest extends TestHelper {
 
   private JsonSerializer jsonSerializer;
 
@@ -40,7 +40,7 @@ public class JsonSerializerTest extends TestHelper {
   }
 
   @Test
-  void testSerializeDocument() {
+  void serializeDocument() {
     database.transaction(() -> {
       DocumentType type = database.getSchema().createDocumentType("TestType");
       type.createProperty("key1", Type.STRING);
@@ -60,7 +60,7 @@ public class JsonSerializerTest extends TestHelper {
   }
 
   @Test
-  void testSerializeVertex() {
+  void serializeVertex() {
     database.transaction(() -> {
       DocumentType type = database.getSchema().createVertexType("TestVertexType");
       type.createProperty("key1", Type.STRING);
@@ -80,7 +80,7 @@ public class JsonSerializerTest extends TestHelper {
   }
 
   @Test
-  void testSerializeEdge() {
+  void serializeEdge() {
     database.transaction(() -> {
       DocumentType vertexType = database.getSchema().createVertexType("TestVertexType");
       DocumentType edgeType = database.getSchema().createEdgeType("TestEdgeType");

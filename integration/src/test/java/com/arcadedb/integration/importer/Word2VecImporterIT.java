@@ -28,9 +28,9 @@ import java.io.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class Word2VecImporterIT {
+class Word2VecImporterIT {
   @Test
-  public void importDocuments() {
+  void importDocuments() {
     final String databasePath = "target/databases/test-word2vec";
 
     FileUtils.deleteRecursively(new File(databasePath));

@@ -39,7 +39,7 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Fail.fail;
 
-public class QueryTest extends TestHelper {
+class QueryTest extends TestHelper {
   private static final int TOT = 10000;
 
   @Override
@@ -61,7 +61,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testScan() {
+  void scan() {
 
     database.transaction(() -> {
       final ResultSet rs = database.command("SQL", """
@@ -89,7 +89,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testEqualsFiltering() {
+  void equalsFiltering() {
 
     database.transaction(() -> {
       final Map<String, Object> params = new HashMap<>();
@@ -114,7 +114,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testNullSafeEqualsFiltering() {
+  void nullSafeEqualsFiltering() {
     database.transaction(() -> {
       final Map<String, Object> params = new HashMap<>();
       params.put(":name", "Jay");
@@ -134,7 +134,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testCachedStatementAndExecutionPlan() {
+  void cachedStatementAndExecutionPlan() {
 
     database.transaction(() -> {
       final Map<String, Object> params = new HashMap<>();
@@ -189,7 +189,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testMajorFiltering() {
+  void majorFiltering() {
     database.transaction(() -> {
       final Map<String, Object> params = new HashMap<>();
       params.put(":id", TOT - 11);
@@ -207,7 +207,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testMajorEqualsFiltering() {
+  void majorEqualsFiltering() {
     database.transaction(() -> {
       final Map<String, Object> params = new HashMap<>();
       params.put(":id", TOT - 11);
@@ -226,7 +226,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testMinorFiltering() {
+  void minorFiltering() {
     database.transaction(() -> {
       final Map<String, Object> params = new HashMap<>();
       params.put(":id", 10);
@@ -244,7 +244,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testMinorEqualsFiltering() {
+  void minorEqualsFiltering() {
     database.transaction(() -> {
       final Map<String, Object> params = new HashMap<>();
       params.put(":id", 10);
@@ -262,7 +262,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testNotFiltering() {
+  void notFiltering() {
     database.transaction(() -> {
       final Map<String, Object> params = new HashMap<>();
       params.put(":id", 10);
@@ -280,7 +280,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testCreateVertexType() {
+  void createVertexType() {
     database.transaction(() -> {
       database.command("SQL", "CREATE VERTEX TYPE Foo");
       database.command("SQL", "CREATE VERTEX Foo SET name = 'foo'");
@@ -298,7 +298,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testCreateEdge() {
+  void createEdge() {
     database.transaction(() -> {
       database.command("SQL", "CREATE VERTEX TYPE Foo");
       database.command("SQL", "CREATE EDGE TYPE TheEdge");
@@ -317,7 +317,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testQueryEdge() {
+  void queryEdge() {
     final String vertexClass = "testQueryEdge_V";
     final String edgeClass = "testQueryEdge_E";
     database.transaction(() -> {
@@ -348,7 +348,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testMethod() {
+  void method() {
     database.transaction(() -> {
       final ResultSet rs = database.query("SQL", "SELECT 'bar'.prefix('foo') as name");
       assertThat(rs.hasNext()).isTrue();
@@ -361,7 +361,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testMatch() {
+  void match() {
     final String vertexClass = "testMatch_V";
     final String edgeClass = "testMatch_E";
     database.transaction(() -> {
@@ -391,7 +391,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testAnonMatch() {
+  void anonMatch() {
     final String vertexClass = "testAnonMatch_V";
     final String edgeClass = "testAnonMatch_E";
     database.transaction(() -> {
@@ -421,7 +421,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testLike() {
+  void like() {
     database.transaction(() -> {
       ResultSet rs = database.command("SQL", "SELECT FROM V WHERE surname LIKE '%in%' LIMIT 1");
       assertThat(rs.hasNext()).isTrue();
@@ -444,7 +444,7 @@ public class QueryTest extends TestHelper {
 
   // Issue https://github.com/ArcadeData/arcadedb/issues/603
   @Test
-  public void testLikeEncoding() {
+  void likeEncoding() {
     database.transaction(() -> {
       database.command("SQL", "insert into V set age = '10%'");
       database.command("SQL", "insert into V set age = '100%'");
@@ -469,7 +469,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testTimeout() {
+  void timeout() {
     database.transaction(() -> {
       try {
         for (int i = 0; i < TOT * 3; ++i) {
@@ -497,7 +497,7 @@ public class QueryTest extends TestHelper {
    * Test case for issue https://github.com/ArcadeData/arcadedb/issues/725
    */
   @Test
-  public void testOrderByRID() {
+  void orderByRID() {
     database.transaction(() -> {
       final ResultSet rs = database.query("SQL", "SELECT @rid, name FROM V order by @rid asc LIMIT 2");
 
@@ -520,7 +520,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testFlattenWhereCondition() {
+  void flattenWhereCondition() {
     database.transaction(() -> {
       database.getSchema().createDocumentType("test");
       StringBuilder query = new StringBuilder("SELECT FROM test WHERE (");
@@ -538,7 +538,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testCollectionsInProjections() {
+  void collectionsInProjections() {
     try (ResultSet set = database.query("sql", "SELECT [\"a\",\"b\",\"c\"] as coll")) {
       Collection<String> coll = set.nextIfAvailable().getProperty("coll");
       assertThat(coll.size()).isEqualTo(3);
@@ -549,7 +549,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testCollectionsInProjectionsContains() {
+  void collectionsInProjectionsContains() {
     try (ResultSet set = database.query("sql", "SELECT ([\"a\",\"b\",\"c\"] CONTAINS (@this ILIKE \"C\")) as coll")) {
       final Object coll = set.nextIfAvailable().getProperty("coll");
       assertThat((Boolean) coll).isTrue();
@@ -557,7 +557,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testCollectionsOfObjectsInProjectionsContains() {
+  void collectionsOfObjectsInProjectionsContains() {
     try (ResultSet set = database.query("sql",
         "SELECT ([{\"x\":\"a\"},{\"x\":\"b\"},{\"x\":\"c\"}] CONTAINS (x ILIKE \"C\")) as coll")) {
       final Object coll = set.nextIfAvailable().getProperty("coll");
@@ -566,7 +566,7 @@ public class QueryTest extends TestHelper {
   }
 
   @Test
-  public void testGraphElementSize() {
+  void graphElementSize() {
     database.transaction(() -> {
       database.command("sqlscript",
           """

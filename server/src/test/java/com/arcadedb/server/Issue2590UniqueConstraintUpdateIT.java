@@ -44,10 +44,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * Actual behavior (BUG): UPDATE succeeds, creating duplicate values for unique field.
  */
-public class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
+class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
 
   @Test
-  void testUniqueIndexOnUpdate() {
+  void uniqueIndexOnUpdate() {
 
     try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
@@ -89,7 +89,7 @@ public class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
    * Test Case 1: Test via RemoteDatabase API - Exact scenario from issue #2590
    */
   @Test
-  public void testRemoteDatabaseUniqueConstraintViolationOnUpdate() throws Exception {
+  void remoteDatabaseUniqueConstraintViolationOnUpdate() throws Exception {
     try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
@@ -122,7 +122,7 @@ public class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
    * Test Case 2: Test via HTTP API - UPDATE with duplicate value
    */
   @Test
-  public void testHttpApiUniqueConstraintViolationOnUpdate() throws Exception {
+  void httpApiUniqueConstraintViolationOnUpdate() throws Exception {
     // Create vertex type with unique field
     JSONObject response = executeCommand(0, "sql", "CREATE VERTEX TYPE HttpTestVertex");
     assertThat(response).isNotNull();
@@ -159,7 +159,7 @@ public class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
    * Test Case 3: Test with Integer type via RemoteDatabase
    */
   @Test
-  public void testRemoteDatabaseUniqueConstraintWithIntegerType() throws Exception {
+  void remoteDatabaseUniqueConstraintWithIntegerType() throws Exception {
     try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
@@ -189,7 +189,7 @@ public class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
    * Test Case 4: Test with Long type via HTTP API
    */
   @Test
-  public void testHttpApiUniqueConstraintWithLongType() throws Exception {
+  void httpApiUniqueConstraintWithLongType() throws Exception {
     // Create vertex type with unique long field
     JSONObject response = executeCommand(0, "sql", "CREATE VERTEX TYPE LongHttpTest");
     assertThat(response).isNotNull();
@@ -216,7 +216,7 @@ public class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
    * Test Case 5: Test UPDATE with multiple fields via RemoteDatabase
    */
   @Test
-  public void testRemoteDatabaseUpdateMultipleFieldsWithUniqueConstraint() throws Exception {
+  void remoteDatabaseUpdateMultipleFieldsWithUniqueConstraint() throws Exception {
     try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
@@ -246,7 +246,7 @@ public class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
    * Test Case 6: Test UPDATE with WHERE clause via HTTP API
    */
   @Test
-  public void testHttpApiUpdateWithWhereClause() throws Exception {
+  void httpApiUpdateWithWhereClause() throws Exception {
     // Create vertex type
     JSONObject response = executeCommand(0, "sql", "CREATE VERTEX TYPE WhereClauseHttpTest");
     assertThat(response).isNotNull();
@@ -285,7 +285,7 @@ public class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
    * This test should pass - updating to a unique value that doesn't exist should succeed.
    */
   @Test
-  public void testRemoteDatabaseValidUpdateToUniqueNonDuplicateValue() throws Exception {
+  void remoteDatabaseValidUpdateToUniqueNonDuplicateValue() throws Exception {
     try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
@@ -315,7 +315,7 @@ public class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
    * This should always succeed as it's not creating a duplicate.
    */
   @Test
-  public void testHttpApiUpdateSameRecordToSameValue() throws Exception {
+  void httpApiUpdateSameRecordToSameValue() throws Exception {
     // Create vertex type
     JSONObject response = executeCommand(0, "sql", "CREATE VERTEX TYPE SameValueHttpTest");
     assertThat(response).isNotNull();
@@ -345,7 +345,7 @@ public class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
    * Test Case 10: Test attempting to swap unique values between records via RemoteDatabase
    */
   @Test
-  public void testRemoteDatabaseSwapUniqueValuesBetweenRecords() throws Exception {
+  void remoteDatabaseSwapUniqueValuesBetweenRecords() throws Exception {
     try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
@@ -370,7 +370,7 @@ public class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
    * Test Case 11: Test UPDATE with parameterized query via RemoteDatabase
    */
   @Test
-  public void testRemoteDatabaseParameterizedUpdateWithUniqueConstraint() throws Exception {
+  void remoteDatabaseParameterizedUpdateWithUniqueConstraint() throws Exception {
     try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
@@ -399,7 +399,7 @@ public class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
    * This tests race conditions where two updates might try to create duplicates.
    */
   @Test
-  public void testRemoteDatabaseConcurrentUpdateWithUniqueConstraint() throws Exception {
+  void remoteDatabaseConcurrentUpdateWithUniqueConstraint() throws Exception {
     try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 

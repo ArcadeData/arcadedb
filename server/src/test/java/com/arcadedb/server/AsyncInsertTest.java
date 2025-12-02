@@ -45,12 +45,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * From Issue https://github.com/ArcadeData/arcadedb/issues/1126
  */
-public class AsyncInsertTest {
+class AsyncInsertTest {
   private static ArcadeDBServer arcadeDBServer;
   static final   String         DATABASE_NAME = "AsyncInsertTest";
 
   @Test
-  public void testBulkAsyncInsertConflict() {
+  void bulkAsyncInsertConflict() {
     final int CONCURRENCY_LEVEL = 24;
     ContextConfiguration configuration = new ContextConfiguration();
     GlobalConfiguration.ASYNC_WORKER_THREADS.setValue(CONCURRENCY_LEVEL);
@@ -103,7 +103,7 @@ public class AsyncInsertTest {
   }
 
   @Test
-  public void testBulkAsyncInsertOk() {
+  void bulkAsyncInsertOk() {
     ContextConfiguration configuration = new ContextConfiguration();
     GlobalConfiguration.TYPE_DEFAULT_BUCKETS.setValue(4);
     GlobalConfiguration.ASYNC_WORKER_THREADS.setValue(4);
@@ -155,7 +155,7 @@ public class AsyncInsertTest {
   }
 
   @BeforeEach
-  public void beginTests() {
+  void beginTests() {
     try (DatabaseFactory databaseFactory = new DatabaseFactory("./databases/" + DATABASE_NAME)) {
       if (databaseFactory.exists())
         databaseFactory.open().drop();
@@ -174,7 +174,7 @@ public class AsyncInsertTest {
   }
 
   @AfterEach
-  public void endTests() {
+  void endTests() {
     arcadeDBServer.stop();
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();

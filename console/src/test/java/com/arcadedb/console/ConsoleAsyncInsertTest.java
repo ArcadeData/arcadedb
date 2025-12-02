@@ -149,7 +149,7 @@ public class ConsoleAsyncInsertTest {
   }
 
   @Test
-  public void testBulkAsyncInsertProductsUsingSQL() {
+  void bulkAsyncInsertProductsUsingSQL() {
     GlobalConfiguration.SERVER_ROOT_PATH.setValue(".");
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
 
@@ -225,7 +225,7 @@ public class ConsoleAsyncInsertTest {
   }
 
   @Test
-  public void testBulkAsyncInsertProductsUsingAPI() {
+  void bulkAsyncInsertProductsUsingAPI() {
     GlobalConfiguration.SERVER_ROOT_PATH.setValue(".");
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
 
@@ -302,7 +302,7 @@ public class ConsoleAsyncInsertTest {
   }
 
   @Test
-  public void testOrderByAfterDeleteInsert() {
+  void orderByAfterDeleteInsert() {
     GlobalConfiguration.SERVER_ROOT_PATH.setValue(".");
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
 
@@ -535,12 +535,12 @@ public class ConsoleAsyncInsertTest {
   }
 
   @BeforeEach
-  public void cleanup() {
+  void cleanup() {
     FileUtils.deleteRecursively(new File("./target/databases/"));
   }
 
   @AfterEach
-  public void endTests() {
+  void endTests() {
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();
   }

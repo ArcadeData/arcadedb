@@ -28,7 +28,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.net.*;
 import java.util.*;
 import java.util.stream.*;
@@ -36,7 +38,7 @@ import java.util.zip.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class GraphSONImporterIT {
+class GraphSONImporterIT {
   private final static String DATABASE_PATH     = "target/databases/performance";
   private final static String FILE              = "arcadedb-export.graphson.tgz";
   private final static String UNCOMPRESSED_FILE = "target/arcadedb-export.graphson";
@@ -44,7 +46,7 @@ public class GraphSONImporterIT {
   private final static File databaseDirectory = new File(DATABASE_PATH);
 
   @Test
-  public void testImportCompressedOK() {
+  void importCompressedOK() {
     final URL inputFile = GraphSONImporterIT.class.getClassLoader().getResource(FILE);
 
     try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
@@ -63,7 +65,7 @@ public class GraphSONImporterIT {
   }
 
   @Test
-  public void testImportNotCompressedOK() throws IOException {
+  void importNotCompressedOK() throws Exception {
     final URL inputFile = GraphSONImporterIT.class.getClassLoader().getResource(FILE);
 
     try (final GZIPInputStream gis = new GZIPInputStream(new FileInputStream(inputFile.getFile()));
@@ -91,7 +93,7 @@ public class GraphSONImporterIT {
   }
 
   @Test
-  public void testImportFromSQL() {
+  void importFromSQL() {
     final URL inputFile = GraphSONImporterIT.class.getClassLoader().getResource(FILE);
 
     try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
@@ -111,7 +113,7 @@ public class GraphSONImporterIT {
 
   @BeforeEach
   @AfterEach
-  public void clean() {
+  void clean() {
     TestServerHelper.checkActiveDatabases();
     FileUtils.deleteRecursively(databaseDirectory);
     if (new File(UNCOMPRESSED_FILE).exists())

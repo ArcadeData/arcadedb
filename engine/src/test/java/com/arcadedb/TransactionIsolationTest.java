@@ -28,7 +28,7 @@ import java.util.concurrent.CountDownLatch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
-public class TransactionIsolationTest extends TestHelper {
+class TransactionIsolationTest extends TestHelper {
   @Override
   protected void beginTest() {
     database.transaction(() -> {
@@ -39,7 +39,7 @@ public class TransactionIsolationTest extends TestHelper {
   }
 
   @Test
-  public void testNoDirtyReads() throws InterruptedException {
+  void noDirtyReads() throws Exception {
     final CountDownLatch sem1 = new CountDownLatch(1);
     final CountDownLatch sem2 = new CountDownLatch(1);
 
@@ -102,7 +102,7 @@ public class TransactionIsolationTest extends TestHelper {
   }
 
   @Test
-  public void testReadCommitted() throws InterruptedException {
+  void readCommitted() throws Exception {
     final CountDownLatch sem1 = new CountDownLatch(1);
     final CountDownLatch sem2 = new CountDownLatch(1);
     final CountDownLatch sem3 = new CountDownLatch(1);
@@ -183,7 +183,7 @@ public class TransactionIsolationTest extends TestHelper {
   }
 
   @Test
-  public void testRepeatableRead() throws InterruptedException {
+  void repeatableRead() throws Exception {
     database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
     try {
 

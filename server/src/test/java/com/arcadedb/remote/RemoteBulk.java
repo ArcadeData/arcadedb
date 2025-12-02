@@ -24,7 +24,7 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
-public class RemoteBulk {
+class RemoteBulk {
   protected Supplier<Integer> idSupplier = new Supplier<>() {
 
     private final AtomicInteger id = new AtomicInteger();

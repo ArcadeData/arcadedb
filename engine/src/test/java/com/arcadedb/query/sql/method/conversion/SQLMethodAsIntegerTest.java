@@ -33,7 +33,7 @@ class SQLMethodAsIntegerTest {
   }
 
   @Test
-  void testNulIsReturnedAsNull() {
+  void nulIsReturnedAsNull() {
     final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }

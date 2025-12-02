@@ -127,12 +127,12 @@ public class TestLinkedPropertiesSchemaReloadIT {
       "CREATE PROPERTY userProfile.password IF NOT EXISTS STRING;";
 
   @Test
-  public void testSchema1() {
+  void schema1() {
     testSchema();
   }
 
   @Test
-  public void testSchema2() {
+  void schema2() {
     testSchema();
   }
 
@@ -194,7 +194,7 @@ public class TestLinkedPropertiesSchemaReloadIT {
   }
 
   @AfterAll
-  public static void endTests() {
+  static void endTests() {
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();
   }

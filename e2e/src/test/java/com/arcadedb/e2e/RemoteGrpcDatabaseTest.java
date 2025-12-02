@@ -31,7 +31,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class RemoteGrpcDatabaseTest extends ArcadeContainerTemplate {
+class RemoteGrpcDatabaseTest extends ArcadeContainerTemplate {
 
   private RemoteGrpcDatabase database;
 

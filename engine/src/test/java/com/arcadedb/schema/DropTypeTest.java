@@ -29,14 +29,14 @@ import java.util.*;
 
 import static org.assertj.core.api.Assertions.*;
 
-public class DropTypeTest extends TestHelper {
+class DropTypeTest extends TestHelper {
   private static final int    TOT        = 10;
   private static final String TYPE_NAME  = "V";
   private static final String TYPE_NAME2 = "V2";
   private static final String TYPE_NAME3 = "V3";
 
   @Test
-  public void testDropAndRecreateType() {
+  void dropAndRecreateType() {
     database.transaction(() -> {
       assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 

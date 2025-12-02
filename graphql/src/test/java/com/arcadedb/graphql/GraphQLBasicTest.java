@@ -28,12 +28,13 @@ import org.junit.jupiter.api.Test;
 import java.util.Collection;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
-public class GraphQLBasicTest extends AbstractGraphQLTest {
+class GraphQLBasicTest extends AbstractGraphQLTest {
 
   @Test
-  public void ridMapping() {
+  void ridMapping() {
     executeTest((database) -> {
       final String types = """
           type Query {
@@ -88,7 +89,7 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
   }
 
   @Test
-  public void bookByName() {
+  void bookByName() {
     executeTest((database) -> {
       defineTypes(database);
 
@@ -97,7 +98,7 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
         assertThat(resultSet.hasNext()).isTrue();
         final Result record = resultSet.next();
         assertThat(record.getPropertyNames()).hasSize(7);
-        assertThat( record.<Collection<?>>getProperty("authors")).hasSize(1);
+        assertThat(record.<Collection<?>>getProperty("authors")).hasSize(1);
         assertThat(record.<String>getProperty("name")).isEqualTo("Harry Potter and the Philosopher's Stone");
         assertThat(resultSet.hasNext()).isFalse();
       }
@@ -106,7 +107,7 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
         assertThat(resultSet.hasNext()).isTrue();
         final Result record = resultSet.next();
         assertThat(record.getPropertyNames()).hasSize(7);
-        assertThat( record.<Collection<?>>getProperty("authors")).hasSize(1);
+        assertThat(record.<Collection<?>>getProperty("authors")).hasSize(1);
         assertThat(record.<String>getProperty("name")).isEqualTo("Mr. brain");
         assertThat(resultSet.hasNext()).isFalse();
       }
@@ -116,23 +117,19 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
   }
 
   @Test
-  public void bookByNameWrongParams() {
+  void bookByNameWrongParams() {
     executeTest((database) -> {
       defineTypes(database);
 
-      try {
-        database.query("graphql", "{ bookByName(wrong: \"Mr. brain\") }");
-        fail();
-      } catch (final CommandParsingException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> database.query("graphql", "{ bookByName(wrong: \"Mr. brain\") }"))
+          .isInstanceOf(CommandParsingException.class);
 
       return null;
     });
   }
 
   @Test
-  public void allBooks() {
+  void allBooks() {
     executeTest((database) -> {
       final String types = """
           type Query {
@@ -159,13 +156,12 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
         assertThat(resultSet.hasNext()).isTrue();
         Result record = resultSet.next();
         assertThat(record.getPropertyNames()).hasSize(7);
-        assertThat( record.<Collection<?>>getProperty("authors")).hasSize(1);
-
+        assertThat(record.<Collection<?>>getProperty("authors")).hasSize(1);
 
         assertThat(resultSet.hasNext()).isTrue();
         record = resultSet.next();
         assertThat(record.getPropertyNames()).hasSize(7);
-        assertThat( record.<Collection<?>>getProperty("authors")).hasSize(1);
+        assertThat(record.<Collection<?>>getProperty("authors")).hasSize(1);
 
         assertThat(resultSet.hasNext()).isFalse();
       }
@@ -175,7 +171,7 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
   }
 
   @Test
-  public void embeddedAddresses() {
+  void embeddedAddresses() {
     executeTest((database) -> {
       final String types = """
           type Query {
@@ -222,7 +218,7 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
   }
 
   @Test
-  public void allBooksWrongRelationshipDirective() {
+  void allBooksWrongRelationshipDirective() {
     executeTest((database) -> {
       final String types = """
           type Query {
@@ -270,7 +266,7 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
   }
 
   @Test
-  public void queryWhereCondition() {
+  void queryWhereCondition() {
     executeTest((database) -> {
       final String types = """
           type Query {

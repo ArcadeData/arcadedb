@@ -26,7 +26,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -37,7 +37,7 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void okEdgesContentJsonArray() {
+  void okEdgesContentJsonArray() {
     final String vertexClassName = "testVertexContentArray";
     database.getSchema().createVertexType(vertexClassName, 1);
     final String edgeClassName = "testEdgeContentArray";
@@ -73,7 +73,7 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void errorEdgesContentJsonArray() {
+  void errorEdgesContentJsonArray() {
     final String vertexClassName = "testVertexContentArray";
     database.getSchema().createVertexType(vertexClassName, 1);
     final String edgeClassName = "testEdgeContentArray";
@@ -82,20 +82,17 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
     MutableVertex v1 = database.newVertex(vertexClassName).save();
     MutableVertex v2 = database.newVertex(vertexClassName).save();
 
-    String array = "[";
+    final StringBuffer array = new StringBuffer("[");
     for (int i = 0; i < 10; i++) {
       if (i > 0)
-        array += ",";
-      array += "{'x':" + i + "}";
+        array.append(",");
+      array.append("{'x':" + i + "}");
     }
-    array += "]";
+    array.append("]");
 
-    try {
-      ResultSet result = database.command("sql", "create edge " + edgeClassName + " from ? to ? CONTENT " + array, v1, v2);
-      fail("");
-    } catch (CommandSQLParsingException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() ->
+        database.command("sql", "create edge " + edgeClassName + " from ? to ? CONTENT " + array, v1, v2))
+        .isInstanceOf(CommandSQLParsingException.class);
   }
 
   @Test
@@ -149,7 +146,6 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
           """);
       assertThat(rs.stream().count()).isEqualTo(3);
     });
-
 
   }
 }

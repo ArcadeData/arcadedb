@@ -22,14 +22,14 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
+import java.io.File;
 
 import static com.arcadedb.GlobalConfiguration.TX_WAL;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class ServerConfigurationIT extends BaseGraphServerTest {
+class ServerConfigurationIT extends BaseGraphServerTest {
   @Test
-  public void testServerLoadConfiguration() throws IOException {
+  void serverLoadConfiguration() throws Exception {
     final ContextConfiguration cfg = new ContextConfiguration();
 
     assertThat(cfg.getValueAsBoolean(TX_WAL)).isTrue();

@@ -23,18 +23,25 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
+import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 
 public class CreateIndexStatement extends DDLStatement {
 
@@ -56,16 +63,10 @@ public class CreateIndexStatement extends DDLStatement {
   public void validate() throws CommandSQLParsingException {
     final String typeAsString = type.getStringValue().toUpperCase();
     switch (typeAsString) {
-    case "FULL_TEXT" -> {
-    }
-    case "UNIQUE" -> {
-    }
-    case "NOTUNIQUE" -> {
-    }
-    case "HNSW" -> {
-    }
-    case "LSM_VECTOR" -> {
-    }
+    case "FULL_TEXT" -> {}
+    case "UNIQUE" -> {}
+    case "NOTUNIQUE" -> {}
+    case "LSM_VECTOR" -> {}
     default -> throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
     }
   }
@@ -118,7 +119,7 @@ public class CreateIndexStatement extends DDLStatement {
     final AtomicLong total = new AtomicLong();
 
     // Use unified buildTypeIndex() API for all index types
-    com.arcadedb.schema.TypeIndexBuilder builder = database.getSchema().buildTypeIndex(typeName.getStringValue(), fields);
+    TypeIndexBuilder builder = database.getSchema().buildTypeIndex(typeName.getStringValue(), fields);
     builder = builder.withType(indexType);  // This may return LSMVectorIndexBuilder for LSM_VECTOR
 
     // Set index name if provided
@@ -144,15 +145,16 @@ public class CreateIndexStatement extends DDLStatement {
             "LSM_VECTOR index requires METADATA with dimensions, similarity, maxConnections, and beamWidth");
 
       final Map<String, Object> metadataMap = metadata.toMap((Result) null, context);
-      final com.arcadedb.serializer.json.JSONObject jsonMetadata = new com.arcadedb.serializer.json.JSONObject(metadataMap);
+      final JSONObject jsonMetadata = new JSONObject(metadataMap);
 
       // Builder is now an LSMVectorIndexBuilder after withType(LSM_VECTOR)
       final TypeLSMVectorIndexBuilder vectorBuilder = builder.withLSMVectorType();
       vectorBuilder.withMetadata(jsonMetadata);
+      vectorBuilder.create();
+
+    } else {
+      builder.create();
     }
-
-    builder.create();
-
     typeName = prevName;
 
     final InternalResultSet rs = new InternalResultSet();
