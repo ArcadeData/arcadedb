@@ -27,6 +27,9 @@ import java.io.IOException;
 /**
  * Implements JVector's ReaderSupplier interface to provide RandomAccessReader instances
  * for lazy-loading graph topology from ArcadeDB pages.
+ * <p>
+ * Returns ContiguousPageReader which provides a gap-free logical address space over
+ * physical pages with headers. This is critical for JVector's offset calculations.
  *
  * Thread-safe: Creates a new reader per thread (JVector requirement).
  *
@@ -48,8 +51,9 @@ public class ArcadePageReaderSupplier implements ReaderSupplier {
 
   @Override
   public RandomAccessReader get() throws IOException {
-    // Create a new reader for each request (JVector uses readers per-thread)
-    return new ArcadePageGraphReader(database, fileId, pageSize, totalBytes);
+    // Create a new contiguous reader for each request (JVector uses readers per-thread)
+    // ContiguousPageReader provides gap-free logical address space over physical pages
+    return new ContiguousPageReader(database, fileId, pageSize, totalBytes);
   }
 
   @Override

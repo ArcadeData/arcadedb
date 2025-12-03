@@ -19,6 +19,7 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
@@ -26,16 +27,17 @@ import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
-import io.github.jbellis.jvector.disk.RandomAccessWriter;
+import io.github.jbellis.jvector.disk.IndexWriter;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
-import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndexWriter;
-import io.github.jbellis.jvector.graph.disk.feature.Feature;
+import io.github.jbellis.jvector.graph.disk.OnDiskSequentialGraphIndexWriter;
 import io.github.jbellis.jvector.graph.disk.feature.FeatureId;
 import io.github.jbellis.jvector.graph.disk.feature.InlineVectors;
-import io.github.jbellis.jvector.graph.disk.feature.SeparatedVectors;
+import io.github.jbellis.jvector.vector.JVectorUtils;
+import io.github.jbellis.jvector.vector.types.VectorFloat;
 
 import java.io.*;
+import java.util.*;
 import java.util.function.*;
 import java.util.logging.*;
 
@@ -50,8 +52,9 @@ import java.util.logging.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class LSMVectorIndexGraphFile extends PaginatedComponent {
-  public static final String FILE_EXT        = "vecgraph";
-  public static final int    CURRENT_VERSION = 0;
+  public static final  String         FILE_EXT        = "vecgraph";
+  public static final  int            CURRENT_VERSION = 0;
+  private static final VectorFloat<?> EMPTY_VECTOR    = JVectorUtils.createVectorFloat(100);
 
   // Graph data starts at page 0 (no metadata page needed)
   // totalGraphBytes is computed from file size - JVector format is self-describing
@@ -99,12 +102,16 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
     if (totalPages == 0)
       return 0;
 
-    // Load last page to get actual content size from 4-byte offset
-    final int lastPageId = totalPages - 1;
+    final int usablePageSize = pageSize - BasePage.PAGE_HEADER_SIZE;
 
+    // Load last page to get actual content size
+    final int lastPageId = totalPages - 1;
     final var lastPage = database.getPageManager()
         .getImmutablePage(new PageId(database, fileId, lastPageId), pageSize, false, false);
-    return (long) pageSize * (totalPages - 1L) + lastPage.getContentSize();
+
+    // Compute contiguous logical size (excluding headers from logical address space)
+    // Each full page contributes usablePageSize bytes, last page contributes its actual content
+    return (long) usablePageSize * (totalPages - 1L) + lastPage.getContentSize();
   }
 
   /**
@@ -126,28 +133,30 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
 
     try {
       LogManager.instance().log(this, Level.INFO,
-          "Starting graph write: %d nodes", graph.getIdUpperBound());
+          "Starting graph write (sequential): %d nodes", graph.getIdUpperBound());
 
-      // Create writer that writes to our pages (starting from page 0)
-      final RandomAccessWriter writer = new ArcadePageGraphWriter(database, getFileId(), getPageSize());
+      // Create contiguous writer that provides gap-free logical address space over physical pages
+      // This is critical: JVector assumes contiguous file layout with no gaps
+      final IndexWriter writer = new ContiguousPageWriter(database, getFileId(), getPageSize());
 
       // Write graph topology WITHOUT inline vectors
       // Vectors will be read on-demand from ArcadeDB documents (no duplication)
-      // NOTE: JVector 4.0+ requires a vector feature for dimension info, but we don't write vector data
-      try (final OnDiskGraphIndexWriter indexWriter = new OnDiskGraphIndexWriter.Builder(graph, writer)
-          .withStartOffset(0)
-          .with(new SeparatedVectors(graph.getDimension(), 0))
+      // NOTE: JVector requires a vector feature; use SeparatedVectors since vectors are stored externally
+      try (final OnDiskSequentialGraphIndexWriter indexWriter = new OnDiskSequentialGraphIndexWriter.Builder(graph, writer)
+          .with(new InlineVectors(vectors.dimension()))
+          //.with(new SeparatedVectors(vectors.dimension(), 0))
           .build()) {
-        // Write header
-        indexWriter.writeHeader(graph.getView());
+        // Write header with startOffset 0 (graph data starts at beginning of file)
+        indexWriter.writeHeader(graph.getView(), 0L);
 
-        // Write graph topology only (no inline vectors or other features)
-        indexWriter.write(java.util.Map.of(FeatureId.SEPARATED_VECTORS, new IntFunction<Feature.State>() {
-          @Override
-          public InlineVectors.State apply(int value) {
-            return new InlineVectors.State(null);
-          }
-        }));
+        // Write graph topology only (no vectors written to file)
+        // Workaround: JVector expects a state supplier for SEPARATED_VECTORS feature
+        // Return InlineVectors.State(null) to indicate no vector data (vectors accessed externally)
+        indexWriter.write(Map.of(
+            FeatureId.INLINE_VECTORS,
+            (IntFunction<io.github.jbellis.jvector.graph.disk.feature.Feature.State>) ordinal ->
+                new InlineVectors.State(EMPTY_VECTOR)
+        ));
       }
 
       writer.close();
@@ -155,7 +164,7 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
       final long totalBytes = writer.position();
 
       LogManager.instance().log(this, Level.INFO,
-          "Graph written to pages: %d nodes, %d bytes, %d pages (topology only, vectors in documents)",
+          "Graph written to pages (sequential): %d nodes, %d bytes, %d pages (topology only, vectors in documents)",
           graph.getIdUpperBound(), totalBytes, getTotalPages());
 
     } catch (final Exception e) {
