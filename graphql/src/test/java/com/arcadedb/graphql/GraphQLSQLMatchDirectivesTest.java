@@ -24,9 +24,10 @@ public class GraphQLSQLMatchDirectivesTest extends AbstractGraphQLNativeLanguage
   @Override
   protected void defineTypes(final Database database) {
     super.defineTypes(database);
-    database.command("graphql", "type Query {\n" +//
-        "  bookById(id: String): Book\n" +//
-        "  bookByName(bookNameParameter: String): Book @sql(statement: \"match {type:Book, as:b, where:(name = :bookNameParameter)} return expand(b)\")\n" +//
-        "}");
+    database.command("graphql", """
+        type Query {
+          bookById(id: String): Book
+          bookByName(bookNameParameter: String): Book @sql(statement: "match {type:Book, as:b, where:(name = :bookNameParameter)} return expand(b)")
+        }""");
   }
 }

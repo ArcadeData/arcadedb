@@ -51,12 +51,15 @@ import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
+import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.index.vector.HnswVectorIndex;
+import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.index.vector.LSMVectorIndexGraphFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QueryEngineManager;
@@ -99,9 +102,16 @@ import java.util.logging.*;
 public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public static final  int                                       EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
   public static final  int                                       MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
-  private static final Set<String>                               SUPPORTED_FILE_EXT                   = Set.of(Dictionary.DICT_EXT,
-      LocalBucket.BUCKET_EXT, LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT, LSMTreeIndexMutable.UNIQUE_INDEX_EXT,
-      LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT, LSMTreeIndexCompacted.UNIQUE_INDEX_EXT, HnswVectorIndex.FILE_EXT);
+  private static final Set<String>                               SUPPORTED_FILE_EXT                   = Set.of(
+      Dictionary.DICT_EXT,
+      LocalBucket.BUCKET_EXT,
+      LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT,
+      LSMTreeIndexMutable.UNIQUE_INDEX_EXT,
+      LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT,
+      LSMTreeIndexCompacted.UNIQUE_INDEX_EXT,
+      HnswVectorIndex.FILE_EXT,
+      LSMVectorIndex.FILE_EXT,
+      LSMVectorIndexGraphFile.FILE_EXT);
   public final         AtomicLong                                indexCompactions                     = new AtomicLong();
   protected final      String                                    name;
   protected final      ComponentFile.MODE                        mode;
@@ -538,10 +548,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public Iterator<Record> iterateType(final String typeName, final boolean polymorphic) {
     stats.iterateType.incrementAndGet();
 
-    return (Iterator<Record>) executeInReadLock(() -> {
+    return executeInReadLock(() -> {
       checkDatabaseIsOpen();
-      final DocumentType type = schema.getType(typeName);
-      final MultiIterator iter = new MultiIterator();
+      var type = schema.getType(typeName);
+      var iter = new MultiIterator<Record>();
 
       // SET THE PROFILED LIMITS IF ANY
       iter.setLimit(getResultSetLimit());
@@ -1637,12 +1647,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (record instanceof Document document) {
       final DocumentType type = document.getType();
       if (type != null) {
-//        System.out.println("invokeAfterReadEvents for type = pre");
-
-        Record record1 = ((RecordEventsRegistry) type.getEvents()).onAfterRead(record);
-//        System.out.println("invokeAfterReadEvents for type = after");
-
-        return record1;
+        return ((RecordEventsRegistry) type.getEvents()).onAfterRead(record);
       }
     }
     return record;
@@ -1691,6 +1696,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       } catch (final Throwable e) {
         LogManager.instance()
             .log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database '%s'", e, name);
+      }
+    }
+
+    if (!drop) {
+      // CLOSE ALL INDEXES WHILE THE DATABASE IS STILL OPEN TO AVOID "FILE CLOSED" ERRORS
+      for (Index idx : schema.getIndexes()) {
+        try {
+          ((IndexInternal) idx).close();
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error closing index %s: %s", e, idx.getName(), e.getMessage());
+        }
       }
     }
 

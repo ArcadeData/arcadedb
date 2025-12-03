@@ -25,45 +25,51 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.Collection;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
-public class GraphQLBasicTest extends AbstractGraphQLTest {
+class GraphQLBasicTest extends AbstractGraphQLTest {
 
   @Test
-  public void ridMapping() {
+  void ridMapping() {
     executeTest((database) -> {
-      final String types = "type Query {\n" +//
-          "  bookById(id: String): Book\n" +//
-          "}\n\n" +//
-          "type Book {\n" +//
-          "  id: String\n" +//
-          "  name: String\n" +//
-          "  pageCount: Int\n" +//
-          "  authors: [Author] @relationship(type: \"IS_AUTHOR_OF\", direction: IN)\n" +//
-          "}\n\n" +//
-          "type Author {\n" +//
-          "  id: String\n" +//
-          "  firstName: String\n" +//
-          "  lastName: String\n" +//
-          "}";
+      final String types = """
+          type Query {
+            bookById(id: String): Book
+          }
+
+          type Book {
+            id: String
+            name: String
+            pageCount: Int
+            authors: [Author] @relationship(type: "IS_AUTHOR_OF", direction: IN)
+          }
+
+          type Author {
+            id: String
+            firstName: String
+            lastName: String
+          }""";
 
       database.command("graphql", types);
 
       RID rid = null;
-      try (final ResultSet resultSet = database.query("graphql", "{ bookById(id: \"book-1\"){" +//
-          "  rid @rid" +//
-          "  id" +//
-          "  name" +//
-          "  pageCount" +//
-          "  authors {" +//
-          "    firstName" +//
-          "    lastName" +//
-          "  }" +//
-          "}" +//
-          "}")) {
+      try (
+          final ResultSet resultSet = database.query("graphql", """
+              { bookById(id: "book-1"){\
+                rid @rid\
+                id\
+                name\
+                pageCount\
+                authors {\
+                  firstName\
+                  lastName\
+                }\
+              }\
+              }""")) {
         assertThat(resultSet.hasNext()).isTrue();
         final Result record = resultSet.next();
 
@@ -73,7 +79,7 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
         assertThat(rid).isNotNull();
 
         assertThat(record.getPropertyNames()).hasSize(8);
-        assertThat(((Collection) record.getProperty("authors"))).hasSize(1);
+        assertThat(record.<Collection<?>>getProperty("authors")).hasSize(1);
 
         assertThat(resultSet.hasNext()).isFalse();
       }
@@ -83,7 +89,7 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
   }
 
   @Test
-  public void bookByName() {
+  void bookByName() {
     executeTest((database) -> {
       defineTypes(database);
 
@@ -92,7 +98,7 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
         assertThat(resultSet.hasNext()).isTrue();
         final Result record = resultSet.next();
         assertThat(record.getPropertyNames()).hasSize(7);
-        assertThat(((Collection) record.getProperty("authors"))).hasSize(1);
+        assertThat(record.<Collection<?>>getProperty("authors")).hasSize(1);
         assertThat(record.<String>getProperty("name")).isEqualTo("Harry Potter and the Philosopher's Stone");
         assertThat(resultSet.hasNext()).isFalse();
       }
@@ -101,7 +107,7 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
         assertThat(resultSet.hasNext()).isTrue();
         final Result record = resultSet.next();
         assertThat(record.getPropertyNames()).hasSize(7);
-        assertThat(((Collection) record.getProperty("authors"))).hasSize(1);
+        assertThat(record.<Collection<?>>getProperty("authors")).hasSize(1);
         assertThat(record.<String>getProperty("name")).isEqualTo("Mr. brain");
         assertThat(resultSet.hasNext()).isFalse();
       }
@@ -111,39 +117,38 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
   }
 
   @Test
-  public void bookByNameWrongParams() {
+  void bookByNameWrongParams() {
     executeTest((database) -> {
       defineTypes(database);
 
-      try {
-        database.query("graphql", "{ bookByName(wrong: \"Mr. brain\") }");
-        fail();
-      } catch (final CommandParsingException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> database.query("graphql", "{ bookByName(wrong: \"Mr. brain\") }"))
+          .isInstanceOf(CommandParsingException.class);
 
       return null;
     });
   }
 
   @Test
-  public void allBooks() {
+  void allBooks() {
     executeTest((database) -> {
-      final String types = "type Query {\n" +//
-          "  bookById(id: String): Book\n" +//
-          "  books(where: String!): [Book!]!\n" +//
-          "}\n\n" +//
-          "type Book {\n" +//
-          "  id: String\n" +//
-          "  name: String\n" +//
-          "  pageCount: Int\n" +//
-          "  authors: [Author] @relationship(type: \"IS_AUTHOR_OF\", direction: IN)\n" +//
-          "}\n\n" +//
-          "type Author {\n" +//
-          "  id: String\n" +//
-          "  firstName: String\n" +//
-          "  lastName: String\n" +//
-          "}";
+      final String types = """
+          type Query {
+            bookById(id: String): Book
+            books(where: String!): [Book!]!
+          }
+
+          type Book {
+            id: String
+            name: String
+            pageCount: Int
+            authors: [Author] @relationship(type: "IS_AUTHOR_OF", direction: IN)
+          }
+
+          type Author {
+            id: String
+            firstName: String
+            lastName: String
+          }""";
 
       database.command("graphql", types);
 
@@ -151,12 +156,12 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
         assertThat(resultSet.hasNext()).isTrue();
         Result record = resultSet.next();
         assertThat(record.getPropertyNames()).hasSize(7);
-        assertThat(((Collection) record.getProperty("authors"))).hasSize(1);
+        assertThat(record.<Collection<?>>getProperty("authors")).hasSize(1);
 
         assertThat(resultSet.hasNext()).isTrue();
         record = resultSet.next();
         assertThat(record.getPropertyNames()).hasSize(7);
-        assertThat(((Collection) record.getProperty("authors"))).hasSize(1);
+        assertThat(record.<Collection<?>>getProperty("authors")).hasSize(1);
 
         assertThat(resultSet.hasNext()).isFalse();
       }
@@ -166,28 +171,32 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
   }
 
   @Test
-  public void embeddedAddresses() {
+  void embeddedAddresses() {
     executeTest((database) -> {
-      final String types = "type Query {\n" +//
-          "  bookById(id: String): Book\n" +//
-          "  books(where: String!): [Book!]!\n" +//
-          "  addresses(firstName: String): [Author]\n" + //
-          "}\n\n" +//
-          "type Book {\n" +//
-          "  id: String\n" +//
-          "  name: String\n" +//
-          "  pageCount: Int\n" +//
-          "  authors: [Author] @relationship(type: \"IS_AUTHOR_OF\", direction: IN)\n" +//
-          "}\n\n" +//
-          "type Address {\n" +//
-          "  city: String\n" +//
-          "}\n\n" +//
-          "type Author {\n" +//
-          "  id: String\n" +//
-          "  firstName: String\n" +//
-          "  lastName: String\n" +//
-          "  address: Address\n" +//
-          "}";
+      final String types = """
+          type Query {
+            bookById(id: String): Book
+            books(where: String!): [Book!]!
+            addresses(firstName: String): [Author]
+          }
+
+          type Book {
+            id: String
+            name: String
+            pageCount: Int
+            authors: [Author] @relationship(type: "IS_AUTHOR_OF", direction: IN)
+          }
+
+          type Address {
+            city: String
+          }
+
+          type Author {
+            id: String
+            firstName: String
+            lastName: String
+            address: Address
+          }""";
 
       database.command("graphql", types);
 
@@ -209,38 +218,45 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
   }
 
   @Test
-  public void allBooksWrongRelationshipDirective() {
+  void allBooksWrongRelationshipDirective() {
     executeTest((database) -> {
-      final String types = "type Query {\n" +//
-          "  bookById(id: String): Book\n" +//
-          "  books(where: String!): [Book!]!\n" +//
-          "}\n\n" +//
-          "type Book {\n" +//
-          "  id: String\n" +//
-          "  name: String\n" +//
-          "  pageCount: Int\n" +//
-          "  authors: [Author] @relationship(type: \"IS_AUTHOR_OF\", direction: IN)\n" +//
-          "}\n\n" +//
-          "type Author {\n" +//
-          "  id: String\n" +//
-          "  firstName: String\n" +//
-          "  lastName: String\n" +//
-          "  address: Address\n" +//
-          "}";
+      final String types = """
+          type Query {
+            bookById(id: String): Book
+            books(where: String!): [Book!]!
+          }
+
+          type Book {
+            id: String
+            name: String
+            pageCount: Int
+            authors: [Author] @relationship(type: "IS_AUTHOR_OF", direction: IN)
+          }
+
+          type Author {
+            id: String
+            firstName: String
+            lastName: String
+            address: Address
+          }""";
 
       database.command("graphql", types);
 
       try (final ResultSet resultSet = database.query("graphql",
-          "{ books { id\n name\n pageCount\n authors @relationship(type: \"WRONG\", direction: IN)} }")) {
+          """
+              { books { id
+               name
+               pageCount
+               authors @relationship(type: "WRONG", direction: IN)} }""")) {
         assertThat(resultSet.hasNext()).isTrue();
         Result record = resultSet.next();
         assertThat(record.getPropertyNames()).hasSize(7);
-        assertThat(countIterable(record.getProperty("authors"))).isEqualTo(0);
+        assertThat(record.<Iterable<?>>getProperty("authors")).hasSize(0);
 
         assertThat(resultSet.hasNext()).isTrue();
         record = resultSet.next();
         assertThat(record.getPropertyNames()).hasSize(7);
-        assertThat(countIterable(record.getProperty("authors"))).isEqualTo(0);
+        assertThat(record.<Iterable<?>>getProperty("authors")).hasSize(0);
 
         assertThat(resultSet.hasNext()).isFalse();
       }
@@ -250,24 +266,27 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
   }
 
   @Test
-  public void queryWhereCondition() {
+  void queryWhereCondition() {
     executeTest((database) -> {
-      final String types = "type Query {\n" +//
-          "  bookById(id: String): Book\n" +//
-          "  books(where: WHERE): [Book!]!\n" +//
-          "}\n\n" +//
-          "type Book {\n" +//
-          "  id: String\n" +//
-          "  name: String\n" +//
-          "  pageCount: Int\n" +//
-          "  authors: [Author] @relationship(type: \"IS_AUTHOR_OF\", direction: IN)\n" +//
-          "}\n\n" +//
-          "type Author {\n" +//
-          "  id: String\n" +//
-          "  firstName: String\n" +//
-          "  lastName: String\n" +//
-          "  address: Address\n" +//
-          "}";
+      final String types = """
+          type Query {
+            bookById(id: String): Book
+            books(where: WHERE): [Book!]!
+          }
+
+          type Book {
+            id: String
+            name: String
+            pageCount: Int
+            authors: [Author] @relationship(type: "IS_AUTHOR_OF", direction: IN)
+          }
+
+          type Author {
+            id: String
+            firstName: String
+            lastName: String
+            address: Address
+          }""";
 
       database.command("graphql", types);
 
@@ -280,7 +299,7 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
         assertThat(record.<String>getProperty("name")).isEqualTo("Mr. brain");
         assertThat((Integer) record.getProperty("pageCount")).isEqualTo(422);
 
-        assertThat(((Collection) record.getProperty("authors"))).hasSize(1);
+        assertThat(record.<Collection<?>>getProperty("authors")).hasSize(1);
 
         assertThat(resultSet.hasNext()).isFalse();
       }

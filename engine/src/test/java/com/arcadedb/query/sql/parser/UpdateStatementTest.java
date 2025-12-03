@@ -66,7 +66,7 @@ public class UpdateStatementTest {
   }
 
   @Test
-  public void testSimpleInsert() {
+  void simpleInsert() {
     checkRightSyntax("update  Foo set a = b");
     checkRightSyntax("update  Foo set a = 'b'");
     checkRightSyntax("update  Foo set a = 1");
@@ -83,7 +83,7 @@ public class UpdateStatementTest {
   }
 
   @Test
-  public void testCollections() {
+  void collections() {
     checkRightSyntax("update Foo add a = b");
     checkWrongSyntax("update Foo add 'a' = b");
     checkRightSyntax("update Foo add a = 'a'");
@@ -94,7 +94,7 @@ public class UpdateStatementTest {
   }
 
   @Test
-  public void testJson() {
+  void json() {
     checkRightSyntax("update Foo merge {'a':'b', 'c':{'d':'e'}} where name = 'foo'");
     checkRightSyntax("update Foo content {'a':'b', 'c':{'d':'e', 'f': ['a', 'b', 4]}} where name = 'foo'");
   }
@@ -117,25 +117,25 @@ public class UpdateStatementTest {
   }
 
   @Test
-  public void testTargetQuery() {
+  void targetQuery() {
     // issue #4415
     checkRightSyntax(
         "update (select from (traverse References from ( select from Node WHERE Email = 'julia@local'  ) ) WHERE @type = 'Node' and $depth <= 1 and Active = true ) set Points = 0 RETURN BEFORE $current.Points");
   }
 
   @Test
-  public void testTargetMultipleRids() {
+  void targetMultipleRids() {
     checkRightSyntax("update [#9:0, #9:1] set foo = 'bar'");
   }
 
   @Test
-  public void testDottedTarget() {
+  void dottedTarget() {
     // issue #5397
     checkRightSyntax("update $publishedVersionEdge.row set isPublished = false");
   }
 
   @Test
-  public void testReturnCount() {
+  void returnCount() {
     checkRightSyntax("update foo set bar = 1 RETURN COUNT");
     checkRightSyntax("update foo set bar = 1 return count");
   }

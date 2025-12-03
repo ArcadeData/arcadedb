@@ -25,7 +25,7 @@ import java.io.InputStream;
 
 import static org.assertj.core.api.Assertions.fail;
 
-public class TraverseStatementTest {
+class TraverseStatementTest {
 
   protected SimpleNode checkRightSyntax(final String query) {
     return checkSyntax(query, true);
@@ -61,7 +61,7 @@ public class TraverseStatementTest {
   }
 
   @Test
-  public void testDepthFirst() {
+  void depthFirst() {
     checkRightSyntax("traverse out() from #9:0 while $depth <= 2 strategy DEPTH_FIRST");
     checkRightSyntax("traverse out() from #9:0 while $depth <= 2 strategy depth_first");
   }

@@ -29,7 +29,7 @@ import org.junit.jupiter.api.Test;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 
 public class DocumentTest extends TestHelper {
@@ -53,7 +53,7 @@ public class DocumentTest extends TestHelper {
   }
 
   @Test
-  public void testDetached() {
+  void detached() {
     database.transaction(() -> {
       final MutableDocument doc = database.newDocument("ConversionTest");
       doc.set("name", "Tim");
@@ -100,19 +100,11 @@ public class DocumentTest extends TestHelper {
 
       detached.toString();
 
-      try {
-        detached.modify();
-        fail("modify");
-      } catch (final UnsupportedOperationException ignored) {
-      }
+      assertThatThrownBy(() -> detached.modify()).isInstanceOf(UnsupportedOperationException.class);
 
       detached.reload();
 
-      try {
-        detached.setBuffer(null);
-        fail("setBuffer");
-      } catch (final UnsupportedOperationException ignored) {
-      }
+      assertThatThrownBy(() -> detached.setBuffer(null)).isInstanceOf(UnsupportedOperationException.class);
 
       assertThat(detached.getString("name")).isNull();
       assertThat(detached.getString("lastname")).isNull();

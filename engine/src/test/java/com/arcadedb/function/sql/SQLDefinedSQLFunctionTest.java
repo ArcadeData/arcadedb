@@ -1,3 +1,21 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.arcadedb.function.sql;
 
 import com.arcadedb.TestHelper;
@@ -8,42 +26,37 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class SQLDefinedSQLFunctionTest extends TestHelper {
+class SQLDefinedSQLFunctionTest extends TestHelper {
   @Test
-  public void testEmbeddedFunction() {
+  void embeddedFunction() {
     registerFunctions();
     final Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(3, 5);
     assertThat(result).isEqualTo(8);
   }
 
   @Test
-  public void testCallFromSQLWithParams() {
+  void callFromSQLWithParams() {
     registerFunctions();
     final ResultSet result = database.command("sql", "select `math.sum`(?,?) as result", 3, 5);
     assertThat((Integer) result.next().getProperty("result")).isEqualTo(8);
   }
 
   @Test
-  public void testCallFromSQLNoParams() {
+  void callFromSQLNoParams() {
     database.command("sql", "define function math.hello \"select 'hello'\" language sql");
     final ResultSet result = database.command("sql", "select `math.hello`() as result");
     assertThat(result.next().<String>getProperty("result")).isEqualTo("hello");
   }
 
   @Test
-  public void errorTestCallFromSQLEmptyParams() {
-    try {
-      database.command("sql", "define function math.hello \"select 'hello'\" parameters [] language sql");
-      fail("");
-    } catch (CommandSQLParsingException e) {
-      // EXPECTED
-    }
+  void errorTestCallFromSQLEmptyParams() {
+    assertThatThrownBy(() -> database.command("sql", "define function math.hello \"select 'hello'\" parameters [] language sql")).isInstanceOf(CommandSQLParsingException.class);
   }
 
   @Test
-  public void testReuseSameQueryEngine() {
+  void reuseSameQueryEngine() {
     registerFunctions();
 
     Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(3, 5);
@@ -60,18 +73,13 @@ public class SQLDefinedSQLFunctionTest extends TestHelper {
   }
 
   @Test
-  public void testRedefineFunction() {
+  void redefineFunction() {
     registerFunctions();
 
     Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(100, 50);
     assertThat(result).isEqualTo(150);
 
-    try {
-      database.command("sql", "define function math.sum \"select :a + :b;\" parameters [a,b] language sql");
-      fail("");
-    } catch (final IllegalArgumentException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> database.command("sql", "define function math.sum \"select :a + :b;\" parameters [a,b] language sql")).isInstanceOf(IllegalArgumentException.class);
 
     database.getSchema().getFunctionLibrary("math").unregisterFunction("sum");
     database.command("sql", "define function math.sum \"select :a + :b;\" parameters [a,b] language sql");

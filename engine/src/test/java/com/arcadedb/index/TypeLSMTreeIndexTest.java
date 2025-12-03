@@ -32,6 +32,8 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
+import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -41,18 +43,24 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class TypeLSMTreeIndexTest extends TestHelper {
+class TypeLSMTreeIndexTest extends TestHelper {
   private static final int    TOT       = 100000;
   private static final String TYPE_NAME = "V";
   private static final int    PAGE_SIZE = 20000;
 
   @Test
-  public void testGet() {
+  void get() {
     database.transaction(() -> {
 
       int total = 0;
@@ -77,12 +85,12 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testGetAsRange() {
+  void getAsRange() {
     database.transaction(this::execute);
   }
 
   @Test
-  public void testRangeFromHead() {
+  void rangeFromHead() {
     database.transaction(() -> {
 
       final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
@@ -116,7 +124,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testRangeFromTail() {
+  void rangeFromTail() {
     database.transaction(() -> {
 
       final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
@@ -151,7 +159,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testRangeWithSQL() {
+  void rangeWithSQL() {
     database.transaction(() -> {
       for (int i = 0; i < TOT - 1; ++i) {
         int total = 0;
@@ -176,15 +184,25 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexAscending() {
+  void scanIndexAscending() {
     database.transaction(() -> {
 
-      try {
-        // WAIT FOR THE INDEX TO BE COMPACTED
-        Thread.sleep(1000);
-      } catch (final InterruptedException e) {
-        //noop
-      }
+      // Wait for the index to be compacted using awaitility
+      Awaitility.await()
+          .alias("Wait for index to be ready for ascending scan")
+          .atMost(30, TimeUnit.SECONDS)
+          .pollInterval(100, TimeUnit.MILLISECONDS)
+          .until(() -> {
+            // Check if all indexes are ready by trying to access them
+            try {
+              for (final RangeIndex index : database.getSchema().getType(TYPE_NAME).getAllIndexes(false)) {
+                index.iterator(true);
+              }
+              return true;
+            } catch (Exception e) {
+              return false;
+            }
+          });
 
       int total = 0;
 
@@ -213,15 +231,25 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexDescending() {
+  void scanIndexDescending() {
     database.transaction(() -> {
 
-      try {
-        // WAIT FOR THE INDEX TO BE COMPACTED
-        Thread.sleep(1000);
-      } catch (final InterruptedException e) {
-        e.printStackTrace();
-      }
+      // Wait for the index to be compacted using awaitility
+      Awaitility.await()
+          .alias("Wait for index to be ready for descending scan")
+          .atMost(30, TimeUnit.SECONDS)
+          .pollInterval(100, TimeUnit.MILLISECONDS)
+          .until(() -> {
+            // Check if all indexes are ready by trying to access them
+            try {
+              for (final RangeIndex index : database.getSchema().getType(TYPE_NAME).getAllIndexes(false)) {
+                index.iterator(false);
+              }
+              return true;
+            } catch (Exception e) {
+              return false;
+            }
+          });
 
       int total = 0;
 
@@ -248,7 +276,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexAscendingPartialInclusive() {
+  void scanIndexAscendingPartialInclusive() {
     database.transaction(() -> {
 
       int total = 0;
@@ -277,7 +305,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexAscendingPartialExclusive() {
+  void scanIndexAscendingPartialExclusive() {
     database.transaction(() -> {
 
       int total = 0;
@@ -306,7 +334,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexDescendingPartialInclusive() {
+  void scanIndexDescendingPartialInclusive() {
     database.transaction(() -> {
 
       int total = 0;
@@ -334,7 +362,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexDescendingPartialExclusive() {
+  void scanIndexDescendingPartialExclusive() {
     database.transaction(() -> {
 
       int total = 0;
@@ -362,7 +390,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeInclusive2Inclusive() {
+  void scanIndexRangeInclusive2Inclusive() {
     database.transaction(() -> {
 
       int total = 0;
@@ -395,7 +423,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeInclusive2Exclusive() {
+  void scanIndexRangeInclusive2Exclusive() {
     database.transaction(() -> {
 
       int total = 0;
@@ -428,7 +456,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeExclusive2Inclusive() {
+  void scanIndexRangeExclusive2Inclusive() {
     database.transaction(() -> {
 
       int total = 0;
@@ -461,7 +489,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeExclusive2InclusiveInverse() {
+  void scanIndexRangeExclusive2InclusiveInverse() {
     database.transaction(() -> {
 
       int total = 0;
@@ -494,7 +522,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeExclusive2Exclusive() {
+  void scanIndexRangeExclusive2Exclusive() {
     database.transaction(() -> {
 
       int total = 0;
@@ -527,7 +555,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeExclusive2ExclusiveInverse() {
+  void scanIndexRangeExclusive2ExclusiveInverse() {
     database.transaction(() -> {
 
       int total = 0;
@@ -560,7 +588,8 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testUniqueConcurrentWithIndexesCompaction() {
+  @Tag("slow")
+  void uniqueConcurrentWithIndexesCompaction() {
     GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(0);
 
     database.begin();
@@ -569,90 +598,109 @@ public class TypeLSMTreeIndexTest extends TestHelper {
     final long total = 2000;
     final int maxRetries = 100;
 
-    final Thread[] threads = new Thread[16];
+    final int threadCount = 16;
+    final ExecutorService executorService = Executors.newFixedThreadPool(threadCount);
+    final List<Future<?>> futures = new ArrayList<>();
 
     final AtomicLong needRetryExceptions = new AtomicLong();
     final AtomicLong duplicatedExceptions = new AtomicLong();
     final AtomicLong crossThreadsInserted = new AtomicLong();
 
-    LogManager.instance().log(this, Level.FINE, "%s Started with %d threads", null, getClass(), threads.length);
+    LogManager.instance().log(this, Level.FINE, "%s Started with %d threads", null, getClass(), threadCount);
 
-    for (int i = 0; i < threads.length; ++i) {
-      threads[i] = new Thread(() -> {
-        try {
-          int threadInserted = 0;
-          for (int i1 = TOT; i1 < TOT + total; ++i1) {
-            boolean keyPresent = false;
-            for (int retry = 0; retry < maxRetries && !keyPresent; ++retry) {
+    try {
+      for (int i = 0; i < threadCount; ++i) {
+        Future<?> future = executorService.submit(() -> {
+          try {
+            int threadInserted = 0;
+            for (int i1 = TOT; i1 < TOT + total; ++i1) {
+              boolean keyPresent = false;
+              for (int retry = 0; retry < maxRetries && !keyPresent; ++retry) {
 
-              try {
-                Thread.sleep(new Random().nextInt(10));
-              } catch (final InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-              }
+                try {
+                  TimeUnit.MILLISECONDS.sleep(new Random().nextInt(10));
+                } catch (final InterruptedException e) {
+                  Thread.currentThread().interrupt();
+                  return;
+                }
 
-              database.begin();
-              try {
-                final MutableDocument v = database.newDocument(TYPE_NAME);
-                v.set("id", i1);
-                v.set("name", "Jay");
-                v.set("surname", "Miner");
-                v.save();
+                database.begin();
+                try {
+                  final MutableDocument v = database.newDocument(TYPE_NAME);
+                  v.set("id", i1);
+                  v.set("name", "Jay");
+                  v.set("surname", "Miner");
+                  v.save();
 
-                database.commit();
+                  database.commit();
 
-                threadInserted++;
-                crossThreadsInserted.incrementAndGet();
+                  threadInserted++;
+                  crossThreadsInserted.incrementAndGet();
 
-                if (threadInserted % 1000 == 0)
+                  if (threadInserted % 1000 == 0)
+                    LogManager.instance()
+                        .log(this, Level.FINE, "%s Thread %d inserted %d records with key %d (total=%d)", null, getClass(),
+                            Thread.currentThread().threadId(), i1, threadInserted, crossThreadsInserted.get());
+
+                  keyPresent = true;
+
+                } catch (final NeedRetryException e) {
+                  needRetryExceptions.incrementAndGet();
+                  assertThat(database.isTransactionActive()).isFalse();
+
+                } catch (final DuplicatedKeyException e) {
+                  duplicatedExceptions.incrementAndGet();
+                  keyPresent = true;
+                  assertThat(database.isTransactionActive()).isFalse();
+                } catch (final Exception e) {
                   LogManager.instance()
-                      .log(this, Level.FINE, "%s Thread %d inserted %d records with key %d (total=%d)", null, getClass(),
-                          Thread.currentThread().threadId(), i1, threadInserted, crossThreadsInserted.get());
-
-                keyPresent = true;
-
-              } catch (final NeedRetryException e) {
-                needRetryExceptions.incrementAndGet();
-                assertThat(database.isTransactionActive()).isFalse();
-
-              } catch (final DuplicatedKeyException e) {
-                duplicatedExceptions.incrementAndGet();
-                keyPresent = true;
-                assertThat(database.isTransactionActive()).isFalse();
-              } catch (final Exception e) {
-                LogManager.instance()
-                    .log(this, Level.SEVERE, "%s Thread %d Generic Exception", e, getClass(), Thread.currentThread().threadId());
-                assertThat(database.isTransactionActive()).isFalse();
-                return;
+                      .log(this, Level.SEVERE, "%s Thread %d Generic Exception", e, getClass(), Thread.currentThread().threadId());
+                  assertThat(database.isTransactionActive()).isFalse();
+                  return;
+                }
               }
+
+              if (!keyPresent)
+                LogManager.instance()
+                    .log(this, Level.WARNING, "%s Thread %d Cannot create key %d after %d retries! (total=%d)", null, getClass(),
+                        Thread.currentThread().threadId(), i1, maxRetries, crossThreadsInserted.get());
+
             }
 
-            if (!keyPresent)
-              LogManager.instance()
-                  .log(this, Level.WARNING, "%s Thread %d Cannot create key %d after %d retries! (total=%d)", null, getClass(),
-                      Thread.currentThread().threadId(), i1, maxRetries, crossThreadsInserted.get());
+            LogManager.instance()
+                .log(this, Level.FINE, "%s Thread %d completed (inserted=%d)", null, getClass(), Thread.currentThread().threadId(),
+                    threadInserted);
 
+          } catch (final Exception e) {
+            LogManager.instance().log(this, Level.SEVERE, "%s Thread %d Error", e, getClass(), Thread.currentThread().threadId());
           }
+        });
+        futures.add(future);
+      }
 
-          LogManager.instance()
-              .log(this, Level.FINE, "%s Thread %d completed (inserted=%d)", null, getClass(), Thread.currentThread().threadId(),
-                  threadInserted);
-
-        } catch (final Exception e) {
-          LogManager.instance().log(this, Level.SEVERE, "%s Thread %d Error", e, getClass(), Thread.currentThread().threadId());
+      for (Future<?> future : futures) {
+        try {
+          future.get(120, TimeUnit.SECONDS);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          LogManager.instance().log(this, Level.WARNING, "Thread interrupted while waiting for future", e);
+        } catch (final ExecutionException e) {
+          LogManager.instance().log(this, Level.WARNING, "Execution exception in future", e);
+        } catch (final TimeoutException e) {
+          LogManager.instance().log(this, Level.SEVERE, "Future timed out after 120 seconds", e);
+          future.cancel(true);
         }
-      });
-    }
+      }
 
-    for (Thread thread : threads)
-      thread.start();
-
-    for (Thread thread : threads) {
+    } finally {
+      executorService.shutdown();
       try {
-        thread.join();
-      } catch (final InterruptedException e) {
-        //noop
+        if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
+          executorService.shutdownNow();
+        }
+      } catch (InterruptedException e) {
+        executorService.shutdownNow();
+        Thread.currentThread().interrupt();
       }
     }
 
@@ -691,7 +739,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testRebuildIndex() {
+  void rebuildIndex() {
     final Index typeIndexBefore = database.getSchema().getIndexByName(TYPE_NAME + "[id]");
     assertThat(typeIndexBefore).isNotNull();
     assertThat(typeIndexBefore.getPropertyNames().size()).isEqualTo(1);
@@ -709,7 +757,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testIndexNameSpecialCharacters() throws InterruptedException {
+  void indexNameSpecialCharacters() throws Exception {
     VertexType type = database.getSchema().createVertexType("This.is:special");
     type.createProperty("other.special:property", Type.STRING);
 
@@ -720,14 +768,18 @@ public class TypeLSMTreeIndexTest extends TestHelper {
         database.command("sql", "rebuild index `" + idx.getName() + "`");
         break;
       } catch (NeedRetryException e) {
-        // RETRY
-        Thread.sleep(1000);
+        // RETRY - wait a bit before retrying
+        Awaitility.await()
+            .alias("Wait for transaction to become inactive before retry")
+            .atMost(30, TimeUnit.SECONDS)
+            .pollInterval(100, TimeUnit.MILLISECONDS)
+            .until(() -> !database.isTransactionActive());
       }
     }
   }
 
   @Test
-  public void testIndexNameSpecialCharactersUsingSQL() throws InterruptedException {
+  void indexNameSpecialCharactersUsingSQL() throws Exception {
     database.command("sql", "create vertex type `This.is:special`");
     database.command("sql", "create property `This.is:special`.`other.special:property` string");
     database.transaction(() -> {
@@ -735,9 +787,8 @@ public class TypeLSMTreeIndexTest extends TestHelper {
     });
 
     database.async().waitCompletion();
-
-    // THIS IS NECESSARY TO THE CI TO COMPLETE THE TEST
-    Thread.sleep(1000);
+    // Second call ensures all async operations including index compaction are fully complete
+    // This is needed in CI environments where async operations may take longer to finalize
     database.async().waitCompletion();
 
     database.command("sql", "create index on `This.is:special`(`other.special:property`) unique");
@@ -753,7 +804,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testSQL() {
+  void sql() {
     final Index typeIndexBefore = database.getSchema().getIndexByName(TYPE_NAME + "[id]");
     assertThat(typeIndexBefore).isNotNull();
     database.command("sql", "create index if not exists on " + TYPE_NAME + " (id) UNIQUE");

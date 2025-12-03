@@ -31,7 +31,7 @@ arcadedb = (DockerContainer("arcadedata/arcadedb:latest")
             .with_env("JAVA_OPTS",
                       "-Darcadedb.server.rootPassword=playwithdata "
                       "-Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} "
-                      "-Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin"))
+                      "-Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin,PrometheusMetrics:com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin"))
 
 
 def get_connection_params(container):
@@ -207,8 +207,8 @@ def test_psycopg2_with_named_parameterized_query():
 
     try:
         with conn.cursor() as cursor:
-            query_params = {'name': 'Stout'}
-            cursor.execute('SELECT * FROM Beer WHERE name = %(name)s', query_params)
+            query_params = {'name': 'Stout', 'brewery_id': 350}
+            cursor.execute('SELECT * FROM Beer WHERE name = %(name)s AND brewery_id = %(brewery_id)s', query_params)
             beer = cursor.fetchall()[0]
             assert 'Stout' in beer
     finally:
@@ -222,8 +222,8 @@ def test_psycopg2_with_named_parameterized_cypher_query():
 
     try:
         with conn.cursor() as cursor:
-            query_params = {'name': 'Stout'}
-            cursor.execute('{cypher} MATCH (b:Beer) WHERE b.name =%(name)s RETURN b', query_params)
+            query_params = {'name': 'Stout', 'brewery_id': 350}
+            cursor.execute('{cypher} MATCH (b:Beer) WHERE b.name =%(name)s AND b.brewery_id = %(brewery_id)s RETURN b', query_params)
             beer = cursor.fetchall()[0]
             assert 'Stout' in beer
     finally:
@@ -238,8 +238,41 @@ def test_psycopg2_with_positional_parameterized_query():
 
     try:
         with conn.cursor() as cursor:
-            cursor.execute('SELECT * FROM Beer WHERE name = %s', ("Stout",))
+            cursor.execute('SELECT * FROM Beer WHERE name = %s AND brewery_id = %s', ("Stout", 350))
             beer = cursor.fetchall()[0]
             assert 'Stout' in beer
+    finally:
+        conn.close()
+
+
+def test_psycopg2_cypher_with_array_parameter_in_clause():
+    """Test Cypher query with array parameter using IN clause - reproduces the ClassCastException issue"""
+    params = get_connection_params(arcadedb)
+    conn = psycopg.connect(**params)
+    conn.autocommit = True
+
+    try:
+        with conn.cursor() as cursor:
+            # Create test vertices first
+            cursor.execute('{cypher} CREATE (n:CHUNK {text: "chunk1"}) RETURN ID(n)')
+            rid1 = cursor.fetchone()[0]
+            cursor.execute('{cypher} CREATE (n:CHUNK {text: "chunk2"}) RETURN ID(n)')
+            rid2 = cursor.fetchone()[0]
+            cursor.execute('{cypher} CREATE (n:CHUNK {text: "chunk3"}) RETURN ID(n)')
+            rid3 = cursor.fetchone()[0]
+
+            # Now query with IN clause using array parameter
+            rids_list = [rid1, rid2, rid3]
+            query_params = {'ids': rids_list}
+            cursor.execute('{cypher} MATCH (n:CHUNK) WHERE ID(n) IN %(ids)s RETURN n.text as text, ID(n) as id', query_params)
+
+            results = cursor.fetchall()
+            assert len(results) == 3
+
+            # Verify we got all three chunks
+            texts = [r[0] for r in results]
+            assert 'chunk1' in texts
+            assert 'chunk2' in texts
+            assert 'chunk3' in texts
     finally:
         conn.close()

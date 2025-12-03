@@ -54,32 +54,32 @@ public class CreateEdgeStatementTest {
   }
 
   @Test
-  public void testSimpleCreate() {
+  void simpleCreate() {
     checkRightSyntax("create edge Foo from (Select from a) to (Select from b)");
   }
 
   @Test
-  public void testCreateFromRid() {
+  void createFromRid() {
     checkRightSyntax("create edge Foo from #11:0 to #11:1");
   }
 
   @Test
-  public void testCreateFromRidArray() {
+  void createFromRidArray() {
     checkRightSyntax("create edge Foo from [#11:0, #11:3] to [#11:1, #12:0]");
   }
 
   @Test
-  public void testCreateFromRidSet() {
+  void createFromRidSet() {
     checkRightSyntax("create edge Foo from #11:0 to #11:1 set foo='bar', bar=2");
   }
 
   @Test
-  public void testCreateFromRidArraySet() {
+  void createFromRidArraySet() {
     checkRightSyntax("create edge Foo from [#11:0, #11:3] to [#11:1, #12:0] set foo='bar', bar=2");
   }
 
   @Test
-  public void testBatch() {
+  void batch() {
     checkRightSyntax("create edge Foo from [#11:0, #11:3] to [#11:1, #12:0] set foo='bar', bar=2");
   }
 

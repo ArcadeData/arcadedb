@@ -444,8 +444,8 @@ public class PostgresNetworkExecutor extends Thread {
     if (portal.language.equals("cypher")) {
       Object[] parametersCypher = new Object[parameters.length * 2];
       for (int i = 0; i < parameters.length; i++) {
-        parametersCypher[i] = "" + (i + 1);
-        parametersCypher[i + 1] = portal.parameterValues.get(i);
+        parametersCypher[i * 2] = "" + (i + 1);
+        parametersCypher[i * 2 + 1] = portal.parameterValues.get(i);
       }
       return parametersCypher;
     }

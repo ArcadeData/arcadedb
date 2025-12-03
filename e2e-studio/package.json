@@ -1,6 +1,7 @@
 {
   "name": "arcadedb-e2e-tests",
   "version": "1.0.0",
+  "license": "Apache-2.0",
   "description": "End-to-end tests for ArcadeDB Studio",
   "scripts": {
     "test": "playwright test",
@@ -10,10 +11,10 @@
     "install-browsers": "npx playwright install"
   },
   "devDependencies": {
-    "@playwright/test": "^1.40.0",
-    "testcontainers": "^11.2.1",
-    "@types/node": "^20.0.0",
-    "typescript": "^5.0.0"
+    "@playwright/test": "^1.57.0",
+    "testcontainers": "^11.9.0",
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
   },
   "engines": {
     "node": ">=18.0.0",

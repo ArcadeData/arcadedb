@@ -20,6 +20,7 @@ package com.arcadedb.engine;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.index.IndexException;
 
 import java.io.*;
 import java.util.concurrent.atomic.*;
@@ -32,9 +33,10 @@ import java.util.concurrent.atomic.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public abstract class PaginatedComponent extends Component {
-  protected final PaginatedComponentFile file;
-  protected final int                    pageSize;
-  protected final AtomicInteger          pageCount = new AtomicInteger();
+  public static final String                 TEMP_EXT  = "temp_";
+  protected final     PaginatedComponentFile file;
+  protected final     int                    pageSize;
+  protected final     AtomicInteger          pageCount = new AtomicInteger();
 
   protected PaginatedComponent(final DatabaseInternal database, final String name, final String filePath, final String ext,
       final ComponentFile.MODE mode,
@@ -105,5 +107,23 @@ public abstract class PaginatedComponent extends Component {
         return txPageCounter;
     }
     return pageCount.get();
+  }
+
+  public void removeTempSuffix() {
+    final String fileName = file.getFilePath();
+
+    final int extPos = fileName.lastIndexOf('.');
+    if (fileName.substring(extPos + 1).startsWith(TEMP_EXT)) {
+      final String newFileName = fileName.substring(0, extPos) + "." + fileName.substring(extPos + TEMP_EXT.length() + 1);
+
+      try {
+        file.rename(newFileName);
+        database.getFileManager().renameFile(fileName, newFileName);
+      } catch (final IOException e) {
+        throw new IndexException(
+            "Cannot rename temporary index file '" + file.getFilePath() + "' to '" + newFileName + "' (exists=" + (new File(
+                file.getFilePath()).exists()) + ")", e);
+      }
+    }
   }
 }

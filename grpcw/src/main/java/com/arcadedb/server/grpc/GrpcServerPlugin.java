@@ -1,6 +1,25 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.security.ServerSecurity;
@@ -17,12 +36,11 @@ import io.grpc.health.v1.HealthCheckResponse;
 import io.grpc.protobuf.services.HealthStatusManager;
 import io.grpc.protobuf.services.ProtoReflectionService;
 import io.grpc.xds.XdsServerBuilder;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
 /**
  * ArcadeDB gRPC Server Plugin
@@ -41,8 +59,6 @@ import java.util.concurrent.TimeUnit;
  * - grpc.health.enabled: Enable health checking (default: true)
  */
 public class GrpcServerPlugin implements ServerPlugin {
-
-  private static final Logger logger = LoggerFactory.getLogger(GrpcServerPlugin.class);
 
   private ArcadeDBServer      arcadeServer;
   private Server              grpcServer;
@@ -80,7 +96,7 @@ public class GrpcServerPlugin implements ServerPlugin {
     // Get configuration values with defaults
     boolean enabled = getConfigBoolean(config, CONFIG_ENABLED, true);
     if (!enabled) {
-      logger.info("gRPC server is disabled");
+      LogManager.instance().log(this, Level.INFO, "gRPC server is disabled");
       return;
     }
 
@@ -88,24 +104,19 @@ public class GrpcServerPlugin implements ServerPlugin {
 
     try {
       switch (mode) {
-      case "standard":
-        startStandardServer(config);
-        break;
-      case "xds":
-        startXdsServer(config);
-        break;
-      case "both":
+      case "standard" -> startStandardServer(config);
+      case "xds" -> startXdsServer(config);
+      case "both" -> {
         startStandardServer(config);
         startXdsServer(config);
-        break;
-      default:
-        logger.error("Invalid gRPC mode: {}. Use 'standard', 'xds', or 'both'", mode);
+      }
+      default -> LogManager.instance().log(this, Level.SEVERE, "Invalid gRPC mode: %s. Use 'standard', 'xds', or 'both'", mode);
       }
 
       registerShutdownHook();
 
     } catch (IOException e) {
-      logger.error("Failed to start gRPC server", e);
+      LogManager.instance().log(this, Level.SEVERE, "Failed to start gRPC server", e);
       throw new RuntimeException("Failed to start gRPC server", e);
     }
   }
@@ -153,7 +164,7 @@ public class GrpcServerPlugin implements ServerPlugin {
     }
 
     status.append(")");
-    logger.info(status.toString());
+    LogManager.instance().log(this, Level.INFO, status.toString());
   }
 
   private void startXdsServer(ContextConfiguration config) throws IOException {
@@ -171,7 +182,7 @@ public class GrpcServerPlugin implements ServerPlugin {
         .maxInboundMetadataSize(32 * 1024 * 1024)
         .build().start();
 
-    logger.info("gRPC XDS server started on port {} (xDS management enabled)", port);
+    LogManager.instance().log(this, Level.INFO, "gRPC XDS server started on port %s (xDS management enabled)", port);
   }
 
   private void configureServer(ServerBuilder<?> serverBuilder, ContextConfiguration config) {
@@ -238,7 +249,8 @@ public class GrpcServerPlugin implements ServerPlugin {
     String keyPath = getConfigString(config, CONFIG_TLS_KEY, null);
 
     if (certPath == null || keyPath == null) {
-      logger.warn("TLS enabled but certificate or key path not provided. Falling back to insecure.");
+      LogManager.instance()
+          .log(this, Level.WARNING, "TLS enabled but certificate or key path not provided. Falling back to insecure.");
       return ServerBuilder.forPort(port);
     }
 
@@ -246,7 +258,7 @@ public class GrpcServerPlugin implements ServerPlugin {
     File keyFile = new File(keyPath);
 
     if (!certFile.exists() || !keyFile.exists()) {
-      logger.warn("TLS certificate or key file not found. Falling back to insecure.");
+      LogManager.instance().log(this, Level.WARNING, "TLS certificate or key file not found. Falling back to insecure.");
       return ServerBuilder.forPort(port);
     }
 
@@ -255,7 +267,7 @@ public class GrpcServerPlugin implements ServerPlugin {
       // Use Grpc.newServerBuilderForPort for TLS
       return Grpc.newServerBuilderForPort(port, credentials);
     } catch (Exception e) {
-      logger.error("Failed to configure TLS", e);
+      LogManager.instance().log(this, Level.SEVERE, "Failed to configure TLS", e);
       return ServerBuilder.forPort(port);
     }
   }
@@ -265,7 +277,8 @@ public class GrpcServerPlugin implements ServerPlugin {
     String keyPath = getConfigString(config, CONFIG_TLS_KEY, null);
 
     if (certPath == null || keyPath == null) {
-      logger.warn("TLS enabled but certificate or key path not provided. Using insecure credentials.");
+      LogManager.instance()
+          .log(this, Level.WARNING, "TLS enabled but certificate or key path not provided. Using insecure credentials.");
       return InsecureServerCredentials.create();
     }
 
@@ -273,21 +286,21 @@ public class GrpcServerPlugin implements ServerPlugin {
     File keyFile = new File(keyPath);
 
     if (!certFile.exists() || !keyFile.exists()) {
-      logger.warn("TLS certificate or key file not found. Using insecure credentials.");
+      LogManager.instance().log(this, Level.WARNING, "TLS certificate or key file not found. Using insecure credentials.");
       return InsecureServerCredentials.create();
     }
 
     try {
       return TlsServerCredentials.create(certFile, keyFile);
     } catch (Exception e) {
-      logger.error("Failed to configure TLS credentials", e);
+      LogManager.instance().log(this, Level.SEVERE, "Failed to configure TLS credentials", e);
       return InsecureServerCredentials.create();
     }
   }
 
   private void registerShutdownHook() {
     shutdownHook = new Thread(() -> {
-      logger.info("Shutting down gRPC server...");
+      LogManager.instance().log(GrpcServerPlugin.this, Level.INFO, "Shutting down gRPC server...");
       stopService();
     });
     Runtime.getRuntime().addShutdownHook(shutdownHook);
@@ -308,9 +321,9 @@ public class GrpcServerPlugin implements ServerPlugin {
       if (grpcService != null) {
         try {
           grpcService.close();
-          logger.info("gRPC service closed and database connections released");
+          LogManager.instance().log(this, Level.INFO, "gRPC service closed and database connections released");
         } catch (Exception e) {
-          logger.error("Error closing gRPC service", e);
+          LogManager.instance().log(this, Level.SEVERE, "Error closing gRPC service", e);
         }
       }
 
@@ -321,7 +334,7 @@ public class GrpcServerPlugin implements ServerPlugin {
           grpcServer.shutdownNow();
           grpcServer.awaitTermination(5, TimeUnit.SECONDS);
         }
-        logger.info("Standard gRPC server stopped");
+        LogManager.instance().log(this, Level.INFO, "Standard gRPC server stopped");
       }
 
       if (xdsServer != null) {
@@ -330,7 +343,7 @@ public class GrpcServerPlugin implements ServerPlugin {
           xdsServer.shutdownNow();
           xdsServer.awaitTermination(5, TimeUnit.SECONDS);
         }
-        logger.info("XDS gRPC server stopped");
+        LogManager.instance().log(this, Level.INFO, "XDS gRPC server stopped");
       }
 
       // Remove shutdown hook if it exists
@@ -344,7 +357,7 @@ public class GrpcServerPlugin implements ServerPlugin {
 
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-      logger.error("Interrupted while shutting down gRPC server", e);
+      LogManager.instance().log(this, Level.SEVERE, "Interrupted while shutting down gRPC server", e);
     }
   }
 
@@ -373,7 +386,7 @@ public class GrpcServerPlugin implements ServerPlugin {
       try {
         return Integer.parseInt(value);
       } catch (NumberFormatException e) {
-        logger.warn("Invalid integer value for {}: {}", key, value);
+        LogManager.instance().log(this, Level.WARNING, "Invalid integer value for %s: %s", key, value);
       }
     }
     return defaultValue;

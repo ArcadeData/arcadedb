@@ -38,10 +38,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class SQLGeoFunctionsTest {
+class SQLGeoFunctionsTest {
 
   @Test
-  public void testPoint() throws Exception {
+  void point() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql", "select point(11,11) as point");
       assertThat(result.hasNext()).isTrue();
@@ -51,7 +51,7 @@ public class SQLGeoFunctionsTest {
   }
 
   @Test
-  public void testRectangle() throws Exception {
+  void rectangle() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql", "select rectangle(10,10,20,20) as shape");
       assertThat(result.hasNext()).isTrue();
@@ -61,7 +61,7 @@ public class SQLGeoFunctionsTest {
   }
 
   @Test
-  public void testCircle() throws Exception {
+  void circle() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql", "select circle(10,10,10) as circle");
       assertThat(result.hasNext()).isTrue();
@@ -71,7 +71,7 @@ public class SQLGeoFunctionsTest {
   }
 
   @Test
-  public void testPolygon() throws Exception {
+  void polygon() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql",
           "select polygon( [ point(10,10), point(20,10), point(20,20), point(10,20), point(10,10) ] ) as polygon");
@@ -87,7 +87,7 @@ public class SQLGeoFunctionsTest {
   }
 
   @Test
-  public void testPointIsWithinRectangle() throws Exception {
+  void pointIsWithinRectangle() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql", "select point(11,11).isWithin( rectangle(10,10,20,20) ) as isWithin");
       assertThat(result.hasNext()).isTrue();
@@ -100,7 +100,7 @@ public class SQLGeoFunctionsTest {
   }
 
   @Test
-  public void testPointIsWithinCircle() throws Exception {
+  void pointIsWithinCircle() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql", "select point(11,11).isWithin( circle(10,10,10) ) as isWithin");
       assertThat(result.hasNext()).isTrue();
@@ -113,7 +113,7 @@ public class SQLGeoFunctionsTest {
   }
 
   @Test
-  public void testPointIntersectWithRectangle() throws Exception {
+  void pointIntersectWithRectangle() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql", "select rectangle(9,9,11,11).intersectsWith( rectangle(10,10,20,20) ) as intersectsWith");
       assertThat(result.hasNext()).isTrue();
@@ -126,7 +126,7 @@ public class SQLGeoFunctionsTest {
   }
 
   @Test
-  public void testPointIntersectWithPolygons() throws Exception {
+  void pointIntersectWithPolygons() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql",
           "select polygon( [ [10,10], [20,10], [20,20], [10,20], [10,10] ] ).intersectsWith( rectangle(10,10,20,20) ) as intersectsWith");
@@ -141,7 +141,7 @@ public class SQLGeoFunctionsTest {
   }
 
   @Test
-  public void testLineStringsIntersect() throws Exception {
+  void lineStringsIntersect() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql",
           "select linestring( [ [10,10], [20,10], [20,20], [10,20], [10,10] ] ).intersectsWith( rectangle(10,10,20,20) ) as intersectsWith");
@@ -156,7 +156,7 @@ public class SQLGeoFunctionsTest {
   }
 
   @Test
-  public void testGeoManualIndexPoints() throws Exception {
+  void geoManualIndexPoints() throws Exception {
     final int TOTAL = 1_000;
 
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
@@ -205,7 +205,7 @@ public class SQLGeoFunctionsTest {
   }
 
   @Test
-  public void testGeoManualIndexBoundingBoxes() throws Exception {
+  void geoManualIndexBoundingBoxes() throws Exception {
     final int TOTAL = 1_000;
 
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {

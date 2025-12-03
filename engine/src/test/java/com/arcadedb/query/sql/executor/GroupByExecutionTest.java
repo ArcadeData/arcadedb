@@ -35,7 +35,7 @@ public class GroupByExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testGroupByCount() {
+  void groupByCount() {
     database.getSchema().createDocumentType("InputTx");
 
     for (int i = 0; i < 100; i++) {

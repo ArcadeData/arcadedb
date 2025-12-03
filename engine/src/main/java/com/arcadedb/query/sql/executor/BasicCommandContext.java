@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.exception.CommandSQLParsingException;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -125,7 +126,7 @@ public class BasicCommandContext implements CommandContext {
     if (name.contains(".")) {
       final String[] parts = name.split("\\.");
       if (parts.length > 2) {
-        throw new com.arcadedb.exception.CommandSQLParsingException(
+        throw new CommandSQLParsingException(
             "Nested property access is not supported in this context: " + name);
       }
       name = parts[0];

@@ -479,37 +479,39 @@ public interface SqlParserConstants {
   /** RegularExpression Id. */
   int KEY = 242;
   /** RegularExpression Id. */
-  int INSTANCEOF = 243;
+  int ITEM = 243;
   /** RegularExpression Id. */
-  int IDENTIFIER = 244;
+  int INSTANCEOF = 244;
   /** RegularExpression Id. */
-  int QUOTED_IDENTIFIER = 245;
+  int IDENTIFIER = 245;
   /** RegularExpression Id. */
-  int INDEX_COLON = 246;
+  int QUOTED_IDENTIFIER = 246;
   /** RegularExpression Id. */
-  int INDEXVALUES_IDENTIFIER = 247;
+  int INDEX_COLON = 247;
   /** RegularExpression Id. */
-  int INDEXVALUESASC_IDENTIFIER = 248;
+  int INDEXVALUES_IDENTIFIER = 248;
   /** RegularExpression Id. */
-  int INDEXVALUESDESC_IDENTIFIER = 249;
+  int INDEXVALUESASC_IDENTIFIER = 249;
   /** RegularExpression Id. */
-  int BUCKET_IDENTIFIER = 250;
+  int INDEXVALUESDESC_IDENTIFIER = 250;
   /** RegularExpression Id. */
-  int BUCKET_NUMBER_IDENTIFIER = 251;
+  int BUCKET_IDENTIFIER = 251;
   /** RegularExpression Id. */
-  int HTTP_URL = 252;
+  int BUCKET_NUMBER_IDENTIFIER = 252;
   /** RegularExpression Id. */
-  int HTTPS_URL = 253;
+  int HTTP_URL = 253;
   /** RegularExpression Id. */
-  int FILE_URL = 254;
+  int HTTPS_URL = 254;
   /** RegularExpression Id. */
-  int CLASSPATH_URL = 255;
+  int FILE_URL = 255;
   /** RegularExpression Id. */
-  int SCHEMA_IDENTIFIER = 256;
+  int CLASSPATH_URL = 256;
   /** RegularExpression Id. */
-  int LETTER = 257;
+  int SCHEMA_IDENTIFIER = 257;
   /** RegularExpression Id. */
-  int PART_LETTER = 258;
+  int LETTER = 258;
+  /** RegularExpression Id. */
+  int PART_LETTER = 259;
 
   /** Lexical state. */
   int DEFAULT = 0;
@@ -763,6 +765,7 @@ public interface SqlParserConstants {
     "<CONTAINSTEXT>",
     "<MATCHES>",
     "<KEY>",
+    "<ITEM>",
     "<INSTANCEOF>",
     "<IDENTIFIER>",
     "<QUOTED_IDENTIFIER>",

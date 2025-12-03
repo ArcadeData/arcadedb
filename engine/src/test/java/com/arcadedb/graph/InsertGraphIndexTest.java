@@ -32,7 +32,7 @@ import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class InsertGraphIndexTest extends TestHelper {
+class InsertGraphIndexTest extends TestHelper {
   private static final int    VERTICES         = 1_000;
   private static final int    EDGES_PER_VERTEX = 1_000;
   private static final String VERTEX_TYPE_NAME = "Person";
@@ -40,7 +40,7 @@ public class InsertGraphIndexTest extends TestHelper {
   private static final int    PARALLEL         = 3;
 
   @Test
-  public void testGraph() throws Exception {
+  void graph() throws Exception {
     // PHASE 1
     {
       createSchema();

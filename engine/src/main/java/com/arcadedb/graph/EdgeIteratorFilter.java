@@ -33,7 +33,8 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
   private final Vertex           vertex;
   private final Vertex.DIRECTION direction;
 
-  public EdgeIteratorFilter(final DatabaseInternal database, final Vertex vertex, final Vertex.DIRECTION direction, final EdgeSegment current,
+  public EdgeIteratorFilter(final DatabaseInternal database, final Vertex vertex, final Vertex.DIRECTION direction,
+      final EdgeSegment current,
       final String[] edgeTypes) {
     super(database, current, edgeTypes);
     this.direction = direction;
@@ -67,7 +68,8 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
       return next.asEdge(false);
 
     } catch (final RecordNotFoundException e) {
-      LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s from vertex %s direction %s", e, next, vertex, direction);
+      LogManager.instance()
+          .log(this, Level.WARNING, "Error on loading edge %s from vertex %s direction %s", e, next, vertex, direction);
 
       next = null;
       if (hasNext())
@@ -76,7 +78,8 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
       throw e;
 
     } catch (final SchemaException e) {
-      LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s from vertex %s direction %s", e, next, vertex, direction);
+      LogManager.instance()
+          .log(this, Level.WARNING, "Error on loading edge %s from vertex %s direction %s", e, next, vertex, direction);
       throw e;
     } finally {
       next = null;
@@ -89,7 +92,13 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
     if ((e instanceof RecordNotFoundException || e instanceof SchemaException) &&//
         database.getMode() == ComponentFile.MODE.READ_WRITE) {
 
-      LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s %s. Fixing it...", e, edge, vertex != null ? "vertex " + vertex : "");
+      if (fullStackTracePrinted < 10) {
+        ++fullStackTracePrinted;
+        LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s %s. Fixing it...", e, edge,
+            vertex != null ? "vertex " + vertex : "");
+      } else
+        LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s %s. Fixing it. Error: %s", edge,
+            vertex != null ? "vertex " + vertex : "", e.getMessage());
 
       database.transaction(() -> {
         final EdgeLinkedList outEdges = database.getGraphEngine().getEdgeHeadChunk((VertexInternal) this.vertex, direction);
@@ -98,7 +107,15 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
 
       }, true);
 
-    } else
-      LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s %s. Skip it.", e, edge, vertex != null ? "vertex " + vertex : "");
+    } else {
+      if (fullStackTracePrinted < 10) {
+        ++fullStackTracePrinted;
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error on loading edge %s %s. Skip it.", e, edge, vertex != null ? "vertex " + vertex : "");
+      } else
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error on loading edge %s %s. Skip it. Error: %s", e, edge,
+                vertex != null ? "vertex " + vertex : "", e.getMessage());
+    }
   }
 }

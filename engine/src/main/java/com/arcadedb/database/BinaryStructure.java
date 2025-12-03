@@ -54,6 +54,14 @@ public interface BinaryStructure {
 
   void putLong(long value);
 
+  float getFloat(int i);
+
+  void putFloat(int index, float value);
+
+  void putFloat(float value);
+
+  void putDouble(int index, double value);
+
   int putString(int index, String value);
 
   int putString(String value);
@@ -103,6 +111,8 @@ public interface BinaryStructure {
   long getLong();
 
   long getLong(int index);
+
+  float getFloat();
 
   String getString();
 

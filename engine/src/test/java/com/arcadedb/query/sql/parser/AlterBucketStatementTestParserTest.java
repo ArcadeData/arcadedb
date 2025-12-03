@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class AlterBucketStatementTestParserTest extends AbstractParserTest {
+class AlterBucketStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("ALTER BUCKET Foo name bar");
     checkRightSyntax("alter bucket Foo name bar");
     checkRightSyntax("alter bucket Foo* name bar");

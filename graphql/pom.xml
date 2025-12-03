@@ -24,7 +24,7 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>25.9.1-SNAPSHOT</version>
+        <version>25.11.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -33,7 +33,7 @@
     <name>ArcadeDB GraphQL</name>
 
     <properties>
-        <ph-javacc-maven-plugin.version>4.1.5</ph-javacc-maven-plugin.version>
+        <ph-javacc-maven-plugin.version>5.0.1</ph-javacc-maven-plugin.version>
     </properties>
 
     <dependencies>

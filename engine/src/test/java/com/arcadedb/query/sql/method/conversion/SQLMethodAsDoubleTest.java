@@ -33,34 +33,34 @@ class SQLMethodAsDoubleTest {
   }
 
   @Test
-  void testNulIsReturnedAsNull() {
+  void nulIsReturnedAsNull() {
     final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
-  void testStringToDouble() {
+  void stringToDouble() {
     final Object result = method.execute("10.0", null, null, null);
     assertThat(result).isInstanceOf(Double.class);
     assertThat(result).isEqualTo(10.0D);
   }
 
   @Test
-  void testLongToDouble() {
+  void longToDouble() {
     final Object result = method.execute(10l, null, null, null);
     assertThat(result).isInstanceOf(Double.class);
     assertThat(result).isEqualTo(10.0D);
   }
 
   @Test
-  void testDoubleToDouble() {
+  void doubleToDouble() {
     final Object result = method.execute(10.0D, null, null, null);
     assertThat(result).isInstanceOf(Double.class);
     assertThat(result).isEqualTo(10.0D);
   }
 
   @Test
-  void testIntegerToDouble() {
+  void integerToDouble() {
     final Object result = method.execute(10, null, null, null);
     assertThat(result).isInstanceOf(Double.class);
     assertThat(result).isEqualTo(10.0D);

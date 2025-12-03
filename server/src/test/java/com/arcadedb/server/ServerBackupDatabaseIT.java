@@ -25,7 +25,7 @@ import java.io.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class ServerBackupDatabaseIT extends BaseGraphServerTest {
+class ServerBackupDatabaseIT extends BaseGraphServerTest {
 
   @Override
   protected boolean isCreateDatabases() {
@@ -33,7 +33,7 @@ public class ServerBackupDatabaseIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void backupDatabase() {
+  void backupDatabase() {
     final File backupFile = new File("target/backups/graph/backup-test.tgz");
     if (backupFile.exists())
       backupFile.delete();

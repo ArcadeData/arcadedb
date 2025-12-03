@@ -1,24 +1,21 @@
 /*
- * Copyright 2023 Arcade Data Ltd
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
  */
-
 package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
@@ -48,29 +45,38 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class RemoteDateIT {
+class RemoteDateIT {
   @Test
-  public void testDateTimeMicros1() {
+  void dateTimeMicros1() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
 
-    DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/remotedate");
+    // Set the database directory explicitly
+    final String databaseDir = rootPath + "/databases";
+    serverConfiguration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, databaseDir);
 
-    try (Database db = databaseFactory.create()) {
-      db.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
-      db.command("sql", "alter database `arcadedb.dateTimeFormat` \"yyyy-MM-dd'T'HH:mm:ss.SSSSSS\"");
-      db.transaction(() -> {
-        DocumentType dtOrders = db.getSchema().createDocumentType("Order");
-        dtOrders.createProperty("vstart", Type.DATETIME_MICROS);
-      });
-    }
-
+    // Set server configuration BEFORE creating the server
     serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
+
+    // Start the server first so security is properly initialized
     ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
     arcadeDBServer.start();
 
-    Database database = arcadeDBServer.getDatabase("remotedate");
+    // Create and configure the database through the server
+    Database database = arcadeDBServer.getOrCreateDatabase("remotedate");
     try {
+      // Configure datetime settings
+      database.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
+      database.command("sql", "alter database `arcadedb.dateTimeFormat` \"yyyy-MM-dd'T'HH:mm:ss.SSSSSS\"");
+
+      // Create schema
+      database.transaction(() -> {
+        if (!database.getSchema().existsType("Order")) {
+          DocumentType dtOrders = database.getSchema().createDocumentType("Order");
+          dtOrders.createProperty("vstart", Type.DATETIME_MICROS);
+        }
+      });
+
       LocalDateTime vstart = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
 
       database.begin();
@@ -84,6 +90,7 @@ public class RemoteDateIT {
 
       database.commit();
 
+      // Now the remote connection will work because the database has proper security setup
       final RemoteDatabase remote = new RemoteDatabase("localhost", 2480, "remotedate", "root", DEFAULT_PASSWORD_FOR_TESTS);
 
       try (ResultSet resultSet = remote.query("sql", "select from Order")) {
@@ -97,7 +104,7 @@ public class RemoteDateIT {
   }
 
   @BeforeEach
-  public void beginTest() {
+  void beginTest() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
     DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/remotedate");
@@ -106,7 +113,7 @@ public class RemoteDateIT {
   }
 
   @AfterEach
-  public void endTests() {
+  void endTests() {
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();
   }

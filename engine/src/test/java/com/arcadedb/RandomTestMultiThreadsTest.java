@@ -32,6 +32,7 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Pair;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.math.*;
@@ -41,7 +42,7 @@ import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class RandomTestMultiThreadsTest extends TestHelper {
+class RandomTestMultiThreadsTest extends TestHelper {
   private static final int CYCLES           = 10000;
   private static final int STARTING_ACCOUNT = 10000;
   private static final int BUCKETS          = 4;
@@ -58,7 +59,8 @@ public class RandomTestMultiThreadsTest extends TestHelper {
   private final boolean                              debug                   = false;
 
   @Test
-  public void testRandom() {
+  @Tag("slow")
+  void random() {
     GlobalConfiguration.COMMIT_LOCK_TIMEOUT.setValue(10_000);
 
     LogManager.instance().log(this, Level.SEVERE, "Executing " + CYCLES + " transactions with %d workers", WORKERS);

@@ -58,7 +58,7 @@ public class AlterTypeStatement extends DDLStatement {
     builder.append("ALTER TYPE ");
     name.toString(params, builder);
     if (property != null) {
-      builder.append(" " + property + " ");
+      builder.append(" ").append(property).append(" ");
 
       if (numberValue != null) {
         numberValue.toString(params, builder); // clusters only

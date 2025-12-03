@@ -1,5 +1,24 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.log.LogManager;
 import com.arcadedb.server.security.ServerSecurity;
 import io.grpc.Context;
 import io.grpc.Contexts;
@@ -8,14 +27,13 @@ import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.Status;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
+import java.util.logging.Level;
 
 /**
  * Authentication interceptor for gRPC requests
  */
 class GrpcAuthInterceptor implements ServerInterceptor {
-  private static final Logger logger = LoggerFactory.getLogger(GrpcAuthInterceptor.class);
 
   private static final String               BEARER_TYPE          = "Bearer";
   private static final Metadata.Key<String> AUTHORIZATION_HEADER =
@@ -26,9 +44,8 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> DATABASE_HEADER      =
       Metadata.Key.of("x-arcade-database", Metadata.ASCII_STRING_MARSHALLER);
-
-  private final ServerSecurity security;
-  private final boolean        securityEnabled;
+  private final        ServerSecurity       security;
+  private final        boolean              securityEnabled;
 
   public GrpcAuthInterceptor(ServerSecurity security) {
     this.security = security;
@@ -103,7 +120,7 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       return Contexts.interceptCall(context, call, headers, next);
 
     } catch (Exception e) {
-      logger.error("Authentication error", e);
+      LogManager.instance().log(this, Level.SEVERE, "Authentication error", e);
       call.close(Status.INTERNAL.withDescription("Authentication error"), new Metadata());
       return new ServerCall.Listener<ReqT>() {
       };
@@ -128,7 +145,7 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       Object authenticatedUser = security.authenticate(username, password, database);
       return authenticatedUser != null;
     } catch (Exception e) {
-      logger.error("Failed to authenticate user: {} for database: {}", username, database, e);
+      LogManager.instance().log(this, Level.SEVERE, "Failed to authenticate user: %s for database: %s", e, username, database);
       return false;
     }
   }

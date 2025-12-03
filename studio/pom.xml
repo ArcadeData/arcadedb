@@ -1,4 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+
+    Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+
+-->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
@@ -6,7 +23,7 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>25.9.1-SNAPSHOT</version>
+        <version>25.11.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -16,7 +33,7 @@
     <properties>
         <node.version>v18.19.0</node.version>
         <npm.version>10.2.3</npm.version>
-        <frontend-maven-plugin.version>1.15.1</frontend-maven-plugin.version>
+        <frontend-maven-plugin.version>1.15.4</frontend-maven-plugin.version>
     </properties>
 
     <build>
@@ -66,6 +83,17 @@
                         </configuration>
                     </execution>
 
+<!--                    &lt;!&ndash; Build frontend assets &ndash;&gt;-->
+<!--                    <execution>-->
+<!--                        <id>prebuild</id>-->
+<!--                        <goals>-->
+<!--                            <goal>npm</goal>-->
+<!--                        </goals>-->
+<!--                        <phase>generate-resources</phase>-->
+<!--                        <configuration>-->
+<!--                            <arguments>run prebuild</arguments>-->
+<!--                        </configuration>-->
+<!--                    </execution>-->
                     <!-- Build frontend assets -->
                     <execution>
                         <id>webpack build</id>

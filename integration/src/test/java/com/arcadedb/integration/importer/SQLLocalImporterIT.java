@@ -30,9 +30,9 @@ import java.net.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class SQLLocalImporterIT {
+class SQLLocalImporterIT {
   @Test
-  public void importOrientDB() {
+  void importOrientDB() {
     final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
 
     FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));

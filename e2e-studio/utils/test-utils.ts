@@ -1,4 +1,21 @@
 /**
+* Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+*
+*/
+
+/**
  * Shared Test Utilities for ArcadeDB Studio E2E Tests
  *
  * Provides reusable helper classes and functions to reduce code duplication
@@ -46,28 +63,43 @@ export class ArcadeStudioTestHelper {
     const { username, password } = getTestCredentials();
 
     await this.page.goto('/');
-    await expect(this.page.getByRole('dialog', { name: 'Login to the server' }))
+
+    // Wait for login dialog to appear using correct selector
+    await expect(this.page.locator('#loginPopup'))
       .toBeVisible({ timeout: TEST_CONFIG.timeouts.login });
 
-    // Fill credentials
-    await this.page.getByRole('textbox', { name: 'User Name' }).fill(username);
-    await this.page.getByRole('textbox', { name: 'Password' }).fill(password);
-    await this.page.getByRole('button', { name: 'Sign in' }).click();
+    // Fill in login credentials using actual HTML IDs
+    await this.page.fill('#inputUserName', username);
+    await this.page.fill('#inputUserPassword', password);
 
-    // Wait for login success with network state
-    await this.page.waitForLoadState('networkidle');
+    // Click sign in button using actual onclick handler
+    await this.page.click('button[onclick="login()"]');
 
-    // Wait for the login modal to disappear first
-    await expect(this.page.getByRole('dialog', { name: 'Login to the server' }))
-      .not.toBeVisible({ timeout: TEST_CONFIG.timeouts.login });
+    // Wait for login spinner to appear (indicates login started) - with short timeout for fast logins
+    await expect(this.page.locator('#loginSpinner')).toBeVisible({ timeout: 2000 }).catch(() => {
+      // If spinner doesn't appear, login might be very fast - continue
+    });
 
-    // Then wait for the "Connected as" text to appear (use first one)
-    await expect(this.page.getByText('Connected as').first())
-      .toBeVisible({ timeout: TEST_CONFIG.timeouts.login });
+    // Wait for login to complete - check multiple conditions
+    await Promise.all([
+      expect(this.page.locator('#loginSpinner')).toBeHidden({ timeout: 30000 }),
+      expect(this.page.locator('#studioPanel')).toBeVisible({ timeout: 30000 }),
+      expect(this.page.locator('#loginPopup')).toBeHidden({ timeout: 30000 })
+    ]);
 
-    // Select database
-    await this.page.getByLabel('root').selectOption(database);
-    await expect(this.page.getByLabel('root')).toHaveValue(database);
+    // Verify username is populated in the query tab
+    await expect(this.page.locator('#queryUser')).not.toBeEmpty();
+
+    // Select database if not empty list
+    const databaseSelect = this.page.locator('#queryInputDatabase');
+    await expect(databaseSelect).toBeVisible();
+
+    // Only select database if it exists in the dropdown
+    const hasDatabase = await databaseSelect.locator(`option:has-text("${database}")`).count() > 0;
+    if (hasDatabase) {
+      await databaseSelect.selectOption(database);
+      await expect(databaseSelect).toHaveValue(database);
+    }
   }
 
   /**

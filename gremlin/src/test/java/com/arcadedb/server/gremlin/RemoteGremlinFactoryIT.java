@@ -1,22 +1,20 @@
 /*
- * Copyright 2023 Arcade Data Ltd
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
  */
 package com.arcadedb.server.gremlin;
 
@@ -24,6 +22,7 @@ import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.gremlin.ArcadeGraphFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
+import org.apache.tinkerpop.gremlin.structure.T;
 import org.apache.tinkerpop.gremlin.structure.Transaction;
 import org.junit.jupiter.api.Test;
 
@@ -32,9 +31,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
+class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
 
   @Override
   protected boolean isCreateDatabases() {
@@ -42,7 +41,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
   }
 
   @Test
-  public void okPoolRelease() {
+  void okPoolRelease() {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
       for (int i = 0; i < 1_000; i++) {
@@ -56,7 +55,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
   }
 
   @Test
-  public void errorPoolRelease() {
+  void errorPoolRelease() {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
       for (int i = 0; i < pool.getMaxInstances(); i++) {
@@ -64,24 +63,19 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
         assertThat(instance).isNotNull();
       }
 
-      try {
-        pool.get();
-        fail("");
-      } catch (IllegalArgumentException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> pool.get()).isInstanceOf(IllegalArgumentException.class);
 
       assertThat(pool.getTotalInstancesCreated()).isEqualTo(pool.getMaxInstances());
     }
   }
 
   @Test
-  public void executeTraversalSeparateTransactions() {
+  void executeTraversalSeparateTransactions() {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
       try (final ArcadeGraph graph = pool.get()) {
         for (int i = 0; i < 1_000; i++)
-          graph.addVertex(org.apache.tinkerpop.gremlin.structure.T.label, "inputstructure", "json", "{\"name\": \"John\"}");
+          graph.addVertex(T.label, "inputstructure", "json", "{\"name\": \"John\"}");
 
         // THIS IS IN THE SAME SCOPE, SO IT CAN SEE THE PENDING VERTICES ADDED EARLIER
         try (final ResultSet list = graph.gremlin("g.V().hasLabel(\"inputstructure\").count()").execute()) {
@@ -97,7 +91,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
   }
 
   @Test
-  public void executeTraversalTxMgmtMultiThreads() throws InterruptedException {
+  void executeTraversalTxMgmtMultiThreads() throws Exception {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
 
@@ -141,7 +135,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
   }
 
   @Test
-  public void executeTraversalNoTxMgmtMultiThreads() throws InterruptedException {
+  void executeTraversalNoTxMgmtMultiThreads() throws Exception {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
 
@@ -168,7 +162,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
   }
 
   @Test
-  public void executeTraversalTxMgmtHttp() throws InterruptedException {
+  void executeTraversalTxMgmtHttp() throws Exception {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
 
@@ -188,7 +182,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
   }
 
   @Test
-  public void executeTraversalTxMgmt() {
+  void executeTraversalTxMgmt() {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
 
@@ -209,7 +203,7 @@ public class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
   }
 
   @Test
-  public void executeTraversalNoTxMgmt() {
+  void executeTraversalNoTxMgmt() {
     try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
 

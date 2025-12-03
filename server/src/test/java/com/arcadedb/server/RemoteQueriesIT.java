@@ -1,24 +1,21 @@
 /*
- * Copyright 2023 Arcade Data Ltd
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
  */
-
 package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
@@ -50,13 +47,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class RemoteQueriesIT {
+class RemoteQueriesIT {
 
   private final static String         DATABASE_NAME = "remotequeries";
   private              ArcadeDBServer arcadeDBServer;
 
   @Test
-  public void testEdgeDirection() {
+  void edgeDirection() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
 
@@ -93,7 +90,7 @@ public class RemoteQueriesIT {
   }
 
   @Test
-  public void testWhereEqualsAfterUpdate() {
+  void whereEqualsAfterUpdate() {
     // create database
     GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);
     GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
@@ -166,7 +163,7 @@ public class RemoteQueriesIT {
   }
 
   @Test
-  public void testLocalDateTimeOrderBy() {
+  void localDateTimeOrderBy() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
 
@@ -184,9 +181,9 @@ public class RemoteQueriesIT {
       }
     }
     ContextConfiguration configuration = new ContextConfiguration();
-    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);
     GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
-    assertThat(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION) == java.time.LocalDateTime.class).isTrue();
+    assertThat(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION) == LocalDateTime.class).isTrue();
 
     arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();
@@ -220,7 +217,7 @@ public class RemoteQueriesIT {
   }
 
   @BeforeEach
-  public void beginTests() {
+  void beginTests() {
     try (DatabaseFactory databaseFactory = new DatabaseFactory("./databases/" + DATABASE_NAME)) {
       if (databaseFactory.exists())
         databaseFactory.open().drop();
@@ -234,7 +231,7 @@ public class RemoteQueriesIT {
   }
 
   @AfterEach
-  public void afterEach() {
+  void afterEach() {
     if (arcadeDBServer != null)
       arcadeDBServer.stop();
     TestServerHelper.checkActiveDatabases();

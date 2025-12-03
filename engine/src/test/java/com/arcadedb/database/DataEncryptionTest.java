@@ -1,5 +1,5 @@
 /*
- * Copyright © 2024-present Arcade Data Ltd (info@arcadedata.com)
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,17 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * SPDX-FileCopyrightText: 2024-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
 package com.arcadedb.database;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import java.security.NoSuchAlgorithmException;
-import java.security.spec.InvalidKeySpecException;
 import java.util.concurrent.atomic.AtomicReference;
-
-import javax.crypto.NoSuchPaddingException;
 
 import org.junit.jupiter.api.Test;
 
@@ -41,7 +37,7 @@ class DataEncryptionTest extends TestHelper {
   String salt = "salt";
 
   @Test
-  void dataIsEncrypted() throws NoSuchAlgorithmException, InvalidKeySpecException, NoSuchPaddingException {
+  void dataIsEncrypted() throws Exception {
     database.setDataEncryption(DefaultDataEncryption.useDefaults(DefaultDataEncryption.getSecretKeyFromPasswordUsingDefaults(password, salt)));
 
     database.command("sql", "create vertex type Person");

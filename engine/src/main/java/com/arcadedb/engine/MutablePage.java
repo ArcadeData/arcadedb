@@ -22,11 +22,9 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.TrackableBinary;
-import com.arcadedb.log.LogManager;
 
 import java.nio.*;
 import java.util.*;
-import java.util.logging.*;
 
 /**
  * Mutable page that accepts updates. It keeps track of the modified bytes.
@@ -127,6 +125,18 @@ public class MutablePage extends BasePage implements TrackableContent {
     index += PAGE_HEADER_SIZE;
     checkBoundariesOnWrite(index, Binary.SHORT_SERIALIZED_SIZE);
     this.content.putShort(index, (short) content);
+  }
+
+  public void writeFloat(int index, final float content) {
+    index += PAGE_HEADER_SIZE;
+    checkBoundariesOnWrite(index, Binary.FLOAT_SERIALIZED_SIZE);
+    this.content.putFloat(index, content);
+  }
+
+  public void writeDouble(int index, final double content) {
+    index += PAGE_HEADER_SIZE;
+    checkBoundariesOnWrite(index, Binary.DOUBLE_SERIALIZED_SIZE);
+    this.content.putDouble(index, content);
   }
 
   public void writeByte(int index, final byte content) {

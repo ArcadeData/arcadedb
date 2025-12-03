@@ -1,5 +1,5 @@
 /*
- * Copyright © 2022-present Arcade Data Ltd (info@arcadedata.com)
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * SPDX-FileCopyrightText: 2022-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
 package com.arcadedb.server;
@@ -22,12 +22,10 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-
 import static com.arcadedb.engine.ComponentFile.MODE.READ_ONLY;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class ServerReadOnlyDatabasesIT extends BaseGraphServerTest {
+class ServerReadOnlyDatabasesIT extends BaseGraphServerTest {
 
   @Override
   protected boolean isCreateDatabases() {
@@ -49,7 +47,7 @@ public class ServerReadOnlyDatabasesIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void checkDefaultDatabases() throws IOException {
+  void checkDefaultDatabases() throws Exception {
     assertThat(getServer(0).existsDatabase("Universe")).isTrue();
     assertThat(getServer(0).existsDatabase("Amiga")).isTrue();
 

@@ -36,20 +36,33 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
+import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.io.File;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.Iterator;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
-public class ACIDTransactionTest extends TestHelper {
+class ACIDTransactionTest extends TestHelper {
   @Test
-  public void testAsyncTX() {
+  void asyncTX() {
     final Database db = database;
 
     db.async().setTransactionSync(WALFile.FlushType.YES_NOMETADATA);
@@ -72,13 +85,6 @@ public class ACIDTransactionTest extends TestHelper {
 
       db.async().waitCompletion();
 
-      try {
-        Thread.sleep(500);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-        // IGNORE IT
-      }
-
     } catch (final TransactionException e) {
       assertThat(e.getCause() instanceof IOException).isTrue();
     }
@@ -93,7 +99,7 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   @Test
-  public void testIndexCreationWhileAsyncMustFail() {
+  void indexCreationWhileAsyncMustFail() {
     final Database db = database;
 
     final int TOT = 100;
@@ -134,13 +140,13 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   @Test
-  public void testDatabaseInternals() {
+  void databaseInternals() {
     assertThat(database.getStats()).isNotNull();
     assertThat(database.getCurrentUserName()).isNull();
   }
 
   @Test
-  public void testCrashDuringTx() {
+  void crashDuringTx() {
     final Database db = database;
     db.begin();
     try {
@@ -160,7 +166,7 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   @Test
-  public void testIOExceptionAfterWALIsWritten() {
+  void iOExceptionAfterWALIsWritten() {
     final Database db = database;
     db.begin();
 
@@ -196,7 +202,7 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   @Test
-  public void testAsyncIOExceptionAfterWALIsWrittenLastRecords() {
+  void asyncIOExceptionAfterWALIsWrittenLastRecords() {
     final Database db = database;
 
     final AtomicInteger errors = new AtomicInteger(0);
@@ -234,13 +240,6 @@ public class ACIDTransactionTest extends TestHelper {
 
       db.async().waitCompletion();
 
-      try {
-        Thread.sleep(500);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-        // IGNORE IT
-      }
-
       assertThat(errors.get()).isEqualTo(1);
 
     } catch (final TransactionException e) {
@@ -256,7 +255,8 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   @Test
-  public void testAsyncIOExceptionAfterWALIsWrittenManyRecords() {
+  @Tag("slow")
+  void asyncIOExceptionAfterWALIsWrittenManyRecords() {
     final Database db = database;
 
     final int TOT = 100000;
@@ -316,7 +316,7 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   @Test
-  public void multiThreadConcurrentTransactions() {
+  void multiThreadConcurrentTransactions() {
     database.transaction(() -> {
       final DocumentType type = database.getSchema().buildDocumentType().withName("Stock").withTotalBuckets(32).create();
       type.createProperty("symbol", Type.STRING);
@@ -397,7 +397,8 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   @Test
-  public void testAsyncEdges() {
+  @Tag("slow")
+  void asyncEdges() {
     final Database db = database;
 
     final int TOT = 10000;
@@ -454,7 +455,7 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   @Test
-  public void testExceptionInsideTransaction() {
+  void exceptionInsideTransaction() {
     final Database db = database;
 
     final int TOT = 100;
@@ -478,10 +479,12 @@ public class ACIDTransactionTest extends TestHelper {
 
     final int CONCURRENT_THREADS = 4;
 
-    // SPAWN ALL THE THREADS
-    final Thread[] threads = new Thread[CONCURRENT_THREADS];
+    // SPAWN ALL THE THREADS USING EXECUTORSERVICE
+    final ExecutorService executorService = Executors.newFixedThreadPool(CONCURRENT_THREADS);
+    final List<Future<?>> futures = new ArrayList<>();
+
     for (int i = 0; i < CONCURRENT_THREADS; i++) {
-      threads[i] = new Thread(() -> {
+      Future<?> future = executorService.submit(() -> {
         for (int k = 0; k < TOT; ++k) {
           final int id = k;
 
@@ -504,16 +507,33 @@ public class ACIDTransactionTest extends TestHelper {
         }
 
       });
-      threads[i].start();
+      futures.add(future);
     }
 
     // WAIT FOR ALL THE THREADS
-    for (int i = 0; i < CONCURRENT_THREADS; i++)
+    for (Future<?> future : futures) {
       try {
-        threads[i].join();
+        future.get(120, TimeUnit.SECONDS);
       } catch (InterruptedException e) {
-        // IGNORE IT
+        Thread.currentThread().interrupt();
+        LogManager.instance().log(this, Level.WARNING, "Thread interrupted while waiting for future", e);
+      } catch (ExecutionException e) {
+        LogManager.instance().log(this, Level.WARNING, "Execution exception in future", e);
+      } catch (TimeoutException e) {
+        LogManager.instance().log(this, Level.SEVERE, "Future timed out after 120 seconds", e);
+        future.cancel(true);
       }
+    }
+
+    executorService.shutdown();
+    try {
+      if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
+        executorService.shutdownNow();
+      }
+    } catch (InterruptedException e) {
+      executorService.shutdownNow();
+      Thread.currentThread().interrupt();
+    }
 
     assertThat(database.countType("Node", true)).isEqualTo(1);
 
@@ -524,7 +544,7 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   @Test
-  public void testDeleteOverwriteCompositeKeyInTx() {
+  void deleteOverwriteCompositeKeyInTx() {
     database.transaction(() ->
         database.command("sqlscript", """
             CREATE VERTEX TYPE zone;

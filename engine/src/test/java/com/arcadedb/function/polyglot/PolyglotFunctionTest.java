@@ -1,3 +1,21 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.arcadedb.function.polyglot;
 
 import com.arcadedb.TestHelper;
@@ -6,21 +24,19 @@ import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.InvocationTargetException;
-
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class PolyglotFunctionTest extends TestHelper {
+class PolyglotFunctionTest extends TestHelper {
   @Test
-  public void testEmbeddedFunction() {
+  void embeddedFunction() {
     registerFunctions();
     final Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(3, 5);
     assertThat(result).isEqualTo(8);
   }
 
   @Test
-  public void testReuseSameQueryEngine() {
+  void reuseSameQueryEngine() {
     registerFunctions();
 
     Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(3, 5);
@@ -31,19 +47,14 @@ public class PolyglotFunctionTest extends TestHelper {
   }
 
   @Test
-  public void testRedefineFunction() {
+  void redefineFunction() {
     registerFunctions();
 
     Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(100, 50);
     assertThat(result).isEqualTo(150);
 
-    try {
-      database.getSchema().getFunctionLibrary("math")
-          .registerFunction(new JavascriptFunctionDefinition("sum", "return a - b;", "a", "b"));
-      fail("");
-    } catch (final IllegalArgumentException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> database.getSchema().getFunctionLibrary("math")
+      .registerFunction(new JavascriptFunctionDefinition("sum", "return a - b;", "a", "b"))).isInstanceOf(IllegalArgumentException.class);
 
     database.getSchema().getFunctionLibrary("math").unregisterFunction("sum");
     database.getSchema().getFunctionLibrary("math")
@@ -54,34 +65,24 @@ public class PolyglotFunctionTest extends TestHelper {
   }
 
   @Test
-  public void testNotFound()
-      throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException,
-      IllegalAccessException {
+  void notFound()
+    throws Exception {
     registerFunctions();
-    try {
-      database.getSchema().getFunction("math", "NOT_found").execute(3, 5);
-      fail("");
-    } catch (IllegalArgumentException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> database.getSchema().getFunction("math", "NOT_found").execute(3, 5)).isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
-  public void testExecutionError() {
-    try {
+  void executionError() {
+    assertThatThrownBy(() -> {
       database.getSchema().registerFunctionLibrary(//
-          new JavascriptFunctionLibraryDefinition(database, "math")//
-              .registerFunction(new JavascriptFunctionDefinition("sum", "return a ++++ b;", "a", "b")));
-
+        new JavascriptFunctionLibraryDefinition(database, "math")//
+          .registerFunction(new JavascriptFunctionDefinition("sum", "return a ++++ b;", "a", "b")));
       database.getSchema().getFunction("math", "sum").execute("invalid", 5);
-      fail("");
-    } catch (FunctionExecutionException e) {
-      // EXPECTED
-    }
+    }).isInstanceOf(FunctionExecutionException.class);
   }
 
   @Test
-  void testJsonObjectAsInput() {
+  void jsonObjectAsInput() {
 
     database.command("sql", """
         DEFINE FUNCTION Test.objectComparison "return a.foo == 'bar'" PARAMETERS [a] LANGUAGE js;
@@ -102,7 +103,7 @@ public class PolyglotFunctionTest extends TestHelper {
   }
 
   @Test
-  void testStringObjectAsInput() {
+  void stringObjectAsInput() {
 
     database.command("sql", """
         DEFINE FUNCTION Test.lowercase "return a.toLowerCase()" PARAMETERS [a] LANGUAGE js;

@@ -29,10 +29,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Created by luigidellaquila on 02/07/15.
  */
-public class MathExpressionTest {
+class MathExpressionTest {
 
   @Test
-  public void testTypes() {
+  void types() {
 
     final MathExpression expr = new MathExpression(-1);
 
@@ -65,7 +65,7 @@ public class MathExpressionTest {
   }
 
   @Test
-  public void testPriority() {
+  void priority() {
     final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(integer(10));
     exp.operators.add(MathExpression.Operator.PLUS);
@@ -85,7 +85,7 @@ public class MathExpressionTest {
   }
 
   @Test
-  public void testPriority2() {
+  void priority2() {
     final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(integer(1));
     exp.operators.add(MathExpression.Operator.PLUS);
@@ -111,7 +111,7 @@ public class MathExpressionTest {
   }
 
   @Test
-  public void testPriority3() {
+  void priority3() {
     final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(integer(3));
     exp.operators.add(MathExpression.Operator.RSHIFT);
@@ -125,7 +125,7 @@ public class MathExpressionTest {
   }
 
   @Test
-  public void testPriority4() {
+  void priority4() {
     final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(integer(3));
     exp.operators.add(MathExpression.Operator.LSHIFT);
@@ -139,7 +139,7 @@ public class MathExpressionTest {
   }
 
   @Test
-  public void testAnd() {
+  void and() {
     final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(integer(5));
     exp.operators.add(MathExpression.Operator.BIT_AND);
@@ -151,7 +151,7 @@ public class MathExpressionTest {
   }
 
   @Test
-  public void testAnd2() {
+  void and2() {
     final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(integer(5));
     exp.operators.add(MathExpression.Operator.BIT_AND);
@@ -163,7 +163,7 @@ public class MathExpressionTest {
   }
 
   @Test
-  public void testDivide() {
+  void divide() {
     final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(integer(20));
     exp.operators.add(MathExpression.Operator.SLASH);
@@ -175,7 +175,7 @@ public class MathExpressionTest {
   }
 
   @Test
-  public void testDivideByNull() {
+  void divideByNull() {
     final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(integer(20));
     exp.operators.add(MathExpression.Operator.SLASH);
@@ -186,7 +186,7 @@ public class MathExpressionTest {
   }
 
   @Test
-  public void testOr() {
+  void or() {
     final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(integer(4));
     exp.operators.add(MathExpression.Operator.BIT_OR);
@@ -198,7 +198,7 @@ public class MathExpressionTest {
   }
 
   @Test
-  public void testNullCoalescing() {
+  void nullCoalescing() {
     testNullCoalescingGeneric(integer(20), integer(15), 20);
     testNullCoalescingGeneric(nullExpr(), integer(14), 14);
     testNullCoalescingGeneric(str("32"), nullExpr(), "32");
@@ -207,7 +207,7 @@ public class MathExpressionTest {
   }
 
   @Test
-  public void testAddListOfNumbers() {
+  void addListOfNumbers() {
     final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(list(1, 2, 3));
     exp.operators.add(MathExpression.Operator.PLUS);
@@ -219,7 +219,7 @@ public class MathExpressionTest {
   }
 
   @Test
-  public void testAddListOfStrings() {
+  void addListOfStrings() {
     final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(list("this", "is", "a"));
     exp.operators.add(MathExpression.Operator.PLUS);
@@ -231,7 +231,7 @@ public class MathExpressionTest {
   }
 
   @Test
-  public void testRemoveListOfStrings() {
+  void removeListOfStrings() {
     final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(list("this", "is", "a", "test"));
     exp.operators.add(MathExpression.Operator.MINUS);

@@ -44,6 +44,7 @@ import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.IndexBuilder;
+import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -64,21 +65,19 @@ import java.util.logging.*;
  * LSM-Tree index implementation. It relies on a mutable index and its underlying immutable, compacted index.
  */
 public class LSMTreeIndex implements RangeIndex, IndexInternal {
-  private static final IndexCursor                   EMPTY_CURSOR       = new EmptyIndexCursor();
+  private static final IndexCursor                   EMPTY_CURSOR = new EmptyIndexCursor();
   private final        String                        name;
-  private final        RWLockContext                 lock               = new RWLockContext();
+  private final        RWLockContext                 lock         = new RWLockContext();
   private              TypeIndex                     typeIndex;
-  private              int                           associatedBucketId = -1;
-  private              String                        typeName;
-  protected            List<String>                  propertyNames;
   protected            LSMTreeIndexMutable           mutable;
-  protected final      AtomicReference<INDEX_STATUS> status             = new AtomicReference<>(
+  protected final      AtomicReference<INDEX_STATUS> status       = new AtomicReference<>(
       INDEX_STATUS.AVAILABLE);
-  private              boolean                       valid              = true;
+  private              boolean                       valid        = true;
+  private              IndexMetadata                 metadata;
 
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override
-    public IndexInternal create(final IndexBuilder builder) {
+    public IndexInternal create(final IndexBuilder<?> builder) {
       return new LSMTreeIndex(builder.getDatabase(), builder.getIndexName(), builder.isUnique(), builder.getFilePath(),
           ComponentFile.MODE.READ_WRITE, builder.getKeyTypes(), builder.getPageSize(), builder.getNullStrategy());
     }
@@ -114,6 +113,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
     try {
       this.name = name;
+      this.metadata = new IndexMetadata(null, null, -1);
       this.mutable = new LSMTreeIndexMutable(this, database, name, unique, filePath, mode, keyTypes, pageSize, nullStrategy);
     } catch (final IOException e) {
       throw new IndexException("Error on creating index '" + name + "'", e);
@@ -126,6 +126,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public LSMTreeIndex(final DatabaseInternal database, final String name, final boolean unique, final String filePath, final int id,
       final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
     this.name = FileUtils.encode(name, database.getSchema().getEncoding());
+    this.metadata = new IndexMetadata(null, null, -1);
     this.mutable = new LSMTreeIndexMutable(this, database, name, unique, filePath, id, mode, pageSize, version);
   }
 
@@ -136,16 +137,39 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     return status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.COMPACTION_SCHEDULED);
   }
 
-  public void setMetadata(final String typeName, final String[] propertyNames, final int associatedBucketId) {
+  @Override
+  public IndexMetadata getMetadata() {
+    return metadata;
+  }
+
+  @Override
+  public void setMetadata(final IndexMetadata metadata) {
     checkIsValid();
-    this.typeName = typeName;
-    this.propertyNames = List.of(propertyNames);
-    this.associatedBucketId = associatedBucketId;
+    this.metadata = metadata;
+  }
+
+  @Override
+  public void setMetadata(final JSONObject indexJSON) {
+    final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy =
+        LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(
+            indexJSON.getString("nullStrategy", LSMTreeIndexAbstract.NULL_STRATEGY.ERROR.name())
+        );
+
+    setNullStrategy(nullStrategy);
+
+    if (indexJSON.has("typeName"))
+      this.metadata.typeName = indexJSON.getString("typeName");
+    if (indexJSON.has("properties")) {
+      final var jsonArray = indexJSON.getJSONArray("properties");
+      this.metadata.propertyNames = new ArrayList<>();
+      for (int i = 0; i < jsonArray.length(); i++)
+        metadata.propertyNames.add(jsonArray.getString(i));
+    }
   }
 
   @Override
   public void updateTypeName(final String newTypeName) {
-    typeName = newTypeName;
+    metadata.typeName = newTypeName;
     if (mutable != null) {
       try {
         mutable.getComponentFile().rename(newTypeName);
@@ -188,7 +212,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public int hashCode() {
-    return Objects.hash(name, associatedBucketId, typeName, propertyNames);
+    return Objects.hash(name, metadata.associatedBucketId, metadata.typeName, metadata.propertyNames);
   }
 
   @Override
@@ -204,13 +228,13 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     if (!BinaryComparator.equalsString(name, m2.name))
       return false;
 
-    if (!BinaryComparator.equalsString(typeName, m2.typeName))
+    if (!BinaryComparator.equalsString(metadata.typeName, m2.metadata.typeName))
       return false;
 
-    if (associatedBucketId != m2.associatedBucketId)
+    if (metadata.associatedBucketId != m2.metadata.associatedBucketId)
       return false;
 
-    return propertyNames.equals(m2.propertyNames);
+    return metadata.propertyNames.equals(m2.metadata.propertyNames);
   }
 
   @Override
@@ -220,12 +244,12 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public String getTypeName() {
-    return typeName;
+    return metadata.typeName;
   }
 
   @Override
   public List<String> getPropertyNames() {
-    return propertyNames;
+    return metadata.propertyNames;
   }
 
   @Override
@@ -293,8 +317,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
           mutable.close();
         return null;
       });
-    } else
-      throw new NeedRetryException("Error on closing index '" + name + "' because not available");
+    }
   }
 
   public void drop() {
@@ -366,7 +389,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public boolean isAutomatic() {
-    return propertyNames != null;
+    return metadata.propertyNames != null;
   }
 
   @Override
@@ -513,7 +536,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public int getAssociatedBucketId() {
-    return associatedBucketId;
+    return metadata.associatedBucketId;
   }
 
   @Override
@@ -615,8 +638,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     } finally {
       final Integer lockedFileId = lockedNewFileId.get();
-      if (lockedFileId != null)
-        database.getTransactionManager().unlockFile(lockedFileId, Thread.currentThread());
+      database.getTransactionManager().unlockFile(lockedFileId, Thread.currentThread());
 
       if (locked == LockManager.LOCK_STATUS.YES)
         // RELEASE THE DELETED FILE ONLY IF THE LOCK WAS ACQUIRED HERE
@@ -627,17 +649,30 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {
     checkIsValid();
     final AtomicLong total = new AtomicLong();
+    final long LOG_INTERVAL = 10000; // Log every 10K records
 
-    if (propertyNames == null || propertyNames.isEmpty())
+    if (metadata.propertyNames == null || metadata.propertyNames.isEmpty())
       throw new IndexException("Cannot rebuild index '" + name + "' because metadata information are missing");
 
     final DatabaseInternal db = getDatabase();
 
     if (status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE)) {
 
-      db.scanBucket(db.getSchema().getBucketById(associatedBucketId).getName(), record -> {
+      LogManager.instance().log(this, Level.INFO, "Building index '%s' on %d properties...", name, metadata.propertyNames.size());
+
+      final long startTime = System.currentTimeMillis();
+
+      db.scanBucket(db.getSchema().getBucketById(metadata.associatedBucketId).getName(), record -> {
         db.getIndexer().addToIndex(LSMTreeIndex.this, record.getIdentity(), (Document) record);
         total.incrementAndGet();
+
+        // Periodic progress logging
+        if (total.get() % LOG_INTERVAL == 0) {
+          final long elapsed = System.currentTimeMillis() - startTime;
+          final double rate = total.get() / (elapsed / 1000.0);
+          LogManager.instance().log(this, Level.INFO, "Building index '%s': processed %d records (%.0f records/sec)...",
+              name, total.get(), rate);
+        }
 
         if (total.get() % buildIndexBatchSize == 0) {
           // CHUNK OF 100K
@@ -650,6 +685,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
         return true;
       });
+
+      // Completion logging
+      final long elapsed = System.currentTimeMillis() - startTime;
+      LogManager.instance().log(this, Level.INFO, "Completed building index '%s': processed %d records in %dms", name,
+          total.get(), elapsed);
 
       status.set(INDEX_STATUS.AVAILABLE);
 

@@ -1,22 +1,20 @@
 /*
- * Copyright 2023 Arcade Data Ltd
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
  */
 package com.arcadedb.gremlin.integration.importer;
 
@@ -30,7 +28,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.net.*;
 import java.util.*;
 import java.util.stream.*;
@@ -38,7 +38,7 @@ import java.util.zip.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class GraphSONImporterIT {
+class GraphSONImporterIT {
   private final static String DATABASE_PATH     = "target/databases/performance";
   private final static String FILE              = "arcadedb-export.graphson.tgz";
   private final static String UNCOMPRESSED_FILE = "target/arcadedb-export.graphson";
@@ -46,7 +46,7 @@ public class GraphSONImporterIT {
   private final static File databaseDirectory = new File(DATABASE_PATH);
 
   @Test
-  public void testImportCompressedOK() {
+  void importCompressedOK() {
     final URL inputFile = GraphSONImporterIT.class.getClassLoader().getResource(FILE);
 
     try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
@@ -65,7 +65,7 @@ public class GraphSONImporterIT {
   }
 
   @Test
-  public void testImportNotCompressedOK() throws IOException {
+  void importNotCompressedOK() throws Exception {
     final URL inputFile = GraphSONImporterIT.class.getClassLoader().getResource(FILE);
 
     try (final GZIPInputStream gis = new GZIPInputStream(new FileInputStream(inputFile.getFile()));
@@ -93,7 +93,7 @@ public class GraphSONImporterIT {
   }
 
   @Test
-  public void testImportFromSQL() {
+  void importFromSQL() {
     final URL inputFile = GraphSONImporterIT.class.getClassLoader().getResource(FILE);
 
     try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
@@ -113,7 +113,7 @@ public class GraphSONImporterIT {
 
   @BeforeEach
   @AfterEach
-  public void clean() {
+  void clean() {
     TestServerHelper.checkActiveDatabases();
     FileUtils.deleteRecursively(databaseDirectory);
     if (new File(UNCOMPRESSED_FILE).exists())

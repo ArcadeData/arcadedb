@@ -364,8 +364,30 @@ public class TransactionManager {
         database.getPageManager().removePageFromCache(modifiedPage.pageId);
 
         final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileById(txPage.fileId);
-        if (component != null)
+        if (component != null) {
           component.updatePageCount(modifiedPage.pageId.getPageNumber() + 1);
+
+          // Phase 5: For LSMVectorIndex, incrementally update VectorLocationIndex during replication
+          // This keeps in-memory metadata synchronized with replicated pages
+          // Note: LSMVectorIndexMutable is what gets registered with Schema (via index.getComponent())
+          if (component instanceof com.arcadedb.index.vector.LSMVectorIndexMutable) {
+            final com.arcadedb.index.vector.LSMVectorIndexMutable vectorMutable =
+                (com.arcadedb.index.vector.LSMVectorIndexMutable) component;
+            final com.arcadedb.index.vector.LSMVectorIndex mainIndex = vectorMutable.getMainIndex();
+            if (mainIndex != null) {
+              mainIndex.applyReplicatedPageUpdate(modifiedPage);
+            } else {
+              LogManager.instance().log(this, Level.WARNING,
+                  "LSMVectorIndexMutable has null mainIndex for fileId=%d", null, txPage.fileId);
+            }
+          } else if (component instanceof com.arcadedb.index.vector.LSMVectorIndexCompacted) {
+            final com.arcadedb.index.vector.LSMVectorIndex mainIndex =
+                (com.arcadedb.index.vector.LSMVectorIndex) ((com.arcadedb.index.vector.LSMVectorIndexCompacted) component).getMainComponent();
+            if (mainIndex != null) {
+              mainIndex.applyReplicatedPageUpdate(modifiedPage);
+            }
+          }
+        }
 
         if (file.getFileId() == dictionaryId)
           involveDictionary = true;
@@ -532,7 +554,7 @@ public class TransactionManager {
             file.setActive(false);
             inactiveWALFilePool.add(file);
           }
-        } catch (final java.nio.channels.ClosedChannelException e) {
+        } catch (final ClosedChannelException e) {
           try {
             file.close();
           } catch (IOException ex) {

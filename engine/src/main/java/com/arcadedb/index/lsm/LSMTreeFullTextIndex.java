@@ -31,6 +31,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.IndexBuilder;
+import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
@@ -210,6 +211,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   @Override
+  public IndexMetadata getMetadata() {
+    return underlyingIndex.getMetadata();
+  }
+
+  @Override
   public boolean isCompacting() {
     return underlyingIndex.isCompacting();
   }
@@ -225,13 +231,18 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   @Override
-  public void setMetadata(final String name, final String[] propertyNames, final int associatedBucketId) {
-    underlyingIndex.setMetadata(name, propertyNames, associatedBucketId);
+  public void setMetadata(final IndexMetadata metadata) {
+    underlyingIndex.setMetadata(metadata);
   }
 
   @Override
   public boolean setStatus(final INDEX_STATUS[] expectedStatuses, final INDEX_STATUS newStatus) {
     return underlyingIndex.setStatus(expectedStatuses, newStatus);
+  }
+
+  @Override
+  public void setMetadata(final JSONObject indexJSON) {
+    underlyingIndex.setMetadata(indexJSON);
   }
 
   @Override
@@ -312,7 +323,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
   @Override
   public boolean isAutomatic() {
-    return underlyingIndex.propertyNames != null;
+    return underlyingIndex.getPropertyNames() != null;
   }
 
   @Override

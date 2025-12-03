@@ -1,3 +1,21 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.arcadedb;
 
 import com.arcadedb.database.Database;
@@ -10,7 +28,7 @@ import java.util.concurrent.CountDownLatch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
-public class TransactionIsolationTest extends TestHelper {
+class TransactionIsolationTest extends TestHelper {
   @Override
   protected void beginTest() {
     database.transaction(() -> {
@@ -21,7 +39,7 @@ public class TransactionIsolationTest extends TestHelper {
   }
 
   @Test
-  public void testNoDirtyReads() throws InterruptedException {
+  void noDirtyReads() throws Exception {
     final CountDownLatch sem1 = new CountDownLatch(1);
     final CountDownLatch sem2 = new CountDownLatch(1);
 
@@ -84,7 +102,7 @@ public class TransactionIsolationTest extends TestHelper {
   }
 
   @Test
-  public void testReadCommitted() throws InterruptedException {
+  void readCommitted() throws Exception {
     final CountDownLatch sem1 = new CountDownLatch(1);
     final CountDownLatch sem2 = new CountDownLatch(1);
     final CountDownLatch sem3 = new CountDownLatch(1);
@@ -165,7 +183,7 @@ public class TransactionIsolationTest extends TestHelper {
   }
 
   @Test
-  public void testRepeatableRead() throws InterruptedException {
+  void repeatableRead() throws Exception {
     database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
     try {
 

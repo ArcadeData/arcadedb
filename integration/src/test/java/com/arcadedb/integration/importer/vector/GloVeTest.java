@@ -1,35 +1,35 @@
 /*
- * Copyright 2023 Arcade Data Ltd
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
  */
-
 package com.arcadedb.integration.importer.vector;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
-import com.arcadedb.index.vector.HnswVectorIndex;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.Pair;
+import org.assertj.core.api.Assertions;
 
 import java.io.*;
 import java.util.*;
@@ -45,7 +45,7 @@ import static java.util.concurrent.TimeUnit.*;
  */
 public class GloVeTest {
   private final static int     PARALLEL_LEVEL = 8;
-  private static final String  FILE_NAME      = "/Users/luca/Downloads/glove.twitter.27B.100d.txt";
+  private static final String  FILE_NAME      = "/Users/luca/Downloads/test.glove.twitter.27B.100d.txt";
   private              boolean USE_SQL        = false;
 
   public static void main(String[] args) {
@@ -57,7 +57,7 @@ public class GloVeTest {
 
     final Database database;
 
-    final DatabaseFactory factory = new DatabaseFactory("glovedb");
+    final DatabaseFactory factory = new DatabaseFactory("databases/glovedb");
 
     // TODO: REMOVE THIS
 //    if (factory.exists())
@@ -85,13 +85,47 @@ public class GloVeTest {
       long end = System.currentTimeMillis();
       long duration = end - start;
 
-      LogManager.instance().log(this, Level.SEVERE, "Creating index took %d millis which is %d minutes.%n", duration, MILLISECONDS.toMinutes(duration));
+      LogManager.instance().log(this, Level.SEVERE, "Creating index took %d millis which is %d minutes.%n", duration,
+          MILLISECONDS.toMinutes(duration));
+
+      LogManager.instance().log(this, Level.SEVERE, "Building vector index...");
+
+      // Get the LSMVectorIndex from the bucket
+      final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Word[vector]");
+      final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
+
+      // Build with callbacks
+      lsmIndex.build(
+          100000, // batch size
+          (doc, total) -> {
+            if (total % 10000 == 0) {
+              LogManager.instance().log(this, Level.SEVERE, "Indexed " + total + " documents...");
+            }
+          },
+          (phase, processedNodes, totalNodes, vecAccesses) -> {
+            switch (phase) {
+            case "validating":
+              LogManager.instance().log(this, Level.SEVERE, "Validating vectors: %d / %d", processedNodes, totalNodes);
+              break;
+            case "building":
+              LogManager.instance().log(this, Level.SEVERE, "Building graph: %d unique nodes accessed, %d total vector accesses",
+                  processedNodes, vecAccesses);
+              break;
+            case "persisting":
+              LogManager.instance().log(this, Level.SEVERE, "Persisting graph: %d / %d nodes", processedNodes, totalNodes);
+              break;
+            default:
+              LogManager.instance().log(this, Level.SEVERE, "Unknown phase: %d / %d nodes", processedNodes, totalNodes);
+              break;
+            }
+          }
+      );
 
       database.close();
       System.exit(1);
     }
 
-    final HnswVectorIndex persistentIndex = (HnswVectorIndex) database.getSchema().getIndexByName("Word[name,vector]");
+    final TypeIndex persistentIndex = (TypeIndex) database.getSchema().getIndexByName("Word[vector]");
 
     try {
 
@@ -99,7 +133,8 @@ public class GloVeTest {
 
       final Random random = new Random();
 
-      final ExecutorService executor = new ThreadPoolExecutor(PARALLEL_LEVEL, PARALLEL_LEVEL, 5, TimeUnit.SECONDS, new SynchronousQueue(),
+      final ExecutorService executor = new ThreadPoolExecutor(PARALLEL_LEVEL, PARALLEL_LEVEL, 5, TimeUnit.SECONDS,
+          new SynchronousQueue(),
           new ThreadPoolExecutor.CallerRunsPolicy());
 
       final AtomicLong totalSearchTime = new AtomicLong();
@@ -107,23 +142,36 @@ public class GloVeTest {
       final long begin = System.currentTimeMillis();
       final AtomicLong lastStats = new AtomicLong();
 
+      LogManager.instance().log(this, Level.SEVERE, "Loaded words embeddings from database...");
+
       final List<String> words = new ArrayList<>();
-      for (Iterator<Record> it = database.iterateType("Word", true); it.hasNext(); )
-        words.add(it.next().asVertex().getString("name"));
+      final List<float[]> embeddings = new ArrayList<>();
+      for (Iterator<Record> it = database.iterateType("Word", true); it.hasNext(); ) {
+        final Vertex v = it.next().asVertex();
+        words.add(v.getString("name"));
+        embeddings.add((float[]) v.get("vector"));
+      }
+
+      LogManager.instance().log(this, Level.SEVERE, "Loaded %d embeddings", embeddings.size());
 
       for (int cycle = 0; ; ++cycle) {
         final int currentCycle = cycle;
 
         executor.submit(() -> {
           try {
-            final int randomWord = random.nextInt(words.size());
-            String input = words.get(randomWord);
+            //final int randomWordIndex = random.nextInt(embeddings.size());
+            final int randomWordIndex = currentCycle >= words.size() ? 0 : currentCycle;
+
+            final String wordToSearch = words.get(randomWordIndex);
+            final float[] embeddingsToSearch = embeddings.get(randomWordIndex);
 
             final long startWord = System.currentTimeMillis();
 
-            final List<Pair<Identifiable, Float>> approximateResults;
+            final List<Pair<RID, Float>> approximateResults;
             if (USE_SQL) {
-              final ResultSet resultSet = database.query("sql", "select vectorNeighbors('Word[name,vector]', ?,?) as neighbors", input, k);
+              final ResultSet resultSet = database.query("sql", "select vectorNeighbors('Word[vector]', ?,?) as neighbors",
+                  embeddingsToSearch,
+                  k);
               if (resultSet.hasNext()) {
                 approximateResults = new ArrayList<>();
                 while (resultSet.hasNext()) {
@@ -131,17 +179,19 @@ public class GloVeTest {
                   final List<Map<String, Object>> neighbors = row.getProperty("neighbors");
 
                   for (Map<String, Object> neighbor : neighbors)
-                    approximateResults.add(new Pair<>((Identifiable) neighbor.get("vertex"), ((Number) neighbor.get("distance")).floatValue()));
+                    approximateResults.add(
+                        new Pair<>((RID) neighbor.get("vertex"), ((Number) neighbor.get("distance")).floatValue()));
                 }
 
               } else {
-                LogManager.instance().log(this, Level.SEVERE, "Not Found %s", input);
+                LogManager.instance().log(this, Level.SEVERE, "Not Found %s", embeddingsToSearch);
                 return;
               }
             } else {
-              database.begin();
-              approximateResults = persistentIndex.findNeighborsFromVector(input, k);
-              database.rollback();
+              // Vector searches are read-only, no transaction needed
+              approximateResults = ((LSMVectorIndex) persistentIndex.getIndexesOnBuckets()[0]).findNeighborsFromVector(
+                  embeddingsToSearch, k);
+              Assertions.assertThat(approximateResults.size()).isNotEqualTo(0);
             }
 
             final long now = System.currentTimeMillis();
@@ -151,7 +201,7 @@ public class GloVeTest {
             totalSearchTime.addAndGet(delta);
 
             final Map<String, Float> results = new LinkedHashMap<>();
-            for (Pair<Identifiable, Float> result : approximateResults)
+            for (Pair<RID, Float> result : approximateResults)
               results.put(result.getFirst().asVertex().getString("name"), result.getSecond());
 
 //            LogManager.instance()
@@ -161,7 +211,10 @@ public class GloVeTest {
 
             if (now - lastStats.get() >= 1000) {
               LogManager.instance()
-                  .log(this, Level.SEVERE, "STATS: %d searched words, avg %dms per single word, total throughput %.2f words/sec", totalSearchTime.get(),
+                  .log(this, Level.SEVERE,
+                      "STATS: %d searched words, (last %s -> found %d), avg %dms per single word, total throughput %.2f words/sec",
+                      totalSearchTime.get(),
+                      wordToSearch, approximateResults.size(),
                       totalSearchTime.get() / totalHits.get(), throughput);
               lastStats.set(now);
             }

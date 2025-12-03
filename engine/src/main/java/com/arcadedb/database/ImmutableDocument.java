@@ -23,6 +23,7 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
@@ -61,8 +62,8 @@ public class ImmutableDocument extends BaseDocument {
     if (propertyName == null)
       return null;
 
+    checkForLazyLoading();
     try {
-      checkForLazyLoading();
       return database.getSerializer()
           .deserializeProperty(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName, rid);
     } catch (Exception e) {
@@ -102,7 +103,7 @@ public class ImmutableDocument extends BaseDocument {
     checkForLazyLoading();
     final Map<String, Object> map = database.getSerializer()
         .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
-    final JSONObject result = new JSONSerializer(database).map2json(map, type, includeMetadata);
+    final JSONObject result = new JsonSerializer(database).map2json(map, type, includeMetadata);
     if (includeMetadata) {
       result.put(CAT_PROPERTY, "d");
       result.put(TYPE_PROPERTY, type.getName());

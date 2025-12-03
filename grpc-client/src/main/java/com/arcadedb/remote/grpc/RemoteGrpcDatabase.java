@@ -1,3 +1,21 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.arcadedb.remote.grpc;
 
 import com.arcadedb.ContextConfiguration;
@@ -24,6 +42,9 @@ import com.arcadedb.remote.RemoteImmutableVertex;
 import com.arcadedb.remote.RemoteSchema;
 import com.arcadedb.remote.RemoteTransactionExplicitLock;
 import com.arcadedb.remote.grpc.utils.ProtoUtils;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.grpc.ArcadeDbServiceGrpc;
 import com.arcadedb.server.grpc.BatchAck;
 import com.arcadedb.server.grpc.BeginTransactionRequest;
@@ -65,17 +86,20 @@ import com.arcadedb.server.grpc.UpdateRecordResponse;
 import com.google.protobuf.Int32Value;
 import io.grpc.CallCredentials;
 import io.grpc.Metadata;
+import io.grpc.Status;
 import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.BlockingClientCall;
 import io.grpc.stub.ClientCallStreamObserver;
 import io.grpc.stub.ClientResponseObserver;
 import io.grpc.stub.StreamObserver;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.arcadedb.log.LogManager;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 import javax.annotation.Nullable;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -84,9 +108,17 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -99,21 +131,18 @@ import java.util.function.Supplier;
  */
 public class RemoteGrpcDatabase extends RemoteDatabase {
 
-  private static final Logger logger = LoggerFactory.getLogger(RemoteGrpcDatabase.class);
 
-  private final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub blockingStub;
-  private final ArcadeDbServiceGrpc.ArcadeDbServiceStub           asyncStub;
-
-  private String transactionId;
-
-  private RemoteSchema schema;
-
-  private final String                        userName;
-  private final String                        userPassword;
-  private       String                        databaseName;
-  private       RemoteTransactionExplicitLock explicitLock;
-
-  protected RemoteGrpcServer remoteGrpcServer;
+  private final    ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub blockingStub;
+  private final    ArcadeDbServiceGrpc.ArcadeDbServiceStub           asyncStub;
+  private final    RemoteSchema                                      schema;
+  private final    String                                            userName;
+  private final    String                                            userPassword;
+  private final    String                                            databaseName;
+  private          String                                            transactionId;
+  private          RemoteTransactionExplicitLock                     explicitLock;
+  protected        RemoteGrpcServer                                  remoteGrpcServer;
+  // ---- fields ----
+  private volatile TxDebug                                           debugTx;
 
   public RemoteGrpcDatabase(final RemoteGrpcServer remoteGrpcServer, final String server, final int grpcPort, final int httpPort,
       final String databaseName, final String userName, final String userPassword) {
@@ -122,20 +151,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   public RemoteGrpcDatabase(final RemoteGrpcServer remoteGrpcServer, final String host, final int grpcPort, final int httpPort,
       final String databaseName, final String userName, final String userPassword, final ContextConfiguration configuration) {
-
     super(host, httpPort, databaseName, userName, userPassword, configuration);
-
     this.remoteGrpcServer = remoteGrpcServer;
-
     this.userName = userName;
     this.userPassword = userPassword;
-
     this.databaseName = databaseName;
-
     this.blockingStub = createBlockingStub();
-
     this.asyncStub = createAsyncStub();
-
     this.schema = new RemoteSchema(this);
   }
 
@@ -213,9 +235,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         transactionId = response.getTransactionId();
         // Store transaction ID in parent class session management
         setSessionId(transactionId);
-      } catch (StatusRuntimeException e) {
-        throw new TransactionException("Error on transaction begin", e);
-      } catch (StatusException e) {
+      } catch (StatusRuntimeException | StatusException e) {
         throw new TransactionException("Error on transaction begin", e);
       }
 
@@ -254,32 +274,27 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
         CommitTransactionRequest request = CommitTransactionRequest.newBuilder()
             .setTransaction(TransactionContext.newBuilder().setTransactionId(transactionId).setDatabase(getName()).build())
-            .setCredentials(buildCredentials()).build();
+            .setCredentials(buildCredentials())
+            .build();
 
         try {
 
           CommitTransactionResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
               .commitTransaction(request);
 
-          logger.debug("[After commit] Success: {} Committed: {}", response.getSuccess(), response.getCommitted());
+          LogManager.instance().log(this, Level.FINE, "[After commit] Success: %s Committed: %s", response.getSuccess(), response.getCommitted());
 
           if (!response.getSuccess()) {
             throw new TransactionException("Failed to commit transaction: " + response.getMessage());
           }
-        } catch (StatusRuntimeException e) {
-
-          handleGrpcException(e);
-        } catch (StatusException e) {
-
+        } catch (StatusRuntimeException | StatusException e) {
           handleGrpcException(e);
         } finally {
-
           transactionId = null;
           setSessionId(null);
         }
 
         if (debugTx != null) {
-
           debugTx.committed = true;
           debugTx.rpcSeq.incrementAndGet();
         }
@@ -317,14 +332,12 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
           RollbackTransactionResponse response = blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS)
               .rollbackTransaction(request);
 
-          logger.debug("[After rollback] Success: {} Committed: {}", response.getSuccess(), response.getRolledBack());
+          LogManager.instance().log(this, Level.FINE, "[After rollback] Success: %s Committed: %s", response.getSuccess(), response.getRolledBack());
 
           if (!response.getSuccess()) {
             throw new TransactionException("Failed to rollback transaction: " + response.getMessage());
           }
-        } catch (StatusRuntimeException e) {
-          throw new TransactionException("Error on transaction rollback", e);
-        } catch (StatusException e) {
+        } catch (StatusRuntimeException | StatusException e) {
           throw new TransactionException("Error on transaction rollback", e);
         } finally {
           transactionId = null;
@@ -355,8 +368,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         .setCredentials(buildCredentials()).build();
 
     try {
-      if (logger.isDebugEnabled()) {
-        logger.debug("CLIENT deleteRecord: db={}, tx={}, rid={}", getName(), (transactionId != null), record.getIdentity());
+      if (LogManager.instance().isDebugEnabled()) {
+        LogManager.instance().log(this, Level.FINE, "CLIENT deleteRecord: db=%s, tx=%s, rid=%s", getName(), (transactionId != null), record.getIdentity());
       }
 
       final DeleteRecordResponse resp = callUnary("DeleteRecord",
@@ -368,7 +381,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
             "Failed to delete record: " + (resp.getMessage().isEmpty() ? "unknown error" : resp.getMessage()));
       }
 
-    } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+    } catch (StatusRuntimeException | StatusException e) {
       handleGrpcException(e); // rethrows mapped domain exception
       throw new IllegalStateException("unreachable");
     }
@@ -383,8 +396,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         .build();
 
     try {
-      if (logger.isDebugEnabled()) {
-        logger.debug("CLIENT deleteRecord: db={}, tx={}, rid={}, timeoutMs={}", getName(), (transactionId != null), rid, timeoutMs);
+      if (LogManager.instance().isDebugEnabled()) {
+        LogManager.instance().log(this, Level.FINE, "CLIENT deleteRecord: db=%s, tx=%s, rid=%s, timeoutMs=%s", getName(), (transactionId != null), rid, timeoutMs);
       }
 
       final DeleteRecordResponse res = callUnary("DeleteRecord",
@@ -392,7 +405,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
       return res.getDeleted();
 
-    } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+    } catch (StatusRuntimeException | StatusException e) {
       handleGrpcException(e); // rethrows mapped domain exception
       throw new IllegalStateException("unreachable");
     }
@@ -456,15 +469,15 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
     try {
 
-      if (logger.isDebugEnabled())
-        logger.debug("CLIENT executeCommand: db={}, tx={}, cmdLen={}, params={}", getName(), (transactionId != null),
+      if (LogManager.instance().isDebugEnabled())
+        LogManager.instance().log(this, Level.FINE, "CLIENT executeCommand: db=%s, tx=%s, cmdLen=%s, params=%s", getName(), (transactionId != null),
             requestBuilder.getCommand().length(), requestBuilder.getParametersCount());
 
       final ExecuteCommandResponse response = callUnary("ExecuteCommand",
           () -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).executeCommand(requestBuilder.build()));
 
-      if (logger.isDebugEnabled())
-        logger.debug("CLIENT executeCommand: success = {}", response.getSuccess());
+      if (LogManager.instance().isDebugEnabled())
+        LogManager.instance().log(this, Level.FINE, "CLIENT executeCommand: success = %s", response.getSuccess());
 
       if (!response.getSuccess()) {
         throw new DatabaseOperationException("Failed to execute command: " + response.getMessage());
@@ -489,10 +502,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       }
 
       return resultSet;
-    } catch (StatusRuntimeException e) {
-      handleGrpcException(e);
-      return new InternalResultSet();
-    } catch (StatusException e) {
+    } catch (StatusRuntimeException | StatusException e) {
       handleGrpcException(e);
       return new InternalResultSet();
     }
@@ -543,16 +553,16 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     }
 
     ProjectionSettings projectionSettings = ProjectionSettings.newBuilder()
-        .setIncludeProjections(remoteGrpcConfig.isIncludeProjections())
-        .setProjectionEncoding(remoteGrpcConfig.getProjectionEncoding())
-        .setSoftLimitBytes(Int32Value.newBuilder().setValue(remoteGrpcConfig.getSoftLimitBytes()).build()).build();
+        .setIncludeProjections(remoteGrpcConfig.includeProjections())
+        .setProjectionEncoding(remoteGrpcConfig.projectionEncoding())
+        .setSoftLimitBytes(Int32Value.newBuilder().setValue(remoteGrpcConfig.softLimitBytes()).build()).build();
 
     requestBuilder.setProjectionSettings(projectionSettings);
 
     try {
 
-      if (logger.isDebugEnabled()) {
-        logger.debug("CLIENT executeQuery: db={}, tx={}, queryLen={}, params={}", getName(), (transactionId != null),
+      if (LogManager.instance().isDebugEnabled()) {
+        LogManager.instance().log(this, Level.FINE, "CLIENT executeQuery: db=%s, tx=%s, queryLen=%s, params=%s", getName(), (transactionId != null),
             requestBuilder.getQuery().length(), requestBuilder.getParametersCount());
       }
 
@@ -562,14 +572,14 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
           () -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS) // or getTimeout(MODE_QUERY)
               .executeQuery(req));
 
-      if (logger.isDebugEnabled()) {
+      if (LogManager.instance().isDebugEnabled()) {
         int _r = 0;
         for (var qr : response.getResultsList())
           _r += qr.getRecordsCount();
-        logger.debug("CLIENT executeQuery: results={}", _r);
+        LogManager.instance().log(this, Level.FINE, "CLIENT executeQuery: results=%s", _r);
       }
       return createGrpcResultSet(response);
-    } catch (io.grpc.StatusException | io.grpc.StatusRuntimeException e) {
+    } catch (StatusException | StatusRuntimeException e) {
       handleGrpcException(e);
       return new InternalResultSet();
     }
@@ -589,7 +599,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
     var reqB = ExecuteCommandRequest.newBuilder().setDatabase(databaseName).setCommand(command)
         .putAllParameters(convertParamsToGrpcValue(params)).setLanguage(langOrDefault(language)).setReturnRows(returnRows)
-        .setMaxRows(maxRows > 0 ? maxRows : 0);
+        .setMaxRows(Math.max(maxRows, 0));
 
     if (tx != null)
       reqB.setTransaction(tx);
@@ -609,7 +619,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
     var reqB = ExecuteCommandRequest.newBuilder().setDatabase(database).setCommand(command)
         .putAllParameters(convertParamsToGrpcValue(params)).setLanguage(langOrDefault(language)).setReturnRows(returnRows)
-        .setMaxRows(maxRows > 0 ? maxRows : 0);
+        .setMaxRows(Math.max(maxRows, 0));
 
     if (tx != null)
       reqB.setTransaction(tx);
@@ -680,10 +690,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
           // Fallback for older APIs expecting (Database, String)
           return new RID(this, ridStr);
         }
-      } catch (StatusRuntimeException e) {
-        handleGrpcException(e);
-        return null;
-      } catch (StatusException e) {
+      } catch (StatusRuntimeException | StatusException e) {
         handleGrpcException(e);
         return null;
       }
@@ -767,136 +774,6 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   }
 
   /**
-   * A ResultSet implementation that lazily fetches results from a gRPC stream.
-   * Supports both Record results and projection/aggregation results.
-   */
-  private static class StreamingResultSet implements ResultSet {
-    private static final Logger logger = LoggerFactory.getLogger(StreamingResultSet.class);
-
-    private final BlockingClientCall<?, QueryResult> stream;
-    private final RemoteGrpcDatabase                 db;
-    protected     Iterator<Result>                   currentBatch    = Collections.emptyIterator();
-    private       boolean                            streamExhausted = false;
-    private       Result                             nextResult      = null;
-    private final AtomicLong                         totalProcessed  = new AtomicLong(0);
-
-    StreamingResultSet(BlockingClientCall<?, QueryResult> stream, RemoteGrpcDatabase db) {
-      this.stream = stream;
-      this.db = db;
-    }
-
-    @Override
-    public boolean hasNext() {
-      if (nextResult != null) {
-        return true;
-      }
-
-      // Try to get next from current batch
-      if (currentBatch.hasNext()) {
-        nextResult = currentBatch.next();
-        return true;
-      }
-
-      // Current batch exhausted, try to fetch next batch
-      if (streamExhausted) {
-        return false;
-      }
-
-      if (db.debugTx != null) {
-        db.checkCrossThreadUse("streamQuery.hasNext");
-      }
-
-      try {
-        while (stream.hasNext()) {
-          final QueryResult queryResult = stream.read();
-
-          if (logger.isDebugEnabled()) {
-            logger.debug("Received batch with {} records, isLastBatch={}", queryResult.getRecordsCount(),
-                queryResult.getIsLastBatch());
-          }
-
-          if (queryResult.getRecordsCount() == 0) {
-            if (queryResult.getIsLastBatch()) {
-              streamExhausted = true;
-              return false;
-            }
-            continue; // empty non-terminal batch
-          }
-
-          // Convert GrpcRecords to Results
-          currentBatch = convertBatchToResults(queryResult);
-
-          if (currentBatch.hasNext()) {
-            nextResult = currentBatch.next();
-            return true;
-          }
-        }
-
-        streamExhausted = true;
-        return false;
-
-      } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
-        db.handleGrpcException(e);
-        throw new IllegalStateException("unreachable");
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        throw new RuntimeException("Stream interrupted", e);
-      } catch (RuntimeException re) {
-        throw re;
-      } catch (Exception e) {
-        throw new RuntimeException("Stream failed", e);
-      }
-    }
-
-    /**
-     * Convert a QueryResult batch to an Iterator of Result objects
-     */
-    protected Iterator<Result> convertBatchToResults(QueryResult queryResult) {
-      List<Result> results = new ArrayList<>(queryResult.getRecordsCount());
-
-      for (GrpcRecord grpcRecord : queryResult.getRecordsList()) {
-        // Use the existing grpcRecordToResult method from RemoteGrpcDatabase
-        Result result = db.grpcRecordToResult(grpcRecord);
-        results.add(result);
-      }
-
-      return results.iterator();
-    }
-
-    @Override
-    public Result next() {
-      if (!hasNext()) {
-        throw new NoSuchElementException();
-      }
-
-      if (db.debugTx != null) {
-        db.checkCrossThreadUse("streamQuery.next");
-      }
-
-      Result result = nextResult;
-      nextResult = null;
-      totalProcessed.incrementAndGet();
-      return result;
-    }
-
-    @Override
-    public void close() {
-
-      try {
-        // Drain any remaining results
-        while (stream.hasNext()) {
-          stream.read();
-        }
-      } catch (Exception e) {
-        logger.debug("Exception while draining stream during close", e);
-      }
-
-      // BlockingClientCall doesn't implement AutoCloseable
-      // No need to cast or check instanceof
-    }
-  }
-
-  /**
    * Enhanced streaming with batch-aware ResultSet for better memory control and
    * performance monitoring.
    */
@@ -918,57 +795,6 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         () -> blockingStub.withWaitForReady().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).streamQuery(b.build()));
 
     return new BatchedStreamingResultSet(responseIterator, this);
-  }
-
-  /**
-   * A ResultSet that exposes batch boundaries for advanced use cases while
-   * maintaining the standard ResultSet interface.
-   */
-  private static class BatchedStreamingResultSet extends StreamingResultSet {
-
-    private int     currentBatchSize = 0;
-    private boolean isLastBatch      = false;
-    private long    runningTotal     = 0;
-
-    BatchedStreamingResultSet(BlockingClientCall<?, QueryResult> stream, RemoteGrpcDatabase db) {
-      super(stream, db);
-    }
-
-    @Override
-    public boolean hasNext() {
-      boolean hasMore = super.hasNext();
-
-      // Update batch info when we fetch a new batch
-      if (hasMore && currentBatch != null) {
-        // Track batch metadata here if needed
-      }
-
-      return hasMore;
-    }
-
-    @Override
-    protected Iterator<Result> convertBatchToResults(QueryResult queryResult) {
-      // Capture batch metadata
-      this.currentBatchSize = queryResult.getRecordsCount();
-      this.isLastBatch = queryResult.getIsLastBatch();
-      this.runningTotal = queryResult.getRunningTotalEmitted();
-
-      // Call parent implementation
-      return super.convertBatchToResults(queryResult);
-    }
-
-    // Additional methods for batch-aware processing
-    public long getRunningTotal() {
-      return runningTotal;
-    }
-
-    public int getCurrentBatchSize() {
-      return currentBatchSize;
-    }
-
-    public boolean isLastBatch() {
-      return isLastBatch;
-    }
   }
 
   public Iterator<QueryBatch> queryStreamBatchesIterator(final String language, final String query,
@@ -1035,7 +861,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
           drained = true;
           return false;
-        } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+        } catch (StatusRuntimeException | StatusException e) {
           handleGrpcException(e);
           throw new IllegalStateException("unreachable");
         } catch (InterruptedException ie) {
@@ -1057,49 +883,6 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         return out;
       }
     };
-  }
-
-  public static final class QueryBatch {
-    private final List<Result> results; // Changed from List<Record>
-    private final int          totalInBatch;
-    private final long         runningTotal;
-    private final boolean      lastBatch;
-
-    public QueryBatch(List<Result> results, int totalInBatch, long runningTotal, boolean lastBatch) {
-      this.results = results;
-      this.totalInBatch = totalInBatch;
-      this.runningTotal = runningTotal;
-      this.lastBatch = lastBatch;
-    }
-
-    public List<Result> results() {
-      return results;
-    }
-
-    // Backward compatibility: provide records() method that extracts Records from
-    // Results
-    @Deprecated
-    public List<Record> records() {
-      List<Record> records = new ArrayList<>(results.size());
-      for (Result result : results) {
-        if (result.isElement()) {
-          result.getRecord().ifPresent(records::add);
-        }
-      }
-      return records;
-    }
-
-    public int totalInBatch() {
-      return totalInBatch;
-    }
-
-    public long runningTotal() {
-      return runningTotal;
-    }
-
-    public boolean isLastBatch() {
-      return lastBatch;
-    }
   }
 
   public Iterator<GrpcRecord> queryStream(final String database, final String sql, final Map<String, Object> params,
@@ -1136,7 +919,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
             // else loop to fetch next batch (handles empty batches)
           }
           return false;
-        } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+        } catch (StatusRuntimeException | StatusException e) {
           handleGrpcException(e);
           throw new IllegalStateException("unreachable");
         } catch (InterruptedException ie) {
@@ -1214,8 +997,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         .setCredentials(buildCredentials()).build();
 
     try {
-      if (logger.isDebugEnabled()) {
-        logger.debug("CLIENT createRecord: db={}, txOpen={}, type={}, propCount={}, timeoutMs={}", getName(),
+      if (LogManager.instance().isDebugEnabled()) {
+        LogManager.instance().log(this, Level.FINE, "CLIENT createRecord: db=%s, txOpen=%s, type=%s, propCount=%s, timeoutMs=%s", getName(),
             (transactionId != null),
             cls, props.size(), timeoutMs);
       }
@@ -1225,7 +1008,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
       return res.getRid(); // e.g. "#12:0"
 
-    } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+    } catch (StatusRuntimeException | StatusException e) {
       handleGrpcException(e); // rethrows mapped domain exception
       throw new IllegalStateException("unreachable");
     }
@@ -1244,7 +1027,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
           () -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).createRecord(req));
       return res.getRid();
 
-    } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+    } catch (StatusRuntimeException | StatusException e) {
       handleGrpcException(e);
       throw new IllegalStateException("unreachable");
     }
@@ -1274,8 +1057,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         .setTransaction(TransactionContext.newBuilder().setBegin(true).setCommit(true)).setCredentials(buildCredentials()).build();
 
     try {
-      if (logger.isDebugEnabled()) {
-        logger.debug("CLIENT updateRecord(partial): db={}, txOpen={}, rid={}, timeoutMs={}", getName(), (transactionId != null),
+      if (LogManager.instance().isDebugEnabled()) {
+        LogManager.instance().log(this, Level.FINE, "CLIENT updateRecord(partial): db=%s, txOpen=%s, rid=%s, timeoutMs=%s", getName(), (transactionId != null),
             rid,
             timeoutMs);
       }
@@ -1286,7 +1069,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       // Most builds expose getSuccess(); if your proto has getUpdated(), swap here.
       return res.getSuccess();
 
-    } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+    } catch (StatusRuntimeException | StatusException e) {
       handleGrpcException(e); // rethrows mapped domain exception
       throw new IllegalStateException("unreachable");
     }
@@ -1305,8 +1088,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         .setTransaction(TransactionContext.newBuilder().setBegin(true).setCommit(true)).setCredentials(buildCredentials()).build();
 
     try {
-      if (logger.isDebugEnabled()) {
-        logger.debug("CLIENT updateRecord(full): db={}, txOpen={}, rid={}, timeoutMs={}", getName(), (transactionId != null), rid,
+      if (LogManager.instance().isDebugEnabled()) {
+        LogManager.instance().log(this, Level.FINE, "CLIENT updateRecord(full): db=%s, txOpen=%s, rid=%s, timeoutMs=%s", getName(), (transactionId != null), rid,
             timeoutMs);
       }
 
@@ -1315,7 +1098,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
       return res.getSuccess();
 
-    } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+    } catch (StatusRuntimeException | StatusException e) {
       handleGrpcException(e); // rethrows mapped domain exception
       throw new IllegalStateException("unreachable");
     }
@@ -1372,8 +1155,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         .setCredentials(buildCredentials()).build();
 
     try {
-      if (logger.isDebugEnabled()) {
-        logger.debug("CLIENT lookupByRID: db={}, txOpen={}, rid={}, loadContent={}, timeoutMs={}", getName(),
+      if (LogManager.instance().isDebugEnabled()) {
+        LogManager.instance().log(this, Level.FINE, "CLIENT lookupByRID: db=%s, txOpen=%s, rid=%s, loadContent=%s, timeoutMs=%s", getName(),
             (transactionId != null),
             rid, loadContent, getTimeout());
       }
@@ -1388,7 +1171,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       // record.
       return grpcRecordToDBRecord(resp.getRecord());
 
-    } catch (io.grpc.StatusException | io.grpc.StatusRuntimeException e) {
+    } catch (StatusException | StatusRuntimeException e) {
       handleGrpcException(e); // maps & rethrows proper domain exception
       throw new IllegalStateException("unreachable");
     }
@@ -1411,7 +1194,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       final long timeoutMs) {
 
     List<GrpcRecord> protoRows = rows.stream().map(this::toProtoRecordFromMap) // your converter
-        .collect(java.util.stream.Collectors.toList());
+        .collect(Collectors.toList());
 
     return insertBulk(options, protoRows, timeoutMs);
   }
@@ -1436,14 +1219,14 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     final BulkInsertRequest req = BulkInsertRequest.newBuilder().setOptions(newOptions).addAllRows(protoRows).build();
 
     try {
-      if (logger.isDebugEnabled()) {
-        logger.debug("CLIENT insertBulk: rows={}, timeoutMs={}, tx={}", req.getRowsCount(), timeoutMs, (transactionId != null));
+      if (LogManager.instance().isDebugEnabled()) {
+        LogManager.instance().log(this, Level.FINE, "CLIENT insertBulk: rows=%s, timeoutMs=%s, tx=%s", req.getRowsCount(), timeoutMs, (transactionId != null));
       }
 
       // use callUnary so tx cross-thread checks + rpcSeq happen in one place
       return callUnary("BulkInsert", () -> blockingStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).bulkInsert(req));
 
-    } catch (io.grpc.StatusRuntimeException | io.grpc.StatusException e) {
+    } catch (StatusRuntimeException | StatusException e) {
       handleGrpcException(e); // maps to your domain exceptions and rethrows
       throw new IllegalStateException("unreachable"); // keep compiler happy
     }
@@ -1454,7 +1237,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       final int chunkSize,
       final long timeoutMs) throws InterruptedException {
 
-    List<GrpcRecord> protoRows = rows.stream().map(this::toProtoRecordFromMap).collect(java.util.stream.Collectors.toList());
+    List<GrpcRecord> protoRows = rows.stream().map(this::toProtoRecordFromMap).collect(Collectors.toList());
 
     return ingestStream(options, protoRows, chunkSize, timeoutMs);
   }
@@ -1501,8 +1284,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       }
     };
 
-    if (logger.isDebugEnabled()) {
-      logger.debug("CLIENT ingestStream: db={}, rows={}, chunkSize={}, timeoutMs={}", getName(), protoRows.size(), chunkSize,
+    if (LogManager.instance().isDebugEnabled()) {
+      LogManager.instance().log(this, Level.FINE, "CLIENT ingestStream: db=%s, rows=%s, chunkSize=%s, timeoutMs=%s", getName(), protoRows.size(), chunkSize,
           timeoutMs);
     }
 
@@ -1553,8 +1336,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       s = InsertSummary.newBuilder().setReceived(sent).build();
     }
 
-    if (logger.isDebugEnabled()) {
-      logger.debug("CLIENT ingestStream: completed; received={}", s.getReceived());
+    if (LogManager.instance().isDebugEnabled()) {
+      LogManager.instance().log(this, Level.FINE, "CLIENT ingestStream: completed; received=%s", s.getReceived());
     }
 
     return s;
@@ -1564,14 +1347,14 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    * Pushes domain {@code com.arcadedb.database.Record} rows via
    * InsertBidirectional with per-batch ACKs.
    */
-  public InsertSummary ingestBidi(final List<com.arcadedb.database.Record> rows, final InsertOptions opts, final int chunkSize,
+  public InsertSummary ingestBidi(final List<Record> rows, final InsertOptions opts, final int chunkSize,
       final int maxInflight, final long timeoutMs) throws InterruptedException {
 
     return ingestBidiCore(rows, opts, chunkSize, maxInflight, timeoutMs,
-        (Object o) -> toProtoRecordFromDbRecord((com.arcadedb.database.Record) o));
+        (Object o) -> toProtoRecordFromDbRecord((Record) o));
   }
 
-  public InsertSummary ingestBidi(final List<com.arcadedb.database.Record> rows, final InsertOptions opts, final int chunkSize,
+  public InsertSummary ingestBidi(final List<Record> rows, final InsertOptions opts, final int chunkSize,
       final int maxInflight) throws InterruptedException {
 
     return ingestBidiCore(rows, opts, chunkSize, maxInflight, /* timeoutMs */ 5 * 60_000L, this::toProtoRecordFromDbRecord);
@@ -1599,7 +1382,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   private <T> InsertSummary ingestBidiCore(final List<T> rows, final InsertOptions options, final int chunkSize,
       final int maxInflight,
-      final long timeoutMs, final java.util.function.Function<? super T, GrpcRecord> mapper) throws InterruptedException {
+      final long timeoutMs, final Function<? super T, GrpcRecord> mapper) throws InterruptedException {
 
     // Fast-path & guards
     if (rows == null || rows.isEmpty())
@@ -1618,28 +1401,28 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     final InsertOptions effectiveOpts = ob.build();
 
     // Pre-map rows → proto
-    final List<GrpcRecord> protoRows = rows.stream().map(mapper).collect(java.util.stream.Collectors.toList());
+    final List<GrpcRecord> protoRows = rows.stream().map(mapper).collect(Collectors.toList());
 
-    if (logger.isDebugEnabled()) {
-      logger.debug("CLIENT ingestBidi start: rows={}, chunkSize={}, maxInflight={}, timeoutMs={}", protoRows.size(), chunkSize,
+    if (LogManager.instance().isDebugEnabled()) {
+      LogManager.instance().log(this, Level.FINE, "CLIENT ingestBidi start: rows=%s, chunkSize=%s, maxInflight=%s, timeoutMs=%s", protoRows.size(), chunkSize,
           maxInflight, timeoutMs);
     }
 
     // --- streaming state
     final String sessionId = "sess-" + System.nanoTime();
-    final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-    final java.util.concurrent.atomic.AtomicReference<Throwable> errRef = new java.util.concurrent.atomic.AtomicReference<>();
-    final java.util.concurrent.atomic.AtomicLong seq = new java.util.concurrent.atomic.AtomicLong(1);
-    final java.util.concurrent.atomic.AtomicInteger cursor = new java.util.concurrent.atomic.AtomicInteger(0);
-    final java.util.concurrent.atomic.AtomicInteger sent = new java.util.concurrent.atomic.AtomicInteger(0);
-    final java.util.concurrent.atomic.AtomicInteger acked = new java.util.concurrent.atomic.AtomicInteger(0);
-    final java.util.concurrent.atomic.AtomicReference<InsertSummary> committed = new java.util.concurrent.atomic.AtomicReference<>();
-    final List<BatchAck> acks = java.util.Collections.synchronizedList(new ArrayList<>());
+    final CountDownLatch done = new CountDownLatch(1);
+    final AtomicReference<Throwable> errRef = new AtomicReference<>();
+    final AtomicLong seq = new AtomicLong(1);
+    final AtomicInteger cursor = new AtomicInteger(0);
+    final AtomicInteger sent = new AtomicInteger(0);
+    final AtomicInteger acked = new AtomicInteger(0);
+    final AtomicReference<InsertSummary> committed = new AtomicReference<>();
+    final List<BatchAck> acks = Collections.synchronizedList(new ArrayList<>());
 
-    final java.util.concurrent.atomic.AtomicReference<ClientCallStreamObserver<InsertRequest>> observerRef = new java.util.concurrent.atomic.AtomicReference<>();
+    final AtomicReference<ClientCallStreamObserver<InsertRequest>> observerRef = new AtomicReference<>();
 
-    final java.util.concurrent.atomic.AtomicBoolean commitSent = new java.util.concurrent.atomic.AtomicBoolean(false);
-    final java.util.concurrent.ScheduledExecutorService scheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(
+    final AtomicBoolean commitSent = new AtomicBoolean(false);
+    final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(
         r -> {
           Thread t = new Thread(r, "grpc-ack-grace-timer");
           t.setDaemon(true);
@@ -1647,7 +1430,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         });
     final long ackGraceMillis = Math.min(Math.max(timeoutMs / 10, 1_000L), 10_000L);
     final Object timerLock = new Object();
-    final java.util.concurrent.atomic.AtomicReference<java.util.concurrent.ScheduledFuture<?>> ackGraceFuture = new java.util.concurrent.atomic.AtomicReference<>();
+    final AtomicReference<ScheduledFuture<?>> ackGraceFuture = new AtomicReference<>();
 
     final Runnable sendCommitIfNeeded = () -> {
       if (commitSent.compareAndSet(false, true)) {
@@ -1756,7 +1539,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         }
         case ERROR -> {
           // surface as error; caller will map/throw after await
-          errRef.set(new StatusRuntimeException(io.grpc.Status.INTERNAL.withDescription(v.getError().getMessage())));
+          errRef.set(new StatusRuntimeException(Status.INTERNAL.withDescription(v.getError().getMessage())));
           cancelAckGraceTimer.run();
           try {
             req.cancel("server ERROR", null);
@@ -1815,9 +1598,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         throw new RemoteException("gRPC bidi stream failed: " + err.getMessage(), err);
       }
 
-      if (logger.isDebugEnabled()) {
+      if (LogManager.instance().isDebugEnabled()) {
         try {
-          logger.debug("CLIENT ingestBidi finished: sent={}, acked={}", sent.get(), acked.get());
+          LogManager.instance().log(this, Level.FINE, "CLIENT ingestBidi finished: sent=%s, acked=%s", sent.get(), acked.get());
         } catch (Throwable ignore) {
         }
       }
@@ -1844,17 +1627,17 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     GrpcRecord.Builder b = GrpcRecord.newBuilder();
     row.forEach((k, v) -> b.putProperties(k, objectToGrpcValue(v)));
     GrpcRecord rec = b.build();
-    if (logger.isDebugEnabled())
-      logger.debug("CLIENT toProtoRecordFromMap: {}", summarize(rec));
+    if (LogManager.instance().isDebugEnabled())
+      LogManager.instance().log(this, Level.FINE, "CLIENT toProtoRecordFromMap: %s", summarize(rec));
     return rec;
   }
 
   // Domain Record (storage) -> GrpcRecord
-  private GrpcRecord toProtoRecordFromDbRecord(com.arcadedb.database.Record rec) {
+  private GrpcRecord toProtoRecordFromDbRecord(Record rec) {
     // Use ProtoUtils for proper conversion
     GrpcRecord out = ProtoUtils.toProtoRecord(rec);
-    if (logger.isDebugEnabled())
-      logger.debug("CLIENT toProtoRecordFromDbRecord: {}", summarize(out));
+    if (LogManager.instance().isDebugEnabled())
+      LogManager.instance().log(this, Level.FINE, "CLIENT toProtoRecordFromDbRecord: %s", summarize(out));
     return out;
   }
 
@@ -1922,9 +1705,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
             currentBatch = result.getRecordsList().iterator();
             return currentBatch.hasNext();
           }
-        } catch (InterruptedException e) {
-          throw new RuntimeException(e);
-        } catch (StatusException e) {
+        } catch (InterruptedException | StatusException e) {
           throw new RuntimeException(e);
         }
 
@@ -1959,7 +1740,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     return resultSet;
   }
 
-  private Result grpcRecordToResult(GrpcRecord grpcRecord) {
+  Result grpcRecordToResult(GrpcRecord grpcRecord) {
 
     Record record = grpcRecordToDBRecord(grpcRecord);
 
@@ -1989,39 +1770,22 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     String cat = null;
 
     if (catFromGrpcRecord != null) {
-
       cat = catFromGrpcRecord.getStringValue();
     } else {
-
       cat = mapRecordType(grpcRecord);
     }
 
     if (cat != null) {
-
       map.put("@cat", cat);
     }
-
-    if (cat == null) {
-
+    if (cat == null)
       return null;
-    }
-
-    switch (cat) {
-    case "d":
-
-      return new RemoteImmutableDocument(this, map);
-
-    case "v":
-
-      return new RemoteImmutableVertex(this, map);
-
-    case "e":
-
-      return new RemoteImmutableEdge(this, map);
-
-    default:
-      return null;
-    }
+    return switch (cat) {
+      case "d" -> new RemoteImmutableDocument(this, map);
+      case "v" -> new RemoteImmutableVertex(this, map);
+      case "e" -> new RemoteImmutableEdge(this, map);
+      default -> null;
+    };
   }
 
   private String mapRecordType(GrpcRecord grpcRecord) {
@@ -2036,13 +1800,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
         Object type = getSchema().getType(typeName);
 
-        if (type instanceof com.arcadedb.schema.VertexType) {
+        if (type instanceof VertexType) {
 
           return "v";
-        } else if (type instanceof com.arcadedb.schema.EdgeType) {
+        } else if (type instanceof EdgeType) {
 
           return "e";
-        } else if (type instanceof com.arcadedb.schema.DocumentType) {
+        } else if (type instanceof DocumentType) {
 
           return "d";
         } else {
@@ -2072,14 +1836,14 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   private Object grpcValueToObject(GrpcValue grpcValue) {
     Object out = ProtoUtils.fromGrpcValue(grpcValue);
-    if (logger.isDebugEnabled())
-      logger.debug("CLIENT decode grpcValueToObject: {} -> {}", summarize(grpcValue), summarize(out));
+    if (LogManager.instance().isDebugEnabled())
+      LogManager.instance().log(this, Level.FINE, "CLIENT decode grpcValueToObject: %s -> %s", summarize(grpcValue), summarize(out));
     return out;
   }
 
-  private void handleGrpcException(Throwable e) {
+  void handleGrpcException(Throwable e) {
     // Works for StatusException, StatusRuntimeException, and anything else
-    io.grpc.Status status = io.grpc.Status.fromThrowable(e);
+    Status status = Status.fromThrowable(e);
     String msg = status.getDescription() != null ? status.getDescription() : status.getCode().name();
 
     switch (status.getCode()) {
@@ -2116,9 +1880,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         return "String(" + s.length() + ")";
       if (o instanceof byte[] b)
         return "bytes[" + b.length + "]";
-      if (o instanceof java.util.Collection<?> c)
+      if (o instanceof Collection<?> c)
         return o.getClass().getSimpleName() + "[size=" + c.size() + "]";
-      if (o instanceof java.util.Map<?, ?> m)
+      if (o instanceof Map<?, ?> m)
         return o.getClass().getSimpleName() + "[size=" + m.size() + "]";
       return o.getClass().getSimpleName();
     } catch (Exception e) {
@@ -2158,25 +1922,6 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   // RemoteGrpcDatabase.java
 
-  // ---- fields ----
-  private volatile TxDebug debugTx;
-
-  private static final class TxDebug {
-    final    long                                   id          = System.nanoTime(); // local correlation id
-    final    Thread                                 ownerThread = Thread.currentThread();
-    final    String                                 dbName;
-    volatile String                                 txLabel; // optional
-    final    Exception                              beginSite   = new Exception("begin site"); // capture stack
-    final    java.util.concurrent.atomic.AtomicLong rpcSeq      = new java.util.concurrent.atomic.AtomicLong();
-    volatile boolean                                beginRpcSent, committed, rolledBack;
-
-    @SuppressWarnings("unused")
-    TxDebug(String db, String label) {
-      this.dbName = db;
-      this.txLabel = label;
-    }
-  }
-
   // one place to handle JDK 17/21 differences
   private static String tidName(Thread t) {
     try {
@@ -2213,33 +1958,33 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   }
 
   private void logTx(String phase, String rpcOp) {
-    if (debugTx == null || !logger.isDebugEnabled())
+    if (debugTx == null || !LogManager.instance().isDebugEnabled())
       return;
     TxDebug d = debugTx;
-    logger.debug("TXDBG {} db={} tx#{} label={} owner={} now={} rpcOp={} rpcSeq={} beginSent={} committed={} rolledBack={}", phase,
+    LogManager.instance().log(this, Level.FINE, "TXDBG %s db=%s tx#%s label=%s owner=%s now=%s rpcOp=%s rpcSeq=%s beginSent=%s committed=%s rolledBack=%s", phase,
         d.dbName,
         d.id, d.txLabel, tidName(d.ownerThread), tidName(Thread.currentThread()), rpcOp, d.rpcSeq.get(), d.beginRpcSent,
         d.committed,
         d.rolledBack);
   }
 
-  private void checkCrossThreadUse(String where) {
+  void checkCrossThreadUse(String where) {
     TxDebug d = debugTx;
     if (d == null)
       return;
     Thread now = Thread.currentThread();
     if (now != d.ownerThread) {
-      logger.warn("TXDBG CROSS-THREAD {} db={} tx#{} owner={} now={} label={} (begin site follows)", where, d.dbName, d.id,
+      LogManager.instance().log(this, Level.WARNING, "TXDBG CROSS-THREAD %s db=%s tx#%s owner=%s now=%s label=%s (begin site follows)", where, d.dbName, d.id,
           tidName(d.ownerThread), tidName(now), d.txLabel, d.beginSite);
     }
   }
 
   @FunctionalInterface
   private interface Rpc<T> {
-    T run() throws io.grpc.StatusException; // V2 throws this; v1 lambdas compile fine too
+    T run() throws StatusException; // V2 throws this; v1 lambdas compile fine too
   }
 
-  private <Resp> Resp callUnary(String opName, Rpc<Resp> rpc) throws io.grpc.StatusException {
+  private <Resp> Resp callUnary(String opName, Rpc<Resp> rpc) throws StatusException {
     if (debugTx != null) {
       checkCrossThreadUse("RPC " + opName);
       logTx("RPC(local)", opName);
@@ -2277,7 +2022,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         debugTx.rpcSeq.incrementAndGet();
       }
       return it;
-    } catch (io.grpc.StatusRuntimeException e) {
+    } catch (StatusRuntimeException e) {
       handleGrpcException(e); // rethrows mapped runtime exception
       throw new IllegalStateException("unreachable");
     }
@@ -2286,13 +2031,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   // For async "client-streaming" and "bidirectional" calls that RETURN a request
   // StreamObserver
   private <Req, Resp> StreamObserver<Req> callAsyncDuplex(String opName, long timeoutMs,
-      java.util.function.BiFunction<ArcadeDbServiceGrpc.ArcadeDbServiceStub, StreamObserver<Resp>, StreamObserver<Req>> starter,
+      BiFunction<ArcadeDbServiceGrpc.ArcadeDbServiceStub, StreamObserver<Resp>, StreamObserver<Req>> starter,
       StreamObserver<Resp> responseObserver) {
     if (debugTx != null) {
       checkCrossThreadUse("STREAM " + opName);
       logTx("STREAM(local)", opName);
     }
-    final var stub = asyncStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+    final var stub = asyncStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS);
     StreamObserver<Req> reqObs = starter.apply(stub, wrapObserver(opName, responseObserver));
     if (debugTx != null) {
       debugTx.rpcSeq.incrementAndGet();
@@ -2303,13 +2048,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   // For async "server-streaming" calls that take (request, responseObserver) and
   // return void
   private <Req, Resp> void callAsyncServerStreaming(String opName, long timeoutMs, Req request,
-      java.util.function.BiConsumer<ArcadeDbServiceGrpc.ArcadeDbServiceStub, StreamObserver<Resp>> invoker,
+      BiConsumer<ArcadeDbServiceGrpc.ArcadeDbServiceStub, StreamObserver<Resp>> invoker,
       StreamObserver<Resp> responseObserver) {
     if (debugTx != null) {
       checkCrossThreadUse("STREAM " + opName);
       logTx("STREAM(local)", opName);
     }
-    final var stub = asyncStub.withDeadlineAfter(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+    final var stub = asyncStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS);
     invoker.accept(stub, wrapObserver(opName, responseObserver));
     if (debugTx != null) {
       debugTx.rpcSeq.incrementAndGet();
@@ -2348,7 +2093,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   private <Req, Resp> ClientResponseObserver<Req, Resp> wrapObserver(String opName, ClientResponseObserver<Req, Resp> delegate) {
     return new ClientResponseObserver<>() {
       @Override
-      public void beforeStart(io.grpc.stub.ClientCallStreamObserver<Req> r) {
+      public void beforeStart(ClientCallStreamObserver<Req> r) {
         // pass through; your delegate may set onReady handler, request(n), etc.
         delegate.beforeStart(r);
       }
@@ -2394,9 +2139,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       public void onError(Throwable t) {
         // Normalize gRPC errors through your handler, then pass the mapped exception
         try {
-          if (t instanceof io.grpc.StatusRuntimeException sre) {
+          if (t instanceof StatusRuntimeException sre) {
             handleGrpcException(sre); // throws
-          } else if (t instanceof io.grpc.StatusException se) {
+          } else if (t instanceof StatusException se) {
             handleGrpcException(se); // throws
           }
           // Non-gRPC error: forward as-is

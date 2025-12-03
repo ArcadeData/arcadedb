@@ -25,7 +25,7 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>25.9.1-SNAPSHOT</version>
+        <version>25.11.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -36,11 +36,12 @@
     <properties>
         <javacc-maven-plugin.version>3.1.1</javacc-maven-plugin.version>
         <disruptor.version>1.2.21</disruptor.version>
-        <gson.version>2.13.1</gson.version>
+        <gson.version>2.13.2</gson.version>
         <lz4-java.version>1.8.0</lz4-java.version>
-        <lucene.version>10.2.2</lucene.version>
-        <graalvm.version>24.2.2</graalvm.version>
+        <lucene.version>10.3.2</lucene.version>
+        <graalvm.version>25.0.1</graalvm.version>
         <hnswlib.version>1.1.0</hnswlib.version>
+        <jvector.version>4.0.0-rc.6</jvector.version>
         <spatial4j.version>0.8</spatial4j.version>
         <jts-core.version>1.20.0</jts-core.version>
     </properties>
@@ -140,6 +141,16 @@
             <groupId>com.github.jelmerk</groupId>
             <artifactId>hnswlib-core</artifactId>
             <version>${hnswlib.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.jbellis</groupId>
+            <artifactId>jvector</artifactId>
+            <version>${jvector.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-jdk14</artifactId>
+            <version>${slf4j.version}</version>
         </dependency>
         <dependency>
             <groupId>org.graalvm.sdk</groupId>

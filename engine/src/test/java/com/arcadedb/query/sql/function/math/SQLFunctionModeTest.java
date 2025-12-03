@@ -26,23 +26,23 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class SQLFunctionModeTest {
+class SQLFunctionModeTest {
 
   private SQLFunctionMode mode;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     mode = new SQLFunctionMode();
   }
 
   @Test
-  public void testEmpty() {
+  void empty() {
     final Object result = mode.getResult();
     assertThat(result).isNull();
   }
 
   @Test
-  public void testSingleMode() {
+  void singleMode() {
     final int[] scores = { 1, 2, 3, 3, 3, 2 };
 
     for (final int s : scores) {
@@ -54,7 +54,7 @@ public class SQLFunctionModeTest {
   }
 
   @Test
-  public void testMultiMode() {
+  void multiMode() {
     final int[] scores = { 1, 2, 3, 3, 3, 2, 2 };
 
     for (final int s : scores) {
@@ -69,7 +69,7 @@ public class SQLFunctionModeTest {
   }
 
   @Test
-  public void testMultiValue() {
+  void multiValue() {
     final List[] scores = new List[2];
     scores[0] = Arrays.asList(1, 2, null, 3, 4);
     scores[1] = Arrays.asList(1, 1, 1, 2, null);

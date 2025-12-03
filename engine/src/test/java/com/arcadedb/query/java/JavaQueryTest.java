@@ -1,3 +1,21 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.arcadedb.query.java;
 
 import com.arcadedb.TestHelper;
@@ -8,8 +26,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.*;
 
 class JavaMethods {
   public JavaMethods() {
@@ -28,9 +45,9 @@ class JavaMethods {
   }
 }
 
-public class JavaQueryTest extends TestHelper {
+class JavaQueryTest extends TestHelper {
   @Test
-  public void testRegisteredMethod() {
+  void registeredMethod() {
     assertThat(database.getQueryEngine("java").getLanguage()).isEqualTo("java");
 
     database.getQueryEngine("java").registerFunctions("com.arcadedb.query.java.JavaMethods::sum");
@@ -41,7 +58,7 @@ public class JavaQueryTest extends TestHelper {
   }
 
   @Test
-  public void testRegisteredMethods() {
+  void registeredMethods() {
     database.getQueryEngine("java").registerFunctions("com.arcadedb.query.java.JavaMethods::sum");
     database.getQueryEngine("java").registerFunctions("com.arcadedb.query.java.JavaMethods::SUM");
 
@@ -57,7 +74,7 @@ public class JavaQueryTest extends TestHelper {
   }
 
   @Test
-  public void testRegisteredClass() {
+  void registeredClass() {
     database.getQueryEngine("java").registerFunctions("com.arcadedb.query.java.JavaMethods");
 
     ResultSet result = database.command("java", "com.arcadedb.query.java.JavaMethods::sum", 5, 3);
@@ -72,7 +89,7 @@ public class JavaQueryTest extends TestHelper {
   }
 
   @Test
-  public void testUnRegisteredMethod() {
+  void unRegisteredMethod() {
     try {
       database.command("java", "com.arcadedb.query.java.JavaMethods::sum", 5, 3);
       fail("");
@@ -83,7 +100,7 @@ public class JavaQueryTest extends TestHelper {
   }
 
   @Test
-  public void testNotExistentMethod() {
+  void notExistentMethod() {
     database.getQueryEngine("java").registerFunctions("com.arcadedb.query.java.JavaMethods");
     try {
       database.command("java", "com.arcadedb.query.java.JavaMethods::totallyInvented", 5, 3);
@@ -95,7 +112,7 @@ public class JavaQueryTest extends TestHelper {
   }
 
   @Test
-  public void testAnalyzeQuery() {
+  void analyzeQuery() {
     database.getQueryEngine("java").registerFunctions("com.arcadedb.query.java.JavaMethods");
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("java").analyze("com.arcadedb.query.java.JavaMethods::totallyInvented");
     assertThat(analyzed.isDDL()).isFalse();
@@ -103,31 +120,18 @@ public class JavaQueryTest extends TestHelper {
   }
 
   @Test
-  public void testUnsupportedMethods() {
+  void unsupportedMethods() {
     database.getQueryEngine("java").registerFunctions("com.arcadedb.query.java.JavaMethods");
-    try {
-      database.query("java", "com.arcadedb.query.java.JavaMethods::sum", 5, 3);
-      fail("");
-    } catch (final UnsupportedOperationException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> database.query("java", "com.arcadedb.query.java.JavaMethods::sum", 5, 3)).isInstanceOf(UnsupportedOperationException.class);
 
     database.getQueryEngine("java").registerFunctions("com.arcadedb.query.java.JavaMethods");
-    try {
+    assertThatThrownBy(() -> {
       final HashMap map = new HashMap();
       map.put("name", 1);
       database.getQueryEngine("java").command("com.arcadedb.query.java.JavaMethods::hello", null, map);
-      fail("");
-    } catch (final UnsupportedOperationException e) {
-      // EXPECTED
-    }
+    }).isInstanceOf(UnsupportedOperationException.class);
 
     database.getQueryEngine("java").registerFunctions("com.arcadedb.query.java.JavaMethods");
-    try {
-      database.getQueryEngine("java").query("com.arcadedb.query.java.JavaMethods::sum", null, new HashMap<>());
-      fail("");
-    } catch (final UnsupportedOperationException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> database.getQueryEngine("java").query("com.arcadedb.query.java.JavaMethods::sum", null, new HashMap<>())).isInstanceOf(UnsupportedOperationException.class);
   }
 }

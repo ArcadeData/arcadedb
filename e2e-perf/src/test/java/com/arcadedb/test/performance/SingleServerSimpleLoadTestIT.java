@@ -1,28 +1,49 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.arcadedb.test.performance;
 
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
+import com.arcadedb.test.support.ServerWrapper;
 import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-import org.testcontainers.containers.GenericContainer;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
-import java.io.IOException;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-public class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
+class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
 
-  @Test
   @DisplayName("Single server load test")
-  void singleServerLoadTest() throws InterruptedException, IOException {
+  @ParameterizedTest
+  @EnumSource(DatabaseWrapper.Protocol.class)
+    //to eneable only one protocol use the following annotation
+    //@EnumSource(value = DatabaseWrapper.Protocol.class, names = "GRPC")
+  void singleServerLoadTest(DatabaseWrapper.Protocol protocol) throws Exception {
 
-    GenericContainer<?> arcadeContainer = createArcadeContainer("arcade", "none", "none", "any", false, network);
+    createArcadeContainer("arcade", "none", "none", "any", false, network);
 
-    startContainers();
-    String host = arcadeContainer.getHost();
-    int port = arcadeContainer.getMappedPort(2480);
-    DatabaseWrapper db = new DatabaseWrapper(host, port, idSupplier);
+    List<ServerWrapper> serverWrappers = startContainers();
+    ServerWrapper server = serverWrappers.getFirst();
+    DatabaseWrapper db = new DatabaseWrapper(server, idSupplier, protocol);
     db.createDatabase();
     db.createSchema();
 
@@ -38,7 +59,7 @@ public class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
     for (int i = 0; i < numOfThreads; i++) {
       // Each thread will create users and photos
       executor.submit(() -> {
-        DatabaseWrapper db1 = new DatabaseWrapper(host, port, idSupplier);
+        DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier, protocol);
         db1.addUserAndPhotos(numOfUsers, numOfPhotos);
         db1.close();
       });

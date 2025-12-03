@@ -26,13 +26,13 @@ import com.arcadedb.schema.DocumentType;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.*;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThat;
 
-public class CheckRecordTypeStepTest {
+class CheckRecordTypeStepTest {
 
   @Test
-  public void shouldCheckRecordsOfOneType() throws Exception {
+  void shouldCheckRecordsOfOneType() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
       final String className = TestHelper.createRandomType(db).getName();
 
@@ -64,7 +64,7 @@ public class CheckRecordTypeStepTest {
   }
 
   @Test
-  public void shouldCheckRecordsOfSubclasses() throws Exception {
+  void shouldCheckRecordsOfSubclasses() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
       final CommandContext context = new BasicCommandContext();
       final DocumentType parentClass = TestHelper.createRandomType(db);
@@ -96,41 +96,35 @@ public class CheckRecordTypeStepTest {
   }
 
   @Test
-  public void shouldThrowExceptionWhenTypeIsDifferent() throws Exception {
-    try {
-      TestHelper.executeInNewDatabase((db) -> {
-        final CommandContext context = new BasicCommandContext();
-        final String firstClassName = TestHelper.createRandomType(db).getName();
-        final String secondClassName = TestHelper.createRandomType(db).getName();
-        final CheckRecordTypeStep step = new CheckRecordTypeStep(context, firstClassName);
-        final AbstractExecutionStep previous = new AbstractExecutionStep(context) {
-          boolean done = false;
+  void shouldThrowExceptionWhenTypeIsDifferent() throws Exception {
+    assertThatThrownBy(() -> TestHelper.executeInNewDatabase((db) -> {
+      final CommandContext context = new BasicCommandContext();
+      final String firstClassName = TestHelper.createRandomType(db).getName();
+      final String secondClassName = TestHelper.createRandomType(db).getName();
+      final CheckRecordTypeStep step = new CheckRecordTypeStep(context, firstClassName);
+      final AbstractExecutionStep previous = new AbstractExecutionStep(context) {
+        boolean done = false;
 
-          @Override
-          public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-            final InternalResultSet result = new InternalResultSet();
-            if (!done) {
-              for (int i = 0; i < 10; i++) {
-                final ResultInternal item = new ResultInternal();
-                item.setElement(db.newDocument(i % 2 == 0 ? firstClassName : secondClassName));
-                result.add(item);
-              }
-              done = true;
+        @Override
+        public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+          final InternalResultSet result = new InternalResultSet();
+          if (!done) {
+            for (int i = 0;i < 10;i++) {
+              final ResultInternal item = new ResultInternal();
+              item.setElement(db.newDocument(i % 2 == 0 ? firstClassName : secondClassName));
+              result.add(item);
             }
-            return result;
+            done = true;
           }
-        };
-
-        step.setPrevious(previous);
-        final ResultSet result = step.syncPull(context, 20);
-        while (result.hasNext()) {
-          result.next();
+          return result;
         }
-      });
-      fail("Expected CommandExecutionException");
+      };
 
-    } catch (final CommandExecutionException e) {
-      // OK
-    }
+      step.setPrevious(previous);
+      final ResultSet result = step.syncPull(context, 20);
+      while (result.hasNext()) {
+        result.next();
+      }
+    })).isInstanceOf(CommandExecutionException.class);
   }
 }

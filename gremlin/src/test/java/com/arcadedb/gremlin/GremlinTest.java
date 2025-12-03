@@ -1,22 +1,20 @@
 /*
- * Copyright 2023 Arcade Data Ltd
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
  */
 package com.arcadedb.gremlin;
 
@@ -46,16 +44,16 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests execution of gremlin queries as text.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class GremlinTest {
+class GremlinTest {
   @Test
-  public void testGremlin() {
+  void gremlin() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
 
@@ -93,7 +91,7 @@ public class GremlinTest {
   }
 
   @Test
-  public void testGremlinTargetingBuckets() {
+  void gremlinTargetingBuckets() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
 
@@ -138,7 +136,7 @@ public class GremlinTest {
   }
 
   @Test
-  public void testGremlinCountNotDefinedTypes() {
+  void gremlinCountNotDefinedTypes() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       assertThat((Long) graph.gremlin("g.V().hasLabel ( 'foo-label' ).count ()").execute().nextIfAvailable().getProperty("result")).isEqualTo(0);
@@ -151,7 +149,7 @@ public class GremlinTest {
   }
 
   @Test
-  public void testGremlinEmbeddedDocument() {
+  void gremlinEmbeddedDocument() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
 
@@ -188,7 +186,7 @@ public class GremlinTest {
    * Issue https://github.com/ArcadeData/arcadedb/issues/500
    */
   @Test
-  public void testGremlinIssue500() {
+  void gremlinIssue500() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
 
@@ -212,7 +210,7 @@ public class GremlinTest {
   }
 
   @Test
-  public void testGremlinLoadByRID() {
+  void gremlinLoadByRID() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
 
@@ -236,7 +234,7 @@ public class GremlinTest {
   }
 
   @Test
-  public void testGremlinFromDatabase() {
+  void gremlinFromDatabase() {
     final Database database = new DatabaseFactory("./target/testgremlin").create();
     try {
 
@@ -273,20 +271,15 @@ public class GremlinTest {
   }
 
   @Test
-  public void testCypherSyntaxError() {
+  void cypherSyntaxError() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
 
       graph.getDatabase().getSchema().createVertexType("Person");
 
-      try {
-        graph.getDatabase().query("gremlin",
-            "g.V().as('p').hasLabel22222('Person').where(__.choose(__.constant(p1), __.constant(p1), __.constant('  cypher.null')).is(neq('  cypher.null')).as('  GENERATED1').select('p').values('age').where(gte('  GENERATED1'))).select('p').project('p.name', 'p.age').by(__.choose(neq('  cypher.null'), __.choose(__.values('name'), __.values('name'), __.constant('  cypher.null')))).by(__.choose(neq('  cypher.null'), __.choose(__.values('age'), __.values('age'), __.constant('  cypher.null')))).order().by(__.select('p.age'), asc)",
-            "p1", 25);
-        fail("");
-      } catch (final CommandParsingException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> graph.getDatabase().query("gremlin",
+        "g.V().as('p').hasLabel22222('Person').where(__.choose(__.constant(p1), __.constant(p1), __.constant('  cypher.null')).is(neq('  cypher.null')).as('  GENERATED1').select('p').values('age').where(gte('  GENERATED1'))).select('p').project('p.name', 'p.age').by(__.choose(neq('  cypher.null'), __.choose(__.values('name'), __.values('name'), __.constant('  cypher.null')))).by(__.choose(neq('  cypher.null'), __.choose(__.values('age'), __.values('age'), __.constant('  cypher.null')))).order().by(__.select('p.age'), asc)",
+        "p1", 25)).isInstanceOf(CommandParsingException.class);
 
     } finally {
       graph.drop();
@@ -294,7 +287,7 @@ public class GremlinTest {
   }
 
   @Test
-  public void testGremlinParse() {
+  void gremlinParse() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
 
@@ -315,7 +308,7 @@ public class GremlinTest {
   }
 
   @Test
-  public void testGremlinLists() {
+  void gremlinLists() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       final ResultSet result = graph.gremlin("g.addV('Person').property( 'list', ['a', 'b'] )").execute();
@@ -334,7 +327,7 @@ public class GremlinTest {
   }
 
   @Test
-  public void testUseIndex() {
+  void useIndex() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       graph.getDatabase().getSchema().getOrCreateVertexType("Person").getOrCreateProperty("id", Type.STRING)
@@ -354,7 +347,7 @@ public class GremlinTest {
   }
 
   @Test
-  public void labelExists() {
+  void labelExists() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       graph.traversal().V().hasLabel("Car").forEachRemaining(System.out::println);
@@ -366,7 +359,7 @@ public class GremlinTest {
   // ISSUE: https://github.com/ArcadeData/arcadedb/issues/289
   @Disabled
   @Test
-  public void infinityValue() {
+  void infinityValue() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       final Vertex alice = graph.addVertex("person");
@@ -387,7 +380,7 @@ public class GremlinTest {
 
   // ISSUE: https://github.com/ArcadeData/arcadedb/issues/690
   @Test
-  public void testVertexConstraints() {
+  void vertexConstraints() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       final VertexType type = graph.getDatabase().getSchema().getOrCreateVertexType("ChipID");
@@ -406,7 +399,7 @@ public class GremlinTest {
 
   // ISSUE: https://github.com/ArcadeData/arcadedb/issues/290
   @Test
-  public void sort() {
+  void sort() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       graph.getDatabase().getSchema().getOrCreateVertexType("Person");
@@ -432,7 +425,7 @@ public class GremlinTest {
 
   // ISSUE: https://github.com/ArcadeData/arcadedb/issues/911
   @Test
-  public void testLongOverflow() {
+  void longOverflow() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       Result value = graph.gremlin("g.inject(Long.MAX_VALUE, 0).sum()").execute().nextIfAvailable();
@@ -450,7 +443,7 @@ public class GremlinTest {
 
   // ISSUE: https://github.com/ArcadeData/arcadedb/issues/912
   @Test
-  public void testNumberConversion() {
+  void numberConversion() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       Result value = graph.gremlin("g.inject(1).size()").execute().nextIfAvailable();
@@ -461,7 +454,7 @@ public class GremlinTest {
   }
 
   @Test
-  public void testGroupBy() {
+  void groupBy() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       graph.getDatabase().getSchema().getOrCreateVertexType("Person");
@@ -487,7 +480,7 @@ public class GremlinTest {
 
   // Issue https://github.com/ArcadeData/arcadedb/issues/1301
   @Test
-  public void testMerge() {
+  void merge() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       graph.database.command("sqlscript",//
@@ -505,7 +498,7 @@ public class GremlinTest {
 
   // https://github.com/ArcadeData/arcadedb/issues/1674
   @Test
-  public void testBooleanProperties() {
+  void booleanProperties() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       graph.database.command("sqlscript",//
@@ -527,7 +520,7 @@ public class GremlinTest {
 
   @BeforeEach
   @AfterEach
-  public void clean() {
+  void clean() {
     FileUtils.deleteRecursively(new File("./target/testgremlin"));
   }
 }

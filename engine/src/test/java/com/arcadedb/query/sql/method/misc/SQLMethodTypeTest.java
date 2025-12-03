@@ -35,25 +35,25 @@ class SQLMethodTypeTest {
   }
 
   @Test
-  void testNulIsReturnedAsNull() {
+  void nulIsReturnedAsNull() {
     final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
-  void testUnknownTypesReturnedAsNull() {
+  void unknownTypesReturnedAsNull() {
     final Object result = method.execute(new SQLMethodType(), null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
-  void testTypeName() {
+  void typeName() {
     final Object result = method.execute("string", null, null, null);
     assertThat(result).isEqualTo("STRING");
   }
 
   @Test
-  void testTypeNameOfList() {
+  void typeNameOfList() {
     final Object result = method.execute(new ArrayList<>(), null, null, null);
     assertThat(result).isEqualTo("LIST");
   }

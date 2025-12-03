@@ -35,24 +35,24 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Michael MacFadden
  */
-public class SQLMethodAsMapTest {
+class SQLMethodAsMapTest {
 
   private SQLMethod function;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     function = new SQLMethodAsMap();
   }
 
   @Test
-  public void testNull() {
+  void testNull() {
     // The expected behavior is to return an empty map.
     final Object result = function.execute(null, null, null, null);
     assertThat(new HashMap<Object, Object>()).isEqualTo(result);
   }
 
   @Test
-  public void testMap() {
+  void map() {
     // The expected behavior is to return the map itself.
     final HashMap<Object, Object> aMap = new HashMap<Object, Object>();
     aMap.put("p1", 1);
@@ -62,7 +62,7 @@ public class SQLMethodAsMapTest {
   }
 
   @Test
-  public void testDocument() {
+  void document() {
     // The expected behavior is to return a map that has the field names mapped
     // to the field values of the ODocument.
     final MutableDocument doc = new MutableDocument(null, new LocalVertexType(null, "Test"), null) {
@@ -77,7 +77,7 @@ public class SQLMethodAsMapTest {
   }
 
   @Test
-  public void testIterable() {
+  void iterable() {
     // The expected behavior is to return a map where the even values (0th,
     // 2nd, 4th, etc) are keys and the odd values (1st, 3rd, etc.) are
     // property values.
@@ -96,7 +96,7 @@ public class SQLMethodAsMapTest {
   }
 
   @Test
-  public void testIterator() {
+  void iterator() {
     // The expected behavior is to return a map where the even values (0th,
     // 2nd, 4th, etc) are keys and the odd values (1st, 3rd, etc.) are
     // property values.
@@ -115,7 +115,7 @@ public class SQLMethodAsMapTest {
   }
 
   @Test
-  public void testOtherValue() {
+  void otherValue() {
     // The expected behavior is to return null.
     final Object result = function.execute(Integer.valueOf(4), null, null, null);
     assertThat(result).isNull();

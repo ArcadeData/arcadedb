@@ -30,9 +30,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
-public class EqualsCompareOperatorTest {
+class EqualsCompareOperatorTest {
   @Test
-  public void test() {
+  void test() {
     final EqualsCompareOperator op = new EqualsCompareOperator(-1);
 
     assertThat(op.execute(null, null, 1)).isFalse();

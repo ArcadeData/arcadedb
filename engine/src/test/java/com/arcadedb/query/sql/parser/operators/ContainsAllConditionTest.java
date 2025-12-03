@@ -28,9 +28,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luca Garulli (l.garulli-(at)-arcadedata.com)
  */
-public class ContainsAllConditionTest {
+class ContainsAllConditionTest {
   @Test
-  public void test() {
+  void test() {
     final ContainsAllCondition op = new ContainsAllCondition(-1);
 
     assertThat(op.execute(null, null)).isFalse();
@@ -58,7 +58,7 @@ public class ContainsAllConditionTest {
   }
 
   @Test
-  public void testIterable() {
+  void iterable() {
     final Iterable<Object> left = new Iterable<>() {
       private final List<Integer> ls = Arrays.asList(3, 1, 2);
 
@@ -82,7 +82,7 @@ public class ContainsAllConditionTest {
   }
 
   @Test
-  public void issue1785() {
+  void issue1785() {
     final ContainsAllCondition op = new ContainsAllCondition(-1);
 
     final List<Object> nullList = new ArrayList<>();

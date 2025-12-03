@@ -1,24 +1,21 @@
 /*
- * Copyright 2023 Arcade Data Ltd
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
  */
-
 package com.arcadedb.console;
 
 import com.arcadedb.ContextConfiguration;
@@ -39,6 +36,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.utility.FileUtils;
@@ -67,7 +65,7 @@ public class ConsoleAsyncInsertTest {
   static final int    PARALLEL_LEVEL             = 6;
   static final String RECORD_TIME_FORMAT_PATTERN = "yyyyMMdd'_'HHmmss.SSSSSS";
   static final String userName                   = "user";
-  static final String password                   = com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+  static final String password                   = BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
 
   AtomicInteger autoIncrementOrderId = new AtomicInteger(0);
 
@@ -151,7 +149,7 @@ public class ConsoleAsyncInsertTest {
   }
 
   @Test
-  public void testBulkAsyncInsertProductsUsingSQL() {
+  void bulkAsyncInsertProductsUsingSQL() {
     GlobalConfiguration.SERVER_ROOT_PATH.setValue(".");
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
 
@@ -177,7 +175,7 @@ public class ConsoleAsyncInsertTest {
     String dateTimePattern = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS";
     GlobalConfiguration.SERVER_METRICS.setValue(false);
     GlobalConfiguration.HA_ENABLED.setValue(false);
-    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);
     GlobalConfiguration.DATE_TIME_FORMAT.setValue(dateTimePattern);
     GlobalConfiguration.ASYNC_WORKER_THREADS.setValue(PARALLEL_LEVEL);
 
@@ -227,7 +225,7 @@ public class ConsoleAsyncInsertTest {
   }
 
   @Test
-  public void testBulkAsyncInsertProductsUsingAPI() {
+  void bulkAsyncInsertProductsUsingAPI() {
     GlobalConfiguration.SERVER_ROOT_PATH.setValue(".");
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
 
@@ -254,7 +252,7 @@ public class ConsoleAsyncInsertTest {
     String dateTimePattern = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS";
     GlobalConfiguration.SERVER_METRICS.setValue(false);
     GlobalConfiguration.HA_ENABLED.setValue(false);
-    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);
     GlobalConfiguration.DATE_TIME_FORMAT.setValue(dateTimePattern);
     GlobalConfiguration.ASYNC_WORKER_THREADS.setValue(PARALLEL_LEVEL);
 
@@ -304,7 +302,7 @@ public class ConsoleAsyncInsertTest {
   }
 
   @Test
-  public void testOrderByAfterDeleteInsert() {
+  void orderByAfterDeleteInsert() {
     GlobalConfiguration.SERVER_ROOT_PATH.setValue(".");
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
 
@@ -335,7 +333,7 @@ public class ConsoleAsyncInsertTest {
       }
     }
     String dateTimePattern = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS";
-    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);
     GlobalConfiguration.DATE_TIME_FORMAT.setValue(dateTimePattern);
     GlobalConfiguration.SERVER_METRICS.setValue(false);
     GlobalConfiguration.HA_ENABLED.setValue(false);
@@ -537,12 +535,12 @@ public class ConsoleAsyncInsertTest {
   }
 
   @BeforeEach
-  public void cleanup() {
+  void cleanup() {
     FileUtils.deleteRecursively(new File("./target/databases/"));
   }
 
   @AfterEach
-  public void endTests() {
+  void endTests() {
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();
   }

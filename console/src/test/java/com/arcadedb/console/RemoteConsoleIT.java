@@ -30,8 +30,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.*;
 
 public class RemoteConsoleIT extends BaseGraphServerTest {
   private static final String URL               = "remote:localhost:2480/console root " + DEFAULT_PASSWORD_FOR_TESTS;
@@ -48,42 +47,32 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void testCreateDatabase() throws IOException {
+  void createDatabase() throws Exception {
     assertThat(console.parse("create database " + URL_NEW_DB)).isTrue();
   }
 
   @Test
-  public void testConnect() throws IOException {
+  void connect() throws Exception {
     assertThat(console.parse("connect " + URL)).isTrue();
   }
 
   @Test
-  public void testConnectShortURL() throws IOException {
+  void connectShortURL() throws Exception {
     assertThat(console.parse("connect " + URL_SHORT)).isTrue();
   }
 
   @Test
-  public void testConnectNoCredentials() throws IOException {
-    try {
-      assertThat(console.parse("connect " + URL_NOCREDENTIALS + ";create document type VVVV")).isTrue();
-      fail("Security was bypassed!");
-    } catch (final ConsoleException e) {
-      // EXPECTED
-    }
+  void connectNoCredentials() throws Exception {
+    assertThatThrownBy(() -> assertThat(console.parse("connect " + URL_NOCREDENTIALS + ";create document type VVVV")).isTrue()).isInstanceOf(ConsoleException.class);
   }
 
   @Test
-  public void testConnectWrongPassword() throws IOException {
-    try {
-      assertThat(console.parse("connect " + URL_WRONGPASSWD + ";create document type VVVV")).isTrue();
-      fail("Security was bypassed!");
-    } catch (final SecurityException e) {
-      // EXPECTED
-    }
+  void connectWrongPassword() throws Exception {
+    assertThatThrownBy(() -> assertThat(console.parse("connect " + URL_WRONGPASSWD + ";create document type VVVV")).isTrue()).isInstanceOf(SecurityException.class);
   }
 
   @Test
-  public void testCreateType() throws IOException {
+  void createType() throws Exception {
     assertThat(console.parse("connect " + URL)).isTrue();
     assertThat(console.parse("create document type Person2")).isTrue();
 
@@ -95,7 +84,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void testInsertAndSelectRecord() throws IOException {
+  void insertAndSelectRecord() throws Exception {
     assertThat(console.parse("connect " + URL)).isTrue();
     assertThat(console.parse("create document type Person2")).isTrue();
     assertThat(console.parse("insert into Person2 set name = 'Jay', lastname='Miner'")).isTrue();
@@ -108,13 +97,13 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void testListDatabases() throws IOException {
+  void listDatabases() throws Exception {
     assertThat(console.parse("connect " + URL)).isTrue();
     assertThat(console.parse("list databases;")).isTrue();
   }
 
   @Test
-  public void testInsertAndRollback() throws IOException {
+  void insertAndRollback() throws Exception {
     assertThat(console.parse("connect " + URL)).isTrue();
     assertThat(console.parse("begin")).isTrue();
     assertThat(console.parse("create document type Person")).isTrue();
@@ -128,7 +117,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void testInsertAndCommit() throws IOException {
+  void insertAndCommit() throws Exception {
     assertThat(console.parse("connect " + URL)).isTrue();
     assertThat(console.parse("begin")).isTrue();
     assertThat(console.parse("create document type Person")).isTrue();
@@ -142,18 +131,13 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void testTransactionExpired() throws IOException, InterruptedException {
+  void transactionExpired() throws Exception {
     assertThat(console.parse("connect " + URL)).isTrue();
     assertThat(console.parse("begin")).isTrue();
     assertThat(console.parse("create document type Person")).isTrue();
     assertThat(console.parse("insert into Person set name = 'Jay', lastname='Miner'")).isTrue();
     Thread.sleep(5000);
-    try {
-      assertThat(console.parse("commit")).isTrue();
-      fail("");
-    } catch (final Exception e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> assertThat(console.parse("commit")).isTrue()).isInstanceOf(Exception.class);
 
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(buffer::append);
@@ -162,7 +146,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void testUserMgmt() throws IOException {
+  void userMgmt() throws Exception {
     assertThat(console.parse("connect " + URL)).isTrue();
     try {
       assertThat(console.parse("drop user albert")).isTrue();
@@ -170,34 +154,20 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
       // EXPECTED IF ALREADY EXISTENT
     }
 
-    try {
-      assertThat(console.parse("create user jay identified by m")).isTrue();
-      fail("");
-    } catch (final RuntimeException e) {
-      // PASSWORD MUST BE AT LEAST 5 CHARS
-    }
+    assertThatThrownBy(() -> assertThat(console.parse("create user jay identified by m")).isTrue()).isInstanceOf(RuntimeException.class);
 
-    try {
+    assertThatThrownBy(() -> {
       String longPassword = "";
-      for (int i = 0; i < 257; i++)
+      for (int i = 0;i < 257;i++)
         longPassword += "P";
-
       assertThat(console.parse("create user jay identified by " + longPassword)).isTrue();
-      fail("");
-    } catch (final RuntimeException e) {
-      // PASSWORD MUST BE MAX 256 CHARS LONG
-    }
+    }).isInstanceOf(RuntimeException.class);
 
     assertThat(console.parse("create user albert identified by einstein")).isTrue();
     assertThat(console.parse("drop user albert")).isTrue();
 
     // TEST SYNTAX ERROR
-    try {
-      assertThat(console.parse("create user albert identified by einstein grand connect on db1")).isTrue();
-      fail("");
-    } catch (final Exception e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> assertThat(console.parse("create user albert identified by einstein grand connect on db1")).isTrue()).isInstanceOf(Exception.class);
 
     assertThat(console.parse("create user albert identified by einstein grant connect to db1")).isTrue();
     assertThat(console.parse("create user jeff identified by amazon grant connect to db1:readonly")).isTrue();
@@ -205,7 +175,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void testHelp() throws IOException {
+  void help() throws Exception {
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(buffer::append);
     assertThat(console.parse("?")).isTrue();
@@ -216,7 +186,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
    * Issue https://github.com/ArcadeData/arcadedb/issues/726
    */
   @Test
-  public void testProjectionOrder() throws IOException {
+  void projectionOrder() throws Exception {
     assertThat(console.parse("connect " + URL)).isTrue();
     assertThat(console.parse("create document type Order")).isTrue();
     assertThat(console.parse(
@@ -245,7 +215,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void testCustomPropertyInSchema() throws IOException {
+  void customPropertyInSchema() throws Exception {
     assertThat(console.parse("connect " + URL)).isTrue();
     assertThat(console.parse("CREATE DOCUMENT TYPE doc;")).isTrue();
     assertThat(console.parse("ALTER TYPE doc CUSTOM testType = 444;")).isTrue();
@@ -266,7 +236,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void testIfWithSchemaResult() throws IOException {
+  void ifWithSchemaResult() throws Exception {
     assertThat(console.parse("connect " + URL)).isTrue();
     assertThat(console.parse("CREATE DOCUMENT TYPE doc;")).isTrue();
     assertThat(console.parse("CREATE PROPERTY doc.prop STRING;")).isTrue();
@@ -327,7 +297,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
   }
 
   @AfterAll
-  public static void afterAll() {
+  static void afterAll() {
     GlobalConfiguration.SERVER_HTTP_SESSION_EXPIRE_TIMEOUT.setValue(
         GlobalConfiguration.SERVER_HTTP_SESSION_EXPIRE_TIMEOUT.getDefValue());
   }

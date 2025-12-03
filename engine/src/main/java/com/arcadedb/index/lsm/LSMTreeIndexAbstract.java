@@ -26,6 +26,7 @@ import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
+import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
@@ -34,9 +35,11 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.BinaryTypes;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
@@ -59,9 +62,8 @@ import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   public enum NULL_STRATEGY {ERROR, SKIP}
 
-  public static final    int    DEF_PAGE_SIZE = 262_144;
-  public final           RID    REMOVED_ENTRY_RID;
-  protected static final String TEMP_EXT      = "temp_";
+  public static final int DEF_PAGE_SIZE = 262_144;
+  public final        RID REMOVED_ENTRY_RID;
 
   protected static final LSMTreeIndexCompacted.LookupResult LOWER     = new LSMTreeIndexCompacted.LookupResult(false, true, 0,
       null);
@@ -75,7 +77,8 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   protected final boolean          unique;
   protected       Type[]           keyTypes;
   protected       byte[]           binaryKeyTypes;
-  protected       NULL_STRATEGY    nullStrategy = NULL_STRATEGY.SKIP;
+  protected       NULL_STRATEGY    nullStrategy       = NULL_STRATEGY.SKIP;
+  protected final AtomicLong       statsAdjacentSteps = new AtomicLong();
 
   protected static class LookupResult {
     public final boolean found;
@@ -188,24 +191,6 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return rid.getBucketId() < 0;
   }
 
-  public void removeTempSuffix() {
-    final String fileName = file.getFilePath();
-
-    final int extPos = fileName.lastIndexOf('.');
-    if (fileName.substring(extPos + 1).startsWith(TEMP_EXT)) {
-      final String newFileName = fileName.substring(0, extPos) + "." + fileName.substring(extPos + TEMP_EXT.length() + 1);
-
-      try {
-        file.rename(newFileName);
-        database.getFileManager().renameFile(fileName, newFileName);
-      } catch (final IOException e) {
-        throw new IndexException(
-            "Cannot rename index file '" + file.getFilePath() + "' into temp file '" + newFileName + "' (exists=" + (new File(
-                file.getFilePath()).exists()) + ")", e);
-      }
-    }
-  }
-
   public void drop() throws IOException {
     if (database.isOpen()) {
       database.getPageManager().deleteFile(database, file.getFileId());
@@ -288,7 +273,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     result = compareKey(currentPageBuffer, startIndexArray, convertedKeys, high, count, purpose);
     if (result == HIGHER) {
       if (purpose == 3)
-        // BROWSE ASCENDING
+        // BROWSE DESCENDING
         return new LookupResult(false, false, high, new int[] { currentPageBuffer.position() });
 
       return new LookupResult(false, true, count, null);
@@ -316,16 +301,46 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return new LookupResult(false, false, low, null);
   }
 
-  protected void writeEntry(final Binary buffer, final Object[] keys, final Object rid) {
+  protected void writeEntrySingleValue(final Binary buffer, final Object[] keys, final Object rid, final int pageUsableSpace) {
     buffer.clear();
     writeKeys(buffer, keys);
     writeEntryValue(buffer, rid);
+
+    if (buffer.size() > pageUsableSpace)
+      throw new IndexException(
+          "Key/value size (" + FileUtils.getSizeAsString(buffer.size()) + ") is too big to fit in a single page ("
+              + FileUtils.getSizeAsString(pageUsableSpace) + "). Define the index with larger pages");
   }
 
-  protected void writeEntry(final Binary buffer, final Object[] keys, final Object[] rids) {
-    buffer.clear();
-    writeKeys(buffer, keys);
-    writeEntryValues(buffer, rids);
+  protected int writeEntryMultipleValues(final Binary buffer, final Object[] keys, Object[] rids, final int availableSpaceInPage,
+      final int pageUsableSpace, final PageId pageId) {
+    Object[] values = rids;
+    do {
+      buffer.clear();
+      writeKeys(buffer, keys);
+
+      if (buffer.size() > pageUsableSpace)
+        throw new IndexException("Key size (" + FileUtils.getSizeAsString(buffer.size()) + ") is too big to fit in a single page ("
+            + FileUtils.getSizeAsString(pageUsableSpace) + "). Define the index with larger pages");
+
+      final int written = writeEntryValues(buffer, values, availableSpaceInPage);
+      if (written == values.length)
+        // ALL ENTRIES WRITTEN
+        break;
+
+      if (values.length <= 1)
+        return 0;
+
+      LogManager.instance()
+          .log(this, Level.FINE, "Cannot fit %d values in index page %s, saving only %d values",
+              values.length, pageId, written);
+
+      // NOT ENOUGH SPACE: Split the array with the max number of values that fit in the page
+      values = Arrays.copyOf(values, written);
+
+    } while (true);
+
+    return values.length;
   }
 
   /**
@@ -453,13 +468,17 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return 0;
   }
 
-  private void writeEntryValues(final Binary buffer, final Object[] values) {
+  private int writeEntryValues(final Binary buffer, final Object[] values, final int availableSpaceInPage) {
     // WRITE NUMBER OF VALUES
     serializer.serializeValue(database, buffer, BinaryTypes.TYPE_INT, values.length);
 
     // WRITE VALUES
-    for (int i = 0; i < values.length; ++i)
+    for (int i = 0; i < values.length; ++i) {
       serializer.serializeValue(database, buffer, valueType, values[i]);
+      if (buffer.size() > availableSpaceInPage)
+        return i;
+    }
+    return values.length;
   }
 
   private void writeEntryValue(final Binary buffer, final Object value) {
@@ -490,7 +509,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       list.add((RID) serializer.deserializeValue(database, buffer, valueType, null));
   }
 
-  private List<RID> readAllValuesFromResult(final Binary currentPageBuffer, final LookupResult result) {
+  protected List<RID> readAllValuesFromResult(final Binary currentPageBuffer, final LookupResult result) {
     final List<RID> allValues = new ArrayList<>();
     for (int i = 0; i < result.valueBeginPositions.length; ++i) {
       currentPageBuffer.position(result.valueBeginPositions[i]);
@@ -523,7 +542,8 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       for (int i = 0; i < keys.length; ++i)
         if (keys[i] == null)
           throw new IllegalArgumentException(
-              "Indexed key " + mainIndex.getTypeName() + mainIndex.propertyNames + " cannot be NULL (" + Arrays.toString(keys)
+              "Indexed key " + mainIndex.getTypeName() + mainIndex.getPropertyNames() + " cannot be NULL (" + Arrays.toString(
+                  keys)
                   + ")");
   }
 
@@ -536,6 +556,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       final List<RID> allValues = readAllValuesFromResult(currentPageBuffer, result);
 
       final Set<RID> validRIDs = new HashSet<>();
+      final Set<RID> deletedRIDs = new HashSet<>();
 
       final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(convertedKeys);
 
@@ -544,13 +565,28 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
         final RID rid = allValues.get(i);
 
         if (rid.getBucketId() < 0) {
-          removedKeys.add(keys);
+          // This is a deletion marker - convert to original RID
+          final RID originalRID = getOriginalRID(rid);
+          deletedRIDs.add(originalRID);
+
+          // For unique indexes, also mark the entire key as removed
+          if (mainIndex.isUnique()) {
+            removedKeys.add(keys);
+          }
           continue;
         }
 
-        if (removedKeys.contains(keys))
-          // HAS BEEN DELETED
+        // For unique indexes, check if the entire key has been removed
+        if (mainIndex.isUnique() && removedKeys.contains(keys)) {
+          // Skipping rid because key is in removedKeys (unique index)
           continue;
+        }
+
+        // For all indexes, check if this specific RID has been deleted
+        if (deletedRIDs.contains(rid)) {
+          // Skipping rid because it is in deletedRIDs
+          continue;
+        }
 
         validRIDs.add(rid);
         set.add(new IndexCursorEntry(originalKeys, rid, 1));
@@ -573,6 +609,49 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
   protected RID getOriginalRID(final RID rid) {
     return new RID(database, (rid.getBucketId() * -1) - 2, rid.getPosition());
+  }
+
+  private int findEntryOfSameKey(final Binary currentPageBuffer, final Object[] keys, final int startIndexArray, int mid, int start,
+      int end, int step) {
+    int result;
+    for (int i = start; i != end; i += step) {
+      currentPageBuffer.position(currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE)));
+
+      result = 1;
+      for (int keyIndex = 0; keyIndex < keys.length; ++keyIndex) {
+        final boolean notNull = version < 1 || currentPageBuffer.getByte() == 1;
+        if (!notNull)
+          break;
+
+        final byte keyType = binaryKeyTypes[keyIndex];
+        if (keyType == BinaryTypes.TYPE_STRING) {
+          // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
+          result = comparator.compareBytes((byte[]) keys[keyIndex], currentPageBuffer);
+        } else {
+          final Object key = serializer.deserializeValue(database, currentPageBuffer, keyType, null);
+          result = comparator.compare(keys[keyIndex], keyType, key, keyType);
+        }
+
+        if (result != 0)
+          break;
+      }
+
+      if (result == 0) {
+        mid = i;
+        statsAdjacentSteps.incrementAndGet();
+      } else
+        break;
+    }
+    return mid;
+  }
+
+  protected int findFirstEntryOfSameKey(final Binary currentPageBuffer, final Object[] keys, final int startIndexArray, int mid) {
+    return findEntryOfSameKey(currentPageBuffer, keys, startIndexArray, mid, mid - 1, -1, -1);
+  }
+
+  protected int findLastEntryOfSameKey(final int count, final Binary currentPageBuffer, final Object[] keys,
+      final int startIndexArray, int mid) {
+    return findEntryOfSameKey(currentPageBuffer, keys, startIndexArray, mid, mid + 1, count, 1);
   }
 
   private void writeKeys(final Binary buffer, final Object[] keys) {

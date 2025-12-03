@@ -25,13 +25,13 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class CompressDatabaseTest extends TestHelper {
+class CompressDatabaseTest extends TestHelper {
 
   private static final int           TOTAL = 10_000;
   private              MutableVertex root;
 
   @Test
-  public void compressDatabase() {
+  void compressDatabase() {
     final ResultSet result = database.command("sql", "check database compress");
     assertThat(result.hasNext()).isTrue();
   }

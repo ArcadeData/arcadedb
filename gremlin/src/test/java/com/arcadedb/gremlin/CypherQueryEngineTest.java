@@ -1,22 +1,20 @@
 /*
- * Copyright 2023 Arcade Data Ltd
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
  */
 package com.arcadedb.gremlin;
 
@@ -46,11 +44,11 @@ import static com.arcadedb.schema.Property.CAT_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class CypherQueryEngineTest {
+class CypherQueryEngineTest {
   private static final String DB_PATH = "./target/testsql";
 
   @Test
-  public void verifyProjectionWithCollectFunction() {
+  void verifyProjectionWithCollectFunction() {
     final Configuration config = new BaseConfiguration();
     config.setProperty(ArcadeGraph.CONFIG_DIRECTORY, DB_PATH);
 
@@ -106,7 +104,7 @@ public class CypherQueryEngineTest {
    * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/383">...</a>
    */
   @Test
-  public void returnPath() {
+  void returnPath() {
     final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
     try (final BasicDatabase database = graph.getDatabase()) {
       database.transaction(() -> {
@@ -136,7 +134,7 @@ public class CypherQueryEngineTest {
    * Test inheritance in Cypher (and therefore in Gremlin). Issue https://github.com/ArcadeData/arcadedb/issues/384.
    */
   @Test
-  public void inheritance() {
+  void inheritance() {
     final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
     try (final BasicDatabase database = graph.getDatabase()) {
       database.transaction(() -> {
@@ -163,7 +161,7 @@ public class CypherQueryEngineTest {
    * Test null results are returned as null instead of `  cypher.null`. Issue https://github.com/ArcadeData/arcadedb/issues/804.
    */
   @Test
-  public void testNullReturn() {
+  void nullReturn() {
     final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
     try (final BasicDatabase database = graph.getDatabase()) {
       database.transaction(() -> {
@@ -183,7 +181,7 @@ public class CypherQueryEngineTest {
    * Cypher columns are returned in the wrong order. Issue https://github.com/ArcadeData/arcadedb/issues/818.
    */
   @Test
-  public void testReturnOrder() {
+  void returnOrder() {
     final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
     try (final BasicDatabase database = graph.getDatabase()) {
       database.transaction(() -> {
@@ -205,7 +203,7 @@ public class CypherQueryEngineTest {
 
   @BeforeEach
   @AfterEach
-  public void clean() {
+  void clean() {
     FileUtils.deleteRecursively(new File(DB_PATH));
   }
 }

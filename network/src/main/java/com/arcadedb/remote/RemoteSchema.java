@@ -262,7 +262,6 @@ public class RemoteSchema implements Schema {
     throw new UnsupportedOperationException();
   }
 
-  @Deprecated
   @Override
   public VectorIndexBuilder buildVectorIndex() {
     throw new UnsupportedOperationException();
@@ -579,10 +578,11 @@ public class RemoteSchema implements Schema {
   @Deprecated
   @Override
   public DocumentType getTypeByBucketName(final String bucketName) {
-    ResultSet resultSet = remoteDatabase.command("sql", "select from schema:types where buckets contains `" + bucketName + "`");
+    ResultSet resultSet = remoteDatabase.command("sql", "select from schema:types where buckets contains '" + bucketName + "'");
 
     final Result result = resultSet.nextIfAvailable();
-    return result != null ? remoteDatabase.getSchema().getType(result.getProperty("name")) : null;  }
+    return result != null ? remoteDatabase.getSchema().getType(result.getProperty("name")) : null;
+  }
 
   @Deprecated
   @Override

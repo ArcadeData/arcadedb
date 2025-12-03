@@ -25,7 +25,7 @@ import java.io.InputStream;
 
 import static org.assertj.core.api.Assertions.fail;
 
-public class MatchStatementTest {
+class MatchStatementTest {
 
   protected SimpleNode checkRightSyntax(final String query) {
     final SimpleNode result = checkSyntax(query, true);
@@ -56,39 +56,39 @@ public class MatchStatementTest {
   }
 
   @Test
-  public void testWrongFilterKey() {
+  void wrongFilterKey() {
     checkWrongSyntax("MATCH {clasx: 'V'} RETURN foo");
   }
 
   @Test
-  public void testBasicMatch() {
+  void basicMatch() {
     checkRightSyntax("MATCH { type: 'V', as: foo} RETURN foo");
   }
 
   @Test
-  public void testNoReturn() {
+  void noReturn() {
     checkWrongSyntax("MATCH { type: 'V', as: foo}");
   }
 
   @Test
-  public void testSingleMethod() {
+  void singleMethod() {
     checkRightSyntax("MATCH { type: 'V', as: foo}.out() RETURN foo");
   }
 
   @Test
-  public void testArrowsNoBrackets() {
+  void arrowsNoBrackets() {
     checkWrongSyntax("MATCH {}-->-->{as:foo} RETURN foo");
   }
 
   @Test
-  public void testSingleMethodAndFilter() {
+  void singleMethodAndFilter() {
     checkRightSyntax("MATCH { type: 'V', as: foo}.out(){ type: 'V', as: bar} RETURN foo");
     checkRightSyntax("MATCH { type: 'V', as: foo}-E->{ type: 'V', as: bar} RETURN foo");
     checkRightSyntax("MATCH { type: 'V', as: foo}-->{ type: 'V', as: bar} RETURN foo");
   }
 
   @Test
-  public void testLongPath() {
+  void longPath() {
     checkRightSyntax(
         "MATCH { type: 'V', as: foo}.out().in('foo').both('bar').out(){as: bar} RETURN foo");
 
@@ -96,13 +96,13 @@ public class MatchStatementTest {
   }
 
   @Test
-  public void testLongPath2() {
+  void longPath2() {
     checkRightSyntax(
         "MATCH { type: 'V', as: foo}.out().in('foo'){}.both('bar'){ TYPE: 'bar'}.out(){as: bar} RETURN foo");
   }
 
   @Test
-  public void testFilterTypes() {
+  void filterTypes() {
     final StringBuilder query = new StringBuilder();
     query.append("MATCH {");
     query.append("   type: 'v', ");
@@ -114,7 +114,7 @@ public class MatchStatementTest {
   }
 
   @Test
-  public void testFilterTypes2() {
+  void filterTypes2() {
     final StringBuilder query = new StringBuilder();
     query.append("MATCH {");
     query.append("   types: ['V', 'E'], ");
@@ -126,7 +126,7 @@ public class MatchStatementTest {
   }
 
   @Test
-  public void testMultiPath() {
+  void multiPath() {
     final StringBuilder query = new StringBuilder();
     query.append("MATCH {}");
     query.append("  .(out().in(){type:'v'}.both('Foo')){maxDepth: 3}.out() return foo");
@@ -134,7 +134,7 @@ public class MatchStatementTest {
   }
 
   @Test
-  public void testMultiPathArrows() {
+  void multiPathArrows() {
     final StringBuilder query = new StringBuilder();
     query.append("MATCH {}");
     query.append("  .(-->{}<--{type:'v'}--){maxDepth: 3}-->{} return foo");
@@ -142,7 +142,7 @@ public class MatchStatementTest {
   }
 
   @Test
-  public void testMultipleMatches() {
+  void multipleMatches() {
     String query = "MATCH {type: 'V', as: foo}.out(){type: 'V', as: bar}, ";
     query += " {type: 'V', as: foo}.out(){type: 'V', as: bar},";
     query += " {type: 'V', as: foo}.out(){type: 'V', as: bar} RETURN foo";
@@ -150,7 +150,7 @@ public class MatchStatementTest {
   }
 
   @Test
-  public void testMultipleMatchesArrow() {
+  void multipleMatchesArrow() {
     String query = "MATCH {type: 'V', as: foo}-->{type: 'V', as: bar}, ";
     query += " {type: 'V', as: foo}-->{type: 'V', as: bar},";
     query += " {type: 'V', as: foo}-->{type: 'V', as: bar} RETURN foo";
@@ -158,27 +158,27 @@ public class MatchStatementTest {
   }
 
   @Test
-  public void testWhile() {
+  void testWhile() {
     checkRightSyntax("MATCH {type: 'V', as: foo}.out(){while:($depth<4), as:bar} RETURN bar ");
   }
 
   @Test
-  public void testWhileArrow() {
+  void whileArrow() {
     checkRightSyntax("MATCH {type: 'V', as: foo}-->{while:($depth<4), as:bar} RETURN bar ");
   }
 
   @Test
-  public void testLimit() {
+  void limit() {
     checkRightSyntax("MATCH {type: 'V'} RETURN foo limit 10");
   }
 
   @Test
-  public void testReturnJson() {
+  void returnJson() {
     checkRightSyntax("MATCH {type: 'V'} RETURN {'name':'foo', 'value': bar}");
   }
 
   @Test
-  public void testOptional() {
+  void optional() {
     checkRightSyntax(
         "MATCH {type: 'V', as: foo}-->{}<-foo-{}-bar-{}-->{as: bar, optional:true} RETURN foo");
     checkRightSyntax(
@@ -186,38 +186,38 @@ public class MatchStatementTest {
   }
 
   @Test
-  public void testOrderBy() {
+  void orderBy() {
     checkRightSyntax("MATCH {type: 'V', as: foo}-->{} RETURN foo ORDER BY foo");
     checkRightSyntax("MATCH {type: 'V', as: foo}-->{} RETURN foo ORDER BY foo limit 10");
   }
 
   @Test
-  public void testNestedProjections() {
+  void nestedProjections() {
     checkRightSyntax("MATCH {type: 'V', as: foo}-->{} RETURN foo:{name, surname}");
     checkRightSyntax(
         "MATCH {type: 'V', as: foo}-->{as:bar} RETURN foo:{name, surname} as bloo, bar:{*}");
   }
 
   @Test
-  public void testUnwind() {
+  void unwind() {
     checkRightSyntax(
         "MATCH {type: 'V', as: foo}-->{as:bar} RETURN foo.name, bar.name as x unwind x");
   }
 
   @Test
-  public void testDepthAlias() {
+  void depthAlias() {
     checkRightSyntax(
         "MATCH {type: 'V', as: foo}-->{as:bar, while:($depth < 2), depthAlias: depth} RETURN depth");
   }
 
   @Test
-  public void testPathAlias() {
+  void pathAlias() {
     checkRightSyntax(
         "MATCH {type: 'V', as: foo}-->{as:bar, while:($depth < 2), pathAlias: barPath} RETURN barPath");
   }
 
   @Test
-  public void testBucketTarget() {
+  void bucketTarget() {
     checkRightSyntax("MATCH {bucket:v, as: foo} RETURN $elements");
     checkRightSyntax("MATCH {bucket:12, as: foo} RETURN $elements");
     checkRightSyntax("MATCH {bucket: v, as: foo} RETURN $elements");
@@ -229,18 +229,18 @@ public class MatchStatementTest {
   }
 
   @Test
-  public void testNot() {
+  void not() {
     checkRightSyntax("MATCH {bucket:v, as: foo}, NOT {as:foo}-->{as:bar} RETURN $elements");
   }
 
   @Test
-  public void testSkip() {
+  void skip() {
     checkRightSyntax(
         "MATCH {type: 'V', as: foo}-->{as:bar} RETURN foo.name, bar.name skip 10 limit 10");
   }
 
   @Test
-  public void testFieldTraversal() {
+  void fieldTraversal() {
     checkRightSyntax(
         "MATCH {type: 'V', as: foo}.toBar{as:bar} RETURN foo.name, bar.name skip 10 limit 10");
     checkRightSyntax(

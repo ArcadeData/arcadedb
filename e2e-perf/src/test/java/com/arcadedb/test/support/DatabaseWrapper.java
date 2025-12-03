@@ -1,3 +1,21 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.arcadedb.test.support;
 
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -5,6 +23,8 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteHttpComponent;
 import com.arcadedb.remote.RemoteSchema;
 import com.arcadedb.remote.RemoteServer;
+import com.arcadedb.remote.grpc.RemoteGrpcDatabase;
+import com.arcadedb.remote.grpc.RemoteGrpcServer;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
@@ -20,8 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class DatabaseWrapper {
   private static final Logger            logger = LoggerFactory.getLogger(DatabaseWrapper.class);
-  private final        String            host;
-  private final        int               port;
+  private final        ServerWrapper     server;
   private final        RemoteDatabase    db;
   private final        Supplier<Integer> idSupplier;
   private final        Timer             photosTimer;
@@ -29,10 +48,11 @@ public class DatabaseWrapper {
   private final        Timer             friendshipTimer;
   private final        Timer             likeTimer;
 
-  public DatabaseWrapper(String host, int port, Supplier<Integer> idSupplier) {
-    this.host = host;
-    this.port = port;
-    this.db = connectToDatabase();
+  public enum Protocol {HTTP, GRPC}
+
+  public DatabaseWrapper(ServerWrapper server, Supplier<Integer> idSupplier, Protocol protocol) {
+    this.server = server;
+    this.db = connectToDatabase(protocol);
     this.idSupplier = idSupplier;
     usersTimer = Metrics.timer("arcadedb.test.inserted.users");
     photosTimer = Metrics.timer("arcadedb.test.inserted.photos");
@@ -40,9 +60,21 @@ public class DatabaseWrapper {
     likeTimer = Metrics.timer("arcadedb.test.inserted.like");
   }
 
-  private RemoteDatabase connectToDatabase() {
-    RemoteDatabase database = new RemoteDatabase(host,
-        port,
+  public DatabaseWrapper(ServerWrapper server, Supplier<Integer> idSupplier) {
+    this(server, idSupplier, Protocol.HTTP);
+  }
+
+  private RemoteDatabase connectToDatabaseGrpc() {
+    RemoteGrpcServer gtpcServer = new RemoteGrpcServer(server.host(), server.grpcPort(), "root", PASSWORD, true, List.of());
+    RemoteGrpcDatabase database = new RemoteGrpcDatabase(gtpcServer, server.host(), server.grpcPort(), server.httpPort(), DATABASE,
+        "root", PASSWORD);
+    return database;
+  }
+
+  private RemoteDatabase connectToDatabaseHttp() {
+    RemoteDatabase database = new RemoteDatabase(
+        server.host(),
+        server.httpPort(),
         DATABASE,
         "root",
         PASSWORD);
@@ -51,22 +83,31 @@ public class DatabaseWrapper {
     return database;
   }
 
+  private RemoteDatabase connectToDatabase(Protocol protocol) {
+    return switch (protocol) {
+      case HTTP -> connectToDatabaseHttp();
+      case GRPC -> connectToDatabaseGrpc();
+    };
+  }
+
   public void close() {
     db.close();
   }
 
   public void createDatabase() {
-    RemoteServer server = new RemoteServer(host,
-        port,
+    RemoteServer httpServer = new RemoteServer(
+        server.host(),
+        server.httpPort(),
         "root",
         PASSWORD);
-    server.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
+    httpServer.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
 
-    if (server.exists(DATABASE)) {
+    if (httpServer.exists(DATABASE)) {
       logger.info("Dropping existing database {}", DATABASE);
-      server.drop(DATABASE);
+      httpServer.drop(DATABASE);
     }
-    server.create(DATABASE);
+    logger.info("Creating  database {}", DATABASE);
+    httpServer.create(DATABASE);
   }
 
   /**
@@ -84,7 +125,9 @@ public class DatabaseWrapper {
 
             CREATE VERTEX TYPE Photo;
             CREATE PROPERTY Photo.id INTEGER;
+            CREATE PROPERTY Photo.tags LIST OF STRING;
             CREATE INDEX ON Photo (id) UNIQUE;
+            CREATE INDEX ON Photo (tags BY ITEM) NOTUNIQUE;
 
             CREATE EDGE TYPE HasUploaded;
 
@@ -151,17 +194,19 @@ public class DatabaseWrapper {
     for (int i = 0; i < numberOfPhotos; i++) {
       int photoId = idSupplier.get();
       String photoName = String.format("download-%s.jpg", photoId);
+      String tag1 = "tag" + i % numberOfPhotos;
+      String tag2 = "tag" + (i % numberOfPhotos + 1);
       String sqlScript = """
           BEGIN;
           LOCK TYPE User, Photo, HasUploaded;
-          LET photo = CREATE VERTEX Photo SET id = ?, name = ?;
+          LET photo = CREATE VERTEX Photo SET id = ?, name = ?, tags = ['?', '?'];
           LET user = SELECT FROM User WHERE id = ?;
           CREATE EDGE HasUploaded FROM $user TO $photo;
           COMMIT RETRY 30;
           """;
       try {
         photosTimer.record(() -> {
-              db.command("sqlscript", sqlScript, photoId, photoName, userId);
+              db.command("sqlscript", sqlScript, photoId, photoName, userId, tag1, tag2);
             }
         );
 

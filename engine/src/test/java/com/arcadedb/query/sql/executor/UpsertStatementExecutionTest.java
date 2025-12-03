@@ -87,7 +87,7 @@ public class UpsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testUpsertBucket() {
+  void upsertBucket() {
     final List<Bucket> buckets = database.getSchema().getType(className).getBuckets(false);
 
     final List<Document> resultSet = database.select().fromType(className).where().property("name").eq().value("name1").documents()
@@ -158,7 +158,7 @@ public class UpsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testUpsert1() {
+  void upsert1() {
     ResultSet result = database.command("sql", "update " + className + " set foo = 'bar' upsert where name = 'name1'");
     assertThat(result.hasNext()).isTrue();
     Result item = result.next();
@@ -188,7 +188,7 @@ public class UpsertStatementExecutionTest extends TestHelper {
    * Issue https://github.com/ArcadeData/arcadedb/issues/380
    */
   @Test
-  public void testUpsertVertices() {
+  void upsertVertices() {
     database.command("sql", "CREATE vertex TYPE extra_node");
     database.command("sql", "CREATE PROPERTY extra_node.extraitem STRING");
     database.command("sql", "CREATE INDEX ON extra_node (extraitem) UNIQUE");
@@ -205,7 +205,7 @@ public class UpsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testUpsertAndReturn() {
+  void upsertAndReturn() {
     final ResultSet result = database.command("sql",
         "update " + className + " set foo = 'bar' upsert  return after  where name = 'name1' ");
 
@@ -218,7 +218,7 @@ public class UpsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testUpsert2() {
+  void upsert2() {
 
     ResultSet result = database.command("sql", "update " + className + " set foo = 'bar' upsert where name = 'name11'");
     assertThat(result.hasNext()).isTrue();
@@ -246,7 +246,7 @@ public class UpsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testUpsertVertices2() {
+  void upsertVertices2() {
     final VertexType clazz = database.getSchema().createVertexType("UpsertableVertex");
     clazz.createProperty("name", Type.STRING);
     clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
@@ -298,7 +298,7 @@ public class UpsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testLocalDateTimeUpsertWithIndex() throws ClassNotFoundException {
+  void localDateTimeUpsertWithIndex() throws Exception {
     if (System.getProperty("os.name").startsWith("Windows"))
       // NOTE: ON WINDOWS MICROSECONDS ARE NOT HANDLED CORRECTLY
       return;
@@ -336,7 +336,7 @@ public class UpsertStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testLocalDateTimeUpsertWithIndexMicros() throws ClassNotFoundException {
+  void localDateTimeUpsertWithIndexMicros() throws Exception {
     database.transaction(() -> {
       if (database.getSchema().existsType("Product"))
         database.getSchema().dropType("Product");

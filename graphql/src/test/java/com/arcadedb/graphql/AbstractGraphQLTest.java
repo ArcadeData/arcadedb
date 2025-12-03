@@ -30,7 +30,7 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 
-import java.io.*;
+import java.io.File;
 
 public abstract class AbstractGraphQLTest {
   protected static final String DB_PATH = "./target/testgraphql";
@@ -92,31 +92,26 @@ public abstract class AbstractGraphQLTest {
     }
   }
 
-  protected int countIterable(final Iterable<?> iter) {
-    int count = 0;
-    for (final Object o : iter)
-      ++count;
-
-    return count;
-  }
-
   protected void defineTypes(final Database database) {
-    final String types = "type Query {\n" +//
-        "  bookById(id: String): Book\n" +//
-        "  bookByName(name: String): Book\n" +//
-        "}\n\n" +//
-        "type Book {\n" +//
-        "  id: String\n" +//
-        "  name: String\n" +//
-        "  pageCount: Int\n" +//
-        "  authors: [Author] @relationship(type: \"IS_AUTHOR_OF\", direction: IN)\n" +//
-        "}\n\n" +//
-        "type Author {\n" +//
-        "  id: String\n" +//
-        "  firstName: String\n" +//
-        "  lastName: String\n" +//
-        "  wrote: [Book] @relationship(type: \"IS_AUTHOR_OF\", direction: OUT)\n" +//
-        "}";
+    final String types = """
+        type Query {
+          bookById(id: String): Book
+          bookByName(name: String): Book
+        }
+
+        type Book {
+          id: String
+          name: String
+          pageCount: Int
+          authors: [Author] @relationship(type: "IS_AUTHOR_OF", direction: IN)
+        }
+
+        type Author {
+          id: String
+          firstName: String
+          lastName: String
+          wrote: [Book] @relationship(type: "IS_AUTHOR_OF", direction: OUT)
+        }""";
     database.command("graphql", types);
   }
 }

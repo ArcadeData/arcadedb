@@ -1,13 +1,13 @@
 {
   "name": "js",
   "version": "1.0.0",
+  "license": "Apache-2.0",
   "main": "index.js",
   "scripts": {
     "test": "jest --runInBand --ci --reporters=default --reporters=jest-junit --detectOpenHandles"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
   "description": "",
   "dependencies": {
     "pg": "^8.16.0"

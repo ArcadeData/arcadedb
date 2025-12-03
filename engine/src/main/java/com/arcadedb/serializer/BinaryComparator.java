@@ -29,6 +29,8 @@ import java.math.*;
 import java.time.temporal.*;
 import java.util.*;
 
+import static com.arcadedb.utility.CollectionUtils.arrayToList;
+
 public class BinaryComparator {
   public int compare(final Object value1, final byte type1, final Object value2, final byte type2) {
     if (value1 == null) {
@@ -289,7 +291,21 @@ public class BinaryComparator {
     case BinaryTypes.TYPE_BINARY: {
       switch (type2) {
       case BinaryTypes.TYPE_BINARY: {
-        return ((Binary) value1).compareTo((Binary) value2);
+        // Handle both byte[] and Binary objects
+        if (value1 instanceof byte[] bytes1) {
+          if (value2 instanceof byte[] bytes2) {
+            return UnsignedBytesComparator.BEST_COMPARATOR.compare(bytes1, bytes2);
+          } else if (value2 instanceof Binary binary2) {
+            return -compareBytes(binary2.getContent(), bytes1);
+          }
+        } else if (value1 instanceof Binary binary1) {
+          if (value2 instanceof byte[] bytes2) {
+            return compareBytes(binary1.getContent(), bytes2);
+          } else if (value2 instanceof Binary binary2) {
+            return binary1.compareTo(binary2);
+          }
+        }
+        throw new IllegalArgumentException("Invalid binary type for comparison: " + value1.getClass() + " and " + value2.getClass());
       }
       }
       throw new UnsupportedOperationException("Comparing binary types");
@@ -331,8 +347,8 @@ public class BinaryComparator {
     case BinaryTypes.TYPE_LIST: {
       switch (type2) {
       case BinaryTypes.TYPE_LIST:
-        final List v1 = value1.getClass().isArray() ? Arrays.asList((Object[]) value1) : (List) value1;
-        final List v2 = value2.getClass().isArray() ? Arrays.asList((Object[]) value2) : (List) value2;
+        final List v1 = value1.getClass().isArray() ? arrayToList(value1) : (List) value1;
+        final List v2 = value2.getClass().isArray() ? arrayToList(value2) : (List) value2;
 
         return CollectionUtils.compare(v1, v2);
       }
@@ -458,4 +474,5 @@ public class BinaryComparator {
   public static int compareBytes(final byte[] buffer1, final byte[] buffer2) {
     return UnsignedBytesComparator.BEST_COMPARATOR.compare(buffer1, buffer2);
   }
+
 }

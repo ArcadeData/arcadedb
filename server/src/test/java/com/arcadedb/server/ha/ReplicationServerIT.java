@@ -61,7 +61,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void testReplication() throws Exception {
+  public void replication() throws Exception {
     testReplication(0);
   }
 
@@ -225,9 +225,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
           }
         }
 
-        assertThat(ridsFoundInIndex.size())
-            .withFailMessage("TEST: Found " + missingsCount + " missing records on server " + server)
-            .isEqualTo(recordInDb);
+        assertThat(ridsFoundInIndex.size()).isEqualTo(recordInDb);
         assertThat(missingsCount).isZero();
         assertThat(total).isEqualTo(total2);
 

@@ -41,13 +41,13 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
-public class ReplicationChangeSchemaIT extends ReplicationServerIT {
+class ReplicationChangeSchemaIT extends ReplicationServerIT {
   private final Database[]          databases   = new Database[getServerCount()];
   private final Map<String, String> schemaFiles = new LinkedHashMap<>(getServerCount());
 
   @Test
   public void testReplication() throws Exception {
-    super.testReplication();
+    super.replication();
 
     for (int i = 0; i < getServerCount(); i++) {
       databases[i] = getServer(i).getDatabase(getDatabaseName());
@@ -57,6 +57,12 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
 
     // CREATE NEW TYPE
     final VertexType type1 = databases[0].getSchema().createVertexType("RuntimeVertex0");
+    for (int i = 0; i < getServerCount(); i++) {
+      databases[i] = getServer(i).getDatabase(getDatabaseName());
+      if (databases[i].isTransactionActive())
+        databases[i].commit();
+    }
+
     testOnAllServers((database) -> isInSchemaFile(database, "RuntimeVertex0"));
 
     // CREATE NEW PROPERTY

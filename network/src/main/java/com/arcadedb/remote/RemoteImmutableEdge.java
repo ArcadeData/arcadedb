@@ -18,7 +18,7 @@
  */
 package com.arcadedb.remote;
 
-import com.arcadedb.database.JSONSerializer;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
@@ -113,7 +113,7 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
 
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
-    final JSONObject result = new JSONSerializer(database).map2json(map, type, includeMetadata);
+    final JSONObject result = new JsonSerializer(database).map2json(map, type, includeMetadata);
     if (includeMetadata) {
       result.put(Property.CAT_PROPERTY, "e");
       result.put(Property.TYPE_PROPERTY, getTypeName());

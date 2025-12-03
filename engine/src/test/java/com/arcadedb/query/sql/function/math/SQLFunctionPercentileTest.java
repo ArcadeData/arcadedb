@@ -25,35 +25,35 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class SQLFunctionPercentileTest {
+class SQLFunctionPercentileTest {
 
   private SQLFunctionPercentile percentile;
 
   @BeforeEach
-  public void beforeMethod() {
+  void beforeMethod() {
     percentile = new SQLFunctionPercentile();
   }
 
   @Test
-  public void testEmpty() {
+  void empty() {
     final Object result = percentile.getResult();
     assertThat(result).isNull();
   }
 
   @Test
-  public void testSingleValueLower() {
+  void singleValueLower() {
     percentile.execute(null, null, null, new Object[] { 10, .25 }, null);
     assertThat(percentile.getResult()).isEqualTo(10);
   }
 
   @Test
-  public void testSingleValueUpper() {
+  void singleValueUpper() {
     percentile.execute(null, null, null, new Object[] { 10, .75 }, null);
     assertThat(percentile.getResult()).isEqualTo(10);
   }
 
   @Test
-  public void test50thPercentileOdd() {
+  void test50thPercentileOdd() {
     final int[] scores = { 1, 2, 3, 4, 5 };
 
     for (final int s : scores) {
@@ -65,7 +65,7 @@ public class SQLFunctionPercentileTest {
   }
 
   @Test
-  public void test50thPercentileOddWithNulls() {
+  void test50thPercentileOddWithNulls() {
     final Integer[] scores = { null, 1, 2, null, 3, 4, null, 5 };
 
     for (final Integer s : scores) {
@@ -77,7 +77,7 @@ public class SQLFunctionPercentileTest {
   }
 
   @Test
-  public void test50thPercentileEven() {
+  void test50thPercentileEven() {
     final int[] scores = { 1, 2, 4, 5 };
 
     for (final int s : scores) {
@@ -89,7 +89,7 @@ public class SQLFunctionPercentileTest {
   }
 
   @Test
-  public void testFirstQuartile() {
+  void firstQuartile() {
     final int[] scores = { 1, 2, 3, 4, 5 };
 
     for (final int s : scores) {
@@ -101,7 +101,7 @@ public class SQLFunctionPercentileTest {
   }
 
   @Test
-  public void testThirdQuartile() {
+  void thirdQuartile() {
     final int[] scores = { 1, 2, 3, 4, 5 };
 
     for (final int s : scores) {
@@ -113,7 +113,7 @@ public class SQLFunctionPercentileTest {
   }
 
   @Test
-  public void testMultiQuartile() {
+  void multiQuartile() {
     final int[] scores = { 1, 2, 3, 4, 5 };
 
     for (final int s : scores) {

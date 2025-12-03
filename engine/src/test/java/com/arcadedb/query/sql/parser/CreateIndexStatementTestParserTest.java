@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class CreateIndexStatementTestParserTest extends AbstractParserTest {
+class CreateIndexStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("create index `OUser.name` UNIQUE ENGINE LSM");
     checkRightSyntax("create index `OUser.name` UNIQUE engine LSM");
     checkRightSyntax("create index `OUser.name` IF NOT EXISTS UNIQUE engine LSM");
@@ -36,6 +36,9 @@ public class CreateIndexStatementTestParserTest extends AbstractParserTest {
     checkRightSyntax("CREATE INDEX on Foo (bar, baz) UNIQUE");
     checkRightSyntax("CREATE INDEX on Foo (bar, baz) UNIQUE");
     checkRightSyntax("CREATE INDEX on Foo (bar by key, baz by value) UNIQUE");
+    checkRightSyntax("CREATE INDEX on Foo (tags by item) NOTUNIQUE");
+    checkRightSyntax("CREATE INDEX on Foo (identifiers by item) NOTUNIQUE");
+    checkRightSyntax("CREATE INDEX on Foo (items by item, name by key) UNIQUE");
     checkRightSyntax("CREATE INDEX IF NOT EXISTS on Foo (bar) UNIQUE");
     checkRightSyntax("CREATE INDEX IF NOT EXISTS on Foo (bar) UNIQUE NULL_STRATEGY SKIP");
     checkRightSyntax("CREATE INDEX IF NOT EXISTS on Foo (bar) UNIQUE ENGINE LSM");

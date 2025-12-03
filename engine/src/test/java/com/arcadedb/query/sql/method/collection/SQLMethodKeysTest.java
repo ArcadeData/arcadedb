@@ -29,17 +29,17 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class SQLMethodKeysTest {
+class SQLMethodKeysTest {
 
   private SQLMethod function;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     function = new SQLMethodKeys();
   }
 
   @Test
-  public void testWithResult() {
+  void withResult() {
     final ResultInternal resultInternal = new ResultInternal();
     resultInternal.setProperty("name", "Foo");
     resultInternal.setProperty("surname", "Bar");
@@ -49,7 +49,7 @@ public class SQLMethodKeysTest {
   }
 
   @Test
-  public void testWithCollection() {
+  void withCollection() {
     List<Map<String, Object>> collection = List.of(Map.of("key1", "value1"), Map.of("key2", "value2"));
 
     Object result = function.execute(collection, null, null, null);
@@ -57,7 +57,7 @@ public class SQLMethodKeysTest {
   }
 
   @Test
-  public void testWithNull() {
+  void withNull() {
     Object result = function.execute(null, null, null, null);
     assertThat(result).isNull();
   }

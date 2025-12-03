@@ -1,7 +1,27 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.arcadedb.remote.grpc;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.grpc.InsertOptions;
 import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
 import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
@@ -9,7 +29,6 @@ import com.arcadedb.server.grpc.InsertSummary;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -17,11 +36,11 @@ import org.junit.jupiter.api.TestInstance;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Regression tests that exercise ONLY the gRPC Remote database client.
@@ -38,8 +57,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * own data.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-@Disabled
-public class RemoteGrpcDatabaseRegressionTest {
+class RemoteGrpcDatabaseRegressionTest extends BaseGraphServerTest {
 
   // -------- Config (env overrides supported) --------
 
@@ -57,23 +75,30 @@ public class RemoteGrpcDatabaseRegressionTest {
   private RemoteGrpcServer   grpcServer;
   private RemoteGrpcDatabase grpc;
 
+  @Override
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
+    GlobalConfiguration.SERVER_PLUGINS.setValue(
+        "GRPC:com.arcadedb.server.grpc.GrpcServerPlugin");
+  }
+
+  @AfterEach
+  @Override
+  public void endTest() {
+    GlobalConfiguration.SERVER_PLUGINS.setValue("");
+    super.endTest();
+  }
+
   @BeforeAll
-  @Disabled
   void ensureDatabaseExists() {
 
-    this.grpcServer = new RemoteGrpcServer(GRPC_HOST, GRPC_PORT, USER, PASS, true, List.of());
+    grpcServer = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
-    // Prefer using the gRPC admin helper if available (same package).
-    if (!grpcServer.existsDatabase(DB_NAME)) {
-      grpcServer.createDatabase(DB_NAME);
-    }
   }
 
   @BeforeEach
-  @Disabled
   void open() {
-
-    grpc = new RemoteGrpcDatabase(this.grpcServer, GRPC_HOST, GRPC_PORT, HTTP_PORT, DB_NAME, USER, PASS);
+    grpc = new RemoteGrpcDatabase(this.grpcServer, "localhost", 50051, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Create isolated schema for these tests (id unique, name string, n integer)
     grpc.command("sql", "CREATE VERTEX TYPE `" + TYPE + "` IF NOT EXISTS", Map.of());
@@ -86,7 +111,6 @@ public class RemoteGrpcDatabaseRegressionTest {
   }
 
   @AfterEach
-  @Disabled
   void close() {
     if (grpc != null) {
       try {
@@ -100,7 +124,7 @@ public class RemoteGrpcDatabaseRegressionTest {
   // ---------- Helpers ----------
 
   private InsertOptions defaultInsertOptions(final String targetClass, final List<String> keyCols, final List<String> updateCols) {
-    return InsertOptions.newBuilder().setDatabase(DB_NAME).setTargetClass(targetClass).addAllKeyColumns(keyCols)
+    return InsertOptions.newBuilder().setDatabase(getDatabaseName()).setTargetClass(targetClass).addAllKeyColumns(keyCols)
         .setConflictMode(ConflictMode.CONFLICT_UPDATE) // idempotent: upsert by keys
         .addAllUpdateColumnsOnConflict(updateCols) // LWW on these fields
         .setTransactionMode(TransactionMode.PER_BATCH).setServerBatchSize(256)
@@ -138,7 +162,6 @@ public class RemoteGrpcDatabaseRegressionTest {
 
   @Test
   @DisplayName("Bulk insert via gRPC is idempotent by key and supports updates on conflict")
-  @Disabled
   void bulkInsertIdempotentAndUpdate() {
     // Prepare rows
     List<Map<String, Object>> rows = new ArrayList<>();
@@ -151,9 +174,9 @@ public class RemoteGrpcDatabaseRegressionTest {
     InsertSummary s1 = grpc.insertBulkAsListOfMaps(opts, rows, 60_000);
     grpc.commit();
 
-    assertEquals(3, s1.getInserted(), "first insert should insert 3");
-    assertEquals(0, s1.getUpdated(), "first insert should not update");
-    assertEquals(3, countAll(TYPE), "row count after first insert");
+    assertThat(s1.getInserted()).as("first insert should insert 3").isEqualTo(3);
+    assertThat(s1.getUpdated()).as("first insert should not update").isEqualTo(0);
+    assertThat(countAll(TYPE)).as("row count after first insert").isEqualTo(3);
 
     // Re-insert with one changed record (r2) to force an update-on-conflict
     rows.set(1, row("r2", "beta-UPDATED", 22));
@@ -162,34 +185,33 @@ public class RemoteGrpcDatabaseRegressionTest {
     InsertSummary s2 = grpc.insertBulkAsListOfMaps(opts, rows, 60_000);
     grpc.commit();
 
-    assertEquals(0, s2.getInserted(), "second insert should not insert new rows");
-    assertTrue(s2.getUpdated() >= 1, "should update at least 1 row on conflict");
-    assertEquals(3, countAll(TYPE), "row count unchanged after upsert");
+    assertThat(s2.getInserted()).as("second insert should not insert new rows").isEqualTo(0);
+    assertThat(s2.getUpdated() >= 1).as("should update at least 1 row on conflict").isTrue();
+    assertThat(countAll(TYPE)).as("row count unchanged after upsert").isEqualTo(3);
 
     // Verify the updated record
     try (ResultSet rs = grpc.query("sql", "SELECT from `" + TYPE + "` WHERE id = :id", Map.of("id", "r2"))) {
-      assertTrue(rs.hasNext(), "record r2 must exist");
+      assertThat(rs.hasNext()).as("record r2 must exist").isTrue();
       Result r = rs.next();
-      assertEquals("beta-UPDATED", r.<String>getProperty("name"));
-      assertEquals(22, r.<Number>getProperty("n").intValue());
+      assertThat(r.<String>getProperty("name")).isEqualTo("beta-UPDATED");
+      assertThat(r.<Number>getProperty("n").intValue()).isEqualTo(22);
     }
   }
 
   @Test
   @DisplayName("Basic CRUD via SQL commands over gRPC")
-  @Disabled
   void basicCrudViaCommand() {
     // Create
     grpc.command("sql", "INSERT INTO `" + TYPE + "` set id = :id, name = :name, n = :n", Map.of("id", "x1", "name", "one", "n", 1));
     grpc.command("sql", "INSERT INTO `" + TYPE + "` set id = :id, name = :name, n = :n", Map.of("id", "x2", "name", "two", "n", 2));
 
-    assertEquals(2, countAll(TYPE), "two rows inserted");
+    assertThat(countAll(TYPE)).as("two rows inserted").isEqualTo(2);
 
     // Read
     try (ResultSet rs = grpc.query("sql", "SELECT from `" + TYPE + "` WHERE id = :id", Map.of("id", "x1"))) {
-      assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       Result r = rs.next();
-      assertEquals("one", r.<String>getProperty("name"));
+      assertThat(r.<String>getProperty("name")).isEqualTo("one");
     }
 
     // Update
@@ -200,18 +222,17 @@ public class RemoteGrpcDatabaseRegressionTest {
 
     try (ResultSet rs = grpc.query("sql", "SELECT from `" + TYPE + "` WHERE id = :id", Map.of("id", "x1"))) {
       Result r = rs.next();
-      assertEquals("ONE!", r.<String>getProperty("name"));
-      assertEquals(11, r.<Number>getProperty("n").intValue());
+      assertThat(r.<String>getProperty("name")).isEqualTo("ONE!");
+      assertThat(r.<Number>getProperty("n").intValue()).isEqualTo(11);
     }
 
     // Delete
     grpc.command("sql", "DELETE FROM `" + TYPE + "` WHERE id = :id", Map.of("id", "x2"));
-    assertEquals(1, countAll(TYPE), "one row remains after delete");
+    assertThat(countAll(TYPE)).as("one row remains after delete").isEqualTo(1);
   }
 
   @Test
   @DisplayName("Transaction: rollback undoes changes; commit persists")
-  @Disabled
   void transactionsRollbackAndCommit() {
     long before = countAll(TYPE);
 
@@ -220,52 +241,50 @@ public class RemoteGrpcDatabaseRegressionTest {
     grpc.command("sql", "INSERT INTO `" + TYPE + "` set id = :id, name = :name, n = :n",
         Map.of("id", "tx1", "name", "temp", "n", 99));
     grpc.rollback();
-    assertEquals(before, countAll(TYPE), "rollback must revert insert");
+    assertThat(countAll(TYPE)).as("rollback must revert insert").isEqualTo(before);
 
     // Commit path
     grpc.begin();
     grpc.command("sql", "INSERT INTO `" + TYPE + "` set id = :id, name = :name, n = :n",
         Map.of("id", "tx2", "name", "persisted", "n", 100));
     grpc.commit();
-    assertEquals(before + 1, countAll(TYPE), "commit must persist insert");
+    assertThat(countAll(TYPE)).as("commit must persist insert").isEqualTo(before + 1);
   }
 
   @Test
   @DisplayName("schema:types → properties decoded as List<Map<..>>")
-  @Disabled
   void schemaTypesPropertiesDecodedAsMaps() {
 
     try (ResultSet rs = grpc.query("sql", "SELECT FROM schema:types WHERE name = :name", Map.of("name", TYPE))) {
 
-      assertTrue(rs.hasNext(), "schema:types should contain our test type");
+      assertThat(rs.hasNext()).as("schema:types should contain our test type").isTrue();
 
       Result r = rs.next();
 
       Object propsObj = r.getProperty("properties");
 
-      assertTrue(propsObj instanceof java.util.List<?>, "properties must be a List");
+      assertThat(propsObj).as("properties must be a List").isInstanceOf(List.class);
 
-      java.util.List<?> props = (java.util.List<?>) propsObj;
-      assertTrue(!props.isEmpty(), "properties list should not be empty");
+      List<?> props = (List<?>) propsObj;
+      assertThat(props.isEmpty()).as("properties list should not be empty").isFalse();
 
       Object first = props.get(0);
-      assertTrue(first instanceof java.util.Map<?, ?>, "each property is expected to be a Map");
+      assertThat(first).as("each property is expected to be a Map").isInstanceOf(Map.class);
 
-      java.util.Map<?, ?> p0 = (java.util.Map<?, ?>) first;
+      Map<?, ?> p0 = (Map<?, ?>) first;
 
       // Spot-check expected keys
-      assertTrue(p0.containsKey("name"), "property map must have 'name'");
-      assertTrue(p0.containsKey("type"), "property map must have 'type'");
+      assertThat(p0.containsKey("name")).as("property map must have 'name'").isTrue();
+      assertThat(p0.containsKey("type")).as("property map must have 'type'").isTrue();
     }
   }
 
   @Test
   @DisplayName("Embedded _auditMetadata map round-trips with Long timestamps")
-  @Disabled
   void embeddedAuditMetadataRoundTrip() {
 
     final String recId = "audit1";
-    final java.util.Map<String, Object> audit = new java.util.LinkedHashMap<>();
+    final Map<String, Object> audit = new LinkedHashMap<>();
 
     audit.put("createdDate", 1720225210408L);
     audit.put("createdByUser", "service-account-empower-platform-admin");
@@ -276,21 +295,66 @@ public class RemoteGrpcDatabaseRegressionTest {
         Map.of("id", recId, "name", "with-audit", "n", 1, "audit", audit));
 
     try (ResultSet rs = grpc.query("sql", "SELECT FROM `" + TYPE + "` WHERE id = :id", Map.of("id", recId))) {
-      assertTrue(rs.hasNext(), "inserted record should be queriable");
+      assertThat(rs.hasNext()).as("inserted record should be queriable").isTrue();
       Result r = rs.next();
       Object auditObj = r.getProperty("_auditMetadata");
-      assertTrue(auditObj instanceof java.util.Map<?, ?>, "_auditMetadata must be a Map");
+      assertThat(auditObj).as("_auditMetadata must be a Map").isInstanceOf(Map.class);
       @SuppressWarnings("unchecked")
-      java.util.Map<String, Object> m = (java.util.Map<String, Object>) auditObj;
+      Map<String, Object> m = (Map<String, Object>) auditObj;
 
       Object cd = m.get("createdDate");
       Object md = m.get("lastModifiedDate");
-      assertTrue(cd instanceof Number, "createdDate must be numeric");
-      assertTrue(md instanceof Number, "lastModifiedDate must be numeric");
-      assertEquals(1720225210408L, ((Number) cd).longValue(), "createdDate must be precise long");
-      assertEquals(1741795459718L, ((Number) md).longValue(), "lastModifiedDate must be precise long");
-      assertEquals("service-account-empower-platform-admin", m.get("createdByUser"));
-      assertEquals("service-account-empower-platform-admin", m.get("lastModifiedByUser"));
+      assertThat(cd).as("createdDate must be numeric").isInstanceOf(Number.class);
+      assertThat(md).as("lastModifiedDate must be numeric").isInstanceOf(Number.class);
+      assertThat(((Number) cd).longValue()).as("createdDate must be precise long").isEqualTo(1720225210408L);
+      assertThat(((Number) md).longValue()).as("lastModifiedDate must be precise long").isEqualTo(1741795459718L);
+      assertThat(m.get("createdByUser")).isEqualTo("service-account-empower-platform-admin");
+      assertThat(m.get("lastModifiedByUser")).isEqualTo("service-account-empower-platform-admin");
+    }
+  }
+
+  @Test
+  @DisplayName("Issue #2854: gRPC ResultSet should preserve SQL aliases")
+  void sqlAliasesArePreservedInGrpcResultSet() {
+    // Setup: Insert test data with a known value
+    grpc.command("sql", "INSERT INTO `" + TYPE + "` SET id = :id, name = :name, n = :n",
+        Map.of("id", "alias-test-1", "name", "TestAuthor", "n", 42));
+
+    // Test: Query with alias (AS clause)
+    try (ResultSet rs = grpc.query("sql",
+        "SELECT *, @rid, @type, name AS _aliasedName FROM `" + TYPE + "` WHERE id = :id",
+        Map.of("id", "alias-test-1"))) {
+
+      assertThat(rs.hasNext()).as("Query should return at least one result").isTrue();
+      Result r = rs.next();
+
+      // Verify original property is present
+      assertThat((Object) r.getProperty("name"))
+          .as("Original 'name' property should be present")
+          .isEqualTo("TestAuthor");
+
+      // Verify aliased property is present with the correct value
+      assertThat((Object) r.getProperty("_aliasedName"))
+          .as("Aliased property '_aliasedName' should be present and equal to original 'name'")
+          .isEqualTo("TestAuthor");
+
+      // Verify @rid is present (metadata attribute)
+      assertThat((Object) r.getIdentity())
+          .as("@rid property should be present")
+          .isNotNull();
+
+      // Verify @type is present (metadata attribute)
+      assertThat(r.getElement().get().getTypeName())
+          .as("@type property should be present")
+          .isEqualTo(TYPE);
+
+      // Verify the numeric property 'n' is also present
+      assertThat(r.<Number>getProperty("n"))
+          .as("Numeric property 'n' should be present")
+          .isNotNull();
+      assertThat(r.<Number>getProperty("n").intValue())
+          .as("Numeric property 'n' should have correct value")
+          .isEqualTo(42);
     }
   }
 }

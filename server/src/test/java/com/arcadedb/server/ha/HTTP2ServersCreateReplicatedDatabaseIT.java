@@ -21,16 +21,18 @@ package com.arcadedb.server.ha;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import java.net.*;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.*;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class HTTP2ServersCreateReplicatedDatabaseIT extends BaseGraphServerTest {
+class HTTP2ServersCreateReplicatedDatabaseIT extends BaseGraphServerTest {
   @Override
   protected int getServerCount() {
     return 2;
@@ -42,7 +44,7 @@ public class HTTP2ServersCreateReplicatedDatabaseIT extends BaseGraphServerTest 
   }
 
   @Test
-  public void testCreateReplicatedDatabase() throws Exception {
+  void createReplicatedDatabase() throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
         "http://127.0.0.1:248" + 0 + "/api/v1/server").openConnection();
 
@@ -68,10 +70,23 @@ public class HTTP2ServersCreateReplicatedDatabaseIT extends BaseGraphServerTest 
           .withFailMessage("Type " + (("VertexType" + serverIndex) + " not found on server " + serverIndex));
     });
 
-    Thread.sleep(300);
-
-    // CHECK THE SCHEMA HAS BEEN PROPAGATED
-    testEachServer((serverIndex) -> command(serverIndex, "select from VertexType" + serverIndex));
+    // Wait for schema propagation
+    Awaitility.await()
+        .atMost(10, TimeUnit.SECONDS)
+        .pollInterval(100, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          // CHECK THE SCHEMA HAS BEEN PROPAGATED to both servers
+          for (int i = 0; i < getServerCount(); i++) {
+            final int serverIndex = i;
+            try {
+              command(serverIndex, "select from VertexType" + serverIndex);
+            } catch (Exception e) {
+              LogManager.instance().log(this, Level.FINE, "Schema not yet propagated to server " + serverIndex, e);
+              return false;
+            }
+          }
+          return true;
+        });
 
     // CREATE SOME VERTICES ON BOTH SERVERS
     testEachServer((serverIndex) -> {

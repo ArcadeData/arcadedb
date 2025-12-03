@@ -31,15 +31,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.sql.SQLException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
+class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
   private RemoteDatabase database;
 
   @BeforeEach
@@ -56,7 +54,7 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
   }
 
   @Test
-  void backupDatabase() throws IOException, InterruptedException {
+  void backupDatabase() throws Exception {
 
     ResultSet resultSet = database.command("sql", "BACKUP DATABASE");
 
@@ -210,7 +208,7 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
 
   @Test
   @Disabled
-  void testMultipleInsert() throws SQLException, ClassNotFoundException {
+  void multipleInsert() throws Exception {
     database.command("sqlscript", """
         create vertex type `TEXT_EMBEDDING` if not exists;
         create property TEXT_EMBEDDING.str if not exists STRING;
@@ -236,7 +234,7 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
 
   @Test
   @Disabled
-  void testMultipleInsertBAtched() throws SQLException, ClassNotFoundException {
+  void multipleInsertBAtched() throws Exception {
     database.command("sqlscript", """
         create vertex type `TEXT_EMBEDDING` if not exists;
         create property TEXT_EMBEDDING.str if not exists STRING;
@@ -271,7 +269,7 @@ public class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
 
   @Test
   @Disabled
-  void testMultipleInsertSingleTransaction() throws SQLException, ClassNotFoundException {
+  void multipleInsertSingleTransaction() throws Exception {
     database.command("sqlscript", """
         create vertex type `TEXT_EMBEDDING` if not exists;
         create property TEXT_EMBEDDING.str if not exists STRING;

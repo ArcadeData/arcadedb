@@ -32,7 +32,7 @@ public class WhileBlockExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testPlain() {
+  void plain() {
 
     final String className = "testPlain";
 
@@ -61,7 +61,7 @@ public class WhileBlockExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testReturn() {
+  void testReturn() {
     final String className = "testReturn";
 
     database.getSchema().createDocumentType(className);

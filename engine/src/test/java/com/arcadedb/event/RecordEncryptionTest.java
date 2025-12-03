@@ -83,7 +83,7 @@ public class RecordEncryptionTest extends TestHelper
   }
 
   @Test
-  public void testEncryption() {
+  void encryption() {
     database.transaction(() -> {
       final MutableVertex v1 = database.newVertex("BackAccount")
           .set("secret", "Nobody must know John and Zuck are brothers")
@@ -118,12 +118,12 @@ public class RecordEncryptionTest extends TestHelper
 
   @Override
   public Record onAfterRead(Record record) {
+    reads.incrementAndGet();
     final MutableVertex doc = record.asVertex().modify();
     try {
       byte[] ivBytes = Base64.getDecoder().decode(doc.getString("iv"));
       IvParameterSpec iv = new IvParameterSpec(ivBytes);
       doc.set("secret", decrypt(ALGORITHM, doc.getString("secret"), key, iv));
-      reads.incrementAndGet();
       return doc;
     } catch (Exception e) {
       throw new SecurityException(e);
@@ -132,12 +132,12 @@ public class RecordEncryptionTest extends TestHelper
 
   @Override
   public boolean onBeforeCreate(Record record) {
+    creates.incrementAndGet();
     final MutableVertex doc = record.asVertex().modify();
     try {
       String encrypted = encrypt(ALGORITHM, doc.getString("secret"), key, ivParameterSpec);
       doc.set("secret", encrypted);
       doc.set("iv", Base64.getEncoder().encodeToString(ivParameterSpec.getIV()));
-      creates.incrementAndGet();
     } catch (Exception e) {
       throw new SecurityException(e);
     }
@@ -146,12 +146,12 @@ public class RecordEncryptionTest extends TestHelper
 
   @Override
   public boolean onBeforeUpdate(Record record) {
+    updates.incrementAndGet();
     final MutableVertex doc = record.asVertex().modify();
     try {
       String encrypted = encrypt(ALGORITHM, doc.getString("secret"), key, ivParameterSpec);
       doc.set("secret", encrypted);
       doc.set("iv", Base64.getEncoder().encodeToString(ivParameterSpec.getIV()));
-      updates.incrementAndGet();
     } catch (Exception e) {
       throw new SecurityException(e);
     }

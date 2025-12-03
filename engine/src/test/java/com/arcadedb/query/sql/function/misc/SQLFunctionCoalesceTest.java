@@ -29,10 +29,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class SQLFunctionCoalesceTest extends TestHelper {
+class SQLFunctionCoalesceTest extends TestHelper {
 
   @Test
-  public void testBoolAnd_SingleNull() {
+  void boolAndSingleNull() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE doc");
       database.command("sql", "INSERT INTO doc (num) VALUES (1),(3),(5),(2),(4)");

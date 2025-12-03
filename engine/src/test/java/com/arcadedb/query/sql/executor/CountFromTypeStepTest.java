@@ -26,12 +26,12 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.*;
 
-public class CountFromTypeStepTest {
+class CountFromTypeStepTest {
 
   private static final String ALIAS = "size";
 
   @Test
-  public void shouldCountRecordsOfClass() throws Exception {
+  void shouldCountRecordsOfClass() throws Exception {
     TestHelper.executeInNewDatabase((db) -> {
       final String className = TestHelper.createRandomType(db).getName();
       for (int i = 0; i < 20; i++) {

@@ -26,8 +26,18 @@ import com.arcadedb.integration.restore.RestoreSettings;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
+
+import javax.crypto.Cipher;
+import javax.crypto.CipherInputStream;
+import javax.crypto.SecretKey;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.SecretKeySpec;
+
 import java.net.*;
 import java.nio.charset.*;
+import java.security.spec.KeySpec;
 import java.util.*;
 import java.util.zip.*;
 
@@ -95,7 +105,7 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
         throw new RestoreException("Unable to perform restore");
 
       logger.logLine(0, "Full restore completed in %d seconds %s -> %s (%,d%% compression)", elapsedInSecs,
-          FileUtils.getSizeAsString(databaseOrigSize), FileUtils.getSizeAsString((inputSource.fileSize)),
+          FileUtils.getSizeAsString((inputSource.fileSize)), FileUtils.getSizeAsString(databaseOrigSize),
           databaseOrigSize > 0 ? (databaseOrigSize - inputSource.fileSize) * 100 / databaseOrigSize : 0);
     });
   }
@@ -124,8 +134,12 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
     final long origSize = uncompressedFile.length();
     final long compressedSize = compressedFile.getCompressedSize();
 
-    logger.logLine(2, " %s -> %s (%,d%% compressed)", FileUtils.getSizeAsString(origSize),
-        FileUtils.getSizeAsString(compressedSize), origSize > 0 ? (origSize - compressedSize) * 100 / origSize : 0);
+    if (compressedSize > -1) {
+      logger.logLine(2, " %s -> %s (%,d%% compression)",
+          FileUtils.getSizeAsString(compressedSize), FileUtils.getSizeAsString(origSize),
+          origSize > 0 ? (origSize - compressedSize) * 100 / origSize : 0);
+    } else
+      logger.logLine(2, " uncompressed to %s", FileUtils.getSizeAsString(origSize));
 
     return origSize;
   }
@@ -164,26 +178,26 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
       }
 
       // Derive the key using PBKDF2 with the salt
-      final javax.crypto.SecretKeyFactory factory = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
-      final java.security.spec.KeySpec spec = new javax.crypto.spec.PBEKeySpec(settings.encryptionKey.toCharArray(), salt, 65536,
+      final SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+      final KeySpec spec = new PBEKeySpec(settings.encryptionKey.toCharArray(), salt, 65536,
           256);
-      final javax.crypto.SecretKey tmp = factory.generateSecret(spec);
+      final SecretKey tmp = factory.generateSecret(spec);
       final byte[] keyBytes = tmp.getEncoded();
 
-      final javax.crypto.SecretKey secretKey = new javax.crypto.spec.SecretKeySpec(keyBytes, settings.encryptionAlgorithm);
+      final SecretKey secretKey = new SecretKeySpec(keyBytes, settings.encryptionAlgorithm);
       // Read IV from the beginning of the file
       final byte[] iv = new byte[16];
       if (fis.read(iv) != iv.length) {
         throw new IOException("Unable to read IV from encrypted file");
       }
-      final javax.crypto.spec.IvParameterSpec ivSpec = new javax.crypto.spec.IvParameterSpec(iv);
+      final IvParameterSpec ivSpec = new IvParameterSpec(iv);
 
       // Initialize cipher for decryption
-      final javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance(settings.encryptionAlgorithm + "/CTR/NoPadding");
-      cipher.init(javax.crypto.Cipher.DECRYPT_MODE, secretKey, ivSpec);
+      final Cipher cipher = Cipher.getInstance(settings.encryptionAlgorithm + "/CTR/NoPadding");
+      cipher.init(Cipher.DECRYPT_MODE, secretKey, ivSpec);
 
       // Wrap the input stream with CipherInputStream
-      final javax.crypto.CipherInputStream cis = new javax.crypto.CipherInputStream(fis, cipher);
+      final CipherInputStream cis = new CipherInputStream(fis, cipher);
       zipFile = new ZipInputStream(cis, StandardCharsets.UTF_8);
     } else
       zipFile = new ZipInputStream(fis, StandardCharsets.UTF_8);

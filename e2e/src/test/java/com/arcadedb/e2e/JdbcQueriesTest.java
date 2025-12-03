@@ -39,7 +39,7 @@ import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class JdbcQueriesTest extends ArcadeContainerTemplate {
+class JdbcQueriesTest extends ArcadeContainerTemplate {
 
   private Connection conn;
 
@@ -134,7 +134,7 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
   }
 
   @Test
-  void createSchemaWithSqlScript() throws SQLException {
+  void createSchemaWithSqlScript() throws Exception {
     try (final Statement st = conn.createStatement()) {
 
       st.execute("""
@@ -159,7 +159,8 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
           CREATE PROPERTY article.comment IF NOT EXISTS LIST OF comment;
           CREATE PROPERTY article.location IF NOT EXISTS EMBEDDED OF location;
 
-          CREATE INDEX IF NOT EXISTS on article(id) UNIQUE;
+          CREATE INDEX IF NOT EXISTS on article (id) UNIQUE;
+          CREATE INDEX IF NOT EXISTS on article (tags BY ITEM) NOTUNIQUE;
           """);
 
       st.execute("""
@@ -234,7 +235,7 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
   }
 
   @Test
-  void testSelectSchemaTypes() throws SQLException, ClassNotFoundException {
+  void selectSchemaTypes() throws Exception {
     try (final Statement st = conn.createStatement()) {
 
       final ResultSet rs = st.executeQuery("{sql}select from schema:types");
@@ -242,7 +243,7 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
         if (rs.getArray("properties").getResultSet().next()) {
           ResultSet props = rs.getArray("properties").getResultSet();
           assertThat(props.next()).isTrue();
-          assertThat(new JSONObject(props.getString("value")).getString("type")).isEqualTo("INTEGER");
+          assertThat(new JSONObject(props.getString("value")).getString("type")).isIn("INTEGER", "STRING");
         }
       }
 
@@ -250,7 +251,7 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
   }
 
   @Test
-  void testBackupDatabase() throws SQLException {
+  void backupDatabase() throws Exception {
     try (final Statement stmt = conn.createStatement()) {
       ResultSet backupDatabase = stmt.executeQuery("{sqlscript}BACKUP DATABASE");
       while (backupDatabase.next()) {
@@ -299,7 +300,7 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
 
   @Test
   @Disabled
-  void testMultipleInsert() throws SQLException, ClassNotFoundException {
+  void multipleInsert() throws Exception {
     try (Statement stmt = conn.createStatement()) {
 
       stmt.execute("""

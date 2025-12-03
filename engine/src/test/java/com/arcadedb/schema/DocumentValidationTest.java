@@ -1,3 +1,21 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
@@ -11,19 +29,23 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.text.*;
-import java.util.*;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class DocumentValidationTest extends TestHelper {
+class DocumentValidationTest extends TestHelper {
 
   @Test
-  public void testReadOnly() {
+  void readOnly() {
     final DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
     embeddedClazz.createProperty("int", Type.INTEGER).setReadonly(true);
 
@@ -98,7 +120,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testRequiredValidationAPI() {
+  void requiredValidationAPI() {
     final DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
     embeddedClazz.createProperty("int", Type.INTEGER).setMandatory(true);
 
@@ -173,7 +195,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testDefaultValueIsSetWithSQL() {
+  void defaultValueIsSetWithSQL() {
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
 
     database.command("sql", "create property Validation.long LONG (default 1)");
@@ -194,7 +216,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testDefaultNotNullValueIsSetWithSQL() {
+  void defaultNotNullValueIsSetWithSQL() {
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
 
     database.command("sql", "create property Validation.string STRING (notnull, default \"1\")");
@@ -209,7 +231,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testDefaultNotNullMandatoryValueIsSetWithSQL() {
+  void defaultNotNullMandatoryValueIsSetWithSQL() {
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
 
     database.command("sql", "create property Validation.string STRING (mandatory true, notnull true, default \"Hi\")");
@@ -236,7 +258,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testRequiredValidationSQL() {
+  void requiredValidationSQL() {
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
 
     database.command("sql", "create property Validation.int INTEGER (mandatory true)");
@@ -252,7 +274,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testRequiredValidationEdge() {
+  void requiredValidationEdge() {
     database.getSchema().createVertexType("V");
     database.getSchema().createEdgeType("E");
 
@@ -261,12 +283,8 @@ public class DocumentValidationTest extends TestHelper {
     database.transaction(() -> {
       final MutableVertex v1 = database.newVertex("V").save();
       final MutableVertex v2 = database.newVertex("V").save();
-      try {
-        v1.newEdge("E", v2);
-        Assertions.fail();
-      } catch (ValidationException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> v1.newEdge("E", v2))
+          .isInstanceOf(ValidationException.class);
 
       final MutableEdge e = v1.newEdge("E", v2, "id", "12345");
       assertThat(e.getString("id")).isEqualTo("12345");
@@ -274,7 +292,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testRequiredValidationEdgeSQL() {
+  void requiredValidationEdgeSQL() {
     database.getSchema().createVertexType("V");
     database.getSchema().createEdgeType("E");
 
@@ -285,26 +303,14 @@ public class DocumentValidationTest extends TestHelper {
     database.transaction(() -> {
       final MutableVertex v1 = database.newVertex("V").save();
       final MutableVertex v2 = database.newVertex("V").save();
-      try {
-        database.command("sql", "create edge E from ? to ?", v1, v2);
-        Assertions.fail();
-      } catch (ValidationException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> database.command("sql", "create edge E from ? to ?", v1, v2))
+          .isInstanceOf(ValidationException.class);
 
-      try {
-        database.command("sql", "create edge E from ? to ? set a = '12345'", v1, v2);
-        Assertions.fail();
-      } catch (ValidationException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> database.command("sql", "create edge E from ? to ? set a = '12345'", v1, v2))
+          .isInstanceOf(ValidationException.class);
 
-      try {
-        database.command("sql", "create edge E from ? to ? set a = '12345', b = '4444'", v1, v2);
-        Assertions.fail();
-      } catch (ValidationException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> database.command("sql", "create edge E from ? to ? set a = '12345', b = '4444'", v1, v2))
+          .isInstanceOf(ValidationException.class);
 
       final Edge e = database.command("sql", "create edge E from ? to ? set a = '12345', b = '4444', c = '2222'", v1, v2)
           .nextIfAvailable().getEdge().get();
@@ -315,7 +321,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testValidationNotValidEmbedded() {
+  void validationNotValidEmbedded() {
     final DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
     embeddedClazz.createProperty("int", Type.INTEGER).setMandatory(true);
 
@@ -330,16 +336,13 @@ public class DocumentValidationTest extends TestHelper {
 
     final MutableDocument embedded = d.newEmbeddedDocument("EmbeddedValidation", "embedded");
     embedded.set("test", "test");
-    try {
-      d.validate();
-      fail("Validation doesn't throw exception");
-    } catch (final ValidationException e) {
-      assertThat(e.toString().contains("int")).isTrue();
-    }
+    assertThatThrownBy(() -> d.validate())
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("int");
   }
 
   @Test
-  public void testValidationNotValidEmbeddedList() {
+  void validationNotValidEmbeddedList() {
     final DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
     embeddedClazz.createProperty("int", Type.INTEGER).setMandatory(true);
     embeddedClazz.createProperty("long", Type.LONG).setMandatory(true);
@@ -363,16 +366,13 @@ public class DocumentValidationTest extends TestHelper {
     final MutableDocument embeddedInList2 = d.newEmbeddedDocument("EmbeddedValidation", "embeddedList");
     embeddedInList2.set("int", 30);
 
-    try {
-      d.validate();
-      fail("Validation doesn't throw exception");
-    } catch (final ValidationException e) {
-      assertThat(e.toString().contains("long")).isTrue();
-    }
+    assertThatThrownBy(() -> d.validate())
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("long");
   }
 
   @Test
-  public void testValidationNotValidEmbeddedMap() {
+  void validationNotValidEmbeddedMap() {
     final DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
     embeddedClazz.createProperty("int", Type.INTEGER).setMandatory(true);
     embeddedClazz.createProperty("long", Type.LONG).setMandatory(true);
@@ -397,16 +397,13 @@ public class DocumentValidationTest extends TestHelper {
     embeddedInMap2.set("int", 30);
     embeddedMap.put("2", embeddedInMap2);
 
-    try {
-      d.validate();
-      fail("Validation doesn't throw exception");
-    } catch (final ValidationException e) {
-      assertThat(e.toString().contains("long")).isTrue();
-    }
+    assertThatThrownBy(() -> d.validate())
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("long");
   }
 
   @Test
-  public void testMaxValidation() {
+  void maxValidation() {
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
     clazz.createProperty("int", Type.INTEGER).setMax("11");
     clazz.createProperty("long", Type.LONG).setMax("11");
@@ -473,7 +470,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testMinValidation() {
+  void minValidation() {
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
     clazz.createProperty("int", Type.INTEGER).setMin("11");
     clazz.createProperty("long", Type.LONG).setMin("11");
@@ -539,7 +536,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testNotNullValidation() {
+  void notNullValidation() {
     database.getSchema().createDocumentType("EmbeddedValidation");
 
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
@@ -597,7 +594,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testNotNullSave() {
+  void notNullSave() {
     database.getSchema().createDocumentType("EmbeddedValidation");
 
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
@@ -657,7 +654,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testRegExpValidation() {
+  void regExpValidation() {
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType("Validation");
     clazz.getOrCreateProperty("string", Type.STRING).setRegexp("[^Z]*");
 
@@ -669,7 +666,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testRegExpValidationFromSQL() {
+  void regExpValidationFromSQL() {
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType("Validation");
 
     database.command("sql", "create property Validation.anychars string (regexp '.*')");
@@ -687,7 +684,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testPropertyMetadataAreSavedAndReloadded() {
+  void propertyMetadataAreSavedAndReloadded() {
     database.getSchema().createDocumentType("EmbeddedValidation");
 
     final DocumentType clazz = database.getSchema().createDocumentType("Validation");
@@ -716,25 +713,17 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testMinMaxNotApplicable() {
+  void minMaxNotApplicable() {
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType("Validation");
-    try {
-      clazz.createProperty("invString", Type.STRING).setMin("-1");
-      fail("");
-    } catch (IllegalArgumentException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> clazz.createProperty("invString", Type.STRING).setMin("-1"))
+        .isInstanceOf(IllegalArgumentException.class);
 
-    try {
-      clazz.createProperty("invBinary", Type.LIST).setMax("-1");
-      fail("");
-    } catch (IllegalArgumentException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> clazz.createProperty("invBinary", Type.LIST).setMax("-1"))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
-  public void testEmbeddedDocumentConversion() {
+  void embeddedDocumentConversion() {
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType("Validation");
     MutableDocument v = clazz.newRecord();
     v.set("embedded", Map.of("value", 300, Property.TYPE_PROPERTY, "Validation"));
@@ -744,31 +733,25 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   private void checkFieldValue(final Document toCheck, final String field, final Object newValue) {
-    try {
+    assertThatThrownBy(() -> {
       final MutableDocument newD = database.newDocument(toCheck.getTypeName()).fromMap(toCheck.toMap());
       newD.set(field, newValue);
       newD.validate();
-      fail("");
-    } catch (final ValidationException v) {
-    }
+    }).isInstanceOf(ValidationException.class);
   }
 
   private void checkRequireField(final MutableDocument toCheck, final String fieldName) {
-    try {
+    assertThatThrownBy(() -> {
       final MutableDocument newD = database.newDocument(toCheck.getTypeName()).fromMap(toCheck.toMap());
       newD.remove(fieldName);
       newD.validate();
-      fail("");
-    } catch (final ValidationException v) {
-    }
+    }).isInstanceOf(ValidationException.class);
   }
 
   private void checkReadOnlyField(final MutableDocument toCheck, final String fieldName) {
-    try {
+    assertThatThrownBy(() -> {
       toCheck.remove(fieldName);
       toCheck.validate();
-      fail("");
-    } catch (final ValidationException v) {
-    }
+    }).isInstanceOf(ValidationException.class);
   }
 }

@@ -35,10 +35,10 @@ import java.io.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class GremlinServerTest extends AbstractGremlinServerIT {
+class GremlinServerTest extends AbstractGremlinServerIT {
 
   @Test
-  public void getAllVertices() {
+  void getAllVertices() {
     final GraphTraversalSource g = traversal();
     final var vertices = g.V().limit(3).toList();
     assertThat(vertices.size()).isEqualTo(3);

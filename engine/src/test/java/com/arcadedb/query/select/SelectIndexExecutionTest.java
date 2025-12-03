@@ -56,7 +56,7 @@ public class SelectIndexExecutionTest extends TestHelper {
   }
 
   @Test
-  public void okOneOfTwoAvailableIndexes() {
+  void okOneOfTwoAvailableIndexes() {
     // EXPECTED TO USE BOTH INDEXES BECAUSE OF THE AND LOGIC OPERATOR
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
@@ -79,7 +79,7 @@ public class SelectIndexExecutionTest extends TestHelper {
   }
 
   @Test
-  public void okBothAvailableIndexes() {
+  void okBothAvailableIndexes() {
     // EXPECTED TO USE BOTH INDEXES BECAUSE OF THE OR LOGIC OPERATOR AND EACH PROPERTY IS INDEXED
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
@@ -99,7 +99,7 @@ public class SelectIndexExecutionTest extends TestHelper {
   }
 
   @Test
-  public void okOneIndexUsed() {
+  void okOneIndexUsed() {
     // EXPECTED TO USE ONLY ONE INDEX
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
@@ -136,7 +136,7 @@ public class SelectIndexExecutionTest extends TestHelper {
   }
 
   @Test
-  public void okNoIndexUsed() {
+  void okNoIndexUsed() {
     // EXPECTED NO INDEXES IS USED BECAUSE NO INDEXES WERE DEFINED ON ANY OF THE PROPERTIES
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
@@ -192,7 +192,7 @@ public class SelectIndexExecutionTest extends TestHelper {
   }
 
   @Test
-  public void okRanges() {
+  void okRanges() {
     {
       final SelectCompiled select = database.select().fromType("Vertex")//
           .where().property("id").gt().parameter("value").compile();

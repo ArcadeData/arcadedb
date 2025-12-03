@@ -25,20 +25,20 @@ import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.CallableNoReturn;
 
 import org.assertj.core.api.Assertions;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 import org.xnio.http.UpgradeFailedException;
 
+import java.util.concurrent.TimeUnit;
 import java.util.logging.*;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class WebSocketEventBusIT extends BaseGraphServerTest {
-  private static final int DELAY_MS = 1000;
-
+class WebSocketEventBusIT extends BaseGraphServerTest {
   @Test
-  public void closeUnsubscribesAll() throws Throwable {
+  void closeUnsubscribesAll() throws Throwable {
     execute(() -> {
       try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
@@ -47,13 +47,15 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
         result = new JSONObject(client.send(buildActionMessage("subscribe", "graph", "V2")));
         assertThat(result.get("result")).isEqualTo("ok");
       }
-      Thread.sleep(DELAY_MS);
-      assertThat(getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph")).isEmpty();
+      Awaitility.await()
+          .atMost(5, TimeUnit.SECONDS)
+          .pollInterval(100, TimeUnit.MILLISECONDS)
+          .until(() -> getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph").isEmpty());
     }, "closeUnsubscribesAll");
   }
 
   @Test
-  public void badCloseIsCleanedUp() throws Throwable {
+  void badCloseIsCleanedUp() throws Throwable {
     execute(() -> {
       {
         final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
@@ -73,18 +75,21 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
         assertThat(json.get("changeType")).isEqualTo("create");
 
         // The sending thread should have detected and removed the zombie connection.
-        Thread.sleep(DELAY_MS);
-        assertThat(getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph")).hasSize(1);
+        Awaitility.await()
+            .atMost(5, TimeUnit.SECONDS)
+            .pollInterval(100, TimeUnit.MILLISECONDS)
+            .until(() -> getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph").size() == 1);
       }
 
-      Thread.sleep(DELAY_MS);
-      assertThat(
-          getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions(getDatabaseName()).isEmpty()).isTrue();
+      Awaitility.await()
+          .atMost(5, TimeUnit.SECONDS)
+          .pollInterval(100, TimeUnit.MILLISECONDS)
+          .until(() -> getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions(getDatabaseName()).isEmpty());
     }, "badCloseIsCleanedUp");
   }
 
   @Test
-  public void invalidJsonReturnsError() throws Throwable {
+  void invalidJsonReturnsError() throws Throwable {
     execute(() -> {
       try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
@@ -96,7 +101,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void authenticationFailureReturns403() throws Throwable {
+  void authenticationFailureReturns403() throws Throwable {
     execute(() -> {
       assertThatThrownBy(() -> {
         new WebSocketClientHelper("ws://localhost:2480/ws", "root", "bad");
@@ -107,7 +112,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void invalidDatabaseReturnsError() throws Throwable {
+  void invalidDatabaseReturnsError() throws Throwable {
     execute(() -> {
       try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
@@ -119,7 +124,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void unsubscribeWithoutSubscribeDoesNothing() throws Throwable {
+  void unsubscribeWithoutSubscribeDoesNothing() throws Throwable {
     execute(() -> {
       try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
@@ -130,7 +135,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void invalidActionReturnsError() throws Throwable {
+  void invalidActionReturnsError() throws Throwable {
     execute(() -> {
       try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
@@ -142,7 +147,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void missingActionReturnsError() throws Throwable {
+  void missingActionReturnsError() throws Throwable {
     execute(() -> {
       try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
@@ -154,7 +159,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void subscribeDatabaseWorks() throws Throwable {
+  void subscribeDatabaseWorks() throws Throwable {
     execute(() -> {
       try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
@@ -173,7 +178,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void twoSubscribersAreServiced() throws Throwable {
+  void twoSubscribersAreServiced() throws Throwable {
     execute(() -> {
       final var clients = new WebSocketClientHelper[] {
           new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS),
@@ -199,7 +204,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void subscribeTypeWorks() throws Throwable {
+  void subscribeTypeWorks() throws Throwable {
     execute(() -> {
       try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
@@ -218,7 +223,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void subscribeChangeTypeWorks() throws Throwable {
+  void subscribeChangeTypeWorks() throws Throwable {
     execute(() -> {
       try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
@@ -237,7 +242,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void subscribeMultipleChangeTypesWorks() throws Throwable {
+  void subscribeMultipleChangeTypesWorks() throws Throwable {
     execute(() -> {
       try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
@@ -273,7 +278,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void subscribeChangeTypeDoesNotPushOtherChangeTypes() throws Throwable {
+  void subscribeChangeTypeDoesNotPushOtherChangeTypes() throws Throwable {
     execute(() -> {
       try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
@@ -288,7 +293,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void subscribeTypeDoesNotPushOtherTypes() throws Throwable {
+  void subscribeTypeDoesNotPushOtherTypes() throws Throwable {
     execute(() -> {
       try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
@@ -303,7 +308,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void unsubscribeDatabaseWorks() throws Throwable {
+  void unsubscribeDatabaseWorks() throws Throwable {
     execute(() -> {
       try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {

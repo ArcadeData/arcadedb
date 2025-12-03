@@ -19,6 +19,7 @@
 package com.arcadedb.index;
 
 import com.arcadedb.engine.Component;
+import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
@@ -37,7 +38,11 @@ public interface IndexInternal extends Index {
 
   boolean compact() throws IOException, InterruptedException;
 
-  void setMetadata(String name, String[] propertyNames, int associatedBucketId);
+  IndexMetadata getMetadata();
+
+  void setMetadata(IndexMetadata metadata);
+
+  void setMetadata(JSONObject indexJSON);
 
   boolean setStatus(INDEX_STATUS[] expectedStatuses, INDEX_STATUS newStatus);
 

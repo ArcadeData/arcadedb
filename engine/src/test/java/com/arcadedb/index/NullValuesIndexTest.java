@@ -31,13 +31,13 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class NullValuesIndexTest extends TestHelper {
+class NullValuesIndexTest extends TestHelper {
   private static final int    TOT       = 10;
   private static final String TYPE_NAME = "V";
   private static final int    PAGE_SIZE = 20000;
 
   @Test
-  public void testNullStrategyError() {
+  void nullStrategyError() {
     assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 
     final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
@@ -83,7 +83,7 @@ public class NullValuesIndexTest extends TestHelper {
   }
 
   @Test
-  public void testNullStrategySkip() {
+  void nullStrategySkip() {
     assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 
     final DocumentType type = database.getSchema()
@@ -154,7 +154,7 @@ public class NullValuesIndexTest extends TestHelper {
   }
 
   @Test
-  public void testNullStrategySkipUnique() {
+  void nullStrategySkipUnique() {
     assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 
     assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();

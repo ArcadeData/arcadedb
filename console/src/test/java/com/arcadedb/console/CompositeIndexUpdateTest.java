@@ -1,24 +1,21 @@
 /*
- * Copyright 2023 Arcade Data Ltd
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
  */
-
 package com.arcadedb.console;
 
 import com.arcadedb.ContextConfiguration;
@@ -115,7 +112,7 @@ public class CompositeIndexUpdateTest {
   }
 
   @Test
-  public void testWhereAfterAsyncInsert() {
+  void whereAfterAsyncInsert() {
     final int PARALLEL_LEVEL = 6;
     final String DATABASE_NAME = "test";
     final int TOTAL_ORDERS = 7;
@@ -138,7 +135,7 @@ public class CompositeIndexUpdateTest {
     }
     String dateTimePattern = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS";
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
-    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);
     GlobalConfiguration.DATE_TIME_FORMAT.setValue(dateTimePattern);
     GlobalConfiguration.SERVER_METRICS.setValue(false);
     GlobalConfiguration.HA_ENABLED.setValue(false);
@@ -320,12 +317,12 @@ public class CompositeIndexUpdateTest {
   }
 
   @BeforeEach
-  public void cleanup() {
+  void cleanup() {
     FileUtils.deleteRecursively(new File("./target/databases/"));
   }
 
   @AfterEach
-  public void endTests() {
+  void endTests() {
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();
   }

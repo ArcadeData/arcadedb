@@ -27,12 +27,12 @@ import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class LoggerTest extends TestHelper {
+class LoggerTest extends TestHelper {
   private boolean logged  = false;
   private boolean flushed = false;
 
   @Test
-  public void testCustomLogger() {
+  void customLogger() {
     try {
       LogManager.instance().setLogger(new Logger() {
         @Override

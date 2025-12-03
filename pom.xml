@@ -25,7 +25,7 @@
     <groupId>com.arcadedb</groupId>
     <artifactId>arcadedb-parent</artifactId>
     <packaging>pom</packaging>
-    <version>25.9.1-SNAPSHOT</version>
+    <version>25.11.1-SNAPSHOT</version>
 
     <name>ArcadeDB</name>
     <url>https://arcadedata.com/</url>
@@ -51,34 +51,35 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <docker.plugin.version>1.2.2</docker.plugin.version>
-        <maven-compiler-plugin.version>3.14.0</maven-compiler-plugin.version>
-        <jacoco-maven-plugin.version>0.8.13</jacoco-maven-plugin.version>
-        <maven-surefire-plugin.version>3.5.3</maven-surefire-plugin.version>
-        <maven-failsafe-plugin.version>3.5.3</maven-failsafe-plugin.version>
-        <maven-assembly-plugin.version>3.7.1</maven-assembly-plugin.version>
-        <maven-resources-plugin.version>3.3.1</maven-resources-plugin.version>
-        <maven-javadoc-plugin.version>3.11.3</maven-javadoc-plugin.version>
-        <maven-source-plugin.version>3.3.1</maven-source-plugin.version>
+        <maven-compiler-plugin.version>3.14.1</maven-compiler-plugin.version>
+        <jacoco-maven-plugin.version>0.8.14</jacoco-maven-plugin.version>
+        <maven-surefire-plugin.version>3.5.4</maven-surefire-plugin.version>
+        <maven-failsafe-plugin.version>3.5.4</maven-failsafe-plugin.version>
+        <maven-assembly-plugin.version>3.8.0</maven-assembly-plugin.version>
+        <maven-resources-plugin.version>3.4.0</maven-resources-plugin.version>
+        <maven-javadoc-plugin.version>3.12.0</maven-javadoc-plugin.version>
+        <maven-source-plugin.version>3.4.0</maven-source-plugin.version>
         <maven-gpg-plugin.version>3.2.8</maven-gpg-plugin.version>
-        <maven-versions-plugin.version>2.19.0</maven-versions-plugin.version>
-        <maven-jar-plugin.version>3.4.2</maven-jar-plugin.version>
-        <maven-shade-plugin.version>3.6.0</maven-shade-plugin.version>
+        <maven-versions-plugin.version>2.20.1</maven-versions-plugin.version>
+        <maven-jar-plugin.version>3.5.0</maven-jar-plugin.version>
+        <maven-shade-plugin.version>3.6.1</maven-shade-plugin.version>
         <maven-deploy-plugin.version>3.1.4</maven-deploy-plugin.version>
         <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
         <maven-clean-plugin.version>3.5.0</maven-clean-plugin.version>
         <license-maven-plugin.version>5.0.0</license-maven-plugin.version>
-        <maven-central-publishing-plugin.version>0.8.0</maven-central-publishing-plugin.version>
+        <maven-central-publishing-plugin.version>0.9.0</maven-central-publishing-plugin.version>
 
-        <testcontainers.version>1.21.3</testcontainers.version>
-        <logback-classic.version>1.5.18</logback-classic.version>
-        <micrometer.version>1.15.3</micrometer.version>
-        <postgres.version>42.7.7</postgres.version>
+        <testcontainers.version>2.0.2</testcontainers.version>
+        <logback-classic.version>1.5.21</logback-classic.version>
+        <micrometer.version>1.16.0</micrometer.version>
+        <postgres.version>42.7.8</postgres.version>
 
-        <assertj-core.version>3.27.4</assertj-core.version>
-        <junit.jupiter.version>5.13.4</junit.jupiter.version>
+        <assertj-core.version>3.27.6</assertj-core.version>
+        <junit.jupiter.version>6.0.1</junit.jupiter.version>
         <awaitility.version>4.3.0</awaitility.version>
         <mockito-core.version>5.16.0</mockito-core.version>
-        <json-path.version>2.9.0</json-path.version>
+        <json-path.version>2.10.0</json-path.version>
+        <slf4j.version>2.0.17</slf4j.version>
 
         <skipITs>true</skipITs>
         <skipTests>false</skipTests>
@@ -86,16 +87,16 @@
         <itCoverageAgent></itCoverageAgent>
         <argLine></argLine>
         <license-maven-plugin.version>5.0.0</license-maven-plugin.version>
-        <mockito-core.version>5.19.0</mockito-core.version>
+        <mockito-core.version>5.20.0</mockito-core.version>
         <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
 
         <!-- Oleg Cohen - gRPC support -->
 
-        <protobuf-maven-plugin.version>3.8.0</protobuf-maven-plugin.version>
-        <grpc.version>1.75.0</grpc.version>
+        <protobuf-maven-plugin.version>4.0.3</protobuf-maven-plugin.version>
+        <grpc.version>1.77.0</grpc.version>
         <protoc.version>4.32.0</protoc.version>
-        <protobuf-java.version>4.32.0</protobuf-java.version>
-        <com.google.api.grpc.version>2.26.0</com.google.api.grpc.version>
+        <protobuf-java.version>4.33.1</protobuf-java.version>
+        <com.google.api.grpc.version>2.63.1</com.google.api.grpc.version>
         <javax.annotation-api.version>1.3.2</javax.annotation-api.version>
 
     </properties>
@@ -192,9 +193,6 @@
                     <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
                     <forkCount>1</forkCount>
                     <systemPropertyVariables>
-                        <org.slf4j.simpleLogger.defaultLogLevel>warn</org.slf4j.simpleLogger.defaultLogLevel>
-                        <org.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener>warn
-                        </org.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener>
                         <polyglot.engine.WarnInterpreterOnly>false</polyglot.engine.WarnInterpreterOnly>
                     </systemPropertyVariables>
                     <argLine>
@@ -202,6 +200,7 @@
                         --add-exports java.management/sun.management=ALL-UNNAMED
                         --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED
                         --add-opens java.base/java.nio.channels.spi=ALL-UNNAMED
+                        --add-modules jdk.incubator.vector
                     </argLine>
                     <skipTests>${skipTests}</skipTests>
                     <!--                    <skipTests>${skipUnit}</skipTests>-->

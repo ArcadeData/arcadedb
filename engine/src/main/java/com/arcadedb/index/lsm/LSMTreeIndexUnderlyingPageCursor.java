@@ -28,19 +28,17 @@ import java.util.*;
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 
 public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbstractCursor {
-  protected final PageId pageId;
-  protected final Binary buffer;
-  protected final int    keyStartPosition;
+  protected final PageId   pageId;
+  protected final Binary   buffer;
+  protected final int      keyStartPosition;
+  protected       int      currentEntryIndex;
+  protected       int      valuePosition = -1;
+  protected       Object[] nextKeys;
+  protected       RID[]    nextValue;
 
-  protected int      currentEntryIndex;
-  protected int      valuePosition = -1;
-  protected Object[] nextKeys;
-  protected RID[]    nextValue;
-
-  public LSMTreeIndexUnderlyingPageCursor(final LSMTreeIndexAbstract index, final BasePage page, final int currentEntryInPage, final int keyStartPosition,
-      final byte[] keyTypes, final int totalKeys, final boolean ascendingOrder) {
+  public LSMTreeIndexUnderlyingPageCursor(final LSMTreeIndexAbstract index, final BasePage page, final int currentEntryInPage,
+      final int keyStartPosition, final byte[] keyTypes, final int totalKeys, final boolean ascendingOrder) {
     super(index, keyTypes, totalKeys, ascendingOrder);
-
     this.keyStartPosition = keyStartPosition;
     this.pageId = page.getPageId();
     this.buffer = new Binary(page.slice());
@@ -97,6 +95,8 @@ public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbst
       final int compare = LSMTreeIndexMutable.compareKeys(index.comparator, keyTypes, nextKeys, adjacentKeys);
       if (compare != 0)
         break;
+
+      currentEntryIndex = pos;
 
       // SAME KEY, MERGE VALUES
       valuePosition = buffer.position();

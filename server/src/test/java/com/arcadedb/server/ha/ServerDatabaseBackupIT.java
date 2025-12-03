@@ -53,7 +53,7 @@ public class ServerDatabaseBackupIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void sqlBackup() {
+  void sqlBackup() {
     for (int i = 0; i < getServerCount(); i++) {
       final Database database = getServer(i).getDatabase(getDatabaseName());
 
@@ -71,7 +71,7 @@ public class ServerDatabaseBackupIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void sqlScriptBackup() {
+  void sqlScriptBackup() {
     for (int i = 0; i < getServerCount(); i++) {
       final Database database = getServer(i).getDatabase(getDatabaseName());
 

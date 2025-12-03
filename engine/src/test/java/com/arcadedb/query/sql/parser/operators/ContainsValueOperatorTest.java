@@ -26,9 +26,9 @@ import java.util.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com) */
-public class ContainsValueOperatorTest {
+class ContainsValueOperatorTest {
   @Test
-  public void test() {
+  void test() {
     final ContainsValueOperator op = new ContainsValueOperator(-1);
 
     assertThat(op.execute(null, null, null)).isFalse();

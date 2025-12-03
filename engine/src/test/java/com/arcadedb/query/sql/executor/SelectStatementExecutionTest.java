@@ -36,18 +36,28 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.*;
-import java.util.*;
+import java.lang.reflect.Array;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Random;
+import java.util.UUID;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
 public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
-  public void testSelectNoTarget() {
+  void selectNoTarget() {
     final ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3");
     assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
@@ -60,7 +70,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testGroupByCount() {
+  void groupByCount() {
     database.getSchema().createDocumentType("InputTx");
 
     database.begin();
@@ -87,7 +97,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSelectNoTargetSkip() {
+  void selectNoTargetSkip() {
     final ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3 skip 1");
     assertThat(result.hasNext()).isFalse();
 
@@ -95,7 +105,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSelectNoTargetSkipZero() {
+  void selectNoTargetSkipZero() {
     final ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3 skip 0");
     assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
@@ -108,7 +118,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSelectNoTargetLimit0() {
+  void selectNoTargetLimit0() {
     final ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3 limit 0");
     assertThat(result.hasNext()).isFalse();
 
@@ -116,7 +126,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSelectNoTargetLimit1() {
+  void selectNoTargetLimit1() {
     final ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3 limit 1");
     assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
@@ -129,13 +139,13 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSelectNoTargetLimitx() {
+  void selectNoTargetLimitx() {
     final ResultSet result = database.query("sql", "select 1 as one, 2 as two, 2+3 skip 0 limit 0");
     result.close();
   }
 
   @Test
-  public void testSelectFullScan1() {
+  void selectFullScan1() {
     final String className = "TestSelectFullScan1";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -158,7 +168,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSelectFullScanOrderByRidAsc() {
+  void selectFullScanOrderByRidAsc() {
     final String className = "testSelectFullScanOrderByRidAsc";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -187,7 +197,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSelectFullScanOrderByRidDesc() {
+  void selectFullScanOrderByRidDesc() {
     final String className = "testSelectFullScanOrderByRidDesc";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -216,7 +226,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSelectFullScanLimit1() {
+  void selectFullScanLimit1() {
     final String className = "testSelectFullScanLimit1";
     database.getSchema().createDocumentType(className);
 
@@ -241,7 +251,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSelectFullScanSkipLimit1() {
+  void selectFullScanSkipLimit1() {
     final String className = "testSelectFullScanSkipLimit1";
     database.getSchema().createDocumentType(className);
 
@@ -266,7 +276,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSelectOrderByDesc() {
+  void selectOrderByDesc() {
     final String className = "testSelectOrderByDesc";
     database.getSchema().createDocumentType(className);
 
@@ -296,7 +306,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSelectOrderByAsc() {
+  void selectOrderByAsc() {
     final String className = "testSelectOrderByAsc";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -325,7 +335,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSelectOrderByMassiveAsc() {
+  void selectOrderByMassiveAsc() {
     final String className = "testSelectOrderByMassiveAsc";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -351,7 +361,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSelectOrderWithProjections() {
+  void selectOrderWithProjections() {
     final String className = "testSelectOrderWithProjections";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -383,7 +393,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSelectOrderWithProjections2() {
+  void selectOrderWithProjections2() {
     final String className = "testSelectOrderWithProjections2";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -415,7 +425,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSelectFullScanWithFilter1() {
+  void selectFullScanWithFilter1() {
     final String className = "testSelectFullScanWithFilter1";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -440,7 +450,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSelectFullScanWithFilter2() {
+  void selectFullScanWithFilter2() {
     final String className = "testSelectFullScanWithFilter2";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -465,7 +475,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testProjections() {
+  void projections() {
     final String className = "testProjections";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -494,7 +504,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCountStar() {
+  void countStar() {
     final String className = "testCountStar";
     database.getSchema().createDocumentType(className);
 
@@ -521,7 +531,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCountStar2() {
+  void countStar2() {
     final String className = "testCountStar2";
     database.getSchema().createDocumentType(className);
 
@@ -551,7 +561,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCountStarEmptyNoIndex() {
+  void countStarEmptyNoIndex() {
     final String className = "testCountStarEmptyNoIndex";
     database.getSchema().createDocumentType(className);
 
@@ -578,7 +588,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCountStarEmptyNoIndexWithAlias() {
+  void countStarEmptyNoIndexWithAlias() {
     final String className = "testCountStarEmptyNoIndexWithAlias";
     database.getSchema().createDocumentType(className);
 
@@ -605,7 +615,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testAggregateMixedWithNonAggregate() {
+  void aggregateMixedWithNonAggregate() {
     final String className = "testAggregateMixedWithNonAggregate";
     database.getSchema().createDocumentType(className);
 
@@ -620,7 +630,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testAggregateMixedWithNonAggregateInCollection() {
+  void aggregateMixedWithNonAggregateInCollection() {
     final String className = "testAggregateMixedWithNonAggregateInCollection";
     database.getSchema().createDocumentType(className);
 
@@ -635,7 +645,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testAggregateInCollection() {
+  void aggregateInCollection() {
     final String className = "testAggregateInCollection";
     database.getSchema().createDocumentType(className);
 
@@ -649,7 +659,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testAggregateMixedWithNonAggregateConstants() {
+  void aggregateMixedWithNonAggregateConstants() {
     final String className = "testAggregateMixedWithNonAggregateConstants";
     database.getSchema().createDocumentType(className);
 
@@ -665,7 +675,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testAggregateSum() {
+  void aggregateSum() {
     final String className = "testAggregateSum";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -686,7 +696,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testAggregateSumGroupBy() {
+  void aggregateSumGroupBy() {
     final String className = "testAggregateSumGroupBy";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -719,7 +729,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testAggregateSumMaxMinGroupBy() {
+  void aggregateSumMaxMinGroupBy() {
     final String className = "testAggregateSumMaxMinGroupBy";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -757,7 +767,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testAggregateSumNoGroupByInProjection() {
+  void aggregateSumNoGroupByInProjection() {
     final String className = "testAggregateSumNoGroupByInProjection";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -789,7 +799,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testAggregateSumNoGroupByInProjection2() {
+  void aggregateSumNoGroupByInProjection2() {
     final String className = "testAggregateSumNoGroupByInProjection2";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -813,7 +823,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromBucketNumber() {
+  void fetchFromBucketNumber() {
     final String className = "testFetchFromBucketNumber";
     final Schema schema = database.getSchema();
     final DocumentType clazz = schema.createDocumentType(className);
@@ -841,7 +851,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromBucketNumberOrderByRidDesc() {
+  void fetchFromBucketNumberOrderByRidDesc() {
     final String className = "testFetchFromBucketNumberOrderByRidDesc";
     final Schema schema = database.getSchema();
     final DocumentType clazz = schema.createDocumentType(className);
@@ -869,7 +879,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromClusterNumberOrderByRidAsc() {
+  void fetchFromClusterNumberOrderByRidAsc() {
     final String className = "testFetchFromClusterNumberOrderByRidAsc";
     final Schema schema = database.getSchema();
     final DocumentType clazz = schema.createDocumentType(className);
@@ -897,7 +907,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromClustersNumberOrderByRidAsc() {
+  void fetchFromClustersNumberOrderByRidAsc() {
     final String className = "testFetchFromClustersNumberOrderByRidAsc";
     final Schema schema = database.getSchema();
     final DocumentType clazz = schema.createDocumentType(className);
@@ -937,7 +947,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testQueryAsTarget() {
+  void queryAsTarget() {
     final String className = "testQueryAsTarget";
     final Schema schema = database.getSchema();
     final DocumentType clazz = schema.createDocumentType(className);
@@ -963,7 +973,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testQuerySchema() {
+  void querySchema() {
     final DocumentType type = database.getSchema().createDocumentType("testQuerySchema");
     type.setCustomValue("description", "this is just a test");
 
@@ -984,7 +994,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testQueryMetadataIndexManager() {
+  void queryMetadataIndexManager() {
     final DocumentType type = database.getSchema().createDocumentType("testQuerySchema");
     database.begin();
     type.createProperty("name", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
@@ -1003,7 +1013,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testQueryMetadataDatabase() {
+  void queryMetadataDatabase() {
     final ResultSet result = database.query("sql", "select from schema:database");
 
     assertThat(result.hasNext()).isTrue();
@@ -1014,7 +1024,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testNonExistingRids() {
+  void nonExistingRids() {
     final int bucketId = database.getSchema().createDocumentType("testNonExistingRids").getBuckets(false).getFirst().getFileId();
     final ResultSet result = database.query("sql", "select from #" + bucketId + ":100000000");
     assertThat(result.hasNext()).isTrue();
@@ -1028,7 +1038,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromSingleRid() {
+  void fetchFromSingleRid() {
     database.getSchema().createDocumentType("testFetchFromSingleRid");
     database.begin();
     final MutableDocument doc = database.newDocument("testFetchFromSingleRid");
@@ -1042,7 +1052,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromSingleRid2() {
+  void fetchFromSingleRid2() {
     database.getSchema().createDocumentType("testFetchFromSingleRid2");
     database.begin();
     final MutableDocument doc = database.newDocument("testFetchFromSingleRid2");
@@ -1056,7 +1066,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromSingleRidParam() {
+  void fetchFromSingleRidParam() {
     database.getSchema().createDocumentType("testFetchFromSingleRidParam");
     database.begin();
     final MutableDocument doc = database.newDocument("testFetchFromSingleRidParam");
@@ -1070,7 +1080,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromSingleRid3() {
+  void fetchFromSingleRid3() {
     database.getSchema().createDocumentType("testFetchFromSingleRid3", 8);
     database.begin();
     MutableDocument doc = database.newDocument("testFetchFromSingleRid3");
@@ -1089,7 +1099,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromSingleRid4() {
+  void fetchFromSingleRid4() {
     database.getSchema().createDocumentType("testFetchFromSingleRid4", 8);
     database.begin();
     MutableDocument doc = database.newDocument("testFetchFromSingleRid4");
@@ -1113,7 +1123,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromClassWithIndex() {
+  void fetchFromClassWithIndex() {
     final String className = "testFetchFromClassWithIndex";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -1145,7 +1155,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromIndex() {
+  void fetchFromIndex() {
     final String className = "testFetchFromIndex";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -1178,7 +1188,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromClassWithIndexes() {
+  void fetchFromClassWithIndexes() {
     final String className = "testFetchFromClassWithIndexes";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -1218,7 +1228,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromClassWithIndexes2() {
+  void fetchFromClassWithIndexes2() {
     final String className = "testFetchFromClassWithIndexes2";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -1243,7 +1253,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromClassWithIndexes3() {
+  void fetchFromClassWithIndexes3() {
     final String className = "testFetchFromClassWithIndexes3";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -1276,7 +1286,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromClassWithIndexes4() {
+  void fetchFromClassWithIndexes4() {
     final String className = "testFetchFromClassWithIndexes4";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -1309,7 +1319,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromClassWithIndexes5() {
+  void fetchFromClassWithIndexes5() {
     final String className = "testFetchFromClassWithIndexes5";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -1340,7 +1350,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromClassWithIndexes6() {
+  void fetchFromClassWithIndexes6() {
     final String className = "testFetchFromClassWithIndexes6";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -1364,7 +1374,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromClassWithIndexes7() {
+  void fetchFromClassWithIndexes7() {
     final String className = "testFetchFromClassWithIndexes7";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -1392,7 +1402,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromClassWithIndexes8() {
+  void fetchFromClassWithIndexes8() {
     final String className = "testFetchFromClassWithIndexes8";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -1416,7 +1426,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromClassWithIndexes9() {
+  void fetchFromClassWithIndexes9() {
     final String className = "testFetchFromClassWithIndexes9";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -1444,7 +1454,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromClassWithIndexes10() {
+  void fetchFromClassWithIndexes10() {
     final String className = "testFetchFromClassWithIndexes10";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -1472,7 +1482,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromClassWithIndexes11() {
+  void fetchFromClassWithIndexes11() {
     final String className = "testFetchFromClassWithIndexes11";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -1499,7 +1509,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromClassWithIndexes12() {
+  void fetchFromClassWithIndexes12() {
     final String className = "testFetchFromClassWithIndexes12";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -1526,7 +1536,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromClassWithIndexes13() {
+  void fetchFromClassWithIndexes13() {
     final String className = "testFetchFromClassWithIndexes13";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -1553,7 +1563,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromClassWithIndexes14() {
+  void fetchFromClassWithIndexes14() {
     final String className = "testFetchFromClassWithIndexes14";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -1582,7 +1592,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromClassWithIndexes15() {
+  void fetchFromClassWithIndexes15() {
     final String className = "testFetchFromClassWithIndexes15";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -1674,7 +1684,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    }
 
   @Test
-  public void testExpand1() {
+  void expand1() {
     final String childClassName = "testExpand1_child";
     final String parentClassName = "testExpand1_parent";
     final DocumentType childClass = database.getSchema().createDocumentType(childClassName);
@@ -1703,25 +1713,19 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     assertThat(result.hasNext()).isFalse();
 
-    try {
-      result = database.query("sql", "select expand(linked).asString() from " + parentClassName);
-      fail("");
-    } catch (CommandSQLParsingException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(
+        () -> database.query("sql", "select expand(linked).asString() from " + parentClassName)).isInstanceOf(
+        CommandSQLParsingException.class);
 
-    try {
-      result = database.query("sql", "SELECT expand([{'name':2},2,3,4]).name from " + parentClassName);
-      fail("");
-    } catch (CommandSQLParsingException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(
+        () -> database.query("sql", "SELECT expand([{'name':2},2,3,4]).name from " + parentClassName)).isInstanceOf(
+        CommandSQLParsingException.class);
 
     result.close();
   }
 
   @Test
-  public void testExpand2() {
+  void expand2() {
     final String childClassName = "testExpand2_child";
     final String parentClassName = "testExpand2_parent";
     final DocumentType childClass = database.getSchema().createDocumentType(childClassName);
@@ -1757,7 +1761,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testExpand3() {
+  void expand3() {
     final String childClassName = "testExpand3_child";
     final String parentClassName = "testExpand3_parent";
     final DocumentType childClass = database.getSchema().createDocumentType(childClassName);
@@ -1798,7 +1802,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testDistinct1() {
+  void distinct1() {
     final String className = "testDistinct1";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -1824,7 +1828,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testDistinct2() {
+  void distinct2() {
     final String className = "testDistinct2";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -1851,7 +1855,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testLet1() {
+  void let1() {
     final ResultSet result = database.query("sql", "select $a as one, $b as two let $a = 1, $b = 1+1");
     assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
@@ -1862,7 +1866,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testLet1Long() {
+  void let1Long() {
     final ResultSet result = database.query("sql", "select $a as one, $b as two let $a = 1L, $b = 1L+1");
     assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
@@ -1873,7 +1877,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testLet2() {
+  void let2() {
     final ResultSet result = database.query("sql", "select $a as one let $a = (select 1 as a)");
     assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
@@ -1888,7 +1892,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testLet3() {
+  void let3() {
     final ResultSet result = database.query("sql", "select $a[0].foo as one let $a = (select 1 as foo)");
     assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
@@ -1899,7 +1903,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testLet4() {
+  void let4() {
     final String className = "testLet4";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -1925,7 +1929,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testLet5() {
+  void let5() {
     final String className = "testLet5";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -1951,7 +1955,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testLet6() {
+  void let6() {
     final String className = "testLet6";
     database.getSchema().createDocumentType(className);
 
@@ -1979,7 +1983,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testLet7() {
+  void let7() {
     final String className = "testLet7";
     database.getSchema().createDocumentType(className);
 
@@ -2047,7 +2051,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testUnwind1() {
+  void unwind1() {
     final String className = "testUnwind1";
     database.getSchema().createDocumentType(className);
 
@@ -2076,7 +2080,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testUnwind2() {
+  void unwind2() {
     final String className = "testUnwind2";
     database.getSchema().createDocumentType(className);
 
@@ -2109,7 +2113,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromSubclassIndexes1() {
+  void fetchFromSubclassIndexes1() {
     final String parent = "testFetchFromSubclassIndexes1_parent";
     final String child1 = "testFetchFromSubclassIndexes1_child1";
     final String child2 = "testFetchFromSubclassIndexes1_child2";
@@ -2156,7 +2160,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromSubclassIndexes2() {
+  void fetchFromSubclassIndexes2() {
     final String parent = "testFetchFromSubclassIndexes2_parent";
     final String child1 = "testFetchFromSubclassIndexes2_child1";
     final String child2 = "testFetchFromSubclassIndexes2_child2";
@@ -2201,7 +2205,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromSubclassIndexes3() {
+  void fetchFromSubclassIndexes3() {
     final String parent = "testFetchFromSubclassIndexes3_parent";
     final String child1 = "testFetchFromSubclassIndexes3_child1";
     final String child2 = "testFetchFromSubclassIndexes3_child2";
@@ -2245,7 +2249,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromSubclassIndexes4() {
+  void fetchFromSubclassIndexes4() {
     final String parent = "testFetchFromSubclassIndexes4_parent";
     final String child1 = "testFetchFromSubclassIndexes4_child1";
     final String child2 = "testFetchFromSubclassIndexes4_child2";
@@ -2295,7 +2299,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromSubSubclassIndexes() {
+  void fetchFromSubSubclassIndexes() {
     final String parent = "testFetchFromSubSubclassIndexes_parent";
     final String child1 = "testFetchFromSubSubclassIndexes_child1";
     final String child2 = "testFetchFromSubSubclassIndexes_child2";
@@ -2357,7 +2361,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFetchFromSubSubclassIndexesWithDiamond() {
+  void fetchFromSubSubclassIndexesWithDiamond() {
     final String parent = "testFetchFromSubSubclassIndexesWithDiamond_parent";
     final String child1 = "testFetchFromSubSubclassIndexesWithDiamond_child1";
     final String child2 = "testFetchFromSubSubclassIndexesWithDiamond_child2";
@@ -2416,7 +2420,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testIndexPlusSort1() {
+  void indexPlusSort1() {
     final String className = "testIndexPlusSort1";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -2454,7 +2458,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testIndexPlusSort2() {
+  void indexPlusSort2() {
     final String className = "testIndexPlusSort2";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -2494,7 +2498,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testIndexPlusSort3() {
+  void indexPlusSort3() {
     final String className = "testIndexPlusSort3";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -2533,7 +2537,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testIndexPlusSort4() {
+  void indexPlusSort4() {
     final String className = "testIndexPlusSort4";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -2572,7 +2576,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testIndexPlusSort5() {
+  void indexPlusSort5() {
     final String className = "testIndexPlusSort5";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -2611,7 +2615,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testIndexPlusSort6() {
+  void indexPlusSort6() {
     final String className = "testIndexPlusSort6";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -2650,7 +2654,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testIndexPlusSort7() {
+  void indexPlusSort7() {
     final String className = "testIndexPlusSort7";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -2689,7 +2693,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testIndexPlusSort8() {
+  void indexPlusSort8() {
     final String className = "testIndexPlusSort8";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -2727,7 +2731,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testIndexPlusSort9() {
+  void indexPlusSort9() {
     final String className = "testIndexPlusSort9";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     database.begin();
@@ -2764,7 +2768,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testIndexPlusSort10() {
+  void indexPlusSort10() {
     final String className = "testIndexPlusSort10";
     database.begin();
     final DocumentType clazz = database.getSchema().createDocumentType(className);
@@ -2801,7 +2805,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testIndexPlusSort11() {
+  void indexPlusSort11() {
     final String className = "testIndexPlusSort11";
     database.begin();
     final DocumentType clazz = database.getSchema().createDocumentType(className);
@@ -2838,7 +2842,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testIndexPlusSort12() {
+  void indexPlusSort12() {
     final String className = "testIndexPlusSort12";
     database.begin();
     final DocumentType clazz = database.getSchema().createDocumentType(className);
@@ -2882,7 +2886,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSelectFromStringParam() {
+  void selectFromStringParam() {
     final String className = "testSelectFromStringParam";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -2905,7 +2909,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSelectFromStringNamedParam() {
+  void selectFromStringNamedParam() {
     final String className = "testSelectFromStringNamedParam";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -2930,7 +2934,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testMatches() {
+  void matches() {
     final String className = "testMatches";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -2953,7 +2957,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testRange() {
+  void range() {
     final String className = "testRange";
     database.getSchema().createDocumentType(className);
 
@@ -2990,7 +2994,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testRangeParams1() {
+  void rangeParams1() {
     final String className = "testRangeParams1";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -3027,7 +3031,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testRangeParams2() {
+  void rangeParams2() {
     final String className = "testRangeParams2";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -3067,7 +3071,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testEllipsis() {
+  void ellipsis() {
     final String className = "testEllipsis";
     database.getSchema().createDocumentType(className);
     database.begin();
@@ -3107,7 +3111,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testNewRid() {
+  void newRid() {
     final ResultSet result = database.query("sql", "select {\"@rid\":\"#12:0\"} as theRid ");
     assertThat(result.hasNext()).isTrue();
     final Result item = result.next();
@@ -3121,7 +3125,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testNestedProjections1() {
+  void nestedProjections1() {
     final String className = "testNestedProjections1";
     database.command("sql", "create document type " + className).close();
     database.begin();
@@ -3167,7 +3171,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSimpleCollectionFiltering() {
+  void simpleCollectionFiltering() {
     final String className = "testSimpleCollectionFiltering";
     database.command("sql", "create document type " + className).close();
     database.begin();
@@ -3212,7 +3216,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testContaninsWithConversion() {
+  void contaninsWithConversion() {
     final String className = "testContaninsWithConversion";
     database.command("sql", "create document type " + className).close();
     database.begin();
@@ -3251,7 +3255,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testContainsIntegers() {
+  void containsIntegers() {
     final String className = "testContains";
 
     final DocumentType clazz1 = database.getSchema().createDocumentType(className);
@@ -3290,7 +3294,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testContainsStrings() {
+  void containsStrings() {
     final String className = "testContains";
 
     final DocumentType clazz1 = database.getSchema().createDocumentType(className);
@@ -3329,7 +3333,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testContainsStringsInMap() {
+  void containsStringsInMap() {
     final String className = "testContains";
 
     final DocumentType clazz1 = database.getSchema().createDocumentType(className);
@@ -3370,7 +3374,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testIndexPrefixUsage() {
+  void indexPrefixUsage() {
     // issue #7636
     final String className = "testIndexPrefixUsage";
     database.begin();
@@ -3389,7 +3393,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testNamedParams() {
+  void namedParams() {
     final String className = "testNamedParams";
     database.begin();
     database.command("sql", "create document type " + className).close();
@@ -3408,7 +3412,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testNamedParamsWithIndex() {
+  void namedParamsWithIndex() {
     final String className = "testNamedParamsWithIndex";
     database.command("sql", "create document type " + className).close();
     database.begin();
@@ -3428,7 +3432,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testIsDefined() {
+  void isDefined() {
     final String className = "testIsDefined";
     database.command("sql", "create document type " + className).close();
     database.begin();
@@ -3445,7 +3449,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testIsNotDefined() {
+  void isNotDefined() {
     final String className = "testIsNotDefined";
     database.command("sql", "create document type " + className).close();
     database.begin();
@@ -3462,7 +3466,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testRidPagination1() {
+  void ridPagination1() {
     final String className = "testRidPagination1";
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
     database.begin();
@@ -3498,7 +3502,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testRidPagination2() {
+  void ridPagination2() {
     final String className = "testRidPagination2";
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
     database.begin();
@@ -3536,7 +3540,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testContainsWithSubquery() {
+  void containsWithSubquery() {
     final String className = "testContainsWithSubquery";
     database.begin();
     final DocumentType clazz1 = database.getSchema().getOrCreateDocumentType(className + 1);
@@ -3562,7 +3566,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInWithSubquery() {
+  void inWithSubquery() {
     final String className = "testInWithSubquery";
     database.begin();
     final DocumentType clazz1 = database.getSchema().getOrCreateDocumentType(className + 1);
@@ -3588,7 +3592,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testContainsAny() {
+  void containsAny() {
     final String className = "testContainsAny";
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
     database.begin();
@@ -3676,7 +3680,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testContainsAll() {
+  void containsAll() {
     final String className = "testContainsAll";
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
     clazz.createProperty("tags", Type.LIST);
@@ -3702,7 +3706,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testBetween() {
+  void between() {
     final String className = "testBetween";
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
     database.begin();
@@ -3723,7 +3727,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInWithIndex() {
+  void inWithIndex() {
     final String className = "testInWithIndex";
     database.begin();
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
@@ -3769,7 +3773,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testInWithoutIndex() {
+  void inWithoutIndex() {
     final String className = "testInWithoutIndex";
     database.begin();
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
@@ -3834,7 +3838,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testContainsMultipleConditions() {
+  void containsMultipleConditions() {
     final String className = "testContainsMultipleConditions";
 
     database.getSchema().getOrCreateVertexType("Legajo");
@@ -3882,7 +3886,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testContainsEmptyCollection() {
+  void containsEmptyCollection() {
     final String className = "testContainsEmptyCollection";
     database.begin();
 
@@ -3904,7 +3908,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testContainsCollection() {
+  void containsCollection() {
     final String className = "testContainsCollection";
 
     database.getSchema().getOrCreateDocumentType(className);
@@ -3926,7 +3930,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testHeapLimitForOrderBy() {
+  void heapLimitForOrderBy() {
     final Long oldValue = GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong();
     try {
       GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.setValue(3);
@@ -3942,20 +3946,19 @@ public class SelectStatementExecutionTest extends TestHelper {
       database.command("sql", "insert INTO " + className + " set name = 'd'").close();
       database.commit();
 
-      try {
-        try (final ResultSet result = database.query("sql", "select from " + className + " ORDER BY name")) {
-          result.forEachRemaining(x -> x.getProperty("name"));
-        }
-        fail("");
-      } catch (final CommandExecutionException ex) {
-      }
+      assertThatThrownBy(() -> {
+            try (final ResultSet result = database.query("sql", "select from " + className + " ORDER BY name")) {
+              result.forEachRemaining(x -> x.getProperty("name"));
+            }
+          }
+      ).isInstanceOf(CommandExecutionException.class);
     } finally {
       GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.setValue(oldValue);
     }
   }
 
   @Test
-  public void testXor() {
+  void xor() {
     try (final ResultSet result = database.query("sql", "select 15 ^ 4 as foo")) {
       assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
@@ -3965,7 +3968,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testLike() {
+  void like() {
     final String className = "testLike";
 
     database.getSchema().getOrCreateDocumentType(className);
@@ -4011,7 +4014,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCountGroupBy() {
+  void countGroupBy() {
     // issue #9288
     final String className = "testCountGroupBy";
     database.getSchema().createDocumentType(className);
@@ -4135,7 +4138,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    }
 
   @Test
-  public void testSimpleRangeQueryWithIndexGTE() {
+  void simpleRangeQueryWithIndexGTE() {
     final String className = "testSimpleRangeQueryWithIndexGTE";
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
     database.begin();
@@ -4159,7 +4162,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSimpleRangeQueryWithIndexLTE() {
+  void simpleRangeQueryWithIndexLTE() {
     final String className = "testSimpleRangeQueryWithIndexLTE";
     final DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
     database.begin();
@@ -4230,7 +4233,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testExclude() {
+  void exclude() {
     final String className = "TestExclude";
     database.begin();
     database.getSchema().createDocumentType(className);
@@ -4251,7 +4254,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testOrderByLet() {
+  void orderByLet() {
     final String className = "testOrderByLet";
     database.setAutoTransaction(true);
     database.getSchema().createDocumentType(className);
@@ -4280,7 +4283,7 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSchemaMap() {
+  void schemaMap() {
     database.command("sql", "CREATE DOCUMENT TYPE SchemaMap");
     database.command("sql", "ALTER TYPE SchemaMap CUSTOM label = 'Document'");
     final ResultSet result = database.query("sql", "SELECT map(name,custom.label) as map FROM schema:types");

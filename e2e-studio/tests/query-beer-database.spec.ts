@@ -1,3 +1,20 @@
+/**
+* Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+*
+*/
+
 import { test, expect } from '@playwright/test';
 
 test.describe('ArcadeDB Studio Beer Database Query', () => {
@@ -18,11 +35,11 @@ test.describe('ArcadeDB Studio Beer Database Query', () => {
     // Wait for the main interface to load
     await expect(page.getByText('Connected as').first()).toBeVisible();
 
-    // Select the Beer database from the dropdown
-    await page.getByLabel('root').selectOption('Beer');
+    // Select the Beer database from the dropdown - use specific query tab selector
+    await page.locator('#queryInputDatabase').selectOption('Beer');
 
     // Verify Beer database is selected
-    await expect(page.getByLabel('root')).toHaveValue('Beer');
+    await expect(page.locator('#queryInputDatabase')).toHaveValue('Beer');
 
     // Make sure we're on the Query tab (first tab should be selected by default)
     // Wait for the query interface to be visible
@@ -53,9 +70,6 @@ test.describe('ArcadeDB Studio Beer Database Query', () => {
     // Check specifically for "Displayed 10 vertices and 0 edges"
     const graphStats = page.locator('text=Displayed').locator('..'); // Get parent element
     await expect(graphStats).toContainText('Displayed 10 vertices and 0 edges');
-
-    // Alternative verification: check for the exact count in the graph stats
-    await expect(page.getByText('10').nth(1)).toBeVisible(); // Second occurrence should be in graph stats
   });
 
   test.skip('should navigate graph by expanding edges from Beer to Brewery', async ({ page }) => {
@@ -75,11 +89,11 @@ test.describe('ArcadeDB Studio Beer Database Query', () => {
     // Wait for the main interface to load with increased timeout
     await expect(page.getByText('Connected as').first()).toBeVisible({ timeout: 10000 });
 
-    // Select the Beer database from the dropdown
-    await page.getByLabel('root').selectOption('Beer');
+    // Select the Beer database from the dropdown - use specific query tab selector
+    await page.locator('#queryInputDatabase').selectOption('Beer');
 
     // Verify Beer database is selected
-    await expect(page.getByLabel('root')).toHaveValue('Beer');
+    await expect(page.locator('#queryInputDatabase')).toHaveValue('Beer');
 
     // Make sure we're on the Query tab
     await expect(page.getByText('Auto Limit')).toBeVisible();

@@ -1,3 +1,21 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.arcadedb.query.polyglot;
 
 import com.arcadedb.GlobalConfiguration;
@@ -18,16 +36,16 @@ import java.util.concurrent.TimeoutException;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
-public class PolyglotQueryTest extends TestHelper {
+class PolyglotQueryTest extends TestHelper {
   @Test
-  public void testSum() {
+  void sum() {
     final ResultSet result = database.command("js", "3 + 5");
     assertThat(result.hasNext()).isTrue();
     assertThat((Integer) result.next().getProperty("value")).isEqualTo(8);
   }
 
   @Test
-  public void testDatabaseQuery() {
+  void databaseQuery() {
     database.transaction(() -> {
       database.getSchema().createVertexType("Product");
       database.newVertex("Product").set("name", "Amiga 1200", "price", 900).save();
@@ -42,7 +60,7 @@ public class PolyglotQueryTest extends TestHelper {
   }
 
   @Test
-  public void testSandbox() {
+  void sandbox() {
     // BY DEFAULT NO JAVA PACKAGES ARE ACCESSIBLE
     try {
       final ResultSet result = database.command("js", "let BigDecimal = Java.type('java.math.BigDecimal'); new BigDecimal(1)");
@@ -66,7 +84,7 @@ public class PolyglotQueryTest extends TestHelper {
   }
 
   @Test
-  public void testSandboxSystem() {
+  void sandboxSystem() {
     // BY DEFAULT NO JAVA PACKAGES ARE ACCESSIBLE
     try {
       final ResultSet result = database.command("js", "let System = Java.type('java.lang.System'); System.exit(1)");
@@ -80,7 +98,7 @@ public class PolyglotQueryTest extends TestHelper {
   }
 
   @Test
-  public void testTimeout() {
+  void timeout() {
     GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT.setValue(2000);
     try {
       database.command("js", "while(true);");
@@ -94,7 +112,7 @@ public class PolyglotQueryTest extends TestHelper {
   }
 
   @Test
-  public void testAnalyzeQuery() {
+  void analyzeQuery() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("js").analyze("3 + 5");
     assertThat(analyzed.isDDL()).isFalse();
     assertThat(analyzed.isIdempotent()).isFalse();

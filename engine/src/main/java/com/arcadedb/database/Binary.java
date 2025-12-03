@@ -262,6 +262,24 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   }
 
   @Override
+  public void putFloat(final int index, final float value) {
+    checkForAllocation(index, FLOAT_SERIALIZED_SIZE);
+    buffer.putFloat(index, value);
+  }
+
+  @Override
+  public void putFloat(final float value) {
+    checkForAllocation(buffer.position(), FLOAT_SERIALIZED_SIZE);
+    buffer.putFloat(value);
+  }
+
+  @Override
+  public void putDouble(final int index, final double value) {
+    checkForAllocation(index, DOUBLE_SERIALIZED_SIZE);
+    buffer.putDouble(index, value);
+  }
+
+  @Override
   public int putString(final int index, final String value) {
     return putBytes(index, value.getBytes(DatabaseFactory.getDefaultCharset()));
   }
@@ -446,6 +464,17 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   @Override
   public long getLong(final int index) {
     return buffer.getLong(index);
+  }
+
+  @Override
+  public float getFloat(final int index) {
+    return buffer.getFloat(index);
+  }
+
+  @Override
+  public float getFloat() {
+    checkForFetching(FLOAT_SERIALIZED_SIZE);
+    return buffer.getFloat();
   }
 
   @Override

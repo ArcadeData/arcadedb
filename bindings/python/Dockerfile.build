@@ -1,0 +1,219 @@
+# Docker build for ArcadeDB Python package
+# Builds arcadedb-embedded package with bundled JRE (no external Java required)
+# Excludes JARs listed in jar_exclusions.txt to optimize size
+#
+# REQUIRED BUILD ARGS (passed from build.sh):
+#   PACKAGE_NAME - always: arcadedb-embedded
+#   PACKAGE_DESCRIPTION - package description
+#   ARCADEDB_TAG - version tag from pom.xml (e.g., 25.10.1-SNAPSHOT)
+#                  Default below is fallback; build.sh extracts and passes actual version
+#   TARGET_PLATFORM - target platform for JRE (e.g., linux-x64, linux-arm64, darwin-x64)
+
+ARG PACKAGE_NAME=arcadedb-embedded
+ARG PACKAGE_DESCRIPTION="ArcadeDB embedded multi-model database with bundled JRE - no Java installation required"
+ARG ARCADEDB_TAG=25.10.1-SNAPSHOT
+ARG TARGET_PLATFORM=linux-x64
+
+# Stage 1: Use prebuilt ArcadeDB image to obtain compiled JARs
+# JARs are filtered based on jar_exclusions.txt in later stages
+FROM arcadedata/arcadedb:${ARCADEDB_TAG} AS java-builder
+
+# nothing to do here; jars will be copied from /home/arcadedb/lib in the python-builder stage
+
+# Stage 2: Build minimal JRE with jlink
+FROM eclipse-temurin:21-jdk-jammy AS jre-builder
+
+ARG TARGET_PLATFORM
+
+WORKDIR /build
+
+# Copy JARs from ArcadeDB image
+RUN mkdir -p /build/jars
+COPY --from=java-builder /home/arcadedb/lib /build/jars/
+
+# Copy JAR exclusion list
+COPY bindings/python/jar_exclusions.txt /build/jar_exclusions.txt
+
+# Remove excluded JARs based on jar_exclusions.txt
+RUN echo "🗑️  Removing excluded JARs..." && \
+    echo "📋 JAR count before exclusion: $(ls -1 /build/jars/*.jar | wc -l)" && \
+    while IFS= read -r pattern; do \
+        # Skip empty lines and comments
+        if [ -n "$pattern" ] && [ "${pattern#\#}" = "$pattern" ]; then \
+            echo "   Processing pattern: $pattern" && \
+            # Use find and delete to show what's being removed
+            find /build/jars -name "$pattern" -type f -exec echo "   - Removing: {}" \; -delete; \
+        fi \
+    done < /build/jar_exclusions.txt && \
+    echo "📋 JAR count after exclusion: $(ls -1 /build/jars/*.jar | wc -l)"
+
+# Build minimal JRE with jlink (21 modules)
+# Based on analysis of ArcadeDB dependencies
+# Note: jdk.zipfs is required for JPype JAR filesystem support
+RUN echo "🔨 Building minimal JRE for platform: ${TARGET_PLATFORM}" && \
+    REQUIRED_MODULES="java.base,java.compiler,java.desktop,java.logging,java.management,java.naming,java.prefs,java.rmi,java.scripting,java.security.jgss,java.security.sasl,java.sql,java.transaction.xa,java.xml,jdk.incubator.vector,jdk.internal.vm.ci,jdk.jfr,jdk.management,jdk.sctp,jdk.unsupported,jdk.zipfs" && \
+    echo "📦 Required modules (21):" && \
+    echo "$REQUIRED_MODULES" | tr ',' '\n' | sed 's/^/   - /' && \
+    echo "" && \
+    echo "🔨 Running jlink..." && \
+    jlink \
+        --module-path "${JAVA_HOME}/jmods" \
+        --add-modules "${REQUIRED_MODULES}" \
+        --ignore-signing-information \
+        --strip-debug \
+        --no-man-pages \
+        --no-header-files \
+        --compress zip-9 \
+        --output /build/jre && \
+    echo "" && \
+    echo "✅ JRE build complete!" && \
+    echo "" && \
+    JRE_SIZE=$(du -sh /build/jre | cut -f1) && \
+    echo "📊 JRE size: $JRE_SIZE" && \
+    echo "" && \
+    echo "🧪 Testing JRE..." && \
+    /build/jre/bin/java -version && \
+    echo "" && \
+    echo "✅ JRE is functional!" && \
+    if [ ! -f /build/jre/bin/java ]; then \
+        echo "❌ ERROR: JRE build failed - java executable not found!"; \
+        exit 1; \
+    fi
+
+# Stage 3: Build Python wheel
+
+FROM python:3.11-slim AS python-builder
+
+# Install system dependencies (JDK needed for JPype at build/test time)
+RUN apt-get update && apt-get install -y \
+    openjdk-21-jdk \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set JAVA_HOME
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+ENV PATH=$PATH:$JAVA_HOME/bin
+
+WORKDIR /build
+
+# Copy filtered JARs from jre-builder (already has exclusions applied)
+RUN mkdir -p /build/jars
+COPY --from=jre-builder /build/jars /build/jars/
+
+# Copy JRE from jre-builder stage
+COPY --from=jre-builder /build/jre /build/jre/
+
+# Copy Python bindings source
+COPY bindings/python/src ./src
+COPY bindings/python/tests ./tests
+COPY bindings/python/setup.py .
+COPY bindings/python/setup_jars.py .
+COPY bindings/python/extract_version.py .
+COPY bindings/python/write_version.py .
+COPY bindings/python/jar_exclusions.txt .
+COPY bindings/python/pyproject.toml ./
+COPY bindings/python/README.md ./
+
+# Also copy repository pom.xml so extract_version.py can read it
+COPY ../../pom.xml /arcadedb/pom.xml
+
+# Install Python build dependencies
+RUN pip install --no-cache-dir build wheel setuptools jpype1
+
+# Re-declare build args for this stage (required after FROM)
+ARG PACKAGE_NAME
+ARG PACKAGE_DESCRIPTION
+ARG ARCADEDB_TAG
+ARG TARGET_PLATFORM
+
+# Extract version and copy JARs (including JRE)
+# Version is passed from build.sh via ARCADEDB_TAG build arg
+RUN echo "📌 Package name: ${PACKAGE_NAME}" && \
+    echo "📌 Docker tag used: ${ARCADEDB_TAG}" && \
+    echo "📌 Target platform: ${TARGET_PLATFORM}" && \
+    python3 write_version.py /arcadedb/pom.xml && \
+    python3 setup_jars.py && \
+    echo "📦 JAR files and JRE copied"
+
+# Build the wheel
+# Extract PEP 440 version from pom.xml or use BUILD_VERSION if provided
+ARG BUILD_VERSION=""
+RUN if [ -n "${BUILD_VERSION}" ]; then \
+        export ARCADEDB_VERSION="${BUILD_VERSION}"; \
+        echo "📌 Using provided version: ${ARCADEDB_VERSION}"; \
+    else \
+        export ARCADEDB_VERSION=$(python3 extract_version.py --format=pep440 /arcadedb/pom.xml); \
+        echo "📦 Extracted version from pom.xml: ${ARCADEDB_VERSION}"; \
+    fi && \
+    echo "📦 Python package version: ${ARCADEDB_VERSION}" && \
+    echo "📦 Package name: ${PACKAGE_NAME}" && \
+    echo "📦 Package description: ${PACKAGE_DESCRIPTION}" && \
+    sed -i 's|^name = .*|name = "'"${PACKAGE_NAME}"'"|' pyproject.toml && \
+    sed -i 's|^version = .*|version = "'"${ARCADEDB_VERSION}"'"|' pyproject.toml && \
+    sed -i 's|^description = .*|description = "'"${PACKAGE_DESCRIPTION}"'"|' pyproject.toml && \
+    python3 -m build --wheel && \
+    echo "✅ Wheel built successfully!" && \
+    ls -lh dist/
+
+# Stage 4: Export stage (for extracting wheels)
+FROM python-builder AS export
+# This stage exists to provide a stable location for wheel extraction
+# The dist directory is preserved from python-builder stage
+
+# Stage 5: Test the built wheel
+FROM python:3.11-slim AS tester
+
+# Install Java runtime for JPype
+RUN apt-get update && apt-get install -y \
+    openjdk-21-jre-headless \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+ENV PATH=$PATH:$JAVA_HOME/bin
+
+WORKDIR /test
+
+# Copy the wheel from builder
+COPY --from=python-builder /build/dist/*.whl /tmp/
+
+# Install the wheel and test dependencies
+RUN pip install --no-cache-dir /tmp/*.whl pytest pytest-cov
+
+# Copy tests
+COPY --from=python-builder /build/tests ./tests/
+
+# Create a quick installation test
+RUN echo '#!/usr/bin/env python3\n\
+import arcadedb_embedded as arcadedb\n\
+import tempfile\n\
+import shutil\n\
+import os\n\
+\n\
+print("🎮 Testing ArcadeDB Python bindings...")\n\
+print(f"📦 Version: {arcadedb.__version__}")\n\
+\n\
+temp_dir = tempfile.mkdtemp()\n\
+db_path = os.path.join(temp_dir, "test_db")\n\
+\n\
+try:\n\
+    with arcadedb.create_database(db_path) as db:\n\
+        print("✅ Database created")\n\
+        \n\
+        with db.transaction():\n\
+            db.command("sql", "CREATE DOCUMENT TYPE TestDoc")\n\
+            db.command("sql", "INSERT INTO TestDoc SET name = '\''docker_test'\'', value = 123")\n\
+        print("✅ Transaction committed")\n\
+        \n\
+        result = db.query("sql", "SELECT FROM TestDoc")\n\
+        for record in result:\n\
+            print(f"✅ Query result: {record.get_property('\''name'\'')} = {record.get_property('\''value'\'')}")\n\
+    \n\
+    print("🎉 All tests passed!")\n\
+finally:\n\
+    if os.path.exists(temp_dir):\n\
+        shutil.rmtree(temp_dir)\n\
+' > /test/test_install.py && chmod +x /test/test_install.py
+
+# Run the installation test
+RUN python3 /test/test_install.py
+
+CMD ["python3", "/test/test_install.py"]

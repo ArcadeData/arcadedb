@@ -27,9 +27,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
-public class DropTypeStatementExecutionTest extends TestHelper {
+class DropTypeStatementExecutionTest extends TestHelper {
   @Test
-  public void testPlain() {
+  void plain() {
     final String className = "testPlain";
     final Schema schema = database.getSchema();
     schema.createDocumentType(className);
@@ -47,7 +47,7 @@ public class DropTypeStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testIfExists() {
+  void ifExists() {
     final String className = "testIfExists";
     final Schema schema = database.getSchema();
     schema.createDocumentType(className);
@@ -70,7 +70,7 @@ public class DropTypeStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testParam() {
+  void param() {
     final String className = "testParam";
     final Schema schema = database.getSchema();
     schema.createDocumentType(className);

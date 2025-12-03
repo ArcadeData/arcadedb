@@ -32,17 +32,19 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.util.Iterator;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class BasicGraphTest extends BaseGraphTest {
   @Test
-  public void checkVertices() {
+  void checkVertices() {
     database.begin();
     try {
 
@@ -99,9 +101,9 @@ public class BasicGraphTest extends BaseGraphTest {
     }
   }
 
-  @Test
   //TODO
-  public void autoPersistLightWeightEdge() {
+  @Test
+  void autoPersistLightWeightEdge() {
     database.begin();
     try {
       final Vertex v1 = (Vertex) database.lookupByRID(root, false);
@@ -111,15 +113,8 @@ public class BasicGraphTest extends BaseGraphTest {
       assertThat(edges3).isNotNull();
       assertThat(edges3.hasNext()).isTrue();
 
-      try {
-        final MutableEdge edge = edges3.next().modify();
-        fail("Cannot modify lightweight edges");
-//        edge.set("upgraded", true);
-//        edge.save();
-//
-//        Assertions.assertThat(edge.getIdentity().getPosition() > -1).isTrue();
-      } catch (final IllegalStateException e) {
-      }
+      assertThatThrownBy(() -> edges3.next().modify())
+          .isInstanceOf(IllegalStateException.class);
 
     } finally {
       database.commit();
@@ -127,7 +122,7 @@ public class BasicGraphTest extends BaseGraphTest {
   }
 
   @Test
-  public void checkEdges() {
+  void checkEdges() {
     database.begin();
     try {
 
@@ -184,7 +179,7 @@ public class BasicGraphTest extends BaseGraphTest {
   }
 
   @Test
-  public void updateVerticesAndEdges() {
+  void updateVerticesAndEdges() {
     database.begin();
     try {
 
@@ -224,7 +219,7 @@ public class BasicGraphTest extends BaseGraphTest {
   }
 
   @Test
-  public void deleteVertices() {
+  void deleteVertices() {
     database.begin();
     try {
 
@@ -278,11 +273,7 @@ public class BasicGraphTest extends BaseGraphTest {
       vertices.next();
       assertThat(vertices.hasNext()).isFalse();
 
-      try {
-        database.lookupByRID(root, true);
-        fail("Expected deleted record");
-      } catch (final RecordNotFoundException e) {
-      }
+      assertThatThrownBy(() -> database.lookupByRID(root, true)).isInstanceOf(RecordNotFoundException.class);
 
     } finally {
       database.commit();
@@ -291,7 +282,7 @@ public class BasicGraphTest extends BaseGraphTest {
   }
 
   @Test
-  public void deleteEdges() {
+  void deleteEdges() {
     database.begin();
     try {
 
@@ -324,11 +315,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
       // RELOAD AND CHECK AGAIN
       // -----------------------
-      try {
-        database.lookupByRID(e2.getIdentity(), true);
-        fail("Expected deleted record");
-      } catch (final RecordNotFoundException e) {
-      }
+      assertThatThrownBy(() -> database.lookupByRID(e2.getIdentity(), true)).isInstanceOf(RecordNotFoundException.class);
 
       vOut = e2.getOutVertex();
       edges = vOut.getEdges(Vertex.DIRECTION.OUT).iterator();
@@ -348,7 +335,7 @@ public class BasicGraphTest extends BaseGraphTest {
   }
 
   @Test
-  public void deleteEdgesFromEdgeIterator() {
+  void deleteEdgesFromEdgeIterator() {
     database.begin();
     try {
 
@@ -371,28 +358,13 @@ public class BasicGraphTest extends BaseGraphTest {
 
       assertThat(edges.hasNext()).isFalse();
 
-      try {
-        e2.getOutVertex();
-        fail("");
-      } catch (RecordNotFoundException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> e2.getOutVertex()).isInstanceOf(RecordNotFoundException.class);
 
-      try {
-        e2.getInVertex();
-        fail("");
-      } catch (RecordNotFoundException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> e2.getInVertex()).isInstanceOf(RecordNotFoundException.class);
 
       // RELOAD AND CHECK AGAIN
       // -----------------------
-      try {
-        database.lookupByRID(e2.getIdentity(), true);
-        fail("Expected deleted record");
-      } catch (final RecordNotFoundException e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> database.lookupByRID(e2.getIdentity(), true)).isInstanceOf(RecordNotFoundException.class);
 
     } finally {
       database.commit();
@@ -401,7 +373,7 @@ public class BasicGraphTest extends BaseGraphTest {
   }
 
   @Test
-  public void selfLoopEdges() {
+  void selfLoopEdges() {
     database.getSchema().buildEdgeType().withName(EDGE3_TYPE_NAME).withBidirectional(false).create();
 
     database.begin();
@@ -449,7 +421,7 @@ public class BasicGraphTest extends BaseGraphTest {
   }
 
   @Test
-  public void shortestPath() {
+  void shortestPath() {
     database.begin();
     try {
 
@@ -484,7 +456,7 @@ public class BasicGraphTest extends BaseGraphTest {
   }
 
   @Test
-  public void customFunction() {
+  void customFunction() {
     database.begin();
     try {
       ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(new SQLFunctionAbstract("ciao") {
@@ -519,7 +491,7 @@ public class BasicGraphTest extends BaseGraphTest {
   }
 
   @Test
-  public void customReflectionFunction() {
+  void customReflectionFunction() {
     database.begin();
     try {
       ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().getReflectionFactory().register("test_", getClass());
@@ -538,7 +510,7 @@ public class BasicGraphTest extends BaseGraphTest {
   }
 
   @Test
-  public void rollbackEdge() {
+  void rollbackEdge() {
     final AtomicReference<RID> v1RID = new AtomicReference<>();
 
     database.transaction(() -> {
@@ -575,7 +547,7 @@ public class BasicGraphTest extends BaseGraphTest {
   }
 
   @Test
-  public void reuseRollBackedTx() {
+  void reuseRollBackedTx() {
     final AtomicReference<RID> v1RID = new AtomicReference<>();
 
     database.transaction(() -> {
@@ -596,7 +568,7 @@ public class BasicGraphTest extends BaseGraphTest {
       v2.set("rid", v1RID.get());
       v2.save();
 
-      fail("");
+      Assertions.fail();
 
     } catch (final RuntimeException e) {
       // EXPECTED
@@ -606,7 +578,7 @@ public class BasicGraphTest extends BaseGraphTest {
   }
 
   @Test
-  public void edgeUnivocity() {
+  void edgeUnivocity() {
     final MutableVertex[] v1 = new MutableVertex[1];
     final MutableVertex[] v2 = new MutableVertex[1];
     database.transaction(() -> {
@@ -618,12 +590,8 @@ public class BasicGraphTest extends BaseGraphTest {
       v1[0].newEdge("OnlyOneBetweenVertices", v2[0]);
     });
 
-    try {
-      database.transaction(() -> v1[0].newEdge("OnlyOneBetweenVertices", v2[0]));
-      fail("");
-    } catch (final DuplicatedKeyException ex) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> database.transaction(() -> v1[0].newEdge("OnlyOneBetweenVertices", v2[0]))).isInstanceOf(
+        DuplicatedKeyException.class);
 
     database.transaction(() -> v2[0].newEdge("OnlyOneBetweenVertices", v1[0]));
 
@@ -645,7 +613,7 @@ public class BasicGraphTest extends BaseGraphTest {
   }
 
   @Test
-  public void edgeUnivocitySQL() {
+  void edgeUnivocitySQL() {
     final MutableVertex[] v1 = new MutableVertex[1];
     final MutableVertex[] v2 = new MutableVertex[1];
     database.transaction(() -> {
@@ -660,26 +628,19 @@ public class BasicGraphTest extends BaseGraphTest {
       assertThat(result.hasNext()).isTrue();
     });
 
-    try {
-      database.transaction(() -> v1[0].newEdge("OnlyOneBetweenVertices", v2[0]));
-      fail("");
-    } catch (final DuplicatedKeyException ex) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> database.transaction(() -> v1[0].newEdge("OnlyOneBetweenVertices", v2[0]))).isInstanceOf(
+        DuplicatedKeyException.class);
 
-    try {
-      database.transaction(() -> database.command("sql", "create edge OnlyOneBetweenVertices from ? to ?", v1[0], v2[0]));
-      fail("");
-    } catch (final DuplicatedKeyException ex) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("sql", "create edge OnlyOneBetweenVertices from ? to ?", v1[0], v2[0]))).isInstanceOf(
+        DuplicatedKeyException.class);
 
     database.transaction(
         () -> database.command("sql", "create edge OnlyOneBetweenVertices from ? to ? IF NOT EXISTS", v1[0], v2[0]));
   }
 
   @Test
-  public void edgeConstraints() {
+  void edgeConstraints() {
     final MutableVertex[] v1 = new MutableVertex[1];
     final MutableVertex[] v2 = new MutableVertex[1];
     database.transaction(() -> {
@@ -693,24 +654,17 @@ public class BasicGraphTest extends BaseGraphTest {
       assertThat(result.hasNext()).isTrue();
     });
 
-    try {
-      database.transaction(() -> v2[0].newEdge("EdgeConstraint", v1[0]));
-      fail("");
-    } catch (final ValidationException ex) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> database.transaction(() -> v2[0].newEdge("EdgeConstraint", v1[0]))).isInstanceOf(
+        ValidationException.class);
 
-    try {
-      database.transaction(() -> database.command("sql", "create edge EdgeConstraint from ? to ?", v2[0], v1[0]));
-      fail("");
-    } catch (final ValidationException ex) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("sql", "create edge EdgeConstraint from ? to ?", v2[0], v1[0]))).isInstanceOf(
+        ValidationException.class);
   }
 
   // https://github.com/ArcadeData/arcadedb/issues/577
   @Test
-  public void testEdgeTypeNotFromVertex() {
+  void edgeTypeNotFromVertex() {
     final var vType = database.getSchema().createVertexType("a-vertex");
     final var eType = database.getSchema().createEdgeType("a-edge");
 
@@ -718,17 +672,13 @@ public class BasicGraphTest extends BaseGraphTest {
     final var v1 = database.newVertex("a-vertex").save();
     final var v2 = database.newVertex("a-vertex").save();
 
-    try {
-      final Edge e1 = v1.newEdge("a-vertex", v2); // <-- expect IllegalArgumentException
-      fail("Created an edge of vertex type");
-    } catch (final ClassCastException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> v1.newEdge("a-vertex", v2))
+        .isInstanceOf(ClassCastException.class);
   }
 
   // https://github.com/ArcadeData/arcadedb/issues/689
   @Test
-  public void testEdgeDescendantOrder() {
+  void edgeDescendantOrder() {
     final var vType = database.getSchema().createVertexType("testEdgeDescendantOrderVertex");
     final var eType = database.getSchema().createEdgeType("testEdgeDescendantOrderEdge");
 

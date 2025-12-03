@@ -45,7 +45,9 @@ public class ResultInternal implements Result {
   protected       Document            element;
 
   public ResultInternal() {
-    this.content = new LinkedHashMap<>();
+    // Memory optimization: Use smaller initial capacity to reduce memory footprint
+    // Default LinkedHashMap capacity is 16, but most projections have < 10 fields
+    this.content = new LinkedHashMap<>(8);
     this.database = null;
     this.value = null;
   }
@@ -63,7 +65,8 @@ public class ResultInternal implements Result {
   }
 
   public ResultInternal(final Database database) {
-    this.content = new LinkedHashMap<>();
+    // Memory optimization: Use smaller initial capacity (most projections have < 10 fields)
+    this.content = new LinkedHashMap<>(8);
     this.database = database;
     this.value = null;
   }

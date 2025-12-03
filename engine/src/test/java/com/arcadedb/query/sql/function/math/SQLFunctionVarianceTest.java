@@ -23,23 +23,23 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class SQLFunctionVarianceTest {
+class SQLFunctionVarianceTest {
 
   private SQLFunctionVariance variance;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     variance = new SQLFunctionVariance();
   }
 
   @Test
-  public void testEmpty() {
+  void empty() {
     final Object result = variance.getResult();
     assertThat(result).isNull();
   }
 
   @Test
-  public void testVariance() {
+  void variance() {
     final Integer[] scores = { 4, 7, 15, 3 };
 
     for (final Integer s : scores) {
@@ -51,7 +51,7 @@ public class SQLFunctionVarianceTest {
   }
 
   @Test
-  public void testVariance1() {
+  void variance1() {
     final Integer[] scores = { 4, 7 };
 
     for (final Integer s : scores) {
@@ -63,7 +63,7 @@ public class SQLFunctionVarianceTest {
   }
 
   @Test
-  public void testVariance2() {
+  void variance2() {
     final Integer[] scores = { 15, 3 };
 
     for (final Integer s : scores) {

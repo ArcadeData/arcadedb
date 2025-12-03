@@ -64,6 +64,7 @@ set JAVA_OPTS_SCRIPT=-XX:+HeapDumpOnOutOfMemoryError ^
   --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED ^
   --add-opens java.base/java.nio.channels.spi=ALL-UNNAMED ^
   --add-opens java.base/java.lang=ALL-UNNAMED ^
+  --add-modules jdk.incubator.vector ^
   -Dpolyglot.engine.WarnInterpreterOnly=false ^
   -Djava.awt.headless=true ^
   -Dfile.encoding=UTF8 ^

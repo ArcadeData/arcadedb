@@ -25,17 +25,17 @@ import java.io.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class ProfilerTest {
+class ProfilerTest {
 
   @Test
-  public void testDumpProfileMetrics() {
+  void dumpProfileMetrics() {
     final ByteArrayOutputStream out = new ByteArrayOutputStream();
     Profiler.INSTANCE.dumpMetrics(new PrintStream(out));
     assertThat(out.size() > 0).isTrue();
   }
 
   @Test
-  public void testMetricsToJSON() {
+  void metricsToJSON() {
     JSONObject json = Profiler.INSTANCE.toJSON();
     assertThat(json.has("diskFreeSpace")).isTrue();
     assertThat(json.has("diskTotalSpace")).isTrue();

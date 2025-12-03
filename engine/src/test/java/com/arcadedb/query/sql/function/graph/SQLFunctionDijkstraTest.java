@@ -74,7 +74,7 @@ public class SQLFunctionDijkstraTest {
   }
 
   @Test
-  public void testExecute() throws Exception {
+  void execute() throws Exception {
     TestHelper.executeInNewDatabase("SQLFunctionDijkstraTest", (graph) -> {
       setUp(graph);
       final List<Vertex> result = functionDijkstra.execute(null, null, null, new Object[] { v1, v4, "'weight'" },

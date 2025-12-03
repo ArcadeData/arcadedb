@@ -115,13 +115,11 @@ public class OrBlock extends BooleanExpression {
   }
 
   public List<AndBlock> flatten() {
-    final List<AndBlock> result = new ArrayList<AndBlock>();
-    for (final BooleanExpression sub : subBlocks) {
-      final List<AndBlock> childFlattened = sub.flatten();
-      for (final AndBlock child : childFlattened) {
-        result.add(child);
-      }
-    }
+    final List<AndBlock> result = new ArrayList<>();
+
+    for (final BooleanExpression sub : subBlocks)
+      result.addAll(sub.flatten());
+
     return result;
   }
 

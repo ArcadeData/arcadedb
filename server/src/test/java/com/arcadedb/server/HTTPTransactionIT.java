@@ -20,26 +20,28 @@ package com.arcadedb.server;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
-
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.net.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.io.PrintWriter;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.logging.Level;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.server.http.HttpSessionManager.ARCADEDB_SESSION_ID;
-import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class HTTPTransactionIT extends BaseGraphServerTest {
 
   private static final String DATABASE_NAME = "graph";
 
   @Test
-  public void simpleTx() throws Exception {
+  void simpleTx() throws Exception {
     testEachServer((serverIndex) -> {
       // BEGIN
       HttpURLConnection connection = (HttpURLConnection) new URL(
@@ -91,12 +93,8 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       }
 
       // CANNOT RETRIEVE DOCUMENT OUTSIDE A TX
-      try {
-        checkDocumentWasCreated(DATABASE_NAME, serverIndex, payload, rid, null);
-        fail();
-      } catch (final Exception e) {
-        // EXPECTED
-      }
+      assertThatThrownBy(() -> checkDocumentWasCreated(DATABASE_NAME, serverIndex, payload, rid, null))
+          .isInstanceOf(Exception.class);
 
       // RETRIEVE DOCUMENT
       checkDocumentWasCreated(DATABASE_NAME, serverIndex, payload, rid, sessionId);
@@ -167,10 +165,10 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void checkUnique() throws Exception {
+  void checkUnique() throws Exception {
     testEachServer((serverIndex) -> {
       // BEGIN
-      HttpURLConnection connection = (HttpURLConnection) new URL(
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/begin/graph").openConnection();
 
       connection.setRequestMethod("POST");
@@ -192,40 +190,39 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       }
 
       // CREATE DOCUMENT
-      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+      final HttpURLConnection connection2 = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
 
-      connection.setRequestMethod("POST");
-      connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
-      connection.setRequestProperty("Authorization",
+      connection2.setRequestMethod("POST");
+      connection2.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
+      connection2.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
 
-      final JSONObject payload = new JSONObject("{\"language\":\"sqlScript\", \"command\":\"" +//
-          "CREATE VERTEX TYPE eltdev;" +//
-          "CREATE PROPERTY eltdev.SN string;" +//
-          "CREATE INDEX ON eltdev (SN) UNIQUE;" +//
-          "CREATE VERTEX eltdev SET SN='bubu';" +//
-          "CREATE VERTEX eltdev SET SN='bubu';" +//
-          "\"}");
+      final JSONObject payload = new JSONObject("""
+          {"language":"sqlScript", "command":"
+          CREATE VERTEX TYPE eltdev;
+          CREATE PROPERTY eltdev.SN string;
+          CREATE INDEX ON eltdev (SN) UNIQUE;
+          CREATE VERTEX eltdev SET SN='bubu';
+          CREATE VERTEX eltdev SET SN='bubu';
+          "}""");
 
-      connection.setRequestMethod("POST");
-      connection.setDoOutput(true);
+      connection2.setRequestMethod("POST");
+      connection2.setDoOutput(true);
 
-      connection.connect();
+      connection2.connect();
 
-      final PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection.getOutputStream()));
+      final PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection2.getOutputStream()));
       pw.write(payload.toString());
       pw.close();
 
-      String response = null;
-      try {
-        response = readResponse(connection);
-        fail();
-      } catch (final IOException e) {
-        response = readError(connection);
-        assertThat(connection.getResponseCode()).isEqualTo(503);
-        connection.disconnect();
-        assertThat(response.contains("DuplicatedKeyException")).isTrue();
-      }
+      assertThatThrownBy(() -> readResponse(connection2))
+          .isInstanceOf(IOException.class);
+
+      String response = readError(connection2);
+      assertThat(connection2.getResponseCode()).isEqualTo(503);
+      connection2.disconnect();
+      assertThat(response.contains("DuplicatedKeyException")).isTrue();
     });
   }
 
@@ -261,10 +258,10 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void errorMissingIsolationLevel() throws Exception {
+  void errorMissingIsolationLevel() throws Exception {
     testEachServer((serverIndex) -> {
       // BEGIN
-      HttpURLConnection connection = (HttpURLConnection) new URL(
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/begin/" + DATABASE_NAME).openConnection();
 
       connection.setRequestMethod("POST");
@@ -274,12 +271,9 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       connection.connect();
 
       try {
-        readResponse(connection);
-
-        fail();
-
-      } catch (Exception e) {
-        assertThat(e.getMessage().contains("400")).isTrue();
+        assertThatThrownBy(() -> readResponse(connection))
+            .isInstanceOf(Exception.class)
+            .hasMessageContaining("400");
       } finally {
         connection.disconnect();
       }

@@ -11,16 +11,25 @@ function make_base_auth(user, password) {
 
 function login() {
   var userName = $("#inputUserName").val().trim();
-  if (userName.length == 0) return;
+  if (userName.length == 0) {
+    console.warn("Username is empty");
+    return;
+  }
 
   var userPassword = $("#inputUserPassword").val().trim();
-  if (userPassword.length == 0) return;
+  if (userPassword.length == 0) {
+    console.warn("Password is empty");
+    return;
+  }
 
+  console.log("Starting login process for user:", userName);
   $("#loginSpinner").show();
 
   globalCredentials = make_base_auth(userName, userPassword);
+  console.log("Credentials created, calling updateDatabases");
 
   updateDatabases(function () {
+    console.log("Login successful, initializing query editor");
     initQuery();
   });
 }
@@ -42,15 +51,32 @@ function updateDatabases(callback) {
   let selected = getCurrentDatabase();
   if (selected == null || selected == "") selected = globalStorageLoad("database.current");
 
+  console.log("Making AJAX request to api/v1/databases");
   jQuery
     .ajax({
       type: "GET",
       url: "api/v1/databases",
+      timeout: 30000, // 30 second timeout for slow servers
       beforeSend: function (xhr) {
+        console.log("Setting authorization header");
         xhr.setRequestHeader("Authorization", globalCredentials);
       },
     })
     .done(function (data) {
+      console.log("Login successful, received data:", data);
+
+      if (!data) {
+        console.error("No data received from server");
+        globalNotifyError("No data received from server");
+        return;
+      }
+
+      if (!data.version) {
+        console.error("Invalid response data - missing version:", data);
+        globalNotifyError("Invalid response from server - missing version");
+        return;
+      }
+
       let version = data.version;
       let pos = data.version.indexOf("(build");
       if (pos > -1) {
@@ -58,16 +84,23 @@ function updateDatabases(callback) {
       }
 
       $("#version").html(version);
+      console.log("Set version to:", version);
 
       let databases = "";
-      for (let i in data.result) {
-        let dbName = data.result[i];
-        databases += "<option value='" + dbName + "'>" + dbName + "</option>";
+      if (data.result && Array.isArray(data.result)) {
+        for (let i in data.result) {
+          let dbName = data.result[i];
+          databases += "<option value='" + dbName + "'>" + dbName + "</option>";
+        }
+        console.log("Populated database options:", data.result);
+      } else {
+        console.warn("No databases found in response:", data);
+        databases = "<option value=''>No databases available</option>";
       }
       $(".inputDatabase").html(databases);
-      $("schemaInputDatabase").html(databases);
+      $("#schemaInputDatabase").html(databases);
 
-      if (selected != null && selected != "") {
+      if (selected != null && selected != "" && data.result && Array.isArray(data.result) && data.result.length > 0) {
         //check if selected database exists
         if (data.result.includes(selected)) {
           $(".inputDatabase").val(selected);
@@ -76,25 +109,108 @@ function updateDatabases(callback) {
           $(".inputDatabase").val(data.result[0]);
           $("#schemaInputDatabase").val(data.result[0]);
         }
+      } else if (data.result && Array.isArray(data.result) && data.result.length > 0) {
+        // Default to first database if no selection
+        $(".inputDatabase").val(data.result[0]);
+        $("#schemaInputDatabase").val(data.result[0]);
       }
 
-      $("#currentDatabase").html(getCurrentDatabase());
+      // Update current database display
+      try {
+        $("#currentDatabase").html(getCurrentDatabase());
+      } catch (e) {
+        console.warn("Error updating current database display:", e);
+      }
 
-      $("#user").html(data.user);
+      // This is the critical part - set the user info for "Connected as" text
+      // Handle both query and database user elements
+      let username = data.user;
+      if (!username) {
+        // If server doesn't return user field, extract from our credentials
+        try {
+          let authHeader = globalCredentials; // "Basic base64encodedstring"
+          if (authHeader && authHeader.startsWith('Basic ')) {
+            let decoded = atob(authHeader.substring(6)); // Remove "Basic " prefix
+            username = decoded.split(':')[0]; // Extract username part before colon
+          }
+        } catch (e) {
+          console.warn("Could not extract username from credentials:", e);
+        }
+        username = username || 'unknown';
+      }
+      $("#queryUser").html(username);
+      $("#databaseUser").html(username);
+      console.log("Set user to:", username);
 
+      // CRITICAL: Always hide login and show studio, even if other operations fail
       $("#loginPopup").modal("hide");
       $("#welcomePanel").hide();
       $("#studioPanel").show();
+      console.log("UI updated - login popup hidden, studio panel shown");
 
-      displaySchema();
-      displayDatabaseSettings();
+      // These operations should not block login completion
+      try {
+        displaySchema();
+      } catch (e) {
+        console.warn("Error displaying schema:", e);
+      }
 
-      if (callback) callback();
+      try {
+        displayDatabaseSettings();
+      } catch (e) {
+        console.warn("Error displaying database settings:", e);
+      }
+
+      // Execute callback if provided
+      if (callback) {
+        console.log("Executing callback");
+        try {
+          callback();
+        } catch (e) {
+          console.warn("Error in login callback:", e);
+        }
+      }
     })
     .fail(function (jqXHR, textStatus, errorThrown) {
-      globalNotifyError(jqXHR.responseText);
+      console.error("Login failed:", {
+        status: jqXHR.status,
+        statusText: jqXHR.statusText,
+        textStatus: textStatus,
+        errorThrown: errorThrown,
+        responseText: jqXHR.responseText
+      });
+
+      let errorMessage = "Login failed";
+      if (jqXHR.status === 401) {
+        errorMessage = "Invalid username or password";
+      } else if (jqXHR.status === 403) {
+        errorMessage = "Access denied";
+      } else if (jqXHR.status === 0) {
+        errorMessage = "Cannot connect to server. Please check if ArcadeDB is running.";
+      } else if (textStatus === "timeout") {
+        errorMessage = "Connection timeout. Please try again.";
+      } else if (jqXHR.responseText) {
+        try {
+          let json = JSON.parse(jqXHR.responseText);
+          errorMessage = json.error || json.detail || errorMessage;
+        } catch (e) {
+          errorMessage = jqXHR.responseText;
+        }
+      }
+
+      // Use fallback notification if globalNotify is not available
+      if (typeof globalNotify === 'function') {
+        globalNotify("Login Error", errorMessage, "danger");
+      } else {
+        alert("Login Error: " + errorMessage);
+      }
+
+      // Reset login form for retry
+      globalCredentials = null; // Clear invalid credentials
+      $("#inputUserName").focus().select();
     })
     .always(function (data) {
+      console.log("Login attempt completed, hiding spinner");
       $("#loginSpinner").hide();
     });
 }

@@ -28,9 +28,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
-public class ExplainStatementExecutionTest extends TestHelper {
+class ExplainStatementExecutionTest extends TestHelper {
   @Test
-  public void testExplainSelectNoTarget() {
+  void explainSelectNoTarget() {
     final ResultSet result = database.query("sql", "explain select 1 as one, 2 as two, 2+3");
     assertThat(result.hasNext()).isTrue();
     final Result next = result.next();

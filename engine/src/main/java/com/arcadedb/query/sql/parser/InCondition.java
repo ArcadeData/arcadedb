@@ -245,6 +245,7 @@ public class InCondition extends BooleanExpression {
   }
 
   public boolean isIndexAware(final IndexSearchInfo info) {
+    // Handle normal syntax: field IN [values]
     if (left.isBaseIdentifier()) {
       if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
         if (rightMathExpression != null) {
@@ -253,11 +254,35 @@ public class InCondition extends BooleanExpression {
           return rightParam != null;
       }
     }
+
+    // Handle inverted syntax for BY-ITEM indexes: value IN list_field
+    // For "1 IN nums", rightMathExpression should contain the field "nums"
+    if (rightMathExpression != null && rightMathExpression.isBaseIdentifier() && info.isIndexByItem()) {
+      // Since BaseExpression extends MathExpression, rightMathExpression might BE a BaseExpression
+      if (rightMathExpression instanceof BaseExpression) {
+        final BaseExpression baseExpr = (BaseExpression) rightMathExpression;
+        if (baseExpr.getIdentifier() != null) {
+          final String fieldName = baseExpr.getIdentifier().getSuffix().identifier.getStringValue();
+          if (info.getField().equals(fieldName)) {
+            // The right side matches the indexed field, and left side is the search value
+            return left.isEarlyCalculated(info.getContext());
+          }
+        }
+      }
+    }
+
     return false;
   }
 
   @Override
   public Expression resolveKeyFrom(final BinaryCondition additional) {
+    // Check for inverted syntax: value IN list_field (for BY-ITEM indexes)
+    if (getRightMathExpression() != null && getRightMathExpression().isBaseIdentifier()) {
+      // Inverted syntax - the search key is on the left side
+      return left;
+    }
+
+    // Normal syntax: field IN [values]
     Expression item = new Expression(-1);
     if (getRightMathExpression() != null) {
       item.setMathExpression(getRightMathExpression());
@@ -274,6 +299,13 @@ public class InCondition extends BooleanExpression {
 
   @Override
   public Expression resolveKeyTo(final BinaryCondition additional) {
+    // Check for inverted syntax: value IN list_field (for BY-ITEM indexes)
+    if (getRightMathExpression() != null && getRightMathExpression().isBaseIdentifier()) {
+      // Inverted syntax - the search key is on the left side
+      return left;
+    }
+
+    // Normal syntax: field IN [values]
     Expression item = new Expression(-1);
     if (getRightMathExpression() != null) {
       item.setMathExpression(getRightMathExpression());

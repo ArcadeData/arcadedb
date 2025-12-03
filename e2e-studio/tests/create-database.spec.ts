@@ -1,3 +1,20 @@
+/**
+* Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+*
+*/
+
 import { test, expect } from '@playwright/test';
 
 test.describe('ArcadeDB Studio Database Creation', () => {
@@ -6,17 +23,25 @@ test.describe('ArcadeDB Studio Database Creation', () => {
     await page.goto('/');
 
     // Wait for login dialog to appear
-    await expect(page.getByRole('dialog', { name: 'Login to the server' })).toBeVisible();
+    await expect(page.locator('#loginPopup')).toBeVisible();
 
-    // Fill in login credentials
-    await page.getByRole('textbox', { name: 'User Name' }).fill('root');
-    await page.getByRole('textbox', { name: 'Password' }).fill('playwithdata');
+    // Fill in login credentials using actual HTML IDs
+    await page.fill('#inputUserName', 'root');
+    await page.fill('#inputUserPassword', 'playwithdata');
 
-    // Click sign in button
-    await page.getByRole('button', { name: 'Sign in' }).click();
+    // Click sign in button using actual onclick handler
+    await page.click('button[onclick="login()"]');
 
-    // Wait for the main interface to load
-    await expect(page.getByText('Connected as').first()).toBeVisible();
+    // Wait for login to complete - check multiple conditions
+    // Note: Removed flaky spinner visibility check that fails when login is fast
+    await Promise.all([
+      expect(page.locator('#loginSpinner')).toBeHidden({ timeout: 30000 }),
+      expect(page.locator('#studioPanel')).toBeVisible({ timeout: 30000 }),
+      expect(page.locator('#loginPopup')).toBeHidden({ timeout: 30000 })
+    ]);
+
+    // Verify username is populated in the query tab
+    await expect(page.locator('#queryUser')).not.toBeEmpty();
 
     // Navigate to Database tab (second tab with database icon)
     await page.getByRole('tab').nth(1).click();

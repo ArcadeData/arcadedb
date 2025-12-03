@@ -203,7 +203,13 @@ public class BinarySerializer {
   public Map<String, Object> deserializeProperties(final Database database, final Binary buffer,
       final EmbeddedModifier embeddedModifier, final RID rid, final String... fieldNames) {
     try {
+      final int initialPosition = buffer.position();
       final int headerEndOffset = buffer.getInt();
+      if (headerEndOffset < 0)
+        throw new SerializationException(
+            "Error on deserialize record. It may be corrupted (headerEndOffset=" + headerEndOffset + " at position "
+                + initialPosition + ")");
+
       final int properties = (int) buffer.getUnsignedNumber();
 
       if (properties < 0)
@@ -413,10 +419,9 @@ public class BinarySerializer {
     }
     case BinaryTypes.TYPE_LIST: {
       switch (value) {
-      case Collection collection -> {
-        final Collection<Object> list = (Collection<Object>) value;
+      case Collection<?> list -> {
         content.putUnsignedNumber(list.size());
-        for (final Iterator<Object> it = list.iterator(); it.hasNext(); ) {
+        for (final Iterator<Object> it = (Iterator<Object>) list.iterator(); it.hasNext(); ) {
           final Object entryValue = it.next();
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue, null);
           if (entryType == -1) {
@@ -446,14 +451,13 @@ public class BinarySerializer {
           serializeValue(database, content, entryType, entryValue);
         }
       }
-      case Iterable iter -> {
-        final List list = new ArrayList();
-        for (final Iterator it = iter.iterator(); it.hasNext(); )
-          list.add(it.next());
+      case Iterable<?> iter -> {
+        final List<Object> list = new ArrayList<>();
+        for (Object o : iter)
+          list.add(o);
 
         content.putUnsignedNumber(list.size());
-        for (final Iterator it = list.iterator(); it.hasNext(); ) {
-          final Object entryValue = it.next();
+        for (final Object entryValue : list) {
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue, null);
           if (entryType == -1) {
             LogManager.instance()
@@ -839,17 +843,17 @@ public class BinarySerializer {
     return header;
   }
 
-  public Class getDateImplementation() {
+  public Class<?> getDateImplementation() {
     return dateImplementation;
   }
 
   public void setDateImplementation(final Object dateImplementation) throws ClassNotFoundException {
-    this.dateImplementation = dateImplementation instanceof Class c ?
+    this.dateImplementation = dateImplementation instanceof Class<?> c ?
         c :
         Class.forName(dateImplementation.toString());
   }
 
-  public Class getDateTimeImplementation() {
+  public Class<?> getDateTimeImplementation() {
     return dateTimeImplementation;
   }
 

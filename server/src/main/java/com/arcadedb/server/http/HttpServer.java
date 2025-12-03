@@ -25,9 +25,11 @@ import com.arcadedb.network.binary.SocketFactory;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.http.handler.GetApiDocsHandler;
 import com.arcadedb.server.http.handler.GetDatabasesHandler;
 import com.arcadedb.server.http.handler.GetDynamicContentHandler;
 import com.arcadedb.server.http.handler.GetExistsDatabaseHandler;
+import com.arcadedb.server.http.handler.GetOpenApiHandler;
 import com.arcadedb.server.http.handler.GetQueryHandler;
 import com.arcadedb.server.http.handler.GetReadyHandler;
 import com.arcadedb.server.http.handler.GetServerHandler;
@@ -106,7 +108,9 @@ public class HttpServer implements ServerPlugin {
     final int[] httpPortRange = extractPortRange(configuration.getValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT));
     final int[] httpsPortRange = getHttpsPortRange(configuration);
 
-    LogManager.instance().log(this, Level.INFO, "- Starting HTTP Server (host=%s port=%s httpsPort=%s)...", host, httpPortRange,
+    LogManager.instance().log(this, Level.INFO, "- Starting HTTP Server (host=%s port=%s httpsPort=%s)...",
+        host, //
+        Arrays.toString(httpPortRange), //
         httpsPortRange != null ? Arrays.toString(httpsPortRange) : "-");
 
     final PathHandler routes = setupRoutes();
@@ -155,6 +159,8 @@ public class HttpServer implements ServerPlugin {
         .get("/server", new GetServerHandler(this))
         .post("/server", new PostServerCommandHandler(this))
         .get("/ready", new GetReadyHandler(this))
+        .get("/openapi.json", new GetOpenApiHandler(this))
+        .get("/docs", new GetApiDocsHandler(this))
     );
 
     if (!"production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())) {

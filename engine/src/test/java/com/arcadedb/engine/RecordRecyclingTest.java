@@ -1,23 +1,41 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.arcadedb.engine;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
-import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.select.SelectIterator;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
+import java.io.File;
+import java.util.Collection;
 
 import static com.arcadedb.schema.LocalSchema.STATISTICS_FILE_NAME;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class RecordRecyclingTest {
+class RecordRecyclingTest {
   private final static int    TOT_RECORDS  = 100_000;
   private final static String VERTEX_TYPE  = "Product";
   private final static String EDGE_TYPE    = "LinkedTo";
@@ -25,7 +43,8 @@ public class RecordRecyclingTest {
   private final static int    TOT_VERTICES = 1000;
 
   @Test
-  public void testCreateAndDeleteGraph() {
+  @Tag("slow")
+  void createAndDeleteGraph() {
     GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.setValue("high");
 
     try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/RecordRecyclingTest")) {
@@ -112,7 +131,7 @@ public class RecordRecyclingTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Test
-  public void testEdgeLinkedLists() {
+  void edgeLinkedLists() {
     GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.setValue("high");
 
     try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/RecordRecyclingTest")) {

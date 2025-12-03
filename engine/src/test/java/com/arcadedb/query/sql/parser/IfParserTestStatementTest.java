@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class IfParserTestStatementTest extends AbstractParserTest {
+class IfParserTestStatementTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("if(1=1){return foo;}");
     checkRightSyntax("IF(1=1){return foo;}");
 

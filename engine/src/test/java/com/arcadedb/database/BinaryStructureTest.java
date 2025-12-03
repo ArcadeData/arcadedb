@@ -24,15 +24,15 @@ import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class BinaryStructureTest {
+class BinaryStructureTest {
 
   @Test
-  public void write() {
+  void write() {
     addValues(new Binary());
   }
 
   @Test
-  public void read() {
+  void read() {
     final Binary blob = new Binary();
     addValues(blob);
 

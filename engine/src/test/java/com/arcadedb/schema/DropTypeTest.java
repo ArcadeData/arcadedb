@@ -23,21 +23,20 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.*;
 
-public class DropTypeTest extends TestHelper {
+class DropTypeTest extends TestHelper {
   private static final int    TOT        = 10;
   private static final String TYPE_NAME  = "V";
   private static final String TYPE_NAME2 = "V2";
   private static final String TYPE_NAME3 = "V3";
 
   @Test
-  public void testDropAndRecreateType() {
+  void dropAndRecreateType() {
     database.transaction(() -> {
       assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 
@@ -72,23 +71,14 @@ public class DropTypeTest extends TestHelper {
 
       // CHECK ALL THE BUCKETS ARE REMOVED
       for (final Bucket b : buckets) {
-        try {
-          database.getSchema().getBucketById(b.getFileId());
-          fail();
-        } catch (final SchemaException e) {
-        }
+        assertThatThrownBy(() -> database.getSchema().getBucketById(b.getFileId()))
+            .isInstanceOf(SchemaException.class);
 
-        try {
-          database.getSchema().getBucketByName(b.getName());
-          fail();
-        } catch (final SchemaException e) {
-        }
+        assertThatThrownBy(() -> database.getSchema().getBucketByName(b.getName()))
+            .isInstanceOf(SchemaException.class);
 
-        try {
-          database.getSchema().getFileById(b.getFileId());
-          fail();
-        } catch (final SchemaException e) {
-        }
+        assertThatThrownBy(() -> database.getSchema().getFileById(b.getFileId()))
+            .isInstanceOf(SchemaException.class);
       }
 
       // CHECK TYPE HAS BEEN REMOVED FROM INHERITANCE

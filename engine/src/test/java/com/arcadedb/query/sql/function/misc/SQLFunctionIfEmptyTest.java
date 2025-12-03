@@ -1,3 +1,21 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.arcadedb.query.sql.function.misc;
 
 import com.arcadedb.TestHelper;
@@ -14,10 +32,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Test for SQLFunctionIfEmpty
  */
-public class SQLFunctionIfEmptyTest extends TestHelper {
+class SQLFunctionIfEmptyTest extends TestHelper {
 
   @Test
-  public void testFunctionInstance() {
+  void functionInstance() {
     SQLFunctionIfEmpty function = new SQLFunctionIfEmpty();
 
     assertThat(function.getName()).isEqualTo("ifempty");
@@ -25,7 +43,7 @@ public class SQLFunctionIfEmptyTest extends TestHelper {
   }
 
   @Test
-  public void testDirectExecution() {
+  void directExecution() {
     SQLFunctionIfEmpty function = new SQLFunctionIfEmpty();
 
     // Case 1: Non-empty string
@@ -66,7 +84,7 @@ public class SQLFunctionIfEmptyTest extends TestHelper {
   }
 
   @Test
-  public void testSQLQueryWithIfEmpty() {
+  void sqlQueryWithIfEmpty() {
     database.transaction(() -> {
       database.command("sql", "create document type TestIfEmpty");
       database.command("sql",
@@ -112,7 +130,7 @@ public class SQLFunctionIfEmptyTest extends TestHelper {
   }
 
   @Test
-  public void testCombinedIfEmptyAndIfNullInSQL() {
+  void combinedIfEmptyAndIfNullInSQL() {
     database.transaction(() -> {
       database.command("sql", "create document type TestCombined");
       database.command("sql", "insert into TestCombined content {'name': 'Test1', 'value': 'Value1'}");

@@ -32,7 +32,7 @@ public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends Abstra
   }
 
   @Test
-  public void testUseTypeDefinitionForReturn() {
+  public void useTypeDefinitionForReturn() {
     executeTest((database) -> {
       defineTypes(database);
 
@@ -60,7 +60,7 @@ public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends Abstra
   }
 
   @Test
-  public void testCustomDefinitionForReturn() {
+  public void customDefinitionForReturn() {
     executeTest((database) -> {
       defineTypes(database);
 

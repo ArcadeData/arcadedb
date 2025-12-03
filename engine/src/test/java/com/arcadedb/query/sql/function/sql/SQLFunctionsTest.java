@@ -40,8 +40,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.security.*;
+import java.io.File;
 import java.time.*;
 import java.time.format.*;
 import java.util.*;
@@ -49,14 +48,14 @@ import java.util.stream.*;
 
 import static com.arcadedb.TestHelper.checkActiveDatabases;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class SQLFunctionsTest {
+class SQLFunctionsTest {
   private final DatabaseFactory factory = new DatabaseFactory("./target/databases/SQLFunctionsTest");
   private       Database        database;
 
   @BeforeEach
-  public void beforeEach() {
+  void beforeEach() {
     checkActiveDatabases();
     FileUtils.deleteRecursively(new File("./target/databases/SQLFunctionsTest"));
     database = factory.create();
@@ -82,7 +81,7 @@ public class SQLFunctionsTest {
   }
 
   @AfterEach
-  public void afterEach() {
+  void afterEach() {
     if (database != null)
       database.drop();
     checkActiveDatabases();
@@ -90,7 +89,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void queryMax() {
+  void queryMax() {
     final ResultSet result = database.command("sql", "select max(id) as max from Account");
     assertThat(result.hasNext()).isTrue();
     for (final ResultSet it = result; it.hasNext(); ) {
@@ -100,7 +99,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void testSelectSize() {
+  void selectSize() {
     final ResultSet result = database.query("sql", "select @this.size() as size from Account");
     assertThat(result.hasNext()).isTrue();
     for (final ResultSet it = result; it.hasNext(); ) {
@@ -111,7 +110,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void queryMaxInline() {
+  void queryMaxInline() {
     final ResultSet result = database.command("sql", "select max(1,2,7,0,-2,3) as max");
     assertThat(result.hasNext()).isTrue();
     for (final ResultSet it = result; it.hasNext(); ) {
@@ -123,7 +122,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void queryMin() {
+  void queryMin() {
     final ResultSet result = database.command("sql", "select min(id) as min from Account");
     assertThat(result.hasNext()).isTrue();
     for (final ResultSet it = result; it.hasNext(); ) {
@@ -134,7 +133,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void queryMinInline() {
+  void queryMinInline() {
     final ResultSet result = database.command("sql", "select min(1,2,7,0,-2,3) as min");
     assertThat(result.hasNext()).isTrue();
     for (final ResultSet it = result; it.hasNext(); ) {
@@ -145,7 +144,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void querySum() {
+  void querySum() {
     final ResultSet result = database.command("sql", "select sum(id) as sum from Account");
     assertThat(result.hasNext()).isTrue();
     for (final ResultSet it = result; it.hasNext(); ) {
@@ -155,7 +154,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void queryCount() {
+  void queryCount() {
     final ResultSet result = database.command("sql", "select count(*) as total from Account");
     assertThat(result.hasNext()).isTrue();
     for (final ResultSet it = result; it.hasNext(); ) {
@@ -166,7 +165,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void queryCountWithConditions() {
+  void queryCountWithConditions() {
     final DocumentType indexed = database.getSchema().getOrCreateDocumentType("Indexed");
     indexed.createProperty("key", Type.STRING);
 
@@ -188,7 +187,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void queryDistinct() {
+  void queryDistinct() {
     final ResultSet result = database.command("sql", "select distinct(name) as name from City");
 
     assertThat(result.hasNext()).isTrue();
@@ -203,7 +202,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void queryFunctionRenamed() {
+  void queryFunctionRenamed() {
     final ResultSet result = database.command("sql", "select distinct(name) from City");
 
     assertThat(result.hasNext()).isTrue();
@@ -216,7 +215,7 @@ public class SQLFunctionsTest {
 
   @SuppressWarnings("unchecked")
   @Test
-  public void queryUnionAllAsAggregationNotRemoveDuplicates() {
+  void queryUnionAllAsAggregationNotRemoveDuplicates() {
     ResultSet result = database.command("sql", "select from City");
     final int count = (int) CollectionUtils.countEntries(result);
 
@@ -227,7 +226,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void querySetNotDuplicates() {
+  void querySetNotDuplicates() {
     final ResultSet result = database.command("sql", "select set(name) as name from City");
 
     assertThat(result.hasNext()).isTrue();
@@ -243,7 +242,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void queryList() {
+  void queryList() {
     final ResultSet result = database.command("sql", "select list(name) as names from City");
 
     assertThat(result.hasNext()).isTrue();
@@ -256,7 +255,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void testSelectMap() {
+  void selectMap() {
     final ResultSet result = database.query("sql", "select list( 1, 4, 5.00, 'john', map( 'kAA', 'vAA' ) ) as myresult");
 
     assertThat(result.hasNext()).isTrue();
@@ -282,7 +281,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void querySet() {
+  void querySet() {
     final ResultSet result = database.command("sql", "select set(name) as names from City");
     assertThat(result.hasNext()).isTrue();
     for (final ResultSet it = result; it.hasNext(); ) {
@@ -293,7 +292,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void queryMap() {
+  void queryMap() {
     final ResultSet result = database.command("sql", "select map(name, country.name) as names from City");
 
     assertThat(result.hasNext()).isTrue();
@@ -306,7 +305,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void queryUnionAllAsInline() {
+  void queryUnionAllAsInline() {
     final ResultSet result = database.command("sql", "select unionAll(name, country) as edges from City");
 
     assertThat(result.hasNext()).isTrue();
@@ -318,7 +317,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void queryComposedAggregates() {
+  void queryComposedAggregates() {
     final ResultSet result = database.command("sql",
         "select MIN(id) as min, max(id) as max, AVG(id) as average, sum(id) as total from Account");
 
@@ -338,7 +337,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void queryFormat() {
+  void queryFormat() {
     final ResultSet result = database.command("sql",
         "select format('%d - %s (%s)', nr, street, type, dummy ) as output from Account");
     assertThat(result.hasNext()).isTrue();
@@ -349,7 +348,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void querySysdateNoFormat() {
+  void querySysdateNoFormat() {
     final ResultSet result = database.command("sql", "select sysdate() as date from Account");
 
     assertThat(result.hasNext()).isTrue();
@@ -366,7 +365,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void querySysdateWithFormat() {
+  void querySysdateWithFormat() {
     ResultSet result = database.command("sql", "select sysdate().format('dd-MM-yyyy') as date from Account");
 
     assertThat(result.hasNext()).isTrue();
@@ -423,50 +422,39 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void queryDate() throws InterruptedException {
-
-//    System.out.println("dateTimeformat = " + database.getSchema().getDateTimeFormat());
-//    System.out.println("database.getSchema().getDateFormat() = " + database.getSchema().getDateFormat());
-//
-//    System.out.println("DATE_IMPLEMENTATION = " + GlobalConfiguration.DATE_IMPLEMENTATION.getValue());
-//    System.out.println("DATE_TIME_IMPLEMENTATION = " + GlobalConfiguration.DATE_TIME_IMPLEMENTATION.getValue());
-
+  void queryDate() {
     ResultSet result = database.command("sql", "select count(*) as tot from Account");
     assertThat(result.hasNext()).isTrue();
     final long tot = result.next().<Long>getProperty("tot");
 
+    // Use a fixed timestamp to avoid race conditions where LocalDateTime.now() is captured
+    // at a different time than when the records are updated, causing intermittent test failures
+    final String fixedTimestamp = "2025-10-09T12:00:00.000Z";
+    final String pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
+
     database.transaction(() -> {
-      final ResultSet result2 = database.command("sql", "update Account set created = date()");
-      assertThat(result2.next().<Long>getProperty("count")).isEqualTo(tot);
+      database.command("sql", "update Account set created = date('" + fixedTimestamp + "', \"" + pattern + "\")");
     });
 
-    final String pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
-//    final String pattern = GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
+    result = database.command("sql", "select count(*) as tot from Account where created is not null");
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<Long>getProperty("tot")).isEqualTo(tot);
 
-    DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern(pattern);
-    LocalDateTime now = LocalDateTime.now();
-    String formattedDate = now.format(timeFormatter);
-//    System.out.println("formattedDate = " + formattedDate);
-    String query = "select count() as tot from Account where created <= date('" + formattedDate + "', \"" + pattern + "\")";
+    // Query using the same fixed timestamp - guaranteed to match all records
+    String query = "select count() as tot from Account where created <= date('" + fixedTimestamp + "', \"" + pattern + "\")";
     result = database.command("sql", query);
 
     assertThat(result.next().<Long>getProperty("tot")).isEqualTo(tot)
-        .withFailMessage("Failed on querying by date with formattedDate=%s pattern=%s", formattedDate, pattern);
-
+        .withFailMessage("Failed on querying by date with formattedDate=%s pattern=%s", fixedTimestamp, pattern);
   }
 
   @Test
-  public void queryUndefinedFunction() {
-    try {
-      database.command("sql", "select blaaaa(salary) as max from Account");
-      fail("");
-    } catch (final CommandExecutionException e) {
-      // EXPECTED
-    }
+  void queryUndefinedFunction() {
+    assertThatThrownBy(() -> database.command("sql", "select blaaaa(salary) as max from Account")).isInstanceOf(CommandExecutionException.class);
   }
 
   @Test
-  public void queryCustomFunction() {
+  void queryCustomFunction() {
     ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(new SQLFunctionAbstract("bigger") {
       @Override
       public String getSyntax() {
@@ -504,7 +492,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void queryAsLong() {
+  void queryAsLong() {
     final long moreThanInteger = 1 + (long) Integer.MAX_VALUE;
     final String sql =
         "select numberString.asLong() as value from ( select '" + moreThanInteger + "' as numberString from Account ) limit 1";
@@ -520,7 +508,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void testHashMethod() throws UnsupportedEncodingException, NoSuchAlgorithmException {
+  void hashMethod() throws Exception {
     final ResultSet result = database.command("sql", "select name, name.hash() as n256, name.hash('sha-512') as n512 from City");
 
     assertThat(result.hasNext()).isTrue();
@@ -534,7 +522,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void testFirstFunction() {
+  void firstFunction() {
     final List<Long> sequence = new ArrayList<>(100);
     for (long i = 0; i < 100; ++i) {
       sequence.add(i);
@@ -554,7 +542,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void testFirstAndLastFunctionsWithMultipleValues() {
+  void firstAndLastFunctionsWithMultipleValues() {
     database.transaction(() -> {
       database.command("sqlscript",//
           "CREATE DOCUMENT TYPE mytype;\n" +//
@@ -579,7 +567,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void testLastFunction() {
+  void lastFunction() {
     final List<Long> sequence = new ArrayList<Long>(100);
     for (long i = 0; i < 100; ++i) {
       sequence.add(i);
@@ -600,7 +588,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void querySplit() {
+  void querySplit() {
     final String sql = "select v.split('-') as value from ( select '1-2-3' as v ) limit 1";
 
     final ResultSet result = database.command("sql", sql);
@@ -621,7 +609,7 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void CheckAllFunctions() {
+  void CheckAllFunctions() {
     final DefaultSQLFunctionFactory fFactory = ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory();
     for (String fName : fFactory.getFunctionNames()) {
       final SQLFunction f = fFactory.getFunctionInstance(fName);

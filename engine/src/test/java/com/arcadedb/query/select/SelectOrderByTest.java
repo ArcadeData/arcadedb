@@ -53,7 +53,7 @@ public class SelectOrderByTest extends TestHelper {
   }
 
   @Test
-  public void okOrderByNoIndex() {
+  void okOrderByNoIndex() {
     // ASCENDING
     {
       final SelectCompiled select = database.select().fromType("Vertex").orderBy("notIndexedId", true).compile();
@@ -87,7 +87,7 @@ public class SelectOrderByTest extends TestHelper {
   }
 
   @Test
-  public void okOrderBy1Index() {
+  void okOrderBy1Index() {
     // ASCENDING
     {
       final SelectCompiled select = database.select().fromType("Vertex").where().property("id").gt().value(-1).orderBy("id", true).compile();

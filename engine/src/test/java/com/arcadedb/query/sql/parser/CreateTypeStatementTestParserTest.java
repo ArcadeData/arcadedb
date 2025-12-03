@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class CreateTypeStatementTestParserTest extends AbstractParserTest {
+class CreateTypeStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("CREATE DOCUMENT TYPE Foo");
     checkRightSyntax("create document type Foo");
     checkRightSyntax("create document type Foo extends bar, baz bucket 12, 13, 14 ");
@@ -37,7 +37,7 @@ public class CreateTypeStatementTestParserTest extends AbstractParserTest {
   }
 
   @Test
-  public void testIfNotExists() {
+  void ifNotExists() {
     checkRightSyntax("CREATE DOCUMENT TYPE Foo if not exists");
     checkRightSyntax("CREATE DOCUMENT TYPE Foo IF NOT EXISTS");
     checkRightSyntax("CREATE DOCUMENT TYPE Foo if not exists extends V");

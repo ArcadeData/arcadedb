@@ -6,6 +6,9 @@ jspm_packages/
 dist/
 src/main/resources/static/dist/
 
+# Swagger UI assets (copied from node_modules)
+src/main/resources/static/swagger-ui/
+
 # Logs
 npm-debug.log*
 yarn-debug.log*

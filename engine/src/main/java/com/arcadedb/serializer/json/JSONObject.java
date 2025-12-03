@@ -1,22 +1,20 @@
 /*
- * Copyright 2023 Arcade Data Ltd
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
  */
 package com.arcadedb.serializer.json;
 
@@ -126,6 +124,7 @@ public class JSONObject implements Map<String, Object> {
     case JSONArray array -> put(name, array.getInternal());
     case Document doc -> object.add(name, doc.toJSON(false).getInternal());
     case String[] string1s -> object.add(name, new JSONArray(string1s).getInternal());
+    case Object[] objects -> object.add(name, new JSONArray(objects).getInternal());
     case Iterable<?> iterable -> {
       // RETRY UP TO 10 TIMES IN CASE OF CONCURRENT UPDATE
       for (int i = 0; i < 10; i++) {
@@ -327,7 +326,19 @@ public class JSONObject implements Map<String, Object> {
     return new JSONObject(getElement(name).getAsJsonObject());
   }
 
+  public JSONObject getJSONObject(final String name, final JSONObject defaultValue) {
+    if (isNull(name))
+      return defaultValue;
+    return new JSONObject(getElement(name).getAsJsonObject());
+  }
+
   public JSONArray getJSONArray(final String name) {
+    return new JSONArray(getElement(name).getAsJsonArray());
+  }
+
+  public JSONArray getJSONArray(final String name, final JSONArray defaultValue) {
+    if (isNull(name))
+      return defaultValue;
     return new JSONArray(getElement(name).getAsJsonArray());
   }
 
@@ -550,6 +561,7 @@ public class JSONObject implements Map<String, Object> {
       case JSONObject nObject -> nObject.getInternal();
       case JSONArray array -> array.getInternal();
       case Collection collection -> new JSONArray(collection).getInternal();
+      case Object[] objects -> new JSONArray(objects).getInternal();
       case Map map -> new JSONObject(map).getInternal();
       case Document document -> document.toJSON(false).getInternal();
       case Identifiable identifiable -> new JsonPrimitive(identifiable.getIdentity().toString());

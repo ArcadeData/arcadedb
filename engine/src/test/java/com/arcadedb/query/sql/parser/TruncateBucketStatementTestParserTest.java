@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class TruncateBucketStatementTestParserTest extends AbstractParserTest {
+class TruncateBucketStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("TRUNCATE BUCKET Foo");
     checkRightSyntax("truncate bucket Foo");
 

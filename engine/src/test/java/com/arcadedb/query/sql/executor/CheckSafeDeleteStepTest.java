@@ -25,10 +25,10 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class CheckSafeDeleteStepTest {
+class CheckSafeDeleteStepTest {
 
   @Test
-  public void shouldSafelyDeleteRecord() throws Exception {
+  void shouldSafelyDeleteRecord() throws Exception {
     TestHelper.executeInNewDatabase((database) -> {
       final CommandContext context = new BasicCommandContext();
       final CheckSafeDeleteStep step = new CheckSafeDeleteStep(context);

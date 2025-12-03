@@ -34,7 +34,7 @@ import com.arcadedb.serializer.BinaryTypes;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -65,12 +65,7 @@ class RecordFactoryTest extends TestHelper {
         .newImmutableRecord(database, embeddedDocumentType, EMPTY_RID, EmbeddedDocument.RECORD_TYPE);
     assertThat(embeddedDocument instanceof EmbeddedDocument).isTrue();
 
-    try {
-      ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, embeddedDocumentType, EMPTY_RID, (byte) 'Z');
-      fail("");
-    } catch (final DatabaseMetadataException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, embeddedDocumentType, EMPTY_RID, (byte) 'Z')).isInstanceOf(DatabaseMetadataException.class);
   }
 
   @Test
@@ -127,12 +122,7 @@ class RecordFactoryTest extends TestHelper {
     binary.putByte((byte) 'Z');
     binary.flip();
 
-    try {
-      ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, embeddedDocumentType, EMPTY_RID, binary, null);
-      fail("");
-    } catch (final DatabaseMetadataException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, embeddedDocumentType, EMPTY_RID, binary, null)).isInstanceOf(DatabaseMetadataException.class);
   }
 
   @Test
@@ -188,11 +178,6 @@ class RecordFactoryTest extends TestHelper {
     binary.putByte((byte) 'Z');
     binary.flip();
 
-    try {
-      ((DatabaseInternal) database).getRecordFactory().newMutableRecord(database, embeddedDocumentType, EMPTY_RID, binary, null);
-      fail("");
-    } catch (final DatabaseMetadataException e) {
-      // EXPECTED
-    }
+    assertThatThrownBy(() -> ((DatabaseInternal) database).getRecordFactory().newMutableRecord(database, embeddedDocumentType, EMPTY_RID, binary, null)).isInstanceOf(DatabaseMetadataException.class);
   }
 }

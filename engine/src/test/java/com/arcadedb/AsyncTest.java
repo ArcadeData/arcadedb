@@ -35,12 +35,12 @@ import java.util.concurrent.atomic.*;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
-public class AsyncTest extends TestHelper {
+class AsyncTest extends TestHelper {
   private static final int    TOT       = 10000;
   private static final String TYPE_NAME = "V";
 
   @Test
-  public void testScan() {
+  void scan() {
     database.begin();
     try {
       final AtomicLong callbackInvoked = new AtomicLong();
@@ -62,7 +62,7 @@ public class AsyncTest extends TestHelper {
   }
 
   @Test
-  public void testSyncScanAndAsyncUpdate() {
+  void syncScanAndAsyncUpdate() {
     final AtomicLong callbackInvoked = new AtomicLong();
     final AtomicLong updatedRecords = new AtomicLong();
 
@@ -95,7 +95,7 @@ public class AsyncTest extends TestHelper {
   }
 
   @Test
-  public void testAsyncDelete() {
+  void asyncDelete() {
     database.begin();
     try {
       final AtomicLong callbackInvoked = new AtomicLong();
@@ -125,7 +125,7 @@ public class AsyncTest extends TestHelper {
   }
 
   @Test
-  public void testScanInterrupt() {
+  void scanInterrupt() {
     database.begin();
     try {
       final AtomicLong callbackInvoked = new AtomicLong();
@@ -145,7 +145,7 @@ public class AsyncTest extends TestHelper {
   }
 
   @Test
-  public void testQueryFetch() {
+  void queryFetch() {
     database.begin();
     try {
       final AtomicLong completeCallbackInvoked = new AtomicLong();
@@ -174,7 +174,7 @@ public class AsyncTest extends TestHelper {
   }
 
   @Test
-  public void testParallelQueries() throws InterruptedException {
+  void parallelQueries() throws Exception {
     database.begin();
     try {
       CountDownLatch counter = new CountDownLatch(3);
@@ -206,7 +206,7 @@ public class AsyncTest extends TestHelper {
   }
 
   @Test
-  public void testCommandFetch() {
+  void commandFetch() {
     database.begin();
     try {
       final AtomicLong completeCallbackInvoked = new AtomicLong();
@@ -235,7 +235,7 @@ public class AsyncTest extends TestHelper {
   }
 
   @Test
-  public void testCommandFetchVarargParamsNoCallback() {
+  void commandFetchVarargParamsNoCallback() {
     database.begin();
     try {
       database.async().command("sql", "insert into " + TYPE_NAME + " set id = :id", null, Integer.MAX_VALUE);
@@ -254,7 +254,7 @@ public class AsyncTest extends TestHelper {
   }
 
   @Test
-  public void testCommandFetchVarargParamsCallback() {
+  void commandFetchVarargParamsCallback() {
     database.begin();
     try {
       final AtomicLong completeCallbackInvoked = new AtomicLong();
@@ -284,7 +284,7 @@ public class AsyncTest extends TestHelper {
   }
 
   @Test
-  public void testCommandFetchParamsMap() {
+  void commandFetchParamsMap() {
     database.begin();
     try {
       final AtomicLong completeCallbackInvoked = new AtomicLong();
@@ -313,7 +313,7 @@ public class AsyncTest extends TestHelper {
   }
 
   @Test
-  public void testCommandFetchError() {
+  void commandFetchError() {
     database.begin();
     try {
       final AtomicLong completeCallbackInvoked = new AtomicLong();

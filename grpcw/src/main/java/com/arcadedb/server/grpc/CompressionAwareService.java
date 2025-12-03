@@ -1,15 +1,32 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.arcadedb.server.grpc;
 
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.arcadedb.log.LogManager;
+import java.util.logging.Level;
 
 /**
  * Enhanced compression-aware service wrapper
  */
 class CompressionAwareService {
-  private static final Logger logger = LoggerFactory.getLogger(CompressionAwareService.class);
 
   /**
    * Force compression for a specific response
@@ -18,7 +35,7 @@ class CompressionAwareService {
     if (responseObserver instanceof ServerCallStreamObserver) {
       ServerCallStreamObserver<T> serverObserver = (ServerCallStreamObserver<T>) responseObserver;
       serverObserver.setCompression(compression);
-      logger.debug("Set response compression to: {}", compression);
+      LogManager.instance().log(CompressionAwareService.class, Level.FINE, "Set response compression to: %s", compression);
     }
   }
 

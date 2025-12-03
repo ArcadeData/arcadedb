@@ -28,6 +28,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.*;
@@ -37,7 +38,7 @@ import org.assertj.core.api.Assertions;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class CRUDTest extends TestHelper {
+class CRUDTest extends TestHelper {
   private static final int TOT = ((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()) * 2;
 
   @Override
@@ -46,7 +47,7 @@ public class CRUDTest extends TestHelper {
   }
 
   @Test
-  public void testUpdate() {
+  void update() {
     final Database db = database;
     db.begin();
     try {
@@ -77,7 +78,8 @@ public class CRUDTest extends TestHelper {
   }
 
   @Test
-  public void testMultiUpdatesOverlap() {
+  @Tag("slow")
+  void multiUpdatesOverlap() {
     final Database db = database;
 
     try {
@@ -141,7 +143,7 @@ public class CRUDTest extends TestHelper {
   }
 
   @Test
-  public void testUpdateAndDelete() {
+  void updateAndDelete() {
     final Database db = database;
 
     try {
@@ -177,7 +179,8 @@ public class CRUDTest extends TestHelper {
   }
 
   @Test
-  public void testMultiUpdatesAndDeleteOverlap() {
+  @Tag("slow")
+  void multiUpdatesAndDeleteOverlap() {
     final Database db = database;
     try {
 

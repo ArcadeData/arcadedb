@@ -89,7 +89,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSetString() {
+  void setString() {
     ResultSet result = database.command("sql", "update " + className + " set surname = 'foo'");
     assertThat(result.hasNext()).isTrue();
     Result item = result.next();
@@ -111,7 +111,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCopyField() {
+  void copyField() {
     ResultSet result = database.command("sql", "update " + className + " set surname = name");
 
     assertThat(result.hasNext()).isTrue();
@@ -133,7 +133,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSetExpression() {
+  void setExpression() {
     ResultSet result = database.command("sql", "update " + className + " set surname = 'foo'+name ");
     assertThat(result.hasNext()).isTrue();
     Result item = result.next();
@@ -154,7 +154,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testConditionalSet() {
+  void conditionalSet() {
     ResultSet result = database.command("sql", "update " + className + " set surname = 'foo' where name = 'name3'");
     assertThat(result.hasNext()).isTrue();
     Result item = result.next();
@@ -180,7 +180,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSetOnList() {
+  void setOnList() {
     ResultSet result = database.command("sql", "update " + className + " set tagsList[0] = 'abc' where name = 'name3'");
     assertThat(result.hasNext()).isTrue();
     Result item = result.next();
@@ -207,7 +207,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSetOnList2() {
+  void setOnList2() {
     ResultSet result = database.command("sql", "update " + className + " set tagsList[6] = 'abc' where name = 'name3'");
     assertThat(result.hasNext()).isTrue();
     Result item = result.next();
@@ -241,7 +241,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSetOnMap() {
+  void setOnMap() {
     ResultSet result = database.command("sql", "update " + className + " set tagsMap['foo'] = 'abc' where name = 'name3'");
     assertThat(result.hasNext()).isTrue();
     Result item = result.next();
@@ -277,7 +277,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testPlusAssignCollection() {
+  void plusAssignCollection() {
     ResultSet result = database.command("sql",
         "insert into " + className + " set listStrings = ['this', 'is', 'a', 'test'], listNumbers = [1,2,3]");
     final RID rid = result.next().getIdentity().get();
@@ -300,7 +300,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testPlusAssignMap() {
+  void plusAssignMap() {
     ResultSet result = database.command("sql", "insert into " + className + " set map1 = {'name':'Jay'}, map2 = {'name':'Jay'}");
     final RID rid = result.next().getIdentity().get();
     result = database.command("sql", "update " + rid + " set map1 += { 'last': 'Miner'}, map2 += [ 'last', 'Miner']");
@@ -327,7 +327,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
    * Testcase for issue https://github.com/ArcadeData/arcadedb/issues/927
    */
   @Test
-  public void testPlusAssignNestedMaps() {
+  void plusAssignNestedMaps() {
     ResultSet result = database.command("sql", "insert into " + className + " set map1 = {}");
     final RID rid = result.next().getIdentity().get();
 
@@ -355,7 +355,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testPlusAssign() {
+  void plusAssign() {
     ResultSet result = database.command("sql", "update " + className + " set name += 'foo', newField += 'bar', number += 5");
     assertThat(result.hasNext()).isTrue();
     Result item = result.next();
@@ -379,7 +379,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testMinusAssign() {
+  void minusAssign() {
     ResultSet result = database.command("sql", "update " + className + " set number -= 5");
     assertThat(result.hasNext()).isTrue();
     Result item = result.next();
@@ -400,7 +400,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testMinusAssignCollection() {
+  void minusAssignCollection() {
     ResultSet result = database.command("sql",
         "insert into " + className + " set listStrings = ['this', 'is', 'a', 'test'], listNumbers = [1,2,3]");
     final RID rid = result.next().getIdentity().get();
@@ -423,7 +423,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testMinusAssignMap() {
+  void minusAssignMap() {
     ResultSet result = database.command("sql", "insert into " + className + " set map1 = {'name':'Jay'}, map2 = {'name':'Jay'}");
     final RID rid = result.next().getIdentity().get();
     result = database.command("sql", "update " + rid + " set map1 -= {'name':'Jay'}, map2 -= [ 'name' ]");
@@ -443,7 +443,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testStarAssign() {
+  void starAssign() {
     ResultSet result = database.command("sql", "update " + className + " set number *= 5");
     assertThat(result.hasNext()).isTrue();
     Result item = result.next();
@@ -464,7 +464,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSlashAssign() {
+  void slashAssign() {
     ResultSet result = database.command("sql", "update " + className + " set number /= 2");
     assertThat(result.hasNext()).isTrue();
     Result item = result.next();
@@ -485,7 +485,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testRemove() {
+  void remove() {
     ResultSet result = database.query("sql", "SElect from " + className);
     for (int i = 0; i < 10; i++) {
       assertThat(result.hasNext()).isTrue();
@@ -517,7 +517,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testContent() {
+  void content() {
 
     ResultSet result = database.command("sql", "update " + className + " content {'name': 'foo', 'secondName': 'bar'}");
     assertThat(result.hasNext()).isTrue();
@@ -541,7 +541,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testMerge() {
+  void merge() {
 
     ResultSet result = database.command("sql", "update " + className + " merge {'name': 'foo', 'secondName': 'bar'}");
     assertThat(result.hasNext()).isTrue();
@@ -565,7 +565,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testRemove1() {
+  void remove1() {
     final String className = "overridden" + this.className;
 
     final DocumentType clazz = database.getSchema().createDocumentType(className);
@@ -600,7 +600,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testRemove2() {
+  void remove2() {
     final String className = "overridden" + this.className;
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     clazz.createProperty("theProperty", Type.LIST);
@@ -640,7 +640,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testRemove3() {
+  void remove3() {
     final String className = "overridden" + this.className;
     final DocumentType clazz = database.getSchema().createDocumentType(className);
     clazz.createProperty("theProperty", Type.EMBEDDED);
@@ -673,7 +673,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testRemoveFromMapSquare() {
+  void removeFromMapSquare() {
 
     database.command("sql", "UPDATE " + className + " REMOVE tagsMap[\"bar\"]").close();
 
@@ -690,7 +690,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testRemoveFromMapEquals() {
+  void removeFromMapEquals() {
 
     database.command("sql", "UPDATE " + className + " REMOVE tagsMap = \"bar\"").close();
 
@@ -707,7 +707,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testReturnBefore() {
+  void returnBefore() {
     final ResultSet result = database.command("sql",
         "update " + className + " set name = 'foo' RETURN BEFORE where name = 'name1'");
     assertThat(result.hasNext()).isTrue();
@@ -720,7 +720,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testLocalDateTimeUpsertWithIndexMicros() throws ClassNotFoundException {
+  void localDateTimeUpsertWithIndexMicros() throws Exception {
     database.transaction(() -> {
       if (database.getSchema().existsType("Product"))
         database.getSchema().dropType("Product");
@@ -731,9 +731,9 @@ public class UpdateStatementExecutionTest extends TestHelper {
       dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "start", "stop");
     });
 
-    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);
     GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
-    ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(java.time.LocalDateTime.class);
+    ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(LocalDateTime.class);
 
     DateTimeFormatter FILENAME_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss");
 
@@ -775,8 +775,8 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCompositeIndexLookup() {
-    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(java.time.LocalDateTime.class);
+  void compositeIndexLookup() {
+    GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);
     GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
     GlobalConfiguration.TX_RETRIES.setValue(0);
     final TypeIndex[] typeIndex = new TypeIndex[1];
@@ -802,9 +802,8 @@ public class UpdateStatementExecutionTest extends TestHelper {
     }
     // update first record
     database.transaction(() -> {
-      Object[] parameters2 = { "ERROR", 1 };
       String sqlString = "UPDATE Order SET status = ? RETURN AFTER WHERE id = ?";
-      try (ResultSet resultSet1 = database.command("sql", sqlString, parameters2)) {
+      try (ResultSet resultSet1 = database.command("sql", sqlString, "ERROR", 1)) {
       }
     });
     // select records with status = 'PENDING'
@@ -822,15 +821,13 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
     // repeat select records with status = 'PENDING'
     database.transaction(() -> {
-      Object[] parameters2 = { "PENDING" };
       String sqlString = "SELECT id, processor, status FROM Order WHERE status = ?";
-      try (ResultSet resultSet1 = database.query("sql", sqlString, parameters2)) {
+      try (ResultSet resultSet1 = database.query("sql", sqlString, "PENDING")) {
         assertThat(resultSet1.next().<String>getProperty("status")).isEqualTo("PENDING");
       }
     });
 
     database.transaction(() -> {
-      Object[] parameters2 = { "PENDING" };
       try (ResultSet resultSet1 = database.query("sql",
           "SELECT id, status FROM Order WHERE status = 'PENDING' OR status = 'READY' ORDER BY id ASC LIMIT 1")) {
         assertThat(resultSet1.next().<String>getProperty("status")).isEqualTo("PENDING");
@@ -839,7 +836,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testSelectAfterUpdate() {
+  void selectAfterUpdate() {
     database.transaction(() -> {
       DocumentType dtOrders = database.getSchema().buildDocumentType().withName("Order").create();
       dtOrders.createProperty("id", Type.INTEGER);

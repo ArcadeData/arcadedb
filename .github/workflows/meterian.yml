@@ -20,13 +20,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
       - name: Meterian Scanner
         uses: MeterianHQ/meterian-github-action@6849965b713613691cd357967671da061d968f83 # v1.0.17
         with:
           cli_args: "--report-sarif=report.sarif"
           oss: true
-      - uses: github/codeql-action/upload-sarif@f1f6e5f6af878fb37288ce1c627459e94dbf7d01 # v3.29.5
+      - uses: github/codeql-action/upload-sarif@fdbfb4d2750291e159f0156def62b853c2798ca2 # v3.29.5
         if: success() || failure()
         with:
           sarif_file: report.sarif

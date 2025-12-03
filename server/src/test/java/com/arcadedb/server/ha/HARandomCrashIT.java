@@ -32,11 +32,13 @@ import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.CodeUtils;
-import org.graalvm.nativebridge.In;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.Random;
+import java.util.Set;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -56,7 +58,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
   @Test
   @Override
-  public void testReplication() {
+  public void replication() {
     checkDatabases();
 
     final Timer timer = new Timer();
@@ -158,7 +160,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
             final Result result = resultSet.next();
             final Set<String> props = result.getPropertyNames();
             assertThat(props).as("Found the following properties " + props).hasSize(2);
-            assertThat(result.<Integer>getProperty("id")).isEqualTo(counter);
+            assertThat(result.<Long>getProperty("id")).isEqualTo(counter);
             assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
           }
 

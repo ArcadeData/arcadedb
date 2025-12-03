@@ -80,9 +80,6 @@ public class ArcadeDBGremlinSettings extends Settings {
     final TypeDescription jmxReporterDescription = new TypeDescription(JmxReporterMetrics.class);
     constructor.addTypeDescription(jmxReporterDescription);
 
-    final TypeDescription slf4jReporterDescription = new TypeDescription(Slf4jReporterMetrics.class);
-    constructor.addTypeDescription(slf4jReporterDescription);
-
     final TypeDescription gangliaReporterDescription = new TypeDescription(GangliaReporterMetrics.class);
     constructor.addTypeDescription(gangliaReporterDescription);
 

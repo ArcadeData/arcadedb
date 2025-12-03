@@ -33,14 +33,14 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class DropIndexTest extends TestHelper {
+class DropIndexTest extends TestHelper {
   private static final int    TOT        = 10;
   private static final String TYPE_NAME  = "V";
   private static final String TYPE_NAME2 = "V2";
   private static final int    PAGE_SIZE  = 20000;
 
   @Test
-  public void testDropAndRecreate() {
+  void dropAndRecreate() {
     assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 
     final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
@@ -132,7 +132,7 @@ public class DropIndexTest extends TestHelper {
   }
 
   @Test
-  public void testDropAndRecreateTypeWithIndex() {
+  void dropAndRecreateTypeWithIndex() {
     assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 
     final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();

@@ -25,8 +25,12 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -38,7 +42,7 @@ public class DeleteStatementTest extends TestHelper {
   }
 
   @Test
-  public void deleteFromSubqueryWithWhereTest() {
+  void deleteFromSubqueryWithWhereTest() {
     database.command("sql", "create document type Foo");
     database.command("sql", "create document type Bar");
     final MutableDocument doc1 = database.newDocument("Foo").set("k", "key1");
@@ -66,6 +70,151 @@ public class DeleteStatementTest extends TestHelper {
       assertThat(doc.getString("k")).isNotEqualTo("key2");
     }
     database.commit();
+  }
+
+  @Test
+  void deleteWithMultipleOrConditions() {
+    // Reproduction test for issue #  2695
+    // DELETE with multiple OR conditions should delete all matching records
+    database.command("sql", "create vertex type Duct");
+    database.command("sql", "create edge type HierarchyDuctDuct");
+    database.command("sql", "create property HierarchyDuctDuct.internal_from STRING");
+    database.command("sql", "create property HierarchyDuctDuct.internal_to STRING");
+    database.command("sql", "create property HierarchyDuctDuct.swap BOOLEAN");
+    database.command("sql", "create property HierarchyDuctDuct.order_number INTEGER");
+
+    // Create parent and child vertices
+    final var parent = database.newVertex("Duct").set("name", "parent").save();
+    final var child1 = database.newVertex("Duct").set("name", "child1").save();
+    final var child2 = database.newVertex("Duct").set("name", "child2").save();
+    final var child3 = database.newVertex("Duct").set("name", "child3").save();
+    final var child4 = database.newVertex("Duct").set("name", "child4").save();
+    final var child5 = database.newVertex("Duct").set("name", "child5").save();
+    final var child6 = database.newVertex("Duct").set("name", "child6").save();
+
+    // Create 6 edges with different property combinations
+    parent.newEdge("HierarchyDuctDuct", child1)
+        .set("internal_from", "A").set("internal_to", "B").set("swap", false).set("order_number", 1).save();
+    parent.newEdge("HierarchyDuctDuct", child2)
+        .set("internal_from", "A").set("internal_to", "C").set("swap", false).set("order_number", 2).save();
+    parent.newEdge("HierarchyDuctDuct", child3)
+        .set("internal_from", "A").set("internal_to", "D").set("swap", false).set("order_number", 3).save();
+    parent.newEdge("HierarchyDuctDuct", child4)
+        .set("internal_from", "A").set("internal_to", "E").set("swap", false).set("order_number", 4).save();
+    parent.newEdge("HierarchyDuctDuct", child5)
+        .set("internal_from", "A").set("internal_to", "F").set("swap", false).set("order_number", 5).save();
+    parent.newEdge("HierarchyDuctDuct", child6)
+        .set("internal_from", "A").set("internal_to", "G").set("swap", false).set("order_number", 6).save();
+
+    // Verify we have 6 edges
+    ResultSet result = database.query("sql", "select from HierarchyDuctDuct");
+    assertThat(result.stream().count()).isEqualTo(6);
+    // Delete using multiple OR conditions (this should delete all 6 edges)
+    final String deleteQuery = """
+        delete from HierarchyDuctDuct where
+        ((internal_from = 'A') AND (internal_to = 'B') AND (swap = false) AND (order_number = 1)) OR
+        ((internal_from = 'A') AND (internal_to = 'C') AND (swap = false) AND (order_number = 2)) OR
+        ((internal_from = 'A') AND (internal_to = 'D') AND (swap = false) AND (order_number = 3)) OR
+        ((internal_from = 'A') AND (internal_to = 'E') AND (swap = false) AND (order_number = 4)) OR
+        ((internal_from = 'A') AND (internal_to = 'F') AND (swap = false) AND (order_number = 5)) OR
+        ((internal_from = 'A') AND (internal_to = 'G') AND (swap = false) AND (order_number = 6))""";
+
+    final ResultSet deleteResult = database.command("sql", deleteQuery);
+    final long deletedCount = deleteResult.next().getProperty("count");
+
+    // Should delete all 6 edges, not just 1
+    assertThat(deletedCount).isEqualTo(6);
+
+    // Verify all edges are deleted
+    result = database.query("sql", "select from HierarchyDuctDuct");
+    assertThat(result.stream().count()).isZero();
+
+    database.commit();
+  }
+
+  @Test
+  void deleteWithMultipleOrConditionsAndIndex() {
+    // Test for issue #2695 with indexed property
+    // Ensures the fix works when some OR branches can use indexes
+    database.command("sql", "create document type Product");
+    database.command("sql", "create property Product.id INTEGER");
+    database.command("sql", "create property Product.category STRING");
+    database.command("sql", "create index on Product (id) UNIQUE");
+
+    // Create test documents
+    for (int i = 1; i <= 6; i++) {
+      database.newDocument("Product")
+          .set("id", i)
+          .set("category", "cat" + i)
+          .save();
+    }
+
+    // Verify we have 6 documents
+    ResultSet result = database.query("sql", "select from Product");
+    assertThat(CollectionUtils.countEntries(result)).isEqualTo(6);
+
+    // Delete using OR with indexed field - all branches should be processed
+    final String deleteQuery = """
+        delete from Product where
+        (id = 1 AND category = 'cat1') OR
+        (id = 2 AND category = 'cat2') OR
+        (id = 3 AND category = 'cat3') OR
+        (id = 4 AND category = 'cat4') OR
+        (id = 5 AND category = 'cat5') OR
+        (id = 6 AND category = 'cat6')""";
+
+    final ResultSet deleteResult = database.command("sql", deleteQuery);
+    final long deletedCount = deleteResult.next().getProperty("count");
+
+    // Should delete all 6 documents, not just 1
+    assertThat(deletedCount).isEqualTo(6);
+
+    // Verify all documents are deleted
+    result = database.query("sql", "select from Product");
+    assertThat(CollectionUtils.countEntries(result)).isEqualTo(0);
+
+    database.commit();
+  }
+
+  @Test
+  void deleteWithMultipleOrAndMultipleIndexes() {
+    database.command("sqlscript", """
+        CREATE VERTEX TYPE duct;
+        CREATE PROPERTY duct.id STRING;
+        CREATE INDEX ON duct (id) UNIQUE;
+
+        CREATE EDGE TYPE duct_duct;
+        CREATE PROPERTY duct_duct.from_id STRING;
+        CREATE PROPERTY duct_duct.to_id STRING;
+        CREATE PROPERTY duct_duct.swap STRING;
+        CREATE INDEX ON duct_duct (from_id,to_id,swap) UNIQUE;
+        CREATE INDEX ON duct_duct (from_id) NOTUNIQUE;
+        CREATE INDEX ON duct_duct (to_id) NOTUNIQUE;
+        CREATE INDEX ON duct_duct (swap) NOTUNIQUE;
+        """);
+
+    database.command("sqlscript", """
+        INSERT INTO duct (id) VALUES ('1'), ('2'), ('3');
+
+        CREATE EDGE duct_duct from #1:0 to #1:1 SET from_id='1', to_id='2', swap='N';
+        CREATE EDGE duct_duct from #1:0 to #1:2 SET from_id='1', to_id='3', swap='N';
+        """);
+
+
+    ResultSet deleted = database.command("sql", """
+        DELETE FROM duct_duct WHERE (from_id='1' AND to_id='2' AND swap='N') OR (from_id='1' AND to_id='3' AND swap='N');
+        """);
+    assertThat(deleted.next().<Long>getProperty("count")).isEqualTo(2);
+    ResultSet resultSet = database.query("sql", "select from duct_duct");
+    assertThat(resultSet.stream().count()).isEqualTo(0);
+
+    database.command("sqlscript", """
+        CREATE EDGE duct_duct from #1:0 to #1:1 SET from_id='1', to_id='2', swap='N';
+        CREATE EDGE duct_duct from #1:0 to #1:2 SET from_id='1', to_id='3', swap='N';
+        """);
+    ResultSet inserted = database.query("sql", "select from duct_duct");
+    assertThat(inserted.stream().count()).isEqualTo(2);
+
   }
 
   protected SqlParser getParserFor(final String string) {

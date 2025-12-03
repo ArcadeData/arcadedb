@@ -44,7 +44,7 @@ public class DatabaseEventsTest extends TestHelper {
   }
 
   @Test
-  public void testBeforeCreate() {
+  void beforeCreate() {
     final AtomicInteger counter = new AtomicInteger();
     final BeforeRecordCreateListener listener = record -> {
       counter.incrementAndGet();
@@ -74,7 +74,7 @@ public class DatabaseEventsTest extends TestHelper {
   }
 
   @Test
-  public void testAfterCreate() {
+  void afterCreate() {
     final AtomicInteger counter = new AtomicInteger();
     final AfterRecordCreateListener listener = record -> counter.incrementAndGet();
 
@@ -101,7 +101,7 @@ public class DatabaseEventsTest extends TestHelper {
   }
 
   @Test
-  public void testBeforeRead() {
+  void beforeRead() {
     final AtomicInteger counter = new AtomicInteger();
     final BeforeRecordReadListener listener = record -> {
       counter.incrementAndGet();
@@ -131,7 +131,7 @@ public class DatabaseEventsTest extends TestHelper {
   }
 
   @Test
-  public void testBeforeUpdate() {
+  void beforeUpdate() {
     final AtomicInteger counter = new AtomicInteger();
     final BeforeRecordUpdateListener listener = record -> {
       counter.incrementAndGet();
@@ -172,7 +172,7 @@ public class DatabaseEventsTest extends TestHelper {
   }
 
   @Test
-  public void testAfterRead() {
+  void afterRead() {
     final AtomicInteger counter = new AtomicInteger();
     final AfterRecordReadListener listener = record -> {
       counter.incrementAndGet();
@@ -202,7 +202,7 @@ public class DatabaseEventsTest extends TestHelper {
   }
 
   @Test
-  public void testAfterUpdate() {
+  void afterUpdate() {
     final AtomicInteger counter = new AtomicInteger();
     final AfterRecordUpdateListener listener = record -> counter.incrementAndGet();
 
@@ -229,7 +229,7 @@ public class DatabaseEventsTest extends TestHelper {
   }
 
   @Test
-  public void testBeforeDelete() {
+  void beforeDelete() {
     final AtomicInteger counter = new AtomicInteger();
     final BeforeRecordDeleteListener listener = record -> {
       counter.incrementAndGet();
@@ -271,7 +271,7 @@ public class DatabaseEventsTest extends TestHelper {
   }
 
   @Test
-  public void testAfterDelete() {
+  void afterDelete() {
     final AtomicInteger counter = new AtomicInteger();
     final AfterRecordDeleteListener listener = record -> counter.incrementAndGet();
 
@@ -311,7 +311,7 @@ public class DatabaseEventsTest extends TestHelper {
 
   // Issue https://github.com/ArcadeData/arcadedb/issues/807
   @Test
-  public void testBeforeCreateEmulateIncrement() {
+  void beforeCreateEmulateIncrement() {
     final BeforeRecordCreateListener listener = record -> {
       int maxId = database.query("SQL", "select max(counter) from `IndexedVertex`").nextIfAvailable().getProperty("max(counter)", 0);
       record.asVertex().modify().set("counter", maxId + 1);

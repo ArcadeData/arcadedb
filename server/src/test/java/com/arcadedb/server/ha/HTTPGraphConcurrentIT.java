@@ -23,39 +23,46 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 
 import org.assertj.core.api.Assertions;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
+import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.*;
 
-public class HTTPGraphConcurrentIT extends BaseGraphServerTest {
+class HTTPGraphConcurrentIT extends BaseGraphServerTest {
   @Override
   protected int getServerCount() {
     return 3;
   }
 
   @Test
-  public void testOneEdgePerTxMultiThreads() throws Exception {
+  void oneEdgePerTxMultiThreads() throws Exception {
     testEachServer((serverIndex) -> {
       executeCommand(serverIndex, "sqlscript",
           "create vertex type Photos" + serverIndex + ";create vertex type Users" + serverIndex + ";create edge type HasUploaded"
               + serverIndex + ";");
 
-      Thread.sleep(500);
+      // Wait for schema propagation using replication completion
+      waitForReplicationIsCompleted(serverIndex);
 
       executeCommand(serverIndex, "sql", "create vertex Users" + serverIndex + " set id = 'u1111'");
 
-      Thread.sleep(500);
+      // Wait for vertex creation to propagate
+      waitForReplicationIsCompleted(serverIndex);
 
       final int THREADS = 4;
       final int SCRIPTS = 100;
       final AtomicInteger atomic = new AtomicInteger();
 
-      final Thread[] threads = new Thread[THREADS];
+      final ExecutorService executorService = Executors.newFixedThreadPool(THREADS);
+      final List<Future<?>> futures = new ArrayList<>();
+
       for (int i = 0; i < THREADS; i++) {
-        threads[i] = new Thread(() -> {
+        Future<?> future = executorService.submit(() -> {
           for (int j = 0; j < SCRIPTS; j++) {
             try {
               final JSONObject responseAsJson = executeCommand(serverIndex, "sqlscript", //
@@ -80,11 +87,21 @@ public class HTTPGraphConcurrentIT extends BaseGraphServerTest {
             }
           }
         });
-        threads[i].start();
+        futures.add(future);
       }
 
-      for (int i = 0; i < THREADS; i++)
-        threads[i].join(60 * 1_000);
+      for (Future<?> future : futures) {
+        try {
+          future.get(60, TimeUnit.SECONDS);
+        } catch (InterruptedException | ExecutionException | TimeoutException e) {
+          fail(e);
+        }
+      }
+
+      executorService.shutdown();
+      if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
+        executorService.shutdownNow();
+      }
 
       assertThat(atomic.get()).isEqualTo(THREADS * SCRIPTS);
 

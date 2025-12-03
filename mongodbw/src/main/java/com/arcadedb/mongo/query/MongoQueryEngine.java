@@ -71,13 +71,20 @@ public class MongoQueryEngine implements QueryEngine {
     return query(query, null, (Map) null);
   }
 
+  // TODO: This command method can only handle queries, a command method needs to be provided in mongoDBWrapper
   @Override
   public ResultSet command(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
-    return null;
+    try {
+      return mongoDBWrapper.query(query);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on initializing Mongo query engine", e);
+      throw new CommandParsingException("Error on initializing Mongo query engine", e);
+    }
   }
 
+  // TODO: This command method can only handle queries, a command method needs to be provided in mongoDBWrapper
   @Override
   public ResultSet command(final String query, ContextConfiguration configuration, final Object... parameters) {
-    return null;
+    return query(query, null, (Map) null);
   }
 }

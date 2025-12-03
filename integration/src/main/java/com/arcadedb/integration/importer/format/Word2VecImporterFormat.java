@@ -28,17 +28,17 @@ import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.Source;
 import com.arcadedb.integration.importer.SourceSchema;
-import com.arcadedb.integration.importer.vector.TextEmbeddingsImporter;
+import com.arcadedb.integration.importer.vector.TextEmbeddingsImporterLSM;
 
 import java.io.*;
 
 /**
- * Imports Word2Vec text embedding format.
+ * Imports Word2Vec text embedding format using LSMVector index.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class Word2VecImporterFormat extends AbstractImporterFormat {
-  private TextEmbeddingsImporter importer;
+  private TextEmbeddingsImporterLSM importer;
 
   @Override
   public void load(final SourceSchema sourceSchema, final AnalyzedEntity.EntityType entityType, final Parser parser, final DatabaseInternal database,
@@ -48,7 +48,7 @@ public class Word2VecImporterFormat extends AbstractImporterFormat {
 
     try {
       settings.documentsSkipEntries = 1L; // SKIP 1ST LINE
-      importer = new TextEmbeddingsImporter(database, parser.getSource().inputStream, settings).setContext(context);
+      importer = new TextEmbeddingsImporterLSM(database, parser.getSource().inputStream, settings).setContext(context);
       importer.run();
 
     } catch (final Exception e) {

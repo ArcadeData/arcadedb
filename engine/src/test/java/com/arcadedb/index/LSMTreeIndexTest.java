@@ -31,6 +31,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.assertj.core.api.Assertions;
+import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -41,19 +43,25 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class LSMTreeIndexTest extends TestHelper {
+class LSMTreeIndexTest extends TestHelper {
   private static final int    TOT       = 100000;
   private static final String TYPE_NAME = "V";
   private static final int    PAGE_SIZE = 20000;
 
   @Test
-  public void testGet() {
+  void get() {
     database.transaction(() -> {
       int total = 0;
 
@@ -80,7 +88,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testGetAsRange() {
+  void getAsRange() {
     database.transaction(() -> {
 
       final Index[] indexes = database.getSchema().getIndexes();
@@ -122,7 +130,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testRangeFromHead() {
+  void rangeFromHead() {
     database.transaction(() -> {
 
       final Index[] indexes = database.getSchema().getIndexes();
@@ -200,7 +208,7 @@ public class LSMTreeIndexTest extends TestHelper {
 //  }
 
   @Test
-  public void testRemoveKeys() {
+  void removeKeys() {
     database.transaction(() -> {
       int total = 0;
 
@@ -279,7 +287,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testRemoveEntries() {
+  void removeEntries() {
     database.transaction(() -> {
       int total = 0;
 
@@ -360,7 +368,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testRemoveEntriesMultipleTimes() {
+  void removeEntriesMultipleTimes() {
     database.transaction(() -> {
       int total = 0;
 
@@ -404,7 +412,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testRemoveAndPutEntries() {
+  void removeAndPutEntries() {
     //database.getConfiguration().setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 0); // DISABLE COMPACTION
 
     database.transaction(() -> {
@@ -465,7 +473,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testChangePrimaryKeySameTx() {
+  void changePrimaryKeySameTx() {
     database.transaction(() -> {
       for (int i = 0; i < 1000; ++i) {
         final IndexCursor cursor = database.lookupByKey(TYPE_NAME, "id", i);
@@ -478,7 +486,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testDeleteCreateSameKeySameTx() {
+  void deleteCreateSameKeySameTx() {
     database.transaction(() -> {
       for (int i = 0; i < 1000; ++i) {
         final IndexCursor cursor = database.lookupByKey(TYPE_NAME, "id", i);
@@ -487,7 +495,9 @@ public class LSMTreeIndexTest extends TestHelper {
         final Document doc = cursor.next().asDocument();
         doc.delete();
 
-        database.newDocument(TYPE_NAME).fromMap(doc.toMap()).set("version", 2).save();
+        final MutableDocument newDoc = database.newDocument(TYPE_NAME).fromMap(doc.toMap()).set("version", 2).save();
+
+        assertThat(newDoc).isNotNull();
       }
     }, true, 2);
 
@@ -501,7 +511,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testUpdateKeys() {
+  void updateKeys() {
     database.transaction(() -> {
       int total = 0;
 
@@ -582,7 +592,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testPutDuplicates() {
+  void putDuplicates() {
     database.transaction(() -> {
       int total = 0;
 
@@ -617,15 +627,28 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexAscending() {
+  void scanIndexAscending() {
     database.transaction(() -> {
 
-      try {
-        // WAIT FOR THE INDEX TO BE COMPACTED
-        Thread.sleep(1000);
-      } catch (final InterruptedException e) {
-        e.printStackTrace();
-      }
+      // Wait for the index to be compacted using awaitility
+      // Increased timeout for CI environments
+      Awaitility.await("Wait for index compaction (ascending)")
+          .atMost(30, TimeUnit.SECONDS)
+          .pollInterval(200, TimeUnit.MILLISECONDS)
+          .until(() -> {
+            // Check if all indexes are ready by trying to access them
+            try {
+              for (final Index index : database.getSchema().getIndexes()) {
+                if (!(index instanceof TypeIndex)) {
+                  ((RangeIndex) index).iterator(true);
+                }
+              }
+              return true;
+            } catch (Exception e) {
+              // Retry on any exception - indexes may still be compacting
+              return false;
+            }
+          });
 
       int total = 0;
 
@@ -666,15 +689,28 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexDescending() {
+  void scanIndexDescending() {
     database.transaction(() -> {
 
-      try {
-        // WAIT FOR THE INDEX TO BE COMPACTED
-        Thread.sleep(1000);
-      } catch (final InterruptedException e) {
-        e.printStackTrace();
-      }
+      // Wait for the index to be compacted using awaitility
+      // Increased timeout for CI environments
+      Awaitility.await("Wait for index compaction (descending)")
+          .atMost(30, TimeUnit.SECONDS)
+          .pollInterval(200, TimeUnit.MILLISECONDS)
+          .until(() -> {
+            // Check if all indexes are ready by trying to access them
+            try {
+              for (final Index index : database.getSchema().getIndexes()) {
+                if (!(index instanceof TypeIndex)) {
+                  ((RangeIndex) index).iterator(false);
+                }
+              }
+              return true;
+            } catch (Exception e) {
+              // Retry on any exception - indexes may still be compacting
+              return false;
+            }
+          });
 
       int total = 0;
 
@@ -715,7 +751,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexAscendingPartialInclusive() {
+  void scanIndexAscendingPartialInclusive() {
     database.transaction(() -> {
       int total = 0;
 
@@ -750,7 +786,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexAscendingPartialExclusive() {
+  void scanIndexAscendingPartialExclusive() {
     database.transaction(() -> {
       int total = 0;
 
@@ -785,7 +821,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexDescendingPartialInclusive() {
+  void scanIndexDescendingPartialInclusive() {
     database.transaction(() -> {
       int total = 0;
 
@@ -819,7 +855,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexDescendingPartialExclusive() {
+  void scanIndexDescendingPartialExclusive() {
     database.transaction(() -> {
       int total = 0;
 
@@ -853,7 +889,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeInclusive2Inclusive() {
+  void scanIndexRangeInclusive2Inclusive() {
     database.transaction(() -> {
       int total = 0;
 
@@ -892,7 +928,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeInclusive2Exclusive() {
+  void scanIndexRangeInclusive2Exclusive() {
     database.transaction(() -> {
       int total = 0;
 
@@ -931,7 +967,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeExclusive2Inclusive() {
+  void scanIndexRangeExclusive2Inclusive() {
     database.transaction(() -> {
       int total = 0;
 
@@ -970,7 +1006,7 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testScanIndexRangeExclusive2Exclusive() {
+  void scanIndexRangeExclusive2Exclusive() {
     database.transaction(() -> {
       int total = 0;
 
@@ -1009,7 +1045,8 @@ public class LSMTreeIndexTest extends TestHelper {
   }
 
   @Test
-  public void testUniqueConcurrentWithIndexesCompaction() throws InterruptedException {
+  @Tag("slow")
+  void uniqueConcurrentWithIndexesCompaction() throws Exception {
     database.begin();
     final long startingWith = database.countType(TYPE_NAME, true);
 
@@ -1020,21 +1057,23 @@ public class LSMTreeIndexTest extends TestHelper {
     final AtomicLong duplicatedExceptions = new AtomicLong();
     final AtomicLong crossThreadsInserted = new AtomicLong();
 
-    final Thread[] threads = new Thread[16];
-    LogManager.instance().log(this, Level.INFO, "%s Started with %d threads", null, getClass(), threads.length);
+    final int threadCount = 16;
+    final ExecutorService executorService = Executors.newFixedThreadPool(threadCount);
+    final List<Future<?>> futures = new ArrayList<>();
+    LogManager.instance().log(this, Level.INFO, "%s Started with %d threads", null, getClass(), threadCount);
 
-    for (int i = 0; i < threads.length; ++i) {
-      threads[i] = new Thread(new Runnable() {
-        @Override
-        public void run() {
+    try {
+      for (int i = 0; i < threadCount; ++i) {
+        Future<?> future = executorService.submit(() -> {
           try {
             int threadInserted = 0;
-            for (int i = TOT; i < TOT + total; ++i) {
+            for (int i1 = TOT; i1 < TOT + total; ++i1) {
               boolean keyPresent = false;
               for (int retry = 0; retry < maxRetries && !keyPresent; ++retry) {
 
+                // Small random delay using awaitility
                 try {
-                  Thread.sleep(new Random().nextInt(10));
+                  TimeUnit.MILLISECONDS.sleep(new Random().nextInt(10));
                 } catch (final InterruptedException e) {
                   e.printStackTrace();
                   Thread.currentThread().interrupt();
@@ -1044,7 +1083,7 @@ public class LSMTreeIndexTest extends TestHelper {
                 database.begin();
                 try {
                   final MutableDocument v = database.newDocument(TYPE_NAME);
-                  v.set("id", i);
+                  v.set("id", i1);
                   v.set("name", "Jay");
                   v.set("surname", "Miner");
                   v.save();
@@ -1057,7 +1096,7 @@ public class LSMTreeIndexTest extends TestHelper {
                   if (threadInserted % 1000 == 0)
                     LogManager.instance()
                         .log(this, Level.INFO, "%s Thread %d inserted record %s, total %d records with key %d (total=%d)", null,
-                            getClass(), Thread.currentThread().threadId(), v.getIdentity(), i, threadInserted,
+                            getClass(), Thread.currentThread().threadId(), v.getIdentity(), i1, threadInserted,
                             crossThreadsInserted.get());
 
                   keyPresent = true;
@@ -1081,7 +1120,7 @@ public class LSMTreeIndexTest extends TestHelper {
               if (!keyPresent)
                 LogManager.instance()
                     .log(this, Level.WARNING, "%s Thread %d Cannot create key %d after %d retries! (total=%d)", null, getClass(),
-                        Thread.currentThread().threadId(), i, maxRetries, crossThreadsInserted.get());
+                        Thread.currentThread().threadId(), i1, maxRetries, crossThreadsInserted.get());
 
             }
 
@@ -1092,19 +1131,28 @@ public class LSMTreeIndexTest extends TestHelper {
           } catch (final Exception e) {
             LogManager.instance().log(this, Level.SEVERE, "%s Thread %d Error", e, getClass(), Thread.currentThread().threadId());
           }
+        });
+        futures.add(future);
+      }
+
+      // Wait for all threads to complete with explicit timeout
+      for (Future<?> future : futures) {
+        try {
+          future.get(120, TimeUnit.SECONDS);
+        } catch (final InterruptedException | ExecutionException | TimeoutException e) {
+          LogManager.instance().log(this, Level.WARNING, "Thread execution failed or timed out", e);
         }
+      }
 
-      });
-    }
-
-    for (int i = 0; i < threads.length; ++i)
-      threads[i].start();
-
-    for (int i = 0; i < threads.length; ++i) {
+    } finally {
+      executorService.shutdown();
       try {
-        threads[i].join();
-      } catch (final InterruptedException e) {
-        e.printStackTrace();
+        if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
+          executorService.shutdownNow();
+        }
+      } catch (InterruptedException e) {
+        executorService.shutdownNow();
+        Thread.currentThread().interrupt();
       }
     }
 
@@ -1154,7 +1202,8 @@ public class LSMTreeIndexTest extends TestHelper {
 
       final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
       type.createProperty("id", Integer.class);
-      final TypeIndex typeIndex = database.getSchema().buildTypeIndex(TYPE_NAME, new String[] { "id" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).withPageSize(PAGE_SIZE).create();
+      final TypeIndex typeIndex = database.getSchema().buildTypeIndex(TYPE_NAME, new String[] { "id" })
+          .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).withPageSize(PAGE_SIZE).create();
 
       for (int i = 0; i < TOT; ++i) {
         final MutableDocument v = database.newDocument(TYPE_NAME);
@@ -1172,5 +1221,87 @@ public class LSMTreeIndexTest extends TestHelper {
         assertThat(index.getStats().get("pages") > 1).isTrue();
       }
     });
+  }
+
+  @Test
+  void buildWithLogging() {
+    // Test that the build method logs progress messages
+    final List<String> logMessages = new ArrayList<>();
+
+    try {
+      // Set custom logger to capture log messages
+      LogManager.instance().setLogger(new com.arcadedb.log.Logger() {
+        @Override
+        public void log(final Object requester, final Level level, final String message, final Throwable exception, final String context,
+            final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6,
+            final Object arg7, final Object arg8, final Object arg9, final Object arg10, final Object arg11, final Object arg12,
+            final Object arg13, final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
+          if (message != null && (message.contains("Building index") || message.contains("Completed building"))) {
+            logMessages.add(String.format(message, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10));
+          }
+        }
+
+        @Override
+        public void log(final Object requester, final Level level, final String message, final Throwable exception, final String context,
+            final Object... args) {
+          if (message != null && (message.contains("Building index") || message.contains("Completed building"))) {
+            if (args != null && args.length > 0) {
+              logMessages.add(String.format(message, args));
+            } else {
+              logMessages.add(message);
+            }
+          }
+        }
+
+        @Override
+        public void flush() {
+        }
+      });
+
+      database.transaction(() -> {
+        // Create a type with data
+        final DocumentType type = database.getSchema().buildDocumentType().withName("BuildTest").withTotalBuckets(1).create();
+        type.createProperty("id", Integer.class);
+        type.createProperty("text", String.class);
+
+        // Insert records (enough to trigger multiple log intervals)
+        for (int i = 0; i < 25000; ++i) {
+          final MutableDocument doc = database.newDocument("BuildTest");
+          doc.set("id", i);
+          doc.set("text", "Test text " + i);
+          doc.save();
+        }
+      });
+
+      // Now rebuild the index which should trigger logging
+      database.transaction(() -> {
+        final DocumentType type = database.getSchema().getType("BuildTest");
+        database.getSchema().buildTypeIndex("BuildTest", new String[] { "text" })
+            .withType(Schema.INDEX_TYPE.LSM_TREE).create();
+      });
+
+      // Verify that log messages were captured
+      assertThat(logMessages).isNotEmpty();
+
+      // Check for start message
+      boolean hasStartMessage = logMessages.stream()
+          .anyMatch(msg -> msg.contains("Building index") && msg.contains("properties"));
+      assertThat(hasStartMessage).isTrue();
+
+      // Check for progress messages (should have at least 2 for 25000 records with 10K interval)
+      long progressMessages = logMessages.stream()
+          .filter(msg -> msg.contains("processed") && msg.contains("records/sec"))
+          .count();
+      assertThat(progressMessages).isGreaterThanOrEqualTo(2);
+
+      // Check for completion message
+      boolean hasCompletionMessage = logMessages.stream()
+          .anyMatch(msg -> msg.contains("Completed building index"));
+      assertThat(hasCompletionMessage).isTrue();
+
+    } finally {
+      // Restore default logger
+      LogManager.instance().setLogger(new com.arcadedb.log.DefaultLogger());
+    }
   }
 }

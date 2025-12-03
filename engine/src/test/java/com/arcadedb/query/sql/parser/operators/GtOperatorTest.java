@@ -28,9 +28,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
-public class GtOperatorTest {
+class GtOperatorTest {
   @Test
-  public void test() {
+  void test() {
     final GtOperator op = new GtOperator(-1);
     assertThat(op.execute(null, 1, 1)).isFalse();
     assertThat(op.execute(null, 1, 0)).isTrue();

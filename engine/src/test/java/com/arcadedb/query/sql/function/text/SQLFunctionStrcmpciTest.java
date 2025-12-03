@@ -28,28 +28,28 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class SQLFunctionStrcmpciTest {
+class SQLFunctionStrcmpciTest {
 
   private SQLFunctionStrcmpci function;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     function = new SQLFunctionStrcmpci();
   }
 
   @Test
-  public void testEmpty() {
+  void empty() {
     final Object result = function.getResult();
     assertThat(result).isNull();
   }
 
   @Test
-  public void testResult() {
+  void result() {
     assertThat(function.execute(null, null, null, new String[] { "ThisIsATest", "THISISATEST" }, null)).isEqualTo(0);
   }
 
   @Test
-  public void testQuery() throws Exception {
+  void query() throws Exception {
     TestHelper.executeInNewDatabase("SQLFunctionStrcmpci", (db) -> {
       ResultSet result = db.query("sql", "select strcmpci('ThisIsATest', 'THISISATEST') as strcmpci");
       assertThat(result.hasNext()).isTrue();

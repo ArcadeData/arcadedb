@@ -35,13 +35,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
-public class LSMTreeIndexPolymorphicTest extends TestHelper {
+class LSMTreeIndexPolymorphicTest extends TestHelper {
 
   private DocumentType typeChild;
   private DocumentType typeRoot;
 
   @Test
-  public void testPolymorphic() {
+  void polymorphic() {
     populate(Schema.INDEX_TYPE.LSM_TREE);
 
     assertThatThrownBy(() -> {
@@ -57,14 +57,14 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
   }
 
   @Test
-  public void testPolymorphicFullText() {
+  void polymorphicFullText() {
     populate(Schema.INDEX_TYPE.FULL_TEXT);
     checkQueries();
   }
 
   // https://github.com/ArcadeData/arcadedb/issues/152
   @Test
-  public void testDocumentAfterCreation2() {
+  void documentAfterCreation2() {
     final DocumentType typeRoot2 = database.getSchema().getOrCreateDocumentType("TestRoot2");
     typeRoot2.getOrCreateProperty("name", String.class);
     typeRoot2.getOrCreateProperty("parent", Type.LINK);
@@ -90,7 +90,7 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
 
   // https://github.com/ArcadeData/arcadedb/issues/152
   @Test
-  public void testDocumentAfterCreation2AutoTx() {
+  void documentAfterCreation2AutoTx() {
     final DocumentType typeRoot2 = database.getSchema().getOrCreateDocumentType("TestRoot2");
     typeRoot2.getOrCreateProperty("name", String.class);
     typeRoot2.getOrCreateProperty("parent", Type.LINK);

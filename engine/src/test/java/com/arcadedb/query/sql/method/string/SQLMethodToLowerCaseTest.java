@@ -34,13 +34,13 @@ class SQLMethodToLowerCaseTest {
   }
 
   @Test
-  void testNulIReturnedAsNull() {
+  void nulIReturnedAsNull() {
     final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
-  void testToloweCase() {
+  void toloweCase() {
     final Object result = method.execute("UPPER CASE", null, null, null);
     assertThat(result).isEqualTo("upper case");
 

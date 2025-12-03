@@ -1,3 +1,21 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
@@ -11,17 +29,15 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
-import org.assertj.core.api.Assertions;
-import org.junit.jupiter.api.Test;
-
-import java.io.IOException;
+  import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdatabase.com)
  */
-public class ScriptExecutionTest extends TestHelper {
+class ScriptExecutionTest extends TestHelper {
   public static class SQLFunctionThrowCME extends SQLFunctionAbstract {
     public static final String NAME = "throwCME";
 
@@ -48,7 +64,7 @@ public class ScriptExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testTwoInserts() {
+  void twoInserts() {
     String typeName = "testTwoInserts";
     database.getSchema().createDocumentType(typeName);
     database.transaction(() -> {
@@ -60,7 +76,7 @@ public class ScriptExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testIf() {
+  void testIf() {
     String typeName = "testIf";
     database.getSchema().createDocumentType(typeName);
     database.transaction(() -> {
@@ -82,7 +98,7 @@ public class ScriptExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testReturnInIf() {
+  void returnInIf() {
     String typeName = "testReturnInIf";
     database.getSchema().createDocumentType(typeName);
 
@@ -104,7 +120,7 @@ public class ScriptExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testReturnInIf2() {
+  void returnInIf2() {
     String typeName = "testReturnInIf2";
     database.getSchema().createDocumentType(typeName);
 
@@ -127,7 +143,7 @@ public class ScriptExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testReturnInIf3() {
+  void returnInIf3() {
     String typeName = "testReturnInIf3";
     database.getSchema().createDocumentType(typeName);
 
@@ -150,7 +166,7 @@ public class ScriptExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testLazyExecutionPlanning() {
+  void lazyExecutionPlanning() {
     database.transaction(() -> {
       String script = """
               LET $1 = SELECT FROM (select from schema:types) where name = 'nonExistingClass';
@@ -170,7 +186,7 @@ public class ScriptExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCommitRetry() {
+  void commitRetry() {
     String typeName = "testCommitRetry";
     database.getSchema().createDocumentType(typeName);
 
@@ -199,7 +215,7 @@ public class ScriptExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCommitRetryMultiThreadsSQLIncrement() throws IOException {
+  void commitRetryMultiThreadsSQLIncrement() throws Exception {
     String typeName = "testCommitRetryMTSQLIncrement";
     database.getSchema().createDocumentType(typeName, 8);
 
@@ -253,7 +269,7 @@ public class ScriptExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCommitRetryMultiThreadsSQLIncrementRepeatableRead() throws IOException {
+  void commitRetryMultiThreadsSQLIncrementRepeatableRead() throws Exception {
     String typeName = "testCommitRetryMTSQLIncrement";
     database.getSchema()
         .buildDocumentType()
@@ -319,7 +335,7 @@ public class ScriptExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCommitRetryWithFailure() {
+  void commitRetryWithFailure() {
     String typeName = "testCommitRetryWithFailure";
     database.getSchema().createDocumentType(typeName);
 
@@ -334,7 +350,7 @@ public class ScriptExecutionTest extends TestHelper {
           SELECT throwCME(#-1:-1, 1, 1, 1);
           COMMIT RETRY 10;
           """.formatted(typeName);
-      ;
+
       try {
         database.command("sqlscript", script);
       } catch (ConcurrentModificationException x) {
@@ -347,7 +363,7 @@ public class ScriptExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCommitRetryWithFailureAndContinue() {
+  void commitRetryWithFailureAndContinue() {
     String typeName = "testCommitRetryWithFailureAndContinue";
     database.getSchema().createDocumentType(typeName);
 
@@ -375,7 +391,7 @@ public class ScriptExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCommitRetryWithFailureScriptAndContinue() {
+  void commitRetryWithFailureScriptAndContinue() {
     String typeName = "testCommitRetryWithFailureScriptAndContinue";
     database.getSchema().createDocumentType(typeName);
 
@@ -404,7 +420,7 @@ public class ScriptExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCommitRetryWithFailureScriptAndFail() {
+  void commitRetryWithFailureScriptAndFail() {
     String typeName = "testCommitRetryWithFailureScriptAndFail";
     database.getSchema().createDocumentType(typeName);
 
@@ -422,11 +438,8 @@ public class ScriptExecutionTest extends TestHelper {
               } AND FAIL;
           """.formatted(typeName, typeName);
 
-      try {
-        database.command("sqlscript", script);
-        Assertions.fail();
-      } catch (ConcurrentModificationException e) {
-      }
+      assertThatThrownBy(() -> database.command("sqlscript", script))
+          .isInstanceOf(ConcurrentModificationException.class);
     });
 
     ResultSet result = database.query("sql", "select from " + typeName);
@@ -436,7 +449,7 @@ public class ScriptExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testCommitRetryWithFailureScriptAndFail2() {
+  void commitRetryWithFailureScriptAndFail2() {
     String typeName = "testCommitRetryWithFailureScriptAndFail2";
     database.getSchema().createDocumentType(typeName);
 
@@ -454,12 +467,8 @@ public class ScriptExecutionTest extends TestHelper {
               }
           """.formatted(typeName, typeName);
 
-      try {
-        database.command("sqlscript", script);
-        Assertions.fail();
-      } catch (ConcurrentModificationException e) {
-
-      }
+      assertThatThrownBy(() -> database.command("sqlscript", script))
+          .isInstanceOf(ConcurrentModificationException.class);
 
       ResultSet result = database.query("sql", "select from " + typeName);
       Result item = result.next();
@@ -469,16 +478,12 @@ public class ScriptExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testFunctionAsStatement() {
+  void functionAsStatement() {
     database.transaction(() -> {
-      String script = "";
-      script += "sqrt(64);";
+      String script = "sqrt(64);";
 
-      try {
-        database.command("sql", script);
-        Assertions.fail();
-      } catch (CommandSQLParsingException e) {
-      }
+      assertThatThrownBy(() -> database.command("sql", script))
+          .isInstanceOf(CommandSQLParsingException.class);
 
       ResultSet rs = database.command("sqlscript", script);
       Result item = rs.next();
@@ -489,7 +494,7 @@ public class ScriptExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testAssignOnEdgeCreate() {
+  void assignOnEdgeCreate() {
     database.transaction(() -> {
       String script = """
               create vertex type V if not exists;

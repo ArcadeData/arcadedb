@@ -1290,7 +1290,7 @@ public class SelectExecutionPlanner {
     if (info.expand || info.unwind != null)
       maxResults = null;
 
-    if (!info.orderApplied && info.orderBy != null && info.orderBy.getItems() != null && info.orderBy.getItems().size() > 0) {
+    if (!info.orderApplied && info.orderBy != null && info.orderBy.getItems() != null && !info.orderBy.getItems().isEmpty()) {
       plan.chain(new OrderByStep(info.orderBy, maxResults, context, info.timeout != null ? info.timeout.getVal().longValue() : -1));
       if (info.projectionAfterOrderBy != null) {
         plan.chain(new ProjectionCalculationStep(info.projectionAfterOrderBy, context));
@@ -1678,11 +1678,13 @@ public class SelectExecutionPlanner {
     List<IndexSearchDescriptor> indexSearchDescriptors =
         info.flattenedWhereClause.stream()
             .map(x -> findBestIndexFor(context, indexes, x, typez))
-            .filter(Objects::nonNull)
             .collect(Collectors.toList());
 
-    if (indexSearchDescriptors.isEmpty())
-      return null; // some blocks could not be managed with an index
+    // Fix for issue #2695: If any OR branch cannot be optimized with an index,
+    // we must fall back to a full scan. Otherwise, those branches would be silently
+    // ignored, causing incomplete query results (e.g., DELETE only deleting some records).
+    if (indexSearchDescriptors.contains(null))
+      return null; // some blocks could not be managed with an index, fall back to full scan
 
     List<IndexSearchDescriptor> optimumIndexSearchDescriptors =
         commonFactor(indexSearchDescriptors);
@@ -1956,12 +1958,19 @@ public class SelectExecutionPlanner {
 
     // get all valid index descriptors
     List<IndexSearchDescriptor> descriptors = indexes.stream()
-        .map(index -> buildIndexSearchDescriptor(context, index, block, clazz)).filter(Objects::nonNull)
-        .filter(x -> x.keyCondition != null).filter(x -> !x.getSubBlocks().isEmpty()).collect(Collectors.toList());
+        .map(index -> buildIndexSearchDescriptor(context, index, block, clazz))
+        .filter(Objects::nonNull)
+        .filter(x -> x.keyCondition != null)
+        .filter(x -> !x.getSubBlocks().isEmpty())
+        .collect(Collectors.toList());
 
-    final List<IndexSearchDescriptor> fullTextIndexDescriptors = indexes.stream().filter(idx -> idx.getType().equals(FULL_TEXT))
-        .map(idx -> buildIndexSearchDescriptorForFulltext(context, idx, block, clazz)).filter(Objects::nonNull)
-        .filter(x -> x.keyCondition != null).filter(x -> !x.getSubBlocks().isEmpty()).toList();
+    final List<IndexSearchDescriptor> fullTextIndexDescriptors = indexes.stream()
+        .filter(idx -> idx.getType().equals(FULL_TEXT))
+        .map(idx -> buildIndexSearchDescriptorForFulltext(context, idx, block, clazz))
+        .filter(Objects::nonNull)
+        .filter(x -> x.keyCondition != null)
+        .filter(x -> !x.getSubBlocks().isEmpty())
+        .toList();
 
     descriptors.addAll(fullTextIndexDescriptors);
 
@@ -1971,21 +1980,27 @@ public class SelectExecutionPlanner {
 
     // sort by cost
     final List<Pair<Integer, IndexSearchDescriptor>> sortedDescriptors = descriptors.stream()
-        .map(x -> (Pair<Integer, IndexSearchDescriptor>) new Pair(x.cost(context), x)).sorted().collect(Collectors.toList());
+        .map(x -> (Pair<Integer, IndexSearchDescriptor>) new Pair(x.cost(context), x))
+        .sorted()
+        .toList();
 
     // get only the descriptors with the lowest cost
     if (sortedDescriptors.isEmpty()) {
       descriptors = Collections.emptyList();
     } else {
-      descriptors = sortedDescriptors.stream().filter(x -> x.getFirst().equals(sortedDescriptors.getFirst().getFirst()))
-          .map(x -> x.getSecond()).collect(Collectors.toList());
+      descriptors = sortedDescriptors.stream()
+          .filter(x -> x.getFirst().equals(sortedDescriptors.getFirst().getFirst()))
+          .map(x -> x.getSecond())
+          .toList();
     }
 
     // sort remaining by the number of indexed fields
-    descriptors = descriptors.stream().sorted(Comparator.comparingInt(x -> x.getSubBlocks().size())).collect(Collectors.toList());
+    descriptors = descriptors.stream()
+        .sorted(Comparator.comparingInt(x -> x.getSubBlocks().size()))
+        .toList();
 
     // get the one that has more indexed fields
-    return descriptors.isEmpty() ? null : descriptors.getFirst();
+    return descriptors.isEmpty() ? null : descriptors.getLast();
   }
 
   /**
@@ -2096,7 +2111,16 @@ public class SelectExecutionPlanner {
           final Expression left = textCondition.getLeft();
           if (left.isBaseIdentifier()) {
             final String fieldName = left.getDefaultAlias().getStringValue();
-            if (indexField.equals(fieldName)) {
+            // Strip modifiers to get base field name
+            String baseFieldName = indexField;
+            if (indexField.endsWith(" by key")) {
+              baseFieldName = indexField.substring(0, indexField.length() - 7);
+            } else if (indexField.endsWith(" by value")) {
+              baseFieldName = indexField.substring(0, indexField.length() - 9);
+            } else if (indexField.endsWith(" by item")) {
+              baseFieldName = indexField.substring(0, indexField.length() - 8);
+            }
+            if (baseFieldName.equals(fieldName)) {
               found = true;
               indexFieldFound = true;
               final ContainsTextCondition condition = new ContainsTextCondition(-1);
@@ -2146,8 +2170,19 @@ public class SelectExecutionPlanner {
     BinaryCondition additionalRangeCondition = null;
 
     for (String indexField : indexFields) {
-      final IndexSearchInfo info = new IndexSearchInfo(indexField, allowsRangeQueries(index), isMap(clazz, indexField),
-          isIndexByKey(index, indexField), isIndexByValue(index, indexField), true, context);
+      // Strip modifiers to get base field name
+      String baseFieldName = indexField;
+      if (indexField.endsWith(" by key")) {
+        baseFieldName = indexField.substring(0, indexField.length() - 7);
+      } else if (indexField.endsWith(" by value")) {
+        baseFieldName = indexField.substring(0, indexField.length() - 9);
+      } else if (indexField.endsWith(" by item")) {
+        baseFieldName = indexField.substring(0, indexField.length() - 8);
+      }
+
+      final IndexSearchInfo info = new IndexSearchInfo(baseFieldName, allowsRangeQueries(index), isMap(clazz, baseFieldName),
+          isIndexByKey(index, baseFieldName), isIndexByValue(index, baseFieldName), isIndexByItem(index, baseFieldName), true,
+          context);
       blockIterator = blockCopy.getSubBlocks().iterator();
       boolean indexFieldFound = false;
       boolean rangeOp = false;
@@ -2236,6 +2271,14 @@ public class SelectExecutionPlanner {
   private boolean isIndexByValue(final Index index, final String field) {
     for (String o : index.getPropertyNames()) {
       if (o.equalsIgnoreCase(field + " by value"))
+        return true;
+    }
+    return false;
+  }
+
+  private boolean isIndexByItem(final Index index, final String field) {
+    for (String o : index.getPropertyNames()) {
+      if (o.equalsIgnoreCase(field + " by item"))
         return true;
     }
     return false;

@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class DropTypeStatementTestParserTest extends AbstractParserTest {
+class DropTypeStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("DROP TYPE Foo");
     checkRightSyntax("drop type Foo");
     checkRightSyntax("drop type Foo UNSAFE");
@@ -36,7 +36,7 @@ public class DropTypeStatementTestParserTest extends AbstractParserTest {
   }
 
   @Test
-  public void testIfExists() {
+  void ifExists() {
     checkRightSyntax("DROP TYPE Foo if exists");
     checkRightSyntax("DROP TYPE Foo IF EXISTS");
     checkRightSyntax("DROP TYPE if if exists");

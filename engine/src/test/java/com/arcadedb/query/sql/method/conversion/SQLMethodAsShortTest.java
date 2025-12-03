@@ -33,13 +33,13 @@ class SQLMethodAsShortTest {
   }
 
   @Test
-  void testNulIsReturnedAsNull() {
+  void nulIsReturnedAsNull() {
     final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
-  void testStringToShort() {
+  void stringToShort() {
     final Object result = method.execute("10", null, null, null);
     assertThat(result).isInstanceOf(Short.class);
     assertThat(result).isEqualTo((short) 10);

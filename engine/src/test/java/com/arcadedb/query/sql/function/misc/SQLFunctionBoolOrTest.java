@@ -27,10 +27,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class SQLFunctionBoolOrTest extends TestHelper {
+class SQLFunctionBoolOrTest extends TestHelper {
 
   @Test
-  public void testBoolOr_SingleNull() {
+  void boolOrSingleNull() {
     database.transaction(() -> {
       database.command("sql", "create document type doc0;");
       database.command("sql", "create property doc0.bool boolean;");
@@ -42,7 +42,7 @@ public class SQLFunctionBoolOrTest extends TestHelper {
   }
 
   @Test
-  public void testBoolOr_SingleTrue() {
+  void boolOrSingleTrue() {
     database.transaction(() -> {
       database.command("sql", "create document type doc1;");
       database.command("sql", "create property doc1.bool boolean;");
@@ -54,7 +54,7 @@ public class SQLFunctionBoolOrTest extends TestHelper {
   }
 
   @Test
-  public void testBoolOr_SingleFalse() {
+  void boolOrSingleFalse() {
     database.transaction(() -> {
       database.command("sql", "create document type doc2;");
       database.command("sql", "create property doc2.bool boolean;");
@@ -66,7 +66,7 @@ public class SQLFunctionBoolOrTest extends TestHelper {
   }
 
   @Test
-  public void testBoolOr_MultiNull() {
+  void boolOrMultiNull() {
     database.transaction(() -> {
       database.command("sql", "create document type doc3;");
       database.command("sql", "create property doc3.bool boolean;");
@@ -78,7 +78,7 @@ public class SQLFunctionBoolOrTest extends TestHelper {
   }
 
   @Test
-  public void testBoolOr_MultiTrue() {
+  void boolOrMultiTrue() {
     database.transaction(() -> {
       database.command("sql", "create document type doc4;");
       database.command("sql", "create property doc4.bool boolean;");
@@ -90,7 +90,7 @@ public class SQLFunctionBoolOrTest extends TestHelper {
   }
 
   @Test
-  public void testBoolOr_MultiFalse() {
+  void boolOrMultiFalse() {
     database.transaction(() -> {
       database.command("sql", "create document type doc5;");
       database.command("sql", "create property doc5.bool boolean;");
@@ -102,7 +102,7 @@ public class SQLFunctionBoolOrTest extends TestHelper {
   }
 
   @Test
-  public void testBoolOr_MultiTrueHasNull() {
+  void boolOrMultiTrueHasNull() {
     database.transaction(() -> {
       database.command("sql", "create document type doc6;");
       database.command("sql", "create property doc6.bool boolean;");
@@ -114,7 +114,7 @@ public class SQLFunctionBoolOrTest extends TestHelper {
   }
 
   @Test
-  public void testBoolOr_MultiFalseHasNull() {
+  void boolOrMultiFalseHasNull() {
     database.transaction(() -> {
       database.command("sql", "create document type doc7;");
       database.command("sql", "create property doc7.bool boolean;");
@@ -126,7 +126,7 @@ public class SQLFunctionBoolOrTest extends TestHelper {
   }
 
   @Test
-  public void testBoolOr_MultiNullIsNull() {
+  void boolOrMultiNullIsNull() {
     database.transaction(() -> {
       database.command("sql", "create document type doc8;");
       database.command("sql", "create property doc8.bool boolean;");
@@ -138,7 +138,7 @@ public class SQLFunctionBoolOrTest extends TestHelper {
   }
 
   @Test
-  public void testBoolOr_MultiHasNull() {
+  void boolOrMultiHasNull() {
     database.transaction(() -> {
       database.command("sql", "create document type doc9;");
       database.command("sql", "create property doc9.bool boolean;");

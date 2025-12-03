@@ -33,34 +33,34 @@ class SQLMethodAsFloatTest {
   }
 
   @Test
-  void testNulIsReturnedAsNull() {
+  void nulIsReturnedAsNull() {
     final Object result = method.execute(null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
-  void testStringToFloat() {
+  void stringToFloat() {
     final Object result = method.execute("10.0", null, null, null);
     assertThat(result).isInstanceOf(Float.class);
     assertThat(result).isEqualTo(10.0f);
   }
 
   @Test
-  void testLongToFloat() {
+  void longToFloat() {
     final Object result = method.execute(10l, null, null, null);
     assertThat(result).isInstanceOf(Float.class);
     assertThat(result).isEqualTo(10.0f);
   }
 
   @Test
-  void testFloatToFloat() {
+  void floatToFloat() {
     final Object result = method.execute(10.0f, null, null, null);
     assertThat(result).isInstanceOf(Float.class);
     assertThat(result).isEqualTo(10.0f);
   }
 
   @Test
-  void testIntegerToFloat() {
+  void integerToFloat() {
     final Object result = method.execute(10, null, null, null);
     assertThat(result).isInstanceOf(Float.class);
     assertThat(result).isEqualTo(10.0f);

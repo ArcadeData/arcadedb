@@ -22,10 +22,10 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class StatementCacheTest {
+class StatementCacheTest {
 
   @Test
-  public void testInIsNotAReservedWord() {
+  void inIsNotAReservedWord() {
     final StatementCache cache = new StatementCache(null,2);
     cache.get("select from foo");
     cache.get("select from bar");

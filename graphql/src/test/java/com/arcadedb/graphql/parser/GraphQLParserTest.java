@@ -22,24 +22,25 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class GraphQLParserTest {
+class GraphQLParserTest {
   @Test
-  public void testBasic() throws ParseException {
+  void basic() throws Exception {
     GraphQLParser.parse("{ hero { name friends { name } }}");
   }
 
   @Test
-  public void testLookup() throws ParseException {
-    final Document ast = GraphQLParser.parse("{ bookById(id: \"book-1\"){" +//
-        "  id" +//
-        "      name" +//
-        "  pageCount" +//
-        "  author {" +//
-        "    firstName" +//
-        "        lastName" +//
-        "  }" +//
-        "}" +//
-        "}");
+  void lookup() throws Exception {
+    final Document ast = GraphQLParser.parse("""
+        { bookById(id: "book-1"){\
+          id\
+              name\
+          pageCount\
+          author {\
+            firstName\
+                lastName\
+          }\
+        }\
+        }""");
 
     assertThat(ast.children.length > 0).isTrue();
 
