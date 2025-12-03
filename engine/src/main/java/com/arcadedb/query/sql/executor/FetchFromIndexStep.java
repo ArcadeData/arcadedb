@@ -516,8 +516,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       values = (Object[]) value;
 
     if (operator instanceof EqualsCompareOperator) {
-      //return index.get(values);
-      return index.range(orderAsc, values, true, values, true);
+      return index.get(values);
     } else if (operator instanceof GeOperator) {
       return index.iterator(true, values, true);
     } else if (operator instanceof GtOperator) {
