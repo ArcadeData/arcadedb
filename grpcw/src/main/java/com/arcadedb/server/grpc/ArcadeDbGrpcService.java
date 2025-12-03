@@ -2377,7 +2377,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
     }
 
-    LogManager.instance().log(this, Level.WARNING, "ENC-RES DONE rid=%s type=%s props=%s",
+    LogManager.instance().log(this, Level.FINE, "ENC-RES DONE rid=%s type=%s props=%s",
         builder.getRid(), builder.getType(), builder.getPropertiesCount());
 
 
@@ -2430,7 +2430,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
     }
 
-    LogManager.instance().log(this, Level.WARNING, "ENC-REC DONE rid=%s type=%s props=%s", builder.getRid(), builder.getType(),
+    LogManager.instance().log(this, Level.FINE, "ENC-REC DONE rid=%s type=%s props=%s", builder.getRid(), builder.getType(),
         builder.getPropertiesCount());
 
     return builder.build();

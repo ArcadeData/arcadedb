@@ -102,7 +102,7 @@ SUCCESS - All modules compiled without errors
    - Works around client-side limitation where `ResultInternal(record)` discards the properties map
    - Kept existing `convertToGrpcRecord(Record, Database)` for backward compatibility
 
-3. **grpc-client/src/test/java/com/arcadedb/remote/grpc/RemoteGrpcDatabaseRegressionTest.java**
+2. **grpc-client/src/test/java/com/arcadedb/remote/grpc/RemoteGrpcDatabaseRegressionTest.java**
    - Added test method `sqlAliasesArePreservedInGrpcResultSet()`
    - Test validates that SQL aliases are preserved in gRPC ResultSet
    - Extended from BaseGraphServerTest to enable running with embedded server

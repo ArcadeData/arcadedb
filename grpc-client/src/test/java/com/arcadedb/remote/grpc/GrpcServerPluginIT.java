@@ -48,7 +48,7 @@ public class GrpcServerPluginIT extends BaseGraphServerTest {
   }
 
   @Test
-  void renameme() {
+  void testGrpcQueryWithAliasesAndMetadata() {
 
     server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
@@ -98,16 +98,6 @@ public class GrpcServerPluginIT extends BaseGraphServerTest {
 
     String query = "SELECT *,  @rid, @type, author AS _author FROM article";
     ResultSet resultSet = database.query("sql", query);
-
-    resultSet.stream().forEach(r -> {
-          assertThat(r.<String>getProperty("_author")).isEqualTo("John Doe");
-          assertThat(r.getIdentity().get()).isNotNull();
-          assertThat(r.getElement().get().getTypeName()).isEqualTo("article");
-        }
-
-    );
-
-    resultSet = database.query("sql", query);
 
     resultSet.stream().forEach(r -> {
           assertThat(r.<String>getProperty("_author")).isEqualTo("John Doe");
