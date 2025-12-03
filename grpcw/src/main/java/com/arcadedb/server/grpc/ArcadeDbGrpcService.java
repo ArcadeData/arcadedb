@@ -690,40 +690,18 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         LogManager.instance().log(this, Level.FINE, "executeQuery(): result = %s", result);
 
-        if (result.isElement()) {
+        // Convert Result to GrpcRecord, preserving aliases and all properties
+        GrpcRecord grpcRecord = convertResultToGrpcRecord(result, database, projectionConfig);
 
-          LogManager.instance().log(this, Level.FINE, "executeQuery(): isElement");
+        LogManager.instance().log(this, Level.FINE, "executeQuery(): grpcRecord -> @rid = %s", grpcRecord.getRid());
 
-          Record dbRecord = result.getElement().get();
+        resultBuilder.addRecords(grpcRecord);
 
-          LogManager.instance().log(this, Level.FINE, "executeQuery(): dbRecord -> @rid = %s", dbRecord.getIdentity().toString());
+        count++;
 
-          GrpcRecord grpcRecord = convertToGrpcRecord(dbRecord, database);
-
-          LogManager.instance().log(this, Level.FINE, "executeQuery(): grpcRecord -> @rid = %s", grpcRecord.getRid());
-
-          resultBuilder.addRecords(grpcRecord);
-
-          count++;
-
-          // Apply limit if specified
-          if (request.getLimit() > 0 && count >= request.getLimit()) {
-            break;
-          }
-        } else {
-
-          LogManager.instance().log(this, Level.FINE, "executeQuery(): NOT isElement");
-
-          // Scalar / projection row (e.g., RETURN COUNT)
-
-          GrpcRecord.Builder recB = GrpcRecord.newBuilder();
-
-          for (String p : result.getPropertyNames()) {
-
-            recB.putProperties(p, convertPropToGrpcValue(p, result, projectionConfig));
-          }
-
-          resultBuilder.addRecords(recB.build());
+        // Apply limit if specified
+        if (request.getLimit() > 0 && count >= request.getLimit()) {
+          break;
         }
       }
 
@@ -2328,6 +2306,84 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     return params;
   }
 
+  /**
+   * Converts a Result to GrpcRecord, preserving all properties including aliases.
+   * This method works at the Result level (not Record level) to maintain alias information.
+   *
+   * @param result           the Result object from a query execution
+   * @param db               the database instance
+   * @param projectionConfig optional projection configuration
+   *
+   * @return GrpcRecord with all properties and aliases preserved
+   */
+  private GrpcRecord convertResultToGrpcRecord(Result result, Database db, ProjectionConfig projectionConfig) {
+    GrpcRecord.Builder builder = GrpcRecord.newBuilder();
+
+    // If this result wraps an element (Document/Vertex/Edge), get its metadata
+    if (result.isElement()) {
+      Document dbRecord = result.toElement();
+
+      if (dbRecord.getIdentity() != null) {
+        builder.setRid(dbRecord.getIdentity().toString());
+      }
+
+      if (dbRecord.getType() != null) {
+        builder.setType(dbRecord.getTypeName());
+      }
+    }
+
+    // Iterate over ALL properties from the Result, including aliases
+    for (String propertyName : result.getPropertyNames()) {
+      Object value = result.getProperty(propertyName);
+
+      if (value != null) {
+        LogManager.instance()
+            .log(this, Level.FINE, "convertResultToGrpcRecord(): Converting %s\n  value = %s\n  class = %s",
+                propertyName, value, value.getClass());
+
+        GrpcValue gv = projectionConfig != null ?
+            toGrpcValue(value, projectionConfig) :
+            toGrpcValue(value);
+
+        LogManager.instance()
+            .log(this, Level.FINE, "ENC-RES %s: %s -> %s", propertyName, summarizeJava(value), summarizeGrpc(gv));
+
+        builder.putProperties(propertyName, gv);
+      }
+    }
+
+    // Ensure @rid and @type are always in the properties map when there's an element
+    // This matches JsonSerializer behavior and works around client-side limitations
+    if (result.isElement()) {
+      final Document document = result.toElement();
+
+      if (!builder.getPropertiesMap().containsKey(Property.RID_PROPERTY) && document.getIdentity() != null) {
+        builder.putProperties(Property.RID_PROPERTY, toGrpcValue(document.getIdentity()));
+      }
+
+      if (!builder.getPropertiesMap().containsKey(Property.TYPE_PROPERTY) && document instanceof Document doc
+          && doc.getType() != null) {
+        builder.putProperties(Property.TYPE_PROPERTY, toGrpcValue(doc.getTypeName()));
+      }
+    }
+
+    // If this is an Edge and @out/@in are not already in properties, add them
+    if (result.isElement() && result.getElement().get() instanceof Edge edge) {
+      if (!builder.getPropertiesMap().containsKey("@out")) {
+        builder.putProperties("@out", toGrpcValue(edge.getOut().getIdentity()));
+      }
+      if (!builder.getPropertiesMap().containsKey("@in")) {
+        builder.putProperties("@in", toGrpcValue(edge.getIn().getIdentity()));
+      }
+    }
+
+    LogManager.instance().log(this, Level.WARNING, "ENC-RES DONE rid=%s type=%s props=%s",
+        builder.getRid(), builder.getType(), builder.getPropertiesCount());
+
+
+    return builder.build();
+  }
+
   private GrpcRecord convertToGrpcRecord(Record dbRecord, Database db) {
 
     GrpcRecord.Builder builder = GrpcRecord.newBuilder().setRid(dbRecord.getIdentity().toString());
@@ -2374,7 +2430,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
     }
 
-    LogManager.instance().log(this, Level.FINE, "ENC-REC DONE rid=%s type=%s props=%s", builder.getRid(), builder.getType(),
+    LogManager.instance().log(this, Level.WARNING, "ENC-REC DONE rid=%s type=%s props=%s", builder.getRid(), builder.getType(),
         builder.getPropertiesCount());
 
     return builder.build();
@@ -2884,7 +2940,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     // Running counter for MAP/JSON builds:
     final    AtomicInteger used      = new AtomicInteger(0);
-    volatile boolean                                   truncated = false;
+    volatile boolean       truncated = false;
 
     ProjectionConfig(boolean include, ProjectionEncoding enc, int softLimitBytes) {
       this.include = include;

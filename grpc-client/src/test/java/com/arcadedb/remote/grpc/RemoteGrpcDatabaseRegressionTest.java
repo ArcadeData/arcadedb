@@ -18,8 +18,10 @@
  */
 package com.arcadedb.remote.grpc;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.grpc.InsertOptions;
 import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
 import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
@@ -27,12 +29,16 @@ import com.arcadedb.server.grpc.InsertSummary;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -51,18 +57,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * own data.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-@Disabled
-class RemoteGrpcDatabaseRegressionTest {
+class RemoteGrpcDatabaseRegressionTest extends BaseGraphServerTest {
 
   // -------- Config (env overrides supported) --------
-
-  static final String DB_NAME   = System.getenv().getOrDefault("ARCADE_DB", "test");
-  static final String GRPC_HOST = System.getenv().getOrDefault("ARCADE_GRPC_HOST", "127.0.0.1");
-  static final int    GRPC_PORT = Integer.parseInt(System.getenv().getOrDefault("ARCADE_GRPC_PORT", "50051"));
-  static final String HTTP_HOST = System.getenv().getOrDefault("ARCADE_HTTP_HOST", "127.0.0.1");
-  static final int    HTTP_PORT = Integer.parseInt(System.getenv().getOrDefault("ARCADE_HTTP_PORT", "2480"));
-  static final String USER      = System.getenv().getOrDefault("ARCADE_USER", "root");
-  static final String PASS      = System.getenv().getOrDefault("ARCADE_PASS", "oY9uU2uJ8nD8iY7t");
 
   // Test type & props
   static final String TYPE = "RG_Feedback";
@@ -70,23 +67,30 @@ class RemoteGrpcDatabaseRegressionTest {
   private RemoteGrpcServer   grpcServer;
   private RemoteGrpcDatabase grpc;
 
+  @Override
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
+    GlobalConfiguration.SERVER_PLUGINS.setValue(
+        "GRPC:com.arcadedb.server.grpc.GrpcServerPlugin");
+  }
+
+  @AfterEach
+  @Override
+  public void endTest() {
+    GlobalConfiguration.SERVER_PLUGINS.setValue("");
+    super.endTest();
+  }
+
   @BeforeAll
-  @Disabled
   void ensureDatabaseExists() {
 
-    this.grpcServer = new RemoteGrpcServer(GRPC_HOST, GRPC_PORT, USER, PASS, true, List.of());
+    grpcServer = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
-    // Prefer using the gRPC admin helper if available (same package).
-    if (!grpcServer.existsDatabase(DB_NAME)) {
-      grpcServer.createDatabase(DB_NAME);
-    }
   }
 
   @BeforeEach
-  @Disabled
   void open() {
-
-    grpc = new RemoteGrpcDatabase(this.grpcServer, GRPC_HOST, GRPC_PORT, HTTP_PORT, DB_NAME, USER, PASS);
+    grpc = new RemoteGrpcDatabase(this.grpcServer, "localhost", 50051, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Create isolated schema for these tests (id unique, name string, n integer)
     grpc.command("sql", "CREATE VERTEX TYPE `" + TYPE + "` IF NOT EXISTS", Map.of());
@@ -99,7 +103,6 @@ class RemoteGrpcDatabaseRegressionTest {
   }
 
   @AfterEach
-  @Disabled
   void close() {
     if (grpc != null) {
       try {
@@ -113,7 +116,7 @@ class RemoteGrpcDatabaseRegressionTest {
   // ---------- Helpers ----------
 
   private InsertOptions defaultInsertOptions(final String targetClass, final List<String> keyCols, final List<String> updateCols) {
-    return InsertOptions.newBuilder().setDatabase(DB_NAME).setTargetClass(targetClass).addAllKeyColumns(keyCols)
+    return InsertOptions.newBuilder().setDatabase(getDatabaseName()).setTargetClass(targetClass).addAllKeyColumns(keyCols)
         .setConflictMode(ConflictMode.CONFLICT_UPDATE) // idempotent: upsert by keys
         .addAllUpdateColumnsOnConflict(updateCols) // LWW on these fields
         .setTransactionMode(TransactionMode.PER_BATCH).setServerBatchSize(256)
@@ -151,7 +154,6 @@ class RemoteGrpcDatabaseRegressionTest {
 
   @Test
   @DisplayName("Bulk insert via gRPC is idempotent by key and supports updates on conflict")
-  @Disabled
   void bulkInsertIdempotentAndUpdate() {
     // Prepare rows
     List<Map<String, Object>> rows = new ArrayList<>();
@@ -190,7 +192,6 @@ class RemoteGrpcDatabaseRegressionTest {
 
   @Test
   @DisplayName("Basic CRUD via SQL commands over gRPC")
-  @Disabled
   void basicCrudViaCommand() {
     // Create
     grpc.command("sql", "INSERT INTO `" + TYPE + "` set id = :id, name = :name, n = :n", Map.of("id", "x1", "name", "one", "n", 1));
@@ -224,7 +225,6 @@ class RemoteGrpcDatabaseRegressionTest {
 
   @Test
   @DisplayName("Transaction: rollback undoes changes; commit persists")
-  @Disabled
   void transactionsRollbackAndCommit() {
     long before = countAll(TYPE);
 
@@ -245,7 +245,6 @@ class RemoteGrpcDatabaseRegressionTest {
 
   @Test
   @DisplayName("schema:types → properties decoded as List<Map<..>>")
-  @Disabled
   void schemaTypesPropertiesDecodedAsMaps() {
 
     try (ResultSet rs = grpc.query("sql", "SELECT FROM schema:types WHERE name = :name", Map.of("name", TYPE))) {
@@ -274,7 +273,6 @@ class RemoteGrpcDatabaseRegressionTest {
 
   @Test
   @DisplayName("Embedded _auditMetadata map round-trips with Long timestamps")
-  @Disabled
   void embeddedAuditMetadataRoundTrip() {
 
     final String recId = "audit1";
@@ -304,6 +302,51 @@ class RemoteGrpcDatabaseRegressionTest {
       assertThat(((Number) md).longValue()).as("lastModifiedDate must be precise long").isEqualTo(1741795459718L);
       assertThat(m.get("createdByUser")).isEqualTo("service-account-empower-platform-admin");
       assertThat(m.get("lastModifiedByUser")).isEqualTo("service-account-empower-platform-admin");
+    }
+  }
+
+  @Test
+  @DisplayName("Issue #2854: gRPC ResultSet should preserve SQL aliases")
+  void sqlAliasesArePreservedInGrpcResultSet() {
+    // Setup: Insert test data with a known value
+    grpc.command("sql", "INSERT INTO `" + TYPE + "` SET id = :id, name = :name, n = :n",
+        Map.of("id", "alias-test-1", "name", "TestAuthor", "n", 42));
+
+    // Test: Query with alias (AS clause)
+    try (ResultSet rs = grpc.query("sql",
+        "SELECT *, @rid, @type, name AS _aliasedName FROM `" + TYPE + "` WHERE id = :id",
+        Map.of("id", "alias-test-1"))) {
+
+      assertThat(rs.hasNext()).as("Query should return at least one result").isTrue();
+      Result r = rs.next();
+
+      // Verify original property is present
+      assertThat((Object) r.getProperty("name"))
+          .as("Original 'name' property should be present")
+          .isEqualTo("TestAuthor");
+
+      // Verify aliased property is present with the correct value
+      assertThat((Object) r.getProperty("_aliasedName"))
+          .as("Aliased property '_aliasedName' should be present and equal to original 'name'")
+          .isEqualTo("TestAuthor");
+
+      // Verify @rid is present (metadata attribute)
+      assertThat((Object) r.getIdentity())
+          .as("@rid property should be present")
+          .isNotNull();
+
+      // Verify @type is present (metadata attribute)
+      assertThat(r.getElement().get().getTypeName())
+          .as("@type property should be present")
+          .isEqualTo(TYPE);
+
+      // Verify the numeric property 'n' is also present
+      assertThat(r.<Number>getProperty("n"))
+          .as("Numeric property 'n' should be present")
+          .isNotNull();
+      assertThat(r.<Number>getProperty("n").intValue())
+          .as("Numeric property 'n' should have correct value")
+          .isEqualTo(42);
     }
   }
 }
