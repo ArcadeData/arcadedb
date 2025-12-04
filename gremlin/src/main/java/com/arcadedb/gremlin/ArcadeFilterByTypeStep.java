@@ -86,8 +86,8 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
         throw new IllegalArgumentException("Type '" + this.typeName + "' is not a vertex type");
 
       iteratorSupplier = () -> {
-        final Iterator<Record> rawIterator = bucketName == null ? 
-            database.iterateType(this.typeName, true) : 
+        final Iterator<Record> rawIterator = bucketName == null ?
+            database.iterateType(this.typeName, true) :
             database.iterateBucket(bucketName);
         return new Iterator<>() {
           @Override
@@ -108,8 +108,8 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
 
 
       iteratorSupplier = () -> {
-        final Iterator<Record> rawIterator = bucketName == null ? 
-            database.iterateType(this.typeName, true) : 
+        final Iterator<Record> rawIterator = bucketName == null ?
+            database.iterateType(this.typeName, true) :
             database.iterateBucket(bucketName);
         return new Iterator<>() {
           @Override
