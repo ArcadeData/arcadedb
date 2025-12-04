@@ -81,25 +81,28 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
       }
     }
 
-    final Iterator<Identifiable> rawIterator = resultSet.iterator();
 
-    iteratorSupplier = () -> new Iterator<>() {
-        @Override
-        public boolean hasNext() {
-            return rawIterator.hasNext();
-        }
+    iteratorSupplier = () -> {
+      final Iterator<Identifiable> rawIterator = resultSet.iterator();
 
-        @Override
-        public E next() {
-            final Record rec = rawIterator.next().getRecord();
-            if (rec instanceof com.arcadedb.graph.Vertex)
-                return (E) new ArcadeVertex(graph, rec.asVertex());
-            else if (rec instanceof com.arcadedb.graph.Edge)
-                return (E) new ArcadeEdge(graph, rec.asEdge());
-            else
-                throw new IllegalStateException("Record of type '" + rec.getClass() + "' is not a graph element");
-        }
-    };
+      return new Iterator<>() {
+            @Override
+            public boolean hasNext() {
+                return rawIterator.hasNext();
+            }
+
+            @Override
+            public E next() {
+                final Record rec = rawIterator.next().getRecord();
+                if (rec instanceof com.arcadedb.graph.Vertex)
+                    return (E) new ArcadeVertex(graph, rec.asVertex());
+                else if (rec instanceof com.arcadedb.graph.Edge)
+                    return (E) new ArcadeEdge(graph, rec.asEdge());
+                else
+                    throw new IllegalStateException("Record of type '" + rec.getClass() + "' is not a graph element");
+            }
+        };
+      };
   }
 
   public String toString() {
