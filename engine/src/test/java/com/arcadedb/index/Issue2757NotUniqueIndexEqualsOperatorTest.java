@@ -20,8 +20,6 @@ package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.index.Index;
-import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -171,13 +169,10 @@ class Issue2757NotUniqueIndexEqualsOperatorTest extends TestHelper {
         .until(() -> {
           try {
             database.transaction(() -> {
-              // Try to query to see if index is usable
-              final Index[] indexes = database.getSchema().getIndexes();
-              for (final Index index : indexes) {
-                if (index instanceof TypeIndex)
-                  continue;
-                // Just verify the index exists and is accessible
-                assertThat(index).isNotNull();
+              // Try to execute a query that uses the index. If it throws an exception,
+              // it means the index is not ready yet (e.g. compacting).
+              try (ResultSet rs = database.query("sql", "SELECT FROM " + TYPE_NAME + " WHERE title = ?", TEST_TITLES[0])) {
+                rs.hasNext(); // Force execution
               }
             });
             return true;
