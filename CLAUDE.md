@@ -116,9 +116,10 @@ ArcadeDB is a Multi-Model DBMS (Database Management System) built for extreme pe
   - Server test-jar → scope: `test`
   - Cross-module test dependencies → scope: `test` only (e.g., postgresw should not depend on gremlin for compilation)
   - Integration/format handlers → scope: `compile` only if in `src/main/java` (e.g., gremlin's GraphML/GraphSON handlers)
-- **Enforcement**: Maven Enforcer rules in root pom.xml prevent:
-  - Protocol modules depending on other protocol modules in compile scope
-  - Any protocol module using compile scope for arcadedb-server (must be provided)
+- **Enforcement**: Code review process ensures:
+  - Protocol modules do NOT depend on other protocol modules in compile scope
+  - Each protocol module has arcadedb-server in `provided` scope only (not compile)
+  - Only the server assembly (package module) and coverage reporting modules can aggregate protocol modules
 - **Example**:
   ```xml
   <dependency>

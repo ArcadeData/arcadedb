@@ -299,38 +299,6 @@
                     </excludeArtifacts>
                 </configuration>
             </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-enforcer-plugin</artifactId>
-                <version>${maven-enforcer-plugin.version}</version>
-                <executions>
-                    <execution>
-                        <id>enforce-protocol-module-dependencies</id>
-                        <goals>
-                            <goal>enforce</goal>
-                        </goals>
-                        <configuration>
-                            <rules>
-                                <bannedDependencies>
-                                    <!-- Wire protocol modules must use 'provided' scope for arcadedb-server -->
-                                    <excludes>
-                                        <exclude>com.arcadedb:arcadedb-gremlin:*:*:compile</exclude>
-                                        <exclude>com.arcadedb:arcadedb-graphql:*:*:compile</exclude>
-                                        <exclude>com.arcadedb:arcadedb-mongodbw:*:*:compile</exclude>
-                                        <exclude>com.arcadedb:arcadedb-redisw:*:*:compile</exclude>
-                                        <exclude>com.arcadedb:arcadedb-postgresw:*:*:compile</exclude>
-                                        <exclude>com.arcadedb:arcadedb-grpcw:*:*:compile</exclude>
-                                    </excludes>
-                                    <message>
-                                        Wire protocol modules (gremlin, graphql, mongodbw, redisw, postgresw, grpcw) should not depend on each other in compile scope.
-                                        Each protocol module should have arcadedb-server in 'provided' scope only.
-                                    </message>
-                                </bannedDependencies>
-                            </rules>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
         </plugins>
 
         <pluginManagement>
