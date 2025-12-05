@@ -30,12 +30,14 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
 import java.time.temporal.*;
+import java.util.concurrent.TimeUnit;
 
 import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -62,9 +64,17 @@ class RemoteDateIT {
     ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
     arcadeDBServer.start();
 
-    // Create and configure the database through the server
-    Database database = arcadeDBServer.getOrCreateDatabase("remotedate");
+    // Wait for server to be fully started and ready
+    Awaitility.await()
+        .atMost(30, TimeUnit.SECONDS)
+        .pollInterval(100, TimeUnit.MILLISECONDS)
+        .until(() -> arcadeDBServer.isStarted() && arcadeDBServer.getHttpServer() != null);
+
+    RemoteDatabase remote = null;
     try {
+      // Create and configure the database through the server
+      Database database = arcadeDBServer.getOrCreateDatabase("remotedate");
+
       // Configure datetime settings
       database.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
       database.command("sql", "alter database `arcadedb.dateTimeFormat` \"yyyy-MM-dd'T'HH:mm:ss.SSSSSS\"");
@@ -90,8 +100,11 @@ class RemoteDateIT {
 
       database.commit();
 
+      // Ensure HTTP server is ready before creating remote connection
+      final int httpPort = arcadeDBServer.getHttpServer().getPort();
+
       // Now the remote connection will work because the database has proper security setup
-      final RemoteDatabase remote = new RemoteDatabase("localhost", 2480, "remotedate", "root", DEFAULT_PASSWORD_FOR_TESTS);
+      remote = new RemoteDatabase("localhost", httpPort, "remotedate", "root", DEFAULT_PASSWORD_FOR_TESTS);
 
       try (ResultSet resultSet = remote.query("sql", "select from Order")) {
         Result result = resultSet.next();
@@ -99,7 +112,19 @@ class RemoteDateIT {
       }
 
     } finally {
-      arcadeDBServer.stop();
+      // Close remote connection first
+      if (remote != null) {
+        try {
+          remote.close();
+        } catch (Exception e) {
+          // Ignore close errors
+        }
+      }
+
+      // Then stop the server
+      if (arcadeDBServer != null) {
+        arcadeDBServer.stop();
+      }
     }
   }
 
