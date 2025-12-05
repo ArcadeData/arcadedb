@@ -33,6 +33,10 @@ import com.arcadedb.utility.ServerPathUtils;
  */
 @Deprecated(forRemoval = true, since = "25.11.1")
 public class IntegrationUtils {
+  private IntegrationUtils() {
+    // Utility class
+  }
+
   /**
    * Sets the root path for the server configuration.
    *

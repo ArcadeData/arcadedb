@@ -32,6 +32,10 @@ import java.io.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ServerPathUtils {
+  private ServerPathUtils() {
+    // Utility class
+  }
+
   /**
    * Sets the root path for the server configuration.
    * If not configured, it will auto-detect based on the existence of config directory.
