@@ -29,8 +29,8 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseOperationException;
-import com.arcadedb.integration.misc.IntegrationUtils;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.ServerPathUtils;
 import com.arcadedb.network.binary.ChannelBinary;
 import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
@@ -102,7 +102,7 @@ public class ArcadeDBServer {
 
   public ArcadeDBServer() {
     this.configuration = new ContextConfiguration();
-    serverRootPath = IntegrationUtils.setRootPath(configuration);
+    serverRootPath = ServerPathUtils.setRootPath(configuration);
     loadConfiguration();
     this.serverName = configuration.getValueAsString(GlobalConfiguration.SERVER_NAME);
     this.replicationLifecycleEventsEnabled = configuration.getValueAsBoolean(GlobalConfiguration.TEST);
@@ -111,7 +111,7 @@ public class ArcadeDBServer {
 
   public ArcadeDBServer(final ContextConfiguration configuration) {
     this.configuration = configuration;
-    serverRootPath = IntegrationUtils.setRootPath(configuration);
+    serverRootPath = ServerPathUtils.setRootPath(configuration);
     this.serverName = configuration.getValueAsString(GlobalConfiguration.SERVER_NAME);
     this.replicationLifecycleEventsEnabled = configuration.getValueAsBoolean(GlobalConfiguration.TEST);
     init();

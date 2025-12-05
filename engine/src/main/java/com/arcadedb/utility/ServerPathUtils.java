@@ -16,36 +16,39 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.integration.misc;
+package com.arcadedb.utility;
 
 import com.arcadedb.ContextConfiguration;
-import com.arcadedb.utility.ServerPathUtils;
+import com.arcadedb.GlobalConfiguration;
+
+import java.io.*;
 
 /**
- * Deprecated utility class for common packages.
- * Use ServerPathUtils from engine module instead.
+ * Utility class for server path configuration.
  *
- * This class is kept for backward compatibility only.
- * New code should use ServerPathUtils directly.
+ * Originally from IntegrationUtils in integration module.
+ * Moved to engine module to avoid server → integration dependency.
  *
- * @deprecated Use {@link ServerPathUtils#setRootPath(ContextConfiguration)} instead
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-@Deprecated(forRemoval = true, since = "25.11.1")
-public class IntegrationUtils {
-  private IntegrationUtils() {
+public class ServerPathUtils {
+  private ServerPathUtils() {
     // Utility class
   }
 
   /**
    * Sets the root path for the server configuration.
+   * If not configured, it will auto-detect based on the existence of config directory.
    *
-   * @deprecated Use {@link ServerPathUtils#setRootPath(ContextConfiguration)} instead
    * @param configuration The server configuration context
    * @return The server root path (usually "." or "..")
    */
-  @Deprecated(forRemoval = true, since = "25.11.1")
   public static String setRootPath(final ContextConfiguration configuration) {
-    return ServerPathUtils.setRootPath(configuration);
+    String serverRootPath = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH);
+    if (serverRootPath == null) {
+      serverRootPath = new File("config").exists() ? "." : new File("../config").exists() ? ".." : ".";
+      configuration.setValue(GlobalConfiguration.SERVER_ROOT_PATH, serverRootPath);
+    }
+    return serverRootPath;
   }
 }
