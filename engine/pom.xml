@@ -44,6 +44,7 @@
         <jvector.version>4.0.0-rc.6</jvector.version>
         <spatial4j.version>0.8</spatial4j.version>
         <jts-core.version>1.20.0</jts-core.version>
+        <buildnumber-maven-plugin.version>3.2.1</buildnumber-maven-plugin.version>
     </properties>
 
     <build>
@@ -57,7 +58,7 @@
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>buildnumber-maven-plugin</artifactId>
-                <version>3.2.1</version>
+                <version>${buildnumber-maven-plugin.version}</version>
                 <executions>
                     <execution>
                         <phase>validate</phase>
