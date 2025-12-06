@@ -37,8 +37,7 @@ import java.util.concurrent.*;
 public class JavaQueryEngine implements QueryEngine {
   public static final String                       ENGINE_NAME       = "java";
   private final       long                         timeout;
-  private final       ThreadPoolExecutor           userCodeExecutor;
-  private final       ArrayBlockingQueue<Runnable> userCodeExecutorQueue;
+  private final       ExecutorService              userCodeExecutor;
   private final       Set<String>                  registeredClasses = new HashSet<>();
   private final       Set<String>                  registeredMethods = new HashSet<>();
 
@@ -94,15 +93,25 @@ public class JavaQueryEngine implements QueryEngine {
   }
 
   protected JavaQueryEngine(final DatabaseInternal database) {
-    this.userCodeExecutorQueue = new ArrayBlockingQueue<>(1_000);
-    this.userCodeExecutor = new ThreadPoolExecutor(8, 8, 30, TimeUnit.SECONDS, userCodeExecutorQueue, new ThreadPoolExecutor.CallerRunsPolicy());
     this.timeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT);
+    this.userCodeExecutor = createExecutor(database);
+  }
+
+  private static ExecutorService createExecutor(final DatabaseInternal database) {
+    final boolean useVirtualThreads = database.getConfiguration()
+        .getValueAsBoolean(GlobalConfiguration.QUERY_ENGINES_USE_VIRTUAL_THREADS);
+
+    if (useVirtualThreads) {
+      return Executors.newVirtualThreadPerTaskExecutor();
+    } else {
+      final ArrayBlockingQueue<Runnable> queue = new ArrayBlockingQueue<>(1_000);
+      return new ThreadPoolExecutor(8, 8, 30, TimeUnit.SECONDS, queue, new ThreadPoolExecutor.CallerRunsPolicy());
+    }
   }
 
   @Override
   public void close() {
     userCodeExecutor.shutdown();
-    userCodeExecutorQueue.clear();
   }
 
   @Override
