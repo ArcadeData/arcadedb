@@ -38,8 +38,8 @@ import java.nio.*;
  * Example:
  * - Logical addresses: 0, 1, 2, ..., 65527, 65528, 65529, ... (contiguous, no gaps)
  * - Physical mapping:
- *   - Logical 0-65527 → Page 0 (physical bytes 8-65535, after 8-byte header)
- *   - Logical 65528-131055 → Page 1 (physical bytes 65544-131071, after header)
+ * - Logical 0-65527 → Page 0 (physical bytes 8-65535, after 8-byte header)
+ * - Logical 65528-131055 → Page 1 (physical bytes 65544-131071, after header)
  * <p>
  * Reads that span page boundaries are automatically split:
  * - readInt(position=65526) reads 2 bytes from page 0, 2 bytes from page 1
@@ -80,12 +80,13 @@ public class ContiguousPageReader implements RandomAccessReader {
 
   @Override
   public void seek(final long position) throws IOException {
-    if (position < 0 || position > totalBytes) {
+    if (position < 0 || position > totalBytes)
       throw new IOException("Invalid seek position: " + position + " (length=" + totalBytes + ")");
-    }
 
-    // Simply set logical position (no gaps, truly contiguous)
     this.logicalPosition = position;
+    if (logicalPosition < 292)
+      // PATCH TO OVERCOME TO A BUG IN JVECTOR THAT READS 292 BYTES AT START
+      logicalPosition += 292;
   }
 
   @Override

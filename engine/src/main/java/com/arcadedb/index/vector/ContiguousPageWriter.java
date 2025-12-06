@@ -88,8 +88,6 @@ public class ContiguousPageWriter implements IndexWriter {
 
   @Override
   public void writeInt(final int value) throws IOException {
-    //LogManager.instance().log(this, SEVERE, "Writing int value %d at logical position %d", value, logicalPosition);
-
     byteBuffer.rewind();
     byteBuffer.putInt(value);
     write(buffer, 0, Binary.INT_SERIALIZED_SIZE);
@@ -111,10 +109,9 @@ public class ContiguousPageWriter implements IndexWriter {
 
   @Override
   public void writeFloat(final float value) throws IOException {
-// @TODO AVOID WRITING FLOATS FOR NOW, BYPASSING JVECTOR WRITING OF VECTORS
-//    byteBuffer.rewind();
-//    byteBuffer.putFloat(value);
-//    write(buffer, 0, Binary.FLOAT_SERIALIZED_SIZE);
+    byteBuffer.rewind();
+    byteBuffer.putFloat(value);
+    write(buffer, 0, Binary.FLOAT_SERIALIZED_SIZE);
   }
 
   @Override
