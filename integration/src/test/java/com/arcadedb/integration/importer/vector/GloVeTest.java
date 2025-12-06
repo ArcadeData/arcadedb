@@ -31,13 +31,22 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.Pair;
 import org.assertj.core.api.Assertions;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.io.File;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
-import static java.util.concurrent.TimeUnit.*;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 /**
  * Example application that downloads the english fast-text word vectors, inserts them into an hnsw index and lets
@@ -45,7 +54,7 @@ import static java.util.concurrent.TimeUnit.*;
  */
 public class GloVeTest {
   private final static int     PARALLEL_LEVEL = 8;
-  private static final String  FILE_NAME      = "/Users/luca/Downloads/glove.twitter.27B.100d.txt";
+  private static final String  FILE_NAME      = "/Users/frank/Downloads/glove.twitter.27B/glove.twitter.27B.100d.txt";
   private              boolean USE_SQL        = false;
 
   public static void main(String[] args) {
