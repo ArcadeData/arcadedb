@@ -53,6 +53,7 @@ public class ArcadePageReaderSupplier implements ReaderSupplier {
   public RandomAccessReader get() throws IOException {
     // Create a new contiguous reader for each request (JVector uses readers per-thread)
     // ContiguousPageReader provides gap-free logical address space over physical pages
+    // TODO: REUSE readers if possible?
     return new ContiguousPageReader(database, fileId, pageSize, totalBytes);
   }
 

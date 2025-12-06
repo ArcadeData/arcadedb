@@ -52,22 +52,22 @@ import java.util.logging.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class LSMVectorIndexGraphFile extends PaginatedComponent {
-  public static final  String         FILE_EXT        = "vecgraph";
-  public static final  int            CURRENT_VERSION = 0;
-  private static final VectorFloat<?> EMPTY_VECTOR    = JVectorUtils.createVectorFloat(100);
+  public static final String FILE_EXT        = "vecgraph";
+  public static final int    CURRENT_VERSION = 0;
 
   // Graph data starts at page 0 (no metadata page needed)
   // totalGraphBytes is computed from file size - JVector format is self-describing
 
-  private LSMVectorIndex mainIndex;
+  private              LSMVectorIndex mainIndex;
+  private static final VectorFloat<?> EMPTY_VECTOR = JVectorUtils.createVectorFloat(100);
 
   /**
    * Factory handler for loading graph files from disk during schema initialization.
    */
   public static class PaginatedComponentFactoryHandler implements ComponentFactory.PaginatedComponentFactoryHandler {
     @Override
-    public Component createOnLoad(final DatabaseInternal database, final String name, final String filePath,
-        final int id, final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
+    public Component createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id,
+        final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
       return new LSMVectorIndexGraphFile(database, name, filePath, id, mode, pageSize, version);
     }
   }
@@ -125,15 +125,13 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
    * - Caller is responsible for committing the transaction
    * - Graph data starts at page 0 (no metadata page needed - JVector format is self-describing)
    */
-  public void writeGraph(final io.github.jbellis.jvector.graph.ImmutableGraphIndex graph,
-      final RandomAccessVectorValues vectors) {
+  public void writeGraph(final io.github.jbellis.jvector.graph.ImmutableGraphIndex graph, final RandomAccessVectorValues vectors) {
 
     if (!database.isTransactionActive())
       throw new IllegalStateException("writeGraph() must be called within an active transaction");
 
     try {
-      LogManager.instance().log(this, Level.INFO,
-          "Starting graph write (sequential): %d nodes", graph.getIdUpperBound());
+      LogManager.instance().log(this, Level.INFO, "Starting graph write (sequential): %d nodes", graph.getIdUpperBound());
 
       // Create contiguous writer that provides gap-free logical address space over physical pages
       // This is critical: JVector assumes contiguous file layout with no gaps
@@ -141,22 +139,16 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
 
       // Write graph topology WITHOUT inline vectors
       // Vectors will be read on-demand from ArcadeDB documents (no duplication)
-      // NOTE: JVector requires a vector feature; use SeparatedVectors since vectors are stored externally
-      try (final OnDiskSequentialGraphIndexWriter indexWriter = new OnDiskSequentialGraphIndexWriter.Builder(graph, writer)
-          .with(new InlineVectors(vectors.dimension()))
-          //.with(new SeparatedVectors(vectors.dimension(), 0))
-          .build()) {
+      // Use SeparatedVectors to tell JVector that vectors are NOT in the graph file
+      // This prevents JVector from trying to read vectors from the file during search
+      try (final OnDiskSequentialGraphIndexWriter indexWriter = new OnDiskSequentialGraphIndexWriter.Builder(graph, writer).with(
+          new InlineVectors(vectors.dimension())).build()) {
         // Write header with startOffset 0 (graph data starts at beginning of file)
         indexWriter.writeHeader(graph.getView(), 0L);
 
-        // Write graph topology only (no vectors written to file)
-        // Workaround: JVector expects a state supplier for SEPARATED_VECTORS feature
-        // Return InlineVectors.State(null) to indicate no vector data (vectors accessed externally)
-        indexWriter.write(Map.of(
-            FeatureId.INLINE_VECTORS,
-            (IntFunction<io.github.jbellis.jvector.graph.disk.feature.Feature.State>) ordinal ->
-                new InlineVectors.State(EMPTY_VECTOR)
-        ));
+        indexWriter.write(Map.of(FeatureId.INLINE_VECTORS,
+            (IntFunction<io.github.jbellis.jvector.graph.disk.feature.Feature.State>) ordinal -> new InlineVectors.State(
+                EMPTY_VECTOR)));
       }
 
       writer.close();
@@ -168,8 +160,7 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
           graph.getIdUpperBound(), totalBytes, getTotalPages());
 
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE,
-          "Error writing graph to pages: %s", e.getMessage());
+      LogManager.instance().log(this, Level.SEVERE, "Error writing graph to pages: %s", e.getMessage());
       e.printStackTrace();
       throw new IndexException("Error writing graph to pages", e);
     }
@@ -185,15 +176,14 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
 
     try {
       // Create reader supplier for lazy-loading
-      final ArcadePageReaderSupplier supplier =
-          new ArcadePageReaderSupplier(database, getFileId(), getPageSize(), totalBytes);
+      final ArcadePageReaderSupplier supplier = new ArcadePageReaderSupplier(database, getFileId(), getPageSize(), totalBytes);
 
       // Load graph using JVector's OnDiskGraphIndex
       final OnDiskGraphIndex graph = OnDiskGraphIndex.load(supplier);
 
-      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.INFO,
-          "Loaded graph from disk: %d nodes, %d bytes (%d pages)",
-          graph.getIdUpperBound(), totalBytes, getTotalPages());
+      com.arcadedb.log.LogManager.instance()
+          .log(this, java.util.logging.Level.INFO, "Loaded graph from disk: %d nodes, %d bytes (%d pages)", graph.getIdUpperBound(),
+              totalBytes, getTotalPages());
 
       return graph;
 

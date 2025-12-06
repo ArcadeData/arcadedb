@@ -45,7 +45,7 @@ import static java.util.concurrent.TimeUnit.*;
  */
 public class GloVeTest {
   private final static int     PARALLEL_LEVEL = 8;
-  private static final String  FILE_NAME      = "/Users/luca/Downloads/test.glove.twitter.27B.100d.txt";
+  private static final String  FILE_NAME      = "/Users/luca/Downloads/glove.twitter.27B.100d.txt";
   private              boolean USE_SQL        = false;
 
   public static void main(String[] args) {
