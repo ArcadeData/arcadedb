@@ -59,13 +59,12 @@ import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * This class has been copied under Console project to avoid complex dependencies.
+ * Base class for graph database multi-server and HA testing with graph schema population and verification utilities.
  */
 public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   protected static final String VERTEX1_TYPE_NAME = "V1";
@@ -278,9 +277,10 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       }
 
     final ByteArrayOutputStream os = new ByteArrayOutputStream();
-    final PrintWriter output = new PrintWriter(new BufferedOutputStream(os));
-    new Exception().printStackTrace(output);
-    output.flush();
+    try (final PrintWriter output = new PrintWriter(new BufferedOutputStream(os))) {
+      new Exception().printStackTrace(output);
+      output.flush();
+    }
     final String out = os.toString();
     assertThat(out.contains("ArcadeDB")).as("Some thread is still up & running: \n" + out).isFalse();
   }
@@ -507,7 +507,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
         try {
           callback.call();
         } catch (final Exception e) {
-          e.printStackTrace();
+          LogManager.instance().log(BaseGraphServerTest.this, Level.SEVERE, "Error in asynchronous callback", e);
         }
       }
     }, 1);
