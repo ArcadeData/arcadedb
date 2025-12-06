@@ -108,6 +108,34 @@ ArcadeDB is a Multi-Model DBMS (Database Management System) built for extreme pe
 - Security integration required for new endpoints
 - WebSocket support for real-time features
 
+#### Wire Protocol Module Dependencies
+- **Standard**: All wire protocol modules (gremlin, graphql, mongodbw, redisw, postgresw, grpcw) must use `provided` scope for `arcadedb-server` dependency
+- **Rationale**: Server remains the assembly point; prevents dependency duplication in distributions
+- **Pattern**:
+  - Main server dependency → scope: `provided`
+  - Server test-jar → scope: `test`
+  - Cross-module test dependencies → scope: `test` only (e.g., postgresw should not depend on gremlin for compilation)
+  - Integration/format handlers → scope: `compile` only if in `src/main/java` (e.g., gremlin's GraphML/GraphSON handlers)
+- **Enforcement**: Code review process ensures:
+  - Protocol modules do NOT depend on other protocol modules in compile scope
+  - Each protocol module has arcadedb-server in `provided` scope only (not compile)
+  - Only the server assembly (package module) and coverage reporting modules can aggregate protocol modules
+- **Example**:
+  ```xml
+  <dependency>
+      <groupId>com.arcadedb</groupId>
+      <artifactId>arcadedb-server</artifactId>
+      <scope>provided</scope>
+  </dependency>
+  <dependency>
+      <groupId>com.arcadedb</groupId>
+      <artifactId>arcadedb-server</artifactId>
+      <version>${project.parent.version}</version>
+      <scope>test</scope>
+      <type>test-jar</type>
+  </dependency>
+  ```
+
 ## Important Notes
 
 - **Pre-commit hooks**: This project uses pre-commit for code quality checks
