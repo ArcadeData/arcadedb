@@ -175,10 +175,10 @@ public class ArcadeDBException extends RuntimeException {
 
   @Override
   public String toString() {
-    return String.format("%s [%s-%d]: %s", 
-        getClass().getSimpleName(), 
+    return String.format("%s [%s-%d]: %s",
+        getClass().getSimpleName(),
         errorCode.getCategory(),
-        errorCode.getCode(), 
+        errorCode.getCode(),
         getMessage());
   }
 }

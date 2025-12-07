@@ -42,14 +42,14 @@ public enum ErrorCode {
   CONFIGURATION_ERROR(1010, "Configuration error"),
   SCHEMA_ERROR(1011, "Schema error"),
   VALIDATION_ERROR(1012, "Validation error"),
-  
+
   // Transaction errors (2xxx)
   TRANSACTION_FAILED(2001, "Transaction failed"),
   TRANSACTION_TIMEOUT(2002, "Transaction timeout"),
   CONCURRENT_MODIFICATION(2003, "Concurrent modification detected"),
   NEED_RETRY(2004, "Operation needs retry"),
   LOCK_TIMEOUT(2005, "Lock acquisition timeout"),
-  
+
   // Query errors (3xxx)
   QUERY_PARSING_ERROR(3001, "Query parsing error"),
   SQL_PARSING_ERROR(3002, "SQL parsing error"),
@@ -58,13 +58,13 @@ public enum ErrorCode {
   FUNCTION_EXECUTION_ERROR(3005, "Function execution error"),
   GRAPH_ALGORITHM_ERROR(3006, "Graph algorithm error"),
   INDEX_ERROR(3007, "Index error"),
-  
+
   // Security errors (4xxx)
   AUTHENTICATION_FAILED(4001, "Authentication failed"),
   AUTHORIZATION_FAILED(4002, "Authorization failed"),
   SECURITY_ERROR(4003, "Security error"),
   ENCRYPTION_ERROR(4004, "Encryption error"),
-  
+
   // I/O errors (5xxx)
   IO_ERROR(5001, "I/O error"),
   SERIALIZATION_ERROR(5002, "Serialization error"),
@@ -74,7 +74,7 @@ public enum ErrorCode {
   RESTORE_ERROR(5006, "Restore error"),
   IMPORT_ERROR(5007, "Import error"),
   EXPORT_ERROR(5008, "Export error"),
-  
+
   // Network errors (6xxx)
   NETWORK_ERROR(6001, "Network error"),
   NETWORK_PROTOCOL_ERROR(6002, "Network protocol error"),
@@ -84,7 +84,7 @@ public enum ErrorCode {
   REPLICATION_LOG_ERROR(6006, "Replication log error"),
   QUORUM_NOT_REACHED(6007, "Quorum not reached"),
   SERVER_NOT_LEADER(6008, "Server is not the leader"),
-  
+
   // Generic/Unknown errors (9xxx)
   UNKNOWN_ERROR(9999, "Unknown error");
 

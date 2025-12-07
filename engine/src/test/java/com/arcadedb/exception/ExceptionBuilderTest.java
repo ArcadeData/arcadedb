@@ -33,7 +33,7 @@ class ExceptionBuilderTest {
         .errorCode(ErrorCode.DATABASE_NOT_FOUND)
         .message("Database not found")
         .build();
-    
+
     assertEquals(ErrorCode.DATABASE_NOT_FOUND, ex.getErrorCode());
     assertEquals("Database not found", ex.getMessage());
   }
@@ -44,7 +44,7 @@ class ExceptionBuilderTest {
         .errorCode(ErrorCode.DATABASE_NOT_FOUND)
         .message("Database '%s' not found at path '%s'", "testdb", "/data")
         .build();
-    
+
     assertEquals("Database 'testdb' not found at path '/data'", ex.getMessage());
   }
 
@@ -57,7 +57,7 @@ class ExceptionBuilderTest {
         .addContext("path", "/data/databases")
         .addContext("retries", 3)
         .build();
-    
+
     assertEquals(3, ex.getContext().size());
     assertEquals("testdb", ex.getContext().get("databaseName"));
     assertEquals("/data/databases", ex.getContext().get("path"));
@@ -72,7 +72,7 @@ class ExceptionBuilderTest {
         .message("Network error")
         .cause(cause)
         .build();
-    
+
     assertEquals(ErrorCode.NETWORK_ERROR, ex.getErrorCode());
     assertEquals("Network error", ex.getMessage());
     assertEquals(cause, ex.getCause());
@@ -83,7 +83,7 @@ class ExceptionBuilderTest {
     final ArcadeDBException ex = ExceptionBuilder.create()
         .errorCode(ErrorCode.DATABASE_NOT_FOUND)
         .build();
-    
+
     assertEquals("Database not found", ex.getMessage());
   }
 
@@ -92,7 +92,7 @@ class ExceptionBuilderTest {
     final ArcadeDBException ex = ExceptionBuilder.create()
         .message("Some error")
         .build();
-    
+
     assertEquals(ErrorCode.UNKNOWN_ERROR, ex.getErrorCode());
   }
 
@@ -101,7 +101,7 @@ class ExceptionBuilderTest {
     final ArcadeDBException ex = ExceptionBuilder.create(ErrorCode.TRANSACTION_FAILED)
         .message("Transaction failed")
         .build();
-    
+
     assertEquals(ErrorCode.TRANSACTION_FAILED, ex.getErrorCode());
   }
 
@@ -124,7 +124,7 @@ class ExceptionBuilderTest {
         .addContext("line", 1)
         .addContext("column", 15)
         .build();
-    
+
     assertEquals(ErrorCode.QUERY_PARSING_ERROR, ex.getErrorCode());
     assertEquals(3, ex.getContext().size());
   }
@@ -135,7 +135,7 @@ class ExceptionBuilderTest {
         .errorCode(null)
         .message("Test")
         .build();
-    
+
     assertEquals(ErrorCode.UNKNOWN_ERROR, ex.getErrorCode());
   }
 
@@ -145,7 +145,7 @@ class ExceptionBuilderTest {
         .errorCode(ErrorCode.DATABASE_NOT_FOUND)
         .addContext(null, "value")
         .build();
-    
+
     assertEquals(0, ex.getContext().size());
   }
 
@@ -161,12 +161,12 @@ class ExceptionBuilderTest {
         .addContext("attempt", 5)
         .addContext("lastError", "Connection timeout")
         .build();
-    
+
     assertEquals(ErrorCode.REPLICATION_ERROR, ex.getErrorCode());
     assertTrue(ex.getMessage().contains("maindb"));
     assertEquals(cause, ex.getCause());
     assertEquals(4, ex.getContext().size());
-    
+
     final String json = ex.toJSON();
     assertTrue(json.contains("REPLICATION_ERROR"));
     assertTrue(json.contains("database"));

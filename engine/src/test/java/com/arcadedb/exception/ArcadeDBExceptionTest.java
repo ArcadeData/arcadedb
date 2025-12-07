@@ -60,7 +60,7 @@ class ArcadeDBExceptionTest {
     final Map<String, Object> context = new HashMap<>();
     context.put("databaseName", "testdb");
     context.put("path", "/data/databases");
-    
+
     final ArcadeDBException ex = new ArcadeDBException(ErrorCode.DATABASE_NOT_FOUND, "Database not found", context);
     assertEquals(2, ex.getContext().size());
     assertEquals("testdb", ex.getContext().get("databaseName"));
@@ -72,7 +72,7 @@ class ArcadeDBExceptionTest {
     final ArcadeDBException ex = new ArcadeDBException(ErrorCode.DATABASE_NOT_FOUND, "Database not found");
     ex.addContext("databaseName", "testdb");
     ex.addContext("attempt", 3);
-    
+
     assertEquals(2, ex.getContext().size());
     assertEquals("testdb", ex.getContext().get("databaseName"));
     assertEquals(3, ex.getContext().get("attempt"));
@@ -82,7 +82,7 @@ class ArcadeDBExceptionTest {
   void testContextIsImmutable() {
     final ArcadeDBException ex = new ArcadeDBException(ErrorCode.DATABASE_NOT_FOUND, "Database not found");
     final Map<String, Object> context = ex.getContext();
-    
+
     assertThrows(UnsupportedOperationException.class, () -> {
       context.put("key", "value");
     });
@@ -93,7 +93,7 @@ class ArcadeDBExceptionTest {
     final ArcadeDBException ex = new ArcadeDBException(ErrorCode.DATABASE_NOT_FOUND, "Database 'test' not found");
     ex.addContext("databaseName", "test");
     ex.addContext("retries", 3);
-    
+
     final String json = ex.toJSON();
     assertTrue(json.contains("\"errorCode\":1001"));
     assertTrue(json.contains("\"errorName\":\"DATABASE_NOT_FOUND\""));
@@ -107,7 +107,7 @@ class ArcadeDBExceptionTest {
   void testToJSONWithCause() {
     final Exception cause = new RuntimeException("Connection refused");
     final ArcadeDBException ex = new ArcadeDBException(ErrorCode.NETWORK_ERROR, "Network failure", cause);
-    
+
     final String json = ex.toJSON();
     assertTrue(json.contains("\"errorCode\":6001"));
     assertTrue(json.contains("\"cause\":\"Connection refused\""));
@@ -116,7 +116,7 @@ class ArcadeDBExceptionTest {
   @Test
   void testToJSONEscaping() {
     final ArcadeDBException ex = new ArcadeDBException(ErrorCode.QUERY_PARSING_ERROR, "Invalid query: \"SELECT * FROM test\"");
-    
+
     final String json = ex.toJSON();
     assertTrue(json.contains("\\\"SELECT"));
   }
@@ -125,7 +125,7 @@ class ArcadeDBExceptionTest {
   void testToString() {
     final ArcadeDBException ex = new ArcadeDBException(ErrorCode.DATABASE_NOT_FOUND, "Database not found");
     final String str = ex.toString();
-    
+
     assertTrue(str.contains("ArcadeDBException"));
     assertTrue(str.contains("Database"));
     assertTrue(str.contains("1001"));
@@ -136,7 +136,7 @@ class ArcadeDBExceptionTest {
   void testNullSafety() {
     final ArcadeDBException ex = new ArcadeDBException(null, "Test message");
     assertEquals(ErrorCode.UNKNOWN_ERROR, ex.getErrorCode());
-    
+
     ex.addContext(null, "value");
     assertEquals(0, ex.getContext().size());
   }
@@ -146,7 +146,7 @@ class ArcadeDBExceptionTest {
     final ArcadeDBException ex = new ArcadeDBException(ErrorCode.DATABASE_NOT_FOUND, "Test");
     ex.addContext("key1", null);
     ex.addContext("key2", "value");
-    
+
     assertEquals(2, ex.getContext().size());
     assertNull(ex.getContext().get("key1"));
     assertEquals("value", ex.getContext().get("key2"));
@@ -156,7 +156,7 @@ class ArcadeDBExceptionTest {
   void testJSONWithNullContext() {
     final ArcadeDBException ex = new ArcadeDBException(ErrorCode.DATABASE_NOT_FOUND, "Test");
     ex.addContext("nullValue", null);
-    
+
     final String json = ex.toJSON();
     assertTrue(json.contains("\"nullValue\":null"));
   }
@@ -165,7 +165,7 @@ class ArcadeDBExceptionTest {
   void testJSONWithBooleanContext() {
     final ArcadeDBException ex = new ArcadeDBException(ErrorCode.DATABASE_NOT_FOUND, "Test");
     ex.addContext("flag", true);
-    
+
     final String json = ex.toJSON();
     assertTrue(json.contains("\"flag\":true"));
   }
@@ -175,7 +175,7 @@ class ArcadeDBExceptionTest {
     final ArcadeDBException ex = new ArcadeDBException(ErrorCode.DATABASE_NOT_FOUND, "Test");
     ex.addContext("count", 42);
     ex.addContext("ratio", 3.14);
-    
+
     final String json = ex.toJSON();
     assertTrue(json.contains("\"count\":42"));
     assertTrue(json.contains("\"ratio\":3.14"));

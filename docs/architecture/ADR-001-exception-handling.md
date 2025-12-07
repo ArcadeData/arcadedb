@@ -174,7 +174,7 @@ throw new ArcadeDBException(ErrorCode.DATABASE_NOT_FOUND, "Database 'mydb' not f
 #### With Context
 ```java
 ArcadeDBException ex = new ArcadeDBException(
-    ErrorCode.DATABASE_NOT_FOUND, 
+    ErrorCode.DATABASE_NOT_FOUND,
     "Database not found"
 );
 ex.addContext("databaseName", "mydb");

@@ -142,7 +142,7 @@ throw new ArcadeDBException("Database not found");
 ### Pattern 2: With Error Code
 ```java
 throw new ArcadeDBException(
-    ErrorCode.DATABASE_NOT_FOUND, 
+    ErrorCode.DATABASE_NOT_FOUND,
     "Database 'mydb' not found"
 );
 // ErrorCode: DATABASE_NOT_FOUND (1001)

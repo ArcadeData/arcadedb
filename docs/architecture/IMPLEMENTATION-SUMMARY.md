@@ -2,9 +2,9 @@
 
 ## Task: TASK-P1-004
 
-**Priority:** HIGH  
-**Effort:** 2 days  
-**Phase:** Phase 1 - Foundation  
+**Priority:** HIGH
+**Effort:** 2 days
+**Phase:** Phase 1 - Foundation
 **Status:** ✅ COMPLETED
 
 ## Overview
@@ -48,7 +48,7 @@ Successfully designed and implemented a standardized exception hierarchy for Arc
   - Consequences and trade-offs
   - Implementation notes
   - Usage examples
-  
+
 - **exception-hierarchy.md** - Visual hierarchy and reference
   - Visual hierarchy diagram
   - Error code categories table
@@ -264,7 +264,7 @@ throw new ArcadeDBException("Database not found");
 
 // ✅ ENHANCED: Add error code when updating
 throw new ArcadeDBException(
-    ErrorCode.DATABASE_NOT_FOUND, 
+    ErrorCode.DATABASE_NOT_FOUND,
     "Database not found"
 );
 ```

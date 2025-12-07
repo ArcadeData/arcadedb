@@ -23,7 +23,7 @@ import java.util.Map;
 
 /**
  * Builder for creating ArcadeDBException instances with fluent API.
- * 
+ *
  * Example usage:
  * <pre>
  * throw ExceptionBuilder.create()
@@ -143,7 +143,7 @@ public class ExceptionBuilder {
     // Ensure errorCode is never null
     final ErrorCode finalErrorCode = errorCode != null ? errorCode : ErrorCode.UNKNOWN_ERROR;
     final String finalMessage = message != null ? message : finalErrorCode.getDescription();
-    
+
     if (cause != null) {
       return new ArcadeDBException(finalErrorCode, finalMessage, cause, context);
     } else {
