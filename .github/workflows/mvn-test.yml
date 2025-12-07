@@ -1,7 +1,19 @@
-name: CI on java 17 - test
+name: Java CI - test
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    # Skip if only Python bindings change
+    paths-ignore:
+      - 'bindings/python/**'
+  push:
+    branches:
+      - main
+    # Skip if only Python bindings change
+    paths-ignore:
+      - 'bindings/python/**'
 
 jobs:
   setup:
@@ -23,11 +35,11 @@ jobs:
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+      - name: Set up JDK 21
+        uses: actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e # v5.1.0
         with:
           distribution: "temurin"
-          java-version: 17
+          java-version: 21
           cache: "maven"
 
       - name: Set up QEMU
@@ -66,11 +78,11 @@ jobs:
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+      - name: Set up JDK 21
+        uses: actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e # v5.1.0
         with:
           distribution: "temurin"
-          java-version: 17
+          java-version: 21
           cache: "maven"
 
       - name: Restore Maven artifacts
@@ -110,11 +122,11 @@ jobs:
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+      - name: Set up JDK 21
+        uses: actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e # v5.1.0
         with:
           distribution: "temurin"
-          java-version: 17
+          java-version: 21
           cache: "maven"
 
       - name: Restore Maven artifacts
@@ -153,11 +165,11 @@ jobs:
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+      - name: Set up JDK 21
+        uses: actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e # v5.1.0
         with:
           distribution: "temurin"
-          java-version: 17
+          java-version: 21
           cache: "maven"
 
       - name: Restore Maven artifacts
@@ -196,11 +208,11 @@ jobs:
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+      - name: Set up JDK 21
+        uses: actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e # v5.1.0
         with:
           distribution: "temurin"
-          java-version: 17
+          java-version: 21
           cache: "maven"
 
       - name: Restore Maven artifacts
@@ -240,11 +252,11 @@ jobs:
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+      - name: Set up JDK 21
+        uses: actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e # v5.1.0
         with:
           distribution: "temurin"
-          java-version: 17
+          java-version: 21
           cache: "maven"
 
       - name: Restore Maven artifacts
