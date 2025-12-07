@@ -814,7 +814,6 @@ public class HnswVectorIndex<TId, TVector, TDistance> extends Component implemen
     json.put("m", m);
     json.put("maxM", maxM);
     json.put("maxM0", maxM0);
-    json.put("levelLambda", levelLambda);
     json.put("ef", ef);
     json.put("efConstruction", efConstruction);
     json.put("levelLambda", levelLambda);
