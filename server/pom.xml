@@ -49,6 +49,23 @@
             </properties>
         </profile>
     </profiles>
+
+    <build>
+        <plugins>
+            <!-- Disable test-jar packaging for server module -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>default-test-jar</id>
+                        <phase>none</phase>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
     <dependencies>
         <dependency>
             <groupId>com.arcadedb</groupId>

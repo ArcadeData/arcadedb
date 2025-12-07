@@ -36,8 +36,8 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.test.BaseGraphServerTest;
+import com.arcadedb.test.TestServerHelper;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -54,7 +54,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
-import static com.arcadedb.server.StaticBaseServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+import static com.arcadedb.test.StaticBaseServerTest.DEFAULT_PASSWORD_FOR_TESTS;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -65,7 +65,7 @@ public class ConsoleAsyncInsertTest {
   static final int    PARALLEL_LEVEL             = 6;
   static final String RECORD_TIME_FORMAT_PATTERN = "yyyyMMdd'_'HHmmss.SSSSSS";
   static final String userName                   = "user";
-  static final String password                   = BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+  static final String password                   = DEFAULT_PASSWORD_FOR_TESTS;
 
   AtomicInteger autoIncrementOrderId = new AtomicInteger(0);
 

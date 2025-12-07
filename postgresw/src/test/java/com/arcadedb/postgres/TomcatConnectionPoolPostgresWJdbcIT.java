@@ -19,7 +19,7 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.test.BaseGraphServerTest;
 import org.apache.tomcat.jdbc.pool.DataSource;
 import org.apache.tomcat.jdbc.pool.PoolProperties;
 import org.junit.jupiter.api.AfterEach;

@@ -53,9 +53,8 @@
         </dependency>
         <dependency>
             <groupId>com.arcadedb</groupId>
-            <artifactId>arcadedb-server</artifactId>
+            <artifactId>arcadedb-test-utils</artifactId>
             <version>${project.parent.version}</version>
-            <type>test-jar</type>
             <scope>test</scope>
         </dependency>
         <dependency>
