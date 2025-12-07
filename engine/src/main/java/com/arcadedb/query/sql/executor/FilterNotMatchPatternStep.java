@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.graph.Vertex;
 
 import java.util.*;
 
@@ -125,7 +124,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
   }
 
   private SelectExecutionPlan createExecutionPlan(final Result nextItem, final CommandContext context) {
-    final SelectExecutionPlan plan = new SelectExecutionPlan(context);
+    final SelectExecutionPlan plan = new SelectExecutionPlan(context, 0);
     plan.chain(new AbstractExecutionStep(context) {
       private boolean executed = false;
 

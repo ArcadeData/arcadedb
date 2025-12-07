@@ -19,12 +19,15 @@
 package com.arcadedb.server;
 
 import com.arcadedb.Constants;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
+import com.arcadedb.server.http.handler.AbstractQueryHandler;
 import org.assertj.core.api.Assertions;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
@@ -38,8 +41,9 @@ import java.util.logging.*;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.*;
 
-class  HTTPDocumentIT extends BaseGraphServerTest {
+class HTTPDocumentIT extends BaseGraphServerTest {
   private final static String DATABASE_NAME = "httpDocument";
+  private final        int    TOTAL         = AbstractQueryHandler.DEFAULT_LIMIT + 2;
 
   @Override
   protected String getDatabaseName() {
@@ -151,7 +155,65 @@ class  HTTPDocumentIT extends BaseGraphServerTest {
         LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
         assertThat(connection.getResponseCode()).isEqualTo(200);
         assertThat(connection.getResponseMessage()).isEqualTo("OK");
+
+        final JSONArray result = new JSONObject(response).getJSONArray("result");
+        assertThat(result.length()).isEqualTo(1);
+
         assertThat(response.contains("Person")).isTrue();
+
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  @Test
+  void checkQueryInGetWithLimitAboveDefaultCut() throws Exception {
+    testEachServer((serverIndex) -> {
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
+              + "/sql/select%20from%20Person%20limit%20" + (TOTAL - 1)).openConnection();
+
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+        assertThat(connection.getResponseMessage()).isEqualTo("OK");
+
+        final JSONArray result = new JSONObject(response).getJSONArray("result");
+        assertThat(result.length()).isEqualTo(TOTAL - 1);
+
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  @Test
+  void checkQueryInGetWithDefaultLimit() throws Exception {
+    testEachServer((serverIndex) -> {
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
+              + "/sql/select%20from%20Person").openConnection();
+
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+        assertThat(connection.getResponseMessage()).isEqualTo("OK");
+
+        final JSONArray result = new JSONObject(response).getJSONArray("result");
+        assertThat(result.length()).isEqualTo(AbstractQueryHandler.DEFAULT_LIMIT);
 
       } finally {
         connection.disconnect();
@@ -323,7 +385,7 @@ class  HTTPDocumentIT extends BaseGraphServerTest {
         final JSONObject responseAsJson = new JSONObject(response);
 
         final List<Object> records = responseAsJson.getJSONObject("result").getJSONArray("records").toList();
-        assertThat(records).hasSize(100);
+        assertThat(records).hasSize(AbstractQueryHandler.DEFAULT_LIMIT);
         for (final Object o : records)
           assertThat(((Map) o).get("@type")).isEqualTo("Person");
       } finally {
@@ -377,7 +439,7 @@ class  HTTPDocumentIT extends BaseGraphServerTest {
       v.createProperty("id", Long.class);
       schema.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id");
 
-      for (int i = 0; i < 100; i++)
+      for (int i = 0; i < TOTAL; i++)
         database.newDocument("Person").set("id", i).set("name", "John" + i).save();
     });
   }

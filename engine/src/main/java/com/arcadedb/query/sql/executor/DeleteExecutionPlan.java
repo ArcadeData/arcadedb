@@ -23,8 +23,8 @@ package com.arcadedb.query.sql.executor;
  */
 public class DeleteExecutionPlan extends UpdateExecutionPlan {
 
-  public DeleteExecutionPlan(final CommandContext context) {
-    super(context);
+  public DeleteExecutionPlan(final CommandContext context, final int limit) {
+    super(context, limit);
   }
 
   @Override
@@ -32,10 +32,5 @@ public class DeleteExecutionPlan extends UpdateExecutionPlan {
     final ResultInternal res = (ResultInternal) super.toResult();
     res.setProperty("type", "DeleteExecutionPlan");
     return res;
-  }
-
-  @Override
-  public boolean canBeCached() {
-    return false;
   }
 }

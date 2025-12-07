@@ -25,13 +25,15 @@ import java.util.stream.*;
  * Created by luigidellaquila on 06/07/16.
  */
 public class SelectExecutionPlan implements InternalExecutionPlan {
-  private       String                      statement;
+  private final int                         limit;
+  private       String                      statementAsString;
   private final CommandContext              context;
   protected     List<ExecutionStepInternal> steps    = new ArrayList<>();
   private       ExecutionStepInternal       lastStep = null;
 
-  public SelectExecutionPlan(final CommandContext context) {
+  public SelectExecutionPlan(final CommandContext context, final int limit) {
     this.context = context;
+    this.limit = limit;
   }
 
   @Override
@@ -76,12 +78,17 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
     return (List) steps;
   }
 
+  @Override
+  public int getLimit() {
+    return limit;
+  }
+
   public void setSteps(final List<ExecutionStepInternal> steps) {
     this.steps = steps;
     if (steps.isEmpty()) {
       lastStep = null;
     } else {
-      lastStep = steps.get(steps.size() - 1);
+      lastStep = steps.getLast();
     }
   }
 
@@ -98,7 +105,7 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public InternalExecutionPlan copy(final CommandContext context) {
-    final SelectExecutionPlan copy = new SelectExecutionPlan(context);
+    final SelectExecutionPlan copy = new SelectExecutionPlan(context, getLimit());
     copyOn(copy, context);
     return copy;
   }
@@ -111,8 +118,8 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
       lastStep = newStep;
       copy.getSteps().add(newStep);
     }
-    copy.lastStep = copy.steps.isEmpty() ? null : copy.steps.get(copy.steps.size() - 1);
-    copy.statement = this.statement;
+    copy.lastStep = copy.steps.isEmpty() ? null : copy.steps.getLast();
+    copy.statementAsString = this.statementAsString;
   }
 
   @Override

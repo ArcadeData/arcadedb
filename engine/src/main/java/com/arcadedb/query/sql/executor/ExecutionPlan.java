@@ -35,4 +35,10 @@ public interface ExecutionPlan extends Serializable {
 
   Result toResult();
 
+  /**
+   * Return the LIMIT value if any, otherwise 0
+   */
+  default int getLimit() {
+    return 0;
+  }
 }

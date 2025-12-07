@@ -108,7 +108,7 @@ public class MatchExecutionPlanner {
     buildPatterns(context);
     splitDisjointPatterns(context);
 
-    final SelectExecutionPlan result = new SelectExecutionPlan(context);
+    final SelectExecutionPlan result = new SelectExecutionPlan(context,  limit != null ? limit.getValue(context):0);
     final Map<String, Long> estimatedRootEntries = estimateRootEntries(aliasTypes, aliasBuckets, aliasRids, aliasFilters, context);
     final Set<String> aliasesToPrefetch = estimatedRootEntries.entrySet().stream().filter(x -> x.getValue() < threshold)
         .map(x -> x.getKey()).collect(Collectors.toSet());
@@ -205,8 +205,8 @@ public class MatchExecutionPlanner {
       if (exp.getOrigin().getFilter() != null) {
         throw new CommandExecutionException(
             """
-            This kind of NOT expression is not supported (yet): \
-            WHERE condition on the initial alias""");
+                This kind of NOT expression is not supported (yet): \
+                WHERE condition on the initial alias""");
         // TODO implement his
       }
 
@@ -256,11 +256,11 @@ public class MatchExecutionPlanner {
 
   private InternalExecutionPlan createPlanForPattern(final Pattern pattern, final CommandContext context,
       final Map<String, Long> estimatedRootEntries, final Set<String> prefetchedAliases) {
-    final SelectExecutionPlan plan = new SelectExecutionPlan(context);
+    final SelectExecutionPlan plan = new SelectExecutionPlan(context,  limit != null ? limit.getValue(context):0);
     final List<EdgeTraversal> sortedEdges = getTopologicalSortedSchedule(estimatedRootEntries, pattern);
 
     boolean first = true;
-    if (sortedEdges.size() > 0) {
+    if (!sortedEdges.isEmpty()) {
       for (final EdgeTraversal edge : sortedEdges) {
         if (edge.edge.out.alias != null) {
           edge.setLeftClass(aliasTypes.get(edge.edge.out.alias));

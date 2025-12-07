@@ -137,7 +137,8 @@ public class SelectExecutionPlanner {
     final long planningStart = System.currentTimeMillis();
 
     init(context);
-    final SelectExecutionPlan selectExecutionPlan = new SelectExecutionPlan(context);
+    final SelectExecutionPlan selectExecutionPlan = new SelectExecutionPlan(context,
+        statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
 
     if (info.expand && info.distinct)
       throw new CommandExecutionException("Cannot execute a statement with DISTINCT expand(), please use a subquery");
@@ -151,7 +152,8 @@ public class SelectExecutionPlanner {
 
     info.buckets = calculateTargetBuckets(info, context);
 
-    info.fetchExecutionPlan = new SelectExecutionPlan(context);
+    info.fetchExecutionPlan = new SelectExecutionPlan(context,
+        statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
 
     handleFetchFromTarget(selectExecutionPlan, info, context);
 
@@ -853,7 +855,8 @@ public class SelectExecutionPlanner {
     } else if (target.getInputParams() != null && !target.getInputParams().isEmpty()) {
       final List<InternalExecutionPlan> plans = new ArrayList<>();
       for (final InputParameter param : target.getInputParams()) {
-        final SelectExecutionPlan subPlan = new SelectExecutionPlan(context);
+        final SelectExecutionPlan subPlan = new SelectExecutionPlan(context,
+            statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
         handleInputParamAsTarget(subPlan, info.buckets, info, param, context);
         plans.add(subPlan);
       }
@@ -1369,7 +1372,8 @@ public class SelectExecutionPlanner {
           final FetchFromIndexStep step = new FetchFromIndexStep(bestIndex.index, bestIndex.keyCondition,
               bestIndex.additionalRangeCondition, true, context);
 
-          SelectExecutionPlan subPlan = new SelectExecutionPlan(context);
+          SelectExecutionPlan subPlan = new SelectExecutionPlan(context,
+              statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
           subPlan.chain(step);
           List<Integer> filterClusterIds = null;
           if (filterClusters != null)
@@ -1390,7 +1394,8 @@ public class SelectExecutionPlanner {
           resultSubPlans.add(subPlan);
         } else {
           FetchFromTypeExecutionStep step = new FetchFromTypeExecutionStep(typez.getName(), filterClusters, context, true);
-          SelectExecutionPlan subPlan = new SelectExecutionPlan(context);
+          SelectExecutionPlan subPlan = new SelectExecutionPlan(context,
+              statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
           subPlan.chain(step);
           if (!block.getSubBlocks().isEmpty()) {
             if ((info.perRecordLetClause != null && refersToLet(block.getSubBlocks()))) {
@@ -1447,7 +1452,8 @@ public class SelectExecutionPlanner {
             plan.chain(new FilterStep(createWhereFrom(block), context));
           }
         } else {
-          SelectExecutionPlan subPlan = new SelectExecutionPlan(context);
+          SelectExecutionPlan subPlan = new SelectExecutionPlan(context,
+              statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
           subPlan.chain(step);
           if (!block.getSubBlocks().isEmpty()) {
             subPlan.chain(new FilterStep(createWhereFrom(block), context));
@@ -1596,7 +1602,8 @@ public class SelectExecutionPlanner {
       if (subSteps == null || subSteps.isEmpty())
         return false;
 
-      final SelectExecutionPlan subPlan = new SelectExecutionPlan(context);
+      final SelectExecutionPlan subPlan = new SelectExecutionPlan(context,
+          statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
       subSteps.forEach(x -> subPlan.chain(x));
       subTypePlans.add(subPlan);
     }
@@ -1650,7 +1657,8 @@ public class SelectExecutionPlanner {
         if (subSteps == null || subSteps.isEmpty()) {
           return null;
         }
-        final SelectExecutionPlan subPlan = new SelectExecutionPlan(context);
+        final SelectExecutionPlan subPlan = new SelectExecutionPlan(context,
+            statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
         subSteps.forEach(subPlan::chain);
         subTypePlans.add(subPlan);
       }
@@ -1722,7 +1730,8 @@ public class SelectExecutionPlanner {
       if (desc.getRemainingCondition() != null && !desc.getRemainingCondition().isEmpty()) {
         if ((info.perRecordLetClause != null
             && refersToLet(Collections.singletonList(desc.getRemainingCondition())))) {
-          SelectExecutionPlan stubPlan = new SelectExecutionPlan(context);
+          SelectExecutionPlan stubPlan = new SelectExecutionPlan(context,
+              statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
           handleLet(stubPlan, info, context);
           for (ExecutionStep step : stubPlan.getSteps()) {
             result.add((ExecutionStepInternal) step);
@@ -1832,7 +1841,8 @@ public class SelectExecutionPlanner {
       final Set<String> filterClusters, final CommandContext context) {
     final List<InternalExecutionPlan> subPlans = new ArrayList<>();
     for (final IndexSearchDescriptor desc : indexSearchDescriptors) {
-      final SelectExecutionPlan subPlan = new SelectExecutionPlan(context);
+      final SelectExecutionPlan subPlan = new SelectExecutionPlan(context,
+          statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
       subPlan.chain(new FetchFromIndexStep(desc.index, desc.keyCondition, desc.additionalRangeCondition, context));
       List<Integer> filterClusterIds = null;
       if (filterClusters != null)

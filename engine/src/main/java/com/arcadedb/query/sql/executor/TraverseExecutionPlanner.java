@@ -37,11 +37,9 @@ import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.query.sql.parser.TraverseProjectionItem;
 import com.arcadedb.query.sql.parser.TraverseStatement;
 import com.arcadedb.query.sql.parser.WhereClause;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 import java.util.stream.*;
 
 /**
@@ -73,7 +71,7 @@ public class TraverseExecutionPlanner {
   }
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
-    final SelectExecutionPlan result = new SelectExecutionPlan(context);
+    final SelectExecutionPlan result = new SelectExecutionPlan(context, limit != null ? limit.getValue(context) : 0);
 
     handleFetchFromTarget(result, context);
 

@@ -36,8 +36,8 @@ public class UpdateExecutionPlan extends SelectExecutionPlan {
   final List<Result> result = new ArrayList<>();
   int next = 0;
 
-  public UpdateExecutionPlan(final CommandContext context) {
-    super(context);
+  public UpdateExecutionPlan(final CommandContext context, final int limit) {
+    super(context, limit);
   }
 
   @Override

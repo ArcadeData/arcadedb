@@ -67,7 +67,7 @@ public class UpdateExecutionPlanner {
   }
 
   public UpdateExecutionPlan createExecutionPlan(final CommandContext context) {
-    final UpdateExecutionPlan result = new UpdateExecutionPlan(context);
+    final UpdateExecutionPlan result = new UpdateExecutionPlan(context,  limit != null ? limit.getValue(context):0);
 
     handleTarget(result, context, this.target, this.whereClause, this.timeout);
 

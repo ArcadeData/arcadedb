@@ -45,7 +45,7 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
 
 public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
-  protected static final int DEFAULT_LIMIT = 20_000;
+  public static final int DEFAULT_LIMIT = 20_000;
 
   public AbstractQueryHandler(final HttpServer httpServer) {
     super(httpServer);
