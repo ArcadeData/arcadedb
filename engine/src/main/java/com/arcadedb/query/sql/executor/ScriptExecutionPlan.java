@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.executor;
  */
 
 import com.arcadedb.query.sql.parser.BreakStatement;
+import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.Statement;
 
 import java.util.*;
@@ -255,5 +256,14 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
   @Override
   public void setStatements(final List<Statement> statements) {
     this.statements = statements;
+  }
+
+  @Override
+  public int getLimit() {
+    if (statements.size() == 1) {
+      final Limit l = statements.getFirst().getLimit();
+      return l != null ? l.getValue(context) : 0;
+    }
+    return InternalExecutionPlan.super.getLimit();
   }
 }

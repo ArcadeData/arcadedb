@@ -36,7 +36,7 @@ public class InsertExecutionPlan extends SelectExecutionPlan {
   int next = 0;
 
   public InsertExecutionPlan(final CommandContext context) {
-    super(context);
+    super(context, 0);
   }
 
   @Override

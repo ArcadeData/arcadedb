@@ -24,6 +24,6 @@ package com.arcadedb.query.sql.executor;
  */
 public class RetryExecutionPlan extends UpdateExecutionPlan {
   public RetryExecutionPlan(CommandContext ctx) {
-    super(ctx);
+    super(ctx, 0);
   }
 }

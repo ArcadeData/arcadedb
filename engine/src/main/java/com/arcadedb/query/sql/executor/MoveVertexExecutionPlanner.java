@@ -46,8 +46,8 @@ public class MoveVertexExecutionPlanner {
     this.batch = oStatement.getBatch();
   }
 
-  public UpdateExecutionPlan createExecutionPlan(final CommandContext ctx) {
-    UpdateExecutionPlan result = new UpdateExecutionPlan(ctx);
+  public UpdateExecutionPlan createExecutionPlan(final CommandContext ctx, final int limit) {
+    UpdateExecutionPlan result = new UpdateExecutionPlan(ctx, limit);
 
     handleSource(result, ctx, this.source);
     convertToModifiableResult(result, ctx);

@@ -50,18 +50,17 @@ public class DeleteExecutionPlanner {
   }
 
   public DeleteExecutionPlan createExecutionPlan(final CommandContext context) {
-    final DeleteExecutionPlan result = new DeleteExecutionPlan(context);
+    final DeleteExecutionPlan result = new DeleteExecutionPlan(context, 0);
 
     if (handleIndexAsTarget(result, fromClause.getItem().getIndex(), whereClause, context)) {
-      if (limit != null) {
+      if (limit != null)
         throw new CommandExecutionException("Cannot apply a LIMIT on a delete from index");
-      }
-      if (unsafe) {
+
+      if (unsafe)
         throw new CommandExecutionException("Cannot apply a UNSAFE on a delete from index");
-      }
-      if (returnBefore) {
+
+      if (returnBefore)
         throw new CommandExecutionException("Cannot apply a RETURN BEFORE on a delete from index");
-      }
 
       handleReturn(result, context, this.returnBefore);
     } else {

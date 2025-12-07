@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -50,17 +51,20 @@ public class GetQueryHandler extends AbstractQueryHandler {
       serializer = "record";
 
     String limitPar = getQueryParameter(exchange, "limit");
-    final int limit;
-    if (limitPar == null)
-      limit = DEFAULT_LIMIT;
-    else
-      limit = Integer.parseInt(limitPar);
 
     final JSONObject response = new JSONObject();
 
     try {
 
       final ResultSet qResult = database.query(language, text);
+      final ExecutionPlan plan = qResult.getExecutionPlan().orElse(null);
+      int limit = plan != null ? plan.getLimit() : 0;
+      if (limit == 0) {
+        if (limitPar == null)
+          limit = DEFAULT_LIMIT;
+        else
+          limit = Integer.parseInt(limitPar);
+      }
 
       serializeResultSet(database, serializer, limit, response, qResult);
 

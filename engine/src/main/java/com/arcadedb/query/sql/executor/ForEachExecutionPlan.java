@@ -29,7 +29,7 @@ import com.arcadedb.query.sql.parser.WhileStep;
  */
 public class ForEachExecutionPlan extends UpdateExecutionPlan {
   public ForEachExecutionPlan(final CommandContext context) {
-    super(context);
+    super(context, 0);
   }
 
   public boolean containsReturn() {

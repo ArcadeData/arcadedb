@@ -39,7 +39,7 @@ class ParallelExecStepTest {
       for (int i = 0; i < 4; i++) {
         final FetchFromRidsStep step0 = new FetchFromRidsStep(Set.of(new RID(db, 12, i)), ctx);
         final FetchFromRidsStep step1 = new FetchFromRidsStep(Set.of(new RID(db, 12, i)), ctx);
-        final InternalExecutionPlan plan = new SelectExecutionPlan(ctx);
+        final InternalExecutionPlan plan = new SelectExecutionPlan(ctx, 0);
         plan.getSteps().add(step0);
         plan.getSteps().add(step1);
         subPlans.add(plan);
@@ -47,7 +47,7 @@ class ParallelExecStepTest {
 
       final ParallelExecStep step = new ParallelExecStep(subPlans, ctx);
 
-      final SelectExecutionPlan plan = new SelectExecutionPlan(ctx);
+      final SelectExecutionPlan plan = new SelectExecutionPlan(ctx, 0);
       plan.getSteps().add(new FetchFromRidsStep(Set.of(new RID(db, 12, 100)), ctx));
       plan.getSteps().add(step);
       plan.getSteps().add(new FetchFromRidsStep(Set.of(new RID(db, 12, 100)), ctx));

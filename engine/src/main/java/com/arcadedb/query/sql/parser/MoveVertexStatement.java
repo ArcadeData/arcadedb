@@ -52,7 +52,7 @@ public class MoveVertexStatement extends Statement {
 
     final boolean implicitTransaction = ((DatabaseInternal) database).checkTransactionIsActive(database.isAutoTransaction());
     try {
-      final UpdateExecutionPlan executionPlan = createExecutionPlan(ctx);
+      final UpdateExecutionPlan executionPlan = createExecutionPlan(ctx, limit != null ? limit.getValue(ctx) : 0);
 
       executionPlan.executeInternal();
       return new LocalResultSet(executionPlan);
@@ -63,9 +63,9 @@ public class MoveVertexStatement extends Statement {
     }
   }
 
-  public UpdateExecutionPlan createExecutionPlan(final CommandContext ctx) {
+  public UpdateExecutionPlan createExecutionPlan(final CommandContext ctx, final int limit) {
     final MoveVertexExecutionPlanner planner = new MoveVertexExecutionPlanner(this);
-    return planner.createExecutionPlan(ctx);
+    return planner.createExecutionPlan(ctx, limit);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

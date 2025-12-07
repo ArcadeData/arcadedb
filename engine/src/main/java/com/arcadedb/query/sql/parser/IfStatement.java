@@ -78,11 +78,11 @@ public class IfStatement extends Statement {
       last = new EmptyStep(context);
     }
     if (isIdempotent()) {
-      final SelectExecutionPlan finalPlan = new SelectExecutionPlan(context);
+      final SelectExecutionPlan finalPlan = new SelectExecutionPlan(context, limit != null ? limit.getValue(context) : 0);
       finalPlan.chain(last);
       return new LocalResultSet(finalPlan);
     } else {
-      final UpdateExecutionPlan finalPlan = new UpdateExecutionPlan(context);
+      final UpdateExecutionPlan finalPlan = new UpdateExecutionPlan(context, limit != null ? limit.getValue(context) : 0);
       finalPlan.chain(last);
       finalPlan.executeInternal();
       return new LocalResultSet(finalPlan);
@@ -90,10 +90,10 @@ public class IfStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentContext, final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
-    if (parentcontext != null) {
-      context.setParentWithoutOverridingChild(parentcontext);
+    if (parentContext != null) {
+      context.setParentWithoutOverridingChild(parentContext);
     }
     context.setDatabase(db);
     context.setInputParameters(params);
@@ -110,11 +110,11 @@ public class IfStatement extends Statement {
       last = new EmptyStep(context);
     }
     if (isIdempotent()) {
-      final SelectExecutionPlan finalPlan = new SelectExecutionPlan(context);
+      final SelectExecutionPlan finalPlan = new SelectExecutionPlan(context,  limit != null ? limit.getValue(context):0);
       finalPlan.chain(last);
       return new LocalResultSet(finalPlan);
     } else {
-      final UpdateExecutionPlan finalPlan = new UpdateExecutionPlan(context);
+      final UpdateExecutionPlan finalPlan = new UpdateExecutionPlan(context,  limit != null ? limit.getValue(context):0);
       finalPlan.chain(last);
       finalPlan.executeInternal();
       return new LocalResultSet(finalPlan);
