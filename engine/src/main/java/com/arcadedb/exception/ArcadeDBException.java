@@ -152,6 +152,14 @@ public class ArcadeDBException extends RuntimeException {
     }
   }
 
+  /**
+   * Escapes a string for JSON output.
+   * Note: This is a simplified implementation that handles common escape sequences.
+   * For production use with complex strings, consider using a JSON library.
+   *
+   * @param str the string to escape
+   * @return the escaped string
+   */
   private String escapeJson(final String str) {
     if (str == null) {
       return "";
@@ -160,7 +168,9 @@ public class ArcadeDBException extends RuntimeException {
         .replace("\"", "\\\"")
         .replace("\n", "\\n")
         .replace("\r", "\\r")
-        .replace("\t", "\\t");
+        .replace("\t", "\\t")
+        .replace("\b", "\\b")
+        .replace("\f", "\\f");
   }
 
   @Override

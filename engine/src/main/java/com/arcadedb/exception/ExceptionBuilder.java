@@ -140,12 +140,14 @@ public class ExceptionBuilder {
    * @return the built exception
    */
   public ArcadeDBException build() {
-    final String finalMessage = message != null ? message : errorCode.getDescription();
+    // Ensure errorCode is never null
+    final ErrorCode finalErrorCode = errorCode != null ? errorCode : ErrorCode.UNKNOWN_ERROR;
+    final String finalMessage = message != null ? message : finalErrorCode.getDescription();
     
     if (cause != null) {
-      return new ArcadeDBException(errorCode, finalMessage, cause, context);
+      return new ArcadeDBException(finalErrorCode, finalMessage, cause, context);
     } else {
-      return new ArcadeDBException(errorCode, finalMessage, context);
+      return new ArcadeDBException(finalErrorCode, finalMessage, context);
     }
   }
 
