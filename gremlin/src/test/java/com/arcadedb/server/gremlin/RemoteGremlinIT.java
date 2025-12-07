@@ -22,7 +22,7 @@ import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteServer;
-import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.test.BaseGraphServerTest;
 import org.apache.tinkerpop.gremlin.structure.T;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;

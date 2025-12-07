@@ -20,7 +20,7 @@ package com.arcadedb.server.gremlin;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.gremlin.io.ArcadeIoRegistry;
-import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.test.BaseGraphServerTest;
 import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.driver.Cluster;
 import org.apache.tinkerpop.gremlin.driver.remote.DriverRemoteConnection;

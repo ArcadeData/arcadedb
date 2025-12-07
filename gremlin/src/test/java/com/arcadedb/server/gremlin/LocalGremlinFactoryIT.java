@@ -23,7 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.gremlin.ArcadeGraphFactory;
 import com.arcadedb.remote.RemoteServer;
-import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.test.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 

@@ -25,7 +25,7 @@ import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.integration.exporter.Exporter;
 import com.arcadedb.integration.importer.OrientDBImporter;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.test.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.structure.io.IoCore;
 import org.junit.jupiter.api.AfterEach;

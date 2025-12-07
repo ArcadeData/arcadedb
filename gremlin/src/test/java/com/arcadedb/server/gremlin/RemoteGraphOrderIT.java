@@ -22,7 +22,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteServer;
-import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.test.BaseGraphServerTest;
 
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
