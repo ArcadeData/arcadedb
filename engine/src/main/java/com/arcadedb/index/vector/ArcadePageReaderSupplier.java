@@ -30,7 +30,7 @@ import java.io.IOException;
  * <p>
  * Returns ContiguousPageReader which provides a gap-free logical address space over
  * physical pages with headers. This is critical for JVector's offset calculations.
- *
+ * <p>
  * Thread-safe: Creates a new reader per thread (JVector requirement).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -40,13 +40,15 @@ public class ArcadePageReaderSupplier implements ReaderSupplier {
   private final int              fileId;
   private final int              pageSize;
   private final long             totalBytes;
+  private final long             offset;
 
   public ArcadePageReaderSupplier(final DatabaseInternal database, final int fileId,
-                                  final int pageSize, final long totalBytes) {
+      final int pageSize, final long totalBytes, final long offset) {
     this.database = database;
     this.fileId = fileId;
     this.pageSize = pageSize;
     this.totalBytes = totalBytes;
+    this.offset = offset;
   }
 
   @Override
@@ -54,7 +56,7 @@ public class ArcadePageReaderSupplier implements ReaderSupplier {
     // Create a new contiguous reader for each request (JVector uses readers per-thread)
     // ContiguousPageReader provides gap-free logical address space over physical pages
     // TODO: REUSE readers if possible?
-    return new ContiguousPageReader(database, fileId, pageSize, totalBytes);
+    return new ContiguousPageReader(database, fileId, pageSize, totalBytes, offset);
   }
 
   @Override
