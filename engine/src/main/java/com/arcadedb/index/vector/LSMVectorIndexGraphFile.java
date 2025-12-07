@@ -58,8 +58,7 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
   // Graph data starts at page 0 (no metadata page needed)
   // totalGraphBytes is computed from file size - JVector format is self-describing
 
-  private              LSMVectorIndex mainIndex;
-  private static final VectorFloat<?> EMPTY_VECTOR = JVectorUtils.createVectorFloat(100);
+  private LSMVectorIndex mainIndex;
 
   /**
    * Factory handler for loading graph files from disk during schema initialization.
@@ -139,16 +138,19 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
 
       // Write graph topology WITHOUT inline vectors
       // Vectors will be read on-demand from ArcadeDB documents (no duplication)
-      // Use SeparatedVectors to tell JVector that vectors are NOT in the graph file
-      // This prevents JVector from trying to read vectors from the file during search
+      // Use InlineVectors but write zeros with correct dimension to satisfy JVector's format requirements
+      final int dimension = vectors.dimension();
+      final VectorFloat<?> emptyVector = JVectorUtils.createVectorFloat(dimension);
+
       try (final OnDiskSequentialGraphIndexWriter indexWriter = new OnDiskSequentialGraphIndexWriter.Builder(graph, writer).with(
-          new InlineVectors(vectors.dimension())).build()) {
+          new InlineVectors(dimension)).build()) {
         // Write header with startOffset 0 (graph data starts at beginning of file)
         indexWriter.writeHeader(graph.getView(), 0L);
 
+        // Write empty vectors with correct dimension (JVector requires vectors even though we don't use them)
         indexWriter.write(Map.of(FeatureId.INLINE_VECTORS,
             (IntFunction<io.github.jbellis.jvector.graph.disk.feature.Feature.State>) ordinal -> new InlineVectors.State(
-                EMPTY_VECTOR)));
+                emptyVector)));
       }
 
       writer.close();
@@ -176,7 +178,8 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
 
     try {
       // Create reader supplier for lazy-loading
-      final ArcadePageReaderSupplier supplier = new ArcadePageReaderSupplier(database, getFileId(), getPageSize(), totalBytes);
+      // Use 0L offset since graph data starts at position 0 (no separate header)
+      final ArcadePageReaderSupplier supplier = new ArcadePageReaderSupplier(database, getFileId(), getPageSize(), totalBytes, 292L);
 
       // Load graph using JVector's OnDiskGraphIndex
       final OnDiskGraphIndex graph = OnDiskGraphIndex.load(supplier);

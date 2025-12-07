@@ -151,8 +151,8 @@ class ContiguousPageIOTest {
           dbInternal,
           graphFile.getFileId(),
           pageSize,
-          totalBytesWritten
-      );
+          totalBytesWritten,
+          0L);
 
       int failures = 0;
       for (int i = 0; i < magicPositions.length; i++) {

@@ -58,20 +58,23 @@ public class ContiguousPageReader implements RandomAccessReader {
   // Reusable buffer to avoid allocations (max size is 8 bytes for long/double)
   private final byte[]     buffer;
   private final ByteBuffer byteBuffer;
+  private final long       offset;
 
   // Current state
   private long     logicalPosition;  // Contiguous logical address (no gaps)
   private BasePage currentPage;
   private int      currentPageNum;
 
-  public ContiguousPageReader(final DatabaseInternal database, final int fileId, final int pageSize, final long totalBytes) {
+  public ContiguousPageReader(final DatabaseInternal database, final int fileId, final int pageSize, final long totalBytes,
+      final long offset) {
     this.database = database;
     this.fileId = fileId;
     this.pageSize = pageSize;
     this.totalBytes = totalBytes;
     this.usablePageSize = pageSize - BasePage.PAGE_HEADER_SIZE;
-    this.logicalPosition = 0;
+    this.logicalPosition = 0L;
     this.currentPageNum = -1;
+    this.offset = offset;
 
     // Allocate reusable buffer once (8 bytes for largest primitive type)
     this.buffer = new byte[Binary.LONG_SERIALIZED_SIZE];
@@ -84,9 +87,10 @@ public class ContiguousPageReader implements RandomAccessReader {
       throw new IOException("Invalid seek position: " + position + " (length=" + totalBytes + ")");
 
     this.logicalPosition = position;
-    if (logicalPosition < 292)
-      // PATCH TO OVERCOME TO A BUG IN JVECTOR THAT READS 292 BYTES AT START
-      logicalPosition += 292;
+
+    if (logicalPosition == 0)
+      // PATCH TO OVERCOME TO A BUG IN JVECTOR THAT SHOULD START 292 BYTES AFTER THE BEGINNING
+      logicalPosition += offset;
   }
 
   @Override
@@ -143,9 +147,9 @@ public class ContiguousPageReader implements RandomAccessReader {
   @Override
   public void read(final int[] ints, final int offset, final int length) throws IOException {
     if (offset + length > ints.length) {
-      throw new IOException(String.format(
-          "Read would overflow array: offset=%d, length=%d, array.length=%d, would access index %d",
-          offset, length, ints.length, offset + length - 1));
+      throw new IOException(
+          String.format("Read would overflow array: offset=%d, length=%d, array.length=%d, would access index %d", offset, length,
+              ints.length, offset + length - 1));
     }
     for (int i = 0; i < length; i++) {
       ints[offset + i] = readInt();
