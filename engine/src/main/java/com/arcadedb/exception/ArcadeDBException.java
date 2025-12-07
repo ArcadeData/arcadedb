@@ -18,17 +18,157 @@
  */
 package com.arcadedb.exception;
 
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * Base exception class for all ArcadeDB exceptions.
+ * Provides standardized error codes and diagnostic context.
+ */
 public class ArcadeDBException extends RuntimeException {
+  private final ErrorCode errorCode;
+  private final Map<String, Object> context;
 
   public ArcadeDBException(final String message) {
     super(message);
+    this.errorCode = ErrorCode.UNKNOWN_ERROR;
+    this.context = new HashMap<>();
   }
 
   public ArcadeDBException(final String message, final Throwable cause) {
     super(message, cause);
+    this.errorCode = ErrorCode.UNKNOWN_ERROR;
+    this.context = new HashMap<>();
   }
 
   public ArcadeDBException(final Throwable cause) {
     super(cause);
+    this.errorCode = ErrorCode.UNKNOWN_ERROR;
+    this.context = new HashMap<>();
+  }
+
+  public ArcadeDBException(final ErrorCode errorCode, final String message) {
+    super(message);
+    this.errorCode = errorCode != null ? errorCode : ErrorCode.UNKNOWN_ERROR;
+    this.context = new HashMap<>();
+  }
+
+  public ArcadeDBException(final ErrorCode errorCode, final String message, final Throwable cause) {
+    super(message, cause);
+    this.errorCode = errorCode != null ? errorCode : ErrorCode.UNKNOWN_ERROR;
+    this.context = new HashMap<>();
+  }
+
+  public ArcadeDBException(final ErrorCode errorCode, final String message, final Map<String, Object> context) {
+    super(message);
+    this.errorCode = errorCode != null ? errorCode : ErrorCode.UNKNOWN_ERROR;
+    this.context = context != null ? new HashMap<>(context) : new HashMap<>();
+  }
+
+  public ArcadeDBException(final ErrorCode errorCode, final String message, final Throwable cause, final Map<String, Object> context) {
+    super(message, cause);
+    this.errorCode = errorCode != null ? errorCode : ErrorCode.UNKNOWN_ERROR;
+    this.context = context != null ? new HashMap<>(context) : new HashMap<>();
+  }
+
+  /**
+   * Gets the error code associated with this exception.
+   *
+   * @return the error code
+   */
+  public ErrorCode getErrorCode() {
+    return errorCode;
+  }
+
+  /**
+   * Gets the diagnostic context for this exception.
+   * The context contains additional information about the error.
+   *
+   * @return unmodifiable map of context information
+   */
+  public Map<String, Object> getContext() {
+    return Collections.unmodifiableMap(context);
+  }
+
+  /**
+   * Adds a context entry to this exception.
+   *
+   * @param key   the context key
+   * @param value the context value
+   * @return this exception for method chaining
+   */
+  public ArcadeDBException addContext(final String key, final Object value) {
+    if (key != null) {
+      this.context.put(key, value);
+    }
+    return this;
+  }
+
+  /**
+   * Converts this exception to a JSON string.
+   *
+   * @return JSON representation of this exception
+   */
+  public String toJSON() {
+    final StringBuilder json = new StringBuilder();
+    json.append("{");
+    json.append("\"errorCode\":").append(errorCode.getCode()).append(",");
+    json.append("\"errorName\":\"").append(errorCode.name()).append("\",");
+    json.append("\"category\":\"").append(errorCode.getCategory()).append("\",");
+    json.append("\"message\":\"").append(escapeJson(getMessage())).append("\"");
+
+    if (!context.isEmpty()) {
+      json.append(",\"context\":{");
+      boolean first = true;
+      for (final Map.Entry<String, Object> entry : context.entrySet()) {
+        if (!first) {
+          json.append(",");
+        }
+        json.append("\"").append(escapeJson(entry.getKey())).append("\":");
+        appendJsonValue(json, entry.getValue());
+        first = false;
+      }
+      json.append("}");
+    }
+
+    if (getCause() != null) {
+      json.append(",\"cause\":\"").append(escapeJson(getCause().getMessage())).append("\"");
+    }
+
+    json.append("}");
+    return json.toString();
+  }
+
+  private void appendJsonValue(final StringBuilder json, final Object value) {
+    if (value == null) {
+      json.append("null");
+    } else if (value instanceof String) {
+      json.append("\"").append(escapeJson(value.toString())).append("\"");
+    } else if (value instanceof Number || value instanceof Boolean) {
+      json.append(value);
+    } else {
+      json.append("\"").append(escapeJson(value.toString())).append("\"");
+    }
+  }
+
+  private String escapeJson(final String str) {
+    if (str == null) {
+      return "";
+    }
+    return str.replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t");
+  }
+
+  @Override
+  public String toString() {
+    return String.format("%s [%s-%d]: %s", 
+        getClass().getSimpleName(), 
+        errorCode.getCategory(),
+        errorCode.getCode(), 
+        getMessage());
   }
 }
