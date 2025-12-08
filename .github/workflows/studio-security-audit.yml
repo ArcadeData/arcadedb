@@ -36,7 +36,7 @@ jobs:
 
     steps:
       - name: "Checkout Repository"
-        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
       - name: "Setup Node.js"
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
@@ -143,7 +143,7 @@ jobs:
 
     steps:
       - name: "Checkout Repository"
-        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
       - name: "Dependency Review"
         uses: actions/dependency-review-action@3c4e3dcb1aa7874d2c16be7d79418e9b7efd6261 # v4.8.2
@@ -163,7 +163,7 @@ jobs:
 
     steps:
       - name: "Checkout Repository"
-        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
       - name: "Initialize CodeQL"
         uses: github/codeql-action/init@fdbfb4d2750291e159f0156def62b853c2798ca2 # v3.29.5
