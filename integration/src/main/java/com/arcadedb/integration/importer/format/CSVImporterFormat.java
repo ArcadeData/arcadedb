@@ -75,7 +75,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
   private void loadDocuments(final SourceSchema sourceSchema, final Parser parser, final Database database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
-    final AbstractParser csvParser = createCSVParser(settings);
+    final AbstractParser<?> csvParser = createCSVParser(settings);
 
     LogManager.instance().log(this, Level.INFO, "Started importing documents from CSV source");
 
@@ -126,12 +126,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
         final MutableDocument document = database.newDocument(settings.documentTypeName);
 
-        for (int p = 0; p < properties.size(); ++p) {
-          final AnalyzedProperty prop = properties.get(p);
+        for (final AnalyzedProperty prop : properties)
           document.set(prop.getName(), row[prop.getIndex()]);
-        }
 
         document.save();
+        context.createdDocuments.incrementAndGet();
       }
 
       database.commit();
@@ -192,7 +191,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       throw new ImportException("Error on creating internal component", e);
     }
 
-    final AbstractParser csvParser = createCSVParser(settings);
+    final AbstractParser<?> csvParser = createCSVParser(settings);
 
     LogManager.instance().log(this, Level.INFO, "Started importing vertices from CSV source");
 
@@ -203,7 +202,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     long skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries : 0;
     if (settings.verticesSkipEntries == null)
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-      skipEntries = 1l;
+      skipEntries = 1L;
 
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
         DatabaseFactory.getDefaultCharset())) {
