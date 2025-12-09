@@ -45,6 +45,12 @@
             <scope>provided</scope>
         </dependency>
         <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-gremlin</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <version>${postgres.version}</version>
