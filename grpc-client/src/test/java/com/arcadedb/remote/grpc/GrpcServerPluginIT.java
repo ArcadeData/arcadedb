@@ -19,9 +19,12 @@
 package com.arcadedb.remote.grpc;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.test.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -40,20 +43,7 @@ public class GrpcServerPluginIT extends BaseGraphServerTest {
         "GRPC:com.arcadedb.server.grpc.GrpcServerPlugin");
   }
 
-  @AfterEach
-  @Override
-  public void endTest() {
-    GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    super.endTest();
-  }
-
-  @Test
-  void testGrpcQueryWithAliasesAndMetadata() {
-
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-
-    database = new RemoteGrpcDatabase(server, "localhost", 50051, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
-
+  private void createSchema() {
     database.command("sqlscript", """
         CREATE VERTEX TYPE article IF NOT EXISTS BUCKETS 8;
         CREATE PROPERTY article.id IF NOT EXISTS LONG;
@@ -95,6 +85,31 @@ public class GrpcServerPluginIT extends BaseGraphServerTest {
                 "tags": ["tag2", "tag3"]
                 };
         """);
+  }
+
+  @BeforeEach
+  @Override
+  public void beginTest() {
+    super.beginTest();
+    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+
+    database = new RemoteGrpcDatabase(server, "localhost", 50051, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    createSchema();
+
+  }
+
+  @AfterEach
+  @Override
+  public void endTest() {
+    GlobalConfiguration.SERVER_PLUGINS.setValue("");
+
+    database.close();
+    server.close();
+    super.endTest();
+  }
+
+  @Test
+  void testGrpcQueryWithAliasesAndMetadata() {
 
     String query = "SELECT *,  @rid, @type, author AS _author FROM article";
     ResultSet resultSet = database.query("sql", query);
@@ -106,5 +121,75 @@ public class GrpcServerPluginIT extends BaseGraphServerTest {
         }
 
     );
+  }
+
+  @Test
+  void testGrpcUpdateWithAlas() {
+    String update = """
+        UPDATE article  SET title = "My third article updated" RETURN AFTER *, author AS _author WHERE id = 3
+        """;
+
+    database.transaction(() -> {
+
+      ResultSet updated = database.command("sql", update);
+
+      assertThat(updated.hasNext());
+      Result r = updated.next();
+      assertThat(r.<String>getProperty("_author")).isEqualTo("John Doe");
+    });
+
+  }
+
+  @Test
+  void testGrpcInsertWithReturn() {
+    String command = """
+        INSERT INTO article CONTENT {
+                "id": 4,
+                "created": "2021-01-01 00:00:00",
+                "updated": "2021-01-01 00:00:00",
+                "title": "My fourth article",
+                "content": "This is the content of my fourth article",
+                "author": "John Doe",
+                "tags": ["tag1", "tag2"]
+                }
+        RETURN @this;
+        """;
+
+    database.transaction(() -> {
+
+      ResultSet updated = database.command("sql", command);
+
+      assertThat(updated.hasNext());
+      Result r = updated.next();
+      assertThat(r.<Long>getProperty("id")).isEqualTo(4);
+      assertThat(r.<String>getProperty("title")).isEqualTo("My fourth article");
+    });
+
+  }
+
+  @Test
+  void testGrpcCreateVertexWithReturn() {
+    String command = """
+        CREATE VERTEX article CONTENT {
+                "id": 4,
+                "created": "2021-01-01 00:00:00",
+                "updated": "2021-01-01 00:00:00",
+                "title": "My fourth article",
+                "content": "This is the content of my fourth article",
+                "author": "John Doe",
+                "tags": ["tag1", "tag2"]
+                };
+        """;
+
+    database.transaction(() -> {
+
+      ResultSet updated = database.command("sql", command);
+
+      assertThat(updated.hasNext());
+      Result r = updated.next();
+      assertThat(r.<Long>getProperty("id")).isEqualTo(4);
+      assertThat(r.<String>getProperty("title")).isEqualTo("My fourth article");
+    });
+
   }
 }

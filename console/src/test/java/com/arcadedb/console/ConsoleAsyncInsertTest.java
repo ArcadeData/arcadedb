@@ -359,6 +359,7 @@ public class ConsoleAsyncInsertTest {
         p.fileName, p.fileType, p.getStartValidity(), p.getStopValidity(), p.getVersion())) {
       assertThat(resultSet.hasNext()).isTrue();
       Result result = resultSet.next();
+      System.out.println("result.toJSON() = " + result.toJSON());
       rid = result.getProperty(RID_PROPERTY).toString();
     }
     List<CandidateOrder> orders = new ArrayList<>(TOTAL);
