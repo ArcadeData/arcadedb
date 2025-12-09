@@ -198,11 +198,34 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             while (rs.hasNext()) {
 
               Result result = rs.next();
+              if (result.isElement()) {
+                affected++; // count modified/returned records
+                if (emitted < maxRows) {
+                  // Convert Result to GrpcRecord, preserving aliases and all properties
+                  GrpcRecord grpcRecord = convertResultToGrpcRecord(result, db,
+                      new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0));
+                  out.addRecords(grpcRecord);
+                  emitted++;
+                }
+              } else {
 
-              // Convert Result to GrpcRecord, preserving aliases and all properties
-              GrpcRecord grpcRecord = convertResultToGrpcRecord(result, db,
-                  new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0));
-              out.addRecords(grpcRecord);
+                // Scalar / projection row (e.g., RETURN COUNT)
+
+                if (emitted < maxRows) {
+
+                  GrpcRecord.Builder recB = GrpcRecord.newBuilder();
+
+                  for (String p : result.getPropertyNames()) {
+
+                    recB.putProperties(p, convertPropToGrpcValue(p, result));
+                  }
+
+                  out.addRecords(recB.build());
+
+                  emitted++;
+                }
+
+              }
             }
           } else {
 
