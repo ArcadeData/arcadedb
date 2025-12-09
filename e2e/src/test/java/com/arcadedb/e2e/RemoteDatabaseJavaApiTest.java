@@ -231,7 +231,6 @@ class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
         """);
 
     Schema schema = database.getSchema();
-    System.out.println("schema.toString() = " + schema.toString());
     assertThat(schema.existsType("V1")).isTrue();
     assertThat(schema.existsType("V2")).isTrue();
     assertThat(schema.existsType("V3")).isTrue();
@@ -271,7 +270,7 @@ class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
 
   @Test
   @Disabled
-  void multipleInsertBAtched() throws Exception {
+  void multipleInsertBatched() throws Exception {
     database.command("sqlscript", """
         create vertex type `TEXT_EMBEDDING` if not exists;
         create property TEXT_EMBEDDING.str if not exists STRING;
