@@ -108,4 +108,58 @@ public class EmbeddedListIndexByItemTest extends TestHelper {
       // TODO: This should use an index on tags.id or tags.name
     });
   }
+
+  @Test
+  void listOfMapIndexByItem() {
+    // Test indexing a property inside a list of maps
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE doc");
+      database.command("sql", "CREATE PROPERTY doc.nums LIST OF MAP");
+      database.command("sql", "CREATE INDEX ON doc (`nums.a` BY ITEM) NOTUNIQUE");
+    });
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO doc SET nums = [{'a':1},{'a':2}]");
+    });
+
+    // Query the indexed data
+    database.transaction(() -> {
+      ResultSet result = database.query("sql", "SELECT FROM doc WHERE nums.a CONTAINS 1");
+      long count = result.stream().count();
+      assertThat(count).isEqualTo(1);
+
+      // Verify index is being used
+      String explain = database.query("sql", "EXPLAIN SELECT FROM doc WHERE nums.a CONTAINS 1")
+          .next().getProperty("executionPlan").toString();
+      assertThat(explain).contains("FETCH FROM INDEX");
+    });
+  }
+
+  @Test
+  void listOfEmbeddedDocumentIndexByItem() {
+    // Test indexing a property inside a list of embedded documents with explicit type
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE num");
+      database.command("sql", "CREATE PROPERTY num.a LONG");
+      database.command("sql", "CREATE DOCUMENT TYPE doc");
+      database.command("sql", "CREATE PROPERTY doc.nums LIST OF num");
+      database.command("sql", "CREATE INDEX ON doc (`nums.a` BY ITEM) NOTUNIQUE");
+    });
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO doc SET nums = [{'@type':'num','a':1},{'@type':'num','a':2}]");
+    });
+
+    // Query the indexed data
+    database.transaction(() -> {
+      ResultSet result = database.query("sql", "SELECT FROM doc WHERE nums.a CONTAINS 1");
+      long count = result.stream().count();
+      assertThat(count).isEqualTo(1);
+
+      // Verify index is being used
+      String explain = database.query("sql", "EXPLAIN SELECT FROM doc WHERE nums.a CONTAINS 1")
+          .next().getProperty("executionPlan").toString();
+      assertThat(explain).contains("FETCH FROM INDEX");
+    });
+  }
 }
