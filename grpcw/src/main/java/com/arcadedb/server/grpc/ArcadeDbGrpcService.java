@@ -55,6 +55,7 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
+import org.jspecify.annotations.NonNull;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -174,7 +175,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final boolean returnRows = req.getReturnRows();
       final int maxRows = req.getMaxRows() > 0 ? req.getMaxRows() : DEFAULT_MAX_COMMAND_ROWS;
 
-      ExecuteCommandResponse.Builder out = ExecuteCommandResponse.newBuilder().setSuccess(true).setMessage("OK");
+      ExecuteCommandResponse.Builder out = ExecuteCommandResponse.newBuilder()
+          .setSuccess(true)
+          .setMessage("OK");
 
       // Execute the command
 
@@ -191,40 +194,27 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             LogManager.instance().log(this, Level.FINE, "executeCommand(): returning rows ...");
 
             int emitted = 0;
-
             while (rs.hasNext()) {
 
-              Result r = rs.next();
+              Result result = rs.next();
 
-              if (r.isElement()) {
-                affected++; // count modified/returned records
-                if (emitted < maxRows) {
-                  out.addRecords(convertToGrpcRecord(r.getElement().get(), db));
-                  emitted++;
-                }
+              if (result.isElement()) {
+                affected++;
               } else {
-
-                // Scalar / projection row (e.g., RETURN COUNT)
-
-                if (emitted < maxRows) {
-
-                  GrpcRecord.Builder recB = GrpcRecord.newBuilder();
-
-                  for (String p : r.getPropertyNames()) {
-
-                    recB.putProperties(p, convertPropToGrpcValue(p, r));
-                  }
-
-                  out.addRecords(recB.build());
-
-                  emitted++;
-                }
-
-                for (String p : r.getPropertyNames()) {
-                  Object v = r.getProperty(p);
-                  if (v instanceof Number n)
+                for (String p : result.getPropertyNames()) {
+                  Object v = result.getProperty(p);
+                  if (v instanceof Number n) {
                     affected += n.longValue();
+                  }
                 }
+              }
+
+              if (emitted < maxRows) {
+                // Convert Result to GrpcRecord, preserving aliases and all properties
+                GrpcRecord grpcRecord = convertResultToGrpcRecord(result, db,
+                    new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0));
+                out.addRecords(grpcRecord);
+                emitted++;
               }
             }
           } else {
@@ -274,7 +264,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       final long ms = (System.nanoTime() - t0) / 1_000_000L;
       out.setAffectedRecords(affected).setExecutionTimeMs(ms);
-
       resp.onNext(out.build());
       resp.onCompleted();
 
@@ -291,15 +280,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
 
       final long ms = (System.nanoTime() - t0) / 1_000_000L;
-      ExecuteCommandResponse err = ExecuteCommandResponse.newBuilder().setSuccess(false)
-          .setMessage(e.getMessage() == null ? e.toString() : e.getMessage()).setAffectedRecords(0L).setExecutionTimeMs(ms).build();
+      ExecuteCommandResponse err = ExecuteCommandResponse
+          .newBuilder()
+          .setSuccess(false)
+          .setMessage(e.getMessage() == null ? e.toString() : e.getMessage())
+          .setAffectedRecords(0L)
+          .setExecutionTimeMs(ms)
+          .build();
 
       // Prefer returning a structured response so clients always get timing/message
       resp.onNext(err);
       resp.onCompleted();
-      // If you prefer gRPC error codes: comment the two lines above and use:
-      // resp.onError(Status.INTERNAL.withDescription("ExecuteCommand: " +
-      // e.getMessage()).asException());
     }
   }
 
@@ -625,26 +616,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     try {
 
-      ProjectionConfig projectionConfig = null;
-
-      if (request.hasProjectionSettings()) {
-
-        var projectionSettings = request.getProjectionSettings();
-
-        final boolean includeProjections = projectionSettings.getIncludeProjections();
-        final var projMode = projectionSettings.getProjectionEncoding();
-
-        int softLimit = projectionSettings.hasSoftLimitBytes() ?
-            projectionSettings.getSoftLimitBytes().getValue() :
-            0; // choose your
-        // default
-        // or 0 =
-        // unlimited
-        projectionConfig = new ProjectionConfig(includeProjections, projMode, softLimit);
-      } else {
-
-        projectionConfig = new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);
-      }
+      ProjectionConfig projectionConfig = getProjectionConfig(request);
 
       LogManager.instance().log(this, Level.FINE, "executeQuery(): projectionConfig.include = %s projectionConfig.mode = %s",
           projectionConfig.isInclude(),
@@ -724,6 +696,29 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", e, e.getMessage());
       responseObserver.onError(Status.INTERNAL.withDescription("Query execution failed: " + e.getMessage()).asException());
     }
+  }
+
+  private @NonNull ProjectionConfig getProjectionConfig(ExecuteQueryRequest request) {
+    ProjectionConfig projectionConfig;
+    if (request.hasProjectionSettings()) {
+
+      var projectionSettings = request.getProjectionSettings();
+
+      final boolean includeProjections = projectionSettings.getIncludeProjections();
+      final var projMode = projectionSettings.getProjectionEncoding();
+
+      int softLimit = projectionSettings.hasSoftLimitBytes() ?
+          projectionSettings.getSoftLimitBytes().getValue() :
+          0; // choose your
+      // default
+      // or 0 =
+      // unlimited
+      projectionConfig = new ProjectionConfig(includeProjections, projMode, softLimit);
+    } else {
+
+      projectionConfig = new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);
+    }
+    return projectionConfig;
   }
 
   @Override
@@ -2379,7 +2374,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     LogManager.instance().log(this, Level.FINE, "ENC-RES DONE rid=%s type=%s props=%s",
         builder.getRid(), builder.getType(), builder.getPropertiesCount());
-
 
     return builder.build();
   }
