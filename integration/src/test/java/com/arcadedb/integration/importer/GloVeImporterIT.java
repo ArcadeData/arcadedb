@@ -21,12 +21,14 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.integration.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
+import org.junit.jupiter.api.MethodOrderer.OrderAnnotation;
+import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -35,8 +37,10 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@TestMethodOrder(OrderAnnotation.class)
 class GloVeImporterIT {
   @Test
+  @Order(1)
   void importDocuments() {
     final String databasePath = "target/databases/test-glove";
 
@@ -80,7 +84,7 @@ class GloVeImporterIT {
 
       // Verify results
       assertThat(approximateResults).isNotEmpty();
-
+      db.close();
     } finally {
 //      db.drop();
 //      TestHelper.checkActiveDatabases();
@@ -89,9 +93,9 @@ class GloVeImporterIT {
   }
 
   @Test
+  @Order(2)
   void query() {
     final String databasePath = "target/databases/test-glove";
-
 
     final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
 

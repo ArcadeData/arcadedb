@@ -19,8 +19,10 @@
 package com.arcadedb.gremlin.service;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.gremlin.ArcadeGraph;
-import com.arcadedb.index.vector.HnswVectorIndex;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.utility.Pair;
 import org.apache.tinkerpop.gremlin.process.traversal.Traverser;
 import org.apache.tinkerpop.gremlin.process.traversal.traverser.util.TraverserSet;
@@ -38,7 +40,8 @@ import java.util.Set;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class VectorNeighborsFactory extends ArcadeServiceRegistry.ArcadeServiceFactory<Vertex, List<Map>> implements Service<Vertex, List<Map>> {
+public class VectorNeighborsFactory extends ArcadeServiceRegistry.ArcadeServiceFactory<Vertex, List<Map>>
+    implements Service<Vertex, List<Map>> {
 
   public static final String NAME = "arcadedb#vectorNeighbors";
 
@@ -73,18 +76,23 @@ public class VectorNeighborsFactory extends ArcadeServiceRegistry.ArcadeServiceF
 
   public CloseableIterator<List<Map>> execute(final ServiceCallContext ctx, final Map params) {
     final String indexName = (String) params.get("indexName");
-    final Object vector = params.get("vector");
+    final Object vectorParam = params.get("vector");
+
     Integer limit = (Integer) params.get("limit");
     if (limit == null)
       limit = -1;
+    if (vectorParam instanceof float[] vector) {
 
-    final HnswVectorIndex persistentIndex = (HnswVectorIndex) graph.getDatabase().getSchema().getIndexByName(indexName);
-    final List<Pair<Identifiable, ? extends Number>> neighbors = persistentIndex.findNeighborsFromVector(vector, limit);
+      TypeIndex indexByName = (TypeIndex) graph.getDatabase().getSchema().getIndexByName(indexName);
+      final LSMVectorIndex persistentIndex = (LSMVectorIndex) indexByName.getIndexesOnBuckets()[0];
+      final List<Pair<RID, Float>> neighbors = persistentIndex.findNeighborsFromVector(vector, limit);
 
-    final List<Map> result = new ArrayList<>(neighbors.size());
-    for (Pair<Identifiable, ? extends Number> n : neighbors)
-      result.add(Map.of("vertex", graph.getVertexFromRecord(n.getFirst()), "distance", n.getSecond()));
-    return CloseableIterator.of(List.of(result).iterator());
+      final List<Map> result = new ArrayList<>(neighbors.size());
+      for (Pair<RID, Float> n : neighbors)
+        result.add(Map.of("vertex", graph.getVertexFromRecord(n.getFirst()), "distance", n.getSecond()));
+      return CloseableIterator.of(List.of(result).iterator());
+    }
+    else return CloseableIterator.empty();
   }
 
   @Override
