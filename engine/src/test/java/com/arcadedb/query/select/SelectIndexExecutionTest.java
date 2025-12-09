@@ -56,6 +56,15 @@ public class SelectIndexExecutionTest extends TestHelper {
   }
 
   @Test
+  void okSqlCreationIfNotExists() {
+    database.command("sql", "CREATE VERTEX TYPE Z IF NOT EXISTS");
+    database.command("sql", "CREATE PROPERTY Z.prop IF NOT EXISTS STRING");
+    database.command("sql", "CREATE INDEX IF NOT EXISTS ON Z (prop) UNIQUE");
+    // THIS SHOULD NOT FAIL
+    database.command("sql", "CREATE INDEX IF NOT EXISTS ON Z (prop) UNIQUE");
+  }
+
+    @Test
   void okOneOfTwoAvailableIndexes() {
     // EXPECTED TO USE BOTH INDEXES BECAUSE OF THE AND LOGIC OPERATOR
     {
