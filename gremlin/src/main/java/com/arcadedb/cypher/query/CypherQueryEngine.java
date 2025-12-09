@@ -20,17 +20,14 @@ package com.arcadedb.cypher.query;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.cypher.ArcadeCypher;
-import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.stream.*;
 
 import static com.arcadedb.schema.Property.IN_PROPERTY;
 import static com.arcadedb.schema.Property.OUT_PROPERTY;
@@ -85,7 +82,7 @@ public class CypherQueryEngine implements QueryEngine {
       return arcadeCypher.execute();
 
     } catch (final Exception e) {
-      throw new CommandParsingException("Error on executing Cypher query", e);
+      throw new CommandExecutionException("Error on executing Cypher query: `" + query + "` with parameters " + parameters, e);
     }
   }
 
