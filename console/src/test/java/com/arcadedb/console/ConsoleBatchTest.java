@@ -44,6 +44,17 @@ class ConsoleBatchTest {
   }
 
   @Test
+  void okSqlCreationIfNotExists() throws Exception {
+    Console.execute(new String[] { "-b",
+        "create database console;" +
+            "CREATE VERTEX TYPE Z IF NOT EXISTS;" +
+            "CREATE PROPERTY Z.prop IF NOT EXISTS STRING;" +
+            "CREATE INDEX IF NOT EXISTS ON Z (prop) UNIQUE;" +
+            // THIS SHOULD NOT FAIL
+            "CREATE INDEX IF NOT EXISTS ON Z (prop) UNIQUE;" });
+  }
+
+  @Test
   void okBatchMultiLine() throws Exception {
     Console.execute(new String[] { "-b",
         "create database console;" +
