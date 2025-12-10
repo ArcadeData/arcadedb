@@ -179,6 +179,28 @@ class InsertStatementTest {
         }""");
   }
 
+  @Test
+  void insertJsonEmbeddedDeepLevels() {
+    checkRightSyntax("""
+        INSERT INTO V SET brokenembedded = {"@type":"d","1":{"2":{"3":{"4":{"5":{"6":{"7":{"8":{"9":{"10":{"11":{"12":{"13":{"14":{"15":{"16":{"17":{"18":{"19":{"20":{"21":{"22":{"23":{"24":{"25":{}}}}}}}}}}}}}}}}}}}}}}}}}}
+        """);
+  }
+
+  @Test
+  void insertJsonEmbeddedVeryDeepLevels() {
+    // Test with 100 levels to verify O(n) scaling
+    StringBuilder json = new StringBuilder("{\"@type\":\"d\",\"1\":{");
+    for (int i = 2; i <= 100; i++) {
+      json.append("\"").append(i).append("\":{");
+    }
+    // Need 101 closing braces: 1 for initial "{", 1 for "1":{, and 99 more for the loop
+    for (int i = 0; i <= 100; i++) {
+      json.append("}");
+    }
+
+    checkRightSyntax("INSERT INTO V SET brokenembedded = " + json.toString());
+  }
+
   protected SqlParser getParserFor(final String string) {
     final InputStream is = new ByteArrayInputStream(string.getBytes());
     return new SqlParser(null, is);
