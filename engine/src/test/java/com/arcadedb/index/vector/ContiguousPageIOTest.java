@@ -42,7 +42,7 @@ class ContiguousPageIOTest {
   }
 
   @Test
-  void testWriteReadSymmetry() throws Exception {
+  void writeReadSymmetry() throws Exception {
     // Create database
     DatabaseFactory factory = new DatabaseFactory(DB_PATH);
     if (factory.exists()) {

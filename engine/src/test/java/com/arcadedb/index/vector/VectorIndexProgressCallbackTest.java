@@ -19,23 +19,22 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Test for progress callbacks during vector index building.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class VectorIndexProgressCallbackTest extends TestHelper {
+class VectorIndexProgressCallbackTest extends TestHelper {
 
   @Test
-  public void testVectorIndexBuildWithProgressCallback() {
+  void vectorIndexBuildWithProgressCallback() {
     // Create schema
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE VectorDoc IF NOT EXISTS");
@@ -48,7 +47,7 @@ public class VectorIndexProgressCallbackTest extends TestHelper {
     });
 
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("VectorDoc[embedding]");
-    Assertions.assertNotNull(typeIndex);
+    assertThat(typeIndex).isNotNull();
 
     // Insert test documents
     database.transaction(() -> {
@@ -87,27 +86,27 @@ public class VectorIndexProgressCallbackTest extends TestHelper {
         },
         (phase, processedNodes, totalNodes, insertsOrAccesses) -> {
           switch (phase) {
-            case "validating":
-              validationProgress.set(processedNodes);
-              System.out.printf("Validating vectors: %d / %d%n", processedNodes, totalNodes);
-              break;
-            case "building":
-              buildingProgress.set(processedNodes);
-              buildingCallbacks.incrementAndGet();
-              final int insertsInProgress = (int) (insertsOrAccesses - processedNodes);
-              System.out.printf("Building graph: %d / %d nodes (%d inserts in progress)%n",
-                  processedNodes, totalNodes, insertsInProgress);
-              break;
-            case "persisting":
-              persistingCalled.incrementAndGet();
-              System.out.printf("Persisting graph: %d / %d nodes%n", processedNodes, totalNodes);
-              break;
+          case "validating":
+            validationProgress.set(processedNodes);
+            System.out.printf("Validating vectors: %d / %d%n", processedNodes, totalNodes);
+            break;
+          case "building":
+            buildingProgress.set(processedNodes);
+            buildingCallbacks.incrementAndGet();
+            final int insertsInProgress = (int) (insertsOrAccesses - processedNodes);
+            System.out.printf("Building graph: %d / %d nodes (%d inserts in progress)%n",
+                processedNodes, totalNodes, insertsInProgress);
+            break;
+          case "persisting":
+            persistingCalled.incrementAndGet();
+            System.out.printf("Persisting graph: %d / %d nodes%n", processedNodes, totalNodes);
+            break;
           }
         }
     );
 
     // Verify callbacks were called
-    Assertions.assertEquals(1000, documentsIndexed.get(), "Should have indexed 1000 documents");
+    assertThat(documentsIndexed.get()).as("Should have indexed 1000 documents").isEqualTo(1000);
     // Note: Validation and building callbacks may not be called if graph is already built
     // during the insert phase. That's ok - the important thing is that the index build succeeded.
     // In production, these callbacks will be triggered when explicitly rebuilding an existing index.
@@ -119,7 +118,7 @@ public class VectorIndexProgressCallbackTest extends TestHelper {
   }
 
   @Test
-  public void testVectorIndexBuildWithoutCallback() {
+  void vectorIndexBuildWithoutCallback() {
     // Create schema
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE SimpleDoc IF NOT EXISTS");
@@ -129,7 +128,7 @@ public class VectorIndexProgressCallbackTest extends TestHelper {
     });
 
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("SimpleDoc[vec]");
-    Assertions.assertNotNull(typeIndex);
+    assertThat(typeIndex).isNotNull();
 
     // Insert test documents
     database.transaction(() -> {
@@ -147,11 +146,11 @@ public class VectorIndexProgressCallbackTest extends TestHelper {
     final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
     final long totalRecords = lsmIndex.build(100000, null);
 
-    Assertions.assertEquals(100, totalRecords, "Should have indexed 100 documents");
+    assertThat(totalRecords).as("Should have indexed 100 documents").isEqualTo(100);
   }
 
   @Test
-  public void testGraphRebuildWithCallback() {
+  void graphRebuildWithCallback() {
     // This test demonstrates the graph building callbacks when rebuilding an existing index
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE RebuildDoc IF NOT EXISTS");

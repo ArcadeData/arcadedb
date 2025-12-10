@@ -54,6 +54,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.LockManager;
+import com.arcadedb.utility.Pair;
 import io.github.jbellis.jvector.graph.GraphIndexBuilder;
 import io.github.jbellis.jvector.graph.GraphSearcher;
 import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
@@ -1379,7 +1380,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *
    * @return List of pairs containing RID and similarity score
    */
-  public List<com.arcadedb.utility.Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k) {
+  public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k) {
     if (queryVector == null)
       throw new IllegalArgumentException("Query vector cannot be null");
 
@@ -1451,7 +1452,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           searchResult.getNodes().length, graphIndex.size(), vectors.size(), ordinalToVectorId.length);
 
       // Extract RIDs and scores from search results using ordinal mapping
-      final List<com.arcadedb.utility.Pair<RID, Float>> results = new ArrayList<>();
+      final List<Pair<RID, Float>> results = new ArrayList<>();
       int skippedOutOfBounds = 0;
       int skippedDeletedOrNull = 0;
       for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
