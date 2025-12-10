@@ -46,7 +46,7 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
   private final Map<String, String> schemaFiles = new LinkedHashMap<>(getServerCount());
 
   @Test
-  public void testReplication() throws Exception {
+  void testReplication() throws Exception {
     super.replication();
 
     for (int i = 0; i < getServerCount(); i++) {

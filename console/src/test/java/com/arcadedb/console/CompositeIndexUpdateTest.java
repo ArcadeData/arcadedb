@@ -26,6 +26,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -40,8 +41,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.io.PrintStream;
 import java.time.LocalDateTime;
+import java.util.logging.Level;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -147,12 +148,12 @@ public class CompositeIndexUpdateTest {
     arcadeDBServer.start();
     Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
     database.async().onError(exception -> {
-      System.out.println("database.async() error: " + exception.getMessage());
+      LogManager.instance().log(this, Level.FINE, "database.async() error: " + exception.getMessage());
       exception.printStackTrace();
       txErrorCounter.incrementAndGet();
     });
     database.async().setParallelLevel(PARALLEL_LEVEL);
-    System.out.println();
+    LogManager.instance().log(this, Level.FINE, "");
 
     // insert TOTAL_ORDERS orders
     assertThat(TOTAL_ORDERS).isEqualTo(insertOrders(database, TOTAL_ORDERS).get("totalRows"));
@@ -169,7 +170,7 @@ public class CompositeIndexUpdateTest {
 
     // re-submit order
     MutableDocument document = resubmitOrder(database, 1);
-    System.out.println("re-submit result = " + document.toJSON());
+    LogManager.instance().log(this, Level.FINE, "re-submit result = " + document.toJSON());
 
     // retrieve correct order by id
     try (ResultSet resultSet = database.query("sql", "select status from Order where id = 1")) {
@@ -179,7 +180,7 @@ public class CompositeIndexUpdateTest {
     try (ResultSet resultSet = database.query("sql", "SELECT  FROM Order WHERE status = 'PENDING' ORDER BY id ASC")) {
       while (resultSet.hasNext()) {
         Result result = resultSet.next();
-        System.out.println("-> " + result.toJSON());
+        LogManager.instance().log(this, Level.FINE, "-> " + result.toJSON());
       }
     }
 
@@ -202,7 +203,7 @@ public class CompositeIndexUpdateTest {
       orders.add(new CandidateOrder("SIR1LRM-7.1", "#2:0", start, stop, "cs2minipds-test", "PENDING"));
     }
     JSONObject jsonObject = insertOrdersAsync(database, orders);
-    System.out.println("insert result = " + jsonObject.toString());
+    LogManager.instance().log(this, Level.FINE, "insert result = " + jsonObject.toString());
     return jsonObject;
   }
 
@@ -224,7 +225,7 @@ public class CompositeIndexUpdateTest {
       indexCursor = database.lookupByKey("Order", new String[] { "processor", "vstart", "vstop" },
           new Object[] { order.getProcessor(), order.getStart(), order.getStop() });
       if (indexCursor.hasNext()) {
-        System.out.println("found existing record");
+        LogManager.instance().log(this, Level.FINE, "found existing record");
         record = indexCursor.next().getRecord().asDocument(true).modify();
         record.set("processor", order.getProcessor());
         record.set("trigger", order.getTriggerRid());
@@ -252,7 +253,7 @@ public class CompositeIndexUpdateTest {
       }
     }
     if (!database.async().waitCompletion(5000)) {
-      System.out.println("timeout expired before order insertion completed");
+      LogManager.instance().log(this, Level.FINE, "timeout expired before order insertion completed");
     }
     database.getSchema().dropIndex(insertOrdersIndex.getName());
     result.put("totalRows", totalRows.get());
@@ -268,7 +269,7 @@ public class CompositeIndexUpdateTest {
     try (ResultSet resultSet = database.query("sql", RETRIEVE_NEXT_ELIGIBLE_ORDERS, "PENDING", 1)) {
       if (resultSet.hasNext()) {
         result = resultSet.next();
-        System.out.println("retrieve result = " + result.toJSON());
+        LogManager.instance().log(this, Level.FINE, "retrieve result = " + result.toJSON());
         return result.getProperty("id");
       } else {
         fail("no orders found");
@@ -288,7 +289,7 @@ public class CompositeIndexUpdateTest {
       if (node != null) {
         record.set("node", node);
       }
-      System.out.println("modified record = " + record);
+      LogManager.instance().log(this, Level.FINE, "modified record = " + record);
       record.save();
     } else {
       fail("could not find order id = " + orderId);

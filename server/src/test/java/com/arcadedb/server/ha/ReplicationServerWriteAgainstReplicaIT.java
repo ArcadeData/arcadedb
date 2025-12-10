@@ -28,7 +28,7 @@ import java.util.logging.Level;
 
 class ReplicationServerWriteAgainstReplicaIT extends ReplicationServerIT {
   @Test
-  public void testReplication() {
+  void testReplication() {
     // Ensure all servers are fully connected and synchronized before writing against replica
     // This is critical because we're writing against server 1 (replica) which must forward
     // writes to the leader (server 0)

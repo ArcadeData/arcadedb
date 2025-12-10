@@ -57,7 +57,7 @@ public class ReplicationServerLeaderDownIT extends ReplicationServerIT {
 
   @Test
   @Disabled
-  public void testReplication() {
+  void testReplication() {
     checkDatabases();
 
     final String server1Address = getServer(0).getHttpServer().getListeningAddress();
