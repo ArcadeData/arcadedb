@@ -52,7 +52,7 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
   }
 
   @Test
-  public void testReplication() {
+  void testReplication() {
     checkDatabases();
 
     final String server2Address = getServer(1).getHttpServer().getListeningAddress();

@@ -70,7 +70,7 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
   }
 
   @Test
-  public void testReplication() throws Exception {
+  void testReplication() throws Exception {
     assertThatThrownBy(super::replication)
         .isInstanceOf(QuorumNotReachedException.class);
   }

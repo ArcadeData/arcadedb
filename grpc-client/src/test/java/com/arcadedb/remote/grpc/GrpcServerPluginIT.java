@@ -108,7 +108,7 @@ public class GrpcServerPluginIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testGrpcQueryWithAliasesAndMetadata() {
+  void grpcQueryWithAliasesAndMetadata() {
 
     String query = "SELECT *,  @rid, @type, author AS _author FROM article";
     ResultSet resultSet = database.query("sql", query);
@@ -123,7 +123,7 @@ public class GrpcServerPluginIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testGrpcUpdateWithAlas() {
+  void grpcUpdateWithAlas() {
     String update = """
         UPDATE article  SET title = "My third article updated" RETURN AFTER *, author AS _author WHERE id = 3
         """;
@@ -140,7 +140,7 @@ public class GrpcServerPluginIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testGrpcInsertWithReturn() {
+  void grpcInsertWithReturn() {
     String command = """
         INSERT INTO article CONTENT {
                 "id": 4,
@@ -167,7 +167,7 @@ public class GrpcServerPluginIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testGrpcCreateVertexWithReturn() {
+  void grpcCreateVertexWithReturn() {
     String command = """
         CREATE VERTEX article CONTENT {
                 "id": 4,
