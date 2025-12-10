@@ -43,6 +43,7 @@ public class TerminalParser extends DefaultParser {
     int rawWordCursor = -1;
     int rawWordLength = -1;
     int rawWordStart = 0;
+    int braceDepth = 0;
 
     for (int i = 0; i < line.length(); ++i) {
       if (i == cursor) {
@@ -51,20 +52,22 @@ public class TerminalParser extends DefaultParser {
         rawWordCursor = i - rawWordStart;
       }
 
+      final char c = line.charAt(i);
+
       if (quoteStart < 0 && this.isQuoteChar(line, i)) {
         quoteStart = i;
-        current.append(line.charAt(i));
+        current.append(c);
       } else if (quoteStart >= 0) {
-        if (line.charAt(quoteStart) == line.charAt(i) && !this.isEscaped(line, i)) {
-          current.append(line.charAt(i));
+        if (line.charAt(quoteStart) == c && !this.isEscaped(line, i)) {
+          current.append(c);
           quoteStart = -1;
           if (rawWordCursor >= 0 && rawWordLength < 0) {
             rawWordLength = i - rawWordStart + 1;
           }
         } else if (!this.isEscapeChar(line, i)) {
-          current.append(line.charAt(i));
+          current.append(c);
         }
-      } else if (this.isDelimiter(line, i)) {
+      } else if (this.isDelimiter(line, i) && braceDepth == 0) {
         if (current.length() > 0) {
           words.add(current.toString());
           current.setLength(0);
@@ -75,7 +78,46 @@ public class TerminalParser extends DefaultParser {
 
         rawWordStart = i + 1;
       } else if (!this.isEscapeChar(line, i)) {
-        current.append(line.charAt(i));
+        if (c == '{') {
+          braceDepth++;
+          current.append(c);
+        } else if (c == '}') {
+          final int prevDepth = braceDepth;
+          braceDepth--;
+          current.append(c);
+
+          // Check if we just closed all braces and there's more content after newlines
+          if (prevDepth == 1 && braceDepth == 0 && current.length() > 0) {
+            // Look ahead to see if there's a newline followed by non-whitespace content
+            int j = i + 1;
+            boolean foundNewline = false;
+            boolean foundContent = false;
+
+            while (j < line.length() && Character.isWhitespace(line.charAt(j))) {
+              if (line.charAt(j) == '\n' || line.charAt(j) == '\r') {
+                foundNewline = true;
+              }
+              j++;
+            }
+
+            if (j < line.length() && !this.isDelimiter(line, j)) {
+              foundContent = true;
+            }
+
+            // If we found a newline and then more content (not a semicolon), split here
+            if (foundNewline && foundContent) {
+              words.add(current.toString());
+              current.setLength(0);
+              if (rawWordCursor >= 0 && rawWordLength < 0) {
+                rawWordLength = i - rawWordStart + 1;
+              }
+              rawWordStart = j;
+              i = j - 1; // Will be incremented by the loop
+            }
+          }
+        } else {
+          current.append(c);
+        }
       }
     }
 
