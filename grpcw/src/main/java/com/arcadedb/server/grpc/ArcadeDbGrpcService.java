@@ -165,7 +165,24 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       LogManager.instance().log(this, Level.FINE, "executeCommand(): hasTx = %s tx = %s", hasTx, tx);
 
-      if (hasTx && tx.getBegin()) {
+      // Check if this is an externally-managed transaction (started via beginTransaction RPC)
+      final String incomingTxId = (hasTx && tx != null) ? tx.getTransactionId() : null;
+      final boolean isExternalTransaction = incomingTxId != null && !incomingTxId.isBlank()
+          && activeTransactions.containsKey(incomingTxId);
+
+      // Auto-wrap in a tx if the client didn't send a tx and none is active
+      final boolean activeAtEntry = db.isTransactionActive();
+      final boolean autoWrap = !hasTx && !activeAtEntry;
+
+      if (isExternalTransaction) {
+        // Transaction already started via beginTransaction() - don't begin again
+        LogManager.instance().log(this, Level.FINE, "executeCommand(): using external transaction %s (already active)", incomingTxId);
+      } else if (hasTx && tx.getBegin()) {
+        db.begin();
+        beganHere = true;
+      } else if (autoWrap) {
+        // Server-side safety: keep UPDATE/UPSERT/MERGE pipelines atomic
+        LogManager.instance().log(this, Level.FINE, "executeCommand(): auto-wrapping in tx because no client tx and none active");
         db.begin();
         beganHere = true;
       }
@@ -194,27 +211,40 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             LogManager.instance().log(this, Level.FINE, "executeCommand(): returning rows ...");
 
             int emitted = 0;
+
             while (rs.hasNext()) {
 
-              Result result = rs.next();
+              Result r = rs.next();
 
-              if (result.isElement()) {
-                affected++;
-              } else {
-                for (String p : result.getPropertyNames()) {
-                  Object v = result.getProperty(p);
-                  if (v instanceof Number n) {
-                    affected += n.longValue();
-                  }
+              if (r.isElement()) {
+                affected++; // count modified/returned records
+                if (emitted < maxRows) {
+                  out.addRecords(convertToGrpcRecord(r.getElement().get(), db));
+                  emitted++;
                 }
-              }
+              } else {
 
-              if (emitted < maxRows) {
-                // Convert Result to GrpcRecord, preserving aliases and all properties
-                GrpcRecord grpcRecord = convertResultToGrpcRecord(result, db,
-                    new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0));
-                out.addRecords(grpcRecord);
-                emitted++;
+                // Scalar / projection row (e.g., RETURN COUNT)
+
+                if (emitted < maxRows) {
+
+                  GrpcRecord.Builder recB = GrpcRecord.newBuilder();
+
+                  for (String p : r.getPropertyNames()) {
+
+                    recB.putProperties(p, convertPropToGrpcValue(p, r));
+                  }
+
+                  out.addRecords(recB.build());
+
+                  emitted++;
+                }
+
+                for (String p : r.getPropertyNames()) {
+                  Object v = r.getProperty(p);
+                  if (v instanceof Number n)
+                    affected += n.longValue();
+                }
               }
             }
           } else {
@@ -240,11 +270,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       LogManager.instance().log(this, Level.FINE, "executeCommand(): after - hasTx = %s tx = %s", hasTx, tx);
 
-      // Transaction end — precedence: rollback > commit > begin-only⇒commit
-      if (hasTx) {
+      // Check if this transaction is managed externally via beginTransaction()
+      // If so, we must NOT commit/rollback here - let commitTransaction()/rollbackTransaction() handle it
+      final String txId = (hasTx && tx != null) ? tx.getTransactionId() : null;
+      final boolean managedExternally = txId != null && !txId.isBlank() && activeTransactions.containsKey(txId);
 
+      if (managedExternally) {
+        // Transaction was started via beginTransaction() RPC - don't touch its lifecycle
+        LogManager.instance().log(this, Level.FINE,
+            "executeCommand(): after - external transaction %s managed by beginTransaction/commitTransaction, skipping auto-commit/rollback",
+            txId);
+      } else if (hasTx) {
+        // Transaction end — precedence: rollback > commit > begin-only⇒commit
         if (tx.getRollback()) {
-
           LogManager.instance()
               .log(this, Level.FINE, "executeCommand(): after - rolling back db=%s tid=%s", db.getName(), tx.getTransactionId());
           db.rollback();
@@ -253,13 +291,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               .log(this, Level.FINE, "executeCommand(): after - committing [tx.getCommit() == true] db=%s tid=%s", db.getName(),
                   tx.getTransactionId());
           db.commit();
-        } else if (beganHere) {
+        } else if (beganHere && db.isTransactionActive()) {
           // Began but no explicit commit/rollback flag — default to commit (HTTP parity)
           LogManager.instance()
               .log(this, Level.FINE, "executeCommand(): after - committing [beganHere == true] db=%s tid=%s", db.getName(),
                   tx.getTransactionId());
           db.commit();
         }
+      } else if (beganHere && db.isTransactionActive()) {
+        // Auto-wrapped tx: ensure we commit after fully draining ResultSet
+        LogManager.instance().log(this, Level.FINE, "executeCommand(): after - committing [autoWrap] db=%s", db.getName());
+        db.commit();
       }
 
       final long ms = (System.nanoTime() - t0) / 1_000_000L;
@@ -272,9 +314,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       LogManager.instance().log(this, Level.SEVERE, "ERROR", e);
 
       // Best-effort rollback if we began here and failed
+      // But NOT if transaction is managed externally via beginTransaction()
+      final String txIdForError = (req.hasTransaction() && req.getTransaction() != null)
+          ? req.getTransaction().getTransactionId() : null;
+      final boolean managedExternallyForError = txIdForError != null && !txIdForError.isBlank()
+          && activeTransactions.containsKey(txIdForError);
+
       try {
-        if (beganHere && db != null)
+        if (beganHere && db != null && !managedExternallyForError) {
           db.rollback();
+        } else if (managedExternallyForError) {
+          LogManager.instance().log(this, Level.FINE,
+              "executeCommand(): error occurred but transaction %s is externally managed, skipping auto-rollback", txIdForError);
+        }
       } catch (Exception ignore) {
         /* no-op */
       }
@@ -301,7 +353,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       Database db = getDatabase(req.getDatabase(), req.getCredentials());
 
-      final String cls = req.getType(); // or req.getTargetClass() if that’s your proto
+      final String cls = req.getType(); // or req.getTargetClass() if that's your proto
       if (cls == null || cls.isEmpty())
         throw new IllegalArgumentException("targetClass is required");
 
@@ -662,18 +714,40 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         LogManager.instance().log(this, Level.FINE, "executeQuery(): result = %s", result);
 
-        // Convert Result to GrpcRecord, preserving aliases and all properties
-        GrpcRecord grpcRecord = convertResultToGrpcRecord(result, database, projectionConfig);
+        if (result.isElement()) {
 
-        LogManager.instance().log(this, Level.FINE, "executeQuery(): grpcRecord -> @rid = %s", grpcRecord.getRid());
+          LogManager.instance().log(this, Level.FINE, "executeQuery(): isElement");
 
-        resultBuilder.addRecords(grpcRecord);
+          Record dbRecord = result.getElement().get();
 
-        count++;
+          LogManager.instance().log(this, Level.FINE, "executeQuery(): dbRecord -> @rid = %s", dbRecord.getIdentity().toString());
 
-        // Apply limit if specified
-        if (request.getLimit() > 0 && count >= request.getLimit()) {
-          break;
+          GrpcRecord grpcRecord = convertToGrpcRecord(dbRecord, database);
+
+          LogManager.instance().log(this, Level.FINE, "executeQuery(): grpcRecord -> @rid = %s", grpcRecord.getRid());
+
+          resultBuilder.addRecords(grpcRecord);
+
+          count++;
+
+          // Apply limit if specified
+          if (request.getLimit() > 0 && count >= request.getLimit()) {
+            break;
+          }
+        } else {
+
+          LogManager.instance().log(this, Level.FINE, "executeQuery(): NOT isElement");
+
+          // Scalar / projection row (e.g., RETURN COUNT)
+
+          GrpcRecord.Builder recB = GrpcRecord.newBuilder();
+
+          for (String p : result.getPropertyNames()) {
+
+            recB.putProperties(p, convertPropToGrpcValue(p, result, projectionConfig));
+          }
+
+          resultBuilder.addRecords(recB.build());
         }
       }
 
@@ -1053,7 +1127,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   /**
-   * Mode 3: only fetch one page’s worth of rows per emission via LIMIT/SKIP.
+   * Mode 3: only fetch one page's worth of rows per emission via LIMIT/SKIP.
    *
    * @param projectionConfig
    */
@@ -1165,7 +1239,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   private void waitUntilReady(ServerCallStreamObserver<?> scso, AtomicBoolean cancelled) {
-    // Skip if you’re okay with best-effort pushes; otherwise honor transport
+    // Skip if you're okay with best-effort pushes; otherwise honor transport
     // readiness
     if (scso.isReady())
       return;
@@ -2046,7 +2120,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         }
       }
 
-      // Shouldn’t get here, but fall back
+      // Shouldn't get here, but fall back
       LogManager.instance()
           .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION unknown encoding %s; falling back to LINK/STRING",
               enc.name());
@@ -2299,83 +2373,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     return params;
-  }
-
-  /**
-   * Converts a Result to GrpcRecord, preserving all properties including aliases.
-   * This method works at the Result level (not Record level) to maintain alias information.
-   *
-   * @param result           the Result object from a query execution
-   * @param db               the database instance
-   * @param projectionConfig optional projection configuration
-   *
-   * @return GrpcRecord with all properties and aliases preserved
-   */
-  private GrpcRecord convertResultToGrpcRecord(Result result, Database db, ProjectionConfig projectionConfig) {
-    GrpcRecord.Builder builder = GrpcRecord.newBuilder();
-
-    // If this result wraps an element (Document/Vertex/Edge), get its metadata
-    if (result.isElement()) {
-      Document dbRecord = result.toElement();
-
-      if (dbRecord.getIdentity() != null) {
-        builder.setRid(dbRecord.getIdentity().toString());
-      }
-
-      if (dbRecord.getType() != null) {
-        builder.setType(dbRecord.getTypeName());
-      }
-    }
-
-    // Iterate over ALL properties from the Result, including aliases
-    for (String propertyName : result.getPropertyNames()) {
-      Object value = result.getProperty(propertyName);
-
-      if (value != null) {
-        LogManager.instance()
-            .log(this, Level.FINE, "convertResultToGrpcRecord(): Converting %s\n  value = %s\n  class = %s",
-                propertyName, value, value.getClass());
-
-        GrpcValue gv = projectionConfig != null ?
-            toGrpcValue(value, projectionConfig) :
-            toGrpcValue(value);
-
-        LogManager.instance()
-            .log(this, Level.FINE, "ENC-RES %s: %s -> %s", propertyName, summarizeJava(value), summarizeGrpc(gv));
-
-        builder.putProperties(propertyName, gv);
-      }
-    }
-
-    // Ensure @rid and @type are always in the properties map when there's an element
-    // This matches JsonSerializer behavior and works around client-side limitations
-    if (result.isElement()) {
-      final Document document = result.toElement();
-
-      if (!builder.getPropertiesMap().containsKey(Property.RID_PROPERTY) && document.getIdentity() != null) {
-        builder.putProperties(Property.RID_PROPERTY, toGrpcValue(document.getIdentity()));
-      }
-
-      if (!builder.getPropertiesMap().containsKey(Property.TYPE_PROPERTY) && document instanceof Document doc
-          && doc.getType() != null) {
-        builder.putProperties(Property.TYPE_PROPERTY, toGrpcValue(doc.getTypeName()));
-      }
-    }
-
-    // If this is an Edge and @out/@in are not already in properties, add them
-    if (result.isElement() && result.getElement().get() instanceof Edge edge) {
-      if (!builder.getPropertiesMap().containsKey("@out")) {
-        builder.putProperties("@out", toGrpcValue(edge.getOut().getIdentity()));
-      }
-      if (!builder.getPropertiesMap().containsKey("@in")) {
-        builder.putProperties("@in", toGrpcValue(edge.getIn().getIdentity()));
-      }
-    }
-
-    LogManager.instance().log(this, Level.FINE, "ENC-RES DONE rid=%s type=%s props=%s",
-        builder.getRid(), builder.getType(), builder.getPropertiesCount());
-
-    return builder.build();
   }
 
   private GrpcRecord convertToGrpcRecord(Record dbRecord, Database db) {
