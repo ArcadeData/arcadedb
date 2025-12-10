@@ -112,19 +112,17 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
 
     // SQL query with vertex identifier
     String query = "SELECT vectorNeighbors('Doc[embedding]', 'docC', 2) as neighbors";
-    ResultSet results = database.query("sql", query);
+    try (ResultSet results = database.query("sql", query)) {
+      assertThat(results.hasNext()).as("Query should return results").isTrue();
 
-    assertThat(results.hasNext()).as("Query should return results").isTrue();
+      var result = results.next();
+      @SuppressWarnings("unchecked")
+      List<Map<String, Object>> neighbors = result.getProperty("neighbors");
 
-    var result = results.next();
-    @SuppressWarnings("unchecked")
-    List<Map<String, Object>> neighbors = result.getProperty("neighbors");
-
-    assertThat(neighbors).isNotNull();
-    assertThat(neighbors).as("Should find neighbors for docC").isNotEmpty();
-    assertThat(neighbors).as("Should return at most 2 results").hasSizeLessThanOrEqualTo(2);
-
-    results.close();
+      assertThat(neighbors).isNotNull();
+      assertThat(neighbors).as("Should find neighbors for docC").isNotEmpty();
+      assertThat(neighbors).as("Should return at most 2 results").hasSizeLessThanOrEqualTo(2);
+    }
   }
 
   @Test
