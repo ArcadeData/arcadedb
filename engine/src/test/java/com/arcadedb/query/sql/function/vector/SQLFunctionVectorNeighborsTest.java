@@ -126,7 +126,7 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
   }
 
   @Test
-  void sqlVectorNeighborsInSubquery() {
+  void sqlVectorNeighborsResultsAreSortedByDistance() {
 
     // SQL query using vectorNeighbors in a subquery
     String query = """
