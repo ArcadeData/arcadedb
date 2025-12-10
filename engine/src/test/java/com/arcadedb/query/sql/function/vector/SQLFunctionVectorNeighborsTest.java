@@ -133,26 +133,24 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
         SELECT vectorNeighbors('Doc[embedding]', 'docA', 5) as neighbors
         """;
 
-    ResultSet results = database.query("sql", query);
+    try (ResultSet results = database.query("sql", query)) {
+      assertThat(results.hasNext()).as("Query should return results").isTrue();
 
-    assertThat(results.hasNext()).as("Query should return results").isTrue();
+      var result = results.next();
+      @SuppressWarnings("unchecked")
+      List<Map<String, Object>> neighbors = result.getProperty("neighbors");
 
-    var result = results.next();
-    @SuppressWarnings("unchecked")
-    List<Map<String, Object>> neighbors = result.getProperty("neighbors");
+      assertThat(neighbors).as("Neighbors should not be null").isNotNull();
+      assertThat(neighbors).as("Should find neighbors").isNotEmpty();
 
-    assertThat(neighbors).as("Neighbors should not be null").isNotNull();
-    assertThat(neighbors).as("Should find neighbors").isNotEmpty();
-
-    // Verify neighbors are sorted by distance (closer distances first)
-    float previousDistance = -1;
-    for (Map<String, Object> neighbor : neighbors) {
-      float distance = ((Number) neighbor.get("distance")).floatValue();
-      assertThat(distance ).as("Results should be ordered by distance").isGreaterThanOrEqualTo(previousDistance);
-      previousDistance = distance;
+      // Verify neighbors are sorted by distance (closer distances first)
+      float previousDistance = -1;
+      for (Map<String, Object> neighbor : neighbors) {
+        float distance = ((Number) neighbor.get("distance")).floatValue();
+        assertThat(distance ).as("Results should be ordered by distance").isGreaterThanOrEqualTo(previousDistance);
+        previousDistance = distance;
+      }
     }
-
-    results.close();
   }
 
   @Test
