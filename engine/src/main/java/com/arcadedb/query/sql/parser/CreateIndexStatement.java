@@ -63,10 +63,14 @@ public class CreateIndexStatement extends DDLStatement {
   public void validate() throws CommandSQLParsingException {
     final String typeAsString = type.getStringValue().toUpperCase();
     switch (typeAsString) {
-    case "FULL_TEXT" -> {}
-    case "UNIQUE" -> {}
-    case "NOTUNIQUE" -> {}
-    case "LSM_VECTOR" -> {}
+    case "FULL_TEXT" -> {
+    }
+    case "UNIQUE" -> {
+    }
+    case "NOTUNIQUE" -> {
+    }
+    case "LSM_VECTOR" -> {
+    }
     default -> throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
     }
   }
@@ -85,14 +89,6 @@ public class CreateIndexStatement extends DDLStatement {
     if (name == null)
       // GENERATE THE NAME AUTOMATICALLY
       name = new Identifier(typeName.getStringValue() + propertyList.toString().replace(", ", ","));
-
-    if (database.getSchema().existsIndex(name.getValue())) {
-      if (ifNotExists) {
-        return null;
-      } else {
-        throw new CommandExecutionException("Index '" + name + "' already exists");
-      }
-    }
 
     final String[] fields = calculateProperties(context);
 
@@ -115,6 +111,23 @@ public class CreateIndexStatement extends DDLStatement {
       unique = false;
     } else
       throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
+
+    if (database.getSchema().existsIndex(name.getValue())) {
+      if (ifNotExists) {
+        final InternalResultSet rs = new InternalResultSet();
+        final ResultInternal result = new ResultInternal(context.getDatabase());
+        result.setProperty("operation", "create index");
+        result.setProperty("name", name.getValue());
+        result.setProperty("type", indexType);
+        result.setProperty("created", false);
+        result.setProperty("totalIndexed", 0);
+
+        rs.add(result);
+        return rs;
+      } else {
+        throw new CommandExecutionException("Index '" + name + "' already exists");
+      }
+    }
 
     final AtomicLong total = new AtomicLong();
 
@@ -162,6 +175,7 @@ public class CreateIndexStatement extends DDLStatement {
     result.setProperty("operation", "create index");
     result.setProperty("name", name.getValue());
     result.setProperty("type", indexType);
+    result.setProperty("created", true);
     result.setProperty("totalIndexed", total.get());
 
     rs.add(result);
