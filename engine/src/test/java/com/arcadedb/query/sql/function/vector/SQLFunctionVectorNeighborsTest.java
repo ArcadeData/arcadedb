@@ -94,19 +94,17 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
 
     // SQL query with raw vector
     String query = "SELECT vectorNeighbors('Doc[embedding]', [0.0, 0.0, 1.0], 3) as neighbors";
-    ResultSet results = database.query("sql", query);
+    try (ResultSet results = database.query("sql", query)) {
+      assertThat(results.hasNext()).as("Query should return results").isTrue();
 
-    assertThat(results.hasNext()).as("Query should return results").isTrue();
+      var result = results.next();
+      @SuppressWarnings("unchecked")
+      List<Map<String, Object>> neighbors = result.getProperty("neighbors");
 
-    var result = results.next();
-    @SuppressWarnings("unchecked")
-    List<Map<String, Object>> neighbors = result.getProperty("neighbors");
-
-    assertThat(neighbors).isNotNull();
-    assertThat(neighbors.isEmpty()).as("Should find at least one neighbor").isFalse();
-    assertThat(neighbors.size() <= 3).as("Should return at most 3 results").isTrue();
-
-    results.close();
+      assertThat(neighbors).isNotNull();
+      assertThat(neighbors.isEmpty()).as("Should find at least one neighbor").isFalse();
+      assertThat(neighbors.size() <= 3).as("Should return at most 3 results").isTrue();
+    }
   }
 
   @Test
