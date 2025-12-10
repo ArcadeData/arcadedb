@@ -87,7 +87,9 @@ jobs:
         run: |
           cd studio
           jq --arg version "${{ github.event.inputs.nextversion }}" '.version = $version' package.json > package.json.tmp
+          jq --arg version "${{ github.event.inputs.nextversion }}" '.version = $version' package-lock.json > package-lock.json.tmp
           mv package.json.tmp package.json
+          mv package-lock.json.tmp package-lock.json
 
       - name: Commit next development version
         if: success()
