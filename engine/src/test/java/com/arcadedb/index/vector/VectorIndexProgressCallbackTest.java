@@ -41,8 +41,10 @@ public class VectorIndexProgressCallbackTest extends TestHelper {
       database.command("sql", "CREATE VERTEX TYPE VectorDoc IF NOT EXISTS");
       database.command("sql", "CREATE PROPERTY VectorDoc.id IF NOT EXISTS STRING");
       database.command("sql", "CREATE PROPERTY VectorDoc.embedding IF NOT EXISTS ARRAY_OF_FLOATS");
-      database.command("sql", "CREATE INDEX IF NOT EXISTS ON VectorDoc (embedding) LSM_VECTOR " +
-          "METADATA {dimensions: 128, similarity: 'COSINE', maxConnections: 16, beamWidth: 100}");
+      database.command("sql", """
+          CREATE INDEX IF NOT EXISTS ON VectorDoc (embedding) LSM_VECTOR
+          METADATA {dimensions: 128, similarity: 'COSINE', maxConnections: 16, beamWidth: 100}
+          """);
     });
 
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("VectorDoc[embedding]");

@@ -29,7 +29,6 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Paths;
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -133,11 +132,6 @@ class LSMVectorIndexPersistenceTest {
     // Reopen database and verify index is loaded
     database = factory.open();
     try {
-      // List all indexes to see what's available
-      System.out.println("Indexes after reopening database:");
-      for (Index idx : database.getSchema().getIndexes()) {
-        System.out.println("  - " + idx.getName() + " [" + idx.getType() + "]");
-      }
 
       // Verify index exists after reload
       Index reloadedIndex = database.getSchema().getIndexByName("Word[vector]");
@@ -154,7 +148,7 @@ class LSMVectorIndexPersistenceTest {
       }
 
       // Use the index's get() method directly instead of SQL function
-      com.arcadedb.index.IndexCursor cursor = reloadedIndex.get(new Object[]{queryVector}, 5);
+      com.arcadedb.index.IndexCursor cursor = reloadedIndex.get(new Object[] { queryVector }, 5);
       int resultCount = 0;
       while (cursor.hasNext()) {
         cursor.next();
@@ -185,8 +179,7 @@ class LSMVectorIndexPersistenceTest {
 
       // Create vector index
       database.command("sql",
-          "CREATE INDEX ON Word (vector) LSM_VECTOR METADATA " +
-              "{dimensions: 50, similarity: 'COSINE', maxConnections: 16, beamWidth: 100, idPropertyName: 'name'}");
+          "CREATE INDEX ON Word (vector) LSM_VECTOR METADATA {dimensions: 50, similarity: 'COSINE', maxConnections: 16, beamWidth: 100, idPropertyName: 'name'}");
 
       Index index = database.getSchema().getIndexByName("Word[vector]");
 
