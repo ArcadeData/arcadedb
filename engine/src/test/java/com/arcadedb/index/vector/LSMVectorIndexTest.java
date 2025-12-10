@@ -25,7 +25,11 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -49,13 +53,14 @@ class LSMVectorIndexTest extends TestHelper {
       database.command("sql", "CREATE PROPERTY VectorVertex.category IF NOT EXISTS STRING");
 
       // Create the LSM_VECTOR index
-      database.command("sql", "CREATE INDEX IF NOT EXISTS ON VectorVertex (embedding) LSM_VECTOR " +
-          "METADATA {" +
-          "  \"dimensions\" : " + DIMENSIONS + "," +
-          "  \"similarity\" : \"COSINE\"," +
-          "  \"maxConnections\" : 16," +
-          "  \"beamWidth\" : 100" +
-          "}");
+      database.command("sql", """
+          CREATE INDEX IF NOT EXISTS ON VectorVertex (embedding) LSM_VECTOR
+          METADATA {
+            "dimensions" : 1024,
+            "similarity" : "COSINE",
+            "maxConnections" : 16,
+            "beamWidth" : 100
+          }""");
     });
 
     // Verify the index was created
@@ -99,8 +104,8 @@ class LSMVectorIndexTest extends TestHelper {
         count++;
       }
 
-      assertThat(count > 0).as("Should find at least one result").isTrue();
-      assertThat(count <= 10).as("Should return at most 10 results").isTrue();
+      assertThat(count).as("Should find at least one result").isGreaterThan(0);
+      assertThat(count).as("Should return at most 10 results").isLessThanOrEqualTo(10);
     });
   }
 
@@ -160,8 +165,8 @@ class LSMVectorIndexTest extends TestHelper {
         cursor.next();
       }
 
-      assertThat(count > 0).isTrue();
-      assertThat(count <= DIMENSIONS).isTrue();
+      assertThat(count).isGreaterThan(0);
+      assertThat(count).isLessThanOrEqualTo(DIMENSIONS);
     });
   }
 
@@ -170,8 +175,13 @@ class LSMVectorIndexTest extends TestHelper {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE TestDoc");
       database.command("sql", "CREATE PROPERTY TestDoc.vec ARRAY_OF_FLOATS");
-      database.command("sql", "CREATE INDEX ON TestDoc (vec) LSM_VECTOR " +
-          "METADATA {\"dimensions\": 2, \"similarity\": \"DOT_PRODUCT\", \"maxConnections\": 4, \"beamWidth\": 10}");
+      database.command("sql", """
+          CREATE INDEX ON TestDoc (vec) LSM_VECTOR
+          METADATA {"dimensions": 2,
+          "similarity": "DOT_PRODUCT",
+          "maxConnections": 4,
+          "beamWidth": 10}
+          """);
     });
 
     database.transaction(() -> {
@@ -192,8 +202,14 @@ class LSMVectorIndexTest extends TestHelper {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE TxDoc");
       database.command("sql", "CREATE PROPERTY TxDoc.vec ARRAY_OF_FLOATS");
-      database.command("sql", "CREATE INDEX ON TxDoc (vec) LSM_VECTOR " +
-          "METADATA {\"dimensions\": 2, \"similarity\": \"COSINE\", \"maxConnections\": 4, \"beamWidth\": 10}");
+      database.command("sql", """
+          CREATE INDEX ON TxDoc (vec) LSM_VECTOR
+          METADATA {
+            "dimensions": 2,
+            "similarity": "COSINE",
+            "maxConnections": 4,
+            "beamWidth": 10
+          }""");
     });
 
     // Insert in transaction 1
@@ -231,8 +247,15 @@ class LSMVectorIndexTest extends TestHelper {
       database.command("sql", "CREATE DOCUMENT TYPE LSMDoc");
       database.command("sql", "CREATE PROPERTY LSMDoc.id STRING");
       database.command("sql", "CREATE PROPERTY LSMDoc.vec ARRAY_OF_FLOATS");
-      database.command("sql", "CREATE INDEX ON LSMDoc (vec) LSM_VECTOR " +
-          "METADATA {\"dimensions\": 3, \"similarity\": \"EUCLIDEAN\", \"maxConnections\": 4, \"beamWidth\": 10}");
+      database.command("sql", """
+          CREATE INDEX ON LSMDoc (vec) LSM_VECTOR
+          METADATA {
+            "dimensions": 3,
+            "similarity":
+            "EUCLIDEAN",
+            "maxConnections": 4,
+            "beamWidth": 10
+          }""");
     });
 
     final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
@@ -317,8 +340,15 @@ class LSMVectorIndexTest extends TestHelper {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE MergeDoc");
       database.command("sql", "CREATE PROPERTY MergeDoc.vec ARRAY_OF_FLOATS");
-      database.command("sql", "CREATE INDEX ON MergeDoc (vec) LSM_VECTOR " +
-          "METADATA {\"dimensions\": 2, \"similarity\": \"DOT_PRODUCT\", \"maxConnections\": 4, \"beamWidth\": 10}");
+      database.command("sql", """
+          CREATE INDEX ON MergeDoc (vec) LSM_VECTOR
+          METADATA {
+            "dimensions": 2,
+            "similarity":
+            "DOT_PRODUCT",
+            "maxConnections": 4,
+            "beamWidth": 10
+          }""");
     });
 
     final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
@@ -377,8 +407,14 @@ class LSMVectorIndexTest extends TestHelper {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE LazyDoc");
       database.command("sql", "CREATE PROPERTY LazyDoc.vec ARRAY_OF_FLOATS");
-      database.command("sql", "CREATE INDEX ON LazyDoc (vec) LSM_VECTOR " +
-          "METADATA {\"dimensions\": 4, \"similarity\": \"COSINE\", \"maxConnections\": 8, \"beamWidth\": 50}");
+      database.command("sql", """
+          CREATE INDEX ON LazyDoc (vec) LSM_VECTOR
+          METADATA {
+            "dimensions": 4,
+            "similarity": "COSINE",
+            "maxConnections": 8,
+            "beamWidth": 50
+          }""");
     });
 
     final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
@@ -433,8 +469,12 @@ class LSMVectorIndexTest extends TestHelper {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE CompactDoc IF NOT EXISTS");
       database.command("sql", "CREATE PROPERTY CompactDoc.vec IF NOT EXISTS ARRAY_OF_FLOATS");
-      database.command("sql", "CREATE INDEX IF NOT EXISTS ON CompactDoc (vec) LSM_VECTOR " +
-          "METADATA {dimensions: 4, similarity: 'COSINE'}");
+      database.command("sql", """
+          CREATE INDEX IF NOT EXISTS ON CompactDoc (vec) LSM_VECTOR
+          METADATA {
+            dimensions: 4,
+            similarity: 'COSINE'
+          }""");
     });
 
     final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("CompactDoc[vec]");
@@ -483,7 +523,8 @@ class LSMVectorIndexTest extends TestHelper {
 //        ", Threshold: " + threshold);
 
     // Verify that compaction would have been triggered
-    assertThat(finalPages >= threshold || initialPages >= threshold).as("Should have reached compaction threshold at some point").isTrue();
+    assertThat(finalPages >= threshold || initialPages >= threshold).as("Should have reached compaction threshold at some point")
+        .isTrue();
   }
 
   @Test
@@ -493,8 +534,13 @@ class LSMVectorIndexTest extends TestHelper {
       database.command("sql", "CREATE VERTEX TYPE MergeDoc IF NOT EXISTS");
       database.command("sql", "CREATE PROPERTY MergeDoc.id IF NOT EXISTS STRING");
       database.command("sql", "CREATE PROPERTY MergeDoc.vec IF NOT EXISTS ARRAY_OF_FLOATS");
-      database.command("sql", "CREATE INDEX IF NOT EXISTS ON MergeDoc (vec) LSM_VECTOR " +
-          "METADATA {dimensions: 3, similarity: 'COSINE'}");
+      database.command("sql", """
+          CREATE INDEX IF NOT EXISTS ON MergeDoc (vec) LSM_VECTOR
+          METADATA {
+            dimensions: 3,
+            similarity: 'COSINE'
+          }
+          """);
     });
 
     final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("MergeDoc[vec]");
@@ -555,8 +601,12 @@ class LSMVectorIndexTest extends TestHelper {
       database.command("sql", "CREATE VERTEX TYPE DeleteDoc IF NOT EXISTS");
       database.command("sql", "CREATE PROPERTY DeleteDoc.id IF NOT EXISTS STRING");
       database.command("sql", "CREATE PROPERTY DeleteDoc.vec IF NOT EXISTS ARRAY_OF_FLOATS");
-      database.command("sql", "CREATE INDEX IF NOT EXISTS ON DeleteDoc (vec) LSM_VECTOR " +
-          "METADATA {dimensions: 2, similarity: 'COSINE'}");
+      database.command("sql", """
+          CREATE INDEX IF NOT EXISTS ON DeleteDoc (vec) LSM_VECTOR
+          METADATA {
+            dimensions: 2,
+            similarity: 'COSINE'
+          }""");
     });
 
     final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("DeleteDoc[vec]");
@@ -610,8 +660,12 @@ class LSMVectorIndexTest extends TestHelper {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE ConcurrentDoc IF NOT EXISTS");
       database.command("sql", "CREATE PROPERTY ConcurrentDoc.vec IF NOT EXISTS ARRAY_OF_FLOATS");
-      database.command("sql", "CREATE INDEX IF NOT EXISTS ON ConcurrentDoc (vec) LSM_VECTOR " +
-          "METADATA {dimensions: 4, similarity: 'COSINE'}");
+      database.command("sql", """
+          CREATE INDEX IF NOT EXISTS ON ConcurrentDoc (vec) LSM_VECTOR
+          METADATA {
+            dimensions: 4,
+            similarity: 'COSINE'
+          }""");
     });
 
     final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("ConcurrentDoc[vec]");
@@ -692,8 +746,14 @@ class LSMVectorIndexTest extends TestHelper {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE GraphDoc IF NOT EXISTS");
       database.command("sql", "CREATE PROPERTY GraphDoc.vec IF NOT EXISTS ARRAY_OF_FLOATS");
-      database.command("sql", "CREATE INDEX IF NOT EXISTS ON GraphDoc (vec) LSM_VECTOR " +
-          "METADATA {dimensions: 8, similarity: 'EUCLIDEAN', maxConnections: 16, beamWidth: 100}");
+      database.command("sql", """
+          CREATE INDEX IF NOT EXISTS ON GraphDoc (vec) LSM_VECTOR
+          METADATA {
+            dimensions: 8,
+            similarity: 'EUCLIDEAN',
+            maxConnections: 16,
+            beamWidth: 100
+          }""");
     });
 
     final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("GraphDoc[vec]");
@@ -772,8 +832,14 @@ class LSMVectorIndexTest extends TestHelper {
       database.command("sql", "CREATE DOCUMENT TYPE RollbackDoc");
       database.command("sql", "CREATE PROPERTY RollbackDoc.id STRING");
       database.command("sql", "CREATE PROPERTY RollbackDoc.vec ARRAY_OF_FLOATS");
-      database.command("sql", "CREATE INDEX ON RollbackDoc (vec) LSM_VECTOR " +
-          "METADATA {\"dimensions\": 3, \"similarity\": \"COSINE\", \"maxConnections\": 8, \"beamWidth\": 50}");
+      database.command("sql", """
+          CREATE INDEX ON RollbackDoc (vec) LSM_VECTOR
+          METADATA {
+            "dimensions": 3,
+            "similarity": "COSINE",
+            "maxConnections": 8,
+            "beamWidth": 50
+          }""");
     });
 
     final com.arcadedb.index.TypeIndex typeIndex =
@@ -818,7 +884,9 @@ class LSMVectorIndexTest extends TestHelper {
 
     // Verify that the rolled-back changes are NOT in the index
     final long countAfterRollback = typeIndex.countEntries();
-    assertThat(countAfterRollback).as("Index should still have only " + initialCount + " entries after rollback (rollback_* docs should not be there)").isEqualTo(initialCount);
+    assertThat(countAfterRollback).as(
+            "Index should still have only " + initialCount + " entries after rollback (rollback_* docs should not be there)")
+        .isEqualTo(initialCount);
 
     // Verify that we can't find the rolled-back vectors
     database.transaction(() -> {
@@ -831,7 +899,8 @@ class LSMVectorIndexTest extends TestHelper {
         final var doc = rid.asDocument();
         // We shouldn't find any documents with rollback_* ids
         final String id = doc.get("id").toString();
-        assertThat(id.startsWith("rollback_")).as("Should not find rolled-back vector in index (found doc with id: " + id + ")").isFalse();
+        assertThat(id.startsWith("rollback_")).as("Should not find rolled-back vector in index (found doc with id: " + id + ")")
+            .isFalse();
         foundCount++;
       }
 
@@ -853,7 +922,8 @@ class LSMVectorIndexTest extends TestHelper {
 
     // Verify that the committed changes ARE in the index
     final long countAfterCommit = typeIndex.countEntries();
-    assertThat(countAfterCommit).as("Index should have " + (initialCount + 2) + " entries after successful commit").isEqualTo(initialCount + 2);
+    assertThat(countAfterCommit).as("Index should have " + (initialCount + 2) + " entries after successful commit")
+        .isEqualTo(initialCount + 2);
 
     // Verify that we CAN find the committed vectors
     database.transaction(() -> {
@@ -897,7 +967,9 @@ class LSMVectorIndexTest extends TestHelper {
 
     // After multiple rollbacks, count should not have changed
     final long countAfterMultipleRollbacks = typeIndex.countEntries();
-    assertThat(countAfterMultipleRollbacks).as("Index count should remain unchanged after multiple rollbacks").isEqualTo(countBeforeMultipleRollbacks);
+    assertThat(countAfterMultipleRollbacks)
+        .as("Index count should remain unchanged after multiple rollbacks")
+        .isEqualTo(countBeforeMultipleRollbacks);
 
     // Verify no rolled-back documents from any round are in the index
     database.transaction(() -> {
@@ -909,7 +981,9 @@ class LSMVectorIndexTest extends TestHelper {
           final var rid = cursor.next();
           final var doc = rid.asDocument();
           final String id = doc.get("id").toString();
-          assertThat(id.startsWith("rollback_round_")).as("Should not find rolled-back vectors from any round (found: " + id + ")").isFalse();
+          assertThat(id.startsWith("rollback_round_"))
+              .as("Should not find rolled-back vectors from any round (found: " + id + ")")
+              .isFalse();
         }
       }
     });
