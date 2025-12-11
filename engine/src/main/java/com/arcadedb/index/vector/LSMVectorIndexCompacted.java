@@ -48,14 +48,14 @@ import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 public class LSMVectorIndexCompacted extends PaginatedComponent {
   public static final  String FILE_EXT         = "vcidx";
   public static final  int    CURRENT_VERSION  = 1;
-  private static final int    PAGE_HEADER_SIZE = 4 + 4 + 1 + 4; // offsetFree + count + mutable + series
+  // Base header size (without page 0 metadata): offsetFree(4) + count(4) + mutable(1) + series(4) = 13
+  private static final int    BASE_HEADER_SIZE = 4 + 4 + 1 + 4;
 
   protected final LSMVectorIndex           mainIndex;
   protected final int                      dimensions;
   protected final VectorSimilarityFunction similarityFunction;
   protected final int                      maxConnections;
   protected final int                      beamWidth;
-  protected final int                      entrySize;
 
   /**
    * Called at creation time for compaction.
@@ -69,9 +69,7 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
     this.similarityFunction = similarityFunction;
     this.maxConnections = maxConnections;
     this.beamWidth = beamWidth;
-    // Vectors are stored in documents, not in index pages
-    this.entrySize = Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE +
-        Binary.INT_SERIALIZED_SIZE + Binary.BYTE_SERIALIZED_SIZE; // id + position + bucketId + deleted = 17 bytes
+    // Entry size is now variable - calculated per entry using Binary.getNumberSpace()
   }
 
   /**
@@ -88,17 +86,15 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
       final BasePage page0 = database.getTransaction().getPage(new PageId(database, getFileId(), 0), pageSize);
       final ByteBuffer buffer = page0.getContent();
 
-      // Skip both ArcadeDB page header (8 bytes) and LSM vector content header (PAGE_HEADER_SIZE)
-      buffer.position(BasePage.PAGE_HEADER_SIZE + PAGE_HEADER_SIZE);
+      // Skip both ArcadeDB page header (8 bytes) and LSM vector base header (BASE_HEADER_SIZE)
+      buffer.position(BasePage.PAGE_HEADER_SIZE + BASE_HEADER_SIZE);
 
       // Read vector index metadata
       this.dimensions = buffer.getInt();
       this.similarityFunction = VectorSimilarityFunction.values()[buffer.getInt()];
       this.maxConnections = buffer.getInt();
       this.beamWidth = buffer.getInt();
-      // Vectors are stored in documents, not in index pages
-      this.entrySize = Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE +
-          Binary.INT_SERIALIZED_SIZE + Binary.BYTE_SERIALIZED_SIZE; // id + position + bucketId + deleted = 17 bytes
+      // Entry size is now variable - calculated per entry using Binary.getNumberSpace()
 
     } catch (final Exception e) {
       throw new DatabaseOperationException("Error loading compacted vector index metadata", e);
@@ -112,36 +108,34 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
 
   /**
    * Result of appending a vector entry during compaction.
-   * Contains both the pages modified and the physical location where the entry was written.
+   * Contains both the pages modified and the absolute file offset where the entry was written.
    */
   public static class CompactionAppendResult {
     public final List<MutablePage> newPages;
-    public final int               pageNumber;
-    public final int               offset;
+    public final long              absoluteFileOffset;
 
-    public CompactionAppendResult(final List<MutablePage> newPages, final int pageNumber, final int offset) {
+    public CompactionAppendResult(final List<MutablePage> newPages, final long absoluteFileOffset) {
       this.newPages = newPages;
-      this.pageNumber = pageNumber;
-      this.offset = offset;
+      this.absoluteFileOffset = absoluteFileOffset;
     }
   }
 
   /**
-   * Appends a vector entry during compaction.
-   * Handles page overflow by creating new pages as needed.
+   * Appends a vector entry during compaction using variable-sized encoding.
+   * Entries are written sequentially without pointer tables for maximum space efficiency.
    *
    * @param currentPage                 The current page being written to (or null to create new)
    * @param compactedPageNumberOfSeries Counter for page series numbering
+   * @param currentFileOffset           Tracks absolute file offset for entries (updated by this method)
    * @param vectorId                    The vector ID
    * @param rid                         The record ID
-   * @param vector                      The vector data
    * @param deleted                     Whether this entry is deleted
    *
-   * @return CompactionAppendResult containing new pages and write location (pageNum, offset)
+   * @return CompactionAppendResult containing new pages and absolute file offset of the written entry
    */
   public CompactionAppendResult appendDuringCompaction(MutablePage currentPage,
-      final AtomicInteger compactedPageNumberOfSeries, final int vectorId, final RID rid, final float[] vector,
-      final boolean deleted) throws IOException, InterruptedException {
+      final AtomicInteger compactedPageNumberOfSeries, final AtomicLong currentFileOffset,
+      final int vectorId, final RID rid, final boolean deleted) throws IOException, InterruptedException {
 
     final List<MutablePage> newPages = new ArrayList<>();
 
@@ -151,15 +145,20 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
       newPages.add(currentPage);
     }
 
+    // Calculate variable entry size (space needed for this specific entry)
+    final int vectorIdSize = Binary.getNumberSpace(vectorId);
+    final int bucketIdSize = Binary.getNumberSpace(rid.getBucketId());
+    final int positionSize = Binary.getNumberSpace(rid.getPosition());
+    final int entrySize = vectorIdSize + positionSize + bucketIdSize + 1; // +1 for deleted byte
+
     // Read page header using BasePage methods (accounts for PAGE_HEADER_SIZE automatically)
-    int offsetFreeContent = currentPage.readInt(0);
-    int numberOfEntries = currentPage.readInt(4);
+    int offsetFreeContent = currentPage.readInt(LSMVectorIndex.OFFSET_FREE_CONTENT);
+    int numberOfEntries = currentPage.readInt(LSMVectorIndex.OFFSET_NUM_ENTRIES);
     int pageNum = currentPage.getPageId().getPageNumber();
 
-    // Calculate space needed
+    // Calculate space needed (no pointer table - just header + sequential entries)
     int headerSize = getHeaderSize(pageNum);
-    final int pointerTableSize = (numberOfEntries + 1) * 4; // +1 for new entry
-    final int availableSpace = offsetFreeContent - (headerSize + pointerTableSize);
+    final int availableSpace = currentPage.getMaxContentSize() - offsetFreeContent;
 
     if (availableSpace < entrySize) {
       // NO SPACE LEFT, CREATE A NEW PAGE AND FLUSH CURRENT ONE (NO WAL)
@@ -176,81 +175,59 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
       headerSize = getHeaderSize(pageNum);
     }
 
-    // Write entry at tail (backwards from offsetFreeContent)
-    final int entryOffset = offsetFreeContent - entrySize;
+    // Record the absolute file offset where this entry will be written
+    final long entryFileOffset = currentFileOffset.get();
 
-    // Validate we have enough space (safety check)
-    if (entryOffset < 0) {
-      throw new IndexException("Entry size (" + entrySize + ") exceeds available page space. " +
-          "offsetFreeContent=" + offsetFreeContent + ", headerSize=" + headerSize +
-          ", pageSize=" + pageSize + ", pageNum=" + pageNum);
-    }
+    // Write entry sequentially using variable-sized encoding (vectors stored in documents, not index)
+    int bytesWritten = 0;
+    bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, vectorId);
+    bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, rid.getBucketId());
+    bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, rid.getPosition());
+    bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, (byte) (deleted ? 1 : 0));
 
-    // Write entry metadata only - vectors are stored in documents, not in index pages
-    int position = entryOffset;
-    currentPage.writeInt(position, vectorId);
-    position += Binary.INT_SERIALIZED_SIZE;
-
-    currentPage.writeLong(position, rid.getPosition());
-    position += Binary.LONG_SERIALIZED_SIZE;
-
-    currentPage.writeInt(position, rid.getBucketId());
-    position += Binary.INT_SERIALIZED_SIZE;
-
-    currentPage.writeByte(position, (byte) (deleted ? 1 : 0));
-
-    // Add pointer to entry in header using writeInt (accounts for PAGE_HEADER_SIZE)
-    currentPage.writeInt(headerSize + (numberOfEntries * 4), entryOffset);
-
-    // Update page header using BasePage methods
+    // Update page header
     numberOfEntries++;
-    offsetFreeContent = entryOffset;
-    currentPage.writeInt(0, offsetFreeContent);
-    currentPage.writeInt(4, numberOfEntries);
+    offsetFreeContent += bytesWritten;
+    currentPage.writeInt(LSMVectorIndex.OFFSET_FREE_CONTENT, offsetFreeContent);
+    currentPage.writeInt(LSMVectorIndex.OFFSET_NUM_ENTRIES, numberOfEntries);
 
-    // Return the new pages and the location where this entry was written
-    return new CompactionAppendResult(newPages, pageNum, entryOffset);
+    // Advance file offset tracker
+    currentFileOffset.addAndGet(bytesWritten);
+
+    // Return the new pages and the absolute file offset where this entry was written
+    return new CompactionAppendResult(newPages, entryFileOffset);
   }
 
   /**
    * Creates a new immutable page for compacted data.
+   * Entries are written sequentially starting from headerSize (no pointer table).
    */
   protected MutablePage createNewPage(final int compactedPageNumberOfSeries) {
     final int txPageCounter = getTotalPages();
     // Create MutablePage directly (compaction happens outside transaction context)
     final MutablePage currentPage = new MutablePage(new PageId(database, getFileId(), txPageCounter), pageSize);
 
+    // Calculate header size first
+    final int headerSize = getHeaderSize(txPageCounter);
+
     int pos = 0;
 
-    // offsetFreeContent (starts at end of page)
-    currentPage.writeInt(pos, currentPage.getMaxContentSize());
-    pos += INT_SERIALIZED_SIZE;
-
-    // numberOfEntries
-    currentPage.writeInt(pos, 0);
-    pos += INT_SERIALIZED_SIZE;
-
+    // offsetFreeContent starts right after header (entries grow forward sequentially)
+    pos += currentPage.writeInt(pos, headerSize);
+    // numberOfEntries (initially 0)
+    pos += currentPage.writeInt(pos, 0);
     // mutable flag (IMMUTABLE for compacted pages)
-    currentPage.writeByte(pos, (byte) 0);
-    pos += BYTE_SERIALIZED_SIZE;
+    pos += currentPage.writeByte(pos, (byte) 0);
 
     // compacted page number of series
-    currentPage.writeInt(pos, compactedPageNumberOfSeries);
-    pos += INT_SERIALIZED_SIZE;
+    pos += currentPage.writeInt(pos, compactedPageNumberOfSeries);
 
     // If page 0, write metadata
     if (txPageCounter == 0) {
-      currentPage.writeInt(pos, dimensions);
-      pos += INT_SERIALIZED_SIZE;
-
-      currentPage.writeInt(pos, similarityFunction.ordinal());
-      pos += INT_SERIALIZED_SIZE;
-
-      currentPage.writeInt(pos, maxConnections);
-      pos += INT_SERIALIZED_SIZE;
-
+      pos += currentPage.writeInt(pos, dimensions);
+      pos += currentPage.writeInt(pos, similarityFunction.ordinal());
+      pos += currentPage.writeInt(pos, maxConnections);
       currentPage.writeInt(pos, beamWidth);
-      pos += INT_SERIALIZED_SIZE;
     }
 
     // Manually update page count (following LSMTreeIndexCompacted pattern)
@@ -279,24 +256,31 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
         if (numberOfEntries == 0)
           continue;
 
-        // Read pointer table using BasePage methods
-        final int[] pointers = new int[numberOfEntries];
         final int headerSize = getHeaderSize(pageNum);
-        for (int i = 0; i < numberOfEntries; i++) {
-          pointers[i] = page.readInt(headerSize + (i * 4));
-        }
 
-        // Read entries - pages only contain metadata, vectors are in documents
-        final ByteBuffer pageBuffer = page.getContent();
+        // Parse variable-sized entries sequentially (no pointer table)
+        int currentOffset = headerSize;
         for (int i = 0; i < numberOfEntries; i++) {
-          pageBuffer.position(BasePage.PAGE_HEADER_SIZE + pointers[i]);
+          // Read variable-sized vectorId
+          final long[] vectorIdAndSize = page.readNumberAndSize(currentOffset);
+          final int id = (int) vectorIdAndSize[0];
+          currentOffset += (int) vectorIdAndSize[1];
 
-          // Read metadata from page
-          final int id = pageBuffer.getInt();
-          final long position = pageBuffer.getLong();
-          final int bucketId = pageBuffer.getInt();
+          // Read variable-sized bucketId
+          final long[] bucketIdAndSize = page.readNumberAndSize(currentOffset);
+          final int bucketId = (int) bucketIdAndSize[0];
+          currentOffset += (int) bucketIdAndSize[1];
+
+          // Read variable-sized position
+          final long[] positionAndSize = page.readNumberAndSize(currentOffset);
+          final long position = positionAndSize[0];
+          currentOffset += (int) positionAndSize[1];
+
           final RID rid = new RID(database, bucketId, position);
-          final boolean deleted = pageBuffer.get() == 1;
+
+          // Read deleted flag (fixed 1 byte)
+          final boolean deleted = page.readByte(currentOffset) == 1;
+          currentOffset += 1;
 
           // Load vector from document (vectors are NOT stored in index pages)
           float[] vector = null;
