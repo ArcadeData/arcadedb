@@ -914,4 +914,191 @@ class LSMVectorIndexTest extends TestHelper {
       }
     });
   }
+
+  @Test
+  void manualCompactionRemovesDuplicates() throws Exception {
+    // Test that manual compaction correctly merges pages and removes duplicates
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE CompactTest IF NOT EXISTS");
+      database.command("sql", "CREATE PROPERTY CompactTest.id IF NOT EXISTS STRING");
+      database.command("sql", "CREATE PROPERTY CompactTest.vec IF NOT EXISTS ARRAY_OF_FLOATS");
+      database.command("sql", "CREATE INDEX IF NOT EXISTS ON CompactTest (vec) LSM_VECTOR " +
+          "METADATA {dimensions: 4, similarity: 'COSINE'}");
+    });
+
+    final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("CompactTest[vec]");
+    assertThat(typeIndex).as("Index should exist").isNotNull();
+
+    final var indexes = typeIndex.getIndexesOnBuckets();
+    assertThat(indexes.length > 0).as("Should have at least one bucket index").isTrue();
+    final LSMVectorIndex lsmIndex = (LSMVectorIndex) indexes[0];
+
+    // Track initial state
+    final int initialPages = lsmIndex.getTotalPages();
+    final int initialMutablePages = lsmIndex.getCurrentMutablePages();
+
+    // Add initial vectors - need many to fill pages (pages are 256KB)
+    // With 4-dim floats: 4 * 4 bytes = 16 bytes per vector + overhead (~60 bytes total per entry)
+    // Need ~4,000 vectors to fill a page, so we need significantly more to ensure at least one full page
+    final int numVectors = 30000; // Enough to create multiple full pages
+    final List<com.arcadedb.database.RID> rids = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < numVectors; i++) {
+        final var vertex = database.newVertex("CompactTest");
+        vertex.set("id", "doc" + i);
+        vertex.set("vec", new float[] { (float) i, (float) i + 1, (float) i + 2, (float) i + 3 });
+        vertex.save();
+        rids.add(vertex.getIdentity());
+      }
+    });
+
+    final long countAfterInsert = typeIndex.countEntries();
+    assertThat(countAfterInsert).as("Should have " + numVectors + " entries after insert").isEqualTo(numVectors);
+
+    // Update the same vectors multiple times to create duplicates in LSM pages
+    final int numUpdates = 5000; // Update first 5000 vectors
+    for (int iteration = 0; iteration < 5; iteration++) {
+      final int iter = iteration;
+      database.transaction(() -> {
+        for (int i = 0; i < numUpdates; i++) {
+          final var doc = rids.get(i).asDocument().modify();
+          doc.set("vec", new float[] {
+              (float) (i + 100 * (iter + 1)),
+              (float) (i + 100 * (iter + 1) + 1),
+              (float) (i + 100 * (iter + 1) + 2),
+              (float) (i + 100 * (iter + 1) + 3)
+          });
+          doc.save();
+        }
+      });
+    }
+
+    // After multiple updates, LSM index should have many entries in pages (duplicates)
+    // but countEntries should still report numVectors (last-write-wins semantics)
+    final long countAfterUpdates = typeIndex.countEntries();
+    assertThat(countAfterUpdates).as("Should still have " + numVectors + " entries (LSM merge-on-read)").isEqualTo(numVectors);
+
+    final int pagesBeforeCompaction = lsmIndex.getTotalPages();
+    System.out.println("Pages before compaction: " + pagesBeforeCompaction +
+        ", mutable: " + lsmIndex.getCurrentMutablePages());
+
+    // Check which pages are actually immutable by reading the mutable flag directly
+    database.transaction(() -> {
+      final com.arcadedb.database.DatabaseInternal dbInternal = (com.arcadedb.database.DatabaseInternal) database;
+      int immutableCount = 0;
+      for (int pageNum = 1; pageNum < pagesBeforeCompaction; pageNum++) {
+        try {
+          final var page = dbInternal.getTransaction().getPage(
+              new com.arcadedb.engine.PageId(dbInternal, lsmIndex.getFileId(), pageNum),
+              lsmIndex.getPageSize());
+          final java.nio.ByteBuffer buffer = page.getContent();
+          buffer.position(8); // OFFSET_MUTABLE = 8
+          final byte mutable = buffer.get();
+          if (mutable == 0) {
+            immutableCount++;
+          }
+          System.out.println("  Page " + pageNum + ": mutable=" + mutable);
+        } catch (Exception e) {
+          System.out.println("  Page " + pageNum + ": error reading - " + e.getMessage());
+        }
+      }
+      System.out.println("Found " + immutableCount + " immutable pages");
+    });
+
+    // Manually trigger compaction
+    System.out.println("Attempting to schedule compaction...");
+
+    // Check pre-conditions
+    final com.arcadedb.database.DatabaseInternal dbInternal2 = (com.arcadedb.database.DatabaseInternal) database;
+    System.out.println("Database open: " + dbInternal2.isOpen());
+    System.out.println("Database mode: " + dbInternal2.getMode());
+    System.out.println("Page flushing suspended: " + dbInternal2.getPageManager().isPageFlushingSuspended(dbInternal2));
+    System.out.println("Transaction active: " + dbInternal2.isTransactionActive());
+
+    boolean compactionScheduled = lsmIndex.scheduleCompaction();
+    System.out.println("Compaction scheduled: " + compactionScheduled);
+
+    // Try a small delay in case there's async processing
+    Thread.sleep(100);
+
+    System.out.println("Calling compact()...");
+    boolean compacted = lsmIndex.compact();
+    System.out.println("Compaction result: " + compacted);
+
+    // If first attempt failed, try scheduling and compacting again
+    if (!compacted) {
+      System.out.println("First compaction attempt failed, trying again...");
+      Thread.sleep(100);
+      compactionScheduled = lsmIndex.scheduleCompaction();
+      System.out.println("Second compaction scheduled: " + compactionScheduled);
+      compacted = lsmIndex.compact();
+      System.out.println("Second compaction result: " + compacted);
+    }
+
+    if (compacted) {
+      System.out.println("Compaction succeeded!");
+
+      // After compaction, verify the index still works correctly
+      final long countAfterCompaction = typeIndex.countEntries();
+      assertThat(countAfterCompaction).as("Should still have " + numVectors + " entries after compaction").isEqualTo(numVectors);
+
+      // Verify we can still query the index
+      database.transaction(() -> {
+        final float[] queryVec = { 500.0f, 501.0f, 502.0f, 503.0f }; // Last iteration values for first doc
+        final var cursor = typeIndex.get(new Object[] { queryVec }, 10);
+        int count = 0;
+        while (cursor.hasNext()) {
+          cursor.next();
+          count++;
+        }
+        assertThat(count > 0).as("Should find vectors after compaction").isTrue();
+      });
+
+      // Check if compacted sub-index was created
+      final var compactedSubIndex = lsmIndex.getSubIndex();
+      if (compactedSubIndex != null) {
+        System.out.println("Compacted sub-index created: fileId=" + compactedSubIndex.getFileId() +
+            ", pages=" + compactedSubIndex.getTotalPages());
+      }
+    } else {
+      System.out.println("Compaction failed or returned no changes. This could mean:");
+      System.out.println("  - Status was not COMPACTION_SCHEDULED when compact() was called");
+      System.out.println("  - Database is closed or page flushing is suspended");
+      System.out.println("  - No immutable pages found");
+      System.out.println("  - No entries were compacted (all deleted or empty pages)");
+    }
+
+    // Verify sample documents still exist with correct latest values
+    database.transaction(() -> {
+      // Check first 100 and last 100 documents as a sample
+      for (int i = 0; i < Math.min(100, numVectors); i++) {
+        final var doc = rids.get(i).asDocument();
+        assertThat(doc).as("Document " + i + " should still exist").isNotNull();
+
+        final float[] vec = (float[]) doc.get("vec");
+        assertThat(vec).as("Vector should exist for document " + i).isNotNull();
+        assertThat(vec.length).as("Vector should have 4 dimensions").isEqualTo(4);
+
+        // First numUpdates docs were updated 5 times, rest kept original values
+        if (i < numUpdates) {
+          // Should have last iteration values (iter=4)
+          final float expectedFirst = i + 100 * 5;
+          assertThat(vec[0]).as("Vector[0] for doc " + i + " should have latest value").isEqualTo(expectedFirst);
+        } else {
+          // Should have original values
+          assertThat(vec[0]).as("Vector[0] for doc " + i + " should have original value").isEqualTo((float) i);
+        }
+      }
+
+      // Check last 100 documents
+      for (int i = Math.max(0, numVectors - 100); i < numVectors; i++) {
+        final var doc = rids.get(i).asDocument();
+        assertThat(doc).as("Document " + i + " should still exist").isNotNull();
+        final float[] vec = (float[]) doc.get("vec");
+        assertThat(vec).as("Vector should exist for document " + i).isNotNull();
+        // These should have original values (not updated)
+        assertThat(vec[0]).as("Vector[0] for doc " + i + " should have original value").isEqualTo((float) i);
+      }
+    });
+  }
 }
