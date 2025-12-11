@@ -199,7 +199,9 @@ public class BinaryTypes {
       case BinaryTypes.TYPE_DECIMAL -> BigDecimal.class;
       case BinaryTypes.TYPE_FLOAT -> Float.class;
       case BinaryTypes.TYPE_DOUBLE -> Double.class;
-      case BinaryTypes.TYPE_DATETIME, BinaryTypes.TYPE_DATETIME_MICROS, BinaryTypes.TYPE_DATETIME_NANOS,
+      case BinaryTypes.TYPE_DATETIME,
+           BinaryTypes.TYPE_DATETIME_MICROS,
+           BinaryTypes.TYPE_DATETIME_NANOS,
            BinaryTypes.TYPE_DATETIME_SECOND -> GlobalConfiguration.DATE_TIME_IMPLEMENTATION.getValue();
       case BinaryTypes.TYPE_DATE -> GlobalConfiguration.DATE_IMPLEMENTATION.getValue();
       case BinaryTypes.TYPE_RID, BinaryTypes.TYPE_UUID -> RID.class;
