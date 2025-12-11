@@ -23,7 +23,6 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.TrackableBinary;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
@@ -39,7 +38,6 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
-import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -1071,9 +1069,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // NOTE: All metadata (dimensions, similarityFunction, maxConnections, beamWidth) comes from schema JSON
       // via applyMetadataFromSchema(). Pages contain only vector data, no metadata.
 
-      LogManager.instance().log(this, Level.FINE,
-          "loadVectorsFromPages START: index=%s, totalPages=%d, vectorIndexSizeBefore=%d", null,
-          indexName, getTotalPages(), vectorIndex.size());
+      LogManager.instance().log(this, Level.FINE, "loadVectorsFromPages START: index=%s, totalPages=%d, vectorIndexSizeBefore=%d", null, indexName, getTotalPages(), vectorIndex.size());
 
       int entriesRead = 0;
       int maxVectorId = -1;
@@ -1097,10 +1093,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
           .orElse(-1);
       nextId.set(maxVectorId + 1);
 
-      LogManager.instance().log(this, Level.INFO,
-          "Loaded " + vectorIndex.size() + " vector locations (" + entriesRead + " total entries) for index: " + indexName
+      System.out.println("loadVectorsFromPages DONE: Loaded " + vectorIndex.size() + " vector locations (" + entriesRead + " total entries) for index: " + indexName
               + ", nextId=" + nextId.get() + ", fileId=" + getFileId() + ", totalPages=" + getTotalPages() +
-              (compactedSubIndex != null ? ", compactedFileId=" + compactedSubIndex.getFileId() + ", compactedPages=" + compactedSubIndex.getTotalPages() : ""));
+              (compactedSubIndex != null ?
+                  ", compactedFileId=" + compactedSubIndex.getFileId() + ", compactedPages=" + compactedSubIndex.getTotalPages() :
+                  ""));
 
       // NOTE: Do NOT call initializeGraphIndex() here - it would cause infinite recursion
       // because buildGraphFromScratch() calls loadVectorsFromPages()
@@ -1125,9 +1122,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     int entriesRead = 0;
     int pagesWithEntries = 0;
 
-    LogManager.instance().log(this, Level.INFO,
-        "loadVectorsFromFile: fileId=%d, totalPages=%d, isCompacted=%s",
-        fileId, totalPages, isCompacted);
+    System.out.println("loadVectorsFromFile: fileId=" + fileId + ", totalPages=" + totalPages + ", isCompacted=" + isCompacted);
 
     for (int pageNum = 0; pageNum < totalPages; pageNum++) {
       try {
@@ -1149,10 +1144,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         pagesWithEntries++;
 
-        // Read pointer table (starts at HEADER_BASE_SIZE offset)
+        // Calculate header size (page 0 of compacted index has extra metadata)
+        final int headerSize;
+        if (isCompacted && pageNum == 0) {
+          // Compacted page 0: base header + dimensions + similarity + maxConn + beamWidth
+          headerSize = HEADER_BASE_SIZE + (4 * 4); // 9 + 16 = 25 bytes (base + 4 ints)
+        } else {
+          headerSize = HEADER_BASE_SIZE; // 9 bytes
+        }
+
+        // Read pointer table (starts at headerSize offset)
         final int[] pointers = new int[numberOfEntries];
         for (int i = 0; i < numberOfEntries; i++)
-          pointers[i] = currentPage.readInt(HEADER_BASE_SIZE + (i * 4));
+          pointers[i] = currentPage.readInt(headerSize + (i * 4));
 
         // Read entries using pointers - BUT ONLY READ METADATA, NOT VECTOR DATA
         for (int i = 0; i < numberOfEntries; i++) {
@@ -1185,6 +1189,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
     }
 
+    System.out.println("loadVectorsFromFile DONE: fileId=" + fileId + ", entriesRead=" + entriesRead + ", pagesWithEntries=" + pagesWithEntries);
     return entriesRead;
   }
 
@@ -1210,10 +1215,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       MutablePage currentPage = getDatabase().getTransaction().getPageToModify(
           new PageId(getDatabase(), getFileId(), lastPageNum), getPageSize(), false);
 
-      // Get trackable buffer for writing entry data
-      TrackableBinary currentPageBuffer = currentPage.getTrackable();
-
-      // Read page header using MutablePage methods (consistent with writeInt used for updates)
+      // Read page header using MutablePage methods (accounts for PAGE_HEADER_SIZE automatically)
       int offsetFreeContent = currentPage.readInt(OFFSET_FREE_CONTENT);
       int numberOfEntries = currentPage.readInt(OFFSET_NUM_ENTRIES);
 
@@ -1223,25 +1225,30 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       if (availableSpace < entrySize) {
         // Page is full, mark it as immutable before creating a new page
-        currentPageBuffer.putByte(OFFSET_MUTABLE, (byte) 0); // mutable = 0
+        currentPage.writeByte(OFFSET_MUTABLE, (byte) 0); // mutable = 0
 
         lastPageNum++;
         currentPage = createNewVectorDataPage(lastPageNum);
-        currentPageBuffer = currentPage.getTrackable(); // Update buffer reference
-        offsetFreeContent = currentPageBuffer.getInt(OFFSET_FREE_CONTENT);
+        offsetFreeContent = currentPage.readInt(OFFSET_FREE_CONTENT);
         numberOfEntries = 0;
       }
 
       // Write entry at tail (backwards from offsetFreeContent)
       final int entryOffset = offsetFreeContent - entrySize;
 
-      currentPageBuffer.position(entryOffset);
+      int position = entryOffset;
 
-      // Write only: ordinal, RID, deleted (no vector bytes!)
-      currentPageBuffer.putInt(id);  // This will become ordinal
-      currentPageBuffer.putLong(rid.getPosition());
-      currentPageBuffer.putInt(rid.getBucketId());
-      currentPageBuffer.putByte((byte) 0); // not deleted
+      currentPage.writeInt(position, id);  // This will become ordinal
+      position += Binary.INT_SERIALIZED_SIZE;
+
+      currentPage.writeLong(position, rid.getPosition());
+      position += Binary.LONG_SERIALIZED_SIZE;
+
+      currentPage.writeInt(position, rid.getBucketId());
+      position += Binary.INT_SERIALIZED_SIZE;
+
+      currentPage.writeByte(position, (byte) 0); // not deleted
+      position += Binary.BYTE_SERIALIZED_SIZE;
 
       // Add pointer to entry in header
       currentPage.writeInt(HEADER_BASE_SIZE + (numberOfEntries * 4), entryOffset);
@@ -1291,7 +1298,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         MutablePage currentPage = getDatabase().getTransaction().getPageToModify(
             new PageId(getDatabase(), getFileId(), lastPageNum), getPageSize(), false);
 
-        // Read page header
+        // Read page header (accounts for PAGE_HEADER_SIZE automatically)
         int offsetFreeContent = currentPage.readInt(OFFSET_FREE_CONTENT);
         int numberOfEntries = currentPage.readInt(OFFSET_NUM_ENTRIES);
 
@@ -1299,11 +1306,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final int headerSize = HEADER_BASE_SIZE + ((numberOfEntries + 1) * 4);
         final int availableSpace = offsetFreeContent - headerSize;
 
-        final TrackableBinary currentPageBuffer = currentPage.getTrackable();
-
         if (availableSpace < entrySize) {
           // Page is full, mark it as immutable before creating a new page
-          currentPageBuffer.putByte(OFFSET_MUTABLE, (byte) 0);
+          currentPage.writeByte(OFFSET_MUTABLE, (byte) 0);
 
           lastPageNum++;
           currentPage = createNewVectorDataPage(lastPageNum);
@@ -1323,22 +1328,29 @@ public class LSMVectorIndex implements Index, IndexInternal {
           throw new IndexException("Invalid entry offset: " + entryOffset + " (page size: " + getPageSize() + ")");
         }
 
-        currentPageBuffer.position(entryOffset);
-
         // Write deletion entry: ordinal, RID, deleted=1 (no vector bytes!)
-        currentPageBuffer.putInt(vectorId);  // This will become ordinal
-        currentPageBuffer.putLong(loc.rid.getPosition());
-        currentPageBuffer.putInt(loc.rid.getBucketId());
-        currentPageBuffer.putByte((byte) 1); // Mark as deleted
+        int position = entryOffset;
+
+        currentPage.writeInt(position, vectorId);  // This will become ordinal
+        position += Binary.INT_SERIALIZED_SIZE;
+
+        currentPage.writeLong(position, loc.rid.getPosition());
+        position += Binary.LONG_SERIALIZED_SIZE;
+
+        currentPage.writeInt(position, loc.rid.getBucketId());
+        position += Binary.INT_SERIALIZED_SIZE;
+
+        currentPage.writeByte(position, (byte) 1); // Mark as deleted
 
         // Add pointer to entry in header
-        currentPageBuffer.putInt(HEADER_BASE_SIZE + (numberOfEntries * 4), entryOffset);
+        currentPage.writeInt(HEADER_BASE_SIZE + (numberOfEntries * 4), entryOffset);
 
         // Update page header
         numberOfEntries++;
         offsetFreeContent = entryOffset;
-        currentPageBuffer.putInt(OFFSET_FREE_CONTENT, offsetFreeContent);
-        currentPageBuffer.putInt(OFFSET_NUM_ENTRIES, numberOfEntries);
+
+        currentPage.writeInt(OFFSET_FREE_CONTENT, offsetFreeContent);
+        currentPage.writeInt(OFFSET_NUM_ENTRIES, numberOfEntries);
       }
 
     } catch (final Exception e) {
@@ -1357,10 +1369,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     int pos = 0;
     page.writeInt(pos, page.getMaxContentSize()); // offsetFreeContent starts at end of page
-    pos += TrackableBinary.INT_SERIALIZED_SIZE;
+    pos += Binary.INT_SERIALIZED_SIZE;
 
     page.writeInt(pos, 0);              // numberOfEntries = 0
-    pos += TrackableBinary.INT_SERIALIZED_SIZE;
+    pos += Binary.INT_SERIALIZED_SIZE;
 
     page.writeByte(pos, (byte) 1);         // mutable = 1 (page is actively being written to)
 
@@ -1419,7 +1431,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       if (graphIndex == null || vectorIndex.size() == 0)
         return Collections.emptyList();
-
 
       // Convert query vector to VectorFloat
       final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
@@ -1960,23 +1971,33 @@ public class LSMVectorIndex implements Index, IndexInternal {
   @Override
   public boolean compact() throws IOException, InterruptedException {
 
+    LogManager.instance().log(this, Level.INFO, "compact() called for index: %s", null, getName());
     checkIsValid();
     final DatabaseInternal database = getDatabase();
 
     if (database.getMode() == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update the index '" + getName() + "'");
 
-    if (database.getPageManager().isPageFlushingSuspended(database))
+    if (database.getPageManager().isPageFlushingSuspended(database)) {
+      LogManager.instance().log(this, Level.INFO, "compact() returning false: page flushing suspended");
       // POSTPONE COMPACTING (DATABASE BACKUP IN PROGRESS?)
       return false;
+    }
 
-    if (!status.compareAndSet(INDEX_STATUS.COMPACTION_SCHEDULED, INDEX_STATUS.COMPACTION_IN_PROGRESS))
+    LogManager.instance().log(this, Level.INFO,
+        "compact() current status: %s, attempting compareAndSet from COMPACTION_SCHEDULED to COMPACTION_IN_PROGRESS", status.get());
+    if (!status.compareAndSet(INDEX_STATUS.COMPACTION_SCHEDULED, INDEX_STATUS.COMPACTION_IN_PROGRESS)) {
+      LogManager.instance()
+          .log(this, Level.INFO, "compact() returning false: status compareAndSet failed (current status: %s)", status.get());
       // COMPACTION NOT SCHEDULED
       return false;
+    }
 
     try {
+      LogManager.instance().log(this, Level.INFO, "compact() calling LSMVectorIndexCompactor.compact()");
       return LSMVectorIndexCompactor.compact(this);
     } catch (final TimeoutException e) {
+      LogManager.instance().log(this, Level.INFO, "compact() caught TimeoutException: %s", e.getMessage());
       // IGNORE IT, WILL RETRY LATER
       return false;
     } finally {
@@ -2412,6 +2433,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         newMutableIndex.removeTempSuffix();
 
         mutable = newMutableIndex;
+
+        // Set the compacted sub-index on the main index
+        this.compactedSubIndex = compactedIndex;
 
         // Update schema with file migration
         ((LocalSchema) getDatabase().getSchema()).setMigratedFileId(fileId, newMutableIndex.getFileId());
