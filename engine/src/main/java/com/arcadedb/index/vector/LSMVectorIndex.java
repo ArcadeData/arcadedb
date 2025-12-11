@@ -1121,12 +1121,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
           .orElse(-1);
       nextId.set(maxVectorId + 1);
 
-      System.out.println("loadVectorsFromPages DONE: Loaded " + vectorIndex.size() + " vector locations (" + entriesRead
-          + " total entries) for index: " + indexName
-          + ", nextId=" + nextId.get() + ", fileId=" + getFileId() + ", totalPages=" + getTotalPages() +
-          (compactedSubIndex != null ?
-              ", compactedFileId=" + compactedSubIndex.getFileId() + ", compactedPages=" + compactedSubIndex.getTotalPages() :
-              ""));
+      LogManager.instance().log(this, Level.FINE,
+          "loadVectorsFromPages DONE: Loaded " + vectorIndex.size() + " vector locations (" + entriesRead
+              + " total entries) for index: " + indexName
+              + ", nextId=" + nextId.get() + ", fileId=" + getFileId() + ", totalPages=" + getTotalPages() +
+              (compactedSubIndex != null ?
+                  ", compactedFileId=" + compactedSubIndex.getFileId() + ", compactedPages="
+                      + compactedSubIndex.getTotalPages() :
+                  ""));
 
       // NOTE: Do NOT call initializeGraphIndex() here - it would cause infinite recursion
       // because buildGraphFromScratch() calls loadVectorsFromPages()
@@ -1151,7 +1153,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     int entriesRead = 0;
     int pagesWithEntries = 0;
 
-    System.out.println("loadVectorsFromFile: fileId=" + fileId + ", totalPages=" + totalPages + ", isCompacted=" + isCompacted);
+    LogManager.instance().log(this, Level.FINE,
+        "loadVectorsFromFile: fileId=" + fileId + ", totalPages=" + totalPages + ", isCompacted=" + isCompacted);
 
     for (int pageNum = 0; pageNum < totalPages; pageNum++) {
       try {
@@ -1223,8 +1226,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
     }
 
-    System.out.println(
+    LogManager.instance().log(this, Level.FINE,
         "loadVectorsFromFile DONE: fileId=" + fileId + ", entriesRead=" + entriesRead + ", pagesWithEntries=" + pagesWithEntries);
+
     return entriesRead;
   }
 
