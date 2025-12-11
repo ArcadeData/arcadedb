@@ -1121,9 +1121,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
           .orElse(-1);
       nextId.set(maxVectorId + 1);
 
-      System.out.println("loadVectorsFromPages DONE: Loaded " + vectorIndex.size() + " vector locations (" + entriesRead
-          + " total entries) for index: " + indexName
-          + ", nextId=" + nextId.get() + ", fileId=" + getFileId() + ", totalPages=" + getTotalPages() +
+      LogManager.instance().log(this, Level.INFO, "loadVectorsFromPages DONE: Loaded %d vector locations (%d total entries) for index: %s, nextId=%d, fileId=%d, totalPages=%d%s",
+          vectorIndex.size(), entriesRead, indexName, nextId.get(), getFileId(), getTotalPages(),
           (compactedSubIndex != null ?
               ", compactedFileId=" + compactedSubIndex.getFileId() + ", compactedPages=" + compactedSubIndex.getTotalPages() :
               ""));
