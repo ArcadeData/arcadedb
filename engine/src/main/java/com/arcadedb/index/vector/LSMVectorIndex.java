@@ -1068,7 +1068,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // NOTE: All metadata (dimensions, similarityFunction, maxConnections, beamWidth) comes from schema JSON
       // via applyMetadataFromSchema(). Pages contain only vector data, no metadata.
 
-      System.out.println("loadVectorsFromPages START: index=" + indexName + ", totalPages=" + getTotalPages() + ", vectorIndexSizeBefore=" + vectorIndex.size());
+      LogManager.instance().log(this, Level.FINE, "loadVectorsFromPages START: index=%s, totalPages=%d, vectorIndexSizeBefore=%d", null, indexName, getTotalPages(), vectorIndex.size());
 
       int entriesRead = 0;
       int maxVectorId = -1;
