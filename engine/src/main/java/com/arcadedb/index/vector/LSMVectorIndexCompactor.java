@@ -93,10 +93,10 @@ public class LSMVectorIndexCompactor {
         return false;
       }
 
-      // Perform the merge
+      // Perform the merge (start from page 0 which contains vector data)
       final int pageSize = mainIndex.getPageSize();
-      System.out.println("Calling mergePages(startPage=1, endPage=" + lastImmutablePage + ")");
-      final int entriesCompacted = mergePages(mainIndex, compactedIndex, 1, lastImmutablePage, pageSize,
+      System.out.println("Calling mergePages(startPage=0, endPage=" + lastImmutablePage + ")");
+      final int entriesCompacted = mergePages(mainIndex, compactedIndex, 0, lastImmutablePage, pageSize,
           indexCompactionRAM);
 
       LogManager.instance()
@@ -166,9 +166,10 @@ public class LSMVectorIndexCompactor {
     final DatabaseInternal database = mainIndex.getDatabase();
     int lastImmutablePage = -1;
 
-    System.out.println("findLastImmutablePage: scanning from page " + (totalPages - 1) + " down to 1");
+    System.out.println("findLastImmutablePage: scanning from page " + (totalPages - 1) + " down to 0");
     // Start from the end and work backwards, stopping at the first immutable page
-    for (int pageIndex = totalPages - 1; pageIndex >= 1; --pageIndex) {
+    // Note: Page 0 contains vector data (not just metadata), so we need to check it too
+    for (int pageIndex = totalPages - 1; pageIndex >= 0; --pageIndex) {
       try {
         final BasePage page = database.getTransaction().getPage(new PageId(database, mainIndex.getFileId(), pageIndex),
             mainIndex.getPageSize());

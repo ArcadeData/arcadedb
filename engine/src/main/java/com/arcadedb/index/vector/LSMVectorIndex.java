@@ -1143,10 +1143,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         pagesWithEntries++;
 
-        // Read pointer table (starts at HEADER_BASE_SIZE offset)
+        // Calculate header size (page 0 of compacted index has extra metadata)
+        final int headerSize;
+        if (isCompacted && pageNum == 0) {
+          // Compacted page 0: base header + dimensions + similarity + maxConn + beamWidth
+          headerSize = HEADER_BASE_SIZE + (4 * 4); // 9 + 16 = 25 bytes (base + 4 ints)
+        } else {
+          headerSize = HEADER_BASE_SIZE; // 9 bytes
+        }
+
+        // Read pointer table (starts at headerSize offset)
         final int[] pointers = new int[numberOfEntries];
         for (int i = 0; i < numberOfEntries; i++)
-          pointers[i] = currentPage.readInt(HEADER_BASE_SIZE + (i * 4));
+          pointers[i] = currentPage.readInt(headerSize + (i * 4));
 
         // Read entries using pointers - BUT ONLY READ METADATA, NOT VECTOR DATA
         for (int i = 0; i < numberOfEntries; i++) {
