@@ -105,12 +105,26 @@ public class AndBlock extends BooleanExpression {
   }
 
   public List<AndBlock> flatten() {
+    // Maximum number of flattened blocks to prevent exponential explosion
+    // When exceeded, return the block as-is without flattening
+    final int MAX_FLATTENED_BLOCKS = 1000;
+
     List<AndBlock> result = new ArrayList<>();
     boolean first = true;
     for (final BooleanExpression sub : subBlocks) {
       final List<AndBlock> subFlattened = sub.flatten();
       final List<AndBlock> oldResult = result;
       result = new ArrayList<>();
+
+      // Check if cartesian product would exceed the limit
+      final long cartesianSize = first ? (long)subFlattened.size() : (long)oldResult.size() * (long)subFlattened.size();
+      if (cartesianSize > MAX_FLATTENED_BLOCKS) {
+        // Return original unflattened block to avoid exponential explosion
+        final List<AndBlock> unflattenedResult = new ArrayList<>();
+        unflattenedResult.add(this);
+        return unflattenedResult;
+      }
+
       for (final AndBlock subAndItem : subFlattened) {
         if (first) {
           result.add(subAndItem);

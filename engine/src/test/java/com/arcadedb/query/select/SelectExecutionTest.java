@@ -372,6 +372,22 @@ public class SelectExecutionTest extends TestHelper {
   }
 
   @Test
+  void okQueryMultiProperties() {
+    database.command("sql", "create vertex type TestClass");
+
+    String query = "SELECT FROM TestClass WHERE (";
+    for (int i = 0; i < 20; i++) {
+      database.command("sql", "create property TestClass.Property" + (i + 1) + " LINK");
+      if (i > 0)
+        query += " and ";
+      query += "((Property" + (i + 1) + " is null) or (Property" + (i + 1) + " = #107:150))";
+    }
+    query += ")";
+
+    database.query("sql", query);
+  }
+
+  @Test
   void errorMissingParameter() {
     expectingException(() -> {
       database.select().fromType("Vertex")//

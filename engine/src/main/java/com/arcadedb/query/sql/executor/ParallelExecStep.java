@@ -103,7 +103,7 @@ public class ParallelExecStep extends AbstractExecutionStep {
       result = "+-------------------------\n" + result;
       for (int j = 0; j < partials.length; j++) {
         final String p = partials[partials.length - 1 - j];
-        if (result.length() > 0) {
+        if (!result.isEmpty()) {
           result = appendPipe(p) + "\n" + result;
         } else {
           result = appendPipe(p);
