@@ -217,6 +217,7 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
    */
   protected MutablePage createNewPage(final int compactedPageNumberOfSeries) {
     final int txPageCounter = getTotalPages();
+    // Create MutablePage directly (compaction happens outside transaction context)
     final MutablePage currentPage = new MutablePage(new PageId(database, getFileId(), txPageCounter), pageSize);
 
     int pos = 0;
@@ -251,6 +252,9 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
       currentPage.writeInt(pos, beamWidth);
       pos += INT_SERIALIZED_SIZE;
     }
+
+    // Manually update page count (following LSMTreeIndexCompacted pattern)
+    updatePageCount(txPageCounter + 1);
 
     return currentPage;
   }
