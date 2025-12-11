@@ -84,7 +84,7 @@ public class LSMVectorIndexCompactor {
 
       // Find last immutable page (skip mutable pages still being written)
       int lastImmutablePage = findLastImmutablePage(mainIndex, totalPages);
-      System.out.println("findLastImmutablePage returned: " + lastImmutablePage + " (totalPages=" + totalPages + ")");
+      LogManager.instance().log(mainIndex, Level.INFO, "findLastImmutablePage returned: %d (totalPages=%d)", null, lastImmutablePage, totalPages);
 
       if (lastImmutablePage < 1) {
         // All pages are either page 0 (metadata) or mutable
