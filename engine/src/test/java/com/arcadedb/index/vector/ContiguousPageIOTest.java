@@ -42,7 +42,7 @@ class ContiguousPageIOTest {
   }
 
   @Test
-  void testWriteReadSymmetry() throws Exception {
+  void writeReadSymmetry() throws Exception {
     // Create database
     DatabaseFactory factory = new DatabaseFactory(DB_PATH);
     if (factory.exists()) {
@@ -50,10 +50,10 @@ class ContiguousPageIOTest {
     }
 
     Database database = factory.create();
-    DatabaseInternal dbInternal = (DatabaseInternal) database;
-    database.begin();
 
-    try {
+    try (database) {
+      DatabaseInternal dbInternal = (DatabaseInternal) database;
+      database.begin();
       // Create a graph file to test with
       final String fileName = "test-io";
       final int pageSize = 65536;  // Standard page size
@@ -92,7 +92,8 @@ class ContiguousPageIOTest {
       writer.writeInt(magicValues[0]);
 
       // Write padding to get to position ~100
-      for (int i = 0; i < 24; i++) writer.writeInt(0);  // 96 bytes padding
+      for (int i = 0; i < 24; i++)
+        writer.writeInt(0);  // 96 bytes padding
       magicPositions[1] = writer.position();
       writer.writeInt(magicValues[1]);
 
@@ -113,7 +114,8 @@ class ContiguousPageIOTest {
       writer.writeInt(magicValues[4]);
 
       // Write more padding into page 1
-      for (int i = 0; i < 100; i++) writer.writeInt(0);  // 400 bytes into page 1
+      for (int i = 0; i < 100; i++)
+        writer.writeInt(0);  // 400 bytes into page 1
       magicPositions[5] = writer.position();
       writer.writeInt(magicValues[5]);
 
@@ -128,24 +130,13 @@ class ContiguousPageIOTest {
       final long totalBytesWritten = writer.position();
       writer.close();
 
-      System.out.println("===== WRITE PHASE COMPLETE =====");
-      System.out.printf("Total bytes written: %d%n", totalBytesWritten);
-      System.out.printf("Pages written: %d%n", (totalBytesWritten / usablePageSize) + 1);
-      System.out.println();
-
       for (int i = 0; i < magicPositions.length; i++) {
         long pos = magicPositions[i];
         int pageNum = (int) (pos / usablePageSize);
         int pageOffset = (int) (pos % usablePageSize);
-        System.out.printf("Magic[%d] = 0x%X at position %d (page %d, offset %d)%n",
-            i, magicValues[i], pos, pageNum, pageOffset);
       }
 
       database.commit();
-
-      // Read phase: seek to each position and verify
-      System.out.println();
-      System.out.println("===== READ PHASE =====");
 
       ContiguousPageReader reader = new ContiguousPageReader(
           dbInternal,
@@ -154,7 +145,6 @@ class ContiguousPageIOTest {
           totalBytesWritten,
           0L);
 
-      int failures = 0;
       for (int i = 0; i < magicPositions.length; i++) {
         long pos = magicPositions[i];
         reader.seek(pos);
@@ -164,14 +154,6 @@ class ContiguousPageIOTest {
         int pageNum = (int) (pos / usablePageSize);
         int pageOffset = (int) (pos % usablePageSize);
 
-        String status = (actual == expected) ? "✓ OK" : "✗ MISMATCH";
-        System.out.printf("%s: pos=%d (page %d, offset %d) expected=0x%X actual=0x%X%n",
-            status, pos, pageNum, pageOffset, expected, actual);
-
-        if (actual != expected) {
-          failures++;
-        }
-
         assertThat(actual)
             .as("Value at position %d (page %d, offset %d)", pos, pageNum, pageOffset)
             .isEqualTo(expected);
@@ -179,16 +161,6 @@ class ContiguousPageIOTest {
 
       reader.close();
 
-      if (failures == 0) {
-        System.out.println();
-        System.out.println("✓✓✓ ALL TESTS PASSED - Write/Read symmetry is correct! ✓✓✓");
-      } else {
-        System.out.println();
-        System.out.printf("✗✗✗ %d FAILURES - Write/Read symmetry is broken! ✗✗✗%n", failures);
-      }
-
-    } finally {
-      database.close();
     }
   }
 }
