@@ -19,6 +19,7 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.BasePage;
@@ -83,6 +84,8 @@ public class LSMVectorIndexCompactor {
 
       // Find last immutable page (skip mutable pages still being written)
       int lastImmutablePage = findLastImmutablePage(mainIndex, totalPages);
+      LogManager.instance().log(mainIndex, Level.INFO, "findLastImmutablePage returned: %d (totalPages=%d)", null, lastImmutablePage, totalPages);
+
       if (lastImmutablePage < 1) {
         // All pages are either page 0 (metadata) or mutable
         mainIndex.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.COMPACTION_IN_PROGRESS },
@@ -90,9 +93,10 @@ public class LSMVectorIndexCompactor {
         return false;
       }
 
-      // Perform the merge
+      // Perform the merge (start from page 0 which contains vector data)
       final int pageSize = mainIndex.getPageSize();
-      final int entriesCompacted = mergePages(mainIndex, compactedIndex, 1, lastImmutablePage, pageSize,
+      System.out.println("Calling mergePages(startPage=0, endPage=" + lastImmutablePage + ")");
+      final int entriesCompacted = mergePages(mainIndex, compactedIndex, 0, lastImmutablePage, pageSize,
           indexCompactionRAM);
 
       LogManager.instance()
@@ -162,28 +166,35 @@ public class LSMVectorIndexCompactor {
     final DatabaseInternal database = mainIndex.getDatabase();
     int lastImmutablePage = -1;
 
+    System.out.println("findLastImmutablePage: scanning from page " + (totalPages - 1) + " down to 0");
     // Start from the end and work backwards, stopping at the first immutable page
-    for (int pageIndex = totalPages - 1; pageIndex >= 1; --pageIndex) {
+    // Note: Page 0 contains vector data (not just metadata), so we need to check it too
+    for (int pageIndex = totalPages - 1; pageIndex >= 0; --pageIndex) {
       try {
         final BasePage page = database.getTransaction().getPage(new PageId(database, mainIndex.getFileId(), pageIndex),
             mainIndex.getPageSize());
-        final ByteBuffer buffer = page.getContent();
 
-        // Read the mutable flag (OFFSET_MUTABLE = 8, after offsetFreeContent and numberOfEntries)
+        // Read the mutable flag - OFFSET_MUTABLE is absolute, not content-relative
+        // So we need to read from the buffer directly without adding PAGE_HEADER_SIZE again
+        final java.nio.ByteBuffer buffer = page.getContent();
         buffer.position(LSMVectorIndex.OFFSET_MUTABLE);
         final byte mutable = buffer.get();
+        System.out.println("  Page " + pageIndex + ": mutable=" + mutable);
 
         if (mutable == 0) {
           // Found an immutable page, this is the last one to compact
           lastImmutablePage = pageIndex;
+          System.out.println("  Found immutable page at " + pageIndex + ", breaking");
           break;
         }
         // Otherwise, this page is still mutable, skip it and continue backwards
       } catch (final Exception e) {
+        System.out.println("  Page " + pageIndex + ": exception - " + e.getMessage());
         // Page might not exist yet, continue
       }
     }
 
+    System.out.println("findLastImmutablePage: returning " + lastImmutablePage);
     return lastImmutablePage;
   }
 
@@ -197,17 +208,27 @@ public class LSMVectorIndexCompactor {
 
     final DatabaseInternal database = mainIndex.getDatabase();
     final int dimensions = mainIndex.getDimensions();
-    final int entrySize = 4 + 8 + 4 + (dimensions * 4) + 1; // id + position + bucketId + vector + deleted
+    final int entrySize =
+        Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + Binary.BYTE_SERIALIZED_SIZE;
 
     // Calculate how many pages we can process in RAM
     final int pagesToCompact;
-    final long totalRAMNeeded = (long) (endPage - startPage + 1) * pageSize;
+    final int totalPagesToCompact = endPage - startPage + 1;
+    final long totalRAMNeeded = (long) totalPagesToCompact * pageSize;
+
+    System.out.println("Compaction RAM budget: " + (ramBudget / 1024 / 1024) + " MB, " +
+        "totalPagesToCompact: " + totalPagesToCompact + ", " +
+        "totalRAMNeeded: " + (totalRAMNeeded / 1024 / 1024) + " MB, " +
+        "pageSize: " + pageSize);
+
     if (totalRAMNeeded > ramBudget) {
       pagesToCompact = (int) (ramBudget / pageSize);
+      System.out.println("WARNING: RAM budget insufficient - compacting only " + pagesToCompact + " of " + totalPagesToCompact + " pages");
       if (pagesToCompact < 1)
         return 0; // Not enough RAM even for 1 page
     } else {
-      pagesToCompact = endPage - startPage + 1;
+      pagesToCompact = totalPagesToCompact;
+      System.out.println("RAM budget sufficient - compacting all " + pagesToCompact + " pages");
     }
 
     // Read all vector entries from pages being compacted
@@ -218,25 +239,31 @@ public class LSMVectorIndexCompactor {
       try {
         final BasePage page = database.getTransaction().getPage(new PageId(database, mainIndex.getFileId(), pageNum),
             pageSize);
-        final ByteBuffer buffer = page.getContent();
 
-        // Read page header
-        final int offsetFreeContent = buffer.getInt(LSMVectorIndex.OFFSET_FREE_CONTENT);
-        final int numberOfEntries = buffer.getInt(LSMVectorIndex.OFFSET_NUM_ENTRIES);
-        final byte mutable = buffer.get(LSMVectorIndex.OFFSET_MUTABLE); // Read mutable flag (for validation)
+        // Read page header using BasePage methods (accounts for PAGE_HEADER_SIZE automatically)
+        final int offsetFreeContent = page.readInt(LSMVectorIndex.OFFSET_FREE_CONTENT);
+        final int numberOfEntries = page.readInt(LSMVectorIndex.OFFSET_NUM_ENTRIES);
+
+        // Read mutable flag - OFFSET_MUTABLE is absolute, not content-relative
+        final java.nio.ByteBuffer pageBuffer = page.getContent();
+        pageBuffer.position(LSMVectorIndex.OFFSET_MUTABLE);
+        final byte mutable = pageBuffer.get();
+
+        System.out.println("  Page " + pageNum + ": numberOfEntries=" + numberOfEntries + ", mutable=" + mutable);
 
         if (numberOfEntries == 0)
           continue;
 
-        // Validate numberOfEntries is reasonable (not corrupted)
         final int headerSize = LSMVectorIndex.HEADER_BASE_SIZE + (numberOfEntries * 4);
-        final int maxEntriesPerPage = (pageSize - LSMVectorIndex.HEADER_BASE_SIZE) / (entrySize + 4); // +4 for pointer
-        if (numberOfEntries < 0 || numberOfEntries > maxEntriesPerPage || headerSize > pageSize) {
-          LogManager.instance().log(mainIndex, Level.WARNING,
-              "Skipping corrupted page %d: invalid numberOfEntries=%d (max=%d)",
-              pageNum, numberOfEntries, maxEntriesPerPage);
-          continue;
-        }
+
+        //        // Validate numberOfEntries is reasonable (not corrupted)
+//        final int maxEntriesPerPage = (pageSize - LSMVectorIndex.HEADER_BASE_SIZE) / (entrySize + 4); // +4 for pointer
+//        if (numberOfEntries < 0 || numberOfEntries > maxEntriesPerPage || headerSize > pageSize) {
+//          LogManager.instance().log(mainIndex, Level.WARNING,
+//              "Skipping corrupted page %d: invalid numberOfEntries=%d (max=%d)",
+//              pageNum, numberOfEntries, maxEntriesPerPage);
+//          continue;
+//        }
 
         // Validate offsetFreeContent is within page bounds
         if (offsetFreeContent < headerSize || offsetFreeContent > pageSize) {
@@ -246,13 +273,17 @@ public class LSMVectorIndexCompactor {
           continue;
         }
 
-        // Read pointer table (starts at HEADER_BASE_SIZE offset)
+        // Read pointer table using BasePage methods
         final int[] pointers = new int[numberOfEntries];
         for (int i = 0; i < numberOfEntries; i++) {
-          pointers[i] = buffer.getInt(LSMVectorIndex.HEADER_BASE_SIZE + (i * 4));
+          pointers[i] = page.readInt(LSMVectorIndex.HEADER_BASE_SIZE + (i * 4));
         }
 
         // Read entries with validation
+        // Pages only contain metadata (id, position, bucketId, deleted) - vectors are in documents
+        // For sequential reads, use ByteBuffer with correct PAGE_HEADER_SIZE offset
+        final ByteBuffer buffer = page.getContent();
+
         for (int i = 0; i < numberOfEntries; i++) {
           // Validate pointer is within page bounds
           final int pointer = pointers[i];
@@ -263,22 +294,34 @@ public class LSMVectorIndexCompactor {
             continue;
           }
 
-          buffer.position(pointer);
+          // Position buffer at entry location (add PAGE_HEADER_SIZE)
+          buffer.position(BasePage.PAGE_HEADER_SIZE + pointer);
 
+          // Read metadata from page
           final int id = buffer.getInt();
           final long position = buffer.getLong();
           final int bucketId = buffer.getInt();
           final RID rid = new RID(database, bucketId, position);
-
-          final float[] vector = new float[dimensions];
-          for (int j = 0; j < dimensions; j++) {
-            vector[j] = buffer.getFloat();
-          }
-
           final boolean deleted = buffer.get() == 1;
 
+          // Log some sample entries, especially deleted ones
+          if ((pageNum <= 2 && i < 3) || deleted) {
+            if (deleted && totalEntriesRead > 10) {
+              // Only log first few deleted entries to avoid spam
+              if (totalEntriesRead < 50 || (totalEntriesRead % 1000 == 0)) {
+                System.out.println("    Entry " + i + " (page " + pageNum + "): id=" + id + ", rid=" + rid + ", deleted=" + deleted);
+              }
+            } else {
+              System.out.println("    Entry " + i + " (page " + pageNum + "): id=" + id + ", rid=" + rid + ", deleted=" + deleted);
+            }
+          }
+
+          // NOTE: Vectors are stored in documents, not in index pages.
+          // During compaction, we only need to copy metadata (id, rid, deleted flag).
+          // We don't need to load vectors from documents - they remain in the documents.
+
           // Last write wins: later pages override earlier entries
-          final VectorEntryData entry = new VectorEntryData(id, rid, vector, deleted);
+          final VectorEntryData entry = new VectorEntryData(id, rid, null, deleted);
           vectorMap.put(id, entry);
           totalEntriesRead++;
         }
@@ -289,9 +332,7 @@ public class LSMVectorIndexCompactor {
       }
     }
 
-    LogManager.instance()
-        .log(mainIndex, Level.FINE, "Read %d entries from %d pages, unique vectors: %d", null, totalEntriesRead,
-            pagesToCompact, vectorMap.size());
+    System.out.println("Read " + totalEntriesRead + " entries from " + pagesToCompact + " pages, unique vectors: " + vectorMap.size());
 
     // Write merged entries to compacted index (sorted by vector ID, skip deleted)
     final List<Integer> sortedIds = new ArrayList<>(vectorMap.keySet());
@@ -300,13 +341,16 @@ public class LSMVectorIndexCompactor {
     MutablePage currentPage = null;
     final AtomicInteger compactedPageSeries = new AtomicInteger(0);
     int entriesWritten = 0;
+    int deletedSkipped = 0;
 
     for (final Integer vectorId : sortedIds) {
       final VectorEntryData entry = vectorMap.get(vectorId);
 
       // Skip deleted entries
-      if (entry.deleted)
+      if (entry.deleted) {
+        deletedSkipped++;
         continue;
+      }
 
       // Write to compacted index
       final LSMVectorIndexCompacted.CompactionAppendResult result = compactedIndex.appendDuringCompaction(
@@ -337,8 +381,7 @@ public class LSMVectorIndexCompactor {
       database.getPageManager().writePages(List.of(currentPage), true); // Bypass WAL for compaction
     }
 
-    LogManager.instance()
-        .log(mainIndex, Level.FINE, "Wrote %d non-deleted entries to compacted index", null, entriesWritten);
+    System.out.println("Wrote " + entriesWritten + " non-deleted entries to compacted index (skipped " + deletedSkipped + " deleted entries)");
 
     return entriesWritten;
   }
