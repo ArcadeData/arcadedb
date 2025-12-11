@@ -293,7 +293,8 @@ class SelectStatementTest {
 
   @Test
   void escape2() {
-    assertThatThrownBy(() -> checkWrongSyntax("select from bucket:internal where \"\\u005C\" = \"\\u005C\" ")).isInstanceOf(Error.class);
+    assertThatThrownBy(() -> checkWrongSyntax("select from bucket:internal where \"\\u005C\" = \"\\u005C\" ")).isInstanceOf(
+        Error.class);
   }
 
   @Test
