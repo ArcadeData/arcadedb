@@ -304,21 +304,13 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
         new MutablePage(new PageId(database, getFileId(), txPageCounter), pageSize);
 
     int pos = 0;
-    currentPage.writeInt(pos, currentPage.getMaxContentSize());
-    pos += INT_SERIALIZED_SIZE;
-
-    currentPage.writeInt(pos, 0); // ENTRIES COUNT
-    pos += INT_SERIALIZED_SIZE;
-
-    currentPage.writeByte(pos, (byte) 1); // MUTABLE PAGE
-    pos += BYTE_SERIALIZED_SIZE;
-
-    currentPage.writeInt(pos, 0); // COMPACTED PAGES
-    pos += INT_SERIALIZED_SIZE;
+    pos += currentPage.writeInt(pos, currentPage.getMaxContentSize());
+    pos += currentPage.writeInt(pos, 0); // ENTRIES COUNT
+    pos += currentPage.writeByte(pos, (byte) 1); // MUTABLE PAGE
+    pos += currentPage.writeInt(pos, 0); // COMPACTED PAGES
 
     if (txPageCounter == 0) {
-      currentPage.writeInt(pos, subIndex != null ? subIndex.getFileId() : -1); // SUB-INDEX FILE ID
-      pos += INT_SERIALIZED_SIZE;
+      pos += currentPage.writeInt(pos, subIndex != null ? subIndex.getFileId() : -1); // SUB-INDEX FILE ID
 
       currentPage.writeByte(pos++, (byte) binaryKeyTypes.length);
       for (int i = 0; i < binaryKeyTypes.length; ++i)

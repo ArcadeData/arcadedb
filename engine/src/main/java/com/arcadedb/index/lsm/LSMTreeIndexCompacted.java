@@ -44,8 +44,8 @@ import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
  * The first page (main page) contains the total pages under the fields "compactedPageNumberOfSeries". This is to avoid concurrent read/write while compaction.
  */
 public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
-  public static final String     UNIQUE_INDEX_EXT    = "uctidx";
-  public static final String     NOTUNIQUE_INDEX_EXT = "nuctidx";
+  public static final String UNIQUE_INDEX_EXT    = "uctidx";
+  public static final String NOTUNIQUE_INDEX_EXT = "nuctidx";
 
   /**
    * Called at cloning time.
@@ -229,21 +229,13 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     final MutablePage currentPage = new MutablePage(new PageId(database, getFileId(), txPageCounter), pageSize);
 
     int pos = 0;
-    currentPage.writeInt(pos, currentPage.getMaxContentSize());
-    pos += INT_SERIALIZED_SIZE;
-
-    currentPage.writeInt(pos, 0); // ENTRIES COUNT
-    pos += INT_SERIALIZED_SIZE;
-
-    currentPage.writeByte(pos, (byte) 0); // IMMUTABLE PAGE
-    pos += BYTE_SERIALIZED_SIZE;
-
-    currentPage.writeInt(pos, compactedPageNumberOfSeries); // COMPACTED PAGE NUMBER OF SERIES
-    pos += INT_SERIALIZED_SIZE;
+    pos += currentPage.writeInt(pos, currentPage.getMaxContentSize());
+    pos += currentPage.writeInt(pos, 0); // ENTRIES COUNT
+    pos += currentPage.writeByte(pos, (byte) 0); // IMMUTABLE PAGE
+    pos += currentPage.writeInt(pos, compactedPageNumberOfSeries); // COMPACTED PAGE NUMBER OF SERIES
 
     if (txPageCounter == 0) {
-      currentPage.writeInt(pos, -1); // SUB-INDEX FILE ID
-      pos += INT_SERIALIZED_SIZE;
+      pos += currentPage.writeInt(pos, -1); // SUB-INDEX FILE ID
 
       currentPage.writeByte(pos++, (byte) binaryKeyTypes.length);
       for (int i = 0; i < binaryKeyTypes.length; ++i)

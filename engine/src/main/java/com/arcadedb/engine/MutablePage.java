@@ -93,26 +93,30 @@ public class MutablePage extends BasePage implements TrackableContent {
 
   public int writeNumber(int index, final long content) {
     index += PAGE_HEADER_SIZE;
-    checkBoundariesOnWrite(index, Binary.LONG_SERIALIZED_SIZE + 1); // WITH VARSIZE NUMBER THE WORST CASE SCENARIO IS 1 BYTE MORE
+    final int serializedSize = Binary.getNumberSpace(content); // PRE-CALCULATE THE SIZE
+    checkBoundariesOnWrite(index, serializedSize);
     return this.content.putNumber(index, content);
   }
 
-  public void writeLong(int index, final long content) {
+  public int writeLong(int index, final long content) {
     index += PAGE_HEADER_SIZE;
     checkBoundariesOnWrite(index, Binary.LONG_SERIALIZED_SIZE);
     this.content.putLong(index, content);
+    return Binary.LONG_SERIALIZED_SIZE;
   }
 
-  public void writeInt(int index, final int content) {
+  public int writeInt(int index, final int content) {
     index += PAGE_HEADER_SIZE;
     checkBoundariesOnWrite(index, Binary.INT_SERIALIZED_SIZE);
     this.content.putInt(index, content);
+    return Binary.INT_SERIALIZED_SIZE;
   }
 
-  public void writeUnsignedInt(int index, final long content) {
+  public int writeUnsignedInt(int index, final long content) {
     index += PAGE_HEADER_SIZE;
     checkBoundariesOnWrite(index, Binary.INT_SERIALIZED_SIZE);
     this.content.putInt(index, (int) content);
+    return Binary.INT_SERIALIZED_SIZE;
   }
 
   public void writeShort(int index, final short content) {
@@ -139,10 +143,11 @@ public class MutablePage extends BasePage implements TrackableContent {
     this.content.putDouble(index, content);
   }
 
-  public void writeByte(int index, final byte content) {
+  public int writeByte(int index, final byte content) {
     index += PAGE_HEADER_SIZE;
     checkBoundariesOnWrite(index, Binary.BYTE_SERIALIZED_SIZE);
     this.content.putByte(index, content);
+    return Binary.BYTE_SERIALIZED_SIZE;
   }
 
   public int writeBytes(int index, final byte[] content) {
