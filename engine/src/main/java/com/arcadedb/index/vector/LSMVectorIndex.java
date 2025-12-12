@@ -491,9 +491,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final DatabaseInternal database = getDatabase();
       final String expectedGraphFileName = mutable.getName() + "_" + LSMVectorIndexGraphFile.FILE_EXT;
 
+      LogManager.instance().log(this, Level.FINE,
+          "Discovering graph file for index %s, looking for: %s", indexName, expectedGraphFileName);
+
       // Look for ComponentFile in FileManager
       for (final ComponentFile file : database.getFileManager().getFiles()) {
-        if (LSMVectorIndexGraphFile.FILE_EXT.equals(file.getFileExtension()) &&
+        if (file != null && LSMVectorIndexGraphFile.FILE_EXT.equals(file.getFileExtension()) &&
             file.getComponentName().equals(expectedGraphFileName)) {
 
           final int pageSize = file instanceof com.arcadedb.engine.PaginatedComponentFile ?
@@ -513,6 +516,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
       }
 
+      LogManager.instance().log(this, Level.FINE,
+          "No graph file found in FileManager for index %s. Graph will be built on first search.", indexName);
       return null;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
@@ -2129,6 +2134,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // to avoid path transformation issues during replication.
 
         mutable.close();
+
+        // Close graph file to ensure graph data is flushed to disk
+        if (graphFile != null) {
+          try {
+            graphFile.close();
+          } catch (final Exception e) {
+            LogManager.instance().log(this, Level.WARNING,
+                "Error closing graph file for index %s", e, indexName);
+          }
+        }
       } finally {
         lock.writeLock().unlock();
       }
