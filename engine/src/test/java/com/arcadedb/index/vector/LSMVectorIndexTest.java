@@ -2102,21 +2102,17 @@ class LSMVectorIndexTest extends TestHelper {
   }
 
   /**
-   * Helper method to recursively delete a directory
+   * Helper method to recursively delete a directory using Files.walk() API
    */
   private void deleteDirectory(java.io.File directory) {
     if (directory.exists()) {
-      final java.io.File[] files = directory.listFiles();
-      if (files != null) {
-        for (final java.io.File file : files) {
-          if (file.isDirectory()) {
-            deleteDirectory(file);
-          } else {
-            file.delete();
-          }
-        }
+      try (java.util.stream.Stream<java.nio.file.Path> walk = java.nio.file.Files.walk(directory.toPath())) {
+        walk.sorted(java.util.Comparator.reverseOrder())
+            .map(java.nio.file.Path::toFile)
+            .forEach(java.io.File::delete);
+      } catch (java.io.IOException e) {
+        System.err.println("Error deleting directory " + directory.getAbsolutePath() + ": " + e.getMessage());
       }
-      directory.delete();
     }
   }
 }

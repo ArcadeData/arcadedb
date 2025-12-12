@@ -2141,7 +2141,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             graphFile.close();
           } catch (final Exception e) {
             LogManager.instance().log(this, Level.WARNING,
-                "Error closing graph file for index %s: %s", indexName, e.getMessage());
+                "Error closing graph file for index %s", e, indexName);
           }
         }
       } finally {
