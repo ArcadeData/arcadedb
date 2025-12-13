@@ -1732,11 +1732,12 @@ Expression Expression():
     LOOKAHEAD( Rid() )
     jjtThis.rid = Rid() { jjtThis.value = jjtThis.rid; }
     |
-    LOOKAHEAD(3)
+    LOOKAHEAD( <LPAREN> WhereClause() <RPAREN> )
     <LPAREN>
       jjtThis.whereCondition = WhereClause() {jjtThis.value = jjtThis.whereCondition; }
     <RPAREN>
     |
+    LOOKAHEAD( MathExpression() )
     jjtThis.mathExpression = MathExpression() { jjtThis.value = jjtThis.mathExpression; }
   )
   { return jjtThis; }
@@ -1774,6 +1775,7 @@ ArrayConcatExpressionElement ArrayConcatExpressionElement():
     LOOKAHEAD( Rid() )
     jjtThis.rid = Rid() { jjtThis.value = jjtThis.rid; }
     |
+    LOOKAHEAD( MathExpression() )
     jjtThis.mathExpression = MathExpression() { jjtThis.value = jjtThis.mathExpression; }
 
   )
