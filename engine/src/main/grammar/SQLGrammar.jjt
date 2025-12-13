@@ -1739,6 +1739,8 @@ Expression Expression():
     |
     LOOKAHEAD( MathExpression() )
     jjtThis.mathExpression = MathExpression() { jjtThis.value = jjtThis.mathExpression; }
+    |
+    jjtThis.json = Json() {jjtThis.value = jjtThis.json; }
   )
   { return jjtThis; }
 }
@@ -1777,6 +1779,8 @@ ArrayConcatExpressionElement ArrayConcatExpressionElement():
     |
     LOOKAHEAD( MathExpression() )
     jjtThis.mathExpression = MathExpression() { jjtThis.value = jjtThis.mathExpression; }
+    |
+    jjtThis.json = Json() {jjtThis.value = jjtThis.json; }
 
   )
   [ jjtThis.nestedProjection = NestedProjection() ]
