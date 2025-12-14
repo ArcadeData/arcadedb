@@ -157,4 +157,50 @@ class HAServerAliasResolutionTest {
     assertThat(cluster.findByAlias("db2").get().host()).isEqualTo("db2.internal");
     assertThat(cluster.findByAlias("db3").get().host()).isEqualTo("db3.internal");
   }
+
+  @Test
+  @DisplayName("Test HACluster can find server by exact ServerInfo match")
+  void testFindByServerInfo() {
+    ServerInfo server1 = new ServerInfo("host1", 2424, "alias1");
+    ServerInfo server2 = new ServerInfo("host2", 2424, "alias2");
+    ServerInfo server3 = new ServerInfo("host3", 2424, "alias3");
+
+    Set<ServerInfo> servers = new HashSet<>();
+    servers.add(server1);
+    servers.add(server2);
+    servers.add(server3);
+
+    HACluster cluster = new HACluster(servers);
+
+    // Find by exact match
+    assertThat(cluster.getServers()).contains(server1);
+    assertThat(cluster.getServers()).contains(server2);
+    assertThat(cluster.getServers()).contains(server3);
+  }
+
+  @Test
+  @DisplayName("Test HACluster can find server by host and port")
+  void testFindByHostAndPort() {
+    ServerInfo server1 = new ServerInfo("host1", 2424, "alias1");
+    ServerInfo server2 = new ServerInfo("host2", 2425, "alias2");
+
+    Set<ServerInfo> servers = new HashSet<>();
+    servers.add(server1);
+    servers.add(server2);
+
+    HACluster cluster = new HACluster(servers);
+
+    // Find servers matching host and port
+    Optional<ServerInfo> found1 = cluster.getServers().stream()
+        .filter(s -> s.host().equals("host1") && s.port() == 2424)
+        .findFirst();
+    assertThat(found1).isPresent();
+    assertThat(found1.get()).isEqualTo(server1);
+
+    Optional<ServerInfo> found2 = cluster.getServers().stream()
+        .filter(s -> s.host().equals("host2") && s.port() == 2425)
+        .findFirst();
+    assertThat(found2).isPresent();
+    assertThat(found2.get()).isEqualTo(server2);
+  }
 }

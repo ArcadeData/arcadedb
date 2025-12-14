@@ -272,7 +272,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       for (final ArcadeDBServer server : servers) {
         if (server != null) {
           assertThat(server.isStarted()).isFalse();
-          assertThat(server.getStatus()).isEqualTo(ArcadeDBServer.STATUS.OFFLINE);
+          assertThat(server.getStatus()).isEqualTo(ArcadeDBServer.Status.OFFLINE);
           assertThat(server.getHttpServer().getSessionManager().getActiveSessions()).isEqualTo(0);
         }
       }
@@ -326,8 +326,8 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     waitAllReplicasAreConnected();
   }
 
-  protected HAServer.SERVER_ROLE getServerRole(final int serverIndex) {
-    return serverIndex == 0 ? HAServer.SERVER_ROLE.ANY : HAServer.SERVER_ROLE.REPLICA;
+  protected HAServer.ServerRole getServerRole(final int serverIndex) {
+    return serverIndex == 0 ? HAServer.ServerRole.ANY : HAServer.ServerRole.REPLICA;
   }
 
   protected void waitAllReplicasAreConnected() {
@@ -341,7 +341,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
           .pollInterval(500, TimeUnit.MILLISECONDS)
           .until(() -> {
             for (int i = 0; i < serverCount; ++i) {
-              if (getServerRole(i) == HAServer.SERVER_ROLE.ANY) {
+              if (getServerRole(i) == HAServer.ServerRole.ANY) {
                 // ONLY FOR CANDIDATE LEADERS
                 if (servers[i].getHA() != null) {
                   if (servers[i].getHA().isLeader()) {
@@ -361,7 +361,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     } catch (ConditionTimeoutException e) {
       int lastTotalConnectedReplica = 0;
       for (int i = 0; i < serverCount; ++i) {
-        if (getServerRole(i) == HAServer.SERVER_ROLE.ANY && servers[i].getHA() != null && servers[i].getHA().isLeader()) {
+        if (getServerRole(i) == HAServer.ServerRole.ANY && servers[i].getHA() != null && servers[i].getHA().isLeader()) {
           lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
           break;
         }
@@ -378,7 +378,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     int lastTotalConnectedReplica;
 
     for (int i = 0; i < serverCount; ++i) {
-      if (getServerRole(i) == HAServer.SERVER_ROLE.ANY) {
+      if (getServerRole(i) == HAServer.ServerRole.ANY) {
         // ONLY FOR CANDIDATE LEADERS
         if (servers[i].getHA() != null) {
           if (servers[i].getHA().isLeader()) {
