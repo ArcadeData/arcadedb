@@ -93,7 +93,7 @@
 
         <!-- Oleg Cohen - gRPC support -->
 
-        <protobuf-maven-plugin.version>4.0.3</protobuf-maven-plugin.version>
+        <protobuf-maven-plugin.version>4.1.1</protobuf-maven-plugin.version>
         <grpc.version>1.77.0</grpc.version>
         <protoc.version>4.32.0</protoc.version>
         <protobuf-java.version>4.33.1</protobuf-java.version>
