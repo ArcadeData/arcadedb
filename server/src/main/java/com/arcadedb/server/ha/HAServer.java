@@ -84,6 +84,7 @@ public class HAServer implements ServerPlugin {
   private final       String                                         clusterName;
   private final       long                                           startedOn;
   private final       Map<ServerInfo, Leader2ReplicaNetworkExecutor> replicaConnections                = new ConcurrentHashMap<>();
+  private final       Map<ServerInfo, String>                        replicaHTTPAddresses              = new ConcurrentHashMap<>();
   private final       AtomicReference<Replica2LeaderNetworkExecutor> leaderConnection                  = new AtomicReference<>();
   private final       AtomicLong                                     lastDistributedOperationNumber    = new AtomicLong(-1);
   private final       AtomicLong                                     lastForwardOperationNumber        = new AtomicLong(0);
@@ -814,29 +815,39 @@ public class HAServer implements ServerPlugin {
     return total;
   }
 
-//  public void setReplicasHTTPAddresses(final String replicasHTTPAddresses) {
-//    this.replicasHTTPAddresses = replicasHTTPAddresses;
-//  }
+  /**
+   * Stores the HTTP address of a replica server.
+   * This is used by clients to redirect HTTP requests to available replicas.
+   *
+   * @param serverInfo the ServerInfo of the replica
+   * @param httpAddress the HTTP address (host:port) of the replica
+   */
+  public void setReplicaHTTPAddress(final ServerInfo serverInfo, final String httpAddress) {
+    replicaHTTPAddresses.put(serverInfo, httpAddress);
+    LogManager.instance().log(this, Level.FINE, "Stored HTTP address for replica %s: %s", serverInfo.alias(), httpAddress);
+  }
 
-//  public String getReplicaServersHTTPAddressesList() {
-//    if (isLeader()) {
-//      final StringBuilder list = new StringBuilder();
-//      for (final Leader2ReplicaNetworkExecutor r : replicaConnections.values()) {
-//        final String addr = r.getRemoteServerHTTPAddress();
-//        LogManager.instance().log(this, Level.FINE, "Replica http %s", addr);
-//        if (addr == null)
-//          // HTTP SERVER NOT AVAILABLE YET
-//          continue;
-//
-//        if (list.length() > 0)
-//          list.append(",");
-//        list.append(addr);
-//      }
-//      return list.toString();
-//    }
-//
-//    return replicasHTTPAddresses;
-//  }
+  /**
+   * Returns a comma-separated list of HTTP addresses of all replica servers.
+   * This is used by clients to discover available HTTP endpoints for load balancing and failover.
+   *
+   * @return comma-separated list of replica HTTP addresses, or empty string if no replicas
+   */
+  public String getReplicaServersHTTPAddressesList() {
+    final StringBuilder list = new StringBuilder();
+    for (final Map.Entry<ServerInfo, String> entry : replicaHTTPAddresses.entrySet()) {
+      final String addr = entry.getValue();
+      LogManager.instance().log(this, Level.FINE, "Replica http %s", addr);
+      if (addr == null)
+        // HTTP ADDRESS NOT AVAILABLE YET
+        continue;
+
+      if (list.length() > 0)
+        list.append(",");
+      list.append(addr);
+    }
+    return list.toString();
+  }
 
   /**
    * Removes a server from the cluster by ServerInfo.
@@ -851,6 +862,9 @@ public class HAServer implements ServerPlugin {
           .log(this, Level.SEVERE, "Replica '%s' seems not active, removing it from the cluster", serverInfo);
       c.close();
     }
+
+    // Also remove the HTTP address mapping
+    replicaHTTPAddresses.remove(serverInfo);
 
     configuredServers = 1 + replicaConnections.size();
   }
@@ -1197,7 +1211,7 @@ public class HAServer implements ServerPlugin {
     channel.writeString(clusterName);
     channel.writeString(getServerName());
     channel.writeString(getServerAddress().toString());
-//    channel.writeString(server.getHttpServer().getListeningAddress());
+    channel.writeString(server.getHttpServer().getListeningAddress());
 
     channel.writeShort(commandId);
     return channel;
