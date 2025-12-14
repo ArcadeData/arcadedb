@@ -71,7 +71,7 @@
 
         <testcontainers.version>2.0.2</testcontainers.version>
         <logback-classic.version>1.5.22</logback-classic.version>
-        <micrometer.version>1.16.0</micrometer.version>
+        <micrometer.version>1.16.1</micrometer.version>
         <postgres.version>42.7.8</postgres.version>
 
         <assertj-core.version>3.27.6</assertj-core.version>
