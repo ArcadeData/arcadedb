@@ -404,8 +404,49 @@ public class HAServer implements ServerPlugin {
     }
   }
 
+  /**
+   * Gets a replica connection by ServerInfo.
+   * This is the primary method for accessing replica connections with type-safe ServerInfo.
+   *
+   * @param replicaInfo the ServerInfo identifying the replica server
+   * @return the replica network executor, or null if not found
+   */
+  public Leader2ReplicaNetworkExecutor getReplica(final ServerInfo replicaInfo) {
+    return replicaConnections.get(replicaInfo);
+  }
+
+  /**
+   * Gets a replica connection by server name (alias or host:port string).
+   * This method provides backward compatibility for code that uses String identifiers.
+   * It attempts to find the ServerInfo by:
+   * 1. Looking up by alias in the cluster
+   * 2. Parsing the string as host:port and matching against replicaConnections keys
+   *
+   * @param replicaName the server name (alias) or "host:port" string
+   * @return the replica network executor, or null if not found
+   * @deprecated Use {@link #getReplica(ServerInfo)} instead for type safety
+   */
+  @Deprecated
   public Leader2ReplicaNetworkExecutor getReplica(final String replicaName) {
-    return replicaConnections.get(replicaName);
+    ServerInfo serverInfo = null;
+
+    // First, try to find by alias in the cluster
+    if (cluster != null) {
+      serverInfo = cluster.findByAlias(replicaName).orElse(null);
+    }
+
+    // If not found by alias, try to match against existing ServerInfo keys in replicaConnections
+    if (serverInfo == null) {
+      for (ServerInfo key : replicaConnections.keySet()) {
+        if (key.alias().equals(replicaName) ||
+            (key.host() + ":" + key.port()).equals(replicaName)) {
+          serverInfo = key;
+          break;
+        }
+      }
+    }
+
+    return serverInfo != null ? getReplica(serverInfo) : null;
   }
 
   public void disconnectAllReplicas() {
