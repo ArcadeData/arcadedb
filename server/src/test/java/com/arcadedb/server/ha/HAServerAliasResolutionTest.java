@@ -23,7 +23,9 @@ import com.arcadedb.server.ha.HAServer.ServerInfo;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -202,5 +204,110 @@ class HAServerAliasResolutionTest {
         .findFirst();
     assertThat(found2).isPresent();
     assertThat(found2.get()).isEqualTo(server2);
+  }
+
+  @Test
+  @DisplayName("Test ServerInfo lookup by alias for getReplica() compatibility")
+  void testServerInfoLookupByAliasForGetReplica() {
+    // This test validates the logic needed for HAServer.getReplica(String) backward compatibility
+    // It simulates how the deprecated String version should resolve to ServerInfo
+
+    Set<ServerInfo> servers = new HashSet<>();
+    ServerInfo replica1 = new ServerInfo("replica1.internal", 2424, "replica1");
+    ServerInfo replica2 = new ServerInfo("replica2.internal", 2424, "replica2");
+    ServerInfo replica3 = new ServerInfo("192.168.1.30", 2424, "replica3");
+    servers.add(replica1);
+    servers.add(replica2);
+    servers.add(replica3);
+
+    HACluster cluster = new HACluster(servers);
+
+    // Test 1: Lookup by alias should work
+    Optional<ServerInfo> foundByAlias = cluster.findByAlias("replica1");
+    assertThat(foundByAlias).isPresent();
+    assertThat(foundByAlias.get()).isEqualTo(replica1);
+
+    // Test 2: Lookup by different alias
+    Optional<ServerInfo> foundByAlias2 = cluster.findByAlias("replica3");
+    assertThat(foundByAlias2).isPresent();
+    assertThat(foundByAlias2.get()).isEqualTo(replica3);
+    assertThat(foundByAlias2.get().host()).isEqualTo("192.168.1.30");
+  }
+
+  @Test
+  @DisplayName("Test ServerInfo lookup by host:port string for getReplica() compatibility")
+  void testServerInfoLookupByHostPortForGetReplica() {
+    // This test validates the fallback logic for getReplica(String) when alias lookup fails
+    // It should be able to match by "host:port" string
+
+    Set<ServerInfo> servers = new HashSet<>();
+    ServerInfo replica1 = new ServerInfo("192.168.1.10", 2424, "replica1");
+    ServerInfo replica2 = new ServerInfo("192.168.1.20", 2425, "replica2");
+    servers.add(replica1);
+    servers.add(replica2);
+
+    // Simulate the fallback logic in getReplica(String)
+    String searchString1 = "192.168.1.10:2424";
+    Optional<ServerInfo> found1 = servers.stream()
+        .filter(s -> (s.host() + ":" + s.port()).equals(searchString1))
+        .findFirst();
+    assertThat(found1).isPresent();
+    assertThat(found1.get()).isEqualTo(replica1);
+
+    String searchString2 = "192.168.1.20:2425";
+    Optional<ServerInfo> found2 = servers.stream()
+        .filter(s -> (s.host() + ":" + s.port()).equals(searchString2))
+        .findFirst();
+    assertThat(found2).isPresent();
+    assertThat(found2.get()).isEqualTo(replica2);
+  }
+
+  @Test
+  @DisplayName("Test ServerInfo equality and hashCode for Map usage")
+  void testServerInfoEqualityForMapUsage() {
+    // This test ensures ServerInfo can be used as a Map key (as in replicaConnections)
+    // ServerInfo is a record, so equals() and hashCode() are automatically generated
+
+    ServerInfo server1a = new ServerInfo("host1", 2424, "alias1");
+    ServerInfo server1b = new ServerInfo("host1", 2424, "alias1");
+    ServerInfo server2 = new ServerInfo("host2", 2424, "alias2");
+
+    // Test equality
+    assertThat(server1a).isEqualTo(server1b);
+    assertThat(server1a).isNotEqualTo(server2);
+
+    // Test hashCode
+    assertThat(server1a.hashCode()).isEqualTo(server1b.hashCode());
+
+    // Test as Map key
+    Map<ServerInfo, String> map = new HashMap<>();
+    map.put(server1a, "value1");
+    map.put(server2, "value2");
+
+    assertThat(map.get(server1b)).isEqualTo("value1"); // server1b should retrieve same value
+    assertThat(map.get(server2)).isEqualTo("value2");
+    assertThat(map).hasSize(2);
+  }
+
+  @Test
+  @DisplayName("Test ServerInfo with different aliases but same host:port are different")
+  void testServerInfoWithDifferentAliases() {
+    // This validates that ServerInfo with different aliases are treated as different keys
+    // This is important for the migration to ensure we don't have collisions
+
+    ServerInfo server1 = new ServerInfo("localhost", 2424, "alias1");
+    ServerInfo server2 = new ServerInfo("localhost", 2424, "alias2");
+
+    assertThat(server1).isNotEqualTo(server2);
+    assertThat(server1.hashCode()).isNotEqualTo(server2.hashCode());
+
+    // They should be different Map keys
+    Map<ServerInfo, String> map = new HashMap<>();
+    map.put(server1, "value1");
+    map.put(server2, "value2");
+
+    assertThat(map).hasSize(2);
+    assertThat(map.get(server1)).isEqualTo("value1");
+    assertThat(map.get(server2)).isEqualTo("value2");
   }
 }
