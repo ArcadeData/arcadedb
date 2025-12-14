@@ -536,6 +536,23 @@ public class HAServer implements ServerPlugin {
     return servers;
   }
 
+  /**
+   * Resolves a server alias to the actual server information.
+   * This method is used to resolve alias placeholders (e.g., {arcade2}proxy:8667)
+   * to actual server addresses in Docker/K8s environments.
+   *
+   * @param serverInfo The server info potentially containing an alias to resolve
+   * @return The resolved ServerInfo with actual host/port, or the original if alias is empty or not found
+   */
+  public ServerInfo resolveAlias(final ServerInfo serverInfo) {
+    if (serverInfo.alias().isEmpty()) {
+      return serverInfo;
+    }
+
+    return cluster.findByAlias(serverInfo.alias())
+        .orElse(serverInfo);
+  }
+
   public void setServerAddresses(final HACluster receivedCluster) {
 
     LogManager.instance().log(this, Level.INFO, "Current cluster:: %s  - Received cluster  %s", cluster, receivedCluster);
@@ -1055,6 +1072,10 @@ public class HAServer implements ServerPlugin {
       final String[] leader = HostUtil.parseHostAddress(leaderAddress, DEFAULT_PORT);
 
       ServerInfo server1 = new ServerInfo(leader[0], Integer.parseInt(leader[1]), leader[2]);
+
+      // Resolve alias if present (fix for issue #2945)
+      server1 = resolveAlias(server1);
+
       connectToLeader(server1);
 
       // OK, CONNECTED
