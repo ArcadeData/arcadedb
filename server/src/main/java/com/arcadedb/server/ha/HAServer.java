@@ -154,6 +154,23 @@ public class HAServer implements ServerPlugin {
       return Optional.empty();
     }
 
+    /**
+     * Finds a server by host and port combination.
+     * This is useful when we need to match a server by its network address.
+     *
+     * @param host the hostname or IP address
+     * @param port the port number
+     * @return Optional containing the ServerInfo if found, empty otherwise
+     */
+    public Optional<ServerInfo> findByHostAndPort(String host, int port) {
+      for (ServerInfo server : servers) {
+        if (server.host.equals(host) && server.port == port) {
+          return Optional.of(server);
+        }
+      }
+      return Optional.empty();
+    }
+
   }
 
   public enum Quorum {
@@ -821,16 +838,58 @@ public class HAServer implements ServerPlugin {
 //    return replicasHTTPAddresses;
 //  }
 
-  public void removeServer(final String remoteServerName) {
-    final Leader2ReplicaNetworkExecutor c = replicaConnections.remove(remoteServerName);
+  /**
+   * Removes a server from the cluster by ServerInfo.
+   * This is the primary method for removing servers, using the ServerInfo key directly.
+   *
+   * @param serverInfo the ServerInfo identifying the server to remove
+   */
+  public void removeServer(final ServerInfo serverInfo) {
+    final Leader2ReplicaNetworkExecutor c = replicaConnections.remove(serverInfo);
     if (c != null) {
-      //final RemovedServerInfo removedServer = new RemovedServerInfo(remoteServerName, c.getJoinedOn());
       LogManager.instance()
-          .log(this, Level.SEVERE, "Replica '%s' seems not active, removing it from the cluster", remoteServerName);
+          .log(this, Level.SEVERE, "Replica '%s' seems not active, removing it from the cluster", serverInfo);
       c.close();
     }
 
     configuredServers = 1 + replicaConnections.size();
+  }
+
+  /**
+   * Removes a server from the cluster by name (alias or host:port string).
+   * This method provides backward compatibility for code that uses String identifiers.
+   * It attempts to find the ServerInfo by:
+   * 1. Looking up by alias in the cluster
+   * 2. Parsing the string as host:port and matching against replicaConnections keys
+   *
+   * @param remoteServerName the server name (alias) or "host:port" string
+   */
+  public void removeServer(final String remoteServerName) {
+    ServerInfo serverInfo = null;
+
+    // First, try to find by alias in the cluster
+    if (cluster != null) {
+      serverInfo = cluster.findByAlias(remoteServerName).orElse(null);
+    }
+
+    // If not found by alias, try to parse as host:port and find in replicaConnections
+    if (serverInfo == null) {
+      // Try to match against existing ServerInfo keys in replicaConnections
+      for (ServerInfo key : replicaConnections.keySet()) {
+        if (key.alias().equals(remoteServerName) ||
+            (key.host() + ":" + key.port()).equals(remoteServerName)) {
+          serverInfo = key;
+          break;
+        }
+      }
+    }
+
+    if (serverInfo != null) {
+      removeServer(serverInfo);
+    } else {
+      LogManager.instance()
+          .log(this, Level.WARNING, "Cannot remove server '%s' - not found in cluster", remoteServerName);
+    }
   }
 
   public int getOnlineServers() {
