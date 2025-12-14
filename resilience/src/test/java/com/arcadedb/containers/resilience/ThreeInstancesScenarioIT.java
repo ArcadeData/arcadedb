@@ -99,8 +99,8 @@ public class ThreeInstancesScenarioIT extends ContainersTestTemplate {
     logger.info("Adding data to arcade2");
     db2.addUserAndPhotos(100, 10);
 
-    logger.info("Check that all the data are replicated only on arcade1 and arcade2");
-    db1.assertThatUserCountIs(130);
+    logger.info("Check that the data are replicated only on arcade2 and arcade3 (arcade1 is disconnected)");
+    // Don't assert on db1 while arcade1 is disconnected
     db2.assertThatUserCountIs(130);
     db3.assertThatUserCountIs(130);
 
