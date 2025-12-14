@@ -97,7 +97,7 @@
         <grpc.version>1.77.0</grpc.version>
         <protoc.version>4.32.0</protoc.version>
         <protobuf-java.version>4.33.1</protobuf-java.version>
-        <com.google.api.grpc.version>2.63.1</com.google.api.grpc.version>
+        <com.google.api.grpc.version>2.63.2</com.google.api.grpc.version>
         <javax.annotation-api.version>1.3.2</javax.annotation-api.version>
 
         <maven-enforcer-plugin.version>3.4.1</maven-enforcer-plugin.version>
