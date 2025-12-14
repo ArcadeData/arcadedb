@@ -195,9 +195,10 @@ public class LeaderNetworkListener extends Thread {
 
     final String remoteServerName = channel.readString();
     final String remoteServerAddress = channel.readString();
+    final String remoteHTTPAddress = channel.readString();
     LogManager.instance().log(this, Level.INFO,
-        "Connection from serverName '%s'  - serverAddress '%s' ",
-        remoteServerName, remoteServerAddress);
+        "Connection from serverName '%s'  - serverAddress '%s' - httpAddress '%s'",
+        remoteServerName, remoteServerAddress, remoteHTTPAddress);
     final short command = channel.readShort();
 
     HAServer.HACluster cluster = ha.getCluster();
@@ -208,7 +209,7 @@ public class LeaderNetworkListener extends Thread {
           switch (command) {
           case ReplicationProtocol.COMMAND_CONNECT:
             try {
-              connect(channel, server);
+              connect(channel, server, remoteHTTPAddress);
             } catch (IOException e) {
               handleConnectionException(e);
             }
@@ -301,7 +302,7 @@ public class LeaderNetworkListener extends Thread {
     channel.flush();
   }
 
-  private void connect(final ChannelBinaryServer channel, HAServer.ServerInfo remoteServer) throws IOException {
+  private void connect(final ChannelBinaryServer channel, HAServer.ServerInfo remoteServer, final String remoteHTTPAddress) throws IOException {
     if (remoteServer.alias().equals(ha.getServerName())) {
       channel.writeBoolean(false);
       channel.writeByte(ReplicationProtocol.ERROR_CONNECT_SAME_SERVERNAME);
@@ -312,6 +313,9 @@ public class LeaderNetworkListener extends Thread {
 
     // CREATE A NEW PROTOCOL INSTANCE
     final Leader2ReplicaNetworkExecutor connection = new Leader2ReplicaNetworkExecutor(ha, channel, remoteServer);
+
+    // Store the replica's HTTP address for client redirects
+    ha.setReplicaHTTPAddress(remoteServer, remoteHTTPAddress);
 
     ha.registerIncomingConnection(connection.getRemoteServerName(), connection);
 

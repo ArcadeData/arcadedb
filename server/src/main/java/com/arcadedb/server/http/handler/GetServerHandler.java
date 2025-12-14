@@ -146,10 +146,10 @@ public class GetServerHandler extends AbstractServerHttpHandler {
       final String leaderServer = ha.isLeader() ?
           ha.getServer().getHttpServer().getListeningAddress() :
           ha.getLeader().getRemoteHTTPAddress();
-//      final String replicaServers = ha.getReplicaServersHTTPAddressesList();
+      final String replicaServers = ha.getReplicaServersHTTPAddressesList();
 
       haJSON.put("leaderAddress", leaderServer);
-      haJSON.put("replicaAddresses", ha.getCluster().servers.stream().map(HAServer.ServerInfo::toString).collect(Collectors.joining(",")));
+      haJSON.put("replicaAddresses", replicaServers);
 
       LogManager.instance()
           .log(this, Level.FINE, "Returning configuration leaderServer=%s replicaServers=[%s]", leaderServer, ha.getCluster());
