@@ -310,4 +310,123 @@ class HAServerAliasResolutionTest {
     assertThat(map.get(server1)).isEqualTo("value1");
     assertThat(map.get(server2)).isEqualTo("value2");
   }
+
+  @Test
+  @DisplayName("Test HACluster clusterSize returns correct count")
+  void testHAClusterSize() {
+    Set<ServerInfo> servers = new HashSet<>();
+    servers.add(new ServerInfo("server1", 2424, "s1"));
+    servers.add(new ServerInfo("server2", 2424, "s2"));
+    servers.add(new ServerInfo("server3", 2424, "s3"));
+
+    HACluster cluster = new HACluster(servers);
+
+    assertThat(cluster.clusterSize()).isEqualTo(3);
+    assertThat(cluster.getServers()).hasSize(3);
+  }
+
+  @Test
+  @DisplayName("Test HACluster with empty server set")
+  void testHAClusterEmpty() {
+    Set<ServerInfo> servers = new HashSet<>();
+    HACluster cluster = new HACluster(servers);
+
+    assertThat(cluster.clusterSize()).isEqualTo(0);
+    assertThat(cluster.getServers()).isEmpty();
+  }
+
+  @Test
+  @DisplayName("Test HACluster equality based on server set")
+  void testHAClusterEquality() {
+    ServerInfo server1 = new ServerInfo("server1", 2424, "s1");
+    ServerInfo server2 = new ServerInfo("server2", 2424, "s2");
+
+    Set<ServerInfo> set1 = new HashSet<>();
+    set1.add(server1);
+    set1.add(server2);
+
+    Set<ServerInfo> set2 = new HashSet<>();
+    set2.add(server1);
+    set2.add(server2);
+
+    Set<ServerInfo> set3 = new HashSet<>();
+    set3.add(server1);
+
+    HACluster cluster1 = new HACluster(set1);
+    HACluster cluster2 = new HACluster(set2);
+    HACluster cluster3 = new HACluster(set3);
+
+    // cluster1 and cluster2 should have equal server sets
+    assertThat(cluster1.getServers()).isEqualTo(cluster2.getServers());
+
+    // cluster1 and cluster3 should have different server sets
+    assertThat(cluster1.getServers()).isNotEqualTo(cluster3.getServers());
+  }
+
+  @Test
+  @DisplayName("Test HACluster server membership changes")
+  void testHAClusterMembershipChanges() {
+    // Initial cluster
+    Set<ServerInfo> initialServers = new HashSet<>();
+    ServerInfo server1 = new ServerInfo("server1", 2424, "s1");
+    ServerInfo server2 = new ServerInfo("server2", 2424, "s2");
+    initialServers.add(server1);
+    initialServers.add(server2);
+
+    HACluster initialCluster = new HACluster(initialServers);
+
+    // New cluster with added server
+    Set<ServerInfo> newServers = new HashSet<>();
+    ServerInfo server3 = new ServerInfo("server3", 2424, "s3");
+    newServers.add(server1);
+    newServers.add(server2);
+    newServers.add(server3);
+
+    HACluster newCluster = new HACluster(newServers);
+
+    // Verify membership changes can be detected
+    assertThat(initialCluster.clusterSize()).isEqualTo(2);
+    assertThat(newCluster.clusterSize()).isEqualTo(3);
+
+    // Find new servers (servers in newCluster but not in initialCluster)
+    Set<ServerInfo> addedServers = new HashSet<>(newCluster.getServers());
+    addedServers.removeAll(initialCluster.getServers());
+    assertThat(addedServers).containsExactly(server3);
+
+    // Find removed servers (servers in initialCluster but not in newCluster)
+    Set<ServerInfo> removedServers = new HashSet<>(initialCluster.getServers());
+    removedServers.removeAll(newCluster.getServers());
+    assertThat(removedServers).isEmpty();
+  }
+
+  @Test
+  @DisplayName("Test HACluster detects server removal")
+  void testHAClusterServerRemoval() {
+    // Initial cluster with 3 servers
+    Set<ServerInfo> initialServers = new HashSet<>();
+    ServerInfo server1 = new ServerInfo("server1", 2424, "s1");
+    ServerInfo server2 = new ServerInfo("server2", 2424, "s2");
+    ServerInfo server3 = new ServerInfo("server3", 2424, "s3");
+    initialServers.add(server1);
+    initialServers.add(server2);
+    initialServers.add(server3);
+
+    HACluster initialCluster = new HACluster(initialServers);
+
+    // New cluster with one server removed
+    Set<ServerInfo> newServers = new HashSet<>();
+    newServers.add(server1);
+    newServers.add(server2);
+
+    HACluster newCluster = new HACluster(newServers);
+
+    // Verify server removal can be detected
+    assertThat(initialCluster.clusterSize()).isEqualTo(3);
+    assertThat(newCluster.clusterSize()).isEqualTo(2);
+
+    // Find removed servers
+    Set<ServerInfo> removedServers = new HashSet<>(initialCluster.getServers());
+    removedServers.removeAll(newCluster.getServers());
+    assertThat(removedServers).containsExactly(server3);
+  }
 }
