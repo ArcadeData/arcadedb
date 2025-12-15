@@ -188,7 +188,8 @@ public class LocalSchema implements Schema {
             indexMap.put(pf.getName(), internal);
           else
             LogManager.instance()
-                .log(this, Level.WARNING, "Unknown component type '%s' for file '%s'", pf.getClass(), pf.getName());
+                .log(this, Level.WARNING, "Unknown component '%s' from type '%s' for file '%s'",
+                    mainComponent.getClass(), pf.getClass(), pf.getName());
 
           registerFile(pf);
         }
