@@ -26,6 +26,7 @@ import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
@@ -41,6 +42,7 @@ import java.util.concurrent.TimeUnit;
 public class NetworkPartitionIT extends ContainersTestTemplate {
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test split-brain: partition leader from replicas, verify quorum enforcement")
   void testLeaderPartitionWithQuorum() throws IOException, InterruptedException {
     logger.info("Creating proxies for 3-node cluster");
@@ -126,6 +128,7 @@ public class NetworkPartitionIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test asymmetric partition: one replica isolated, cluster continues")
   void testSingleReplicaPartition() throws IOException, InterruptedException {
     logger.info("Creating proxies for 3-node cluster");
@@ -202,6 +205,7 @@ public class NetworkPartitionIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test no-quorum partition: cluster cannot accept writes without quorum")
   void testNoQuorumScenario() throws IOException, InterruptedException {
     logger.info("Creating proxies for 3-node cluster");

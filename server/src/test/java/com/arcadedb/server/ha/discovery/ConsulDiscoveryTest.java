@@ -19,9 +19,12 @@
 package com.arcadedb.server.ha.discovery;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import java.util.concurrent.TimeUnit;
 
 /**
  * Unit tests for ConsulDiscovery implementation.
@@ -33,6 +36,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ConsulDiscoveryTest {
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testConstructorWithValidParameters() {
     // When: Creating discovery with valid parameters
     ConsulDiscovery discovery = new ConsulDiscovery("localhost", 8500, "arcadedb");
@@ -43,6 +47,7 @@ class ConsulDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testConstructorWithCustomSettings() {
     // When: Creating discovery with custom datacenter and health settings
     ConsulDiscovery discovery = new ConsulDiscovery(
@@ -55,6 +60,7 @@ class ConsulDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testNullConsulAddressThrowsException() {
     // When/Then: Creating discovery with null Consul address
     assertThatThrownBy(() ->
@@ -64,6 +70,7 @@ class ConsulDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testEmptyConsulAddressThrowsException() {
     // When/Then: Creating discovery with empty Consul address
     assertThatThrownBy(() ->
@@ -73,6 +80,7 @@ class ConsulDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testWhitespaceConsulAddressThrowsException() {
     // When/Then: Creating discovery with whitespace-only Consul address
     assertThatThrownBy(() ->
@@ -82,6 +90,7 @@ class ConsulDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testInvalidConsulPortThrowsException() {
     // When/Then: Creating discovery with invalid port (0)
     assertThatThrownBy(() ->
@@ -91,6 +100,7 @@ class ConsulDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testNegativeConsulPortThrowsException() {
     // When/Then: Creating discovery with negative port
     assertThatThrownBy(() ->
@@ -100,6 +110,7 @@ class ConsulDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testConsulPortTooHighThrowsException() {
     // When/Then: Creating discovery with port > 65535
     assertThatThrownBy(() ->
@@ -109,6 +120,7 @@ class ConsulDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testNullServiceNameThrowsException() {
     // When/Then: Creating discovery with null service name
     assertThatThrownBy(() ->
@@ -118,6 +130,7 @@ class ConsulDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testEmptyServiceNameThrowsException() {
     // When/Then: Creating discovery with empty service name
     assertThatThrownBy(() ->
@@ -127,6 +140,7 @@ class ConsulDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testWhitespaceServiceNameThrowsException() {
     // When/Then: Creating discovery with whitespace-only service name
     assertThatThrownBy(() ->
@@ -136,6 +150,7 @@ class ConsulDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testGetName() {
     // Given: A Consul discovery service
     ConsulDiscovery discovery = new ConsulDiscovery("localhost", 8500, "arcadedb");
@@ -145,6 +160,7 @@ class ConsulDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testToStringDefaultSettings() {
     // Given: A Consul discovery service with default settings
     ConsulDiscovery discovery = new ConsulDiscovery("localhost", 8500, "arcadedb");
@@ -161,6 +177,7 @@ class ConsulDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testToStringCustomSettings() {
     // Given: A Consul discovery service with custom settings
     ConsulDiscovery discovery = new ConsulDiscovery(
@@ -179,6 +196,7 @@ class ConsulDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testValidPortBoundaries() {
     // When: Creating discovery with port 1 (minimum valid)
     ConsulDiscovery discovery1 = new ConsulDiscovery("localhost", 1, "arcadedb");
@@ -190,6 +208,7 @@ class ConsulDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testDefaultConstructorSetsOnlyHealthyToTrue() {
     // Given: A Consul discovery service created with default constructor
     ConsulDiscovery discovery = new ConsulDiscovery("localhost", 8500, "arcadedb");
@@ -202,6 +221,7 @@ class ConsulDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testCustomConstructorAllowsOnlyHealthyFalse() {
     // Given: A Consul discovery service with onlyHealthy=false
     ConsulDiscovery discovery = new ConsulDiscovery("localhost", 8500, "arcadedb", null, false);
@@ -214,6 +234,7 @@ class ConsulDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testNullDatacenterInToString() {
     // Given: A Consul discovery service with null datacenter
     ConsulDiscovery discovery = new ConsulDiscovery("localhost", 8500, "arcadedb", null, true);
@@ -226,6 +247,7 @@ class ConsulDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testNonNullDatacenterInToString() {
     // Given: A Consul discovery service with datacenter specified
     ConsulDiscovery discovery = new ConsulDiscovery("localhost", 8500, "arcadedb", "dc1", true);
