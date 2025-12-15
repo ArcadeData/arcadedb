@@ -147,6 +147,9 @@ public class PaginatedComponentFile extends ComponentFile {
     // NO NEED TO SYNCHRONIZE THE BUFFER BECAUSE MUTABLE PAGES ARE NOT SHARED
     buffer.rewind();
     try {
+      if (channel == null)
+        throw new ClosedChannelException();
+
       channel.write(buffer, (page.getPhysicalSize() * (long) pageNumber));
     } catch (final ClosedChannelException e) {
       LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on write. Reopen it and retry...", null, fileName);
@@ -189,6 +192,9 @@ public class PaginatedComponentFile extends ComponentFile {
     final ByteBuffer buffer = page.getByteBuffer();
 
     try {
+      if (channel == null)
+        throw new ClosedChannelException();
+
       channel.read(buffer, page.getPhysicalSize() * (long) page.getPageId().getPageNumber());
     } catch (final ClosedChannelException e) {
       LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on read. Reopen it and retry...", null, fileName);

@@ -153,6 +153,9 @@ public class PageManagerFlushThread extends Thread {
           // SET THE PAGES TO FLUSH TO BE RETRIEVED BY A CONCURRENT DB CLOSE = FORCE FLUSH OF PAGES
           nextPagesToFlush.set(pagesToFlush);
           try {
+            if (!pagesToFlush.database.isOpen())
+              return;
+
             synchronized (pagesToFlush.pages) {
               for (final MutablePage page : pagesToFlush.pages) {
                 try {
