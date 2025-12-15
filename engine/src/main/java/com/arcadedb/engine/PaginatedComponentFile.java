@@ -25,8 +25,7 @@ import java.lang.reflect.*;
 import java.nio.*;
 import java.nio.channels.*;
 import java.nio.channels.spi.*;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
+import java.nio.file.*;
 import java.util.logging.*;
 import java.util.zip.*;
 
@@ -93,9 +92,7 @@ public class PaginatedComponentFile extends ComponentFile {
       newFile = new File(osFile.getParentFile(), newFilePath);
     }
     try {
-      Files.move(osFile.getAbsoluteFile().toPath(),
-          newFile.getAbsoluteFile().toPath(),
-          StandardCopyOption.ATOMIC_MOVE);
+      Files.move(osFile.getAbsoluteFile().toPath(), newFile.getAbsoluteFile().toPath(), StandardCopyOption.ATOMIC_MOVE);
       open(newFile.getAbsolutePath(), mode);
     } catch (Exception e) {
       open(filePath, mode);
@@ -141,6 +138,9 @@ public class PaginatedComponentFile extends ComponentFile {
     if (pageNumber < 0)
       throw new IllegalArgumentException("Invalid page number to write: " + pageNumber);
 
+    if (channel == null)
+      throw new IllegalArgumentException("Cannot write page " + pageNumber + " because the file '" + getFileName() + "' is closed");
+
     assert page.pageId.getFileId() == fileId;
     final ByteBuffer buffer = page.getContent();
 
@@ -182,18 +182,22 @@ public class PaginatedComponentFile extends ComponentFile {
   }
 
   public void read(final CachedPage page) throws IOException {
+    final int pageNumber = page.getPageId().getPageNumber();
     if (page.getPageId().getPageNumber() < 0)
-      throw new IllegalArgumentException("Invalid page number to read: " + page.getPageId().getPageNumber());
+      throw new IllegalArgumentException("Invalid page number to read: " + pageNumber);
+
+    if (channel == null)
+      throw new IllegalArgumentException("Cannot read page " + pageNumber + " because the file '" + getFileName() + "' is closed");
 
     assert page.getPageId().getFileId() == fileId;
     final ByteBuffer buffer = page.getByteBuffer();
 
     try {
-      channel.read(buffer, page.getPhysicalSize() * (long) page.getPageId().getPageNumber());
+      channel.read(buffer, page.getPhysicalSize() * (long) pageNumber);
     } catch (final ClosedChannelException e) {
       LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on read. Reopen it and retry...", null, fileName);
       open(filePath, mode);
-      channel.read(buffer, page.getPhysicalSize() * (long) page.getPageId().getPageNumber());
+      channel.read(buffer, page.getPhysicalSize() * (long) pageNumber);
     }
   }
 
@@ -249,9 +253,7 @@ public class PaginatedComponentFile extends ComponentFile {
       final Field field = AbstractInterruptibleChannel.class.getDeclaredField("interruptor");
       final Class<?> interruptibleClass = field.getType();
       field.setAccessible(true);
-      field.set(fc, Proxy.newProxyInstance(
-          interruptibleClass.getClassLoader(),
-          new Class[] { interruptibleClass },
+      field.set(fc, Proxy.newProxyInstance(interruptibleClass.getClassLoader(), new Class[] { interruptibleClass },
           new InterruptibleInvocationHandler()));
     } catch (final Exception e) {
       if (!warningPrinted) {
