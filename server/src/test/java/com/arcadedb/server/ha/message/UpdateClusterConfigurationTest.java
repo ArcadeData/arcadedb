@@ -24,6 +24,7 @@ import com.arcadedb.server.ha.HAServer.HACluster;
 import com.arcadedb.server.ha.HAServer.ServerInfo;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -31,6 +32,8 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+
+import java.util.concurrent.TimeUnit;
 
 /**
  * Unit tests for UpdateClusterConfiguration message.
@@ -41,6 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class UpdateClusterConfigurationTest {
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test serialization of cluster configuration without HTTP addresses")
   void testSerializationWithoutHttpAddresses() {
     // Create a cluster with server information only
@@ -70,6 +74,7 @@ class UpdateClusterConfigurationTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test serialization of cluster configuration with HTTP addresses")
   void testSerializationWithHttpAddresses() {
     // Create a cluster with server information
@@ -116,6 +121,7 @@ class UpdateClusterConfigurationTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test serialization with partial HTTP addresses")
   void testSerializationWithPartialHttpAddresses() {
     // Create a cluster with server information
@@ -145,6 +151,7 @@ class UpdateClusterConfigurationTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test toString includes cluster information")
   void testToString() {
     Set<ServerInfo> servers = new HashSet<>();
@@ -161,6 +168,7 @@ class UpdateClusterConfigurationTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test serialization with empty cluster")
   void testSerializationWithEmptyCluster() {
     Set<ServerInfo> servers = new HashSet<>();
@@ -175,6 +183,7 @@ class UpdateClusterConfigurationTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test HTTP addresses map can be null")
   void testNullHttpAddresses() {
     Set<ServerInfo> servers = new HashSet<>();
@@ -191,6 +200,7 @@ class UpdateClusterConfigurationTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test HTTP addresses with special characters in URLs")
   void testHttpAddressesWithSpecialCharacters() {
     Set<ServerInfo> servers = new HashSet<>();

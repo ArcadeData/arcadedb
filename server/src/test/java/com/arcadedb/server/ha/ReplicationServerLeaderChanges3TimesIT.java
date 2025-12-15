@@ -36,6 +36,7 @@ import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -62,6 +63,7 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
   }
 
   @Test
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)
   @Disabled
   void testReplication() {
     checkDatabases();

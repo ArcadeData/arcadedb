@@ -29,6 +29,9 @@ import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.concurrent.TimeUnit;
 
 import java.io.File;
 import java.util.List;
@@ -59,6 +62,7 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void alignNotNecessary() throws Exception {
     final Database database = getServer(0).getDatabase(getDatabaseName());
 
@@ -84,6 +88,7 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void alignNecessary() throws Exception {
     final DatabaseInternal database = ((DatabaseInternal) getServer(0).getDatabase(getDatabaseName())).getEmbedded().getEmbedded();
 

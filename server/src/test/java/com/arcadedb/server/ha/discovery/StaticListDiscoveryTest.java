@@ -20,12 +20,15 @@ package com.arcadedb.server.ha.discovery;
 
 import com.arcadedb.server.ha.HAServer;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.HashSet;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import java.util.concurrent.TimeUnit;
 
 /**
  * Unit tests for StaticListDiscovery implementation.
@@ -35,6 +38,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class StaticListDiscoveryTest {
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testDiscoveryWithSetConstructor() throws DiscoveryException {
     // Given: A static list of servers
     Set<HAServer.ServerInfo> servers = new HashSet<>();
@@ -53,6 +57,7 @@ class StaticListDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testDiscoveryWithStringConstructor() throws DiscoveryException {
     // Given: A comma-separated list of servers
     String serverList = "{server1}server1.example.com:2424,{server2}server2.example.com:2424,{server3}server3.example.com:2424";
@@ -70,6 +75,7 @@ class StaticListDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testDiscoveryWithSingleServer() throws DiscoveryException {
     // Given: A single server
     String serverList = "{arcade1}localhost:2424";
@@ -88,6 +94,7 @@ class StaticListDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testDiscoveryIsIdempotent() throws DiscoveryException {
     // Given: A static list of servers
     String serverList = "{server1}server1:2424,{server2}server2:2424";
@@ -103,6 +110,7 @@ class StaticListDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testNullServerListThrowsException() {
     // When/Then: Creating discovery with null server set
     assertThatThrownBy(() -> new StaticListDiscovery((Set<HAServer.ServerInfo>) null))
@@ -111,6 +119,7 @@ class StaticListDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testNullServerListStringThrowsException() {
     // When/Then: Creating discovery with null server list string
     assertThatThrownBy(() -> new StaticListDiscovery((String) null))
@@ -119,6 +128,7 @@ class StaticListDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testEmptyServerListStringThrowsException() {
     // When/Then: Creating discovery with empty server list string
     assertThatThrownBy(() -> new StaticListDiscovery(""))
@@ -127,6 +137,7 @@ class StaticListDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testWhitespaceOnlyServerListStringThrowsException() {
     // When/Then: Creating discovery with whitespace-only server list string
     assertThatThrownBy(() -> new StaticListDiscovery("   "))
@@ -135,6 +146,7 @@ class StaticListDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testServerListWithWhitespace() throws DiscoveryException {
     // Given: A server list with extra whitespace
     String serverList = " {server1}server1:2424 , {server2}server2:2424 , {server3}server3:2424 ";
@@ -149,6 +161,7 @@ class StaticListDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testRegisterNodeIsNoOp() throws DiscoveryException {
     // Given: A static discovery service
     String serverList = "{server1}server1:2424";
@@ -165,6 +178,7 @@ class StaticListDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testDeregisterNodeIsNoOp() throws DiscoveryException {
     // Given: A static discovery service
     Set<HAServer.ServerInfo> servers = new HashSet<>();
@@ -182,6 +196,7 @@ class StaticListDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testGetName() {
     // Given: A static discovery service
     String serverList = "{server1}server1:2424";
@@ -192,6 +207,7 @@ class StaticListDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testGetConfiguredServers() {
     // Given: A static discovery service
     Set<HAServer.ServerInfo> servers = new HashSet<>();
@@ -207,6 +223,7 @@ class StaticListDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testConfiguredServersIsUnmodifiable() {
     // Given: A static discovery service
     Set<HAServer.ServerInfo> servers = new HashSet<>();
@@ -222,6 +239,7 @@ class StaticListDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testToString() {
     // Given: A static discovery service with 3 servers
     String serverList = "{s1}server1:2424,{s2}server2:2424,{s3}server3:2424";
@@ -233,6 +251,7 @@ class StaticListDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testDiscoveryWithDefaultPort() throws DiscoveryException {
     // Given: A server without explicit port (should use default 2424)
     String serverList = "{server1}server1.example.com";

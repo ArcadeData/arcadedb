@@ -8,9 +8,11 @@ import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -18,6 +20,7 @@ import java.util.concurrent.TimeUnit;
 public class SimpleHaScenarioIT extends ContainersTestTemplate {
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test resync after network crash with 2 sewers in HA mode")
   void twoInstancesResyncAfterNetworkCrash() throws InterruptedException, IOException {
 
@@ -68,10 +71,7 @@ public class SimpleHaScenarioIT extends ContainersTestTemplate {
 
     logger.info("Waiting for resync");
 
-    TimeUnit.SECONDS.sleep(10);
-    logStatus(db1, db2);
-    TimeUnit.SECONDS.sleep(10);
-    logStatus(db1, db2);
+    // Wait for replication to complete
     Awaitility.await()
         .atMost(30, TimeUnit.SECONDS)
         .pollInterval(1, TimeUnit.SECONDS)

@@ -6,12 +6,15 @@ import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.FileNotFoundException;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
+
+import java.util.concurrent.TimeUnit;
 
 public class ReplicationLogFileTest {
     @TempDir
@@ -34,6 +37,7 @@ public class ReplicationLogFileTest {
     }
 
     @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
     public void testNewLogFileHasInitialValues() {
         // Constants for initial values
         final long INITIAL_MESSAGE_NUMBER = -1L;
@@ -46,6 +50,7 @@ public class ReplicationLogFileTest {
 
 
     @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
     public void testAppendMessage() {
         // Create and append a message
         Binary payload = new Binary(new byte[] {1, 2, 3, 4});
@@ -59,6 +64,7 @@ public class ReplicationLogFileTest {
     }
 
     @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
     public void testAppendMultipleMessages() {
         // Append first message
         Binary payload1 = new Binary(new byte[] {1, 2, 3, 4});
@@ -76,6 +82,7 @@ public class ReplicationLogFileTest {
     }
 
     @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
     public void testGetLastMessage() {
         // Append a message
         Binary payload = new Binary(new byte[] {1, 2, 3, 4});
@@ -91,6 +98,7 @@ public class ReplicationLogFileTest {
     }
 
     @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
     public void testFindMessagePosition() {
         // Append messages
         Binary payload1 = new Binary(new byte[] {1, 2, 3, 4});
@@ -108,6 +116,7 @@ public class ReplicationLogFileTest {
     }
 
     @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
     public void testGetMessage() {
         // Append a message
         Binary payload = new Binary(new byte[] {1, 2, 3, 4});
@@ -126,6 +135,7 @@ public class ReplicationLogFileTest {
     }
 
     @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
     public void testWrongMessageOrder() {
         // Append first message
         Binary payload1 = new Binary(new byte[] {1, 2, 3, 4});
@@ -158,6 +168,7 @@ public class ReplicationLogFileTest {
     }
 
     @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
     public void testSetFlushPolicy() {
         assertThat(logFile.getFlushPolicy()).isEqualTo(WALFile.FlushType.NO);
 
@@ -166,6 +177,7 @@ public class ReplicationLogFileTest {
     }
 
     @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
     public void testSetMaxArchivedChunks() {
         assertThat(logFile.getMaxArchivedChunks()).isEqualTo(200);
 
@@ -174,6 +186,7 @@ public class ReplicationLogFileTest {
     }
 
     @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
     public void testSetArchiveChunkCallback() {
         final boolean[] callbackCalled = {false};
 
