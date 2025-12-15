@@ -26,6 +26,9 @@ import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.concurrent.TimeUnit;
 
 import java.io.*;
 
@@ -53,6 +56,7 @@ public class ServerDatabaseBackupIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void sqlBackup() {
     for (int i = 0; i < getServerCount(); i++) {
       final Database database = getServer(i).getDatabase(getDatabaseName());
@@ -71,6 +75,7 @@ public class ServerDatabaseBackupIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void sqlScriptBackup() {
     for (int i = 0; i < getServerCount(); i++) {
       final Database database = getServer(i).getDatabase(getDatabaseName());

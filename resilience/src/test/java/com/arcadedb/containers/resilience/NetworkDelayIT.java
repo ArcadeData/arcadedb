@@ -26,6 +26,7 @@ import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
@@ -41,6 +42,7 @@ import java.util.concurrent.TimeUnit;
 public class NetworkDelayIT extends ContainersTestTemplate {
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test symmetric network delay: all nodes experience same latency")
   void testSymmetricDelay() throws IOException {
     logger.info("Creating proxies for 3-node cluster");
@@ -116,6 +118,7 @@ public class NetworkDelayIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test asymmetric delay: leader has higher latency than replicas")
   void testAsymmetricLeaderDelay() throws IOException, InterruptedException {
     logger.info("Creating proxies for 3-node cluster");
@@ -187,6 +190,7 @@ public class NetworkDelayIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test high latency with jitter: variable delays simulate unstable network")
   void testHighLatencyWithJitter() throws IOException {
     logger.info("Creating proxies for 2-node cluster");
@@ -248,6 +252,7 @@ public class NetworkDelayIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test extreme latency: verify timeout handling")
   void testExtremeLatency() throws IOException {
     logger.info("Creating proxies for 2-node cluster");

@@ -31,6 +31,9 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.concurrent.TimeUnit;
 
 import java.io.IOException;
 import java.util.LinkedHashMap;
@@ -46,6 +49,7 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
   private final Map<String, String> schemaFiles = new LinkedHashMap<>(getServerCount());
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void testReplication() throws Exception {
     super.replication();
 
