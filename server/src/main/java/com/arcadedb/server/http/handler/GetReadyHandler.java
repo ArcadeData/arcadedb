@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
@@ -34,9 +35,22 @@ public class GetReadyHandler extends AbstractServerHttpHandler {
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     Metrics.counter("http.ready").increment();
 
-    if (httpServer.getServer().getStatus() == ArcadeDBServer.Status.ONLINE)
-      return new ExecutionResponse(204, "");
-    return new ExecutionResponse(503, "Server not started yet");
+    // Check if server is online
+    if (httpServer.getServer().getStatus() != ArcadeDBServer.Status.ONLINE) {
+      return new ExecutionResponse(503, "Server not started yet");
+    }
+
+    // Check cluster membership if HA is enabled
+    final HAServer ha = httpServer.getServer().getHA();
+    if (ha != null) {
+      // For HA clusters, require that the node is part of the cluster
+      // (either as leader or connected to a leader)
+      if (!ha.isLeader() && ha.getLeader() == null) {
+        return new ExecutionResponse(503, "Node not in cluster");
+      }
+    }
+
+    return new ExecutionResponse(204, "");
   }
 
   @Override
