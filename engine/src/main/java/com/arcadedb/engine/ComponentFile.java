@@ -39,7 +39,7 @@ public class ComponentFile {
   protected       int     version = 0;      // STARTING FROM 21.10.2 COMPONENTS HAVE VERSION IN THE FILE NAME
   protected       String  componentName;
   protected       String  fileExtension;
-  protected       boolean open;
+  protected volatile boolean open;
 
   public ComponentFile() {
     this.mode = MODE.READ_ONLY;
