@@ -1717,9 +1717,6 @@ Expression Expression():
 {Token token; }
 {
   (
-    LOOKAHEAD(1, {getToken(1).kind == LBRACE})
-    jjtThis.json = Json() {jjtThis.value = jjtThis.json; }
-    |
     LOOKAHEAD( ArrayConcatExpression() )
     jjtThis.arrayConcatExpression = ArrayConcatExpression() { jjtThis.value = jjtThis.arrayConcatExpression; }
     |
@@ -1732,12 +1729,15 @@ Expression Expression():
     LOOKAHEAD( Rid() )
     jjtThis.rid = Rid() { jjtThis.value = jjtThis.rid; }
     |
-    LOOKAHEAD(3)
+    LOOKAHEAD( <LPAREN> WhereClause() <RPAREN> )
     <LPAREN>
       jjtThis.whereCondition = WhereClause() {jjtThis.value = jjtThis.whereCondition; }
     <RPAREN>
     |
+    LOOKAHEAD( MathExpression() )
     jjtThis.mathExpression = MathExpression() { jjtThis.value = jjtThis.mathExpression; }
+    |
+    jjtThis.json = Json() {jjtThis.value = jjtThis.json; }
   )
   { return jjtThis; }
 }
@@ -1762,9 +1762,6 @@ ArrayConcatExpressionElement ArrayConcatExpressionElement():
 {Token token; }
 {
   (
-    LOOKAHEAD(1, {getToken(1).kind == LBRACE})
-    jjtThis.json = Json() {jjtThis.value = jjtThis.json; }
-    |
     LOOKAHEAD(2) <NULL> {jjtThis.isNull = true; jjtThis.value = null;}
     |
     <TRUE> { jjtThis.booleanValue = true; jjtThis.value = true; }
@@ -1774,7 +1771,10 @@ ArrayConcatExpressionElement ArrayConcatExpressionElement():
     LOOKAHEAD( Rid() )
     jjtThis.rid = Rid() { jjtThis.value = jjtThis.rid; }
     |
+    LOOKAHEAD( MathExpression() )
     jjtThis.mathExpression = MathExpression() { jjtThis.value = jjtThis.mathExpression; }
+    |
+    jjtThis.json = Json() {jjtThis.value = jjtThis.json; }
 
   )
   [ jjtThis.nestedProjection = NestedProjection() ]

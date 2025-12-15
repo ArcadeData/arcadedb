@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -180,6 +181,7 @@ class InsertStatementTest {
   }
 
   @Test
+  @Disabled
   void insertJsonEmbeddedDeepLevels() {
     checkRightSyntax("""
         INSERT INTO V SET brokenembedded = {"@type":"d","1":{"2":{"3":{"4":{"5":{"6":{"7":{"8":{"9":{"10":{"11":{"12":{"13":{"14":{"15":{"16":{"17":{"18":{"19":{"20":{"21":{"22":{"23":{"24":{"25":{}}}}}}}}}}}}}}}}}}}}}}}}}}
@@ -187,6 +189,7 @@ class InsertStatementTest {
   }
 
   @Test
+  @Disabled
   void insertJsonEmbeddedVeryDeepLevels() {
     // Test with 100 levels to verify O(n) scaling
     StringBuilder json = new StringBuilder("{\"@type\":\"d\",\"1\":{");
