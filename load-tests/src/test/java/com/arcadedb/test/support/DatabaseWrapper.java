@@ -40,7 +40,7 @@ import static com.arcadedb.test.support.ContainersTestTemplate.DATABASE;
 import static com.arcadedb.test.support.ContainersTestTemplate.PASSWORD;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class DatabaseWrapper {
+public class DatabaseWrapper implements AutoCloseable {
   private static final Logger            logger = LoggerFactory.getLogger(DatabaseWrapper.class);
   private final        ServerWrapper     server;
   private final        RemoteDatabase    db;
