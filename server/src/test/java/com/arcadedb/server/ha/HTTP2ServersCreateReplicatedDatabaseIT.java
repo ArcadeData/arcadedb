@@ -23,6 +23,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.net.*;
 import java.util.*;
@@ -44,6 +45,7 @@ class HTTP2ServersCreateReplicatedDatabaseIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void createReplicatedDatabase() throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
         "http://127.0.0.1:248" + 0 + "/api/v1/server").openConnection();

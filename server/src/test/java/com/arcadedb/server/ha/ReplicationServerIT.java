@@ -34,6 +34,9 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.concurrent.TimeUnit;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -61,6 +64,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)
   public void replication() throws Exception {
     testReplication(0);
   }
