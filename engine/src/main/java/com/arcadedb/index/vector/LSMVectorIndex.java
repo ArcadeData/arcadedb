@@ -2129,10 +2129,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       lock.writeLock().lock();
       try {
-        // NOTE: Metadata is now embedded in the schema JSON via toJSON() and is automatically
-        // replicated with the schema. We don't write a separate .metadata.json file anymore
-        // to avoid path transformation issues during replication.
-
         mutable.close();
 
         // Close graph file to ensure graph data is flushed to disk
