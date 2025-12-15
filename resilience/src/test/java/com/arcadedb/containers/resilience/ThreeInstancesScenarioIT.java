@@ -9,6 +9,7 @@ import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.GenericContainer;
 
 import java.io.IOException;
@@ -27,6 +28,7 @@ public class ThreeInstancesScenarioIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test resync after network crash with 3 servers in HA mode: one leader and two replicas")
   void oneLeaderAndTwoReplicas() throws IOException {
 
@@ -125,6 +127,7 @@ public class ThreeInstancesScenarioIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test database comparison after simple replication")
   void testDatabaseComparisonAfterReplication() throws IOException {
     logger.info("Creating proxies for 3-node cluster");

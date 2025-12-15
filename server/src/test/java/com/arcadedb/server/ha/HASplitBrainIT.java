@@ -24,9 +24,12 @@ import com.arcadedb.network.HostUtil;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
@@ -45,6 +48,13 @@ public class HASplitBrainIT extends ReplicationServerIT {
 
   public HASplitBrainIT() {
     GlobalConfiguration.HA_QUORUM.setValue("Majority");
+  }
+
+  @Test
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)
+  @Override
+  public void replication() throws Exception {
+    super.replication();
   }
 
   @AfterEach
