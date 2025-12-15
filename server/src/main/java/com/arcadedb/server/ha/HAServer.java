@@ -612,29 +612,55 @@ public class HAServer implements ServerPlugin {
         .orElse(serverInfo);
   }
 
+  /**
+   * Updates the cluster configuration with a new cluster received from the leader.
+   * This method merges the received cluster with the current cluster knowledge and
+   * updates the configured servers count.
+   *
+   * @param receivedCluster the new cluster configuration received from the leader
+   */
   public void setServerAddresses(final HACluster receivedCluster) {
+    if (receivedCluster == null) {
+      LogManager.instance().log(this, Level.WARNING, "Received null cluster configuration, ignoring update");
+      return;
+    }
 
-    LogManager.instance().log(this, Level.INFO, "Current cluster:: %s  - Received cluster  %s", cluster, receivedCluster);
-//    if (serverAddress != null && !serverAddress.isEmpty()) {
-////      serverAddressList.clear();
-//
-//      for (ServerInfo entry : serverAddress) {
-//
-//        for (ServerInfo server : cluster.servers) {
-//          if (server.equals(entry)) {
-//            // ALREADY IN THE LIST
-//            continue;
-//          } else if (server.host.equals(entry.host)) {
-//            // ALREADY IN THE LIST
-//            continue;
-//          } else
-//            serverAddressList.add(entry);
-//        }
-//      }
-//
-//      this.configuredServers = serverAddressList.size();
-//    } else
-//      this.configuredServers = 1;
+    LogManager.instance().log(this, Level.INFO, "Updating cluster configuration: current=%s, received=%s",
+        cluster, receivedCluster);
+
+    // Check if cluster membership has changed
+    final boolean clusterChanged = cluster == null ||
+        !cluster.getServers().equals(receivedCluster.getServers());
+
+    if (clusterChanged) {
+      LogManager.instance().log(this, Level.INFO, "Cluster membership changed from %d to %d servers",
+          cluster != null ? cluster.clusterSize() : 0, receivedCluster.clusterSize());
+
+      // Log new servers
+      if (cluster != null) {
+        for (ServerInfo server : receivedCluster.getServers()) {
+          if (!cluster.getServers().contains(server)) {
+            LogManager.instance().log(this, Level.INFO, "New server joined cluster: %s", server);
+          }
+        }
+
+        // Log removed servers
+        for (ServerInfo server : cluster.getServers()) {
+          if (!receivedCluster.getServers().contains(server)) {
+            LogManager.instance().log(this, Level.INFO, "Server left cluster: %s", server);
+          }
+        }
+      }
+    } else {
+      LogManager.instance().log(this, Level.FINE, "Cluster membership unchanged");
+    }
+
+    // Update cluster configuration
+    this.cluster = receivedCluster;
+    this.configuredServers = cluster.clusterSize();
+
+    LogManager.instance().log(this, Level.INFO, "Cluster configuration updated: %d servers configured",
+        configuredServers);
   }
 
   /**
