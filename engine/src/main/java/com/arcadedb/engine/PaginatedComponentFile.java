@@ -33,7 +33,7 @@ import java.util.zip.*;
 public class PaginatedComponentFile extends ComponentFile {
 
   private                 RandomAccessFile file;
-  private                 FileChannel      channel;
+  private volatile        FileChannel      channel;
   private                 int              pageSize;
   private static volatile boolean          warningPrinted = false;
 
@@ -147,7 +147,11 @@ public class PaginatedComponentFile extends ComponentFile {
     // NO NEED TO SYNCHRONIZE THE BUFFER BECAUSE MUTABLE PAGES ARE NOT SHARED
     buffer.rewind();
     try {
-      channel.write(buffer, (page.getPhysicalSize() * (long) pageNumber));
+      final FileChannel c = channel;
+      if (c == null)
+        throw new ClosedChannelException();
+
+      c.write(buffer, (page.getPhysicalSize() * (long) pageNumber));
     } catch (final ClosedChannelException e) {
       LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on write. Reopen it and retry...", null, fileName);
       open(filePath, mode);
@@ -189,7 +193,11 @@ public class PaginatedComponentFile extends ComponentFile {
     final ByteBuffer buffer = page.getByteBuffer();
 
     try {
-      channel.read(buffer, page.getPhysicalSize() * (long) page.getPageId().getPageNumber());
+      final FileChannel c = channel;
+      if (c == null)
+        throw new ClosedChannelException();
+
+      c.read(buffer, page.getPhysicalSize() * (long) page.getPageId().getPageNumber());
     } catch (final ClosedChannelException e) {
       LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on read. Reopen it and retry...", null, fileName);
       open(filePath, mode);
