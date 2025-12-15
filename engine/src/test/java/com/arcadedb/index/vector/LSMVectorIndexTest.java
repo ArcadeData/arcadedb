@@ -734,8 +734,8 @@ class LSMVectorIndexTest extends TestHelper {
       thread.join();
     }
 
-    System.out.println("Successful queries: " + successfulQueries.get() +
-        ", Failed queries: " + failedQueries.get());
+//    System.out.println("Successful queries: " + successfulQueries.get() +
+//        ", Failed queries: " + failedQueries.get());
 
     // Most queries should succeed
     assertThat(successfulQueries.get() > (numThreads * queriesPerThread) / 2).as("Most concurrent queries should succeed").isTrue();
@@ -823,8 +823,8 @@ class LSMVectorIndexTest extends TestHelper {
     assertThat(resultsAfterUpdates.size() > 0).as("Should find results after updates (graph index rebuilt)").isTrue();
 
     // Results should be different after updates (graph index reflects new data)
-    System.out.println("Results before updates: " + resultsBeforeUpdates.size() +
-        ", Results after updates: " + resultsAfterUpdates.size());
+//    System.out.println("Results before updates: " + resultsBeforeUpdates.size() +
+//        ", Results after updates: " + resultsAfterUpdates.size());
   }
 
   @Test
@@ -1055,8 +1055,8 @@ class LSMVectorIndexTest extends TestHelper {
     assertThat(countAfterUpdates).as("Should still have " + numVectors + " entries (LSM merge-on-read)").isEqualTo(numVectors);
 
     final int pagesBeforeCompaction = lsmIndex.getTotalPages();
-    System.out.println("Pages before compaction: " + pagesBeforeCompaction +
-        ", mutable: " + lsmIndex.getCurrentMutablePages());
+//    System.out.println("Pages before compaction: " + pagesBeforeCompaction +
+//        ", mutable: " + lsmIndex.getCurrentMutablePages());
 
     // Check which pages are actually immutable by reading the mutable flag directly
     database.transaction(() -> {
@@ -1073,46 +1073,46 @@ class LSMVectorIndexTest extends TestHelper {
           if (mutable == 0) {
             immutableCount++;
           }
-          System.out.println("  Page " + pageNum + ": mutable=" + mutable);
+//          System.out.println("  Page " + pageNum + ": mutable=" + mutable);
         } catch (Exception e) {
           System.out.println("  Page " + pageNum + ": error reading - " + e.getMessage());
         }
       }
-      System.out.println("Found " + immutableCount + " immutable pages");
+//      System.out.println("Found " + immutableCount + " immutable pages");
     });
 
     // Manually trigger compaction
-    System.out.println("Attempting to schedule compaction...");
+//    System.out.println("Attempting to schedule compaction...");
 
     // Check pre-conditions
     final com.arcadedb.database.DatabaseInternal dbInternal2 = (com.arcadedb.database.DatabaseInternal) database;
-    System.out.println("Database open: " + dbInternal2.isOpen());
-    System.out.println("Database mode: " + dbInternal2.getMode());
-    System.out.println("Page flushing suspended: " + dbInternal2.getPageManager().isPageFlushingSuspended(dbInternal2));
-    System.out.println("Transaction active: " + dbInternal2.isTransactionActive());
+//    System.out.println("Database open: " + dbInternal2.isOpen());
+//    System.out.println("Database mode: " + dbInternal2.getMode());
+//    System.out.println("Page flushing suspended: " + dbInternal2.getPageManager().isPageFlushingSuspended(dbInternal2));
+//    System.out.println("Transaction active: " + dbInternal2.isTransactionActive());
 
     boolean compactionScheduled = lsmIndex.scheduleCompaction();
-    System.out.println("Compaction scheduled: " + compactionScheduled);
+//    System.out.println("Compaction scheduled: " + compactionScheduled);
 
     // Try a small delay in case there's async processing
     Thread.sleep(100);
 
-    System.out.println("Calling compact()...");
+//    System.out.println("Calling compact()...");
     boolean compacted = lsmIndex.compact();
-    System.out.println("Compaction result: " + compacted);
+//    System.out.println("Compaction result: " + compacted);
 
     // If first attempt failed, try scheduling and compacting again
     if (!compacted) {
-      System.out.println("First compaction attempt failed, trying again...");
+//      System.out.println("First compaction attempt failed, trying again...");
       Thread.sleep(100);
       compactionScheduled = lsmIndex.scheduleCompaction();
-      System.out.println("Second compaction scheduled: " + compactionScheduled);
+//      System.out.println("Second compaction scheduled: " + compactionScheduled);
       compacted = lsmIndex.compact();
-      System.out.println("Second compaction result: " + compacted);
+//      System.out.println("Second compaction result: " + compacted);
     }
 
     if (compacted) {
-      System.out.println("Compaction succeeded!");
+//      System.out.println("Compaction succeeded!");
 
       // After compaction, verify the index still works correctly
       final long countAfterCompaction = typeIndex.countEntries();
@@ -1131,11 +1131,11 @@ class LSMVectorIndexTest extends TestHelper {
       });
 
       // Check if compacted sub-index was created
-      final var compactedSubIndex = lsmIndex.getSubIndex();
-      if (compactedSubIndex != null) {
-        System.out.println("Compacted sub-index created: fileId=" + compactedSubIndex.getFileId() +
-            ", pages=" + compactedSubIndex.getTotalPages());
-      }
+//      final var compactedSubIndex = lsmIndex.getSubIndex();
+//      if (compactedSubIndex != null) {
+//        System.out.println("Compacted sub-index created: fileId=" + compactedSubIndex.getFileId() +
+//            ", pages=" + compactedSubIndex.getTotalPages());
+//      }
     } else {
       System.out.println("Compaction failed or returned no changes. This could mean:");
       System.out.println("  - Status was not COMPACTION_SCHEDULED when compact() was called");
@@ -1235,7 +1235,7 @@ class LSMVectorIndexTest extends TestHelper {
       }
     });
 
-    System.out.println("Inserted " + numDocs + " products with 128-dimensional vectors");
+//    System.out.println("Inserted " + numDocs + " products with 128-dimensional vectors");
 
     // Test 1: Find neighbors of first product (should find products 1-9 as nearest neighbors)
     database.transaction(() -> {
@@ -1248,7 +1248,7 @@ class LSMVectorIndexTest extends TestHelper {
       assertThat(name).as("Should get Product_0").isEqualTo("Product_0");
 
       // The neighbors should include other products from cluster 0-9
-      System.out.println("Neighbors of Product_0: " + doc.toJSON());
+//      System.out.println("Neighbors of Product_0: " + doc.toJSON());
     });
 
     // Test 2: Query using vectorNeighbors with arbitrary query vector
@@ -1263,7 +1263,7 @@ class LSMVectorIndexTest extends TestHelper {
           queryVector);
 
       assertThat(result.hasNext()).as("Query should return results").isTrue();
-      System.out.println("VectorNeighbors result for cluster 1 query: " + result.next().toJSON());
+//      System.out.println("VectorNeighbors result for cluster 1 query: " + result.next().toJSON());
     });
 
     // Test 3: Test vectorNeighbors function with different k value
@@ -1278,7 +1278,7 @@ class LSMVectorIndexTest extends TestHelper {
       assertThat(result.hasNext()).as("Query should return results").isTrue();
 
       final var doc = result.next();
-      System.out.println("VectorNeighbors result for cluster 2 query (k=10): " + doc.toJSON());
+//      System.out.println("VectorNeighbors result for cluster 2 query (k=10): " + doc.toJSON());
     });
 
     // Test 4: Query with specific product and find its nearest neighbors
@@ -1289,7 +1289,7 @@ class LSMVectorIndexTest extends TestHelper {
 
       assertThat(result.hasNext()).as("Query should return results").isTrue();
       final var doc = result.next();
-      System.out.println("Neighbors of Product_15: " + doc.toJSON());
+//      System.out.println("Neighbors of Product_15: " + doc.toJSON());
 
       // Product_15 should be similar to other products in the 10-19 range
       final String productName = doc.getProperty("name");
@@ -1306,7 +1306,7 @@ class LSMVectorIndexTest extends TestHelper {
           queryVector1);
 
       assertThat(result1.hasNext()).as("First query should return results").isTrue();
-      System.out.println("Query 1 result: " + result1.next().toJSON());
+//      System.out.println("Query 1 result: " + result1.next().toJSON());
 
       final float[] queryVector2 = new float[128];
       queryVector2[1] = 1.0f;
@@ -1316,10 +1316,10 @@ class LSMVectorIndexTest extends TestHelper {
           queryVector2);
 
       assertThat(result2.hasNext()).as("Second query should return results").isTrue();
-      System.out.println("Query 2 result: " + result2.next().toJSON());
+//      System.out.println("Query 2 result: " + result2.next().toJSON());
     });
 
-    System.out.println("✓ All SQL vectorNeighbors tests passed!");
+//    System.out.println("✓ All SQL vectorNeighbors tests passed!");
   }
 
   @Test
@@ -1385,10 +1385,10 @@ class LSMVectorIndexTest extends TestHelper {
           queryVector);
 
       assertThat(result.hasNext()).as("Query should return results").isTrue();
-      System.out.println("Variable encoding round-trip test: " + result.next().toJSON());
+//      System.out.println("Variable encoding round-trip test: " + result.next().toJSON());
     });
 
-    System.out.println("✓ Variable encoding round-trip test passed!");
+//    System.out.println("✓ Variable encoding round-trip test passed!");
   }
 
   @Test
@@ -1456,10 +1456,10 @@ class LSMVectorIndexTest extends TestHelper {
           queryVector);
 
       assertThat(result.hasNext()).as("Query should return results").isTrue();
-      System.out.println("Absolute offset test query: " + result.next().toJSON());
+//      System.out.println("Absolute offset test query: " + result.next().toJSON());
     });
 
-    System.out.println("✓ Absolute file offset test passed!");
+//    System.out.println("✓ Absolute file offset test passed!");
   }
 
   @Test
@@ -1508,7 +1508,7 @@ class LSMVectorIndexTest extends TestHelper {
 
     final int totalPages = lsmIndex.getTotalPages();
     assertThat(totalPages).as("Should have created at least 1 page").isGreaterThanOrEqualTo(1);
-    System.out.println("Created " + totalPages + " pages for " + numEntries + " entries");
+//    System.out.println("Created " + totalPages + " pages for " + numEntries + " entries");
 
     // Note: With variable encoding, metadata is very compact (~4-10 bytes per entry)
     // So 5000 entries × 7 bytes ≈ 35KB, which fits in a single 256KB page.
@@ -1524,10 +1524,10 @@ class LSMVectorIndexTest extends TestHelper {
           queryVector);
 
       assertThat(result.hasNext()).as("Query should return results across pages").isTrue();
-      System.out.println("Page boundary test query: " + result.next().toJSON());
+//      System.out.println("Page boundary test query: " + result.next().toJSON());
     });
 
-    System.out.println("✓ Page boundary handling test passed!");
+//    System.out.println("✓ Page boundary handling test passed!");
   }
 
   @Test
@@ -1603,14 +1603,14 @@ class LSMVectorIndexTest extends TestHelper {
     final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
 
     final int pagesBeforeCompaction = lsmIndex.getTotalPages();
-    System.out.println("Pages before compaction: " + pagesBeforeCompaction);
+//    System.out.println("Pages before compaction: " + pagesBeforeCompaction);
 
     // Trigger compaction
     final boolean compacted = lsmIndex.compact();
 
     final int pagesAfterCompaction = lsmIndex.getTotalPages();
-    System.out.println("Pages after compaction: " + pagesAfterCompaction);
-    System.out.println("Compaction occurred: " + compacted);
+//    System.out.println("Pages after compaction: " + pagesAfterCompaction);
+//    System.out.println("Compaction occurred: " + compacted);
 
     // Note: With only 50 entries creating a single mutable page, compaction may return false
     // because there are no immutable pages to compact yet. This is expected behavior.
@@ -1634,7 +1634,7 @@ class LSMVectorIndexTest extends TestHelper {
           queryVector);
 
       assertThat(result.hasNext()).as("Query should work").isTrue();
-      System.out.println("Post-compaction query: " + result.next().toJSON());
+//      System.out.println("Post-compaction query: " + result.next().toJSON());
     });
 
     // Verify VectorLocationIndex has valid offsets
@@ -1647,11 +1647,11 @@ class LSMVectorIndexTest extends TestHelper {
       assertThat(activeCount).as("Should have correct active vector count after compaction").isEqualTo(expectedCount);
     } else {
       // Without compaction, deleted entries remain in the index
-      System.out.println("Compaction didn't occur, so VectorLocationIndex still has all entries (including deleted)");
-      System.out.println("Active count: " + activeCount + " (includes tombstones until compaction)");
+//      System.out.println("Compaction didn't occur, so VectorLocationIndex still has all entries (including deleted)");
+//      System.out.println("Active count: " + activeCount + " (includes tombstones until compaction)");
     }
 
-    System.out.println("✓ Compaction with variable entries test passed!");
+//    System.out.println("✓ Compaction with variable entries test passed!");
   }
 
   @Test
@@ -1702,7 +1702,7 @@ class LSMVectorIndexTest extends TestHelper {
 
       assertThat(result.hasNext()).as("Query should work with correct offsets").isTrue();
       final var doc = result.next();
-      System.out.println("Header offset test query: " + doc.toJSON());
+//      System.out.println("Header offset test query: " + doc.toJSON());
     });
 
     // Get the index and verify internal structure
@@ -1723,7 +1723,7 @@ class LSMVectorIndexTest extends TestHelper {
 
     assertThat(validCount[0]).as("All 100 vectors should have valid locations").isEqualTo(100);
 
-    System.out.println("✓ Header offset consistency test passed!");
+//    System.out.println("✓ Header offset consistency test passed!");
   }
 
   /**
@@ -1802,47 +1802,47 @@ class LSMVectorIndexTest extends TestHelper {
               cursor.next();
               count++;
             }
-            System.out.println("Search completed, found " + count + " results before close");
+//            System.out.println("Search completed, found " + count + " results before close");
           });
         } catch (Exception e) {
           // If search fails due to other bugs, that's OK for this test
           System.out.println("Search failed (may be due to other bugs): " + e.getMessage());
         }
 
-        System.out.println("\nBefore closing database:");
-        System.out.println("  Database path: " + dbPath);
-        final java.io.File[] filesBeforeClose = new java.io.File(dbPath).listFiles();
-        if (filesBeforeClose != null) {
-          System.out.println("  Files in database directory:");
-          for (final java.io.File f : filesBeforeClose) {
-            System.out.println("    " + f.getName() + " (size: " + f.length() + " bytes)");
-          }
-        }
+//        System.out.println("\nBefore closing database:");
+//        System.out.println("  Database path: " + dbPath);
+//        final java.io.File[] filesBeforeClose = new java.io.File(dbPath).listFiles();
+//        if (filesBeforeClose != null) {
+//          System.out.println("  Files in database directory:");
+//          for (final java.io.File f : filesBeforeClose) {
+//            System.out.println("    " + f.getName() + " (size: " + f.length() + " bytes)");
+//          }
+//        }
 
       } finally {
         db.close();
-        System.out.println("\nDatabase closed");
+//        System.out.println("\nDatabase closed");
       }
     }
 
     // Check filesystem after close
-    System.out.println("\nAfter closing database:");
-    System.out.println("  Files in database directory:");
-    final java.io.File[] allFiles = new java.io.File(dbPath).listFiles();
-    if (allFiles != null) {
-      for (final java.io.File f : allFiles) {
-        System.out.println("    " + f.getName() + " (size: " + f.length() + " bytes)");
-      }
-    }
+//    System.out.println("\nAfter closing database:");
+//    System.out.println("  Files in database directory:");
+//    final java.io.File[] allFiles = new java.io.File(dbPath).listFiles();
+//    if (allFiles != null) {
+//      for (final java.io.File f : allFiles) {
+//        System.out.println("    " + f.getName() + " (size: " + f.length() + " bytes)");
+//      }
+//    }
 
     // Look for graph files
     final java.io.File[] graphFiles = new java.io.File(dbPath).listFiles(
         (dir, name) -> name.contains("vecgraph") || name.contains("lsmvecgraph"));
 
-    System.out.println("\nGraph files found: " + (graphFiles != null ? graphFiles.length : 0));
+//    System.out.println("\nGraph files found: " + (graphFiles != null ? graphFiles.length : 0));
     if (graphFiles != null && graphFiles.length > 0) {
       for (final java.io.File f : graphFiles) {
-        System.out.println("  " + f.getName() + " (size: " + f.length() + " bytes)");
+//        System.out.println("  " + f.getName() + " (size: " + f.length() + " bytes)");
         assertThat(f.length()).as(
             "Graph file should have non-zero size if properly flushed")
             .isGreaterThan(0);
@@ -1944,17 +1944,17 @@ class LSMVectorIndexTest extends TestHelper {
         final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
 
         // Check internal state
-        System.out.println("\nAfter reload:");
-        System.out.println("  Vector count: " + lsmIndex.getVectorIndex().size());
-        System.out.println("  Files in FileManager:");
-
-        final com.arcadedb.database.DatabaseInternal dbInternal =
-            (com.arcadedb.database.DatabaseInternal) db;
-        for (final com.arcadedb.engine.ComponentFile file : dbInternal.getFileManager().getFiles()) {
-          System.out.println("    " + file.getComponentName() +
-              " (ext: " + file.getFileExtension() +
-              ", id: " + file.getFileId() + ")");
-        }
+//        System.out.println("\nAfter reload:");
+//        System.out.println("  Vector count: " + lsmIndex.getVectorIndex().size());
+//        System.out.println("  Files in FileManager:");
+//
+//        final com.arcadedb.database.DatabaseInternal dbInternal =
+//            (com.arcadedb.database.DatabaseInternal) db;
+//        for (final com.arcadedb.engine.ComponentFile file : dbInternal.getFileManager().getFiles()) {
+//          System.out.println("    " + file.getComponentName() +
+//              " (ext: " + file.getFileExtension() +
+//              ", id: " + file.getFileId() + ")");
+//        }
 
         // This will FAIL because discoverAndLoadGraphFile() doesn't find the graph file
         // even though it exists on disk
@@ -2033,7 +2033,7 @@ class LSMVectorIndexTest extends TestHelper {
         });
 
         assertThat(firstQueryResults).hasSize(10);
-        System.out.println("Cycle 1 query results: " + firstQueryResults);
+//        System.out.println("Cycle 1 query results: " + firstQueryResults);
 
       } finally {
         db.close();
@@ -2057,7 +2057,7 @@ class LSMVectorIndexTest extends TestHelper {
           }
         });
 
-        System.out.println("Cycle 2 query results: " + secondQueryResults);
+//        System.out.println("Cycle 2 query results: " + secondQueryResults);
 
         // Results should be identical if graph was properly persisted
         assertThat(secondQueryResults).as(
@@ -2087,7 +2087,7 @@ class LSMVectorIndexTest extends TestHelper {
           }
         });
 
-        System.out.println("Cycle 3 query results: " + thirdQueryResults);
+//        System.out.println("Cycle 3 query results: " + thirdQueryResults);
 
         assertThat(thirdQueryResults).as("Results should remain consistent across all cycles")
             .isEqualTo(firstQueryResults);
