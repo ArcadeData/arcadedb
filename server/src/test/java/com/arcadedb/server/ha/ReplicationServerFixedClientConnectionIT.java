@@ -33,6 +33,9 @@ import com.arcadedb.utility.CodeUtils;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.concurrent.TimeUnit;
 
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -64,6 +67,7 @@ public class ReplicationServerFixedClientConnectionIT extends ReplicationServerI
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @Disabled
   void testReplication() {
     checkDatabases();

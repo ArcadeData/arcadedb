@@ -25,6 +25,7 @@ import eu.rekawek.toxiproxy.Proxy;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
@@ -40,6 +41,7 @@ import java.util.concurrent.TimeUnit;
 public class RollingRestartIT extends ContainersTestTemplate {
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test rolling restart: restart each node sequentially, verify zero downtime")
   void testRollingRestart() throws IOException, InterruptedException {
     logger.info("Creating proxies for 3-node cluster");
@@ -191,6 +193,7 @@ public class RollingRestartIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test rapid rolling restart: minimal wait between restarts")
   void testRapidRollingRestart() throws IOException, InterruptedException {
     logger.info("Creating proxies for 3-node cluster");
@@ -282,6 +285,7 @@ public class RollingRestartIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test rolling restart with continuous writes: verify no data loss")
   void testRollingRestartWithContinuousWrites() throws IOException, InterruptedException {
     logger.info("Creating proxies for 3-node cluster");

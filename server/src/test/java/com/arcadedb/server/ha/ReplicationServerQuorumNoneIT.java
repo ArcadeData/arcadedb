@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.utility.CodeUtils;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.TimeUnit;
 

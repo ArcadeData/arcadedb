@@ -25,6 +25,7 @@ import eu.rekawek.toxiproxy.Proxy;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
@@ -40,6 +41,7 @@ import java.util.concurrent.TimeUnit;
 public class LeaderFailoverIT extends ContainersTestTemplate {
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test leader failover: kill leader, verify new election and data consistency")
   void testLeaderFailover() throws IOException, InterruptedException {
     logger.info("Creating proxies for 3-node cluster");
@@ -135,6 +137,7 @@ public class LeaderFailoverIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test repeated leader failures: verify cluster stability under continuous failover")
   void testRepeatedLeaderFailures() throws IOException, InterruptedException {
     logger.info("Creating proxies for 3-node cluster");
@@ -229,6 +232,7 @@ public class LeaderFailoverIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test leader failover with active writes: verify no data loss during failover")
   void testLeaderFailoverDuringWrites() throws IOException, InterruptedException {
     logger.info("Creating proxies for 3-node cluster");

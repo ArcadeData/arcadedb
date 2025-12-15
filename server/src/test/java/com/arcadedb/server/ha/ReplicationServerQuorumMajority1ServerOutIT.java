@@ -21,6 +21,9 @@ package com.arcadedb.server.ha;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.concurrent.TimeUnit;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;

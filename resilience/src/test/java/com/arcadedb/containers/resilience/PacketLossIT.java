@@ -26,6 +26,7 @@ import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
@@ -41,6 +42,7 @@ import java.util.concurrent.TimeUnit;
 public class PacketLossIT extends ContainersTestTemplate {
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test low packet loss (5%): cluster should remain stable")
   void testLowPacketLoss() throws IOException {
     logger.info("Creating proxies for 2-node cluster");
@@ -104,6 +106,7 @@ public class PacketLossIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test moderate packet loss (20%): replication should succeed with retries")
   void testModeratePacketLoss() throws IOException {
     logger.info("Creating proxies for 2-node cluster");
@@ -165,6 +168,7 @@ public class PacketLossIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test high packet loss (50%): verify connection resilience")
   void testHighPacketLoss() throws IOException {
     logger.info("Creating proxies for 2-node cluster");
@@ -226,6 +230,7 @@ public class PacketLossIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test directional packet loss: loss only in one direction")
   void testDirectionalPacketLoss() throws IOException {
     logger.info("Creating proxies for 3-node cluster");
@@ -292,6 +297,7 @@ public class PacketLossIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test intermittent packet loss: verify recovery from transient issues")
   void testIntermittentPacketLoss() throws IOException, InterruptedException {
     logger.info("Creating proxies for 2-node cluster");

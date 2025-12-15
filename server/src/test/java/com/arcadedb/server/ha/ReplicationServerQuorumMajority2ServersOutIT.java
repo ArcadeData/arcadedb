@@ -25,6 +25,9 @@ import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.concurrent.TimeUnit;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
@@ -70,6 +73,7 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
   }
 
   @Test
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)
   void testReplication() throws Exception {
     assertThatThrownBy(super::replication)
         .isInstanceOf(QuorumNotReachedException.class);

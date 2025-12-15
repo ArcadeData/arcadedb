@@ -20,9 +20,12 @@ package com.arcadedb.server.ha.discovery;
 
 import com.arcadedb.server.ha.HAServer;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import java.util.concurrent.TimeUnit;
 
 /**
  * Unit tests for KubernetesDnsDiscovery implementation.
@@ -34,6 +37,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class KubernetesDnsDiscoveryTest {
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testConstructorWithValidParameters() {
     // When: Creating discovery with valid parameters
     KubernetesDnsDiscovery discovery = new KubernetesDnsDiscovery(
@@ -45,6 +49,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testConstructorWithCustomDomain() {
     // When: Creating discovery with custom domain
     KubernetesDnsDiscovery discovery = new KubernetesDnsDiscovery(
@@ -56,6 +61,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testNullServiceNameThrowsException() {
     // When/Then: Creating discovery with null service name
     assertThatThrownBy(() ->
@@ -65,6 +71,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testEmptyServiceNameThrowsException() {
     // When/Then: Creating discovery with empty service name
     assertThatThrownBy(() ->
@@ -74,6 +81,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testNullNamespaceThrowsException() {
     // When/Then: Creating discovery with null namespace
     assertThatThrownBy(() ->
@@ -83,6 +91,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testEmptyNamespaceThrowsException() {
     // When/Then: Creating discovery with empty namespace
     assertThatThrownBy(() ->
@@ -92,6 +101,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testNullPortNameThrowsException() {
     // When/Then: Creating discovery with null port name
     assertThatThrownBy(() ->
@@ -101,6 +111,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testEmptyPortNameThrowsException() {
     // When/Then: Creating discovery with empty port name
     assertThatThrownBy(() ->
@@ -110,6 +121,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testInvalidPortThrowsException() {
     // When/Then: Creating discovery with invalid port (0)
     assertThatThrownBy(() ->
@@ -119,6 +131,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testPortTooHighThrowsException() {
     // When/Then: Creating discovery with port > 65535
     assertThatThrownBy(() ->
@@ -128,6 +141,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testNegativePortThrowsException() {
     // When/Then: Creating discovery with negative port
     assertThatThrownBy(() ->
@@ -137,6 +151,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testNullDomainThrowsException() {
     // When/Then: Creating discovery with null domain
     assertThatThrownBy(() ->
@@ -146,6 +161,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testEmptyDomainThrowsException() {
     // When/Then: Creating discovery with empty domain
     assertThatThrownBy(() ->
@@ -155,6 +171,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testRegisterNodeIsNoOp() throws DiscoveryException {
     // Given: A Kubernetes DNS discovery service
     KubernetesDnsDiscovery discovery = new KubernetesDnsDiscovery(
@@ -166,6 +183,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testDeregisterNodeIsNoOp() throws DiscoveryException {
     // Given: A Kubernetes DNS discovery service
     KubernetesDnsDiscovery discovery = new KubernetesDnsDiscovery(
@@ -177,6 +195,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testGetName() {
     // Given: A Kubernetes DNS discovery service
     KubernetesDnsDiscovery discovery = new KubernetesDnsDiscovery(
@@ -187,6 +206,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testToString() {
     // Given: A Kubernetes DNS discovery service
     KubernetesDnsDiscovery discovery = new KubernetesDnsDiscovery(
@@ -204,6 +224,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testWhitespaceServiceNameThrowsException() {
     // When/Then: Creating discovery with whitespace-only service name
     assertThatThrownBy(() ->
@@ -213,6 +234,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testWhitespaceNamespaceThrowsException() {
     // When/Then: Creating discovery with whitespace-only namespace
     assertThatThrownBy(() ->
@@ -222,6 +244,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testWhitespacePortNameThrowsException() {
     // When/Then: Creating discovery with whitespace-only port name
     assertThatThrownBy(() ->
@@ -231,6 +254,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testWhitespaceDomainThrowsException() {
     // When/Then: Creating discovery with whitespace-only domain
     assertThatThrownBy(() ->
@@ -240,6 +264,7 @@ class KubernetesDnsDiscoveryTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void testValidPortBoundaries() {
     // When: Creating discovery with port 1 (minimum valid)
     KubernetesDnsDiscovery discovery1 = new KubernetesDnsDiscovery(

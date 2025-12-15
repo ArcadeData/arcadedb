@@ -28,15 +28,18 @@ import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ReplicationCallback;
-import com.arcadedb.utility.CodeUtils;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+import java.time.Duration;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 public class ReplicationServerLeaderDownIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();
@@ -57,6 +60,7 @@ public class ReplicationServerLeaderDownIT extends ReplicationServerIT {
 
   @Test
   @Disabled
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)
   void testReplication() {
     checkDatabases();
 
@@ -71,30 +75,26 @@ public class ReplicationServerLeaderDownIT extends ReplicationServerIT {
 
     long counter = 0;
 
-    final int maxRetry = 10;
-
     for (int tx = 0; tx < getTxs(); ++tx) {
       for (int i = 0; i < getVerticesPerTx(); ++i) {
-        for (int retry = 0; retry < maxRetry; ++retry) {
-          try {
-            final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter,
-                "distributed-test");
+        final long currentId = ++counter;
 
-            assertThat(resultSet.hasNext()).isTrue();
-            final Result result = resultSet.next();
-            assertThat(result).isNotNull();
-            final Set<String> props = result.getPropertyNames();
-            assertThat(props.size()).as("Found the following properties " + props).isEqualTo(2);
-            assertThat(result.<Long>getProperty("id")).isEqualTo(counter);
-            assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
-            break;
-          } catch (final RemoteException e) {
-            // IGNORE IT
-            LogManager.instance()
-                .log(this, Level.SEVERE, "Error on creating vertex %d, retrying (retry=%d/%d)...", e, counter, retry, maxRetry);
-            CodeUtils.sleep(500);
-          }
-        }
+        // Use Awaitility to handle retry logic with proper timeout
+        await().atMost(Duration.ofSeconds(15))
+               .pollInterval(Duration.ofMillis(500))
+               .ignoreException(RemoteException.class)
+               .untilAsserted(() -> {
+                 final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?",
+                     currentId, "distributed-test");
+
+                 assertThat(resultSet.hasNext()).isTrue();
+                 final Result result = resultSet.next();
+                 assertThat(result).isNotNull();
+                 final Set<String> props = result.getPropertyNames();
+                 assertThat(props.size()).as("Found the following properties " + props).isEqualTo(2);
+                 assertThat(result.<Long>getProperty("id")).isEqualTo(currentId);
+                 assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
+               });
       }
 
       if (counter % 1000 == 0) {
@@ -105,7 +105,10 @@ public class ReplicationServerLeaderDownIT extends ReplicationServerIT {
     }
 
     LogManager.instance().log(this, Level.FINE, "Done");
-    CodeUtils.sleep(1000);
+
+    // Wait for replication to complete instead of fixed sleep
+    for (final int s : getServerToCheck())
+      waitForReplicationIsCompleted(s);
 
     // CHECK INDEXES ARE REPLICATED CORRECTLY
     for (final int s : getServerToCheck())

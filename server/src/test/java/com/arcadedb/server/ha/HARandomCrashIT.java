@@ -32,20 +32,26 @@ import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.CodeUtils;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+import java.time.Duration;
 import java.util.Random;
 import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 public class HARandomCrashIT extends ReplicationServerIT {
-  private          int  restarts = 0;
-  private volatile long delay    = 0;
+  private          int   restarts = 0;
+  private volatile long  delay    = 0;
+  private          Timer timer    = null;
 
   @Override
   public void setTestConfiguration() {
@@ -59,10 +65,11 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
   @Test
   @Override
+  @Timeout(value = 20, unit = TimeUnit.MINUTES)
   public void replication() {
     checkDatabases();
 
-    final Timer timer = new Timer();
+    timer = new Timer();
     timer.schedule(new TimerTask() {
       @Override
       public void run() {
@@ -101,8 +108,10 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
             getServer(serverId).stop();
 
-            while (getServer(serverId).getStatus() == ArcadeDBServer.Status.SHUTTING_DOWN)
-              CodeUtils.sleep(300);
+            // Wait for server to finish shutting down using Awaitility
+            await().atMost(Duration.ofSeconds(60))
+                   .pollInterval(Duration.ofMillis(300))
+                   .until(() -> getServer(serverId).getStatus() != ArcadeDBServer.Status.SHUTTING_DOWN);
 
             LogManager.instance().log(this, getLogLevel(), "TEST: Restarting the Server %s (delay=%d)...", null, serverId, delay);
 
@@ -150,43 +159,43 @@ public class HARandomCrashIT extends ReplicationServerIT {
     for (int tx = 0; tx < getTxs(); ++tx) {
       final long lastGoodCounter = counter;
 
-      for (int retry = 0; retry < getMaxRetry(); ++retry) {
-        try {
+      try {
+        // Use Awaitility to handle retry logic with proper exception handling
+        await().atMost(Duration.ofSeconds(30))
+               .pollInterval(Duration.ofSeconds(1))
+               .pollDelay(Duration.ofMillis(100))  // Initial delay between operations
+               .ignoreExceptionsMatching(e ->
+                   e instanceof TransactionException ||
+                   e instanceof NeedRetryException ||
+                   e instanceof RemoteException ||
+                   e instanceof TimeoutException)
+               .untilAsserted(() -> {
+                 for (int i = 0; i < getVerticesPerTx(); ++i) {
+                   final long currentId = lastGoodCounter + i + 1;
 
-          for (int i = 0; i < getVerticesPerTx(); ++i) {
+                   final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?",
+                       currentId, "distributed-test");
 
-            final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter,
-                "distributed-test");
+                   final Result result = resultSet.next();
+                   final Set<String> props = result.getPropertyNames();
+                   assertThat(props).as("Found the following properties " + props).hasSize(2);
+                   assertThat(result.<Long>getProperty("id")).isEqualTo(currentId);
+                   assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
+                 }
+               });
 
-            final Result result = resultSet.next();
-            final Set<String> props = result.getPropertyNames();
-            assertThat(props).as("Found the following properties " + props).hasSize(2);
-            assertThat(result.<Long>getProperty("id")).isEqualTo(counter);
-            assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
-          }
+        counter = lastGoodCounter + getVerticesPerTx();
 
-          CodeUtils.sleep(100);
+        // Intentional delay to pace writes during chaos scenario (not waiting for a condition)
+        CodeUtils.sleep(100);
 
-          break;
-
-        } catch (final TransactionException | NeedRetryException | RemoteException | TimeoutException e) {
-          LogManager.instance()
-              .log(this, getLogLevel(), "TEST: - RECEIVED ERROR: %s %s (RETRY %d/%d)", null, e.getClass().getName(), e.toString(),
-                  retry, getMaxRetry());
-          if (retry >= getMaxRetry() - 1)
-            throw e;
-          counter = lastGoodCounter;
-
-          CodeUtils.sleep(1_000);
-
-        } catch (final DuplicatedKeyException e) {
-          // THIS MEANS THE ENTRY WAS INSERTED BEFORE THE CRASH
-          LogManager.instance().log(this, getLogLevel(), "TEST: - RECEIVED ERROR: %s (IGNORE IT)", null, e.toString());
-          break;
-        } catch (final Exception e) {
-          LogManager.instance().log(this, Level.SEVERE, "TEST: - RECEIVED UNKNOWN ERROR: %s", e, e.toString());
-          throw e;
-        }
+      } catch (final DuplicatedKeyException e) {
+        // THIS MEANS THE ENTRY WAS INSERTED BEFORE THE CRASH
+        LogManager.instance().log(this, getLogLevel(), "TEST: - RECEIVED ERROR: %s (IGNORE IT)", null, e.toString());
+        counter = lastGoodCounter + getVerticesPerTx();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "TEST: - RECEIVED UNKNOWN ERROR: %s", e, e.toString());
+        throw e;
       }
 
       if (counter % 1000 == 0) {
@@ -226,6 +235,16 @@ public class HARandomCrashIT extends ReplicationServerIT {
     onAfterTest();
 
     assertThat(restarts >= getServerCount()).as("Restarts " + restarts + " times").isTrue();
+  }
+
+  @AfterEach
+  @Override
+  public void endTest() {
+    if (timer != null) {
+      timer.cancel();
+      timer = null;
+    }
+    super.endTest();
   }
 
   private static Level getLogLevel() {

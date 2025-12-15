@@ -22,12 +22,14 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.CodeUtils;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 class ReplicationServerWriteAgainstReplicaIT extends ReplicationServerIT {
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void testReplication() {
     // Ensure all servers are fully connected and synchronized before writing against replica
     // This is critical because we're writing against server 1 (replica) which must forward

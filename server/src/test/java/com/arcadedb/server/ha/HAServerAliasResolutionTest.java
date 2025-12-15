@@ -22,12 +22,14 @@ import com.arcadedb.server.ha.HAServer.HACluster;
 import com.arcadedb.server.ha.HAServer.ServerInfo;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -41,6 +43,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class HAServerAliasResolutionTest {
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test alias resolution with proxy addresses as in SimpleHaScenarioIT")
   void testAliasResolutionWithProxyAddresses() {
     // Create cluster with servers using proxy addresses and aliases
@@ -71,6 +74,7 @@ class HAServerAliasResolutionTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test alias resolution with unresolved alias placeholder")
   void testAliasResolutionWithPlaceholder() {
     // This tests the scenario where a ServerInfo is created with an alias placeholder
@@ -95,6 +99,7 @@ class HAServerAliasResolutionTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test alias resolution with missing alias returns empty")
   void testAliasResolutionMissingAlias() {
     Set<ServerInfo> servers = new HashSet<>();
@@ -108,6 +113,7 @@ class HAServerAliasResolutionTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test ServerInfo toString includes alias format")
   void testServerInfoToStringFormat() {
     ServerInfo server = new ServerInfo("localhost", 2424, "myalias");
@@ -118,6 +124,7 @@ class HAServerAliasResolutionTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test ServerInfo fromString creates correct instance with alias")
   void testServerInfoFromStringWithAlias() {
     String address = "{arcade1}proxy:8666";
@@ -130,6 +137,7 @@ class HAServerAliasResolutionTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test ServerInfo fromString creates correct instance without alias")
   void testServerInfoFromStringWithoutAlias() {
     String address = "localhost:2424";
@@ -142,6 +150,7 @@ class HAServerAliasResolutionTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test multiple servers with different aliases can be resolved")
   void testMultipleAliasResolution() {
     Set<ServerInfo> servers = new HashSet<>();
@@ -161,6 +170,7 @@ class HAServerAliasResolutionTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test HACluster can find server by exact ServerInfo match")
   void testFindByServerInfo() {
     ServerInfo server1 = new ServerInfo("host1", 2424, "alias1");
@@ -181,6 +191,7 @@ class HAServerAliasResolutionTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test HACluster can find server by host and port")
   void testFindByHostAndPort() {
     ServerInfo server1 = new ServerInfo("host1", 2424, "alias1");
@@ -207,6 +218,7 @@ class HAServerAliasResolutionTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test ServerInfo lookup by alias for getReplica() compatibility")
   void testServerInfoLookupByAliasForGetReplica() {
     // This test validates the logic needed for HAServer.getReplica(String) backward compatibility
@@ -235,6 +247,7 @@ class HAServerAliasResolutionTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test ServerInfo lookup by host:port string for getReplica() compatibility")
   void testServerInfoLookupByHostPortForGetReplica() {
     // This test validates the fallback logic for getReplica(String) when alias lookup fails
@@ -263,6 +276,7 @@ class HAServerAliasResolutionTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test ServerInfo equality and hashCode for Map usage")
   void testServerInfoEqualityForMapUsage() {
     // This test ensures ServerInfo can be used as a Map key (as in replicaConnections)
@@ -290,6 +304,7 @@ class HAServerAliasResolutionTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test ServerInfo with different aliases but same host:port are different")
   void testServerInfoWithDifferentAliases() {
     // This validates that ServerInfo with different aliases are treated as different keys
@@ -312,6 +327,7 @@ class HAServerAliasResolutionTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test HACluster clusterSize returns correct count")
   void testHAClusterSize() {
     Set<ServerInfo> servers = new HashSet<>();
@@ -326,6 +342,7 @@ class HAServerAliasResolutionTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test HACluster with empty server set")
   void testHAClusterEmpty() {
     Set<ServerInfo> servers = new HashSet<>();
@@ -336,6 +353,7 @@ class HAServerAliasResolutionTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test HACluster equality based on server set")
   void testHAClusterEquality() {
     ServerInfo server1 = new ServerInfo("server1", 2424, "s1");
@@ -364,6 +382,7 @@ class HAServerAliasResolutionTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test HACluster server membership changes")
   void testHAClusterMembershipChanges() {
     // Initial cluster
@@ -400,6 +419,7 @@ class HAServerAliasResolutionTest {
   }
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   @DisplayName("Test HACluster detects server removal")
   void testHAClusterServerRemoval() {
     // Initial cluster with 3 servers
