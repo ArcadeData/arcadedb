@@ -189,7 +189,8 @@ public class LocalSchema implements Schema {
           else
             LogManager.instance()
                 .log(this, Level.WARNING, "Unknown component '%s' from type '%s' for file '%s'",
-                    mainComponent.getClass(), pf.getClass(), pf.getName());
+                    mainComponent != null ? mainComponent.getClass() : "null",
+                    pf.getClass(), pf.getName());
 
           registerFile(pf);
         }
