@@ -23,6 +23,9 @@ import com.arcadedb.server.ServerException;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -39,6 +42,7 @@ class HAConfigurationIT extends BaseGraphServerTest {
 
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void replication() {
     try {
       super.beginTest();
