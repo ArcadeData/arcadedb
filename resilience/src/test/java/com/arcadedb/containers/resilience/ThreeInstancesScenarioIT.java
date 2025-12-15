@@ -6,6 +6,7 @@ import com.arcadedb.test.support.ServerWrapper;
 import eu.rekawek.toxiproxy.Proxy;
 import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
@@ -16,32 +17,14 @@ import java.util.concurrent.TimeUnit;
 
 public class ThreeInstancesScenarioIT extends ContainersTestTemplate {
 
-//  @AfterEach
-//  @Override
-//  public void tearDown() {
-//    stopContainers();
-//    logger.info("Comparing databases ");
-//    DatabaseFactory databaseFactory1 = new DatabaseFactory("./target/databases/arcade1/ha-test");
-//    Database db1 = databaseFactory1.open(ComponentFile.MODE.READ_ONLY);
-//    DatabaseFactory databaseFactory2 = new DatabaseFactory("./target/databases/arcade2/ha-test");
-//    Database db2 = databaseFactory2.open(ComponentFile.MODE.READ_ONLY);
-//    DatabaseFactory databaseFactory3 = new DatabaseFactory("./target/databases/arcade3/ha-test");
-//    Database db3 = databaseFactory3.open(ComponentFile.MODE.READ_ONLY);
-//
-//    new DatabaseComparator().compare(db1, db2);
-//    new DatabaseComparator().compare(db1, db3);
-//    new DatabaseComparator().compare(db2, db3);
-//
-//    db1.close();
-//    db2.close();
-//    db3.close();
-//
-//    databaseFactory1.close();
-//    databaseFactory2.close();
-//    databaseFactory3.close();
-//    logger.info("Databases compared");
-//
-//  }
+  @AfterEach
+  @Override
+  public void tearDown() {
+    stopContainers();
+    logger.info("Comparing databases for consistency verification");
+    compareAllDatabases();
+    super.tearDown();
+  }
 
   @Test
   @DisplayName("Test resync after network crash with 3 servers in HA mode: one leader and two replicas")
@@ -139,6 +122,66 @@ public class ThreeInstancesScenarioIT extends ContainersTestTemplate {
     db2.close();
     db3.close();
 
+  }
+
+  @Test
+  @DisplayName("Test database comparison after simple replication")
+  void testDatabaseComparisonAfterReplication() throws IOException {
+    logger.info("Creating proxies for 3-node cluster");
+    final Proxy arcade1Proxy = toxiproxyClient.createProxy("arcade1Proxy", "0.0.0.0:8666", "arcade1:2424");
+    final Proxy arcade2Proxy = toxiproxyClient.createProxy("arcade2Proxy", "0.0.0.0:8667", "arcade2:2424");
+    final Proxy arcade3Proxy = toxiproxyClient.createProxy("arcade3Proxy", "0.0.0.0:8668", "arcade3:2424");
+
+    logger.info("Creating 3 arcade containers");
+    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any",
+        network);
+    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "majority", "any",
+        network);
+    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "majority", "any",
+        network);
+
+    logger.info("Starting the containers");
+    List<ServerWrapper> servers = startContainers();
+
+    DatabaseWrapper db1 = new DatabaseWrapper(servers.getFirst(), idSupplier);
+    DatabaseWrapper db2 = new DatabaseWrapper(servers.get(1), idSupplier);
+    DatabaseWrapper db3 = new DatabaseWrapper(servers.get(2), idSupplier);
+
+    logger.info("Creating the database");
+    db1.createDatabase();
+    db1.createSchema();
+
+    logger.info("Adding test data");
+    db1.addUserAndPhotos(5, 5);
+    db2.addUserAndPhotos(5, 5);
+    db3.addUserAndPhotos(5, 5);
+
+    logger.info("Verifying replication");
+    db1.assertThatUserCountIs(15);
+    db2.assertThatUserCountIs(15);
+    db3.assertThatUserCountIs(15);
+
+    logger.info("Waiting for final consistency");
+    Awaitility.await()
+        .atMost(20, TimeUnit.SECONDS)
+        .pollInterval(1, TimeUnit.SECONDS)
+        .until(() -> {
+          try {
+            Long users1 = db1.countUsers();
+            Long users2 = db2.countUsers();
+            Long users3 = db3.countUsers();
+            return users1.equals(15L) && users2.equals(15L) && users3.equals(15L);
+          } catch (Exception e) {
+            return false;
+          }
+        });
+
+    db1.close();
+    db2.close();
+    db3.close();
+
+    // Database comparison will happen automatically in tearDown()
+    logger.info("Test complete - database comparison will verify consistency");
   }
 
 }
