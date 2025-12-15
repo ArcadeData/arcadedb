@@ -20,6 +20,9 @@ package com.arcadedb.server.ha;
 
 import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.concurrent.TimeUnit;
 
 public class ReplicationServerQuorumAllIT extends ReplicationServerIT {
   public ReplicationServerQuorumAllIT() {
