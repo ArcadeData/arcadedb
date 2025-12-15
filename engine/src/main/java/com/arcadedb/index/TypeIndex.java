@@ -211,6 +211,13 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
+  public void flush() {
+    checkIsValid();
+    for (final IndexInternal index : indexesOnBuckets)
+      index.flush();
+  }
+
+  @Override
   public void close() {
     checkIsValid();
     for (final IndexInternal index : indexesOnBuckets)

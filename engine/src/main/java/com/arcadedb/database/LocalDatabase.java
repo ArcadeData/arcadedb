@@ -1700,12 +1700,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     }
 
     if (!drop) {
-      // CLOSE ALL INDEXES WHILE THE DATABASE IS STILL OPEN TO AVOID "FILE CLOSED" ERRORS
+      // FLUSH ALL INDEXES WHILE THE DATABASE IS STILL OPEN
       for (Index idx : schema.getIndexes()) {
         try {
-          ((IndexInternal) idx).close();
+          ((IndexInternal) idx).flush();
         } catch (Exception e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error closing index %s: %s", e, idx.getName(), e.getMessage());
+          LogManager.instance().log(this, Level.SEVERE, "Error on flushing index %s: %s", e, idx.getName(), e.getMessage());
         }
       }
     }
