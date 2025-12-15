@@ -46,6 +46,9 @@ public interface IndexInternal extends Index {
 
   boolean setStatus(INDEX_STATUS[] expectedStatuses, INDEX_STATUS newStatus);
 
+  default void flush() {
+  }
+
   void close();
 
   void drop();

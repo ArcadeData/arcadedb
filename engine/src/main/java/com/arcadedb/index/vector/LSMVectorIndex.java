@@ -2102,7 +2102,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   @Override
-  public void close() {
+  public void flush() {
     if (status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE)) {
 
       // Build and persist graph if it hasn't been built yet
@@ -2126,24 +2126,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
             "Skipping graph build on close: vectorIndexSize=%d, graphState=%s",
             vectorIndex.size(), graphState);
       }
-
-      lock.writeLock().lock();
-      try {
-        mutable.close();
-
-        // Close graph file to ensure graph data is flushed to disk
-        if (graphFile != null) {
-          try {
-            graphFile.close();
-          } catch (final Exception e) {
-            LogManager.instance().log(this, Level.WARNING,
-                "Error closing graph file for index %s", e, indexName);
-          }
-        }
-      } finally {
-        lock.writeLock().unlock();
-      }
     }
+  }
+
+  @Override
+  public void close() {
+    flush();
   }
 
   @Override
