@@ -80,26 +80,26 @@ class VectorIndexProgressCallbackTest extends TestHelper {
         100000, // batch size
         (doc, total) -> {
           documentsIndexed.set((int) total);
-          if (total % 100 == 0) {
-            System.out.println("Indexed " + total + " documents...");
-          }
+//          if (total % 100 == 0) {
+//            System.out.println("Indexed " + total + " documents...");
+//          }
         },
         (phase, processedNodes, totalNodes, insertsOrAccesses) -> {
           switch (phase) {
           case "validating":
             validationProgress.set(processedNodes);
-            System.out.printf("Validating vectors: %d / %d%n", processedNodes, totalNodes);
+//            System.out.printf("Validating vectors: %d / %d%n", processedNodes, totalNodes);
             break;
           case "building":
             buildingProgress.set(processedNodes);
             buildingCallbacks.incrementAndGet();
             final int insertsInProgress = (int) (insertsOrAccesses - processedNodes);
-            System.out.printf("Building graph: %d / %d nodes (%d inserts in progress)%n",
-                processedNodes, totalNodes, insertsInProgress);
+//            System.out.printf("Building graph: %d / %d nodes (%d inserts in progress)%n",
+//                processedNodes, totalNodes, insertsInProgress);
             break;
           case "persisting":
             persistingCalled.incrementAndGet();
-            System.out.printf("Persisting graph: %d / %d nodes%n", processedNodes, totalNodes);
+//            System.out.printf("Persisting graph: %d / %d nodes%n", processedNodes, totalNodes);
             break;
           }
         }
@@ -110,11 +110,11 @@ class VectorIndexProgressCallbackTest extends TestHelper {
     // Note: Validation and building callbacks may not be called if graph is already built
     // during the insert phase. That's ok - the important thing is that the index build succeeded.
     // In production, these callbacks will be triggered when explicitly rebuilding an existing index.
-    System.out.println("\n=== Callback Summary ===");
-    System.out.println("Validation reports: " + (validationProgress.get() > 0 ? "YES" : "NO"));
-    System.out.println("Building callback count: " + buildingCallbacks.get());
-    System.out.println("Final nodes built: " + buildingProgress.get());
-    System.out.println("Persisting reports: " + (persistingCalled.get() > 0 ? "YES" : "NO"));
+//    System.out.println("\n=== Callback Summary ===");
+//    System.out.println("Validation reports: " + (validationProgress.get() > 0 ? "YES" : "NO"));
+//    System.out.println("Building callback count: " + buildingCallbacks.get());
+//    System.out.println("Final nodes built: " + buildingProgress.get());
+//    System.out.println("Persisting reports: " + (persistingCalled.get() > 0 ? "YES" : "NO"));
   }
 
   @Test
@@ -186,13 +186,13 @@ class VectorIndexProgressCallbackTest extends TestHelper {
         (phase, processedNodes, totalNodes, vecAccesses) -> {
           graphBuildCalls.incrementAndGet();
           phaseLog.append(String.format("[%s: %d/%d] ", phase, processedNodes, totalNodes));
-          System.out.printf("Graph Build - Phase: %s, Progress: %d/%d, Vector accesses: %d%n",
-              phase, processedNodes, totalNodes, vecAccesses);
+//          System.out.printf("Graph Build - Phase: %s, Progress: %d/%d, Vector accesses: %d%n",
+//              phase, processedNodes, totalNodes, vecAccesses);
         }
     );
 
-    System.out.println("\nGraph build phases observed: " + phaseLog);
-    System.out.println("Total graph callback invocations: " + graphBuildCalls.get());
+//    System.out.println("\nGraph build phases observed: " + phaseLog);
+//    System.out.println("Total graph callback invocations: " + graphBuildCalls.get());
 
     // We should have received some callbacks (validation, building, or persisting)
     // Note: callbacks may not be triggered if graph is already built, which is acceptable
