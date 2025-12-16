@@ -186,11 +186,6 @@ public class LocalSchema implements Schema {
             bucketMap.put(pf.getName(), bucket);
           else if (mainComponent instanceof IndexInternal internal)
             indexMap.put(pf.getName(), internal);
-          else
-            LogManager.instance()
-                .log(this, Level.WARNING, "Unknown component '%s' from type '%s' for file '%s'",
-                    mainComponent != null ? mainComponent.getClass() : "null",
-                    pf.getClass(), pf.getName());
 
           registerFile(pf);
         }
