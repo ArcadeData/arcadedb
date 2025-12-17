@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 /**
- * Javascript implementation of a function. To define the function, pass the function name, code and optional parameters in the constructor.
+ * SQL implementation of a function. To define the function, pass the function name, code and optional parameters in the constructor.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -33,17 +33,20 @@ public class SQLFunctionDefinition implements FunctionDefinition {
   private final Database database;
   private final String   functionName;
   private final String   implementation;
+  private final String[] parameterNames;
 
   /**
    * Creates the function with its name, implementation in form of text and optional parameters.
    *
    * @param functionName   Name of the function
    * @param implementation Implementation code as string
+   * @param parameterNames Names of the parameters
    */
-  public SQLFunctionDefinition(final Database database, final String functionName, final String implementation) {
+  public SQLFunctionDefinition(final Database database, final String functionName, final String implementation, final String... parameterNames) {
     this.database = database;
     this.functionName = functionName;
     this.implementation = implementation;
+    this.parameterNames = parameterNames;
   }
 
   @Override
@@ -53,8 +56,15 @@ public class SQLFunctionDefinition implements FunctionDefinition {
 
   @Override
   public Object execute(final Object... parameters) {
-    // TODO: CHECK PASSED PARAMETERS AS ARGUMENT WITH DEFINED PARAMETERS
-    final ResultSet result = database.command("sqlscript", implementation, parameters);
+    // Bind parameters to a Map with their names
+    final Map<String, Object> paramMap = new HashMap<>();
+    if (parameterNames != null) {
+      for (int i = 0; i < parameterNames.length && i < parameters.length; i++) {
+        paramMap.put(parameterNames[i], parameters[i]);
+      }
+    }
+    
+    final ResultSet result = database.command("sqlscript", implementation, paramMap);
     Object first = null;
     if (result.hasNext()) {
       first = result.next();

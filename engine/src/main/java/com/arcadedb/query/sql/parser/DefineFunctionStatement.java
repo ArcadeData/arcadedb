@@ -70,7 +70,7 @@ public class DefineFunctionStatement extends SimpleExecStatement {
       break;
 
     case "sql":
-      f = new SQLFunctionDefinition(database, functionName.getStringValue(), code);
+      f = new SQLFunctionDefinition(database, functionName.getStringValue(), code, parameterArray);
       break;
 
     default:
