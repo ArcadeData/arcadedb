@@ -210,7 +210,7 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
     Awaitility.await("leader replication queue drain")
         .atMost(Duration.ofSeconds(10))
         .pollInterval(Duration.ofMillis(200))
-        .until(() -> getServer(0).getHA().getReplicationLog().getQueueSize() == 0);
+        .until(() -> getServer(0).getHA().getReplicationLogFile().getSize() == 0);
 
     // Wait for all replicas' replication queues to drain
     Awaitility.await("all replicas queue drain")
@@ -218,7 +218,7 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
         .pollInterval(Duration.ofMillis(200))
         .until(() -> {
           for (int i = 1; i < getServerCount(); i++) {
-            if (getServer(i).getHA().getReplicationLog().getQueueSize() > 0) {
+            if (getServer(i).getHA().getReplicationLogFile().getSize() > 0) {
               return false;
             }
           }
