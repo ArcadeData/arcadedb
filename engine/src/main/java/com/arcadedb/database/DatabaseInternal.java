@@ -51,6 +51,8 @@ public interface DatabaseInternal extends Database {
     return tx;
   }
 
+  long getSize();
+
   TransactionContext getTransactionIfExists();
 
   MutableEmbeddedDocument newEmbeddedDocument(EmbeddedModifier modifier, String typeName);
