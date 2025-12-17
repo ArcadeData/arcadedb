@@ -342,7 +342,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
             }
           }).sum();
         }
-      } catch (UncheckedIOException e) {
+      } catch (Exception e) {
         throw new DatabaseOperationException("Error calculating database size", e.getCause());
       }
     });
