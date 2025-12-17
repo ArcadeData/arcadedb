@@ -46,6 +46,60 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
+/**
+ * Integration test for schema changes in replicated High Availability cluster.
+ *
+ * <p>This test verifies that schema changes (type creation, property addition, bucket management,
+ * and index creation) are correctly replicated to all servers in the cluster. Uses multi-layer
+ * verification to ensure changes propagate through the full stack: API → Memory → Replication Queue → Persistence.
+ *
+ * <p><b>Test Coverage:</b>
+ * <ul>
+ *   <li>Type creation and propagation across replicas
+ *   <li>Property creation and removal on existing types
+ *   <li>Bucket creation and association with types
+ *   <li>Index creation and lifecycle
+ *   <li>Transaction-based schema changes
+ * </ul>
+ *
+ * <p><b>Verification Strategy (Layered Approach):</b>
+ * <ul>
+ *   <li><b>Layer 1 (API):</b> Schema change API call completes on leader
+ *   <li><b>Layer 2 (Memory):</b> Schema object exists in memory on all replicas (Awaitility wait)
+ *   <li><b>Layer 3 (Replication Queue):</b> Replication queue drained on leader and all replicas
+ *   <li><b>Layer 4 (Persistence):</b> Schema file system checks performed after queue verification
+ * </ul>
+ *
+ * <p>This multi-layer approach ensures schema changes are not just visible in memory but also
+ * durably persisted across the cluster, preventing race conditions where verification occurs
+ * before replication completes.
+ *
+ * <p><b>Key Patterns Demonstrated:</b>
+ * <ul>
+ *   <li><b>Schema Propagation Waits:</b> Bounded waits for type/property existence on all replicas
+ *   <li><b>Queue Verification:</b> Ensures replication is complete before assertions
+ *   <li><b>File Consistency Checks:</b> Verifies schema persisted correctly in configuration files
+ *   <li><b>Error Conditions:</b> Tests non-leader writes, missing associations
+ * </ul>
+ *
+ * <p><b>Timeout Rationale:</b>
+ * <ul>
+ *   <li>Schema propagation: {@link HATestTimeouts#SCHEMA_PROPAGATION_TIMEOUT} (10s) - Typical schema operations &lt;100ms
+ *   <li>Replication queue drain: {@link HATestTimeouts#REPLICATION_QUEUE_DRAIN_TIMEOUT} (10s) - Network + persistence I/O
+ * </ul>
+ *
+ * <p><b>Expected Behavior:</b>
+ * <ul>
+ *   <li>All schema changes appear on all replicas within timeout
+ *   <li>Replication queue becomes empty after schema operations
+ *   <li>Schema files contain the new type/property/bucket definitions
+ *   <li>Non-leader writes raise ServerIsNotTheLeaderException
+ *   <li>No data loss or schema corruption despite replication
+ * </ul>
+ *
+ * @see HATestTimeouts for timeout rationale
+ * @see ReplicationServerIT for base replication test functionality
+ */
 class ReplicationChangeSchemaIT extends ReplicationServerIT {
   private final Database[]          databases   = new Database[getServerCount()];
   private final Map<String, String> schemaFiles = new LinkedHashMap<>(getServerCount());
@@ -66,8 +120,8 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
 
     // Wait for type creation to propagate across replicas
     Awaitility.await("type creation propagation")
-        .atMost(Duration.ofSeconds(10))
-        .pollInterval(Duration.ofMillis(100))
+        .atMost(HATestTimeouts.SCHEMA_PROPAGATION_TIMEOUT)
+        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL)
         .until(() -> {
           for (int i = 0; i < getServerCount(); i++) {
             if (!getServer(i).getDatabase(getDatabaseName()).getSchema().existsType("RuntimeVertex0")) {
@@ -90,8 +144,8 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
 
     // Wait for property creation to propagate across replicas
     Awaitility.await("property creation propagation")
-        .atMost(Duration.ofSeconds(10))
-        .pollInterval(Duration.ofMillis(100))
+        .atMost(HATestTimeouts.SCHEMA_PROPAGATION_TIMEOUT)
+        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL)
         .until(() -> {
           for (int i = 0; i < getServerCount(); i++) {
             if (!getServer(i).getDatabase(getDatabaseName()).getSchema().getType("RuntimeVertex0")
@@ -109,8 +163,8 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
 
     // Wait for bucket creation to propagate across replicas
     Awaitility.await("bucket creation propagation")
-        .atMost(Duration.ofSeconds(10))
-        .pollInterval(Duration.ofMillis(100))
+        .atMost(HATestTimeouts.SCHEMA_PROPAGATION_TIMEOUT)
+        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL)
         .until(() -> {
           for (int i = 0; i < getServerCount(); i++) {
             if (!getServer(i).getDatabase(getDatabaseName()).getSchema().existsBucket("newBucket")) {
@@ -127,8 +181,8 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
 
     // Wait for bucket to be added to type on all replicas
     Awaitility.await("bucket added to type propagation")
-        .atMost(Duration.ofSeconds(10))
-        .pollInterval(Duration.ofMillis(100))
+        .atMost(HATestTimeouts.SCHEMA_PROPAGATION_TIMEOUT)
+        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL)
         .until(() -> {
           for (int i = 0; i < getServerCount(); i++) {
             if (!getServer(i).getDatabase(getDatabaseName()).getSchema().getType("RuntimeVertex0")
@@ -208,14 +262,14 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
   private void waitForReplicationQueueDrain() {
     // Wait for leader's replication queue to drain
     Awaitility.await("leader replication queue drain")
-        .atMost(Duration.ofSeconds(10))
-        .pollInterval(Duration.ofMillis(200))
+        .atMost(HATestTimeouts.REPLICATION_QUEUE_DRAIN_TIMEOUT)
+        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL_LONG)
         .until(() -> getServer(0).getHA().getReplicationLogFile().getSize() == 0);
 
     // Wait for all replicas' replication queues to drain
     Awaitility.await("all replicas queue drain")
-        .atMost(Duration.ofSeconds(10))
-        .pollInterval(Duration.ofMillis(200))
+        .atMost(HATestTimeouts.REPLICATION_QUEUE_DRAIN_TIMEOUT)
+        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL_LONG)
         .until(() -> {
           for (int i = 1; i < getServerCount(); i++) {
             if (getServer(i).getHA().getReplicationLogFile().getSize() > 0) {
