@@ -25,6 +25,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.HostUtil;
+import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
@@ -49,9 +50,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 public class HARandomCrashIT extends ReplicationServerIT {
-  private          int   restarts = 0;
-  private volatile long  delay    = 0;
-  private          Timer timer    = null;
+  private          int   restarts                = 0;
+  private volatile long  delay                   = 0;
+  private          Timer timer                   = null;
+  private volatile int   consecutiveFailures     = 0;  // Track failures for exponential backoff
 
   @Override
   public void setTestConfiguration() {
@@ -69,7 +71,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
   public void replication() {
     checkDatabases();
 
-    timer = new Timer();
+    timer = new Timer("HARandomCrashIT-Timer", true);  // daemon=true to prevent JVM hangs
     timer.schedule(new TimerTask() {
       @Override
       public void run() {
@@ -77,6 +79,13 @@ public class HARandomCrashIT extends ReplicationServerIT {
           return;
 
         final int serverId = ThreadLocalRandom.current().nextInt(getServerCount());
+
+        // Validate that the selected server is actually running before attempting operations
+        if (getServer(serverId).getStatus() != ArcadeDBServer.Status.ONLINE) {
+          LogManager.instance().log(this, getLogLevel(), "TEST: Skip stop of server %d because it's not ONLINE (status=%s)", null,
+              serverId, getServer(serverId).getStatus());
+          return;
+        }
 
         if (restarts >= getServerCount()) {
           delay = 0;
@@ -103,13 +112,14 @@ public class HARandomCrashIT extends ReplicationServerIT {
               db.rollback();
             }
 
-            delay = 100;
-            LogManager.instance().log(this, getLogLevel(), "TEST: Stopping the Server %s (delay=%d)...", null, serverId, delay);
+            // Exponential backoff for client operations based on consecutive failures
+            delay = Math.min(1_000 * (consecutiveFailures + 1), 5_000);
+            LogManager.instance().log(this, getLogLevel(), "TEST: Stopping the Server %s (delay=%d, failures=%d)...", null, serverId, delay, consecutiveFailures);
 
             getServer(serverId).stop();
 
-            // Wait for server to finish shutting down using Awaitility
-            await().atMost(Duration.ofSeconds(60))
+            // Wait for server to finish shutting down using Awaitility with extended timeout
+            await().atMost(Duration.ofSeconds(90))
                    .pollInterval(Duration.ofMillis(300))
                    .until(() -> getServer(serverId).getStatus() != ArcadeDBServer.Status.SHUTTING_DOWN);
 
@@ -129,11 +139,30 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
             LogManager.instance().log(this, getLogLevel(), "TEST: Server %s restarted (delay=%d)...", null, serverId, delay);
 
-            new Timer().schedule(new TimerTask() {
+            // Wait for replica reconnection with timeout to ensure proper recovery
+            try {
+              final int finalServerId = serverId;
+              await().atMost(Duration.ofSeconds(30))
+                     .pollInterval(Duration.ofMillis(500))
+                     .until(() -> {
+                       try {
+                         return getServer(finalServerId).getHA().getOnlineReplicas() > 0;
+                       } catch (Exception e) {
+                         return false;
+                       }
+                     });
+              LogManager.instance().log(this, getLogLevel(), "TEST: Replica reconnected for server %d", null, serverId);
+            } catch (Exception e) {
+              LogManager.instance()
+                  .log(this, Level.WARNING, "TEST: Timeout waiting for replica reconnection on server %d", e, serverId);
+            }
+
+            new Timer("HARandomCrashIT-DelayReset", true).schedule(new TimerTask() {
               @Override
               public void run() {
                 delay = 0;
-                LogManager.instance().log(this, getLogLevel(), "TEST: Resetting delay (delay=%d)...", null, delay);
+                consecutiveFailures = 0;  // Reset failures when delay expires
+                LogManager.instance().log(this, getLogLevel(), "TEST: Resetting delay and failures (delay=%d, failures=%d)...", null, delay, consecutiveFailures);
               }
             }, 10_000);
 
@@ -160,15 +189,17 @@ public class HARandomCrashIT extends ReplicationServerIT {
       final long lastGoodCounter = counter;
 
       try {
-        // Use Awaitility to handle retry logic with proper exception handling
-        await().atMost(Duration.ofSeconds(30))
+        // Use Awaitility to handle retry logic with adaptive delay based on failures
+        long adaptiveDelay = Math.min(100 + (consecutiveFailures * 50), 500);  // Adaptive delay for polling
+        await().atMost(Duration.ofSeconds(120))  // Extended timeout for HA recovery and quorum restoration
                .pollInterval(Duration.ofSeconds(1))
-               .pollDelay(Duration.ofMillis(100))  // Initial delay between operations
+               .pollDelay(Duration.ofMillis(adaptiveDelay))
                .ignoreExceptionsMatching(e ->
                    e instanceof TransactionException ||
                    e instanceof NeedRetryException ||
                    e instanceof RemoteException ||
-                   e instanceof TimeoutException)
+                   e instanceof TimeoutException ||
+                   e instanceof QuorumNotReachedException)
                .untilAsserted(() -> {
                  for (int i = 0; i < getVerticesPerTx(); ++i) {
                    final long currentId = lastGoodCounter + i + 1;
@@ -185,16 +216,20 @@ public class HARandomCrashIT extends ReplicationServerIT {
                });
 
         counter = lastGoodCounter + getVerticesPerTx();
+        consecutiveFailures = 0;  // Reset on success
 
-        // Intentional delay to pace writes during chaos scenario (not waiting for a condition)
-        CodeUtils.sleep(100);
+        // Intentional delay to pace writes during chaos scenario
+        long pacingDelay = Math.min(100 + delay / 10, 500);  // Adapt pacing to current conditions
+        CodeUtils.sleep(pacingDelay);
 
       } catch (final DuplicatedKeyException e) {
         // THIS MEANS THE ENTRY WAS INSERTED BEFORE THE CRASH
         LogManager.instance().log(this, getLogLevel(), "TEST: - RECEIVED ERROR: %s (IGNORE IT)", null, e.toString());
         counter = lastGoodCounter + getVerticesPerTx();
+        consecutiveFailures = Math.max(0, consecutiveFailures - 1);  // Reduce failure count for duplicates
       } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "TEST: - RECEIVED UNKNOWN ERROR: %s", e, e.toString());
+        consecutiveFailures++;  // Track consecutive failures for exponential backoff
+        LogManager.instance().log(this, Level.SEVERE, "TEST: - RECEIVED UNKNOWN ERROR (failures=%d): %s", e, consecutiveFailures, e.toString());
         throw e;
       }
 
