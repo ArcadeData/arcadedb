@@ -123,16 +123,19 @@ RuntimeException
 
 Error codes follow a 4-digit category-based system:
 
-| Category | Range | Description | Examples |
-|----------|-------|-------------|----------|
-| Database | 1000-1999 | Database lifecycle and operations | 1001: DB_NOT_FOUND, 1002: DB_ALREADY_EXISTS |
-| Transaction | 2000-2999 | Transaction management | 2001: TX_TIMEOUT, 2002: TX_CONFLICT |
-| Query | 3000-3999 | Query parsing and execution | 3001: SYNTAX_ERROR, 3002: EXECUTION_ERROR |
-| Security | 4000-4999 | Authentication and authorization | 4001: UNAUTHORIZED, 4002: FORBIDDEN |
-| Storage | 5000-5999 | I/O and persistence | 5001: IO_ERROR, 5002: CORRUPTION_DETECTED |
-| Network | 6000-6999 | Network communication | 6001: CONNECTION_LOST, 6002: PROTOCOL_ERROR |
-| Schema | 7000-7999 | Schema and type system | 7001: TYPE_NOT_FOUND, 7002: PROPERTY_NOT_FOUND |
-| Index | 8000-8999 | Index operations | 8001: INDEX_NOT_FOUND, 8002: DUPLICATE_KEY |
+| Category      | Range       | Description                    | Examples                                    |
+|---------------|-------------|--------------------------------|---------------------------------------------|
+| Database      | 1000-1999   | Database lifecycle and operations | 1001: DB_NOT_FOUND, 1002: DB_ALREADY_EXISTS |
+| Transaction   | 2000-2999   | Transaction management         | 2001: TX_TIMEOUT, 2002: TX_CONFLICT          |
+| Query         | 3000-3999   | Query parsing and execution    | 3001: SYNTAX_ERROR, 3002: EXECUTION_ERROR   |
+| Security      | 4000-4999   | Authentication and authorization | 4001: UNAUTHORIZED, 4002: FORBIDDEN         |
+| Storage       | 5000-5999   | I/O and persistence            | 5001: IO_ERROR, 5002: CORRUPTION_DETECTED   |
+| Network       | 6000-6999   | Network communication          | 6001: CONNECTION_LOST, 6002: PROTOCOL_ERROR |
+| Schema        | 7000-7999   | Schema and type system         | 7001: TYPE_NOT_FOUND, 7002: PROPERTY_NOT_FOUND |
+| Index         | 8000-8999   | Index operations               | 8001: INDEX_NOT_FOUND, 8002: DUPLICATE_KEY  |
+| Graph         | 9000-9999   | Graph algorithms and traversal | 9001: GRAPH_ALGORITHM_ERROR                 |
+| Import/Export | 10000-10999 | Data import and export         | 10001: IMPORT_ERROR, 10002: EXPORT_ERROR    |
+| Internal      | 99000-99999 | Internal system errors         | 99999: INTERNAL_ERROR                       |
 
 ### Enhanced ArcadeDBException Design
 

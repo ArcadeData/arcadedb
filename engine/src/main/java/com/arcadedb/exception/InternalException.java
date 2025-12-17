@@ -76,22 +76,30 @@ public class InternalException extends ArcadeDBException {
 
   /**
    * Constructs a new internal exception with a specific error code and message.
+   * <p>
+   * This constructor is protected to prevent misuse of InternalException with
+   * non-internal error codes. Use specific exception types (DatabaseException,
+   * QueryException, etc.) for their respective error categories.
    *
-   * @param errorCode the error code
+   * @param errorCode the error code (should only be INTERNAL_ERROR)
    * @param message   the detail message
    */
-  public InternalException(final ErrorCode errorCode, final String message) {
+  protected InternalException(final ErrorCode errorCode, final String message) {
     super(errorCode, message);
   }
 
   /**
    * Constructs a new internal exception with a specific error code, message, and cause.
+   * <p>
+   * This constructor is protected to prevent misuse of InternalException with
+   * non-internal error codes. Use specific exception types (DatabaseException,
+   * QueryException, etc.) for their respective error categories.
    *
-   * @param errorCode the error code
+   * @param errorCode the error code (should only be INTERNAL_ERROR)
    * @param message   the detail message
    * @param cause     the underlying cause
    */
-  public InternalException(final ErrorCode errorCode, final String message, final Throwable cause) {
+  protected InternalException(final ErrorCode errorCode, final String message, final Throwable cause) {
     super(errorCode, message, cause);
   }
 }
