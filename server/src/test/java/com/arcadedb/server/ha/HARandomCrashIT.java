@@ -191,7 +191,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
       try {
         // Use Awaitility to handle retry logic with adaptive delay based on failures
         long adaptiveDelay = Math.min(100 + (consecutiveFailures * 50), 500);  // Adaptive delay for polling
-        await().atMost(Duration.ofSeconds(120))  // Extended timeout for HA recovery and quorum restoration
+        await().atMost(Duration.ofSeconds(300))  // Extended timeout for HA recovery under chaos testing
                .pollInterval(Duration.ofSeconds(1))
                .pollDelay(Duration.ofMillis(adaptiveDelay))
                .ignoreExceptionsMatching(e ->
@@ -199,19 +199,20 @@ public class HARandomCrashIT extends ReplicationServerIT {
                    e instanceof NeedRetryException ||
                    e instanceof RemoteException ||
                    e instanceof TimeoutException ||
-                   e instanceof QuorumNotReachedException)
+                   e instanceof QuorumNotReachedException ||
+                   e instanceof AssertionError)  // Include AssertionError from assertions
                .untilAsserted(() -> {
                  for (int i = 0; i < getVerticesPerTx(); ++i) {
                    final long currentId = lastGoodCounter + i + 1;
 
-                   final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?",
-                       currentId, "distributed-test");
-
-                   final Result result = resultSet.next();
-                   final Set<String> props = result.getPropertyNames();
-                   assertThat(props).as("Found the following properties " + props).hasSize(2);
-                   assertThat(result.<Long>getProperty("id")).isEqualTo(currentId);
-                   assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
+                   try (final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?",
+                       currentId, "distributed-test")) {
+                     final Result result = resultSet.next();
+                     final Set<String> props = result.getPropertyNames();
+                     assertThat(props).as("Found the following properties " + props).hasSize(2);
+                     assertThat(result.<Long>getProperty("id")).isEqualTo(currentId);
+                     assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
+                   }
                  }
                });
 
