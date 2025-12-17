@@ -49,6 +49,49 @@ import java.util.logging.Level;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
+/**
+ * Integration test for High Availability random crash scenarios (chaos engineering).
+ *
+ * <p>This test simulates random server crashes during continuous operation to verify cluster
+ * resilience and automatic recovery. Uses bounded randomness and exponential backoff to ensure
+ * reliable testing without infinite loops or test hangs.
+ *
+ * <p><b>Test Strategy:</b>
+ * <ul>
+ *   <li>Continuously inserts vertices while randomly crashing servers
+ *   <li>Each server crash triggers immediate restart with validation
+ *   <li>Tests continue until all servers have been restarted at least once
+ *   <li>Validates cluster consistency at end of test
+ * </ul>
+ *
+ * <p><b>Key Patterns Demonstrated:</b>
+ * <ul>
+ *   <li><b>Bounded Waits:</b> Awaitility with explicit timeouts (no infinite loops)
+ *   <li><b>Exponential Backoff:</b> Adaptive delays: min(1000 * (retry + 1), 5000) ms
+ *   <li><b>Daemon Timer:</b> Timer thread runs as daemon to prevent JVM hangs
+ *   <li><b>Restart Verification:</b> Server status checked before operations
+ *   <li><b>Resource Management:</b> ResultSet wrapped in try-with-resources
+ * </ul>
+ *
+ * <p><b>Timeout Rationale:</b>
+ * <ul>
+ *   <li>Server shutdown: {@link HATestTimeouts#SERVER_SHUTDOWN_TIMEOUT} - Graceful shutdown with cleanup
+ *   <li>Server startup: {@link HATestTimeouts#SERVER_STARTUP_TIMEOUT} - HA cluster joining and sync
+ *   <li>Replica reconnection: {@link HATestTimeouts#REPLICA_RECONNECTION_TIMEOUT} - Network availability detection
+ *   <li>Transaction execution: {@link HATestTimeouts#CHAOS_TRANSACTION_TIMEOUT} - Extended for recovery
+ * </ul>
+ *
+ * <p><b>Expected Behavior:</b>
+ * <ul>
+ *   <li>All {link getTxs()} transactions eventually succeed
+ *   <li>No data loss despite random crashes
+ *   <li>Cluster automatically recovers without manual intervention
+ *   <li>No test hangs or timeouts under normal conditions
+ * </ul>
+ *
+ * @see HATestTimeouts for timeout rationale
+ * @see ReplicationServerIT for base replication test functionality
+ */
 public class HARandomCrashIT extends ReplicationServerIT {
   private          int   restarts                = 0;
   private volatile long  delay                   = 0;
@@ -119,8 +162,8 @@ public class HARandomCrashIT extends ReplicationServerIT {
             getServer(serverId).stop();
 
             // Wait for server to finish shutting down using Awaitility with extended timeout
-            await().atMost(Duration.ofSeconds(90))
-                   .pollInterval(Duration.ofMillis(300))
+            await("server shutdown").atMost(HATestTimeouts.SERVER_SHUTDOWN_TIMEOUT)
+                   .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL_LONG)
                    .until(() -> getServer(serverId).getStatus() != ArcadeDBServer.Status.SHUTTING_DOWN);
 
             LogManager.instance().log(this, getLogLevel(), "TEST: Restarting the Server %s (delay=%d)...", null, serverId, delay);
@@ -142,8 +185,8 @@ public class HARandomCrashIT extends ReplicationServerIT {
             // Wait for replica reconnection with timeout to ensure proper recovery
             try {
               final int finalServerId = serverId;
-              await().atMost(Duration.ofSeconds(30))
-                     .pollInterval(Duration.ofMillis(500))
+              await("replica reconnection").atMost(HATestTimeouts.REPLICA_RECONNECTION_TIMEOUT)
+                     .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL_LONG)
                      .until(() -> {
                        try {
                          return getServer(finalServerId).getHA().getOnlineReplicas() > 0;
@@ -191,7 +234,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
       try {
         // Use Awaitility to handle retry logic with adaptive delay based on failures
         long adaptiveDelay = Math.min(100 + (consecutiveFailures * 50), 500);  // Adaptive delay for polling
-        await().atMost(Duration.ofSeconds(300))  // Extended timeout for HA recovery under chaos testing
+        await("transaction execution during chaos").atMost(HATestTimeouts.CHAOS_TRANSACTION_TIMEOUT)
                .pollInterval(Duration.ofSeconds(1))
                .pollDelay(Duration.ofMillis(adaptiveDelay))
                .ignoreExceptionsMatching(e ->
