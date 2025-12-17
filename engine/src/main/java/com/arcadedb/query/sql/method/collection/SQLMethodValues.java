@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
@@ -50,6 +51,11 @@ public class SQLMethodValues extends AbstractSQLMethod {
       return List.of(document.toMap().values());
     else if (value instanceof Result result)
       return result.toMap().values();
+    else if (value instanceof Collection<?> collection) {
+      final List<Object> result = collection.stream()
+          .flatMap(o -> ((Collection<Object>) execute(o, currentRecord, context, params)).stream()).toList();
+      return result;
+    }
 
     return null;
   }

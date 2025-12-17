@@ -45,4 +45,18 @@ class SQLMethodValuesTest {
     final Object result = function.execute(resultInternal, null, null, null);
     assertThat(new ArrayList<>((Collection<String>) result)).isEqualTo(Arrays.asList("Foo", "Bar"));
   }
+
+  @Test
+  void withCollection() {
+    List<Map<String, Object>> collection = List.of(Map.of("key1", "value1"), Map.of("key2", "value2"));
+
+    Object result = function.execute(collection, null, null, null);
+    assertThat(result).isEqualTo(List.of("value1", "value2"));
+  }
+
+  @Test
+  void withNull() {
+    Object result = function.execute(null, null, null, null);
+    assertThat(result).isNull();
+  }
 }
