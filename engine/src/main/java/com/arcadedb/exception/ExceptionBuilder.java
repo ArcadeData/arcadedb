@@ -21,7 +21,7 @@ package com.arcadedb.exception;
 import com.arcadedb.index.IndexException;
 
 import java.lang.reflect.Constructor;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -62,7 +62,7 @@ public class ExceptionBuilder {
   private ErrorCode errorCode;
   private String message;
   private Throwable cause;
-  private final Map<String, Object> context = new HashMap<>();
+  private final Map<String, Object> context = new LinkedHashMap<>();
   private final Class<? extends ArcadeDBException> exceptionClass;
 
   private ExceptionBuilder(final Class<? extends ArcadeDBException> exceptionClass) {
@@ -244,7 +244,7 @@ public class ExceptionBuilder {
 
     } catch (final Exception e) {
       // This should not occur if exception classes follow the standard constructor pattern
-      throw new RuntimeException("Failed to build exception: " + exceptionClass.getName(), e);
+      throw new InternalException("Failed to build exception: " + exceptionClass.getName(), e);
     }
   }
 

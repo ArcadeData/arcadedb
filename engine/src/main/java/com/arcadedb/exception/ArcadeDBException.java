@@ -24,6 +24,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * Base exception class for all ArcadeDB exceptions.
@@ -275,16 +276,11 @@ public abstract class ArcadeDBException extends RuntimeException {
       .append(getMessage());
 
     if (!context.isEmpty()) {
-      sb.append(" {");
-      boolean first = true;
-      for (final Map.Entry<String, Object> entry : context.entrySet()) {
-        if (!first) {
-          sb.append(", ");
-        }
-        sb.append(entry.getKey()).append("=").append(entry.getValue());
-        first = false;
-      }
-      sb.append("}");
+      sb.append(" {")
+        .append(context.entrySet().stream()
+          .map(entry -> entry.getKey() + "=" + entry.getValue())
+          .collect(Collectors.joining(", ")))
+        .append("}");
     }
 
     return sb.toString();
