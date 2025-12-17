@@ -116,13 +116,18 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
     if (value == null) {
       return "null";
     } else if (value instanceof String str) {
-      // Check if the string looks like JSON (object or array) or a JavaScript literal
-      // This provides backward compatibility with existing code that passes JSON strings
+      // Check if the string looks like JSON or a JavaScript literal for backward compatibility
+      // This allows existing code that passes JSON strings (e.g., '{"foo":"bar"}') to continue working
+      // Note: This is a heuristic and may not catch all edge cases, but prioritizes backward compatibility
       final String trimmed = str.trim();
-      if ((trimmed.startsWith("{") && trimmed.endsWith("}")) ||
-          (trimmed.startsWith("[") && trimmed.endsWith("]")) ||
-          (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
-        // Pass through as-is for JSON objects, arrays, or already-quoted strings
+      final boolean looksLikeJson = 
+          (trimmed.startsWith("{") && trimmed.endsWith("}") && trimmed.length() > 2 && trimmed.contains(":")) ||
+          (trimmed.startsWith("[") && trimmed.endsWith("]") && trimmed.length() > 2);
+      final boolean alreadyQuoted = 
+          (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length() > 1);
+          
+      if (looksLikeJson || alreadyQuoted) {
+        // Pass through as-is for JSON-like objects/arrays or already-quoted strings
         return str;
       }
       
@@ -159,7 +164,9 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
     for (Map.Entry<?, ?> entry : map.entrySet()) {
       if (!first) sb.append(", ");
       first = false;
-      sb.append(toJavaScriptValue(entry.getKey().toString()));
+      // JavaScript object keys must be strings - convert non-string keys to strings
+      final String key = entry.getKey() instanceof String ? (String) entry.getKey() : entry.getKey().toString();
+      sb.append(toJavaScriptValue(key));
       sb.append(": ");
       sb.append(toJavaScriptValue(entry.getValue()));
     }
