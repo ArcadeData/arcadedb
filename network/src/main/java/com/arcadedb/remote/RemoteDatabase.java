@@ -40,6 +40,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -91,6 +92,17 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   @Override
   public String getDatabasePath() {
     return protocol + "://" + currentServer + ":" + currentPort + "/" + databaseName;
+  }
+
+  @Override
+  public long getSize() {
+    checkDatabaseIsOpen();
+    try (final ResultSet resultSet = command("sql", "select size from schema:database")) {
+      final Result result = resultSet.nextIfAvailable();
+      if (result != null)
+        return (long) Type.convert(null, result.getProperty("size"), Long.class);
+      return 0L;
+    }
   }
 
   @Override
