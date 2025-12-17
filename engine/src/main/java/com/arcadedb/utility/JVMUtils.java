@@ -19,6 +19,7 @@
 package com.arcadedb.utility;
 
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.InternalException;
 import com.sun.management.HotSpotDiagnosticMXBean;
 
 import javax.management.MBeanServer;
@@ -98,7 +99,7 @@ public class JVMUtils {
           } catch (final RuntimeException re) {
             throw re;
           } catch (final Exception exp) {
-            throw new ArcadeDBException(exp);
+            throw new InternalException(exp);
           }
         }
       }
@@ -117,7 +118,7 @@ public class JVMUtils {
     } catch (final RuntimeException re) {
       throw re;
     } catch (final Exception exp) {
-      throw new ArcadeDBException(exp);
+      throw new InternalException(exp);
     }
   }
 
