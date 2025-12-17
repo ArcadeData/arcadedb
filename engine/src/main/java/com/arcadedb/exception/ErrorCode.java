@@ -18,6 +18,9 @@
  */
 package com.arcadedb.exception;
 
+import java.util.Map;
+import java.util.stream.Collectors;
+
 /**
  * Standardized error codes for ArcadeDB exceptions.
  * Error codes are organized in categories based on the first digit(s):
@@ -39,6 +42,9 @@ package com.arcadedb.exception;
  * @see ArcadeDBException
  */
 public enum ErrorCode {
+
+  // ========== Static cache for O(1) lookup ==========
+  // Populated at class loading time to detect duplicate codes early
 
   // ========== Database Errors (1xxx) ==========
   /** Database not found in the file system or registry */
@@ -195,6 +201,11 @@ public enum ErrorCode {
   /** Unexpected internal error (should not normally occur) */
   INTERNAL_ERROR(99999, "Internal error");
 
+  // Static map for efficient O(1) error code lookup
+  private static final Map<Integer, ErrorCode> CODE_MAP =
+      java.util.stream.Stream.of(values())
+          .collect(Collectors.toUnmodifiableMap(ErrorCode::getCode, e -> e));
+
   private final int code;
   private final String defaultMessage;
 
@@ -247,17 +258,15 @@ public enum ErrorCode {
 
   /**
    * Finds an ErrorCode by its numeric code.
+   * <p>
+   * Uses a static map for O(1) lookup efficiency. This also allows
+   * detection of duplicate error codes at class-loading time.
    *
    * @param code the numeric error code to look up
    * @return the matching ErrorCode, or INTERNAL_ERROR if not found
    */
   public static ErrorCode fromCode(final int code) {
-    for (final ErrorCode errorCode : values()) {
-      if (errorCode.code == code) {
-        return errorCode;
-      }
-    }
-    return INTERNAL_ERROR;
+    return CODE_MAP.getOrDefault(code, INTERNAL_ERROR);
   }
 
   @Override
