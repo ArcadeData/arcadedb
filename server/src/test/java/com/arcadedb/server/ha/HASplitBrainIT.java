@@ -81,7 +81,7 @@ public class HASplitBrainIT extends ReplicationServerIT {
             .until(() -> {
               // Verify all servers have same leader
               commonLeader[0] = null;
-              for (int i = 0; i < getTotalServers(); i++) {
+              for (int i = 0; i < getServerCount(); i++) {
                 try {
                   final String leaderName = getServer(i).getHA().getLeaderName();
                   if (commonLeader[0] == null) {
