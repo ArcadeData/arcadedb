@@ -38,8 +38,64 @@ import java.util.logging.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Simulates a split brain on 5 nodes, by isolating nodes 4th and 5th in a separate network. After 10 seconds, allows the 2 networks to see
- * each other and hoping for a rejoin in only one network where the leader is still the original one.
+ * Integration test for High Availability split-brain scenarios.
+ *
+ * <p>This test simulates a network partition in a 5-node cluster by isolating 2 nodes (4th and 5th)
+ * from the rest. The isolated nodes form a minority partition that cannot achieve quorum, while the
+ * remaining 3 nodes form a majority partition that can continue operating. After 15 seconds of split,
+ * the network partition is healed and the cluster re-merges with the original leader intact.
+ *
+ * <p><b>Test Topology:</b>
+ * <ul>
+ *   <li>Nodes 1-3: Majority partition (3 nodes, quorum = 2)
+ *   <li>Nodes 4-5: Minority partition (2 nodes, cannot form quorum)
+ *   <li>Initial leader: Node 1 (nodes are 0-indexed, so node 0 internally)
+ * </ul>
+ *
+ * <p><b>Test Timeline:</b>
+ * <ul>
+ *   <li>T=0: Start cluster, continuous writes
+ *   <li>T=0-20: Monitor for message threshold (20 messages)
+ *   <li>T=20: Network partition occurs (nodes 4-5 isolated)
+ *   <li>T=20-35: Majority partition continues, minority partition stalls
+ *   <li>T=35: Network heals, cluster re-merges
+ *   <li>T=35-60: Verify cluster stabilization and leader selection
+ * </ul>
+ *
+ * <p><b>Key Patterns Demonstrated:</b>
+ * <ul>
+ *   <li><b>Double-Checked Locking:</b> Leader tracking prevents multiple elections
+ *   <li><b>Volatile Fields:</b> Thread-safe visibility of split state across threads
+ *   <li><b>Idempotent Operations:</b> Split can only trigger once despite concurrent detection
+ *   <li><b>Cluster Stabilization:</b> Awaits for consistent leader after network heal
+ *   <li><b>Daemon Timer:</b> Timer thread runs as daemon to prevent JVM hangs
+ * </ul>
+ *
+ * <p><b>Synchronization Strategy:</b>
+ * <ul>
+ *   <li>firstLeader: Volatile field, captured with double-checked locking on first election
+ *   <li>split: Volatile boolean, checked twice (pre-sync + in-sync) to prevent multiple triggers
+ *   <li>rejoining: Volatile boolean, signals when network heal should occur
+ * </ul>
+ *
+ * <p><b>Timeout Rationale:</b>
+ * <ul>
+ *   <li>Split duration: 15 seconds - Allows quorum establishment in both partitions
+ *   <li>Cluster stabilization: {@link HATestTimeouts#CLUSTER_STABILIZATION_TIMEOUT} (60s) - Time for leader re-election and convergence
+ *   <li>Message threshold: 20 messages - Ensures cluster is stable before introducing split
+ * </ul>
+ *
+ * <p><b>Expected Behavior:</b>
+ * <ul>
+ *   <li>Original leader remains leader after partition (no spurious elections)
+ *   <li>Minority partition stalls on writes (cannot reach quorum)
+ *   <li>Majority partition continues normal operation
+ *   <li>After healing, cluster converges back to single leader
+ *   <li>No data loss or corruption despite network partition
+ * </ul>
+ *
+ * @see HATestTimeouts for timeout rationale
+ * @see ReplicationServerIT for base replication test functionality
  */
 public class HASplitBrainIT extends ReplicationServerIT {
   private final    Timer      timer     = new Timer("HASplitBrainIT-Timer", true);  // daemon=true to prevent JVM hangs
@@ -76,8 +132,8 @@ public class HASplitBrainIT extends ReplicationServerIT {
       try {
         final String[] commonLeader = {null};  // Use array to allow mutation in lambda
         Awaitility.await("cluster stabilization")
-            .atMost(Duration.ofSeconds(60))
-            .pollInterval(Duration.ofMillis(500))
+            .atMost(HATestTimeouts.CLUSTER_STABILIZATION_TIMEOUT)
+            .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL_LONG)
             .until(() -> {
               // Verify all servers have same leader
               commonLeader[0] = null;
