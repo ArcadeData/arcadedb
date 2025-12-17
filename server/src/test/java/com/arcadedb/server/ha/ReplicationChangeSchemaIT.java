@@ -30,9 +30,11 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
 import java.io.IOException;
@@ -61,6 +63,20 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
 
     // CREATE NEW TYPE
     final VertexType type1 = databases[0].getSchema().createVertexType("RuntimeVertex0");
+
+    // Wait for type creation to propagate across replicas
+    Awaitility.await("type creation propagation")
+        .atMost(Duration.ofSeconds(10))
+        .pollInterval(Duration.ofMillis(100))
+        .until(() -> {
+          for (int i = 0; i < getServerCount(); i++) {
+            if (!getServer(i).getDatabase(getDatabaseName()).getSchema().existsType("RuntimeVertex0")) {
+              return false;
+            }
+          }
+          return true;
+        });
+
     for (int i = 0; i < getServerCount(); i++) {
       databases[i] = getServer(i).getDatabase(getDatabaseName());
       if (databases[i].isTransactionActive())
@@ -71,14 +87,58 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
 
     // CREATE NEW PROPERTY
     type1.createProperty("nameNotFoundInDictionary", Type.STRING);
+
+    // Wait for property creation to propagate across replicas
+    Awaitility.await("property creation propagation")
+        .atMost(Duration.ofSeconds(10))
+        .pollInterval(Duration.ofMillis(100))
+        .until(() -> {
+          for (int i = 0; i < getServerCount(); i++) {
+            if (!getServer(i).getDatabase(getDatabaseName()).getSchema().getType("RuntimeVertex0")
+                .existsProperty("nameNotFoundInDictionary")) {
+              return false;
+            }
+          }
+          return true;
+        });
+
     testOnAllServers((database) -> isInSchemaFile(database, "nameNotFoundInDictionary"));
 
     // CREATE NEW BUCKET
     final Bucket newBucket = databases[0].getSchema().createBucket("newBucket");
+
+    // Wait for bucket creation to propagate across replicas
+    Awaitility.await("bucket creation propagation")
+        .atMost(Duration.ofSeconds(10))
+        .pollInterval(Duration.ofMillis(100))
+        .until(() -> {
+          for (int i = 0; i < getServerCount(); i++) {
+            if (!getServer(i).getDatabase(getDatabaseName()).getSchema().existsBucket("newBucket")) {
+              return false;
+            }
+          }
+          return true;
+        });
+
     for (final Database database : databases)
       assertThat(database.getSchema().existsBucket("newBucket")).isTrue();
 
     type1.addBucket(newBucket);
+
+    // Wait for bucket to be added to type on all replicas
+    Awaitility.await("bucket added to type propagation")
+        .atMost(Duration.ofSeconds(10))
+        .pollInterval(Duration.ofMillis(100))
+        .until(() -> {
+          for (int i = 0; i < getServerCount(); i++) {
+            if (!getServer(i).getDatabase(getDatabaseName()).getSchema().getType("RuntimeVertex0")
+                .hasBucket("newBucket")) {
+              return false;
+            }
+          }
+          return true;
+        });
+
     testOnAllServers((database) -> isInSchemaFile(database, "newBucket"));
 
     // CHANGE SCHEMA FROM A REPLICA (ERROR EXPECTED)
@@ -145,7 +205,31 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
     testOnAllServers((database) -> isInSchemaFile(database, "RuntimeVertexTx0"));
   }
 
+  private void waitForReplicationQueueDrain() {
+    // Wait for leader's replication queue to drain
+    Awaitility.await("leader replication queue drain")
+        .atMost(Duration.ofSeconds(10))
+        .pollInterval(Duration.ofMillis(200))
+        .until(() -> getServer(0).getHA().getReplicationLog().getQueueSize() == 0);
+
+    // Wait for all replicas' replication queues to drain
+    Awaitility.await("all replicas queue drain")
+        .atMost(Duration.ofSeconds(10))
+        .pollInterval(Duration.ofMillis(200))
+        .until(() -> {
+          for (int i = 1; i < getServerCount(); i++) {
+            if (getServer(i).getHA().getReplicationLog().getQueueSize() > 0) {
+              return false;
+            }
+          }
+          return true;
+        });
+  }
+
   private void testOnAllServers(final Callable<String, Database> callback) {
+    // Wait for replication queue to drain before checking schema
+    waitForReplicationQueueDrain();
+
     // CREATE NEW TYPE
     schemaFiles.clear();
     for (final Database database : databases) {
