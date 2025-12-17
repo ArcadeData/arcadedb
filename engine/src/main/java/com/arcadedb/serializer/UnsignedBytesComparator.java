@@ -19,6 +19,7 @@
 package com.arcadedb.serializer;
 
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.InternalException;
 import sun.misc.Unsafe;
 
 import java.lang.reflect.*;
@@ -195,7 +196,7 @@ public final class UnsignedBytesComparator {
         throw new NoSuchFieldError("the Unsafe");
       });
     } catch (final PrivilegedActionException e) {
-      throw new ArcadeDBException("Could not initialize intrinsics", e.getCause());
+      throw new InternalException("Could not initialize intrinsics", e.getCause());
     }
   }
 

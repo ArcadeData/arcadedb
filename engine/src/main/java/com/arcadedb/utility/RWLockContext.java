@@ -19,6 +19,7 @@
 package com.arcadedb.utility;
 
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.InternalException;
 
 import java.util.concurrent.Callable;
 import java.util.concurrent.locks.*;
@@ -68,7 +69,7 @@ public class RWLockContext {
       throw e;
 
     } catch (final Throwable e) {
-      throw new ArcadeDBException("Error in execution in lock", e);
+      throw new InternalException("Error in execution in lock", e);
 
     } finally {
       readUnlock(rl);
@@ -88,7 +89,7 @@ public class RWLockContext {
       throw e;
 
     } catch (final Throwable e) {
-      throw new ArcadeDBException("Error in execution in lock", e);
+      throw new InternalException("Error in execution in lock", e);
 
     } finally {
       writeUnlock(wl);

@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.InternalException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.Map;
@@ -100,7 +101,7 @@ public class FieldMatchPathItem extends MatchPathItem {
     try {
       result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
     } catch (final Exception e) {
-      throw new ArcadeDBException(e);
+      throw new InternalException(e);
     }
     result.field = field == null ? null : field.copy();
     result.method = method == null ? null : method.copy();
