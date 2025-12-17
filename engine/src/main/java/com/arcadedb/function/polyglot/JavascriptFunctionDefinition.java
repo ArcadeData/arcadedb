@@ -116,7 +116,17 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
     if (value == null) {
       return "null";
     } else if (value instanceof String str) {
-      // Escape special characters and wrap in quotes
+      // Check if the string looks like JSON (object or array) or a JavaScript literal
+      // This provides backward compatibility with existing code that passes JSON strings
+      final String trimmed = str.trim();
+      if ((trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+          (trimmed.startsWith("[") && trimmed.endsWith("]")) ||
+          (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+        // Pass through as-is for JSON objects, arrays, or already-quoted strings
+        return str;
+      }
+      
+      // Otherwise, escape special characters and wrap in quotes
       final String escaped = str.replace("\\", "\\\\")
           .replace("\"", "\\\"")
           .replace("\n", "\\n")
