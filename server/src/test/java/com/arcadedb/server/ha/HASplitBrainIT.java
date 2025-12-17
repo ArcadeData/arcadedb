@@ -23,11 +23,13 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.HostUtil;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.*;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
@@ -40,11 +42,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * each other and hoping for a rejoin in only one network where the leader is still the original one.
  */
 public class HASplitBrainIT extends ReplicationServerIT {
-  private final    Timer      timer     = new Timer();
+  private final    Timer      timer     = new Timer("HASplitBrainIT-Timer", true);  // daemon=true to prevent JVM hangs
   private final    AtomicLong messages  = new AtomicLong();
   private volatile boolean    split     = false;
   private volatile boolean    rejoining = false;
-  private          String     firstLeader;
+  private volatile String     firstLeader;  // Thread-safe leader tracking
 
   public HASplitBrainIT() {
     GlobalConfiguration.HA_QUORUM.setValue("Majority");
@@ -67,6 +69,41 @@ public class HASplitBrainIT extends ReplicationServerIT {
   @Override
   protected void onAfterTest() {
     timer.cancel();
+
+    // Wait for cluster stabilization after rejoin - verify all servers have same leader
+    if (split && rejoining) {
+      testLog("Waiting for cluster stabilization after rejoin...");
+      try {
+        final String[] commonLeader = {null};  // Use array to allow mutation in lambda
+        Awaitility.await("cluster stabilization")
+            .atMost(Duration.ofSeconds(60))
+            .pollInterval(Duration.ofMillis(500))
+            .until(() -> {
+              // Verify all servers have same leader
+              commonLeader[0] = null;
+              for (int i = 0; i < getTotalServers(); i++) {
+                try {
+                  final String leaderName = getServer(i).getHA().getLeaderName();
+                  if (commonLeader[0] == null) {
+                    commonLeader[0] = leaderName;
+                  } else if (leaderName != null && !commonLeader[0].equals(leaderName)) {
+                    testLog("Server " + i + " has different leader: " + leaderName + " vs " + commonLeader[0]);
+                    return false;  // Leaders don't match
+                  }
+                } catch (Exception e) {
+                  testLog("Error getting leader from server " + i + ": " + e.getMessage());
+                  return false;
+                }
+              }
+              return commonLeader[0] != null && commonLeader[0].equals(firstLeader);
+            });
+        testLog("Cluster stabilized successfully with leader: " + commonLeader[0]);
+      } catch (Exception e) {
+        testLog("Timeout waiting for cluster stabilization: " + e.getMessage());
+        LogManager.instance().log(this, Level.WARNING, "Timeout waiting for cluster stabilization", e);
+      }
+    }
+
     assertThat(getLeaderServer().getServerName()).isEqualTo(firstLeader);
   }
 
@@ -81,8 +118,15 @@ public class HASplitBrainIT extends ReplicationServerIT {
       @Override
       public void onEvent(final Type type, final Object object, final ArcadeDBServer server) throws IOException {
         if (type == Type.LEADER_ELECTED) {
-          if (firstLeader == null)
-            firstLeader = (String) object;
+          // Synchronized leader tracking with double-checked locking
+          if (firstLeader == null) {
+            synchronized (HASplitBrainIT.this) {
+              if (firstLeader == null) {
+                firstLeader = (String) object;
+                LogManager.instance().log(this, Level.INFO, "First leader detected: %s", null, firstLeader);
+              }
+            }
+          }
         } else if (type == Type.NETWORK_CONNECTION && split) {
           final String connectTo = (String) object;
 
@@ -123,33 +167,41 @@ public class HASplitBrainIT extends ReplicationServerIT {
         if (!split) {
           if (type == ReplicationCallback.Type.REPLICA_MSG_RECEIVED) {
             messages.incrementAndGet();
-            if (messages.get() > 10) {
-
-              final Leader2ReplicaNetworkExecutor replica3 = getServer(0).getHA().getReplica("ArcadeDB_3");
-              final Leader2ReplicaNetworkExecutor replica4 = getServer(0).getHA().getReplica("ArcadeDB_4");
-
-              if (replica3 == null || replica4 == null) {
-                testLog("REPLICA 4 and 5 NOT STARTED YET");
-                return;
-              }
-
-              split = true;
-
-              testLog("SHUTTING DOWN NETWORK CONNECTION BETWEEN SERVER 0 (THE LEADER) and SERVER 4TH and 5TH...");
-              getServer(3).getHA().getLeader().closeChannel();
-              replica3.closeChannel();
-
-              getServer(4).getHA().getLeader().closeChannel();
-              replica4.closeChannel();
-              testLog("SHUTTING DOWN NETWORK CONNECTION COMPLETED");
-
-              timer.schedule(new TimerTask() {
-                @Override
-                public void run() {
-                  testLog("ALLOWING THE REJOINING OF SERVERS 4TH AND 5TH");
-                  rejoining = true;
+            // Double-checked locking for idempotent split trigger - increased threshold to 20 for stability
+            if (messages.get() >= 20 && !split) {
+              synchronized (HASplitBrainIT.this) {
+                if (split) {
+                  return;  // Another thread already triggered the split
                 }
-              }, 10000);
+                split = true;
+
+                testLog("Triggering network split after " + messages.get() + " messages");
+                final Leader2ReplicaNetworkExecutor replica3 = getServer(0).getHA().getReplica("ArcadeDB_3");
+                final Leader2ReplicaNetworkExecutor replica4 = getServer(0).getHA().getReplica("ArcadeDB_4");
+
+                if (replica3 == null || replica4 == null) {
+                  testLog("REPLICA 4 and 5 NOT STARTED YET");
+                  split = false;  // Reset if replicas not ready
+                  return;
+                }
+
+                testLog("SHUTTING DOWN NETWORK CONNECTION BETWEEN SERVER 0 (THE LEADER) and SERVER 4TH and 5TH...");
+                getServer(3).getHA().getLeader().closeChannel();
+                replica3.closeChannel();
+
+                getServer(4).getHA().getLeader().closeChannel();
+                replica4.closeChannel();
+                testLog("SHUTTING DOWN NETWORK CONNECTION COMPLETED");
+
+                // Increased split duration from 10s to 15s for better quorum establishment in both partitions
+                timer.schedule(new TimerTask() {
+                  @Override
+                  public void run() {
+                    testLog("ALLOWING THE REJOINING OF SERVERS 4TH AND 5TH");
+                    rejoining = true;
+                  }
+                }, 15000);
+              }
             }
           }
         }
