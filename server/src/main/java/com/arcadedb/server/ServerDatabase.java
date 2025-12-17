@@ -107,6 +107,11 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
+  public long getSize() {
+    return wrapped.getSize();
+  }
+
+  @Override
   public String getCurrentUserName() {
     return wrapped.getCurrentUserName();
   }
