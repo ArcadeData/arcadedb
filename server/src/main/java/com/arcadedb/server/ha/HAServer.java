@@ -161,6 +161,7 @@ public class HAServer implements ServerPlugin {
      *
      * @param host the hostname or IP address
      * @param port the port number
+     *
      * @return Optional containing the ServerInfo if found, empty otherwise
      */
     public Optional<ServerInfo> findByHostAndPort(String host, int port) {
@@ -409,6 +410,7 @@ public class HAServer implements ServerPlugin {
    * This is the primary method for accessing replica connections with type-safe ServerInfo.
    *
    * @param replicaInfo the ServerInfo identifying the replica server
+   *
    * @return the replica network executor, or null if not found
    */
   public Leader2ReplicaNetworkExecutor getReplica(final ServerInfo replicaInfo) {
@@ -423,7 +425,9 @@ public class HAServer implements ServerPlugin {
    * 2. Parsing the string as host:port and matching against replicaConnections keys
    *
    * @param replicaName the server name (alias) or "host:port" string
+   *
    * @return the replica network executor, or null if not found
+   *
    * @deprecated Use {@link #getReplica(ServerInfo)} instead for type safety
    */
   @Deprecated
@@ -601,6 +605,7 @@ public class HAServer implements ServerPlugin {
    * to actual server addresses in Docker/K8s environments.
    *
    * @param serverInfo The server info potentially containing an alias to resolve
+   *
    * @return The resolved ServerInfo with actual host/port, or the original if alias is empty or not found
    */
   public ServerInfo resolveAlias(final ServerInfo serverInfo) {
@@ -886,7 +891,7 @@ public class HAServer implements ServerPlugin {
    * Stores the HTTP address of a replica server.
    * This is used by clients to redirect HTTP requests to available replicas.
    *
-   * @param serverInfo the ServerInfo of the replica
+   * @param serverInfo  the ServerInfo of the replica
    * @param httpAddress the HTTP address (host:port) of the replica
    */
   public void setReplicaHTTPAddress(final ServerInfo serverInfo, final String httpAddress) {
