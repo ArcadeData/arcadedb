@@ -20,9 +20,6 @@ package com.arcadedb.server.ha;
 
 import com.arcadedb.exception.ErrorCode;
 import com.arcadedb.exception.ExceptionBuilder;
-import com.arcadedb.exception.InternalException;
-import com.arcadedb.exception.NetworkException;
-import com.arcadedb.exception.StorageException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.network.binary.ConnectionException;
@@ -31,9 +28,15 @@ import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ha.network.ServerSocketFactory;
 import com.arcadedb.utility.Pair;
 
-import java.io.*;
-import java.net.*;
-import java.util.logging.*;
+import java.io.EOFException;
+import java.io.IOException;
+import java.net.BindException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketException;
+import java.util.logging.Level;
 
 public class LeaderNetworkListener extends Thread {
   private final        HAServer            ha;
