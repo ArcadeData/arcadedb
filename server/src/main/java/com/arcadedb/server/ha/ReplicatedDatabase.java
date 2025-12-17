@@ -28,6 +28,7 @@ import com.arcadedb.database.DocumentCallback;
 import com.arcadedb.database.DocumentIndexer;
 import com.arcadedb.database.EmbeddedModifier;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.database.LocalTransactionExplicitLock;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
@@ -36,7 +37,6 @@ import com.arcadedb.database.RecordCallback;
 import com.arcadedb.database.RecordEvents;
 import com.arcadedb.database.RecordFactory;
 import com.arcadedb.database.TransactionContext;
-import com.arcadedb.database.LocalTransactionExplicitLock;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
@@ -345,6 +345,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
   @Override
   public String getDatabasePath() {
     return proxied.getDatabasePath();
+  }
+
+  @Override
+  public long getSize() {
+    return proxied.getSize();
   }
 
   @Override
