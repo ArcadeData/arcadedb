@@ -38,14 +38,14 @@ class CustomFunctionParametersTest {
       db.command("sql", "CREATE DOCUMENT TYPE Beer");
       db.command("sql", "INSERT INTO Beer SET name = 'Hocus Pocus'");
       db.command("sql", "INSERT INTO Beer SET name = 'Leffe'");
-      
+
       // Define a function that retrieves data using a string argument
       db.command("sql", "DEFINE FUNCTION my.getBeerId \"SELECT @rid AS result FROM `Beer` WHERE name=:a\" PARAMETERS [a] LANGUAGE sql");
-      
+
       // Call the function with a string parameter
       final ResultSet result = db.query("sql", "SELECT `my.getBeerId`('Hocus Pocus') as beerRid");
       assertThat(result.hasNext()).isTrue();
-      
+
       final Object beerRid = result.next().getProperty("beerRid");
       assertThat(beerRid).isNotNull();
       // The RID should be a valid RID format (e.g., #1:0)
@@ -58,11 +58,11 @@ class CustomFunctionParametersTest {
     TestHelper.executeInNewDatabase("testSQLFunctionReturningInput", (db) -> {
       // Define a function that returns the input directly
       db.command("sql", "DEFINE FUNCTION my.returnInput \"SELECT :a AS result\" PARAMETERS [a] LANGUAGE sql");
-      
+
       // Call the function with a string parameter
       final ResultSet result = db.query("sql", "SELECT `my.returnInput`('Hocus Pocus') as output");
       assertThat(result.hasNext()).isTrue();
-      
+
       final String output = result.next().getProperty("output");
       assertThat(output).isEqualTo("Hocus Pocus");
     });
@@ -73,11 +73,11 @@ class CustomFunctionParametersTest {
     TestHelper.executeInNewDatabase("testSQLFunctionWithMultipleParameters", (db) -> {
       // Define a function that uses multiple parameters
       db.command("sql", "DEFINE FUNCTION my.add \"SELECT :a + :b AS result\" PARAMETERS [a, b] LANGUAGE sql");
-      
+
       // Call the function with multiple numeric parameters
       final ResultSet result = db.query("sql", "SELECT `my.add`(10, 20) as output");
       assertThat(result.hasNext()).isTrue();
-      
+
       final Integer output = result.next().getProperty("output");
       assertThat(output).isEqualTo(30);
     });
@@ -88,11 +88,11 @@ class CustomFunctionParametersTest {
     TestHelper.executeInNewDatabase("testJavaScriptFunctionReturningInput", (db) -> {
       // Define a JavaScript function that returns the input
       db.command("sql", "DEFINE FUNCTION my.returnInputJS \"return a\" PARAMETERS [a] LANGUAGE js");
-      
+
       // Call the function with a string parameter
       final ResultSet result = db.query("sql", "SELECT `my.returnInputJS`('Hocus Pocus') as output");
       assertThat(result.hasNext()).isTrue();
-      
+
       final String output = result.next().getProperty("output");
       assertThat(output).isEqualTo("Hocus Pocus");
     });
@@ -103,11 +103,11 @@ class CustomFunctionParametersTest {
     TestHelper.executeInNewDatabase("testJavaScriptFunctionWithStringParameter", (db) -> {
       // Define a JavaScript function that manipulates a string
       db.command("sql", "DEFINE FUNCTION my.uppercase \"return a.toUpperCase()\" PARAMETERS [a] LANGUAGE js");
-      
+
       // Call the function with a string parameter
       final ResultSet result = db.query("sql", "SELECT `my.uppercase`('hello world') as output");
       assertThat(result.hasNext()).isTrue();
-      
+
       final String output = result.next().getProperty("output");
       assertThat(output).isEqualTo("HELLO WORLD");
     });
@@ -118,11 +118,11 @@ class CustomFunctionParametersTest {
     TestHelper.executeInNewDatabase("testJavaScriptFunctionWithMultipleParameters", (db) -> {
       // Define a JavaScript function with multiple parameters
       db.command("sql", "DEFINE FUNCTION my.add \"return a + b\" PARAMETERS [a, b] LANGUAGE js");
-      
+
       // Call the function with numeric parameters
       final ResultSet result = db.query("sql", "SELECT `my.add`(10, 20) as output");
       assertThat(result.hasNext()).isTrue();
-      
+
       final Integer output = result.next().getProperty("output");
       assertThat(output).isEqualTo(30);
     });
@@ -133,11 +133,11 @@ class CustomFunctionParametersTest {
     TestHelper.executeInNewDatabase("testJavaScriptFunctionWithStringContainingQuotes", (db) -> {
       // Define a JavaScript function that handles strings
       db.command("sql", "DEFINE FUNCTION my.echo \"return a\" PARAMETERS [a] LANGUAGE js");
-      
+
       // Call the function with a string containing special characters
       final ResultSet result = db.query("sql", "SELECT `my.echo`('It\\'s a \"test\"') as output");
       assertThat(result.hasNext()).isTrue();
-      
+
       final String output = result.next().getProperty("output");
       assertThat(output).isEqualTo("It's a \"test\"");
     });
@@ -148,11 +148,11 @@ class CustomFunctionParametersTest {
     TestHelper.executeInNewDatabase("testSQLFunctionWithNumericParameter", (db) -> {
       // Define a function that works with numbers
       db.command("sql", "DEFINE FUNCTION my.double \"SELECT :a * 2 AS result\" PARAMETERS [a] LANGUAGE sql");
-      
+
       // Call the function with a numeric parameter
       final ResultSet result = db.query("sql", "SELECT `my.double`(21) as output");
       assertThat(result.hasNext()).isTrue();
-      
+
       final Integer output = result.next().getProperty("output");
       assertThat(output).isEqualTo(42);
     });
@@ -163,11 +163,11 @@ class CustomFunctionParametersTest {
     TestHelper.executeInNewDatabase("testJavaScriptFunctionWithBooleanParameter", (db) -> {
       // Define a JavaScript function that works with booleans
       db.command("sql", "DEFINE FUNCTION my.negate \"return !a\" PARAMETERS [a] LANGUAGE js");
-      
+
       // Call the function with a boolean parameter
       final ResultSet result = db.query("sql", "SELECT `my.negate`(true) as output");
       assertThat(result.hasNext()).isTrue();
-      
+
       final Boolean output = result.next().getProperty("output");
       assertThat(output).isFalse();
     });

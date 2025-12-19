@@ -63,7 +63,7 @@ public class SQLFunctionDefinition implements FunctionDefinition {
         paramMap.put(parameterNames[i], parameters[i]);
       }
     }
-    
+
     final ResultSet result = database.command("sqlscript", implementation, paramMap);
     Object first = null;
     if (result.hasNext()) {
