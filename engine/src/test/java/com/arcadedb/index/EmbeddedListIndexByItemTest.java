@@ -150,7 +150,7 @@ public class EmbeddedListIndexByItemTest extends TestHelper {
       database.command("sql", "INSERT INTO doc SET nums = [{'@type':'num','a':1},{'@type':'num','a':2}]");
     });
 
-    // Query the indexed data
+    // Query the indexed data via CONTAINS
     database.transaction(() -> {
       ResultSet result = database.query("sql", "SELECT FROM doc WHERE nums.a CONTAINS 1");
       long count = result.stream().count();
@@ -158,6 +158,18 @@ public class EmbeddedListIndexByItemTest extends TestHelper {
 
       // Verify index is being used
       String explain = database.query("sql", "EXPLAIN SELECT FROM doc WHERE nums.a CONTAINS 1")
+          .next().getProperty("executionPlan").toString();
+      assertThat(explain).contains("FETCH FROM INDEX");
+    });
+
+    // Query the indexed data via CONTAINSANY
+    database.transaction(() -> {
+      ResultSet result = database.query("sql", "SELECT FROM doc WHERE nums.a CONTAINSANY [1]");
+      long count = result.stream().count();
+      assertThat(count).isEqualTo(1);
+
+      // Verify index is being used
+      String explain = database.query("sql", "EXPLAIN SELECT FROM doc WHERE nums.a CONTAINSANY [1]")
           .next().getProperty("executionPlan").toString();
       assertThat(explain).contains("FETCH FROM INDEX");
     });
