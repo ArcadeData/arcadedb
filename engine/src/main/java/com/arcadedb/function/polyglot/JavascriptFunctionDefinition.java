@@ -120,17 +120,17 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
       // This allows existing code that passes JSON strings (e.g., '{"foo":"bar"}') to continue working
       // Note: This is a heuristic and may not catch all edge cases, but prioritizes backward compatibility
       final String trimmed = str.trim();
-      final boolean looksLikeJson = 
+      final boolean looksLikeJson =
           (trimmed.startsWith("{") && trimmed.endsWith("}") && trimmed.length() > 2 && trimmed.contains(":")) ||
           (trimmed.startsWith("[") && trimmed.endsWith("]") && trimmed.length() > 2);
-      final boolean alreadyQuoted = 
+      final boolean alreadyQuoted =
           (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length() > 1);
-          
+
       if (looksLikeJson || alreadyQuoted) {
         // Pass through as-is for JSON-like objects/arrays or already-quoted strings
         return str;
       }
-      
+
       // Otherwise, escape special characters and wrap in quotes
       final String escaped = str.replace("\\", "\\\\")
           .replace("\"", "\\\"")
