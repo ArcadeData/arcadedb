@@ -1,10 +1,10 @@
 repos:
   - repo: https://github.com/gruntwork-io/pre-commit
-    rev: v0.1.26
+    rev: v0.1.30
     hooks:
       - id: helmlint
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: fix-byte-order-marker
       - id: trailing-whitespace
@@ -22,19 +22,19 @@ repos:
       - id: check-json
       - id: check-xml
   - repo: https://github.com/psf/black
-    rev: 24.10.0
+    rev: 25.12.0
     hooks:
       - id: black
         language_version: python3
         files: ^bindings/python/.*\.py$
   - repo: https://github.com/pycqa/isort
-    rev: 5.13.2
+    rev: 7.0.0
     hooks:
       - id: isort
         args: ["--profile", "black"]
         files: ^bindings/python/.*\.py$
   - repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
-    rev: v2.14.0
+    rev: v2.15.0
     hooks:
       - id: pretty-format-yaml
         args:
@@ -42,19 +42,19 @@ repos:
           - --indent=2
         files: ^bindings/python/.*\.ya?ml$
   - repo: https://github.com/scop/pre-commit-shfmt
-    rev: v3.10.0-1
+    rev: v3.12.0-2
     hooks:
       - id: shfmt
         args: ["-i", "4", "-ci", "-sr", "-w"]
         files: ^bindings/python/.*\.sh$
-  - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v3.1.0
+  - repo: https://github.com/rbubley/mirrors-prettier
+    rev: v3.7.4
     hooks:
       - id: prettier
         types: [ java, xml ]
         additional_dependencies:
-          - prettier@3.1.0
-          - prettier-plugin-java@2.4.0
+          - prettier@3.7.4
+          - prettier-plugin-java@2.7.7
           - prettier-plugin-xml
         args:
           - --write
