@@ -37,7 +37,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorNormalizeScores extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_NORMALIZE_SCORES";
+  public static final String NAME = "vectorNormalizeScores";
 
   public SQLFunctionVectorNormalizeScores() {
     super(NAME);
@@ -117,6 +117,6 @@ public class SQLFunctionVectorNormalizeScores extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_NORMALIZE_SCORES(<scores_array>)";
+    return NAME + "(<scores_array>)";
   }
 }

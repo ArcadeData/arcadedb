@@ -37,7 +37,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorHybridScore extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_HYBRID_SCORE";
+  public static final String NAME = "vectorHybridScore";
 
   public SQLFunctionVectorHybridScore() {
     super(NAME);
@@ -91,6 +91,6 @@ public class SQLFunctionVectorHybridScore extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_HYBRID_SCORE(<vector_score>, <keyword_score>, <alpha>)";
+    return NAME + "(<vector_score>, <keyword_score>, <alpha>)";
   }
 }

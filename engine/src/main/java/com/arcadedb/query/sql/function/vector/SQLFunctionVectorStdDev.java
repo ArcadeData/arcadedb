@@ -35,7 +35,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorStdDev extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_STD_DEV";
+  public static final String NAME = "vectorStdDev";
 
   public SQLFunctionVectorStdDev() {
     super(NAME);
@@ -105,6 +105,6 @@ public class SQLFunctionVectorStdDev extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_STD_DEV(<vector>)";
+    return NAME + "(<vector>)";
   }
 }

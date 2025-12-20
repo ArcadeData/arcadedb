@@ -37,7 +37,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionSparseVectorDot extends SQLFunctionAbstract {
-  public static final String NAME = "SPARSE_VECTOR_DOT";
+  public static final String NAME = "vectorSparseDot";
 
   public SQLFunctionSparseVectorDot() {
     super(NAME);
@@ -70,6 +70,6 @@ public class SQLFunctionSparseVectorDot extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "SPARSE_VECTOR_DOT(<sparse_vector1>, <sparse_vector2>)";
+    return NAME + "(<sparse_vector1>, <sparse_vector2>)";
   }
 }

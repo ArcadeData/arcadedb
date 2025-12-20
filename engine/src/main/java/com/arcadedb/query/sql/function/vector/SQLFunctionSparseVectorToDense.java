@@ -33,7 +33,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionSparseVectorToDense extends SQLFunctionAbstract {
-  public static final String NAME = "SPARSE_VECTOR_TO_DENSE";
+  public static final String NAME = "vectorSparseToDense";
 
   public SQLFunctionSparseVectorToDense() {
     super(NAME);
@@ -57,6 +57,6 @@ public class SQLFunctionSparseVectorToDense extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "SPARSE_VECTOR_TO_DENSE(<sparse_vector>)";
+    return NAME + "(<sparse_vector>)";
   }
 }

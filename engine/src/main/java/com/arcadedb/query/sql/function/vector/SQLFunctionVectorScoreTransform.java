@@ -37,7 +37,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorScoreTransform extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_SCORE_TRANSFORM";
+  public static final String NAME = "vectorScoreTransform";
 
   public enum TransformMethod {
     LINEAR,
@@ -110,6 +110,6 @@ public class SQLFunctionVectorScoreTransform extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_SCORE_TRANSFORM(<score>, <method>)";
+    return NAME + "(<score>, <method>)";
   }
 }

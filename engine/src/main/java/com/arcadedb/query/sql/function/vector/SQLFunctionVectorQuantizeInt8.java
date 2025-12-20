@@ -41,7 +41,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorQuantizeInt8 extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_QUANTIZE_INT8";
+  public static final String NAME = "vectorQuantizeInt8";
 
   public SQLFunctionVectorQuantizeInt8() {
     super(NAME);
@@ -127,7 +127,7 @@ public class SQLFunctionVectorQuantizeInt8 extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_QUANTIZE_INT8(<vector>)";
+    return NAME + "(<vector>)";
   }
 
   /**

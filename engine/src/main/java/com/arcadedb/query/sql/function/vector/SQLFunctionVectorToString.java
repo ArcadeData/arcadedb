@@ -39,7 +39,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorToString extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_TO_STRING";
+  public static final String NAME = "vectorToString";
 
   public enum Format {
     COMPACT,
@@ -164,6 +164,6 @@ public class SQLFunctionVectorToString extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_TO_STRING(<vector> [, <format>])";
+    return NAME + "(<vector> [, <format>])";
   }
 }

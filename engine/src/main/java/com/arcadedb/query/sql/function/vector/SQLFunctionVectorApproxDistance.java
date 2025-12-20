@@ -41,7 +41,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorApproxDistance extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_APPROX_DISTANCE";
+  public static final String NAME = "vectorApproxDistance";
 
   public enum QuantizationType {
     INT8,
@@ -143,6 +143,6 @@ public class SQLFunctionVectorApproxDistance extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_APPROX_DISTANCE(<quantized1>, <quantized2>, <type>)";
+    return NAME + "(<quantized1>, <quantized2>, <type>)";
   }
 }

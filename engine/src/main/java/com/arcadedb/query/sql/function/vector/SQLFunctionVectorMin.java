@@ -30,7 +30,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorMin extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_MIN";
+  public static final String NAME = "vectorMin";
 
   private float[] minVector;
   private int dimensions;
@@ -110,6 +110,6 @@ public class SQLFunctionVectorMin extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_MIN(<vector_column>)";
+    return NAME + "(<vector_column>)";
   }
 }

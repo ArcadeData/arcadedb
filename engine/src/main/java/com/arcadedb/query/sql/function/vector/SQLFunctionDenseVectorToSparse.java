@@ -39,7 +39,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionDenseVectorToSparse extends SQLFunctionAbstract {
-  public static final String NAME = "DENSE_VECTOR_TO_SPARSE";
+  public static final String NAME = "vectorDenseToSparse";
 
   public SQLFunctionDenseVectorToSparse() {
     super(NAME);
@@ -123,6 +123,6 @@ public class SQLFunctionDenseVectorToSparse extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "DENSE_VECTOR_TO_SPARSE(<vector> [, <threshold>])";
+    return NAME + "(<vector> [, <threshold>])";
   }
 }

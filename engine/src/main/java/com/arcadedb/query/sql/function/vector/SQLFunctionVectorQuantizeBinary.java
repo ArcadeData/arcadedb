@@ -45,7 +45,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorQuantizeBinary extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_QUANTIZE_BINARY";
+  public static final String NAME = "vectorQuantizeBinary";
 
   public SQLFunctionVectorQuantizeBinary() {
     super(NAME);
@@ -129,7 +129,7 @@ public class SQLFunctionVectorQuantizeBinary extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_QUANTIZE_BINARY(<vector>)";
+    return NAME + "(<vector>)";
   }
 
   /**

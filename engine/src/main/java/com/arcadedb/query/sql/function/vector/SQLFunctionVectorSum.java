@@ -33,7 +33,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorSum extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_SUM";
+  public static final String NAME = "vectorSum";
 
   private float[] sumVector;
   private int dimensions;
@@ -113,6 +113,6 @@ public class SQLFunctionVectorSum extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_SUM(<vector_column>)";
+    return NAME + "(<vector_column>)";
   }
 }

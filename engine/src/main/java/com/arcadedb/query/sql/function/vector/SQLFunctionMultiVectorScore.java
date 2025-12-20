@@ -39,7 +39,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionMultiVectorScore extends SQLFunctionAbstract {
-  public static final String NAME = "MULTI_VECTOR_SCORE";
+  public static final String NAME = "vectorMultiScore";
 
   public enum FusionMethod {
     MAX,
@@ -181,6 +181,6 @@ public class SQLFunctionMultiVectorScore extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "MULTI_VECTOR_SCORE(<scores_array>, <method> [, <weights_array>])";
+    return NAME + "(<scores_array>, <method> [, <weights_array>])";
   }
 }
