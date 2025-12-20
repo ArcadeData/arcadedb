@@ -27,7 +27,8 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  * Calculates the magnitude (Euclidean length) of a vector.
  * This is the L2 norm: sqrt(sum of squared components).
  *
- * Uses JVector's SIMD-optimized operations for better performance.
+ * Uses scalar implementation which is significantly faster than JVector for typical vector sizes.
+ * JVector overhead from object allocation and conversion dominates actual computation cost.
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
@@ -53,21 +54,12 @@ public class SQLFunctionVectorMagnitude extends SQLFunctionAbstract {
     if (v.length == 0)
       return 0.0f;
 
-    // Calculate L2 norm (Euclidean magnitude)
-    // Use dotProduct with itself: magnitude = sqrt(v · v)
-    try {
-      final io.github.jbellis.jvector.vector.VectorizationProvider vp = io.github.jbellis.jvector.vector.VectorizationProvider.getInstance();
-      final io.github.jbellis.jvector.vector.types.VectorFloat<?> jv = vp.getVectorTypeSupport().createFloatVector(v);
-      final float dotSelf = io.github.jbellis.jvector.vector.VectorUtil.dotProduct(jv, jv);
-      return (float) Math.sqrt(Math.max(0.0f, dotSelf)); // Max to avoid NaN from floating point errors
-    } catch (final Exception e) {
-      // Fallback to scalar implementation
-      double magnitude = 0.0;
-      for (final float component : v) {
-        magnitude += component * component;
-      }
-      return (float) Math.sqrt(magnitude);
+    // Calculate L2 norm (Euclidean magnitude): sqrt(sum of squared components)
+    double magnitude = 0.0;
+    for (final float component : v) {
+      magnitude += component * component;
     }
+    return (float) Math.sqrt(magnitude);
   }
 
   private float[] toFloatArray(final Object vector) {

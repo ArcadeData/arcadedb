@@ -27,8 +27,8 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  * Normalizes a vector to unit length using L2 normalization (Euclidean norm).
  * The resulting vector has magnitude 1.0 and points in the same direction as the input.
  *
- * Uses JVector's SIMD-optimized VectorUtil.l2normalize() for significantly better performance.
- * This is especially effective when running on Java 20+ with Panama Vector API enabled.
+ * Uses scalar implementation which is significantly faster than JVector for typical vector sizes.
+ * JVector overhead from object allocation and conversion dominates actual computation cost.
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
@@ -54,39 +54,23 @@ public class SQLFunctionVectorNormalize extends SQLFunctionAbstract {
     if (v.length == 0)
       throw new CommandSQLParsingException("Vector cannot be empty");
 
-    try {
-      // Use JVector's SIMD-optimized l2normalize
-      final io.github.jbellis.jvector.vector.VectorizationProvider vp = io.github.jbellis.jvector.vector.VectorizationProvider.getInstance();
-      final io.github.jbellis.jvector.vector.types.VectorFloat<?> jv = vp.getVectorTypeSupport().createFloatVector(v);
-
-      // l2normalize modifies the vector in-place
-      io.github.jbellis.jvector.vector.VectorUtil.l2normalize(jv);
-
-      // Convert back to float array
-      final float[] result = new float[v.length];
-      for (int i = 0; i < v.length; i++) {
-        result[i] = jv.get(i);
-      }
-      return result;
-    } catch (final Exception e) {
-      // Fallback to scalar implementation
-      double magnitude = 0.0;
-      for (final float component : v) {
-        magnitude += component * component;
-      }
-      magnitude = Math.sqrt(magnitude);
-
-      // Handle zero vector
-      if (magnitude == 0.0)
-        return v;
-
-      // Normalize
-      final float[] result = new float[v.length];
-      for (int i = 0; i < v.length; i++) {
-        result[i] = (float) (v[i] / magnitude);
-      }
-      return result;
+    // Calculate L2 norm (magnitude)
+    double magnitude = 0.0;
+    for (final float component : v) {
+      magnitude += component * component;
     }
+    magnitude = Math.sqrt(magnitude);
+
+    // Handle zero vector
+    if (magnitude == 0.0)
+      return v;
+
+    // Normalize: divide each component by magnitude
+    final float[] result = new float[v.length];
+    for (int i = 0; i < v.length; i++) {
+      result[i] = (float) (v[i] / magnitude);
+    }
+    return result;
   }
 
   private float[] toFloatArray(final Object vector) {
