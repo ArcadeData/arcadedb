@@ -78,6 +78,7 @@ import com.arcadedb.query.sql.function.text.SQLFunctionStrcmpci;
 import com.arcadedb.query.sql.function.time.SQLFunctionDate;
 import com.arcadedb.query.sql.function.time.SQLFunctionDuration;
 import com.arcadedb.query.sql.function.time.SQLFunctionSysdate;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorDistance;
 import com.arcadedb.query.sql.function.vector.SQLFunctionVectorNeighbors;
 
 /**
@@ -160,6 +161,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionSysdate.NAME, SQLFunctionSysdate.class);
 
     // Vectors
+    register(SQLFunctionVectorDistance.NAME, new SQLFunctionVectorDistance());
     register(SQLFunctionVectorNeighbors.NAME, new SQLFunctionVectorNeighbors());
 
     reflectionFactory = new SQLFunctionReflectionFactory(this);

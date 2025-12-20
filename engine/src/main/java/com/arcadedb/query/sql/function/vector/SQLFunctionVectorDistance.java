@@ -31,10 +31,10 @@ import com.github.jelmerk.knn.DistanceFunction;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionDistance extends SQLFunctionAbstract {
-  public static final String NAME = "distance";
+public class SQLFunctionVectorDistance extends SQLFunctionAbstract {
+  public static final String NAME = "vectorDistance";
 
-  public SQLFunctionDistance() {
+  public SQLFunctionVectorDistance() {
     super(NAME);
   }
 
@@ -122,6 +122,6 @@ public class SQLFunctionDistance extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "distance(<vector1>, <vector2>, <algorithm>)";
+    return "vectorDistance(<vector1>, <vector2>, <algorithm>)";
   }
 }
