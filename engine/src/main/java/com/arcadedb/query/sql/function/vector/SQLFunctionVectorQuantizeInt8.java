@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.function.vector;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 import java.util.List;
 
 /**
@@ -40,7 +39,7 @@ import java.util.List;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionVectorQuantizeInt8 extends SQLFunctionAbstract {
+public class SQLFunctionVectorQuantizeInt8 extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorQuantizeInt8";
 
   public SQLFunctionVectorQuantizeInt8() {
@@ -97,34 +96,6 @@ public class SQLFunctionVectorQuantizeInt8 extends SQLFunctionAbstract {
     return result;
   }
 
-  private float[] toFloatArray(final Object vector) {
-    if (vector instanceof float[] floatArray) {
-      return floatArray;
-    } else if (vector instanceof Object[] objArray) {
-      final float[] result = new float[objArray.length];
-      for (int i = 0; i < objArray.length; i++) {
-        if (objArray[i] instanceof Number num) {
-          result[i] = num.floatValue();
-        } else {
-          throw new CommandSQLParsingException("Vector elements must be numbers, found: " + objArray[i].getClass().getSimpleName());
-        }
-      }
-      return result;
-    } else if (vector instanceof List<?> list) {
-      final float[] result = new float[list.size()];
-      for (int i = 0; i < list.size(); i++) {
-        final Object elem = list.get(i);
-        if (elem instanceof Number num) {
-          result[i] = num.floatValue();
-        } else {
-          throw new CommandSQLParsingException("Vector elements must be numbers, found: " + elem.getClass().getSimpleName());
-        }
-      }
-      return result;
-    } else {
-      throw new CommandSQLParsingException("Vector must be an array or list, found: " + vector.getClass().getSimpleName());
-    }
-  }
 
   public String getSyntax() {
     return NAME + "(<vector>)";

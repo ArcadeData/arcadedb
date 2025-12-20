@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.function.vector;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 import java.util.List;
 
 /**
@@ -40,7 +39,7 @@ import java.util.List;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionAbstract {
+public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorDequantizeInt8";
 
   public SQLFunctionVectorDequantizeInt8() {

@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.function.vector;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
 /**
  * Returns the number of dimensions in a vector.
@@ -29,7 +28,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionVectorDims extends SQLFunctionAbstract {
+public class SQLFunctionVectorDims extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorDims";
 
   public SQLFunctionVectorDims() {

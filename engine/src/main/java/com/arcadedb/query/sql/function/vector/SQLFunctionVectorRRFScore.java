@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.function.vector;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
 /**
  * Reciprocal Rank Fusion (RRF) scoring function for combining multiple ranking lists.
@@ -34,7 +33,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionVectorRRFScore extends SQLFunctionAbstract {
+public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorRRFScore";
   private static final long DEFAULT_K = 60;
 

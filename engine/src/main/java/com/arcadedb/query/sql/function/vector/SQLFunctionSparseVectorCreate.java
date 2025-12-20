@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.function.vector;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 import java.util.List;
 
 /**
@@ -34,7 +33,7 @@ import java.util.List;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionSparseVectorCreate extends SQLFunctionAbstract {
+public class SQLFunctionSparseVectorCreate extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorSparseCreate";
 
   public SQLFunctionSparseVectorCreate() {
@@ -105,35 +104,6 @@ public class SQLFunctionSparseVectorCreate extends SQLFunctionAbstract {
       return result;
     } else {
       throw new CommandSQLParsingException("Indices must be an array or list, found: " + indices.getClass().getSimpleName());
-    }
-  }
-
-  private float[] toFloatArray(final Object values) {
-    if (values instanceof float[] floatArray) {
-      return floatArray;
-    } else if (values instanceof Object[] objArray) {
-      final float[] result = new float[objArray.length];
-      for (int i = 0; i < objArray.length; i++) {
-        if (objArray[i] instanceof Number num) {
-          result[i] = num.floatValue();
-        } else {
-          throw new CommandSQLParsingException("Value elements must be numbers, found: " + objArray[i].getClass().getSimpleName());
-        }
-      }
-      return result;
-    } else if (values instanceof List<?> list) {
-      final float[] result = new float[list.size()];
-      for (int i = 0; i < list.size(); i++) {
-        final Object elem = list.get(i);
-        if (elem instanceof Number num) {
-          result[i] = num.floatValue();
-        } else {
-          throw new CommandSQLParsingException("Value elements must be numbers, found: " + elem.getClass().getSimpleName());
-        }
-      }
-      return result;
-    } else {
-      throw new CommandSQLParsingException("Values must be an array or list, found: " + values.getClass().getSimpleName());
     }
   }
 

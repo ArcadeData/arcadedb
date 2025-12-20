@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.function.vector;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
 /**
  * Combines vector similarity score with keyword search score (BM25) using weighted average.
@@ -36,7 +35,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionVectorHybridScore extends SQLFunctionAbstract {
+public class SQLFunctionVectorHybridScore extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorHybridScore";
 
   public SQLFunctionVectorHybridScore() {
