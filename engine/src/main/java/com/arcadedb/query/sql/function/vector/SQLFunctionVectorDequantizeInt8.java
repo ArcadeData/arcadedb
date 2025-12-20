@@ -41,7 +41,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_DEQUANTIZE_INT8";
+  public static final String NAME = "vectorDequantizeInt8";
 
   public SQLFunctionVectorDequantizeInt8() {
     super(NAME);
@@ -136,6 +136,6 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_DEQUANTIZE_INT8(<quantized_bytes>, <min>, <max>)";
+    return NAME + "(<quantized_bytes>, <min>, <max>)";
   }
 }

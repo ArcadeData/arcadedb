@@ -36,7 +36,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorLInfNorm extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_LINF_NORM";
+  public static final String NAME = "vectorLInfNorm";
 
   public SQLFunctionVectorLInfNorm() {
     super(NAME);
@@ -99,6 +99,6 @@ public class SQLFunctionVectorLInfNorm extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_LINF_NORM(<vector>)";
+    return NAME + "(<vector>)";
   }
 }

@@ -34,7 +34,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorHasInf extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_HAS_INF";
+  public static final String NAME = "vectorHasInf";
 
   public SQLFunctionVectorHasInf() {
     super(NAME);
@@ -95,6 +95,6 @@ public class SQLFunctionVectorHasInf extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_HAS_INF(<vector>)";
+    return NAME + "(<vector>)";
   }
 }

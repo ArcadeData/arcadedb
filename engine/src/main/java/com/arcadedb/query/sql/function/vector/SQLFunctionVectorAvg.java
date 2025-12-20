@@ -33,7 +33,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorAvg extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_AVG";
+  public static final String NAME = "vectorAvg";
 
   private float[] sumVector;
   private long count;
@@ -139,6 +139,6 @@ public class SQLFunctionVectorAvg extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_AVG(<vector_column>)";
+    return NAME + "(<vector_column>)";
   }
 }

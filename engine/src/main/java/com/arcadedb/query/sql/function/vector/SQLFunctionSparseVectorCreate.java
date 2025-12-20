@@ -35,7 +35,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionSparseVectorCreate extends SQLFunctionAbstract {
-  public static final String NAME = "SPARSE_VECTOR_CREATE";
+  public static final String NAME = "vectorSparseCreate";
 
   public SQLFunctionSparseVectorCreate() {
     super(NAME);
@@ -138,6 +138,6 @@ public class SQLFunctionSparseVectorCreate extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "SPARSE_VECTOR_CREATE(<indices_array>, <values_array> [, <dimensions>])";
+    return NAME + "(<indices_array>, <values_array> [, <dimensions>])";
   }
 }

@@ -35,7 +35,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorIsNormalized extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_IS_NORMALIZED";
+  public static final String NAME = "vectorIsNormalized";
 
   public SQLFunctionVectorIsNormalized() {
     super(NAME);
@@ -105,6 +105,6 @@ public class SQLFunctionVectorIsNormalized extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_IS_NORMALIZED(<vector> [, <tolerance>])";
+    return NAME + "(<vector> [, <tolerance>])";
   }
 }

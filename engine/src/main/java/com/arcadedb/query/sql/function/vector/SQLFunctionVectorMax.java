@@ -30,7 +30,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorMax extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_MAX";
+  public static final String NAME = "vectorMax";
 
   private float[] maxVector;
   private int dimensions;
@@ -110,6 +110,6 @@ public class SQLFunctionVectorMax extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_MAX(<vector_column>)";
+    return NAME + "(<vector_column>)";
   }
 }

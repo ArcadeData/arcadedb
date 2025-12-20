@@ -35,7 +35,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorSparsity extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_SPARSITY";
+  public static final String NAME = "vectorSparsity";
 
   public SQLFunctionVectorSparsity() {
     super(NAME);
@@ -111,6 +111,6 @@ public class SQLFunctionVectorSparsity extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_SPARSITY(<vector>, <threshold>)";
+    return NAME + "(<vector>, <threshold>)";
   }
 }

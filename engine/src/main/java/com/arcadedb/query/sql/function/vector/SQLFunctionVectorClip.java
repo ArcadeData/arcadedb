@@ -35,7 +35,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorClip extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_CLIP";
+  public static final String NAME = "vectorClip";
 
   public SQLFunctionVectorClip() {
     super(NAME);
@@ -116,6 +116,6 @@ public class SQLFunctionVectorClip extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_CLIP(<vector>, <min>, <max>)";
+    return NAME + "(<vector>, <min>, <max>)";
   }
 }

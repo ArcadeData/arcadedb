@@ -35,7 +35,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorRRFScore extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_RRF_SCORE";
+  public static final String NAME = "vectorRRFScore";
   private static final long DEFAULT_K = 60;
 
   public SQLFunctionVectorRRFScore() {
@@ -88,6 +88,6 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_RRF_SCORE(<rank1>, <rank2>, ..., [<k>])";
+    return NAME + "(<rank1>, <rank2>, ..., [<k>])";
   }
 }

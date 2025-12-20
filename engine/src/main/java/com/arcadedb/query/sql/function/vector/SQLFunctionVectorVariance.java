@@ -35,7 +35,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorVariance extends SQLFunctionAbstract {
-  public static final String NAME = "VECTOR_VARIANCE";
+  public static final String NAME = "vectorVariance";
 
   public SQLFunctionVectorVariance() {
     super(NAME);
@@ -103,6 +103,6 @@ public class SQLFunctionVectorVariance extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "VECTOR_VARIANCE(<vector>)";
+    return NAME + "(<vector>)";
   }
 }
