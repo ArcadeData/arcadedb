@@ -21,8 +21,6 @@ package com.arcadedb.query.sql.function.vector;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
-import java.util.List;
 
 /**
  * Combines multiple scores from different vectors using a fusion method.
@@ -38,7 +36,7 @@ import java.util.List;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionMultiVectorScore extends SQLFunctionAbstract {
+public class SQLFunctionMultiVectorScore extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorMultiScore";
 
   public enum FusionMethod {
@@ -149,35 +147,6 @@ public class SQLFunctionMultiVectorScore extends SQLFunctionAbstract {
       throw new CommandSQLParsingException("Sum of weights cannot be zero");
 
     return weightedSum / weightSum;
-  }
-
-  private float[] toFloatArray(final Object scores) {
-    if (scores instanceof float[] floatArray) {
-      return floatArray;
-    } else if (scores instanceof Object[] objArray) {
-      final float[] result = new float[objArray.length];
-      for (int i = 0; i < objArray.length; i++) {
-        if (objArray[i] instanceof Number num) {
-          result[i] = num.floatValue();
-        } else {
-          throw new CommandSQLParsingException("Score values must be numbers, found: " + objArray[i].getClass().getSimpleName());
-        }
-      }
-      return result;
-    } else if (scores instanceof List<?> list) {
-      final float[] result = new float[list.size()];
-      for (int i = 0; i < list.size(); i++) {
-        final Object elem = list.get(i);
-        if (elem instanceof Number num) {
-          result[i] = num.floatValue();
-        } else {
-          throw new CommandSQLParsingException("Score values must be numbers, found: " + elem.getClass().getSimpleName());
-        }
-      }
-      return result;
-    } else {
-      throw new CommandSQLParsingException("Scores must be an array or list, found: " + scores.getClass().getSimpleName());
-    }
   }
 
   public String getSyntax() {

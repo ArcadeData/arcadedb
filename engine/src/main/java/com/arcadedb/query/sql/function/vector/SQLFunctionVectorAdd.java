@@ -19,9 +19,7 @@
 package com.arcadedb.query.sql.function.vector;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
 /**
  * Performs element-wise vector addition.
@@ -32,7 +30,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionVectorAdd extends SQLFunctionAbstract {
+public class SQLFunctionVectorAdd extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorAdd";
 
   public SQLFunctionVectorAdd() {
@@ -41,20 +39,13 @@ public class SQLFunctionVectorAdd extends SQLFunctionAbstract {
 
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length != 2)
-      throw new CommandSQLParsingException(getSyntax());
+    validateParameterCount(params, 2);
+    validateNotNull(params[0], "Vector1");
+    validateNotNull(params[1], "Vector2");
 
-    final Object vector1 = params[0];
-    final Object vector2 = params[1];
-
-    if (vector1 == null || vector2 == null)
-      throw new CommandSQLParsingException("Vectors cannot be null");
-
-    final float[] v1 = toFloatArray(vector1);
-    final float[] v2 = toFloatArray(vector2);
-
-    if (v1.length != v2.length)
-      throw new CommandSQLParsingException("Vectors must have the same dimension");
+    final float[] v1 = toFloatArray(params[0]);
+    final float[] v2 = toFloatArray(params[1]);
+    validateSameDimension(v1, v2);
 
     // Scalar implementation - significantly faster than JVector for typical sizes
     final float[] result = new float[v1.length];
@@ -62,35 +53,6 @@ public class SQLFunctionVectorAdd extends SQLFunctionAbstract {
       result[i] = v1[i] + v2[i];
     }
     return result;
-  }
-
-  private float[] toFloatArray(final Object vector) {
-    if (vector instanceof float[] floatArray) {
-      return floatArray;
-    } else if (vector instanceof Object[] objArray) {
-      final float[] result = new float[objArray.length];
-      for (int i = 0; i < objArray.length; i++) {
-        if (objArray[i] instanceof Number num) {
-          result[i] = num.floatValue();
-        } else {
-          throw new CommandSQLParsingException("Vector elements must be numbers, found: " + objArray[i].getClass().getSimpleName());
-        }
-      }
-      return result;
-    } else if (vector instanceof java.util.List<?> list) {
-      final float[] result = new float[list.size()];
-      for (int i = 0; i < list.size(); i++) {
-        final Object elem = list.get(i);
-        if (elem instanceof Number num) {
-          result[i] = num.floatValue();
-        } else {
-          throw new CommandSQLParsingException("Vector elements must be numbers, found: " + elem.getClass().getSimpleName());
-        }
-      }
-      return result;
-    } else {
-      throw new CommandSQLParsingException("Vector must be an array or list, found: " + vector.getClass().getSimpleName());
-    }
   }
 
   public String getSyntax() {

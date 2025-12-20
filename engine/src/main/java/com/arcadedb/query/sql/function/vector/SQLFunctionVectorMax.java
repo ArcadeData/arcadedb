@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.function.vector;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
 /**
  * Aggregate function that computes element-wise maximum of vectors.
@@ -29,7 +28,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionVectorMax extends SQLFunctionAbstract {
+public class SQLFunctionVectorMax extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorMax";
 
   private float[] maxVector;
@@ -80,34 +79,6 @@ public class SQLFunctionVectorMax extends SQLFunctionAbstract {
     return maxVector.clone();
   }
 
-  private float[] toFloatArray(final Object vector) {
-    if (vector instanceof float[] floatArray) {
-      return floatArray;
-    } else if (vector instanceof Object[] objArray) {
-      final float[] result = new float[objArray.length];
-      for (int i = 0; i < objArray.length; i++) {
-        if (objArray[i] instanceof Number num) {
-          result[i] = num.floatValue();
-        } else {
-          throw new CommandSQLParsingException("Vector elements must be numbers, found: " + objArray[i].getClass().getSimpleName());
-        }
-      }
-      return result;
-    } else if (vector instanceof java.util.List<?> list) {
-      final float[] result = new float[list.size()];
-      for (int i = 0; i < list.size(); i++) {
-        final Object elem = list.get(i);
-        if (elem instanceof Number num) {
-          result[i] = num.floatValue();
-        } else {
-          throw new CommandSQLParsingException("Vector elements must be numbers, found: " + elem.getClass().getSimpleName());
-        }
-      }
-      return result;
-    } else {
-      throw new CommandSQLParsingException("Vector must be an array or list, found: " + vector.getClass().getSimpleName());
-    }
-  }
 
   public String getSyntax() {
     return NAME + "(<vector_column>)";

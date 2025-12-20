@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.function.vector;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
 /**
  * Converts a sparse vector to dense representation.
@@ -32,7 +31,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionSparseVectorToDense extends SQLFunctionAbstract {
+public class SQLFunctionSparseVectorToDense extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorSparseToDense";
 
   public SQLFunctionSparseVectorToDense() {

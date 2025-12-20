@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.function.vector;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
 /**
  * Computes dot product (inner product) between two sparse vectors.
@@ -36,7 +35,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionSparseVectorDot extends SQLFunctionAbstract {
+public class SQLFunctionSparseVectorDot extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorSparseDot";
 
   public SQLFunctionSparseVectorDot() {

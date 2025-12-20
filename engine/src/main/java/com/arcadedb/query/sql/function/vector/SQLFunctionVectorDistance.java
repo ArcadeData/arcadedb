@@ -22,7 +22,6 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.vector.distance.DistanceFunctionFactory;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 import com.github.jelmerk.knn.DistanceFunction;
 
 /**
@@ -31,7 +30,7 @@ import com.github.jelmerk.knn.DistanceFunction;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionVectorDistance extends SQLFunctionAbstract {
+public class SQLFunctionVectorDistance extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorDistance";
 
   public SQLFunctionVectorDistance() {
@@ -66,34 +65,6 @@ public class SQLFunctionVectorDistance extends SQLFunctionAbstract {
     return distanceFunction.distance(v1, v2);
   }
 
-  private float[] toFloatArray(final Object vector) {
-    if (vector instanceof float[] floatArray) {
-      return floatArray;
-    } else if (vector instanceof Object[] objArray) {
-      final float[] result = new float[objArray.length];
-      for (int i = 0; i < objArray.length; i++) {
-        if (objArray[i] instanceof Number num) {
-          result[i] = num.floatValue();
-        } else {
-          throw new CommandSQLParsingException("Vector elements must be numbers, found: " + objArray[i].getClass().getSimpleName());
-        }
-      }
-      return result;
-    } else if (vector instanceof java.util.List<?> list) {
-      final float[] result = new float[list.size()];
-      for (int i = 0; i < list.size(); i++) {
-        final Object elem = list.get(i);
-        if (elem instanceof Number num) {
-          result[i] = num.floatValue();
-        } else {
-          throw new CommandSQLParsingException("Vector elements must be numbers, found: " + elem.getClass().getSimpleName());
-        }
-      }
-      return result;
-    } else {
-      throw new CommandSQLParsingException("Vector must be an array or list, found: " + vector.getClass().getSimpleName());
-    }
-  }
 
   private DistanceFunction resolveDistanceFunction(final String algorithm) {
     // Try exact name first

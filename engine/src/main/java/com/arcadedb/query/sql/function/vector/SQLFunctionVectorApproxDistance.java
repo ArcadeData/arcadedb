@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.function.vector;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
 /**
  * Calculates approximate distance between quantized vectors without full dequantization.
@@ -40,7 +39,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionVectorApproxDistance extends SQLFunctionAbstract {
+public class SQLFunctionVectorApproxDistance extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorApproxDistance";
 
   public enum QuantizationType {

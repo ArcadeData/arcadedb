@@ -27,7 +27,6 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.Pair;
 
@@ -39,7 +38,7 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionVectorNeighbors extends SQLFunctionAbstract {
+public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorNeighbors";
 
   public SQLFunctionVectorNeighbors() {
