@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.vector.VectorQuantizationType;
 import com.arcadedb.serializer.json.JSONObject;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
@@ -31,6 +32,7 @@ import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
   public int                      dimensions;
   public VectorSimilarityFunction similarityFunction = VectorSimilarityFunction.COSINE;
+  public VectorQuantizationType   quantizationType   = VectorQuantizationType.NONE;
   public int                      maxConnections     = 16;
   public int                      beamWidth          = 100;
   public String                   idPropertyName     = "id";
@@ -121,11 +123,39 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
     return this;
   }
 
+  /**
+   * Sets the quantization type for vector compression.
+   * NONE (default): No quantization, stores float32 vectors (4 bytes per dimension)
+   * INT8: 4x compression using int8 quantization
+   * BINARY: 32x compression using binary quantization
+   *
+   * @param quantizationType the quantization type
+   */
+  public BucketLSMVectorIndexBuilder withQuantization(final VectorQuantizationType quantizationType) {
+    this.quantizationType = quantizationType;
+    return this;
+  }
+
+  /**
+   * Sets the quantization type for vector compression by string name.
+   *
+   * @param quantization the quantization type name (NONE, INT8, BINARY)
+   */
+  public BucketLSMVectorIndexBuilder withQuantization(final String quantization) {
+    try {
+      this.quantizationType = VectorQuantizationType.valueOf(quantization.toUpperCase());
+      return this;
+    } catch (final IllegalArgumentException e) {
+      throw new IndexException("Invalid quantization type: " + quantization + ". Supported values: NONE, INT8, BINARY");
+    }
+  }
+
   @Override
   public BucketLSMVectorIndexBuilder withMetadata(final IndexMetadata metadata) {
     if (metadata instanceof LSMVectorIndexMetadata v) {
       this.dimensions = v.dimensions;
       withSimilarity(v.similarityFunction.name());
+      this.quantizationType = v.quantizationType;
       this.maxConnections = v.maxConnections;
       this.beamWidth = v.beamWidth;
       this.idPropertyName = v.idPropertyName;
@@ -139,6 +169,9 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
 
     if (metadata.has("similarity"))
       withSimilarity(metadata.getString("similarity"));
+
+    if (metadata.has("quantization"))
+      withQuantization(metadata.getString("quantization"));
 
     if (metadata.has("maxConnections"))
       this.maxConnections = metadata.getInt("maxConnections");

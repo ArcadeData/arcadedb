@@ -1,5 +1,6 @@
 package com.arcadedb.schema;
 
+import com.arcadedb.index.vector.VectorQuantizationType;
 import com.arcadedb.serializer.json.JSONObject;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
@@ -21,6 +22,7 @@ import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 public class LSMVectorIndexMetadata extends IndexMetadata {
   public int                      dimensions;
   public VectorSimilarityFunction similarityFunction = VectorSimilarityFunction.COSINE;
+  public VectorQuantizationType   quantizationType   = VectorQuantizationType.NONE;
   public int                      maxConnections     = 16;
   public int                      beamWidth          = 100;
   public String                   idPropertyName     = "id";
@@ -38,6 +40,9 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
 
     if (metadata.has("similarity"))
       this.similarityFunction = VectorSimilarityFunction.valueOf(metadata.getString("similarity"));
+
+    if (metadata.has("quantization"))
+      this.quantizationType = VectorQuantizationType.valueOf(metadata.getString("quantization"));
 
     if (metadata.has("maxConnections"))
       this.maxConnections = metadata.getInt("maxConnections");
