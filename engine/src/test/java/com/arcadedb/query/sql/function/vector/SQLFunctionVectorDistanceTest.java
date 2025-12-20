@@ -8,11 +8,11 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class SQLFunctionDistanceTest extends TestHelper {
+class SQLFunctionVectorDistanceTest extends TestHelper {
 
   @Test
   void distanceCosineWithFloatArrays() {
-    final SQLFunctionDistance function = new SQLFunctionDistance();
+    final SQLFunctionVectorDistance function = new SQLFunctionVectorDistance();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -30,7 +30,7 @@ class SQLFunctionDistanceTest extends TestHelper {
 
   @Test
   void distanceCosineWithDifferentVectors() {
-    final SQLFunctionDistance function = new SQLFunctionDistance();
+    final SQLFunctionVectorDistance function = new SQLFunctionVectorDistance();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -49,7 +49,7 @@ class SQLFunctionDistanceTest extends TestHelper {
 
   @Test
   void distanceEuclidean() {
-    final SQLFunctionDistance function = new SQLFunctionDistance();
+    final SQLFunctionVectorDistance function = new SQLFunctionVectorDistance();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -67,7 +67,7 @@ class SQLFunctionDistanceTest extends TestHelper {
 
   @Test
   void distanceManhattan() {
-    final SQLFunctionDistance function = new SQLFunctionDistance();
+    final SQLFunctionVectorDistance function = new SQLFunctionVectorDistance();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -85,7 +85,7 @@ class SQLFunctionDistanceTest extends TestHelper {
 
   @Test
   void distanceChebyshev() {
-    final SQLFunctionDistance function = new SQLFunctionDistance();
+    final SQLFunctionVectorDistance function = new SQLFunctionVectorDistance();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -103,7 +103,7 @@ class SQLFunctionDistanceTest extends TestHelper {
 
   @Test
   void distanceWithListParameters() {
-    final SQLFunctionDistance function = new SQLFunctionDistance();
+    final SQLFunctionVectorDistance function = new SQLFunctionVectorDistance();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -121,7 +121,7 @@ class SQLFunctionDistanceTest extends TestHelper {
 
   @Test
   void distanceWithObjectArrays() {
-    final SQLFunctionDistance function = new SQLFunctionDistance();
+    final SQLFunctionVectorDistance function = new SQLFunctionVectorDistance();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -139,7 +139,7 @@ class SQLFunctionDistanceTest extends TestHelper {
 
   @Test
   void sqlDistanceWithRawVectors() {
-    String query = "SELECT distance([1.0, 0.0, 0.0], [1.0, 0.0, 0.0], 'COSINE') as dist";
+    String query = "SELECT vectorDistance([1.0, 0.0, 0.0], [1.0, 0.0, 0.0], 'COSINE') as dist";
     try (ResultSet results = database.query("sql", query)) {
       assertThat(results.hasNext()).as("Query should return results").isTrue();
 
@@ -153,7 +153,7 @@ class SQLFunctionDistanceTest extends TestHelper {
 
   @Test
   void sqlDistanceEuclidean() {
-    String query = "SELECT distance([0.0, 0.0], [3.0, 4.0], 'EUCLIDEAN') as dist";
+    String query = "SELECT vectorDistance([0.0, 0.0], [3.0, 4.0], 'EUCLIDEAN') as dist";
     try (ResultSet results = database.query("sql", query)) {
       assertThat(results.hasNext()).as("Query should return results").isTrue();
 
@@ -169,9 +169,9 @@ class SQLFunctionDistanceTest extends TestHelper {
   void sqlDistanceMultipleAlgorithms() {
     String query = """
         SELECT
-          distance([0.0, 0.0], [3.0, 4.0], 'EUCLIDEAN') as euclidean,
-          distance([0.0, 0.0], [3.0, 4.0], 'MANHATTAN') as manhattan,
-          distance([0.0, 0.0], [3.0, 4.0], 'CHEBYSHEV') as chebyshev
+          vectorDistance([0.0, 0.0], [3.0, 4.0], 'EUCLIDEAN') as euclidean,
+          vectorDistance([0.0, 0.0], [3.0, 4.0], 'MANHATTAN') as manhattan,
+          vectorDistance([0.0, 0.0], [3.0, 4.0], 'CHEBYSHEV') as chebyshev
         """;
 
     try (ResultSet results = database.query("sql", query)) {
@@ -190,7 +190,7 @@ class SQLFunctionDistanceTest extends TestHelper {
 
   @Test
   void distanceNullVectorThrowsException() {
-    final SQLFunctionDistance function = new SQLFunctionDistance();
+    final SQLFunctionVectorDistance function = new SQLFunctionVectorDistance();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -203,7 +203,7 @@ class SQLFunctionDistanceTest extends TestHelper {
 
   @Test
   void distanceDifferentDimensionsThrowsException() {
-    final SQLFunctionDistance function = new SQLFunctionDistance();
+    final SQLFunctionVectorDistance function = new SQLFunctionVectorDistance();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -216,7 +216,7 @@ class SQLFunctionDistanceTest extends TestHelper {
 
   @Test
   void distanceWrongParameterCountThrowsException() {
-    final SQLFunctionDistance function = new SQLFunctionDistance();
+    final SQLFunctionVectorDistance function = new SQLFunctionVectorDistance();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -228,7 +228,7 @@ class SQLFunctionDistanceTest extends TestHelper {
 
   @Test
   void distanceInvalidAlgorithmThrowsException() {
-    final SQLFunctionDistance function = new SQLFunctionDistance();
+    final SQLFunctionVectorDistance function = new SQLFunctionVectorDistance();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -241,7 +241,7 @@ class SQLFunctionDistanceTest extends TestHelper {
 
   @Test
   void distanceSyntax() {
-    final SQLFunctionDistance function = new SQLFunctionDistance();
-    assertThat(function.getSyntax()).contains("distance").contains("vector").contains("algorithm");
+    final SQLFunctionVectorDistance function = new SQLFunctionVectorDistance();
+    assertThat(function.getSyntax()).contains("vectorDistance").contains("vector").contains("algorithm");
   }
 }
