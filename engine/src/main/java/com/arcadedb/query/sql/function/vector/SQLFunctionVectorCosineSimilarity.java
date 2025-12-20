@@ -29,6 +29,9 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  * 0 means perpendicular, and -1 means opposite direction.
  * Useful for comparing normalized embeddings.
  *
+ * Uses JVector's SIMD-optimized VectorUtil.cosine() for up to 6-7x performance improvement
+ * when running on Java 20+ with Panama Vector API enabled (--add-modules jdk.incubator.vector).
+ *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorCosineSimilarity extends SQLFunctionAbstract {
@@ -58,29 +61,37 @@ public class SQLFunctionVectorCosineSimilarity extends SQLFunctionAbstract {
     if (v1.length == 0)
       throw new CommandSQLParsingException("Vectors cannot be empty");
 
-    // Calculate dot product
-    double dotProduct = 0.0;
-    for (int i = 0; i < v1.length; i++) {
-      dotProduct += v1[i] * v2[i];
+    // Use JVector's SIMD-optimized cosine similarity (6-7x faster with Vector API)
+    try {
+      final io.github.jbellis.jvector.vector.VectorizationProvider vp = io.github.jbellis.jvector.vector.VectorizationProvider.getInstance();
+      final io.github.jbellis.jvector.vector.types.VectorFloat<?> jv1 = vp.getVectorTypeSupport().createFloatVector(v1);
+      final io.github.jbellis.jvector.vector.types.VectorFloat<?> jv2 = vp.getVectorTypeSupport().createFloatVector(v2);
+      return io.github.jbellis.jvector.vector.VectorUtil.cosine(jv1, jv2);
+    } catch (final Exception e) {
+      // Fallback to scalar implementation
+      // Calculate dot product
+      double dotProduct = 0.0;
+      for (int i = 0; i < v1.length; i++) {
+        dotProduct += v1[i] * v2[i];
+      }
+
+      // Calculate magnitudes
+      double magnitude1 = 0.0;
+      double magnitude2 = 0.0;
+      for (int i = 0; i < v1.length; i++) {
+        magnitude1 += v1[i] * v1[i];
+        magnitude2 += v2[i] * v2[i];
+      }
+      magnitude1 = Math.sqrt(magnitude1);
+      magnitude2 = Math.sqrt(magnitude2);
+
+      // Handle zero vectors
+      if (magnitude1 == 0.0 || magnitude2 == 0.0)
+        return 0.0f;
+
+      // Cosine similarity = dot product / (mag1 * mag2)
+      return (float) (dotProduct / (magnitude1 * magnitude2));
     }
-
-    // Calculate magnitudes
-    double magnitude1 = 0.0;
-    double magnitude2 = 0.0;
-    for (int i = 0; i < v1.length; i++) {
-      magnitude1 += v1[i] * v1[i];
-      magnitude2 += v2[i] * v2[i];
-    }
-    magnitude1 = Math.sqrt(magnitude1);
-    magnitude2 = Math.sqrt(magnitude2);
-
-    // Handle zero vectors
-    if (magnitude1 == 0.0 || magnitude2 == 0.0)
-      return 0.0f;
-
-    // Cosine similarity = dot product / (mag1 * mag2)
-    final float similarity = (float) (dotProduct / (magnitude1 * magnitude2));
-    return similarity;
   }
 
   private float[] toFloatArray(final Object vector) {

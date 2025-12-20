@@ -27,6 +27,9 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  * Aggregate function that computes element-wise sum of vectors.
  * Returns a vector where each component is the sum of corresponding components across all input vectors.
  *
+ * The accumulation uses simple float array operations which are already efficient.
+ * For very large vectors, consider using multiple partial sums with VECTOR_AVG scaling.
+ *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLFunctionVectorSum extends SQLFunctionAbstract {
