@@ -34,6 +34,16 @@ public interface IndexCursor extends Cursor {
 
   Identifiable getRecord();
 
+  /**
+   * Returns the score of the current entry. The score is used by full-text indexes to indicate the relevance of the result.
+   * For indexes that don't support scoring (e.g., regular LSM indexes), this method returns 0.
+   *
+   * @return the score of the current entry, or 0 if scoring is not supported
+   */
+  default int getScore() {
+    return 0;
+  }
+
   default void close() {
     // NO ACTIONS
   }
