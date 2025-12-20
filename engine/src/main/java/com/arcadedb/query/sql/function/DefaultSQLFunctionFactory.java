@@ -78,8 +78,46 @@ import com.arcadedb.query.sql.function.text.SQLFunctionStrcmpci;
 import com.arcadedb.query.sql.function.time.SQLFunctionDate;
 import com.arcadedb.query.sql.function.time.SQLFunctionDuration;
 import com.arcadedb.query.sql.function.time.SQLFunctionSysdate;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorAdd;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorAvg;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorCosineSimilarity;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorDims;
 import com.arcadedb.query.sql.function.vector.SQLFunctionVectorDistance;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorDotProduct;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorHybridScore;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorInnerProduct;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorL2Distance;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorMagnitude;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorMax;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorMin;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorMultiply;
 import com.arcadedb.query.sql.function.vector.SQLFunctionVectorNeighbors;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorNormalize;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorNormalizeScores;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorRRFScore;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorScale;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorScoreTransform;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorSubtract;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorSum;
+import com.arcadedb.query.sql.function.vector.SQLFunctionSparseVectorCreate;
+import com.arcadedb.query.sql.function.vector.SQLFunctionSparseVectorDot;
+import com.arcadedb.query.sql.function.vector.SQLFunctionSparseVectorToDense;
+import com.arcadedb.query.sql.function.vector.SQLFunctionDenseVectorToSparse;
+import com.arcadedb.query.sql.function.vector.SQLFunctionMultiVectorScore;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorQuantizeInt8;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorQuantizeBinary;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorDequantizeInt8;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorApproxDistance;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorL1Norm;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorLInfNorm;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorVariance;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorStdDev;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorSparsity;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorIsNormalized;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorHasNaN;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorHasInf;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorClip;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorToString;
 
 /**
  * Default set of SQL function.
@@ -161,6 +199,56 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionSysdate.NAME, SQLFunctionSysdate.class);
 
     // Vectors
+    // Phase 1.1: Basic Operations
+    register(SQLFunctionVectorNormalize.NAME, new SQLFunctionVectorNormalize());
+    register(SQLFunctionVectorMagnitude.NAME, new SQLFunctionVectorMagnitude());
+    register(SQLFunctionVectorDims.NAME, new SQLFunctionVectorDims());
+    register(SQLFunctionVectorDotProduct.NAME, new SQLFunctionVectorDotProduct());
+    // Phase 1.2: Similarity Scoring
+    register(SQLFunctionVectorCosineSimilarity.NAME, new SQLFunctionVectorCosineSimilarity());
+    register(SQLFunctionVectorL2Distance.NAME, new SQLFunctionVectorL2Distance());
+    register(SQLFunctionVectorInnerProduct.NAME, new SQLFunctionVectorInnerProduct());
+    // Phase 2.1: Vector Arithmetic
+    register(SQLFunctionVectorAdd.NAME, new SQLFunctionVectorAdd());
+    register(SQLFunctionVectorSubtract.NAME, new SQLFunctionVectorSubtract());
+    register(SQLFunctionVectorMultiply.NAME, new SQLFunctionVectorMultiply());
+    register(SQLFunctionVectorScale.NAME, new SQLFunctionVectorScale());
+    // Phase 2.2: Vector Aggregations
+    register(SQLFunctionVectorSum.NAME, new SQLFunctionVectorSum());
+    register(SQLFunctionVectorAvg.NAME, new SQLFunctionVectorAvg());
+    register(SQLFunctionVectorMin.NAME, new SQLFunctionVectorMin());
+    register(SQLFunctionVectorMax.NAME, new SQLFunctionVectorMax());
+    // Phase 3.1: Reranking Functions
+    register(SQLFunctionVectorRRFScore.NAME, new SQLFunctionVectorRRFScore());
+    register(SQLFunctionVectorNormalizeScores.NAME, new SQLFunctionVectorNormalizeScores());
+    // Phase 3.2: Hybrid Search Scoring
+    register(SQLFunctionVectorHybridScore.NAME, new SQLFunctionVectorHybridScore());
+    register(SQLFunctionVectorScoreTransform.NAME, new SQLFunctionVectorScoreTransform());
+    // Phase 4.1: Sparse Vectors
+    register(SQLFunctionSparseVectorCreate.NAME, new SQLFunctionSparseVectorCreate());
+    register(SQLFunctionSparseVectorDot.NAME, new SQLFunctionSparseVectorDot());
+    register(SQLFunctionSparseVectorToDense.NAME, new SQLFunctionSparseVectorToDense());
+    register(SQLFunctionDenseVectorToSparse.NAME, new SQLFunctionDenseVectorToSparse());
+    // Phase 4.2: Multi-Vector Operations
+    register(SQLFunctionMultiVectorScore.NAME, new SQLFunctionMultiVectorScore());
+    // Phase 5: Quantization & Optimization
+    register(SQLFunctionVectorQuantizeInt8.NAME, new SQLFunctionVectorQuantizeInt8());
+    register(SQLFunctionVectorQuantizeBinary.NAME, new SQLFunctionVectorQuantizeBinary());
+    register(SQLFunctionVectorDequantizeInt8.NAME, new SQLFunctionVectorDequantizeInt8());
+    register(SQLFunctionVectorApproxDistance.NAME, new SQLFunctionVectorApproxDistance());
+    // Phase 6.1: Vector Analysis
+    register(SQLFunctionVectorL1Norm.NAME, new SQLFunctionVectorL1Norm());
+    register(SQLFunctionVectorLInfNorm.NAME, new SQLFunctionVectorLInfNorm());
+    register(SQLFunctionVectorVariance.NAME, new SQLFunctionVectorVariance());
+    register(SQLFunctionVectorStdDev.NAME, new SQLFunctionVectorStdDev());
+    register(SQLFunctionVectorSparsity.NAME, new SQLFunctionVectorSparsity());
+    // Phase 6.2: Vector Validation
+    register(SQLFunctionVectorIsNormalized.NAME, new SQLFunctionVectorIsNormalized());
+    register(SQLFunctionVectorHasNaN.NAME, new SQLFunctionVectorHasNaN());
+    register(SQLFunctionVectorHasInf.NAME, new SQLFunctionVectorHasInf());
+    register(SQLFunctionVectorClip.NAME, new SQLFunctionVectorClip());
+    register(SQLFunctionVectorToString.NAME, new SQLFunctionVectorToString());
+    // Existing
     register(SQLFunctionVectorDistance.NAME, new SQLFunctionVectorDistance());
     register(SQLFunctionVectorNeighbors.NAME, new SQLFunctionVectorNeighbors());
 
