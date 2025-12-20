@@ -1750,10 +1750,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     // Validate vector - can be either float[] or ComparableVector (from transaction replay)
     final float[] vector;
-    if (keys[0] instanceof float[]) {
-      vector = (float[]) keys[0];
-    } else if (keys[0] instanceof ComparableVector) {
-      vector = ((ComparableVector) keys[0]).vector;
+    if (keys[0] instanceof float[] f) {
+      vector = f;
+    } else if (keys[0] instanceof List<?> list) {
+      vector = new float[list.size()];
+      for (int i = 0; i < list.size(); i++)
+        vector[i] = ((Number) list.get(i)).floatValue();
+    } else if (keys[0] instanceof ComparableVector c) {
+      vector = c.vector;
     } else {
       throw new IllegalArgumentException(
           "Expected float array or ComparableVector as key for vector index, got " + keys[0].getClass());
