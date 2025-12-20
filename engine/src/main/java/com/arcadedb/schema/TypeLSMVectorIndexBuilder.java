@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.vector.VectorQuantizationType;
 import com.arcadedb.serializer.json.JSONObject;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
@@ -118,6 +119,33 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
     return this;
   }
 
+  /**
+   * Sets the quantization type for vector compression.
+   * NONE (default): No quantization, stores float32 vectors (4 bytes per dimension)
+   * INT8: 4x compression using int8 quantization
+   * BINARY: 32x compression using binary quantization
+   *
+   * @param quantizationType the quantization type
+   */
+  public TypeLSMVectorIndexBuilder withQuantization(final VectorQuantizationType quantizationType) {
+    ((LSMVectorIndexMetadata) metadata).quantizationType = quantizationType;
+    return this;
+  }
+
+  /**
+   * Sets the quantization type for vector compression by string name.
+   *
+   * @param quantization the quantization type name (NONE, INT8, BINARY)
+   */
+  public TypeLSMVectorIndexBuilder withQuantization(final String quantization) {
+    try {
+      ((LSMVectorIndexMetadata) metadata).quantizationType = VectorQuantizationType.valueOf(quantization.toUpperCase());
+      return this;
+    } catch (final IllegalArgumentException e) {
+      throw new IndexException("Invalid quantization type: " + quantization + ". Supported values: NONE, INT8, BINARY");
+    }
+  }
+
   @Override
   public TypeLSMVectorIndexBuilder withMetadata(IndexMetadata metadata) {
     this.metadata = (LSMVectorIndexMetadata) metadata;
@@ -131,6 +159,9 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
 
     if (json.has("similarity"))
       withSimilarity(json.getString("similarity"));
+
+    if (json.has("quantization"))
+      withQuantization(json.getString("quantization"));
 
     if (json.has("maxConnections"))
       v.maxConnections = json.getInt("maxConnections");

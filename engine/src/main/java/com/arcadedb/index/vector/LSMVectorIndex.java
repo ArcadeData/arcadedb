@@ -214,7 +214,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           ComponentFile.MODE.READ_WRITE, builder.getPageSize(),
           vectorBuilder.getTypeName(), vectorBuilder.getPropertyNames(),
           vectorBuilder.dimensions, vectorBuilder.similarityFunction, vectorBuilder.maxConnections, vectorBuilder.beamWidth,
-          vectorBuilder.idPropertyName
+          vectorBuilder.idPropertyName, vectorBuilder.quantizationType
       );
     }
   }
@@ -238,13 +238,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public LSMVectorIndex(final DatabaseInternal database, final String name, final String filePath,
       final ComponentFile.MODE mode, final int pageSize, final String typeName, final String[] propertyNames,
       final int dimensions, final VectorSimilarityFunction similarityFunction, final int maxConnections, final int beamWidth,
-      final String idPropertyName) {
+      final String idPropertyName, final VectorQuantizationType quantizationType) {
     try {
       this.indexName = name;
 
       this.metadata = new LSMVectorIndexMetadata(typeName, propertyNames, -1);
       this.metadata.dimensions = dimensions;
       this.metadata.similarityFunction = similarityFunction;
+      this.metadata.quantizationType = quantizationType;
       this.metadata.maxConnections = maxConnections;
       this.metadata.beamWidth = beamWidth;
       this.metadata.idPropertyName = idPropertyName;
@@ -902,13 +903,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
           "Building graph with %d vectors using property '%s' (cache enabled for performance)",
           filteredVectorIds.length, vectorProp);
 
-      // Create lazy-loading vector values that reads vectors from documents
+      // Create lazy-loading vector values that reads vectors from documents or index pages (if quantized)
       vectors = new ArcadePageVectorValues(
           getDatabase(),
           metadata.dimensions,
           vectorProp,
           vectorLocationSnapshot,  // Use immutable snapshot
-          finalActiveVectorIds
+          finalActiveVectorIds,
+          this  // Pass LSM index reference for quantization support
       );
 
       // Mark that graph building is in progress to prevent new inserts
@@ -1243,11 +1245,32 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private void persistVectorWithLocation(final int id, final RID rid, final float[] vector) {
     try {
+      // Quantize vector if quantization is enabled
+      final VectorQuantizationMetadata qmeta = (VectorQuantizationMetadata) quantizeVector(vector);
+
       // Calculate variable entry size for this specific entry
       final int vectorIdSize = Binary.getNumberSpace(id);
       final int bucketIdSize = Binary.getNumberSpace(rid.getBucketId());
       final int positionSize = Binary.getNumberSpace(rid.getPosition());
-      final int entrySize = vectorIdSize + positionSize + bucketIdSize + 1; // +1 for deleted byte
+      int entrySize = vectorIdSize + positionSize + bucketIdSize + 1; // +1 for deleted byte
+
+      // Add size for quantized vector data if quantization is enabled
+      if (qmeta != null) {
+        entrySize += 1; // quantization type flag
+        if (qmeta.getType() == VectorQuantizationType.INT8) {
+          final VectorQuantizationMetadata.Int8QuantizationMetadata int8meta =
+              (VectorQuantizationMetadata.Int8QuantizationMetadata) qmeta;
+          entrySize += 4; // vector length (int)
+          entrySize += int8meta.quantized.length; // quantized bytes
+          entrySize += 8; // min + max (2 floats)
+        } else if (qmeta.getType() == VectorQuantizationType.BINARY) {
+          final VectorQuantizationMetadata.BinaryQuantizationMetadata binmeta =
+              (VectorQuantizationMetadata.BinaryQuantizationMetadata) qmeta;
+          entrySize += 4; // original length (int)
+          entrySize += binmeta.packed.length; // packed bytes
+          entrySize += 4; // median (float)
+        }
+      }
 
       // Get or create the last mutable page
       int lastPageNum = getTotalPages() - 1;
@@ -1300,6 +1323,45 @@ public class LSMVectorIndex implements Index, IndexInternal {
       bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, rid.getBucketId());
       bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, rid.getPosition());
       bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, (byte) 0); // not deleted
+
+      // Write quantized vector data if quantization is enabled
+      if (qmeta != null) {
+        // Write quantization type flag
+        bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten,
+            (byte) qmeta.getType().ordinal());
+
+        if (qmeta.getType() == VectorQuantizationType.INT8) {
+          final VectorQuantizationMetadata.Int8QuantizationMetadata int8meta =
+              (VectorQuantizationMetadata.Int8QuantizationMetadata) qmeta;
+
+          // Write vector length
+          bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, int8meta.quantized.length);
+
+          // Write quantized bytes
+          for (final byte b : int8meta.quantized) {
+            bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, b);
+          }
+
+          // Write min and max
+          bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, Float.floatToIntBits(int8meta.min));
+          bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, Float.floatToIntBits(int8meta.max));
+
+        } else if (qmeta.getType() == VectorQuantizationType.BINARY) {
+          final VectorQuantizationMetadata.BinaryQuantizationMetadata binmeta =
+              (VectorQuantizationMetadata.BinaryQuantizationMetadata) qmeta;
+
+          // Write original length
+          bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, binmeta.originalLength);
+
+          // Write packed bytes
+          for (final byte b : binmeta.packed) {
+            bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, b);
+          }
+
+          // Write median
+          bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, Float.floatToIntBits(binmeta.median));
+        }
+      }
 
       // Update page header
       numberOfEntries++;
@@ -1399,6 +1461,291 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
   }
 
+  // ========== QUANTIZATION HELPER METHODS ==========
+
+  /**
+   * Quantizes a float vector according to the index's quantization type.
+   * Returns a QuantizationResult containing the quantized data and metadata needed for dequantization.
+   *
+   * @param vector The float vector to quantize
+   * @return Quantization result with quantized bytes and metadata, or null if quantization is NONE
+   */
+  private Object quantizeVector(final float[] vector) {
+    if (metadata.quantizationType == VectorQuantizationType.NONE)
+      return null; // No quantization
+
+    if (metadata.quantizationType == VectorQuantizationType.INT8)
+      return quantizeToInt8(vector);
+
+    if (metadata.quantizationType == VectorQuantizationType.BINARY)
+      return quantizeToBinary(vector);
+
+    throw new IndexException("Unsupported quantization type: " + metadata.quantizationType);
+  }
+
+  /**
+   * Quantizes a float vector to INT8 using min-max scaling.
+   * Algorithm extracted from SQLFunctionVectorQuantizeInt8.
+   *
+   * @param vector The float vector to quantize
+   * @return Int8QuantizationMetadata containing quantized bytes and min/max values
+   */
+  private VectorQuantizationMetadata.Int8QuantizationMetadata quantizeToInt8(final float[] vector) {
+    // Find min and max
+    float min = vector[0];
+    float max = vector[0];
+    for (final float value : vector) {
+      if (value < min)
+        min = value;
+      if (value > max)
+        max = value;
+    }
+
+    // Quantize to int8 [-128, 127]
+    final byte[] quantized = new byte[vector.length];
+    if (min == max) {
+      // All values are the same
+      for (int i = 0; i < vector.length; i++) {
+        quantized[i] = 0;
+      }
+    } else {
+      final float range = max - min;
+      for (int i = 0; i < vector.length; i++) {
+        final float normalized = (vector[i] - min) / range; // [0, 1]
+        final int scaled = Math.round(normalized * 255.0f); // [0, 255]
+        final byte shifted = (byte) (scaled - 128); // [-128, 127]
+        quantized[i] = shifted;
+      }
+    }
+
+    return new VectorQuantizationMetadata.Int8QuantizationMetadata(quantized, min, max);
+  }
+
+  /**
+   * Quantizes a float vector to BINARY using median threshold.
+   * Algorithm extracted from SQLFunctionVectorQuantizeBinary.
+   *
+   * @param vector The float vector to quantize
+   * @return BinaryQuantizationMetadata containing packed bits and median value
+   */
+  private VectorQuantizationMetadata.BinaryQuantizationMetadata quantizeToBinary(final float[] vector) {
+    // Calculate median
+    final float median = calculateMedian(vector);
+
+    // Quantize to binary
+    final int byteCount = (vector.length + 7) / 8; // Round up to nearest byte
+    final byte[] packed = new byte[byteCount];
+
+    for (int i = 0; i < vector.length; i++) {
+      if (vector[i] >= median) {
+        // Set bit to 1
+        final int byteIndex = i / 8;
+        final int bitIndex = i % 8;
+        packed[byteIndex] |= (1 << bitIndex);
+      }
+    }
+
+    return new VectorQuantizationMetadata.BinaryQuantizationMetadata(packed, median, vector.length);
+  }
+
+  /**
+   * Calculate median of array.
+   * Helper method for binary quantization.
+   */
+  private float calculateMedian(final float[] values) {
+    final float[] sorted = values.clone();
+    java.util.Arrays.sort(sorted);
+    if (sorted.length % 2 == 0) {
+      return (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2.0f;
+    } else {
+      return sorted[sorted.length / 2];
+    }
+  }
+
+  /**
+   * Dequantizes a quantized vector back to float array.
+   * Algorithm extracted from SQLFunctionVectorDequantizeInt8 and similar.
+   *
+   * @param quantized      The quantized byte array
+   * @param qmeta         The quantization metadata containing min/max or median
+   * @return The dequantized float vector
+   */
+  private float[] dequantizeVector(final byte[] quantized, final VectorQuantizationMetadata qmeta) {
+    if (qmeta == null || qmeta.getType() == VectorQuantizationType.NONE)
+      throw new IndexException("Cannot dequantize: no quantization metadata");
+
+    if (qmeta.getType() == VectorQuantizationType.INT8)
+      return dequantizeFromInt8(quantized, (VectorQuantizationMetadata.Int8QuantizationMetadata) qmeta);
+
+    if (qmeta.getType() == VectorQuantizationType.BINARY)
+      return dequantizeFromBinary(quantized, (VectorQuantizationMetadata.BinaryQuantizationMetadata) qmeta);
+
+    throw new IndexException("Unsupported quantization type: " + qmeta.getType());
+  }
+
+  /**
+   * Dequantizes an INT8 quantized vector back to float array.
+   * Algorithm extracted from SQLFunctionVectorDequantizeInt8.
+   *
+   * @param quantized The quantized byte array
+   * @param qmeta     The INT8 quantization metadata with min/max
+   * @return The dequantized float vector
+   */
+  private float[] dequantizeFromInt8(final byte[] quantized,
+      final VectorQuantizationMetadata.Int8QuantizationMetadata qmeta) {
+    final float[] result = new float[quantized.length];
+    final float range = qmeta.max - qmeta.min;
+
+    if (range == 0.0f) {
+      // All values were the same, return min value for all
+      for (int i = 0; i < quantized.length; i++) {
+        result[i] = qmeta.min;
+      }
+    } else {
+      for (int i = 0; i < quantized.length; i++) {
+        // Reverse quantization: value = (((quantized + 128) / 255) * range) + min
+        // Convert signed byte [-128, 127] back to [0, 255] range by adding 128
+        final int scaled = (int) quantized[i] + 128; // Convert to [0, 255]
+        final float normalized = scaled / 255.0f; // [0, 1]
+        result[i] = normalized * range + qmeta.min;
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Dequantizes a BINARY quantized vector back to float array.
+   * Unpacks bits and converts back to float values using the median threshold.
+   *
+   * @param packed The packed binary data
+   * @param qmeta  The BINARY quantization metadata with median
+   * @return The dequantized float vector
+   */
+  private float[] dequantizeFromBinary(final byte[] packed,
+      final VectorQuantizationMetadata.BinaryQuantizationMetadata qmeta) {
+    final float[] result = new float[qmeta.originalLength];
+
+    for (int i = 0; i < qmeta.originalLength; i++) {
+      final int byteIndex = i / 8;
+      final int bitIndex = i % 8;
+      final boolean bitSet = (packed[byteIndex] & (1 << bitIndex)) != 0;
+
+      // Reconstruct value based on bit: 1 -> above median, 0 -> below median
+      // This is a lossy approximation - we just use median or 0 as the values
+      result[i] = bitSet ? qmeta.median : 0.0f;
+    }
+
+    return result;
+  }
+
+  /**
+   * Reads a quantized vector from a file offset and dequantizes it.
+   * This method reads the quantized vector data stored in index pages and converts it back to float[].
+   *
+   * @param fileOffset The absolute file offset where the vector entry starts
+   * @param isCompacted Whether to read from compacted or mutable file
+   * @return The dequantized float vector, or null if quantization is disabled or vector not found
+   */
+  protected float[] readVectorFromOffset(final long fileOffset, final boolean isCompacted) {
+    try {
+      // If no quantization is enabled, return null (caller should fetch from document)
+      if (metadata.quantizationType == VectorQuantizationType.NONE)
+        return null;
+
+      // Calculate page number and offset within page
+      final int pageNum = (int) (fileOffset / getPageSize());
+      final int offsetInPage = (int) (fileOffset % getPageSize()) - BasePage.PAGE_HEADER_SIZE;
+
+      // Get the appropriate file ID
+      final int fileId = isCompacted ? compactedSubIndex.getFileId() : getFileId();
+
+      // Read the page
+      final BasePage page = getDatabase().getPageManager().getImmutablePage(
+          new PageId(getDatabase(), fileId, pageNum), getPageSize(), false, false);
+
+      try {
+        // Skip over the entry header (vectorId, bucketId, position, deleted flag)
+        // These are variable-sized, so we need to read and skip them
+        int pos = offsetInPage;
+
+        // Read and skip vectorId
+        final long[] vectorIdAndSize = page.readNumberAndSize(pos);
+        pos += (int) vectorIdAndSize[1];
+        // Read and skip bucketId
+        final long[] bucketIdAndSize = page.readNumberAndSize(pos);
+        pos += (int) bucketIdAndSize[1];
+        // Read and skip position
+        final long[] positionAndSize = page.readNumberAndSize(pos);
+        pos += (int) positionAndSize[1];
+        // Skip deleted flag
+        pos += 1;
+
+        // Read quantization type flag
+        final byte quantTypeOrdinal = page.readByte(pos);
+        pos += 1;
+
+        final VectorQuantizationType quantType = VectorQuantizationType.values()[quantTypeOrdinal];
+
+        if (quantType == VectorQuantizationType.INT8) {
+          // Read vector length
+          final int vectorLength = page.readInt(pos);
+          pos += 4;
+
+          // Read quantized bytes
+          final byte[] quantized = new byte[vectorLength];
+          for (int i = 0; i < vectorLength; i++) {
+            quantized[i] = page.readByte(pos);
+            pos += 1;
+          }
+
+          // Read min and max
+          final float min = Float.intBitsToFloat(page.readInt(pos));
+          pos += 4;
+          final float max = Float.intBitsToFloat(page.readInt(pos));
+
+          // Dequantize
+          final VectorQuantizationMetadata.Int8QuantizationMetadata qmeta =
+              new VectorQuantizationMetadata.Int8QuantizationMetadata(quantized, min, max);
+          return dequantizeFromInt8(quantized, qmeta);
+
+        } else if (quantType == VectorQuantizationType.BINARY) {
+          // Read original length
+          final int originalLength = page.readInt(pos);
+          pos += 4;
+
+          // Read packed bytes
+          final int byteCount = (originalLength + 7) / 8;
+          final byte[] packed = new byte[byteCount];
+          for (int i = 0; i < byteCount; i++) {
+            packed[i] = page.readByte(pos);
+            pos += 1;
+          }
+
+          // Read median
+          final float median = Float.intBitsToFloat(page.readInt(pos));
+
+          // Dequantize
+          final VectorQuantizationMetadata.BinaryQuantizationMetadata qmeta =
+              new VectorQuantizationMetadata.BinaryQuantizationMetadata(packed, median, originalLength);
+          return dequantizeFromBinary(packed, qmeta);
+        }
+
+        return null;
+
+      } finally {
+        // BasePage is managed by PageManager, no explicit close needed
+      }
+
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Error reading vector from offset %d: %s", fileOffset, e.getMessage());
+      return null;
+    }
+  }
+
+  // ========== END QUANTIZATION HELPER METHODS ==========
+
   /**
    * Create a new vector data page with LSM-style header.
    * Page layout: [offsetFreeContent(4)][numberOfEntries(4)][mutable(1)][entries grow forward sequentially]
@@ -1482,7 +1829,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
           metadata.dimensions,
           vectorProp,
           vectorIndex,
-          ordinalToVectorId
+          ordinalToVectorId,
+          this  // Pass LSM index reference for quantization support
       );
 
       // Perform search
@@ -1654,7 +2002,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
             metadata.dimensions,
             vectorProp,
             vectorIndex,
-            ordinalToVectorId
+            ordinalToVectorId,
+            this  // Pass LSM index reference for quantization support
         );
 
         // Perform search
@@ -2062,6 +2411,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     json.put("properties", metadata.propertyNames);
     json.put("dimensions", metadata.dimensions);
     json.put("similarityFunction", metadata.similarityFunction.name());
+    if (metadata.quantizationType != VectorQuantizationType.NONE)
+      json.put("quantization", metadata.quantizationType.name());
     json.put("maxConnections", metadata.maxConnections);
     json.put("beamWidth", metadata.beamWidth);
     json.put("idPropertyName", metadata.idPropertyName);
