@@ -35,6 +35,8 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
   public VectorQuantizationType   quantizationType   = VectorQuantizationType.NONE;
   public int                      maxConnections     = 16;
   public int                      beamWidth          = 100;
+  public float                    neighborOverflowFactor = 1.2f;
+  public float                    alphaDiversityRelaxation = 1.2f;
   public String                   idPropertyName     = "id";
 
   protected BucketLSMVectorIndexBuilder(DatabaseInternal database, String typeName, String bucketName,
@@ -112,6 +114,36 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
   }
 
   /**
+   * Sets the neighbor overflow factor for graph construction.
+   * This parameter controls how many extra candidate neighbors are considered during graph building.
+   * Higher values can improve graph quality but increase build time.
+   * Typical range: 1.0-1.5, default: 1.2
+   *
+   * @param neighborOverflowFactor the neighbor overflow factor
+   */
+  public BucketLSMVectorIndexBuilder withNeighborOverflowFactor(final float neighborOverflowFactor) {
+    if (neighborOverflowFactor < 1.0f)
+      throw new IllegalArgumentException("neighborOverflowFactor must be at least 1.0");
+    this.neighborOverflowFactor = neighborOverflowFactor;
+    return this;
+  }
+
+  /**
+   * Sets the alpha diversity relaxation factor for graph construction.
+   * This parameter controls the trade-off between distance accuracy and diversity in the graph.
+   * Higher values prioritize diversity, which can improve recall for complex queries.
+   * Typical range: 1.0-1.5, default: 1.2
+   *
+   * @param alphaDiversityRelaxation the alpha diversity relaxation factor
+   */
+  public BucketLSMVectorIndexBuilder withAlphaDiversityRelaxation(final float alphaDiversityRelaxation) {
+    if (alphaDiversityRelaxation < 1.0f)
+      throw new IllegalArgumentException("alphaDiversityRelaxation must be at least 1.0");
+    this.alphaDiversityRelaxation = alphaDiversityRelaxation;
+    return this;
+  }
+
+  /**
    * Sets the ID property name used to identify vertices.
    * This property is used when searching for vertices by ID.
    * Default is "id".
@@ -158,6 +190,8 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
       this.quantizationType = v.quantizationType;
       this.maxConnections = v.maxConnections;
       this.beamWidth = v.beamWidth;
+      this.neighborOverflowFactor = v.neighborOverflowFactor;
+      this.alphaDiversityRelaxation = v.alphaDiversityRelaxation;
       this.idPropertyName = v.idPropertyName;
     }
     return this;
@@ -178,6 +212,12 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
 
     if (metadata.has("beamWidth"))
       this.beamWidth = metadata.getInt("beamWidth");
+
+    if (metadata.has("neighborOverflowFactor"))
+      this.neighborOverflowFactor = ((Number) metadata.get("neighborOverflowFactor")).floatValue();
+
+    if (metadata.has("alphaDiversityRelaxation"))
+      this.alphaDiversityRelaxation = ((Number) metadata.get("alphaDiversityRelaxation")).floatValue();
 
     if (metadata.has("idPropertyName"))
       this.idPropertyName = metadata.getString("idPropertyName");
