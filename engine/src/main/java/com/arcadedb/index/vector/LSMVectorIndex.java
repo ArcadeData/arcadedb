@@ -1222,6 +1222,32 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final boolean deleted = currentPage.readByte(currentOffset) == 1;
           currentOffset += 1;
 
+          // Skip quantized vector data if quantization is enabled
+          // This data is not needed for location index, only for vector retrieval
+          if (metadata.quantizationType != VectorQuantizationType.NONE) {
+            // Read quantization type flag
+            final byte quantTypeOrdinal = currentPage.readByte(currentOffset);
+            currentOffset += 1;
+
+            final VectorQuantizationType quantType = VectorQuantizationType.values()[quantTypeOrdinal];
+
+            if (quantType == VectorQuantizationType.INT8) {
+              // Skip: vector length (4 bytes) + quantized bytes + min (4 bytes) + max (4 bytes)
+              final int vectorLength = currentPage.readInt(currentOffset);
+              currentOffset += 4; // vector length
+              currentOffset += vectorLength; // quantized bytes
+              currentOffset += 8; // min + max (2 floats)
+
+            } else if (quantType == VectorQuantizationType.BINARY) {
+              // Skip: original length (4 bytes) + packed bytes + median (4 bytes)
+              final int originalLength = currentPage.readInt(currentOffset);
+              currentOffset += 4; // original length
+              final int byteCount = (originalLength + 7) / 8; // packed bytes
+              currentOffset += byteCount; // packed bytes
+              currentOffset += 4; // median (float)
+            }
+          }
+
           // Store location metadata with absolute file offset
           vectorIndex.addOrUpdate(id, isCompacted, entryFileOffset, rid, deleted);
           entriesRead++;
