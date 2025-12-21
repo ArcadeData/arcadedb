@@ -935,8 +935,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
           metadata.dimensions,
           metadata.maxConnections,  // M parameter (graph degree)
           metadata.beamWidth,       // efConstruction (construction search depth)
-          1.2f,            // neighbor overflow factor
-          1.2f,            // alpha diversity relaxation
+          metadata.neighborOverflowFactor,    // neighbor overflow factor (default: 1.2)
+          metadata.alphaDiversityRelaxation,  // alpha diversity relaxation (default: 1.2)
           false,           // no distance transform
           true)) {         // enable concurrent updates
 

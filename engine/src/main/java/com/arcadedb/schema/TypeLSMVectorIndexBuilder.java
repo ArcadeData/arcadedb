@@ -108,6 +108,36 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   }
 
   /**
+   * Sets the neighbor overflow factor for graph construction.
+   * This parameter controls how many extra candidate neighbors are considered during graph building.
+   * Higher values can improve graph quality but increase build time.
+   * Typical range: 1.0-1.5, default: 1.2
+   *
+   * @param neighborOverflowFactor the neighbor overflow factor
+   */
+  public TypeLSMVectorIndexBuilder withNeighborOverflowFactor(final float neighborOverflowFactor) {
+    if (neighborOverflowFactor < 1.0f)
+      throw new IllegalArgumentException("neighborOverflowFactor must be at least 1.0");
+    ((LSMVectorIndexMetadata) metadata).neighborOverflowFactor = neighborOverflowFactor;
+    return this;
+  }
+
+  /**
+   * Sets the alpha diversity relaxation factor for graph construction.
+   * This parameter controls the trade-off between distance accuracy and diversity in the graph.
+   * Higher values prioritize diversity, which can improve recall for complex queries.
+   * Typical range: 1.0-1.5, default: 1.2
+   *
+   * @param alphaDiversityRelaxation the alpha diversity relaxation factor
+   */
+  public TypeLSMVectorIndexBuilder withAlphaDiversityRelaxation(final float alphaDiversityRelaxation) {
+    if (alphaDiversityRelaxation < 1.0f)
+      throw new IllegalArgumentException("alphaDiversityRelaxation must be at least 1.0");
+    ((LSMVectorIndexMetadata) metadata).alphaDiversityRelaxation = alphaDiversityRelaxation;
+    return this;
+  }
+
+  /**
    * Sets the ID property name used to identify vertices.
    * This property is used when searching for vertices by ID.
    * Default is "id".
@@ -168,6 +198,12 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
 
     if (json.has("beamWidth"))
       v.beamWidth = json.getInt("beamWidth");
+
+    if (json.has("neighborOverflowFactor"))
+      v.neighborOverflowFactor = ((Number) json.get("neighborOverflowFactor")).floatValue();
+
+    if (json.has("alphaDiversityRelaxation"))
+      v.alphaDiversityRelaxation = ((Number) json.get("alphaDiversityRelaxation")).floatValue();
 
     if (json.has("idPropertyName"))
       v.idPropertyName = json.getString("idPropertyName");

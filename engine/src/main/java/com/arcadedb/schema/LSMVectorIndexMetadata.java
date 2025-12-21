@@ -25,6 +25,8 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   public VectorQuantizationType   quantizationType   = VectorQuantizationType.NONE;
   public int                      maxConnections     = 16;
   public int                      beamWidth          = 100;
+  public float                    neighborOverflowFactor = 1.2f;
+  public float                    alphaDiversityRelaxation = 1.2f;
   public String                   idPropertyName     = "id";
 
   public LSMVectorIndexMetadata(final String typeName, final String[] propertyNames, final int bucketId) {
@@ -49,6 +51,12 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
 
     if (metadata.has("beamWidth"))
       this.beamWidth = metadata.getInt("beamWidth");
+
+    if (metadata.has("neighborOverflowFactor"))
+      this.neighborOverflowFactor = ((Number) metadata.get("neighborOverflowFactor")).floatValue();
+
+    if (metadata.has("alphaDiversityRelaxation"))
+      this.alphaDiversityRelaxation = ((Number) metadata.get("alphaDiversityRelaxation")).floatValue();
 
     if (metadata.has("idPropertyName"))
       this.idPropertyName = metadata.getString("idPropertyName");
