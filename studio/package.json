@@ -43,7 +43,7 @@
     "notyf": "^3.10.0",
     "pdfmake": "^0.2.13",
     "swagger-ui-dist": "^5.31.0",
-    "sweetalert2": "^11.26.10",
+    "sweetalert2": "^11.26.12",
     "webcola": "^3.4.0"
   },
   "devDependencies": {
