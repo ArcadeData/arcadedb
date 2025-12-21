@@ -26,7 +26,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -164,7 +164,8 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
       // Combine text and image embeddings (blog post example)
       final ResultSet rs = database.query("sql",
           "SELECT document_id, " +
-              "vectorNormalize(vectorAdd(vectorScale(text_embedding, 0.7), vectorScale(image_embedding, 0.3))) as multi_modal_embedding " +
+              "vectorNormalize(vectorAdd(vectorScale(text_embedding, 0.7), vectorScale(image_embedding, 0.3))) as multi_modal_embedding "
+              +
               "FROM documents");
 
       assertThat(rs.hasNext()).isTrue();
@@ -604,7 +605,8 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
 
     database.transaction(() -> {
       // Value clipping (blog post example)
-      database.command("sql", "UPDATE documents SET embedding = vectorClip(embedding, -3.0, 3.0) WHERE vectorLInfNorm(embedding) > 3.0");
+      database.command("sql",
+          "UPDATE documents SET embedding = vectorClip(embedding, -3.0, 3.0) WHERE vectorLInfNorm(embedding) > 3.0");
     });
 
     database.transaction(() -> {
@@ -736,7 +738,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
           lsmIndex.findNeighborsFromVector(queryComposite, 10);
 
       assertThat(results).isNotEmpty();
-      final com.arcadedb.database.Document doc = results.get(0).getFirst().asDocument();
+      final com.arcadedb.database.Document doc = results.getFirst().getFirst().asDocument();
       assertThat(doc.<String>get("title")).isEqualTo("Multi-modal Doc");
     });
   }
@@ -824,7 +826,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
           lsmIndex.findNeighborsFromVector(queryEmbedding, 10);
 
       assertThat(results).isNotEmpty();
-      final com.arcadedb.database.Document topDoc = results.get(0).getFirst().asDocument();
+      final com.arcadedb.database.Document topDoc = results.getFirst().getFirst().asDocument();
       assertThat(topDoc.<String>get("title")).isEqualTo("Introduction to RAG");
 
       // Step 5: Use vector functions (from document data)

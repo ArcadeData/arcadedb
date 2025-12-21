@@ -24,19 +24,18 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.Pair;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
-import java.util.List;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Comprehensive tests for vector quantization functionality to validate the fix for
  * the "Variable length quantity is too long" bug.
- * 
+ * <p>
  * Tests cover:
  * - INT8 and BINARY quantization across multiple dimensions
  * - Persistence and reload from disk
@@ -104,7 +103,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
         assertThat(results).isNotEmpty();
       }
       assertThat(results.size()).isLessThanOrEqualTo(10);
-      
+
       // Verify we can retrieve the documents (if any results)
       for (Pair<com.arcadedb.database.RID, Float> result : results) {
         final com.arcadedb.database.Document doc = result.getFirst().asDocument();
@@ -119,7 +118,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
     // Test that INT8 quantization persists correctly across database reopen
     final int dimensions = 32;
     final int numVectors = 50;
-    
+
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("Document");
       docType.createProperty("id", Type.INTEGER);
@@ -152,7 +151,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
 
       final LSMVectorIndex lsmIndex = (LSMVectorIndex) index.getIndexesOnBuckets()[0];
       assertThat(lsmIndex.getMetadata().quantizationType).isEqualTo(VectorQuantizationType.INT8);
-      
+
       // Verify all vectors are still accessible
       assertThat(lsmIndex.countEntries()).isEqualTo(numVectors);
 
@@ -170,7 +169,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
     // Test that BINARY quantization persists correctly across database reopen
     final int dimensions = 32;
     final int numVectors = 50;
-    
+
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("Document");
       docType.createProperty("id", Type.INTEGER);
@@ -203,7 +202,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
 
       final LSMVectorIndex lsmIndex = (LSMVectorIndex) index.getIndexesOnBuckets()[0];
       assertThat(lsmIndex.getMetadata().quantizationType).isEqualTo(VectorQuantizationType.BINARY);
-      
+
       // Verify all vectors are still accessible
       assertThat(lsmIndex.countEntries()).isEqualTo(numVectors);
 
@@ -221,7 +220,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
     // Test that INT8 quantization allows basic search functionality
     final int dimensions = 64;
     final int numVectors = 50;  // Reduced from 100
-    
+
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("Document");
       docType.createProperty("id", Type.INTEGER);
@@ -263,7 +262,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
     // Test that BINARY quantization allows basic search functionality
     final int dimensions = 64;
     final int numVectors = 30;  // Reduced for reliability
-    
+
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("Document");
       docType.createProperty("id", Type.INTEGER);
@@ -321,7 +320,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
     // Test with larger dimensions (128) to ensure no overflow issues
     final int dimensions = 128;
     final int numVectors = 30;  // Reduced to avoid timeout
-    
+
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("Document");
       docType.createProperty("id", Type.INTEGER);
@@ -362,7 +361,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
     // Test with larger dimensions (128) to ensure no overflow issues
     final int dimensions = 128;
     final int numVectors = 30;  // Reduced to avoid timeout
-    
+
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("Document");
       docType.createProperty("id", Type.INTEGER);
