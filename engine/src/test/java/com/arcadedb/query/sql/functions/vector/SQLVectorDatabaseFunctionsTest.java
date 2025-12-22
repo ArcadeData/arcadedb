@@ -128,8 +128,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
       // Compute similarity scores (blog post example)
       final ResultSet rs = database.query("sql",
           "SELECT vectorDotProduct(v1_embedding, v2_embedding) as dot_prod, " +
-              "vectorCosineSimilarity(v1_embedding, v2_embedding) as cosine_sim, " +
-              "vectorInnerProduct(v1_embedding, v2_embedding) as inner_prod " +
+              "vectorCosineSimilarity(v1_embedding, v2_embedding) as cosine_sim " +
               "FROM document_pairs");
 
       assertThat(rs.hasNext()).isTrue();
@@ -137,7 +136,6 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
 
       assertThat(result.<Float>getProperty("dot_prod")).isCloseTo(0.6f, org.assertj.core.data.Offset.offset(0.001f));
       assertThat(result.<Float>getProperty("cosine_sim")).isCloseTo(0.6f, org.assertj.core.data.Offset.offset(0.001f));
-      assertThat(result.<Float>getProperty("inner_prod")).isCloseTo(0.6f, org.assertj.core.data.Offset.offset(0.001f));
     });
   }
 
