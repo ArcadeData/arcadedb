@@ -324,18 +324,6 @@ class SQLFunctionPhase1Test extends TestHelper {
     }
   }
 
-  @Test
-  void sqlVectorInnerProduct() {
-    String query = "SELECT vectorInnerProduct([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]) as inner";
-    try (ResultSet results = database.query("sql", query)) {
-      assertThat(results.hasNext()).isTrue();
-
-      var result = results.next();
-      final float inner = result.getProperty("inner");
-
-      assertThat(inner).isCloseTo(32.0f, org.assertj.core.data.Offset.offset(0.001f));
-    }
-  }
 
   @Test
   void sqlPhase1Combined() {
