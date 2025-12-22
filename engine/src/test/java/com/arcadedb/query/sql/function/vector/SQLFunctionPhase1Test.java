@@ -5,7 +5,7 @@ import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -216,7 +216,7 @@ class SQLFunctionPhase1Test extends TestHelper {
 
   @Test
   void vectorInnerProduct() {
-    final SQLFunctionVectorInnerProduct function = new SQLFunctionVectorInnerProduct();
+    final SQLFunctionVectorDotProduct function = new SQLFunctionVectorDotProduct();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -230,7 +230,7 @@ class SQLFunctionPhase1Test extends TestHelper {
 
   @Test
   void vectorInnerProductNegative() {
-    final SQLFunctionVectorInnerProduct function = new SQLFunctionVectorInnerProduct();
+    final SQLFunctionVectorDotProduct function = new SQLFunctionVectorDotProduct();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -352,11 +352,11 @@ class SQLFunctionPhase1Test extends TestHelper {
       assertThat(results.hasNext()).isTrue();
 
       var result = results.next();
-      assertThat(result.<Integer> getProperty("dims")).isEqualTo(3);
-      assertThat(result.<Float> getProperty("magnitude")).isCloseTo(2.236f, org.assertj.core.data.Offset.offset(0.01f));
-      assertThat(result.<Float> getProperty("dot")).isCloseTo(11.0f, org.assertj.core.data.Offset.offset(0.001f));
-      assertThat(result.<Float> getProperty("distance")).isCloseTo(5.0f, org.assertj.core.data.Offset.offset(0.001f));
-      assertThat(result.<Float> getProperty("cosine")).isCloseTo(1.0f, org.assertj.core.data.Offset.offset(0.001f));
+      assertThat(result.<Integer>getProperty("dims")).isEqualTo(3);
+      assertThat(result.<Float>getProperty("magnitude")).isCloseTo(2.236f, org.assertj.core.data.Offset.offset(0.01f));
+      assertThat(result.<Float>getProperty("dot")).isCloseTo(11.0f, org.assertj.core.data.Offset.offset(0.001f));
+      assertThat(result.<Float>getProperty("distance")).isCloseTo(5.0f, org.assertj.core.data.Offset.offset(0.001f));
+      assertThat(result.<Float>getProperty("cosine")).isCloseTo(1.0f, org.assertj.core.data.Offset.offset(0.001f));
     }
   }
 
