@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * Calculates the magnitude (Euclidean length) of a vector.
  * This is the L2 norm: sqrt(sum of squared components).
- *
+ * <p>
  * Uses scalar implementation which is significantly faster than JVector for typical vector sizes.
  * JVector overhead from object allocation and conversion dominates actual computation cost.
  *
@@ -55,14 +55,13 @@ public class SQLFunctionVectorMagnitude extends SQLFunctionVectorAbstract {
 
     // Calculate L2 norm (Euclidean magnitude): sqrt(sum of squared components)
     double magnitude = 0.0;
-    for (final float component : v) {
+    for (final float component : v)
       magnitude += component * component;
-    }
+
     return (float) Math.sqrt(magnitude);
   }
 
-
   public String getSyntax() {
-    return "vectorMagnitude(<vector>)";
+    return NAME + "(<vector>)";
   }
 }

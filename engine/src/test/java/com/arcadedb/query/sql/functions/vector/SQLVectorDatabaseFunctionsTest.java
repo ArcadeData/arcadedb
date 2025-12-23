@@ -101,7 +101,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
     database.transaction(() -> {
       // Calculate vector properties (blog post example)
       final ResultSet rs = database.query("sql",
-          "SELECT vectorDims(embedding) as dimensions, vectorMagnitude(embedding) as length FROM documents");
+          "SELECT vectorDimension(embedding) as dimensions, vectorMagnitude(embedding) as length FROM documents");
 
       assertThat(rs.hasNext()).isTrue();
       final Result result = rs.next();
@@ -830,7 +830,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
       // Step 5: Use vector functions (from document data)
       final Object embeddingObj = topDoc.get("embedding");
       final ResultSet funcs = database.query("sql",
-          "SELECT vectorMagnitude(?) as magnitude, vectorDims(?) as dims", embeddingObj, embeddingObj);
+          "SELECT vectorMagnitude(?) as magnitude, vectorDimension(?) as dims", embeddingObj, embeddingObj);
 
       assertThat(funcs.hasNext()).isTrue();
       final Result funcResult = funcs.next();

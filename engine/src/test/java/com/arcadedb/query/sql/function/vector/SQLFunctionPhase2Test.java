@@ -165,7 +165,7 @@ class SQLFunctionPhase2Test extends TestHelper {
 
   @Test
   void sqlVectorAdd() {
-    String query = "SELECT vectorAdd([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]) as sum";
+    String query = "SELECT vectorAdd( [1.0, 2.0, 3.0], [4.0, 5.0, 6.0] ) as sum";
     try (ResultSet results = database.query("sql", query)) {
       assertThat(results.hasNext()).isTrue();
 

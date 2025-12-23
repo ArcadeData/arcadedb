@@ -62,6 +62,6 @@ public class SQLFunctionVectorMultiply extends SQLFunctionVectorAbstract {
 
 
   public String getSyntax() {
-    return "vectorMultiply(<vector1>, <vector2>)";
+    return NAME+"(<vector1>, <vector2>)";
   }
 }

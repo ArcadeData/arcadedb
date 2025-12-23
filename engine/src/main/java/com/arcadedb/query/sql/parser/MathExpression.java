@@ -208,7 +208,10 @@ public class MathExpression extends SimpleNode {
           final Number r = apply(leftAsLong, rightAsLong);
           return Duration.of(r.longValue(), highestPrecision);
         } else if (left instanceof Collection coll) {
-          coll.add(right);
+          if (right instanceof Collection<?> coll2)
+            coll.addAll(coll2);
+          else
+            coll.add(right);
           return left;
         } else if (left instanceof Map mapLeft) {
 

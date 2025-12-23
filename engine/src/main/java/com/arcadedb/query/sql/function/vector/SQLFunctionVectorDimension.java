@@ -28,10 +28,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionVectorDims extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorDims";
+public class SQLFunctionVectorDimension extends SQLFunctionVectorAbstract {
+  public static final String NAME = "vectorDimension";
 
-  public SQLFunctionVectorDims() {
+  public SQLFunctionVectorDimension() {
     super(NAME);
   }
 
@@ -42,21 +42,17 @@ public class SQLFunctionVectorDims extends SQLFunctionVectorAbstract {
 
     final Object vector = params[0];
 
-    if (vector == null)
-      throw new CommandSQLParsingException("Vector cannot be null");
-
-    if (vector instanceof float[] floatArray) {
-      return floatArray.length;
-    } else if (vector instanceof Object[] objArray) {
-      return objArray.length;
-    } else if (vector instanceof java.util.List<?> list) {
-      return list.size();
-    } else {
-      throw new CommandSQLParsingException("Vector must be an array or list, found: " + vector.getClass().getSimpleName());
-    }
+    return switch (vector) {
+      case null -> throw new CommandSQLParsingException("Vector cannot be null");
+      case float[] floatArray -> floatArray.length;
+      case Object[] objArray -> objArray.length;
+      case java.util.List<?> list -> list.size();
+      default ->
+          throw new CommandSQLParsingException("Vector must be an array or list, found: " + vector.getClass().getSimpleName());
+    };
   }
 
   public String getSyntax() {
-    return "vectorDims(<vector>)";
+    return NAME + "(<vector>)";
   }
 }

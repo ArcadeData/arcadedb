@@ -93,6 +93,6 @@ public class SQLFunctionVectorDistance extends SQLFunctionVectorAbstract {
   }
 
   public String getSyntax() {
-    return "vectorDistance(<vector1>, <vector2>, <algorithm>)";
+    return NAME + "(<vector1>, <vector2>, <algorithm>)";
   }
 }

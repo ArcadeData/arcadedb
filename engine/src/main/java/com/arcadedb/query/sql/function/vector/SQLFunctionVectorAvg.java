@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * Aggregate function that computes element-wise average of vectors (centroid).
  * Returns a vector where each component is the average of corresponding components across all input vectors.
- *
+ * <p>
  * Uses JVector's SIMD-optimized VectorUtil.scale() for the final averaging operation,
  * providing up to 2-3x performance improvement for large vectors on Java 20+ with Vector API enabled.
  *
@@ -35,8 +35,8 @@ public class SQLFunctionVectorAvg extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorAvg";
 
   private float[] sumVector;
-  private long count;
-  private int dimensions;
+  private long    count;
+  private int     dimensions;
 
   public SQLFunctionVectorAvg() {
     super(NAME);
@@ -107,7 +107,6 @@ public class SQLFunctionVectorAvg extends SQLFunctionVectorAbstract {
       return avgVector;
     }
   }
-
 
   public String getSyntax() {
     return NAME + "(<vector_column>)";
