@@ -27,7 +27,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * Returns a value between -1 and 1, where 1 means identical direction,
  * 0 means perpendicular, and -1 means opposite direction.
  * Useful for comparing normalized embeddings.
- *
+ * <p>
  * Uses JVector's SIMD-optimized VectorUtil.cosine() for up to 6-7x performance improvement
  * when running on Java 20+ with Panama Vector API enabled (--add-modules jdk.incubator.vector).
  *
@@ -93,8 +93,7 @@ public class SQLFunctionVectorCosineSimilarity extends SQLFunctionVectorAbstract
     }
   }
 
-
   public String getSyntax() {
-    return "vectorCosineSimilarity(<vector1>, <vector2>)";
+    return NAME + "(<vector1>, <vector2>)";
   }
 }

@@ -26,7 +26,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * Calculates the Euclidean (L2) distance between two vectors.
  * This is the straight-line distance in multi-dimensional space.
  * Lower values indicate greater similarity.
- *
+ * <p>
  * Uses JVector's SIMD-optimized VectorUtil.squareL2Distance() for up to 5-6x performance improvement
  * when running on Java 20+ with Panama Vector API enabled (--add-modules jdk.incubator.vector).
  *
@@ -74,8 +74,7 @@ public class SQLFunctionVectorL2Distance extends SQLFunctionVectorAbstract {
     }
   }
 
-
   public String getSyntax() {
-    return "vectorL2Distance(<vector1>, <vector2>)";
+    return NAME + "(<vector1>, <vector2>)";
   }
 }

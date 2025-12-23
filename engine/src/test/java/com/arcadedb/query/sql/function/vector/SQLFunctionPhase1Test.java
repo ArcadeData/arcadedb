@@ -89,8 +89,8 @@ class SQLFunctionPhase1Test extends TestHelper {
   }
 
   @Test
-  void vectorDims() {
-    final SQLFunctionVectorDims function = new SQLFunctionVectorDims();
+  void vectorDimension() {
+    final SQLFunctionVectorDimension function = new SQLFunctionVectorDimension();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -102,8 +102,8 @@ class SQLFunctionPhase1Test extends TestHelper {
   }
 
   @Test
-  void vectorDimsWithList() {
-    final SQLFunctionVectorDims function = new SQLFunctionVectorDims();
+  void vectorDimensionWithList() {
+    final SQLFunctionVectorDimension function = new SQLFunctionVectorDimension();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -273,8 +273,8 @@ class SQLFunctionPhase1Test extends TestHelper {
   }
 
   @Test
-  void sqlVectorDims() {
-    String query = "SELECT vectorDims([1.0, 2.0, 3.0, 4.0, 5.0]) as dims";
+  void sqlVectorDimension() {
+    String query = "SELECT vectorDimension([1.0, 2.0, 3.0, 4.0, 5.0]) as dims";
     try (ResultSet results = database.query("sql", query)) {
       assertThat(results.hasNext()).isTrue();
 
@@ -324,12 +324,11 @@ class SQLFunctionPhase1Test extends TestHelper {
     }
   }
 
-
   @Test
   void sqlPhase1Combined() {
     String query = """
         SELECT
-          vectorDims([1.0, 2.0, 3.0]) as dims,
+          vectorDimension([1.0, 2.0, 3.0]) as dims,
           vectorMagnitude([1.0, 2.0]) as magnitude,
           vectorDotProduct([1.0, 2.0], [3.0, 4.0]) as dot,
           vectorL2Distance([0.0, 0.0], [3.0, 4.0]) as distance,

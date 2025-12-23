@@ -24,7 +24,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * Performs element-wise vector addition.
  * Returns a new vector where each component is the sum of corresponding components.
- *
+ * <p>
  * Uses scalar implementation which is 7-11x faster than JVector for typical vector sizes (< 1024).
  * JVector overhead from object allocation and conversion dominates actual computation cost.
  *
@@ -56,6 +56,6 @@ public class SQLFunctionVectorAdd extends SQLFunctionVectorAbstract {
   }
 
   public String getSyntax() {
-    return "vectorAdd(<vector1>, <vector2>)";
+    return NAME + "(<vector1>, <vector2>)";
   }
 }

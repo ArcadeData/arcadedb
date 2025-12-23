@@ -89,7 +89,7 @@ import com.arcadedb.query.sql.function.vector.SQLFunctionVectorAvg;
 import com.arcadedb.query.sql.function.vector.SQLFunctionVectorClip;
 import com.arcadedb.query.sql.function.vector.SQLFunctionVectorCosineSimilarity;
 import com.arcadedb.query.sql.function.vector.SQLFunctionVectorDequantizeInt8;
-import com.arcadedb.query.sql.function.vector.SQLFunctionVectorDims;
+import com.arcadedb.query.sql.function.vector.SQLFunctionVectorDimension;
 import com.arcadedb.query.sql.function.vector.SQLFunctionVectorDistance;
 import com.arcadedb.query.sql.function.vector.SQLFunctionVectorDotProduct;
 import com.arcadedb.query.sql.function.vector.SQLFunctionVectorHasInf;
@@ -201,7 +201,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     // Phase 1.1: Basic Operations
     register(SQLFunctionVectorNormalize.NAME, new SQLFunctionVectorNormalize());
     register(SQLFunctionVectorMagnitude.NAME, new SQLFunctionVectorMagnitude());
-    register(SQLFunctionVectorDims.NAME, new SQLFunctionVectorDims());
+    register(SQLFunctionVectorDimension.NAME, new SQLFunctionVectorDimension());
     register(SQLFunctionVectorDotProduct.NAME, new SQLFunctionVectorDotProduct());
     // Phase 1.2: Similarity Scoring
     register(SQLFunctionVectorCosineSimilarity.NAME, new SQLFunctionVectorCosineSimilarity());

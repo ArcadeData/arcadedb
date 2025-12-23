@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * Multiplies a vector by a scalar value.
  * Returns a new vector where each component is multiplied by the scalar.
- *
+ * <p>
  * Uses scalar implementation which is 3-12x faster than JVector for typical vector sizes (< 4096).
  * JVector overhead from object allocation and conversion dominates actual computation cost.
  *
@@ -66,8 +66,7 @@ public class SQLFunctionVectorScale extends SQLFunctionVectorAbstract {
     return result;
   }
 
-
   public String getSyntax() {
-    return "vectorScale(<vector>, <scalar>)";
+    return NAME + "(<vector>, <scalar>)";
   }
 }

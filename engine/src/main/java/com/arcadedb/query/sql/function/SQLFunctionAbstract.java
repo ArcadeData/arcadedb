@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.function;
 
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
 /**
@@ -55,5 +56,47 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
   @Override
   public Object getResult() {
     return null;
+  }
+
+  /**
+   * Converts various input types (float[], Object[], List) to a float array.
+   * Handles type conversion and validation with helpful error messages.
+   *
+   * @param vector The input vector (can be float[], Object[], or List)
+   *
+   * @return float array representation
+   *
+   * @throws CommandSQLParsingException if input type is invalid or contains non-numeric elements
+   */
+  protected float[] toFloatArray(final Object vector) {
+    switch (vector) {
+    case float[] floatArray -> {
+      return floatArray;
+    }
+    case Object[] objArray -> {
+      final float[] result = new float[objArray.length];
+      for (int i = 0; i < objArray.length; i++) {
+        if (objArray[i] instanceof Number num) {
+          result[i] = num.floatValue();
+        } else {
+          throw new CommandSQLParsingException("Vector elements must be numbers, found: " + objArray[i].getClass().getSimpleName());
+        }
+      }
+      return result;
+    }
+    case java.util.List<?> list -> {
+      final float[] result = new float[list.size()];
+      for (int i = 0; i < list.size(); i++) {
+        final Object elem = list.get(i);
+        if (elem instanceof Number num) {
+          result[i] = num.floatValue();
+        } else {
+          throw new CommandSQLParsingException("Vector elements must be numbers, found: " + elem.getClass().getSimpleName());
+        }
+      }
+      return result;
+    }
+    default -> throw new CommandSQLParsingException("Vector must be an array or list, found: " + vector.getClass().getSimpleName());
+    }
   }
 }

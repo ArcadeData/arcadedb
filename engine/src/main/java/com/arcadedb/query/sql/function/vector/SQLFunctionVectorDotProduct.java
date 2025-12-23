@@ -29,7 +29,7 @@ import io.github.jbellis.jvector.vector.types.VectorFloat;
  * Calculates the dot product (inner product) of two vectors.
  * The dot product is the sum of element-wise products.
  * Note: For use with normalized vectors, this is equivalent to cosine similarity.
- *
+ * <p>
  * Uses conditional optimization: scalar for typical vectors (< 4096 elements),
  * JVector SIMD for large vectors (4096+) where 10.6x speedup is observed.
  *
@@ -83,8 +83,7 @@ public class SQLFunctionVectorDotProduct extends SQLFunctionVectorAbstract {
     return (float) result;
   }
 
-
   public String getSyntax() {
-    return "vectorDotProduct(<vector1>, <vector2>)";
+    return NAME + "(<vector1>, <vector2>)";
   }
 }

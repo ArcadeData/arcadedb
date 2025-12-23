@@ -24,7 +24,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * Performs element-wise vector subtraction.
  * Returns a new vector where each component is the difference of corresponding components (v1 - v2).
- *
+ * <p>
  * Uses scalar implementation which is 7-11x faster than JVector for typical vector sizes (< 1024).
  * JVector overhead from object allocation and conversion dominates actual computation cost.
  *
@@ -49,13 +49,13 @@ public class SQLFunctionVectorSubtract extends SQLFunctionVectorAbstract {
 
     // Scalar implementation - significantly faster than JVector for typical sizes
     final float[] result = new float[v1.length];
-    for (int i = 0; i < v1.length; i++) {
+    for (int i = 0; i < v1.length; i++)
       result[i] = v1[i] - v2[i];
-    }
+
     return result;
   }
 
   public String getSyntax() {
-    return "vectorSubtract(<vector1>, <vector2>)";
+    return NAME + "(<vector1>, <vector2>)";
   }
 }
