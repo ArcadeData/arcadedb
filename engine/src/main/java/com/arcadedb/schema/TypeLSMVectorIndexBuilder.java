@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.vector.VectorQuantizationType;
 import com.arcadedb.serializer.json.JSONObject;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
@@ -107,6 +108,36 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   }
 
   /**
+   * Sets the neighbor overflow factor for graph construction.
+   * This parameter controls how many extra candidate neighbors are considered during graph building.
+   * Higher values can improve graph quality but increase build time.
+   * Typical range: 1.0-1.5, default: 1.2
+   *
+   * @param neighborOverflowFactor the neighbor overflow factor
+   */
+  public TypeLSMVectorIndexBuilder withNeighborOverflowFactor(final float neighborOverflowFactor) {
+    if (neighborOverflowFactor < 1.0f)
+      throw new IllegalArgumentException("neighborOverflowFactor must be at least 1.0");
+    ((LSMVectorIndexMetadata) metadata).neighborOverflowFactor = neighborOverflowFactor;
+    return this;
+  }
+
+  /**
+   * Sets the alpha diversity relaxation factor for graph construction.
+   * This parameter controls the trade-off between distance accuracy and diversity in the graph.
+   * Higher values prioritize diversity, which can improve recall for complex queries.
+   * Typical range: 1.0-1.5, default: 1.2
+   *
+   * @param alphaDiversityRelaxation the alpha diversity relaxation factor
+   */
+  public TypeLSMVectorIndexBuilder withAlphaDiversityRelaxation(final float alphaDiversityRelaxation) {
+    if (alphaDiversityRelaxation < 1.0f)
+      throw new IllegalArgumentException("alphaDiversityRelaxation must be at least 1.0");
+    ((LSMVectorIndexMetadata) metadata).alphaDiversityRelaxation = alphaDiversityRelaxation;
+    return this;
+  }
+
+  /**
    * Sets the ID property name used to identify vertices.
    * This property is used when searching for vertices by ID.
    * Default is "id".
@@ -116,6 +147,33 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   public TypeLSMVectorIndexBuilder withIdProperty(final String idPropertyName) {
     ((LSMVectorIndexMetadata) metadata).idPropertyName = idPropertyName;
     return this;
+  }
+
+  /**
+   * Sets the quantization type for vector compression.
+   * NONE (default): No quantization, stores float32 vectors (4 bytes per dimension)
+   * INT8: 4x compression using int8 quantization
+   * BINARY: 32x compression using binary quantization
+   *
+   * @param quantizationType the quantization type
+   */
+  public TypeLSMVectorIndexBuilder withQuantization(final VectorQuantizationType quantizationType) {
+    ((LSMVectorIndexMetadata) metadata).quantizationType = quantizationType;
+    return this;
+  }
+
+  /**
+   * Sets the quantization type for vector compression by string name.
+   *
+   * @param quantization the quantization type name (NONE, INT8, BINARY)
+   */
+  public TypeLSMVectorIndexBuilder withQuantization(final String quantization) {
+    try {
+      ((LSMVectorIndexMetadata) metadata).quantizationType = VectorQuantizationType.valueOf(quantization.toUpperCase());
+      return this;
+    } catch (final IllegalArgumentException e) {
+      throw new IndexException("Invalid quantization type: " + quantization + ". Supported values: NONE, INT8, BINARY");
+    }
   }
 
   @Override
@@ -132,11 +190,20 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
     if (json.has("similarity"))
       withSimilarity(json.getString("similarity"));
 
+    if (json.has("quantization"))
+      withQuantization(json.getString("quantization"));
+
     if (json.has("maxConnections"))
       v.maxConnections = json.getInt("maxConnections");
 
     if (json.has("beamWidth"))
       v.beamWidth = json.getInt("beamWidth");
+
+    if (json.has("neighborOverflowFactor"))
+      v.neighborOverflowFactor = ((Number) json.get("neighborOverflowFactor")).floatValue();
+
+    if (json.has("alphaDiversityRelaxation"))
+      v.alphaDiversityRelaxation = ((Number) json.get("alphaDiversityRelaxation")).floatValue();
 
     if (json.has("idPropertyName"))
       v.idPropertyName = json.getString("idPropertyName");

@@ -91,6 +91,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.concurrent.locks.*;
 import java.util.logging.*;
+import java.util.stream.*;
 
 /**
  * Local implementation of {@link Database}. It is based on files opened on the local file system.
@@ -322,6 +323,29 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public String getDatabasePath() {
     return databasePath;
+  }
+
+  @Override
+  public long getSize() {
+    return executeInReadLock(() -> {
+      checkDatabaseIsOpen();
+      try {
+        final Path dir = Path.of(databasePath);
+        if (!Files.exists(dir))
+          return 0L;
+        try (Stream<Path> stream = Files.walk(dir)) {
+          return stream.filter(Files::isRegularFile).mapToLong(p -> {
+            try {
+              return Files.size(p);
+            } catch (IOException e) {
+              throw new UncheckedIOException(e);
+            }
+          }).sum();
+        }
+      } catch (Exception e) {
+        throw new DatabaseOperationException("Error calculating database size", e.getCause());
+      }
+    });
   }
 
   @Override
@@ -1700,12 +1724,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     }
 
     if (!drop) {
-      // CLOSE ALL INDEXES WHILE THE DATABASE IS STILL OPEN TO AVOID "FILE CLOSED" ERRORS
+      // FLUSH ALL INDEXES WHILE THE DATABASE IS STILL OPEN
       for (Index idx : schema.getIndexes()) {
         try {
-          ((IndexInternal) idx).close();
+          ((IndexInternal) idx).flush();
         } catch (Exception e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error closing index %s: %s", e, idx.getName(), e.getMessage());
+          LogManager.instance().log(this, Level.SEVERE, "Error on flushing index %s: %s", e, idx.getName(), e.getMessage());
         }
       }
     }

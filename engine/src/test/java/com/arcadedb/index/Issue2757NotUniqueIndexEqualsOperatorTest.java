@@ -90,7 +90,7 @@ class Issue2757NotUniqueIndexEqualsOperatorTest extends TestHelper {
   }
 
   @Test
-  void testEqualsOperatorBeforeIndexCreation() {
+  void equalsOperatorBeforeIndexCreation() {
     // Test that = operator works BEFORE creating index
     database.transaction(() -> {
       for (String title : TEST_TITLES) {
@@ -114,7 +114,7 @@ class Issue2757NotUniqueIndexEqualsOperatorTest extends TestHelper {
   }
 
   @Test
-  void testEqualsOperatorAfterIndexCreation() {
+  void equalsOperatorAfterIndexCreation() {
     // First verify = works before index
     database.transaction(() -> {
       for (String title : TEST_TITLES) {
@@ -184,7 +184,7 @@ class Issue2757NotUniqueIndexEqualsOperatorTest extends TestHelper {
   }
 
   @Test
-  void testLikeOperatorStillWorksAfterIndexCreation() {
+  void likeOperatorStillWorksAfterIndexCreation() {
     // Create NOTUNIQUE index on existing large dataset
     database.transaction(() -> {
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false,

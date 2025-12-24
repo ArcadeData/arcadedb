@@ -58,6 +58,7 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
             result.setProperty("name", db.getName());
             result.setProperty("path", db.getDatabasePath());
             result.setProperty("mode", db.getMode());
+            result.setProperty("size", db.getSize());
             result.setProperty("dateFormat", db.getSchema().getDateFormat());
             result.setProperty("dateTimeFormat", db.getSchema().getDateTimeFormat());
             result.setProperty("timezone", db.getSchema().getTimeZone().getDisplayName());

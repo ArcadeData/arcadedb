@@ -60,6 +60,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private         MultiIterator<Map.Entry<Object, Identifiable>> customIterator;
   private         Iterator<?>                                    nullKeyIterator;
   private         Pair<Object, Identifiable>                     nextEntry   = null;
+  private         int                                            nextEntryScore = 0;
 
   public FetchFromIndexStep(final RangeIndex index, final BooleanExpression condition,
       final BinaryCondition additionalRangeCondition,
@@ -114,6 +115,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
           final ResultInternal result = new ResultInternal();
           result.setProperty("key", key);
           result.setProperty("rid", value);
+          if (nextEntryScore > 0)
+            result.setProperty("$score", nextEntryScore);
           context.setVariable("current", result);
           return result;
         } finally {
@@ -132,10 +135,12 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
           if (nextEntry == null && customIterator != null && customIterator.hasNext()) {
             final Map.Entry<Object, Identifiable> entry = customIterator.next();
             nextEntry = new Pair<>(entry.getKey(), entry.getValue().getIdentity());
+            nextEntryScore = 0;
           }
           if (nextEntry == null && nullKeyIterator != null && nullKeyIterator.hasNext()) {
             Identifiable nextValue = (Identifiable) nullKeyIterator.next();
             nextEntry = new Pair<>(null, nextValue.getIdentity());
+            nextEntryScore = 0;
           }
 
           if (nextEntry == null)
@@ -150,6 +155,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (cursor.hasNext()) {
         final Object value = cursor.next();
         nextEntry = new Pair(cursor.getKeys(), value);
+        nextEntryScore = cursor.getScore();
         count++;
         return;
       }

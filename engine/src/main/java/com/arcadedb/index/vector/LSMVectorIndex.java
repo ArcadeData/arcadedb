@@ -23,7 +23,6 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.TrackableBinary;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
@@ -39,7 +38,6 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
-import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -54,6 +52,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.LockManager;
+import com.arcadedb.utility.Pair;
 import io.github.jbellis.jvector.graph.GraphIndexBuilder;
 import io.github.jbellis.jvector.graph.GraphSearcher;
 import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
@@ -142,6 +141,40 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Custom Bits implementation for filtering vector search by RID.
+   * Maps graph ordinals to vector IDs, then checks if the corresponding RID is in the allowed set.
+   */
+  private class RIDBitsFilter implements Bits {
+    private final Set<RID> allowedRIDs;
+    private final int[] ordinalToVectorIdSnapshot;
+    private final VectorLocationIndex vectorIndexSnapshot;
+
+    RIDBitsFilter(final Set<RID> allowedRIDs, final int[] ordinalToVectorIdSnapshot, final VectorLocationIndex vectorIndexSnapshot) {
+      this.allowedRIDs = allowedRIDs;
+      this.ordinalToVectorIdSnapshot = ordinalToVectorIdSnapshot;
+      this.vectorIndexSnapshot = vectorIndexSnapshot;
+    }
+
+    @Override
+    public boolean get(final int ordinal) {
+      // Check if ordinal is within bounds
+      if (ordinal < 0 || ordinal >= ordinalToVectorIdSnapshot.length)
+        return false;
+
+      // Map ordinal to vector ID
+      final int vectorId = ordinalToVectorIdSnapshot[ordinal];
+
+      // Get the RID for this vector ID
+      final VectorLocationIndex.VectorLocation loc = vectorIndexSnapshot.getLocation(vectorId);
+      if (loc == null || loc.deleted)
+        return false;
+
+      // Check if this RID is in the allowed set
+      return allowedRIDs.contains(loc.rid);
+    }
+  }
+
+  /**
    * Comparable wrapper for float[] to use in transaction tracking.
    * Vectors are compared by their hash code for uniqueness in the transaction map.
    */
@@ -196,16 +229,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final int     vectorId;
     final RID     rid;
     final boolean isCompacted;
-    final int     pageNum;
-    final int     pageOffset;
+    final long    absoluteFileOffset;
 
-    VectorEntryForGraphBuild(final int vectorId, final RID rid, final boolean isCompacted, final int pageNum,
-        final int pageOffset) {
+    VectorEntryForGraphBuild(final int vectorId, final RID rid, final boolean isCompacted, final long absoluteFileOffset) {
       this.vectorId = vectorId;
       this.rid = rid;
       this.isCompacted = isCompacted;
-      this.pageNum = pageNum;
-      this.pageOffset = pageOffset;
+      this.absoluteFileOffset = absoluteFileOffset;
     }
   }
 
@@ -218,7 +248,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           ComponentFile.MODE.READ_WRITE, builder.getPageSize(),
           vectorBuilder.getTypeName(), vectorBuilder.getPropertyNames(),
           vectorBuilder.dimensions, vectorBuilder.similarityFunction, vectorBuilder.maxConnections, vectorBuilder.beamWidth,
-          vectorBuilder.idPropertyName
+          vectorBuilder.idPropertyName, vectorBuilder.quantizationType
       );
     }
   }
@@ -242,13 +272,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public LSMVectorIndex(final DatabaseInternal database, final String name, final String filePath,
       final ComponentFile.MODE mode, final int pageSize, final String typeName, final String[] propertyNames,
       final int dimensions, final VectorSimilarityFunction similarityFunction, final int maxConnections, final int beamWidth,
-      final String idPropertyName) {
+      final String idPropertyName, final VectorQuantizationType quantizationType) {
     try {
       this.indexName = name;
 
       this.metadata = new LSMVectorIndexMetadata(typeName, propertyNames, -1);
       this.metadata.dimensions = dimensions;
       this.metadata.similarityFunction = similarityFunction;
+      this.metadata.quantizationType = quantizationType;
       this.metadata.maxConnections = maxConnections;
       this.metadata.beamWidth = beamWidth;
       this.metadata.idPropertyName = idPropertyName;
@@ -495,9 +526,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final DatabaseInternal database = getDatabase();
       final String expectedGraphFileName = mutable.getName() + "_" + LSMVectorIndexGraphFile.FILE_EXT;
 
+      LogManager.instance().log(this, Level.FINE,
+          "Discovering graph file for index %s, looking for: %s", indexName, expectedGraphFileName);
+
       // Look for ComponentFile in FileManager
       for (final ComponentFile file : database.getFileManager().getFiles()) {
-        if (LSMVectorIndexGraphFile.FILE_EXT.equals(file.getFileExtension()) &&
+        if (file != null && LSMVectorIndexGraphFile.FILE_EXT.equals(file.getFileExtension()) &&
             file.getComponentName().equals(expectedGraphFileName)) {
 
           final int pageSize = file instanceof com.arcadedb.engine.PaginatedComponentFile ?
@@ -517,6 +551,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
       }
 
+      LogManager.instance().log(this, Level.FINE,
+          "No graph file found in FileManager for index %s. Graph will be built on first search.", indexName);
       return null;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
@@ -645,26 +681,45 @@ public class LSMVectorIndex implements Index, IndexInternal {
           if (numberOfEntries == 0)
             continue;
 
-          // Read pointer table
-          final int[] pointers = new int[numberOfEntries];
-          for (int i = 0; i < numberOfEntries; i++)
-            pointers[i] = page.readInt(HEADER_BASE_SIZE + (i * 4));
+          // Calculate header size (page 0 has extra metadata)
+          final int headerSize;
+          if (pageNum == 0) {
+            // Compacted page 0: base header + dimensions + similarity + maxConn + beamWidth
+            headerSize = HEADER_BASE_SIZE + (4 * 4); // 9 + 16 = 25 bytes
+          } else {
+            headerSize = HEADER_BASE_SIZE; // 9 bytes
+          }
 
-          // Read entries
+          // Calculate absolute file offset for this page
+          final long pageStartOffset = (long) pageNum * getPageSize();
+
+          // Parse variable-sized entries sequentially (no pointer table)
+          int currentOffset = headerSize;
           for (int i = 0; i < numberOfEntries; i++) {
-            final int entryOffset = pointers[i];
-            int pos = entryOffset;
+            // Record absolute file offset for this entry
+            final long entryFileOffset = pageStartOffset + BasePage.PAGE_HEADER_SIZE + currentOffset;
 
-            final int vectorId = page.readInt(pos);
-            pos += Binary.INT_SERIALIZED_SIZE;
-            final long position = page.readLong(pos);
-            pos += Binary.LONG_SERIALIZED_SIZE;
-            final int bucketId = page.readInt(pos);
-            pos += Binary.INT_SERIALIZED_SIZE;
+            // Read variable-sized vectorId
+            final long[] vectorIdAndSize = page.readNumberAndSize(currentOffset);
+            final int vectorId = (int) vectorIdAndSize[0];
+            currentOffset += (int) vectorIdAndSize[1];
+
+            // Read variable-sized bucketId
+            final long[] bucketIdAndSize = page.readNumberAndSize(currentOffset);
+            final int bucketId = (int) bucketIdAndSize[0];
+            currentOffset += (int) bucketIdAndSize[1];
+
+            // Read variable-sized position
+            final long[] positionAndSize = page.readNumberAndSize(currentOffset);
+            final long position = positionAndSize[0];
+            currentOffset += (int) positionAndSize[1];
+
             final RID rid = new RID(getDatabase(), bucketId, position);
 
-            // NEW FORMAT: Read deleted flag (no vector bytes stored!)
-            final boolean deleted = page.readByte(pos) == 1;
+            // Read deleted flag (fixed 1 byte)
+            final boolean deleted = page.readByte(currentOffset) == 1;
+            currentOffset += 1;
+
             totalEntriesRead++;
 
             if (deleted) {
@@ -676,7 +731,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             // Keep latest (highest ID) vector for each RID
             final VectorEntryForGraphBuild existing = ridToLatestVector.get(rid);
             if (existing == null || vectorId > existing.vectorId) {
-              ridToLatestVector.put(rid, new VectorEntryForGraphBuild(vectorId, rid, true, pageNum, entryOffset));
+              ridToLatestVector.put(rid, new VectorEntryForGraphBuild(vectorId, rid, true, entryFileOffset));
             }
           }
         } catch (final Exception e) {
@@ -701,26 +756,36 @@ public class LSMVectorIndex implements Index, IndexInternal {
         if (numberOfEntries == 0)
           continue;
 
-        // Read pointer table
-        final int[] pointers = new int[numberOfEntries];
-        for (int i = 0; i < numberOfEntries; i++)
-          pointers[i] = page.readInt(HEADER_BASE_SIZE + (i * 4));
+        // Calculate absolute file offset for this page
+        final long pageStartOffset = (long) pageNum * getPageSize();
 
-        // Read entries
+        // Parse variable-sized entries sequentially (no pointer table)
+        int currentOffset = HEADER_BASE_SIZE; // Mutable pages always use base header size
         for (int i = 0; i < numberOfEntries; i++) {
-          final int entryOffset = pointers[i];
-          int pos = entryOffset;
+          // Record absolute file offset for this entry
+          final long entryFileOffset = pageStartOffset + BasePage.PAGE_HEADER_SIZE + currentOffset;
 
-          final int vectorId = page.readInt(pos);
-          pos += Binary.INT_SERIALIZED_SIZE;
-          final long position = page.readLong(pos);
-          pos += Binary.LONG_SERIALIZED_SIZE;
-          final int bucketId = page.readInt(pos);
-          pos += Binary.INT_SERIALIZED_SIZE;
+          // Read variable-sized vectorId
+          final long[] vectorIdAndSize = page.readNumberAndSize(currentOffset);
+          final int vectorId = (int) vectorIdAndSize[0];
+          currentOffset += (int) vectorIdAndSize[1];
+
+          // Read variable-sized bucketId
+          final long[] bucketIdAndSize = page.readNumberAndSize(currentOffset);
+          final int bucketId = (int) bucketIdAndSize[0];
+          currentOffset += (int) bucketIdAndSize[1];
+
+          // Read variable-sized position
+          final long[] positionAndSize = page.readNumberAndSize(currentOffset);
+          final long position = positionAndSize[0];
+          currentOffset += (int) positionAndSize[1];
+
           final RID rid = new RID(getDatabase(), bucketId, position);
 
-          // NEW FORMAT: Read deleted flag (no vector bytes stored!)
-          final boolean deleted = page.readByte(pos) == 1;
+          // Read deleted flag (fixed 1 byte)
+          final boolean deleted = page.readByte(currentOffset) == 1;
+          currentOffset += 1;
+
           totalEntriesRead++;
 
           if (deleted) {
@@ -732,7 +797,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Keep latest (highest ID) vector for each RID (mutable entries override compacted)
           final VectorEntryForGraphBuild existing = ridToLatestVector.get(rid);
           if (existing == null || vectorId > existing.vectorId) {
-            ridToLatestVector.put(rid, new VectorEntryForGraphBuild(vectorId, rid, false, pageNum, entryOffset));
+            ridToLatestVector.put(rid, new VectorEntryForGraphBuild(vectorId, rid, false, entryFileOffset));
           }
         }
       } catch (final Exception e) {
@@ -771,7 +836,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // This ensures vectorIndex is consistent with the graph we're about to build
         vectorIndex.clear();
         for (final VectorEntryForGraphBuild entry : ridToLatestVector.values()) {
-          vectorIndex.addOrUpdate(entry.vectorId, entry.isCompacted, entry.pageNum, entry.pageOffset, entry.rid, false);
+          vectorIndex.addOrUpdate(entry.vectorId, entry.isCompacted, entry.absoluteFileOffset, entry.rid, false);
         }
         vectorIds = activeVectorIds; // Use vector IDs from pages
       } else {
@@ -872,13 +937,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
           "Building graph with %d vectors using property '%s' (cache enabled for performance)",
           filteredVectorIds.length, vectorProp);
 
-      // Create lazy-loading vector values that reads vectors from documents
+      // Create lazy-loading vector values that reads vectors from documents or index pages (if quantized)
       vectors = new ArcadePageVectorValues(
           getDatabase(),
           metadata.dimensions,
           vectorProp,
           vectorLocationSnapshot,  // Use immutable snapshot
-          finalActiveVectorIds
+          finalActiveVectorIds,
+          this  // Pass LSM index reference for quantization support
       );
 
       // Mark that graph building is in progress to prevent new inserts
@@ -903,8 +969,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
           metadata.dimensions,
           metadata.maxConnections,  // M parameter (graph degree)
           metadata.beamWidth,       // efConstruction (construction search depth)
-          1.2f,            // neighbor overflow factor
-          1.2f,            // alpha diversity relaxation
+          metadata.neighborOverflowFactor,    // neighbor overflow factor (default: 1.2)
+          metadata.alphaDiversityRelaxation,  // alpha diversity relaxation (default: 1.2)
           false,           // no distance transform
           true)) {         // enable concurrent updates
 
@@ -1070,9 +1136,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // NOTE: All metadata (dimensions, similarityFunction, maxConnections, beamWidth) comes from schema JSON
       // via applyMetadataFromSchema(). Pages contain only vector data, no metadata.
 
-      LogManager.instance().log(this, Level.FINE,
-          "loadVectorsFromPages START: index=%s, totalPages=%d, vectorIndexSizeBefore=%d", null,
-          indexName, getTotalPages(), vectorIndex.size());
+      LogManager.instance()
+          .log(this, Level.FINE, "loadVectorsFromPages START: index=%s, totalPages=%d, vectorIndexSizeBefore=%d", null, indexName,
+              getTotalPages(), vectorIndex.size());
 
       int entriesRead = 0;
       int maxVectorId = -1;
@@ -1096,10 +1162,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
           .orElse(-1);
       nextId.set(maxVectorId + 1);
 
-      LogManager.instance().log(this, Level.INFO,
-          "Loaded " + vectorIndex.size() + " vector locations (" + entriesRead + " total entries) for index: " + indexName
+      LogManager.instance().log(this, Level.FINE,
+          "loadVectorsFromPages DONE: Loaded " + vectorIndex.size() + " vector locations (" + entriesRead
+              + " total entries) for index: " + indexName
               + ", nextId=" + nextId.get() + ", fileId=" + getFileId() + ", totalPages=" + getTotalPages() +
-              (compactedSubIndex != null ? ", compactedFileId=" + compactedSubIndex.getFileId() + ", compactedPages=" + compactedSubIndex.getTotalPages() : ""));
+              (compactedSubIndex != null ?
+                  ", compactedFileId=" + compactedSubIndex.getFileId() + ", compactedPages="
+                      + compactedSubIndex.getTotalPages() :
+                  ""));
 
       // NOTE: Do NOT call initializeGraphIndex() here - it would cause infinite recursion
       // because buildGraphFromScratch() calls loadVectorsFromPages()
@@ -1124,9 +1194,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     int entriesRead = 0;
     int pagesWithEntries = 0;
 
-    LogManager.instance().log(this, Level.INFO,
-        "loadVectorsFromFile: fileId=%d, totalPages=%d, isCompacted=%s",
-        fileId, totalPages, isCompacted);
+    LogManager.instance().log(this, Level.FINE,
+        "loadVectorsFromFile: fileId=" + fileId + ", totalPages=" + totalPages + ", isCompacted=" + isCompacted);
 
     for (int pageNum = 0; pageNum < totalPages; pageNum++) {
       try {
@@ -1148,33 +1217,73 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         pagesWithEntries++;
 
-        // Read pointer table (starts at HEADER_BASE_SIZE offset)
-        final int[] pointers = new int[numberOfEntries];
-        for (int i = 0; i < numberOfEntries; i++)
-          pointers[i] = currentPage.readInt(HEADER_BASE_SIZE + (i * 4));
+        // Calculate header size (page 0 of compacted index has extra metadata)
+        final int headerSize;
+        if (isCompacted && pageNum == 0) {
+          // Compacted page 0: base header + dimensions + similarity + maxConn + beamWidth
+          headerSize = HEADER_BASE_SIZE + (4 * 4); // 9 + 16 = 25 bytes (base + 4 ints)
+        } else {
+          headerSize = HEADER_BASE_SIZE; // 9 bytes
+        }
 
-        // Read entries using pointers - BUT ONLY READ METADATA, NOT VECTOR DATA
+        // Calculate absolute file offset for the start of this page's data
+        final long pageStartOffset = (long) pageNum * getPageSize();
+
+        // Parse variable-sized entries sequentially (no pointer table)
+        int currentOffset = headerSize;
         for (int i = 0; i < numberOfEntries; i++) {
-          int pos = pointers[i];
-          final int entryOffset = pointers[i]; // Save offset for VectorLocation
+          // Record absolute file offset for this entry (before reading it)
+          final long entryFileOffset = pageStartOffset + BasePage.PAGE_HEADER_SIZE + currentOffset;
 
-          final int id = currentPage.readInt(pos);
-          pos += Binary.INT_SERIALIZED_SIZE;
+          // Read variable-sized vectorId
+          final long[] vectorIdAndSize = currentPage.readNumberAndSize(currentOffset);
+          final int id = (int) vectorIdAndSize[0];
+          currentOffset += (int) vectorIdAndSize[1];
 
-          final long position = currentPage.readLong(pos);
-          pos += Binary.LONG_SERIALIZED_SIZE;
+          // Read variable-sized bucketId
+          final long[] bucketIdAndSize = currentPage.readNumberAndSize(currentOffset);
+          final int bucketId = (int) bucketIdAndSize[0];
+          currentOffset += (int) bucketIdAndSize[1];
 
-          final int bucketId = currentPage.readInt(pos);
-          pos += Binary.INT_SERIALIZED_SIZE;
+          // Read variable-sized position
+          final long[] positionAndSize = currentPage.readNumberAndSize(currentOffset);
+          final long position = positionAndSize[0];
+          currentOffset += (int) positionAndSize[1];
 
           final RID rid = new RID(getDatabase(), bucketId, position);
 
-          // NEW FORMAT: No vector bytes stored, just read deleted flag
-          final boolean deleted = currentPage.readByte(pos) == 1;
+          // Read deleted flag (fixed 1 byte)
+          final boolean deleted = currentPage.readByte(currentOffset) == 1;
+          currentOffset += 1;
 
-          // Store ONLY location metadata (LSM style: later entries override earlier ones)
-          // Store isCompacted flag to know which file to read from (mutable vs compacted)
-          vectorIndex.addOrUpdate(id, isCompacted, pageNum, entryOffset, rid, deleted);
+          // Skip quantized vector data if quantization is enabled
+          // This data is not needed for location index, only for vector retrieval
+          if (metadata.quantizationType != VectorQuantizationType.NONE) {
+            // Read quantization type flag
+            final byte quantTypeOrdinal = currentPage.readByte(currentOffset);
+            currentOffset += 1;
+
+            final VectorQuantizationType quantType = VectorQuantizationType.values()[quantTypeOrdinal];
+
+            if (quantType == VectorQuantizationType.INT8) {
+              // Skip: vector length (4 bytes) + quantized bytes + min (4 bytes) + max (4 bytes)
+              final int vectorLength = currentPage.readInt(currentOffset);
+              currentOffset += 4; // vector length
+              currentOffset += vectorLength; // quantized bytes
+              currentOffset += 8; // min + max (2 floats)
+
+            } else if (quantType == VectorQuantizationType.BINARY) {
+              // Skip: original length (4 bytes) + packed bytes + median (4 bytes)
+              final int originalLength = currentPage.readInt(currentOffset);
+              currentOffset += 4; // original length
+              final int byteCount = (originalLength + 7) / 8; // packed bytes
+              currentOffset += byteCount; // packed bytes
+              currentOffset += 4; // median (float)
+            }
+          }
+
+          // Store location metadata with absolute file offset
+          vectorIndex.addOrUpdate(id, isCompacted, entryFileOffset, rid, deleted);
           entriesRead++;
         }
       } catch (final Exception e) {
@@ -1183,6 +1292,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
             pageNum, fileId, e.getMessage());
       }
     }
+
+    LogManager.instance().log(this, Level.FINE,
+        "loadVectorsFromFile DONE: fileId=" + fileId + ", entriesRead=" + entriesRead + ", pagesWithEntries=" + pagesWithEntries);
 
     return entriesRead;
   }
@@ -1193,10 +1305,32 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private void persistVectorWithLocation(final int id, final RID rid, final float[] vector) {
     try {
-      // NEW FORMAT: Store only ordinal + RID + deleted (vectors read from documents)
-      // Entry size: ordinal(4) + position(8) + bucketId(4) + deleted(1) = 17 bytes
-      final int entrySize =
-          Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + Binary.BYTE_SERIALIZED_SIZE;
+      // Quantize vector if quantization is enabled
+      final VectorQuantizationMetadata qmeta = (VectorQuantizationMetadata) quantizeVector(vector);
+
+      // Calculate variable entry size for this specific entry
+      final int vectorIdSize = Binary.getNumberSpace(id);
+      final int bucketIdSize = Binary.getNumberSpace(rid.getBucketId());
+      final int positionSize = Binary.getNumberSpace(rid.getPosition());
+      int entrySize = vectorIdSize + positionSize + bucketIdSize + 1; // +1 for deleted byte
+
+      // Add size for quantized vector data if quantization is enabled
+      if (qmeta != null) {
+        entrySize += 1; // quantization type flag
+        if (qmeta.getType() == VectorQuantizationType.INT8) {
+          final VectorQuantizationMetadata.Int8QuantizationMetadata int8meta =
+              (VectorQuantizationMetadata.Int8QuantizationMetadata) qmeta;
+          entrySize += 4; // vector length (int)
+          entrySize += int8meta.quantized.length; // quantized bytes
+          entrySize += 8; // min + max (2 floats)
+        } else if (qmeta.getType() == VectorQuantizationType.BINARY) {
+          final VectorQuantizationMetadata.BinaryQuantizationMetadata binmeta =
+              (VectorQuantizationMetadata.BinaryQuantizationMetadata) qmeta;
+          entrySize += 4; // original length (int)
+          entrySize += binmeta.packed.length; // packed bytes
+          entrySize += 4; // median (float)
+        }
+      }
 
       // Get or create the last mutable page
       int lastPageNum = getTotalPages() - 1;
@@ -1209,50 +1343,94 @@ public class LSMVectorIndex implements Index, IndexInternal {
       MutablePage currentPage = getDatabase().getTransaction().getPageToModify(
           new PageId(getDatabase(), getFileId(), lastPageNum), getPageSize(), false);
 
-      // Get trackable buffer for writing entry data
-      TrackableBinary currentPageBuffer = currentPage.getTrackable();
-
-      // Read page header using MutablePage methods (consistent with writeInt used for updates)
+      // Read page header using MutablePage methods (accounts for PAGE_HEADER_SIZE automatically)
       int offsetFreeContent = currentPage.readInt(OFFSET_FREE_CONTENT);
       int numberOfEntries = currentPage.readInt(OFFSET_NUM_ENTRIES);
 
-      // Calculate space needed
-      final int headerSize = HEADER_BASE_SIZE + ((numberOfEntries + 1) * 4); // base header + pointers
-      final int availableSpace = offsetFreeContent - headerSize;
-
-      if (availableSpace < entrySize) {
-        // Page is full, mark it as immutable before creating a new page
-        currentPageBuffer.putByte(OFFSET_MUTABLE, (byte) 0); // mutable = 0
-
+      // Validate offsetFreeContent is sane (detect old-format or corrupted pages)
+      if (offsetFreeContent < HEADER_BASE_SIZE || offsetFreeContent > currentPage.getMaxContentSize()) {
+        // Old format page or corrupted, create new page
+        LogManager.instance().log(this, Level.WARNING,
+            "Invalid offsetFreeContent=%d in page %d (expected range: %d-%d), creating new page",
+            offsetFreeContent, lastPageNum, HEADER_BASE_SIZE, currentPage.getMaxContentSize());
+        currentPage.writeByte(OFFSET_MUTABLE, (byte) 0);
         lastPageNum++;
         currentPage = createNewVectorDataPage(lastPageNum);
-        currentPageBuffer = currentPage.getTrackable(); // Update buffer reference
-        offsetFreeContent = currentPageBuffer.getInt(OFFSET_FREE_CONTENT);
+        offsetFreeContent = currentPage.readInt(OFFSET_FREE_CONTENT);
         numberOfEntries = 0;
       }
 
-      // Write entry at tail (backwards from offsetFreeContent)
-      final int entryOffset = offsetFreeContent - entrySize;
+      // Calculate space needed (no pointer table - just header + sequential entries)
+      final int availableSpace = currentPage.getMaxContentSize() - offsetFreeContent;
 
-      currentPageBuffer.position(entryOffset);
+      if (availableSpace < entrySize) {
+        // Page is full, mark it as immutable before creating a new page
+        currentPage.writeByte(OFFSET_MUTABLE, (byte) 0); // mutable = 0
 
-      // Write only: ordinal, RID, deleted (no vector bytes!)
-      currentPageBuffer.putInt(id);  // This will become ordinal
-      currentPageBuffer.putLong(rid.getPosition());
-      currentPageBuffer.putInt(rid.getBucketId());
-      currentPageBuffer.putByte((byte) 0); // not deleted
+        lastPageNum++;
+        currentPage = createNewVectorDataPage(lastPageNum);
+        offsetFreeContent = currentPage.readInt(OFFSET_FREE_CONTENT);
+        numberOfEntries = 0;
+      }
 
-      // Add pointer to entry in header
-      currentPage.writeInt(HEADER_BASE_SIZE + (numberOfEntries * 4), entryOffset);
+      // Calculate absolute file offset for this entry
+      final long pageStartOffset = (long) lastPageNum * getPageSize();
+      final long entryFileOffset = pageStartOffset + BasePage.PAGE_HEADER_SIZE + offsetFreeContent;
+
+      // Write entry sequentially using variable-sized encoding
+      int bytesWritten = 0;
+      bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, id);
+      bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, rid.getBucketId());
+      bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, rid.getPosition());
+      bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, (byte) 0); // not deleted
+
+      // Write quantized vector data if quantization is enabled
+      if (qmeta != null) {
+        // Write quantization type flag
+        bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten,
+            (byte) qmeta.getType().ordinal());
+
+        if (qmeta.getType() == VectorQuantizationType.INT8) {
+          final VectorQuantizationMetadata.Int8QuantizationMetadata int8meta =
+              (VectorQuantizationMetadata.Int8QuantizationMetadata) qmeta;
+
+          // Write vector length
+          bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, int8meta.quantized.length);
+
+          // Write quantized bytes
+          for (final byte b : int8meta.quantized) {
+            bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, b);
+          }
+
+          // Write min and max
+          bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, Float.floatToIntBits(int8meta.min));
+          bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, Float.floatToIntBits(int8meta.max));
+
+        } else if (qmeta.getType() == VectorQuantizationType.BINARY) {
+          final VectorQuantizationMetadata.BinaryQuantizationMetadata binmeta =
+              (VectorQuantizationMetadata.BinaryQuantizationMetadata) qmeta;
+
+          // Write original length
+          bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, binmeta.originalLength);
+
+          // Write packed bytes
+          for (final byte b : binmeta.packed) {
+            bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, b);
+          }
+
+          // Write median
+          bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, Float.floatToIntBits(binmeta.median));
+        }
+      }
 
       // Update page header
       numberOfEntries++;
-      offsetFreeContent = entryOffset;
+      offsetFreeContent += bytesWritten;
       currentPage.writeInt(OFFSET_FREE_CONTENT, offsetFreeContent);
       currentPage.writeInt(OFFSET_NUM_ENTRIES, numberOfEntries);
 
-      // Add location to vectorIndex (isCompacted=false since this is a new write to mutable file)
-      vectorIndex.addOrUpdate(id, false, lastPageNum, entryOffset, rid, false);
+      // Add location to vectorIndex with absolute file offset (isCompacted=false for mutable file)
+      vectorIndex.addOrUpdate(id, false, entryFileOffset, rid, false);
 
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error persisting vector with location", e);
@@ -1269,10 +1447,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (deletedIds.isEmpty())
         return;
 
-      // NEW FORMAT: Entry size: ordinal(4) + position(8) + bucketId(4) + deleted(1) = 17 bytes
-      final int entrySize =
-          Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + Binary.BYTE_SERIALIZED_SIZE;
-
       // Get or create the last mutable page
       int lastPageNum = getTotalPages() - 1;
       if (lastPageNum < 0) {
@@ -1286,23 +1460,39 @@ public class LSMVectorIndex implements Index, IndexInternal {
         if (loc == null)
           continue;
 
+        // Calculate variable entry size for this specific entry
+        final int vectorIdSize = Binary.getNumberSpace(vectorId);
+        final int bucketIdSize = Binary.getNumberSpace(loc.rid.getBucketId());
+        final int positionSize = Binary.getNumberSpace(loc.rid.getPosition());
+        final int entrySize = vectorIdSize + positionSize + bucketIdSize + 1; // +1 for deleted byte
+
         // Get current page
         MutablePage currentPage = getDatabase().getTransaction().getPageToModify(
             new PageId(getDatabase(), getFileId(), lastPageNum), getPageSize(), false);
 
-        // Read page header
+        // Read page header (accounts for PAGE_HEADER_SIZE automatically)
         int offsetFreeContent = currentPage.readInt(OFFSET_FREE_CONTENT);
         int numberOfEntries = currentPage.readInt(OFFSET_NUM_ENTRIES);
 
-        // Calculate space needed
-        final int headerSize = HEADER_BASE_SIZE + ((numberOfEntries + 1) * 4);
-        final int availableSpace = offsetFreeContent - headerSize;
+        // Validate offsetFreeContent is sane (detect old-format or corrupted pages)
+        if (offsetFreeContent < HEADER_BASE_SIZE || offsetFreeContent > currentPage.getMaxContentSize()) {
+          // Old format page or corrupted, create new page
+          LogManager.instance().log(this, Level.WARNING,
+              "Invalid offsetFreeContent=%d in page %d (expected range: %d-%d), creating new page",
+              offsetFreeContent, lastPageNum, HEADER_BASE_SIZE, currentPage.getMaxContentSize());
+          currentPage.writeByte(OFFSET_MUTABLE, (byte) 0);
+          lastPageNum++;
+          currentPage = createNewVectorDataPage(lastPageNum);
+          offsetFreeContent = currentPage.readInt(OFFSET_FREE_CONTENT);
+          numberOfEntries = 0;
+        }
 
-        final TrackableBinary currentPageBuffer = currentPage.getTrackable();
+        // Calculate space needed (no pointer table - just header + sequential entries)
+        final int availableSpace = currentPage.getMaxContentSize() - offsetFreeContent;
 
         if (availableSpace < entrySize) {
           // Page is full, mark it as immutable before creating a new page
-          currentPageBuffer.putByte(OFFSET_MUTABLE, (byte) 0);
+          currentPage.writeByte(OFFSET_MUTABLE, (byte) 0);
 
           lastPageNum++;
           currentPage = createNewVectorDataPage(lastPageNum);
@@ -1310,34 +1500,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
           numberOfEntries = 0;
         }
 
-        // Write deletion tombstone at tail
-        final int entryOffset = offsetFreeContent - entrySize;
-
-        // Validate entryOffset is within page bounds
-        if (entryOffset < 0 || entryOffset >= getPageSize()) {
-          LogManager.instance()
-              .log(this, Level.SEVERE,
-                  "Invalid entryOffset=%d (pageSize=%d, offsetFreeContent=%d, entrySize=%d, numberOfEntries=%d, pageNum=%d)",
-                  null, entryOffset, getPageSize(), offsetFreeContent, entrySize, numberOfEntries, lastPageNum);
-          throw new IndexException("Invalid entry offset: " + entryOffset + " (page size: " + getPageSize() + ")");
-        }
-
-        currentPageBuffer.position(entryOffset);
-
-        // Write deletion entry: ordinal, RID, deleted=1 (no vector bytes!)
-        currentPageBuffer.putInt(vectorId);  // This will become ordinal
-        currentPageBuffer.putLong(loc.rid.getPosition());
-        currentPageBuffer.putInt(loc.rid.getBucketId());
-        currentPageBuffer.putByte((byte) 1); // Mark as deleted
-
-        // Add pointer to entry in header
-        currentPageBuffer.putInt(HEADER_BASE_SIZE + (numberOfEntries * 4), entryOffset);
+        // Write deletion tombstone sequentially using variable-sized encoding
+        int bytesWritten = 0;
+        bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, vectorId);
+        bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, loc.rid.getBucketId());
+        bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, loc.rid.getPosition());
+        bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, (byte) 1); // Mark as deleted
 
         // Update page header
         numberOfEntries++;
-        offsetFreeContent = entryOffset;
-        currentPageBuffer.putInt(OFFSET_FREE_CONTENT, offsetFreeContent);
-        currentPageBuffer.putInt(OFFSET_NUM_ENTRIES, numberOfEntries);
+        offsetFreeContent += bytesWritten;
+
+        currentPage.writeInt(OFFSET_FREE_CONTENT, offsetFreeContent);
+        currentPage.writeInt(OFFSET_NUM_ENTRIES, numberOfEntries);
       }
 
     } catch (final Exception e) {
@@ -1346,21 +1521,303 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
   }
 
+  // ========== QUANTIZATION HELPER METHODS ==========
+
+  /**
+   * Quantizes a float vector according to the index's quantization type.
+   * Returns a QuantizationResult containing the quantized data and metadata needed for dequantization.
+   *
+   * @param vector The float vector to quantize
+   * @return Quantization result with quantized bytes and metadata, or null if quantization is NONE
+   */
+  private Object quantizeVector(final float[] vector) {
+    if (metadata.quantizationType == VectorQuantizationType.NONE)
+      return null; // No quantization
+
+    if (metadata.quantizationType == VectorQuantizationType.INT8)
+      return quantizeToInt8(vector);
+
+    if (metadata.quantizationType == VectorQuantizationType.BINARY)
+      return quantizeToBinary(vector);
+
+    throw new IndexException("Unsupported quantization type: " + metadata.quantizationType);
+  }
+
+  /**
+   * Quantizes a float vector to INT8 using min-max scaling.
+   * Algorithm extracted from SQLFunctionVectorQuantizeInt8.
+   *
+   * @param vector The float vector to quantize
+   * @return Int8QuantizationMetadata containing quantized bytes and min/max values
+   */
+  private VectorQuantizationMetadata.Int8QuantizationMetadata quantizeToInt8(final float[] vector) {
+    // Find min and max
+    float min = vector[0];
+    float max = vector[0];
+    for (final float value : vector) {
+      if (value < min)
+        min = value;
+      if (value > max)
+        max = value;
+    }
+
+    // Quantize to int8 [-128, 127]
+    final byte[] quantized = new byte[vector.length];
+    if (min == max) {
+      // All values are the same
+      for (int i = 0; i < vector.length; i++) {
+        quantized[i] = 0;
+      }
+    } else {
+      final float range = max - min;
+      for (int i = 0; i < vector.length; i++) {
+        final float normalized = (vector[i] - min) / range; // [0, 1]
+        final int scaled = Math.round(normalized * 255.0f); // [0, 255]
+        final byte shifted = (byte) (scaled - 128); // [-128, 127]
+        quantized[i] = shifted;
+      }
+    }
+
+    return new VectorQuantizationMetadata.Int8QuantizationMetadata(quantized, min, max);
+  }
+
+  /**
+   * Quantizes a float vector to BINARY using median threshold.
+   * Algorithm extracted from SQLFunctionVectorQuantizeBinary.
+   *
+   * @param vector The float vector to quantize
+   * @return BinaryQuantizationMetadata containing packed bits and median value
+   */
+  private VectorQuantizationMetadata.BinaryQuantizationMetadata quantizeToBinary(final float[] vector) {
+    // Calculate median
+    final float median = calculateMedian(vector);
+
+    // Quantize to binary
+    final int byteCount = (vector.length + 7) / 8; // Round up to nearest byte
+    final byte[] packed = new byte[byteCount];
+
+    for (int i = 0; i < vector.length; i++) {
+      if (vector[i] >= median) {
+        // Set bit to 1
+        final int byteIndex = i / 8;
+        final int bitIndex = i % 8;
+        packed[byteIndex] |= (1 << bitIndex);
+      }
+    }
+
+    return new VectorQuantizationMetadata.BinaryQuantizationMetadata(packed, median, vector.length);
+  }
+
+  /**
+   * Calculate median of array.
+   * Helper method for binary quantization.
+   */
+  private float calculateMedian(final float[] values) {
+    final float[] sorted = values.clone();
+    java.util.Arrays.sort(sorted);
+    if (sorted.length % 2 == 0) {
+      return (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2.0f;
+    } else {
+      return sorted[sorted.length / 2];
+    }
+  }
+
+  /**
+   * Dequantizes a quantized vector back to float array.
+   * Algorithm extracted from SQLFunctionVectorDequantizeInt8 and similar.
+   *
+   * @param quantized      The quantized byte array
+   * @param qmeta         The quantization metadata containing min/max or median
+   * @return The dequantized float vector
+   */
+  private float[] dequantizeVector(final byte[] quantized, final VectorQuantizationMetadata qmeta) {
+    if (qmeta == null || qmeta.getType() == VectorQuantizationType.NONE)
+      throw new IndexException("Cannot dequantize: no quantization metadata");
+
+    if (qmeta.getType() == VectorQuantizationType.INT8)
+      return dequantizeFromInt8(quantized, (VectorQuantizationMetadata.Int8QuantizationMetadata) qmeta);
+
+    if (qmeta.getType() == VectorQuantizationType.BINARY)
+      return dequantizeFromBinary(quantized, (VectorQuantizationMetadata.BinaryQuantizationMetadata) qmeta);
+
+    throw new IndexException("Unsupported quantization type: " + qmeta.getType());
+  }
+
+  /**
+   * Dequantizes an INT8 quantized vector back to float array.
+   * Algorithm extracted from SQLFunctionVectorDequantizeInt8.
+   *
+   * @param quantized The quantized byte array
+   * @param qmeta     The INT8 quantization metadata with min/max
+   * @return The dequantized float vector
+   */
+  private float[] dequantizeFromInt8(final byte[] quantized,
+      final VectorQuantizationMetadata.Int8QuantizationMetadata qmeta) {
+    final float[] result = new float[quantized.length];
+    final float range = qmeta.max - qmeta.min;
+
+    if (range == 0.0f) {
+      // All values were the same, return min value for all
+      for (int i = 0; i < quantized.length; i++) {
+        result[i] = qmeta.min;
+      }
+    } else {
+      for (int i = 0; i < quantized.length; i++) {
+        // Reverse quantization: value = (((quantized + 128) / 255) * range) + min
+        // Convert signed byte [-128, 127] back to [0, 255] range by adding 128
+        final int scaled = (int) quantized[i] + 128; // Convert to [0, 255]
+        final float normalized = scaled / 255.0f; // [0, 1]
+        result[i] = normalized * range + qmeta.min;
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Dequantizes a BINARY quantized vector back to float array.
+   * Unpacks bits and converts back to float values using the median threshold.
+   *
+   * @param packed The packed binary data
+   * @param qmeta  The BINARY quantization metadata with median
+   * @return The dequantized float vector
+   */
+  private float[] dequantizeFromBinary(final byte[] packed,
+      final VectorQuantizationMetadata.BinaryQuantizationMetadata qmeta) {
+    final float[] result = new float[qmeta.originalLength];
+
+    for (int i = 0; i < qmeta.originalLength; i++) {
+      final int byteIndex = i / 8;
+      final int bitIndex = i % 8;
+      final boolean bitSet = (packed[byteIndex] & (1 << bitIndex)) != 0;
+
+      // Reconstruct value based on bit: 1 -> above median, 0 -> below median
+      // This is a lossy approximation - we just use median or 0 as the values
+      result[i] = bitSet ? qmeta.median : 0.0f;
+    }
+
+    return result;
+  }
+
+  /**
+   * Reads a quantized vector from a file offset and dequantizes it.
+   * This method reads the quantized vector data stored in index pages and converts it back to float[].
+   *
+   * @param fileOffset The absolute file offset where the vector entry starts
+   * @param isCompacted Whether to read from compacted or mutable file
+   * @return The dequantized float vector, or null if quantization is disabled or vector not found
+   */
+  protected float[] readVectorFromOffset(final long fileOffset, final boolean isCompacted) {
+    try {
+      // If no quantization is enabled, return null (caller should fetch from document)
+      if (metadata.quantizationType == VectorQuantizationType.NONE)
+        return null;
+
+      // Calculate page number and offset within page
+      final int pageNum = (int) (fileOffset / getPageSize());
+      final int offsetInPage = (int) (fileOffset % getPageSize()) - BasePage.PAGE_HEADER_SIZE;
+
+      // Get the appropriate file ID
+      final int fileId = isCompacted ? compactedSubIndex.getFileId() : getFileId();
+
+      // Read the page
+      final BasePage page = getDatabase().getPageManager().getImmutablePage(
+          new PageId(getDatabase(), fileId, pageNum), getPageSize(), false, false);
+
+      try {
+        // Skip over the entry header (vectorId, bucketId, position, deleted flag)
+        // These are variable-sized, so we need to read and skip them
+        int pos = offsetInPage;
+
+        // Read and skip vectorId
+        final long[] vectorIdAndSize = page.readNumberAndSize(pos);
+        pos += (int) vectorIdAndSize[1];
+        // Read and skip bucketId
+        final long[] bucketIdAndSize = page.readNumberAndSize(pos);
+        pos += (int) bucketIdAndSize[1];
+        // Read and skip position
+        final long[] positionAndSize = page.readNumberAndSize(pos);
+        pos += (int) positionAndSize[1];
+        // Skip deleted flag
+        pos += 1;
+
+        // Read quantization type flag
+        final byte quantTypeOrdinal = page.readByte(pos);
+        pos += 1;
+
+        final VectorQuantizationType quantType = VectorQuantizationType.values()[quantTypeOrdinal];
+
+        if (quantType == VectorQuantizationType.INT8) {
+          // Read vector length
+          final int vectorLength = page.readInt(pos);
+          pos += 4;
+
+          // Read quantized bytes
+          final byte[] quantized = new byte[vectorLength];
+          for (int i = 0; i < vectorLength; i++) {
+            quantized[i] = page.readByte(pos);
+            pos += 1;
+          }
+
+          // Read min and max
+          final float min = Float.intBitsToFloat(page.readInt(pos));
+          pos += 4;
+          final float max = Float.intBitsToFloat(page.readInt(pos));
+
+          // Dequantize
+          final VectorQuantizationMetadata.Int8QuantizationMetadata qmeta =
+              new VectorQuantizationMetadata.Int8QuantizationMetadata(quantized, min, max);
+          return dequantizeFromInt8(quantized, qmeta);
+
+        } else if (quantType == VectorQuantizationType.BINARY) {
+          // Read original length
+          final int originalLength = page.readInt(pos);
+          pos += 4;
+
+          // Read packed bytes
+          final int byteCount = (originalLength + 7) / 8;
+          final byte[] packed = new byte[byteCount];
+          for (int i = 0; i < byteCount; i++) {
+            packed[i] = page.readByte(pos);
+            pos += 1;
+          }
+
+          // Read median
+          final float median = Float.intBitsToFloat(page.readInt(pos));
+
+          // Dequantize
+          final VectorQuantizationMetadata.BinaryQuantizationMetadata qmeta =
+              new VectorQuantizationMetadata.BinaryQuantizationMetadata(packed, median, originalLength);
+          return dequantizeFromBinary(packed, qmeta);
+        }
+
+        return null;
+
+      } finally {
+        // BasePage is managed by PageManager, no explicit close needed
+      }
+
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Error reading vector from offset %d: %s", fileOffset, e.getMessage());
+      return null;
+    }
+  }
+
+  // ========== END QUANTIZATION HELPER METHODS ==========
+
   /**
    * Create a new vector data page with LSM-style header.
-   * Page layout: [offsetFreeContent(4)][numberOfEntries(4)][mutable(1)][pointers...]...[entries from tail]
+   * Page layout: [offsetFreeContent(4)][numberOfEntries(4)][mutable(1)][entries grow forward sequentially]
    */
   private MutablePage createNewVectorDataPage(final int pageNum) {
     final PageId pageId = new PageId(getDatabase(), getFileId(), pageNum);
     final MutablePage page = getDatabase().getTransaction().addPage(pageId, getPageSize());
 
     int pos = 0;
-    page.writeInt(pos, page.getMaxContentSize()); // offsetFreeContent starts at end of page
-    pos += TrackableBinary.INT_SERIALIZED_SIZE;
-
-    page.writeInt(pos, 0);              // numberOfEntries = 0
-    pos += TrackableBinary.INT_SERIALIZED_SIZE;
-
+    // offsetFreeContent starts right after header (entries grow forward sequentially)
+    pos += page.writeInt(pos, HEADER_BASE_SIZE);
+    pos += page.writeInt(pos, 0);              // numberOfEntries = 0
     page.writeByte(pos, (byte) 1);         // mutable = 1 (page is actively being written to)
 
     // Track mutable pages for compaction trigger
@@ -1379,7 +1836,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *
    * @return List of pairs containing RID and similarity score
    */
-  public List<com.arcadedb.utility.Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k) {
+  public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k) {
+    return findNeighborsFromVector(queryVector, k, null);
+  }
+
+  /**
+   * Search for k nearest neighbors to the given vector within a filtered set of RIDs.
+   * This method allows restricting the search space to specific records, useful for
+   * filtering by user ID, category, or other criteria during graph traversal.
+   *
+   * @param queryVector The query vector to search for
+   * @param k           The number of neighbors to return
+   * @param allowedRIDs Optional set of RIDs to restrict search to (null means no filtering)
+   *
+   * @return List of pairs containing RID and similarity score
+   */
+  public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k, final Set<RID> allowedRIDs) {
     if (queryVector == null)
       throw new IllegalArgumentException("Query vector cannot be null");
 
@@ -1419,7 +1891,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (graphIndex == null || vectorIndex.size() == 0)
         return Collections.emptyList();
 
-
       // Convert query vector to VectorFloat
       final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
 
@@ -1433,17 +1904,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
           metadata.dimensions,
           vectorProp,
           vectorIndex,
-          ordinalToVectorId
+          ordinalToVectorId,
+          this  // Pass LSM index reference for quantization support
       );
 
-      // Perform search
+      // Perform search with optional RID filtering
+      final Bits bitsFilter = (allowedRIDs != null && !allowedRIDs.isEmpty())
+          ? new RIDBitsFilter(allowedRIDs, ordinalToVectorId, vectorIndex)
+          : Bits.ALL;
+
       final SearchResult searchResult = GraphSearcher.search(
           queryVectorFloat,
           k,
           vectors,
           metadata.similarityFunction,
           graphIndex,
-          Bits.ALL
+          bitsFilter
       );
 
       LogManager.instance().log(this, Level.INFO,
@@ -1451,7 +1927,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           searchResult.getNodes().length, graphIndex.size(), vectors.size(), ordinalToVectorId.length);
 
       // Extract RIDs and scores from search results using ordinal mapping
-      final List<com.arcadedb.utility.Pair<RID, Float>> results = new ArrayList<>();
+      final List<Pair<RID, Float>> results = new ArrayList<>();
       int skippedOutOfBounds = 0;
       int skippedDeletedOrNull = 0;
       for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
@@ -1605,7 +2081,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
             metadata.dimensions,
             vectorProp,
             vectorIndex,
-            ordinalToVectorId
+            ordinalToVectorId,
+            this  // Pass LSM index reference for quantization support
         );
 
         // Perform search
@@ -1701,10 +2178,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     // Validate vector - can be either float[] or ComparableVector (from transaction replay)
     final float[] vector;
-    if (keys[0] instanceof float[]) {
-      vector = (float[]) keys[0];
-    } else if (keys[0] instanceof ComparableVector) {
-      vector = ((ComparableVector) keys[0]).vector;
+    if (keys[0] instanceof float[] f) {
+      vector = f;
+    } else if (keys[0] instanceof List<?> list) {
+      vector = new float[list.size()];
+      for (int i = 0; i < list.size(); i++)
+        vector[i] = ((Number) list.get(i)).floatValue();
+    } else if (keys[0] instanceof ComparableVector c) {
+      vector = c.vector;
     } else {
       throw new IllegalArgumentException(
           "Expected float array or ComparableVector as key for vector index, got " + keys[0].getClass());
@@ -1959,23 +2440,33 @@ public class LSMVectorIndex implements Index, IndexInternal {
   @Override
   public boolean compact() throws IOException, InterruptedException {
 
+    LogManager.instance().log(this, Level.INFO, "compact() called for index: %s", null, getName());
     checkIsValid();
     final DatabaseInternal database = getDatabase();
 
     if (database.getMode() == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update the index '" + getName() + "'");
 
-    if (database.getPageManager().isPageFlushingSuspended(database))
+    if (database.getPageManager().isPageFlushingSuspended(database)) {
+      LogManager.instance().log(this, Level.INFO, "compact() returning false: page flushing suspended");
       // POSTPONE COMPACTING (DATABASE BACKUP IN PROGRESS?)
       return false;
+    }
 
-    if (!status.compareAndSet(INDEX_STATUS.COMPACTION_SCHEDULED, INDEX_STATUS.COMPACTION_IN_PROGRESS))
+    LogManager.instance().log(this, Level.INFO,
+        "compact() current status: %s, attempting compareAndSet from COMPACTION_SCHEDULED to COMPACTION_IN_PROGRESS", status.get());
+    if (!status.compareAndSet(INDEX_STATUS.COMPACTION_SCHEDULED, INDEX_STATUS.COMPACTION_IN_PROGRESS)) {
+      LogManager.instance()
+          .log(this, Level.INFO, "compact() returning false: status compareAndSet failed (current status: %s)", status.get());
       // COMPACTION NOT SCHEDULED
       return false;
+    }
 
     try {
+      LogManager.instance().log(this, Level.INFO, "compact() calling LSMVectorIndexCompactor.compact()");
       return LSMVectorIndexCompactor.compact(this);
     } catch (final TimeoutException e) {
+      LogManager.instance().log(this, Level.INFO, "compact() caught TimeoutException: %s", e.getMessage());
       // IGNORE IT, WILL RETRY LATER
       return false;
     } finally {
@@ -1999,6 +2490,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     json.put("properties", metadata.propertyNames);
     json.put("dimensions", metadata.dimensions);
     json.put("similarityFunction", metadata.similarityFunction.name());
+    if (metadata.quantizationType != VectorQuantizationType.NONE)
+      json.put("quantization", metadata.quantizationType.name());
     json.put("maxConnections", metadata.maxConnections);
     json.put("beamWidth", metadata.beamWidth);
     json.put("idPropertyName", metadata.idPropertyName);
@@ -2043,7 +2536,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   @Override
-  public void close() {
+  public void flush() {
     if (status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE)) {
 
       // Build and persist graph if it hasn't been built yet
@@ -2067,18 +2560,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
             "Skipping graph build on close: vectorIndexSize=%d, graphState=%s",
             vectorIndex.size(), graphState);
       }
-
-      lock.writeLock().lock();
-      try {
-        // NOTE: Metadata is now embedded in the schema JSON via toJSON() and is automatically
-        // replicated with the schema. We don't write a separate .metadata.json file anymore
-        // to avoid path transformation issues during replication.
-
-        mutable.close();
-      } finally {
-        lock.writeLock().unlock();
-      }
     }
+  }
+
+  @Override
+  public void close() {
+    flush();
   }
 
   @Override
@@ -2412,6 +2899,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         mutable = newMutableIndex;
 
+        // Set the compacted sub-index on the main index
+        this.compactedSubIndex = compactedIndex;
+
         // Update schema with file migration
         ((LocalSchema) getDatabase().getSchema()).setMigratedFileId(fileId, newMutableIndex.getFileId());
 
@@ -2467,34 +2957,48 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (numberOfEntries == 0)
         return; // Empty page, nothing to update
 
-      // Read pointer table
-      final int[] pointers = new int[numberOfEntries];
-      for (int i = 0; i < numberOfEntries; i++)
-        pointers[i] = page.readInt(HEADER_BASE_SIZE + (i * 4));
+      // Calculate header size (compacted page 0 has extra metadata)
+      final int headerSize;
+      if (isCompacted && pageNum == 0) {
+        // Compacted page 0: base header + dimensions + similarity + maxConn + beamWidth
+        headerSize = HEADER_BASE_SIZE + (4 * 4); // 9 + 16 = 25 bytes
+      } else {
+        headerSize = HEADER_BASE_SIZE; // 9 bytes
+      }
 
-      // Read each entry and update VectorLocationIndex
+      // Calculate absolute file offset for this page
+      final long pageStartOffset = (long) pageNum * getPageSize();
+
+      // Parse variable-sized entries sequentially (no pointer table)
+      int currentOffset = headerSize;
       for (int i = 0; i < numberOfEntries; i++) {
-        int pos = pointers[i];
-        final int entryOffset = pointers[i];
+        // Record absolute file offset for this entry
+        final long entryFileOffset = pageStartOffset + BasePage.PAGE_HEADER_SIZE + currentOffset;
 
-        // Read entry metadata (don't need full vector data)
-        final int id = page.readInt(pos);
-        pos += Binary.INT_SERIALIZED_SIZE;
+        // Read variable-sized vectorId
+        final long[] vectorIdAndSize = page.readNumberAndSize(currentOffset);
+        final int id = (int) vectorIdAndSize[0];
+        currentOffset += (int) vectorIdAndSize[1];
 
-        final long position = page.readLong(pos);
-        pos += Binary.LONG_SERIALIZED_SIZE;
+        // Read variable-sized bucketId
+        final long[] bucketIdAndSize = page.readNumberAndSize(currentOffset);
+        final int bucketId = (int) bucketIdAndSize[0];
+        currentOffset += (int) bucketIdAndSize[1];
 
-        final int bucketId = page.readInt(pos);
-        pos += Binary.INT_SERIALIZED_SIZE;
+        // Read variable-sized position
+        final long[] positionAndSize = page.readNumberAndSize(currentOffset);
+        final long position = positionAndSize[0];
+        currentOffset += (int) positionAndSize[1];
 
         final RID rid = new RID(getDatabase(), bucketId, position);
 
-        // NEW FORMAT: No vector data to skip, just read deleted flag
-        final boolean deleted = page.readByte(pos) == 1;
+        // Read deleted flag (fixed 1 byte)
+        final boolean deleted = page.readByte(currentOffset) == 1;
+        currentOffset += 1;
 
-        // Update VectorLocationIndex with this entry's location
+        // Update VectorLocationIndex with this entry's absolute file offset
         // LSM semantics: later entries override earlier ones
-        vectorIndex.addOrUpdate(id, isCompacted, pageNum, entryOffset, rid, deleted);
+        vectorIndex.addOrUpdate(id, isCompacted, entryFileOffset, rid, deleted);
       }
 
       LogManager.instance().log(this, Level.FINE,

@@ -43,6 +43,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   private final VectorLocationIndex                                        vectorIndex;      // Used for live reads
   private final java.util.Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot;   // Used for graph building
   private final int[]                                                      ordinalToVectorId;
+  private final LSMVectorIndex                                             lsmIndex;         // Used for reading quantized vectors
 
   // Cache for graph building - dramatically speeds up repeated vector access
   private final java.util.concurrent.ConcurrentHashMap<Integer, VectorFloat<?>> vectorCache;
@@ -50,24 +51,39 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   // Constructor for live reads (uses shared vectorIndex, no cache needed)
   public ArcadePageVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
       final VectorLocationIndex vectorIndex, final int[] ordinalToVectorId) {
+    this(database, dimensions, vectorPropertyName, vectorIndex, ordinalToVectorId, null);
+  }
+
+  // Constructor for live reads with LSM index reference (for quantization support)
+  public ArcadePageVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
+      final VectorLocationIndex vectorIndex, final int[] ordinalToVectorId, final LSMVectorIndex lsmIndex) {
     this.database = database;
     this.dimensions = dimensions;
     this.vectorPropertyName = vectorPropertyName;
     this.vectorIndex = vectorIndex;
     this.vectorSnapshot = null;
     this.ordinalToVectorId = ordinalToVectorId;
+    this.lsmIndex = lsmIndex;
     this.vectorCache = null; // No cache for live reads (search only reads each vector once)
   }
 
   // Constructor for graph building (uses immutable snapshot + cache for performance)
   public ArcadePageVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
       final java.util.Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot, final int[] ordinalToVectorId) {
+    this(database, dimensions, vectorPropertyName, vectorSnapshot, ordinalToVectorId, null);
+  }
+
+  // Constructor for graph building with LSM index reference (for quantization support)
+  public ArcadePageVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
+      final java.util.Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot, final int[] ordinalToVectorId,
+      final LSMVectorIndex lsmIndex) {
     this.database = database;
     this.dimensions = dimensions;
     this.vectorPropertyName = vectorPropertyName;
     this.vectorIndex = null;
     this.vectorSnapshot = vectorSnapshot;
     this.ordinalToVectorId = ordinalToVectorId;
+    this.lsmIndex = lsmIndex;
     this.vectorCache = new java.util.concurrent.ConcurrentHashMap<>(); // Cache for graph building (vectors accessed many times)
   }
 
@@ -107,6 +123,29 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     if (loc == null || loc.deleted)
       return null;
 
+    // If LSM index is available and quantization is enabled, try reading from index pages first
+    if (lsmIndex != null) {
+      try {
+        final float[] vector = lsmIndex.readVectorFromOffset(loc.absoluteFileOffset, loc.isCompacted);
+        if (vector != null) {
+          // Successfully read quantized vector from index pages
+          final VectorFloat<?> result = vts.createFloatVector(vector);
+
+          // Cache the result if caching is enabled
+          if (vectorCache != null)
+            vectorCache.put(vectorId, result);
+
+          return result;
+        }
+      } catch (final Exception e) {
+        // Fall through to document-based retrieval
+        com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+            "Error reading quantized vector from index pages (ordinal=%d), falling back to document: %s",
+            ordinal, e.getMessage());
+      }
+    }
+
+    // Fall back to reading from document (for non-quantized indexes or if quantized read failed)
     try {
       final com.arcadedb.database.Record record = database.lookupByRID(loc.rid, false);
 

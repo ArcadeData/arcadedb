@@ -98,44 +98,105 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public IndexCursor get(final Object[] keys) {
     checkIsValid();
-    Set<Identifiable> result = null;
 
-    for (final Index index : getIndexesByKeys(keys)) {
-      final boolean unique = index.isUnique();
+    // Check if this is a full-text index to preserve scores
+    final boolean isFullText = !indexesOnBuckets.isEmpty() &&
+        indexesOnBuckets.getFirst().getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
-      final IndexCursor cursor = index.get(keys, unique ? 1 : -1);
-      while (cursor.hasNext()) {
-        if (unique) {
-          result = Set.of(cursor.next());
-          return new IndexCursorCollection(result);
+    if (isFullText) {
+      // For full-text indexes, collect entries with scores
+      final List<IndexCursorEntry> entries = new ArrayList<>();
+
+      for (final Index index : getIndexesByKeys(keys)) {
+        final IndexCursor cursor = index.get(keys, -1);
+        while (cursor.hasNext()) {
+          final Identifiable record = cursor.next();
+          final int score = cursor.getScore();
+          entries.add(new IndexCursorEntry(keys, record, score));
         }
-
-        if (result == null)
-          result = new HashSet<>();
-        result.add(cursor.next());
       }
+
+      // Sort by score descending
+      if (entries.size() > 1)
+        entries.sort((o1, o2) -> Integer.compare(o2.score, o1.score));
+
+      return new TempIndexCursor(entries);
+    } else {
+      // For non-full-text indexes, use the original implementation
+      Set<Identifiable> result = null;
+
+      for (final Index index : getIndexesByKeys(keys)) {
+        final boolean unique = index.isUnique();
+
+        final IndexCursor cursor = index.get(keys, unique ? 1 : -1);
+        while (cursor.hasNext()) {
+          if (unique) {
+            result = Set.of(cursor.next());
+            return new IndexCursorCollection(result);
+          }
+
+          if (result == null)
+            result = new HashSet<>();
+          result.add(cursor.next());
+        }
+      }
+      return new IndexCursorCollection(result != null ? result : Collections.emptyList());
     }
-    return new IndexCursorCollection(result != null ? result : Collections.emptyList());
   }
 
   @Override
   public IndexCursor get(final Object[] keys, final int limit) {
     checkIsValid();
-    Set<Identifiable> result = null;
 
-    for (final Index index : getIndexesByKeys(keys)) {
-      final IndexCursor cursor = index.get(keys, limit > -1 ? (result != null ? result.size() : 0) - limit : -1);
-      while (cursor.hasNext()) {
-        if (result == null)
-          result = new HashSet<>(limit);
+    // Check if this is a full-text index to preserve scores
+    final boolean isFullText = !indexesOnBuckets.isEmpty() &&
+        indexesOnBuckets.getFirst().getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
-        result.add(cursor.next());
+    if (isFullText) {
+      // For full-text indexes, collect entries with scores
+      final List<IndexCursorEntry> entries = new ArrayList<>();
 
-        if (limit > -1 && result.size() >= limit)
-          return new IndexCursorCollection(result);
+      for (final Index index : getIndexesByKeys(keys)) {
+        final IndexCursor cursor = index.get(keys, limit > -1 ? limit - entries.size() : -1);
+        while (cursor.hasNext()) {
+          final Identifiable record = cursor.next();
+          final int score = cursor.getScore();
+          entries.add(new IndexCursorEntry(keys, record, score));
+
+          if (limit > -1 && entries.size() >= limit)
+            break;
+        }
+        if (limit > -1 && entries.size() >= limit)
+          break;
       }
+
+      // Sort by score descending
+      if (entries.size() > 1)
+        entries.sort((o1, o2) -> Integer.compare(o2.score, o1.score));
+
+      // Apply limit after sorting
+      if (limit > -1 && entries.size() > limit)
+        return new TempIndexCursor(entries.subList(0, limit));
+
+      return new TempIndexCursor(entries);
+    } else {
+      // For non-full-text indexes, use the original implementation
+      Set<Identifiable> result = null;
+
+      for (final Index index : getIndexesByKeys(keys)) {
+        final IndexCursor cursor = index.get(keys, limit > -1 ? (result != null ? result.size() : 0) - limit : -1);
+        while (cursor.hasNext()) {
+          if (result == null)
+            result = new HashSet<>(limit);
+
+          result.add(cursor.next());
+
+          if (limit > -1 && result.size() >= limit)
+            return new IndexCursorCollection(result);
+        }
+      }
+      return new IndexCursorCollection(result != null ? result : Collections.emptyList());
     }
-    return new IndexCursorCollection(result != null ? result : Collections.emptyList());
   }
 
   @Override
@@ -208,6 +269,13 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   public List<String> getPropertyNames() {
     checkIsValid();
     return getFirstUnderlyingIndex().getPropertyNames();
+  }
+
+  @Override
+  public void flush() {
+    checkIsValid();
+    for (final IndexInternal index : indexesOnBuckets)
+      index.flush();
   }
 
   @Override

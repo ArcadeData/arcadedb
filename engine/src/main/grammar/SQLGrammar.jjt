@@ -2111,20 +2111,18 @@ NotBlock NotBlock():
   (
     <NOT> {jjtThis.negate = true;}
     (
-      LOOKAHEAD( ConditionBlock() )
-      jjtThis.sub = ConditionBlock()
-      |
-      LOOKAHEAD( ParenthesisBlock() )
+      LOOKAHEAD(2)
       jjtThis.sub = ParenthesisBlock()
+      |
+      jjtThis.sub = ConditionBlock()
     )
   )
   |
   (
-    LOOKAHEAD( ConditionBlock() )
-    jjtThis.sub = ConditionBlock()
-    |
-    LOOKAHEAD( ParenthesisBlock() )
+    LOOKAHEAD(2)
     jjtThis.sub = ParenthesisBlock()
+    |
+    jjtThis.sub = ConditionBlock()
   )
 ) { return jjtThis; }
 }
@@ -2140,59 +2138,58 @@ BooleanExpression ConditionBlock():
 {BooleanExpression result = null;}
 {
 (
-  LOOKAHEAD( IsNotNullCondition() )
-  result = IsNotNullCondition()
-  |
-  LOOKAHEAD( IsNullCondition() )
-  result = IsNullCondition()
-  |
-  LOOKAHEAD( IsNotDefinedCondition() )
-  result = IsNotDefinedCondition()
-  |
-  LOOKAHEAD( IsDefinedCondition() )
-  result = IsDefinedCondition()
-  |
-  LOOKAHEAD( InCondition() )
-  result = InCondition()
-  |
-  LOOKAHEAD( NotInCondition() )
-  result = NotInCondition()
-  |
-  LOOKAHEAD( BinaryCondition() )
-  result = BinaryCondition()
-  |
-  LOOKAHEAD( BetweenCondition() )
-  result = BetweenCondition()
-  |
-  LOOKAHEAD( ContainsCondition() )
-  result = ContainsCondition()
-  |
-  LOOKAHEAD( ContainsValueCondition() )
-  result = ContainsValueCondition()
-  |
-  LOOKAHEAD( ContainsAllCondition() )
-  result = ContainsAllCondition()
-  |
-  LOOKAHEAD( ContainsAnyCondition() )
-  result = ContainsAnyCondition()
-  |
-  LOOKAHEAD( ContainsTextCondition() )
-  result = ContainsTextCondition()
-  |
-  LOOKAHEAD( MatchesCondition() )
-  result = MatchesCondition()
-  |
-  LOOKAHEAD( IndexMatchCondition() )
-  result = IndexMatchCondition()
-  |
-  LOOKAHEAD( InstanceofCondition() )
-  result = InstanceofCondition()
-  |
   <TRUE> { result = BooleanExpression.TRUE;}
   |
   <FALSE> { result = BooleanExpression.FALSE;}
   |
   <NULL> { result =null;}
+  |
+  LOOKAHEAD(4)
+  result = IsNotNullCondition()
+  |
+  LOOKAHEAD(3)
+  result = IsNullCondition()
+  |
+  LOOKAHEAD(4)
+  result = IsNotDefinedCondition()
+  |
+  LOOKAHEAD(3)
+  result = IsDefinedCondition()
+  |
+  LOOKAHEAD(3)
+  result = NotInCondition()
+  |
+  LOOKAHEAD(2)
+  result = InCondition()
+  |
+  LOOKAHEAD(2)
+  result = BetweenCondition()
+  |
+  LOOKAHEAD(2)
+  result = ContainsCondition()
+  |
+  LOOKAHEAD(2)
+  result = ContainsValueCondition()
+  |
+  LOOKAHEAD(2)
+  result = ContainsAllCondition()
+  |
+  LOOKAHEAD(2)
+  result = ContainsAnyCondition()
+  |
+  LOOKAHEAD(2)
+  result = ContainsTextCondition()
+  |
+  LOOKAHEAD(2)
+  result = MatchesCondition()
+  |
+  LOOKAHEAD(2)
+  result = IndexMatchCondition()
+  |
+  LOOKAHEAD(2)
+  result = InstanceofCondition()
+  |
+  result = BinaryCondition()
 ){ return result; }
 }
 

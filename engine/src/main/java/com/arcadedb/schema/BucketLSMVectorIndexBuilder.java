@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.vector.VectorQuantizationType;
 import com.arcadedb.serializer.json.JSONObject;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
@@ -31,8 +32,11 @@ import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
   public int                      dimensions;
   public VectorSimilarityFunction similarityFunction = VectorSimilarityFunction.COSINE;
+  public VectorQuantizationType   quantizationType   = VectorQuantizationType.NONE;
   public int                      maxConnections     = 16;
   public int                      beamWidth          = 100;
+  public float                    neighborOverflowFactor = 1.2f;
+  public float                    alphaDiversityRelaxation = 1.2f;
   public String                   idPropertyName     = "id";
 
   protected BucketLSMVectorIndexBuilder(DatabaseInternal database, String typeName, String bucketName,
@@ -110,6 +114,36 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
   }
 
   /**
+   * Sets the neighbor overflow factor for graph construction.
+   * This parameter controls how many extra candidate neighbors are considered during graph building.
+   * Higher values can improve graph quality but increase build time.
+   * Typical range: 1.0-1.5, default: 1.2
+   *
+   * @param neighborOverflowFactor the neighbor overflow factor
+   */
+  public BucketLSMVectorIndexBuilder withNeighborOverflowFactor(final float neighborOverflowFactor) {
+    if (neighborOverflowFactor < 1.0f)
+      throw new IllegalArgumentException("neighborOverflowFactor must be at least 1.0");
+    this.neighborOverflowFactor = neighborOverflowFactor;
+    return this;
+  }
+
+  /**
+   * Sets the alpha diversity relaxation factor for graph construction.
+   * This parameter controls the trade-off between distance accuracy and diversity in the graph.
+   * Higher values prioritize diversity, which can improve recall for complex queries.
+   * Typical range: 1.0-1.5, default: 1.2
+   *
+   * @param alphaDiversityRelaxation the alpha diversity relaxation factor
+   */
+  public BucketLSMVectorIndexBuilder withAlphaDiversityRelaxation(final float alphaDiversityRelaxation) {
+    if (alphaDiversityRelaxation < 1.0f)
+      throw new IllegalArgumentException("alphaDiversityRelaxation must be at least 1.0");
+    this.alphaDiversityRelaxation = alphaDiversityRelaxation;
+    return this;
+  }
+
+  /**
    * Sets the ID property name used to identify vertices.
    * This property is used when searching for vertices by ID.
    * Default is "id".
@@ -121,13 +155,43 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
     return this;
   }
 
+  /**
+   * Sets the quantization type for vector compression.
+   * NONE (default): No quantization, stores float32 vectors (4 bytes per dimension)
+   * INT8: 4x compression using int8 quantization
+   * BINARY: 32x compression using binary quantization
+   *
+   * @param quantizationType the quantization type
+   */
+  public BucketLSMVectorIndexBuilder withQuantization(final VectorQuantizationType quantizationType) {
+    this.quantizationType = quantizationType;
+    return this;
+  }
+
+  /**
+   * Sets the quantization type for vector compression by string name.
+   *
+   * @param quantization the quantization type name (NONE, INT8, BINARY)
+   */
+  public BucketLSMVectorIndexBuilder withQuantization(final String quantization) {
+    try {
+      this.quantizationType = VectorQuantizationType.valueOf(quantization.toUpperCase());
+      return this;
+    } catch (final IllegalArgumentException e) {
+      throw new IndexException("Invalid quantization type: " + quantization + ". Supported values: NONE, INT8, BINARY");
+    }
+  }
+
   @Override
   public BucketLSMVectorIndexBuilder withMetadata(final IndexMetadata metadata) {
     if (metadata instanceof LSMVectorIndexMetadata v) {
       this.dimensions = v.dimensions;
       withSimilarity(v.similarityFunction.name());
+      this.quantizationType = v.quantizationType;
       this.maxConnections = v.maxConnections;
       this.beamWidth = v.beamWidth;
+      this.neighborOverflowFactor = v.neighborOverflowFactor;
+      this.alphaDiversityRelaxation = v.alphaDiversityRelaxation;
       this.idPropertyName = v.idPropertyName;
     }
     return this;
@@ -140,11 +204,20 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
     if (metadata.has("similarity"))
       withSimilarity(metadata.getString("similarity"));
 
+    if (metadata.has("quantization"))
+      withQuantization(metadata.getString("quantization"));
+
     if (metadata.has("maxConnections"))
       this.maxConnections = metadata.getInt("maxConnections");
 
     if (metadata.has("beamWidth"))
       this.beamWidth = metadata.getInt("beamWidth");
+
+    if (metadata.has("neighborOverflowFactor"))
+      this.neighborOverflowFactor = ((Number) metadata.get("neighborOverflowFactor")).floatValue();
+
+    if (metadata.has("alphaDiversityRelaxation"))
+      this.alphaDiversityRelaxation = ((Number) metadata.get("alphaDiversityRelaxation")).floatValue();
 
     if (metadata.has("idPropertyName"))
       this.idPropertyName = metadata.getString("idPropertyName");

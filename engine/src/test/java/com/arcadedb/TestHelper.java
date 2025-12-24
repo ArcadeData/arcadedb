@@ -32,11 +32,9 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 
-import java.io.File;
-import java.util.Collection;
-import java.util.Random;
-import java.util.UUID;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.*;
+import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -79,7 +77,16 @@ public abstract class TestHelper {
   }
 
   public static DocumentType createRandomType(final Database database) {
-    return database.getSchema().createDocumentType("RandomType" + new Random().nextInt(100_000));
+    Exception lastException = null;
+    for (int i = 0; i < 3; i++) {
+      try {
+        return database.getSchema().createDocumentType("RandomType" + new Random().nextInt(100_000));
+      } catch (Exception e) {
+        // RETRY
+        lastException = e;
+      }
+    }
+    throw lastException instanceof RuntimeException ? (RuntimeException) lastException : new RuntimeException(lastException);
   }
 
   public static void executeInNewDatabase(final String testName, final DatabaseTest<Database> callback) throws Exception {

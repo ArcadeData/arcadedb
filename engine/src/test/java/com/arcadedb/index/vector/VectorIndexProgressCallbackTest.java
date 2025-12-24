@@ -19,23 +19,22 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Test for progress callbacks during vector index building.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class VectorIndexProgressCallbackTest extends TestHelper {
+class VectorIndexProgressCallbackTest extends TestHelper {
 
   @Test
-  public void testVectorIndexBuildWithProgressCallback() {
+  void vectorIndexBuildWithProgressCallback() {
     // Create schema
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE VectorDoc IF NOT EXISTS");
@@ -48,7 +47,7 @@ public class VectorIndexProgressCallbackTest extends TestHelper {
     });
 
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("VectorDoc[embedding]");
-    Assertions.assertNotNull(typeIndex);
+    assertThat(typeIndex).isNotNull();
 
     // Insert test documents
     database.transaction(() -> {
@@ -81,45 +80,45 @@ public class VectorIndexProgressCallbackTest extends TestHelper {
         100000, // batch size
         (doc, total) -> {
           documentsIndexed.set((int) total);
-          if (total % 100 == 0) {
-            System.out.println("Indexed " + total + " documents...");
-          }
+//          if (total % 100 == 0) {
+//            System.out.println("Indexed " + total + " documents...");
+//          }
         },
         (phase, processedNodes, totalNodes, insertsOrAccesses) -> {
           switch (phase) {
-            case "validating":
-              validationProgress.set(processedNodes);
-              System.out.printf("Validating vectors: %d / %d%n", processedNodes, totalNodes);
-              break;
-            case "building":
-              buildingProgress.set(processedNodes);
-              buildingCallbacks.incrementAndGet();
-              final int insertsInProgress = (int) (insertsOrAccesses - processedNodes);
-              System.out.printf("Building graph: %d / %d nodes (%d inserts in progress)%n",
-                  processedNodes, totalNodes, insertsInProgress);
-              break;
-            case "persisting":
-              persistingCalled.incrementAndGet();
-              System.out.printf("Persisting graph: %d / %d nodes%n", processedNodes, totalNodes);
-              break;
+          case "validating":
+            validationProgress.set(processedNodes);
+//            System.out.printf("Validating vectors: %d / %d%n", processedNodes, totalNodes);
+            break;
+          case "building":
+            buildingProgress.set(processedNodes);
+            buildingCallbacks.incrementAndGet();
+            final int insertsInProgress = (int) (insertsOrAccesses - processedNodes);
+//            System.out.printf("Building graph: %d / %d nodes (%d inserts in progress)%n",
+//                processedNodes, totalNodes, insertsInProgress);
+            break;
+          case "persisting":
+            persistingCalled.incrementAndGet();
+//            System.out.printf("Persisting graph: %d / %d nodes%n", processedNodes, totalNodes);
+            break;
           }
         }
     );
 
     // Verify callbacks were called
-    Assertions.assertEquals(1000, documentsIndexed.get(), "Should have indexed 1000 documents");
+    assertThat(documentsIndexed.get()).as("Should have indexed 1000 documents").isEqualTo(1000);
     // Note: Validation and building callbacks may not be called if graph is already built
     // during the insert phase. That's ok - the important thing is that the index build succeeded.
     // In production, these callbacks will be triggered when explicitly rebuilding an existing index.
-    System.out.println("\n=== Callback Summary ===");
-    System.out.println("Validation reports: " + (validationProgress.get() > 0 ? "YES" : "NO"));
-    System.out.println("Building callback count: " + buildingCallbacks.get());
-    System.out.println("Final nodes built: " + buildingProgress.get());
-    System.out.println("Persisting reports: " + (persistingCalled.get() > 0 ? "YES" : "NO"));
+//    System.out.println("\n=== Callback Summary ===");
+//    System.out.println("Validation reports: " + (validationProgress.get() > 0 ? "YES" : "NO"));
+//    System.out.println("Building callback count: " + buildingCallbacks.get());
+//    System.out.println("Final nodes built: " + buildingProgress.get());
+//    System.out.println("Persisting reports: " + (persistingCalled.get() > 0 ? "YES" : "NO"));
   }
 
   @Test
-  public void testVectorIndexBuildWithoutCallback() {
+  void vectorIndexBuildWithoutCallback() {
     // Create schema
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE SimpleDoc IF NOT EXISTS");
@@ -129,7 +128,7 @@ public class VectorIndexProgressCallbackTest extends TestHelper {
     });
 
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("SimpleDoc[vec]");
-    Assertions.assertNotNull(typeIndex);
+    assertThat(typeIndex).isNotNull();
 
     // Insert test documents
     database.transaction(() -> {
@@ -147,11 +146,11 @@ public class VectorIndexProgressCallbackTest extends TestHelper {
     final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
     final long totalRecords = lsmIndex.build(100000, null);
 
-    Assertions.assertEquals(100, totalRecords, "Should have indexed 100 documents");
+    assertThat(totalRecords).as("Should have indexed 100 documents").isEqualTo(100);
   }
 
   @Test
-  public void testGraphRebuildWithCallback() {
+  void graphRebuildWithCallback() {
     // This test demonstrates the graph building callbacks when rebuilding an existing index
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE RebuildDoc IF NOT EXISTS");
@@ -187,13 +186,13 @@ public class VectorIndexProgressCallbackTest extends TestHelper {
         (phase, processedNodes, totalNodes, vecAccesses) -> {
           graphBuildCalls.incrementAndGet();
           phaseLog.append(String.format("[%s: %d/%d] ", phase, processedNodes, totalNodes));
-          System.out.printf("Graph Build - Phase: %s, Progress: %d/%d, Vector accesses: %d%n",
-              phase, processedNodes, totalNodes, vecAccesses);
+//          System.out.printf("Graph Build - Phase: %s, Progress: %d/%d, Vector accesses: %d%n",
+//              phase, processedNodes, totalNodes, vecAccesses);
         }
     );
 
-    System.out.println("\nGraph build phases observed: " + phaseLog);
-    System.out.println("Total graph callback invocations: " + graphBuildCalls.get());
+//    System.out.println("\nGraph build phases observed: " + phaseLog);
+//    System.out.println("Total graph callback invocations: " + graphBuildCalls.get());
 
     // We should have received some callbacks (validation, building, or persisting)
     // Note: callbacks may not be triggered if graph is already built, which is acceptable

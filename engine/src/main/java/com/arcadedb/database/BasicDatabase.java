@@ -35,6 +35,14 @@ public interface BasicDatabase extends AutoCloseable {
 
   String getDatabasePath();
 
+  /**
+   * Returns the total size of the database in bytes, including all database files
+   * (data files, indexes, transaction logs, metadata, etc.).
+   *
+   * @return The total size in bytes of all files in the database directory
+   */
+  long getSize();
+
   boolean isOpen();
 
   Schema getSchema();

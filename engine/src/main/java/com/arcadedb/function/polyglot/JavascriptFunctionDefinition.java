@@ -89,23 +89,101 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
   public Object execute(final Object... parameters) {
     return library.execute((polyglotEngine) -> {
       try {
-        String declaration = functionName + "( ";
+        final StringBuilder declaration = new StringBuilder(functionName + "( ");
         for (int i = 0; i < parameters.length; i++) {
           if (i > 0)
-            declaration += ", ";
+            declaration.append(", ");
 
-          declaration += parameters[i];
-
+          // Convert Java value to JavaScript source representation
+          declaration.append(toJavaScriptValue(parameters[i]));
         }
-        declaration += ")";
-        final Value result = polyglotEngine.eval(declaration);
+        declaration.append(")");
+        final Value result = polyglotEngine.eval(declaration.toString());
 
         return jsValueToJava(result);
 
       } catch (final IOException e) {
-        throw new FunctionExecutionException("Error on definition of function '" + functionName + "'");
+        throw new FunctionExecutionException("Error on execution of function '" + functionName + "'");
       }
     });
+  }
+
+  /**
+   * Converts a Java value to its JavaScript source code representation.
+   * This ensures proper quoting and escaping for strings and other types.
+   */
+  private static String toJavaScriptValue(final Object value) {
+    if (value == null) {
+      return "null";
+    } else if (value instanceof String str) {
+      // Check if the string looks like JSON or a JavaScript literal for backward compatibility
+      // This allows existing code that passes JSON strings (e.g., '{"foo":"bar"}') to continue working
+      // Note: This is a heuristic and may not catch all edge cases, but prioritizes backward compatibility
+      final String trimmed = str.trim();
+      final boolean looksLikeJson =
+          (trimmed.startsWith("{") && trimmed.endsWith("}") && trimmed.length() > 2 && trimmed.contains(":")) ||
+          (trimmed.startsWith("[") && trimmed.endsWith("]") && trimmed.length() > 2);
+      final boolean alreadyQuoted =
+          (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length() > 1);
+
+      if (looksLikeJson || alreadyQuoted) {
+        // Pass through as-is for JSON-like objects/arrays or already-quoted strings
+        return str;
+      }
+
+      // Otherwise, escape special characters and wrap in quotes
+      final String escaped = str.replace("\\", "\\\\")
+          .replace("\"", "\\\"")
+          .replace("\n", "\\n")
+          .replace("\r", "\\r")
+          .replace("\t", "\\t");
+      return "\"" + escaped + "\"";
+    } else if (value instanceof Boolean || value instanceof Number) {
+      return value.toString();
+    } else if (value instanceof Map) {
+      // Convert Map to JSON object notation
+      return mapToJavaScript((Map<?, ?>) value);
+    } else if (value instanceof List) {
+      // Convert List to JSON array notation
+      return listToJavaScript((List<?>) value);
+    } else {
+      // For other types, try to convert to string and quote it
+      final String str = value.toString();
+      final String escaped = str.replace("\\", "\\\\")
+          .replace("\"", "\\\"")
+          .replace("\n", "\\n")
+          .replace("\r", "\\r")
+          .replace("\t", "\\t");
+      return "\"" + escaped + "\"";
+    }
+  }
+
+  private static String mapToJavaScript(final Map<?, ?> map) {
+    final StringBuilder sb = new StringBuilder("{");
+    boolean first = true;
+    for (Map.Entry<?, ?> entry : map.entrySet()) {
+      if (!first) sb.append(", ");
+      first = false;
+      // JavaScript object keys must be strings - convert non-string keys to strings
+      final String key = entry.getKey() instanceof String ? (String) entry.getKey() : entry.getKey().toString();
+      sb.append(toJavaScriptValue(key));
+      sb.append(": ");
+      sb.append(toJavaScriptValue(entry.getValue()));
+    }
+    sb.append("}");
+    return sb.toString();
+  }
+
+  private static String listToJavaScript(final List<?> list) {
+    final StringBuilder sb = new StringBuilder("[");
+    boolean first = true;
+    for (Object item : list) {
+      if (!first) sb.append(", ");
+      first = false;
+      sb.append(toJavaScriptValue(item));
+    }
+    sb.append("]");
+    return sb.toString();
   }
 
   public static List<?> jsArrayToJava(final ProxyArray array) {
