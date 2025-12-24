@@ -70,8 +70,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -92,8 +97,33 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       .setUseVertexEdgeSize(true)
       .setUseCollectionSizeForEdges(false).setUseCollectionSize(false);
 
-  // Transaction management
-  private final Map<String, Database> activeTransactions = new ConcurrentHashMap<>();
+  // Transaction management - now stores TransactionContext with executor for thread affinity
+  private final Map<String, TransactionContext> activeTransactions = new ConcurrentHashMap<>();
+
+  /**
+   * Holds transaction state including a single-thread executor to ensure all
+   * transaction operations run on the same thread (required by ArcadeDB's thread-local transactions).
+   */
+  private static final class TransactionContext {
+    final Database db;
+    final ExecutorService executor;
+    final String txId;
+
+    TransactionContext(Database db, String txId) {
+      this.db = db;
+      this.txId = txId;
+      // Single-thread executor ensures all tx operations happen on the same thread
+      this.executor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "arcadedb-tx-" + txId);
+        t.setDaemon(true);
+        return t;
+      });
+    }
+
+    void shutdown() {
+      executor.shutdown();
+    }
+  }
 
   // Database connection pool
   private final Map<String, Database> databasePool = new ConcurrentHashMap<>();
@@ -127,15 +157,22 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
     databasePool.clear();
 
-    // Clean up transactions
-    for (Database db : activeTransactions.values()) {
+    // Clean up transactions - shutdown executors and rollback
+    for (TransactionContext txCtx : activeTransactions.values()) {
       try {
-        if (db != null && db.isOpen()) {
-          db.rollback();
-          db.close();
+        if (txCtx.db != null && txCtx.db.isOpen()) {
+          // Execute rollback on the transaction's thread
+          txCtx.executor.submit(() -> {
+            try {
+              txCtx.db.rollback();
+            } catch (Exception ignore) {
+            }
+          }).get();
         }
       } catch (Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error closing transaction database", e);
+        LogManager.instance().log(this, Level.SEVERE, "Error closing transaction", e);
+      } finally {
+        txCtx.shutdown();
       }
     }
     activeTransactions.clear();
@@ -146,13 +183,80 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     final long t0 = System.nanoTime();
 
-    Database db = null;
+    try {
+      // Check if this is an externally-managed transaction (started via beginTransaction RPC)
+      final boolean hasTx = req.hasTransaction();
+      final var tx = hasTx ? req.getTransaction() : null;
+      final String incomingTxId = (hasTx && tx != null) ? tx.getTransactionId() : null;
+      final TransactionContext txCtx = (incomingTxId != null && !incomingTxId.isBlank()) 
+          ? activeTransactions.get(incomingTxId) : null;
+
+      if (txCtx != null) {
+        // External transaction - execute command on the transaction's dedicated thread
+        LogManager.instance().log(this, Level.FINE, 
+            "executeCommand(): using external transaction %s, executing on dedicated thread", incomingTxId);
+        
+        Future<ExecuteCommandResponse> future = txCtx.executor.submit(() -> 
+            executeCommandInternal(req, t0, txCtx.db, true));
+        
+        ExecuteCommandResponse response = future.get();
+        resp.onNext(response);
+        resp.onCompleted();
+      } else {
+        // No external transaction - execute on current thread
+        Database db = getDatabase(req.getDatabase(), req.getCredentials());
+        ExecuteCommandResponse response = executeCommandInternal(req, t0, db, false);
+        resp.onNext(response);
+        resp.onCompleted();
+      }
+
+    } catch (ExecutionException e) {
+      // Unwrap the cause from the executor
+      Throwable cause = e.getCause() != null ? e.getCause() : e;
+      LogManager.instance().log(this, Level.SEVERE, "ERROR in executeCommand", cause);
+      
+      final long ms = (System.nanoTime() - t0) / 1_000_000L;
+      ExecuteCommandResponse err = ExecuteCommandResponse
+          .newBuilder()
+          .setSuccess(false)
+          .setMessage(cause.getMessage() == null ? cause.toString() : cause.getMessage())
+          .setAffectedRecords(0L)
+          .setExecutionTimeMs(ms)
+          .build();
+      resp.onNext(err);
+      resp.onCompleted();
+
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "ERROR in executeCommand", e);
+
+      final long ms = (System.nanoTime() - t0) / 1_000_000L;
+      ExecuteCommandResponse err = ExecuteCommandResponse
+          .newBuilder()
+          .setSuccess(false)
+          .setMessage(e.getMessage() == null ? e.toString() : e.getMessage())
+          .setAffectedRecords(0L)
+          .setExecutionTimeMs(ms)
+          .build();
+      resp.onNext(err);
+      resp.onCompleted();
+    }
+  }
+
+  /**
+   * Internal implementation of executeCommand that runs on the appropriate thread.
+   * 
+   * @param req the command request
+   * @param t0 start time in nanos
+   * @param db the database to use
+   * @param isExternalTransaction true if this is part of an externally-managed transaction
+   * @return the response
+   */
+  private ExecuteCommandResponse executeCommandInternal(ExecuteCommandRequest req, long t0, 
+      Database db, boolean isExternalTransaction) {
+    
     boolean beganHere = false;
 
     try {
-
-      // Resolve DB + params
-      db = getDatabase(req.getDatabase(), req.getCredentials());
       final Map<String, Object> params = convertParameters(req.getParametersMap());
 
       // Language defaults to "sql" when empty
@@ -160,29 +264,26 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       // Transaction: begin if requested
       final boolean hasTx = req.hasTransaction();
-
       final var tx = hasTx ? req.getTransaction() : null;
 
-      LogManager.instance().log(this, Level.FINE, "executeCommand(): hasTx = %s tx = %s", hasTx, tx);
+      LogManager.instance().log(this, Level.FINE, "executeCommandInternal(): hasTx = %s tx = %s isExternal = %s", 
+          hasTx, tx, isExternalTransaction);
 
-      // Check if this is an externally-managed transaction (started via beginTransaction RPC)
-      final String incomingTxId = (hasTx && tx != null) ? tx.getTransactionId() : null;
-      final boolean isExternalTransaction = incomingTxId != null && !incomingTxId.isBlank()
-          && activeTransactions.containsKey(incomingTxId);
-
-      // Auto-wrap in a tx if the client didn't send a tx and none is active
+      // Auto-wrap in a tx if the client didn't send a tx and none is active (only for non-external)
       final boolean activeAtEntry = db.isTransactionActive();
-      final boolean autoWrap = !hasTx && !activeAtEntry;
+      final boolean autoWrap = !isExternalTransaction && !hasTx && !activeAtEntry;
 
       if (isExternalTransaction) {
         // Transaction already started via beginTransaction() - don't begin again
-        LogManager.instance().log(this, Level.FINE, "executeCommand(): using external transaction %s (already active)", incomingTxId);
+        LogManager.instance().log(this, Level.FINE, 
+            "executeCommandInternal(): external transaction - tx already active, not beginning");
       } else if (hasTx && tx.getBegin()) {
         db.begin();
         beganHere = true;
       } else if (autoWrap) {
         // Server-side safety: keep UPDATE/UPSERT/MERGE pipelines atomic
-        LogManager.instance().log(this, Level.FINE, "executeCommand(): auto-wrapping in tx because no client tx and none active");
+        LogManager.instance().log(this, Level.FINE, 
+            "executeCommandInternal(): auto-wrapping in tx because no client tx and none active");
         db.begin();
         beganHere = true;
       }
@@ -198,17 +299,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       // Execute the command
 
-      LogManager.instance().log(this, Level.FINE, "executeCommand(): command = %s", req.getCommand());
+      LogManager.instance().log(this, Level.FINE, "executeCommandInternal(): command = %s", req.getCommand());
 
       try (ResultSet rs = db.command(language, req.getCommand(), params)) {
 
         if (rs != null) {
 
-          LogManager.instance().log(this, Level.FINE, "executeCommand(): rs = %s", rs);
+          LogManager.instance().log(this, Level.FINE, "executeCommandInternal(): rs = %s", rs);
 
           if (returnRows) {
 
-            LogManager.instance().log(this, Level.FINE, "executeCommand(): returning rows ...");
+            LogManager.instance().log(this, Level.FINE, "executeCommandInternal(): returning rows ...");
 
             int emitted = 0;
 
@@ -249,7 +350,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             }
           } else {
 
-            LogManager.instance().log(this, Level.FINE, "executeCommand(): not returning rows ... rs = %s", rs);
+            LogManager.instance().log(this, Level.FINE, "executeCommandInternal(): not returning rows ... rs = %s", rs);
 
             // Not returning rows: still consume to compute 'affected'
             while (rs.hasNext()) {
@@ -268,81 +369,65 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         }
       }
 
-      LogManager.instance().log(this, Level.FINE, "executeCommand(): after - hasTx = %s tx = %s", hasTx, tx);
+      LogManager.instance().log(this, Level.FINE, "executeCommandInternal(): after - hasTx = %s tx = %s", hasTx, tx);
 
-      // Check if this transaction is managed externally via beginTransaction()
-      // If so, we must NOT commit/rollback here - let commitTransaction()/rollbackTransaction() handle it
-      final String txId = (hasTx && tx != null) ? tx.getTransactionId() : null;
-      final boolean managedExternally = txId != null && !txId.isBlank() && activeTransactions.containsKey(txId);
-
-      if (managedExternally) {
+      // Handle transaction commit/rollback
+      if (isExternalTransaction) {
         // Transaction was started via beginTransaction() RPC - don't touch its lifecycle
         LogManager.instance().log(this, Level.FINE,
-            "executeCommand(): after - external transaction %s managed by beginTransaction/commitTransaction, skipping auto-commit/rollback",
-            txId);
+            "executeCommandInternal(): external transaction - skipping auto-commit/rollback");
       } else if (hasTx) {
         // Transaction end — precedence: rollback > commit > begin-only⇒commit
         if (tx.getRollback()) {
           LogManager.instance()
-              .log(this, Level.FINE, "executeCommand(): after - rolling back db=%s tid=%s", db.getName(), tx.getTransactionId());
+              .log(this, Level.FINE, "executeCommandInternal(): rolling back db=%s tid=%s", db.getName(), tx.getTransactionId());
           db.rollback();
         } else if (tx.getCommit()) {
           LogManager.instance()
-              .log(this, Level.FINE, "executeCommand(): after - committing [tx.getCommit() == true] db=%s tid=%s", db.getName(),
+              .log(this, Level.FINE, "executeCommandInternal(): committing [tx.getCommit() == true] db=%s tid=%s", db.getName(),
                   tx.getTransactionId());
           db.commit();
         } else if (beganHere && db.isTransactionActive()) {
           // Began but no explicit commit/rollback flag — default to commit (HTTP parity)
           LogManager.instance()
-              .log(this, Level.FINE, "executeCommand(): after - committing [beganHere == true] db=%s tid=%s", db.getName(),
+              .log(this, Level.FINE, "executeCommandInternal(): committing [beganHere == true] db=%s tid=%s", db.getName(),
                   tx.getTransactionId());
           db.commit();
         }
       } else if (beganHere && db.isTransactionActive()) {
         // Auto-wrapped tx: ensure we commit after fully draining ResultSet
-        LogManager.instance().log(this, Level.FINE, "executeCommand(): after - committing [autoWrap] db=%s", db.getName());
+        LogManager.instance().log(this, Level.FINE, "executeCommandInternal(): committing [autoWrap] db=%s", db.getName());
         db.commit();
       }
 
       final long ms = (System.nanoTime() - t0) / 1_000_000L;
       out.setAffectedRecords(affected).setExecutionTimeMs(ms);
-      resp.onNext(out.build());
-      resp.onCompleted();
+      return out.build();
 
     } catch (Exception e) {
 
-      LogManager.instance().log(this, Level.SEVERE, "ERROR", e);
+      LogManager.instance().log(this, Level.SEVERE, "ERROR in executeCommandInternal", e);
 
-      // Best-effort rollback if we began here and failed
-      // But NOT if transaction is managed externally via beginTransaction()
-      final String txIdForError = (req.hasTransaction() && req.getTransaction() != null)
-          ? req.getTransaction().getTransactionId() : null;
-      final boolean managedExternallyForError = txIdForError != null && !txIdForError.isBlank()
-          && activeTransactions.containsKey(txIdForError);
-
+      // Best-effort rollback if we began here and failed (only for non-external transactions)
       try {
-        if (beganHere && db != null && !managedExternallyForError) {
+        if (beganHere && db != null && !isExternalTransaction) {
           db.rollback();
-        } else if (managedExternallyForError) {
+        } else if (isExternalTransaction) {
           LogManager.instance().log(this, Level.FINE,
-              "executeCommand(): error occurred but transaction %s is externally managed, skipping auto-rollback", txIdForError);
+              "executeCommandInternal(): error occurred but external transaction - skipping auto-rollback");
         }
       } catch (Exception ignore) {
         /* no-op */
       }
 
       final long ms = (System.nanoTime() - t0) / 1_000_000L;
-      ExecuteCommandResponse err = ExecuteCommandResponse
+      return ExecuteCommandResponse
           .newBuilder()
           .setSuccess(false)
           .setMessage(e.getMessage() == null ? e.toString() : e.getMessage())
           .setAffectedRecords(0L)
           .setExecutionTimeMs(ms)
           .build();
-
-      // Prefer returning a structured response so clients always get timing/message
-      resp.onNext(err);
-      resp.onCompleted();
     }
   }
 
@@ -684,10 +769,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         LogManager.instance().log(this, Level.FINE, "executeQuery(): has Tx %s", request.getTransaction().getTransactionId());
 
-        database = activeTransactions.get(request.getTransaction().getTransactionId());
-        if (database == null) {
+        TransactionContext txCtx = activeTransactions.get(request.getTransaction().getTransactionId());
+        if (txCtx == null) {
           throw new IllegalArgumentException("Invalid transaction ID");
         }
+        database = txCtx.db;
       }
 
       // Execute the query
@@ -811,14 +897,24 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       LogManager.instance().log(this, Level.FINE, "beginTransaction(): resolved database instance dbName=%s class=%s hash=%s",
           (database != null ? database.getName() : "<null>"), (database != null ? database.getClass().getSimpleName() : "<null>"),
           (database != null ? System.identityHashCode(database) : 0));
-      LogManager.instance().log(this, Level.FINE, "beginTransaction(): calling database.begin()");
 
-      // Begin transaction
-      database.begin();
-
-      // Generate transaction ID and register
+      // Generate transaction ID first so we can create the context
       final String transactionId = generateTransactionId();
-      activeTransactions.put(transactionId, database);
+      
+      // Create transaction context with dedicated executor thread
+      final TransactionContext txCtx = new TransactionContext(database, transactionId);
+      
+      LogManager.instance().log(this, Level.FINE, "beginTransaction(): calling database.begin() on dedicated thread for txId=%s", transactionId);
+
+      // Begin transaction ON THE DEDICATED THREAD - this is critical because ArcadeDB
+      // transactions are thread-local
+      Future<?> beginFuture = txCtx.executor.submit(() -> {
+        database.begin();
+      });
+      beginFuture.get(); // Wait for begin to complete
+      
+      // Register the transaction context
+      activeTransactions.put(transactionId, txCtx);
 
       LogManager.instance()
           .log(this, Level.FINE, "beginTransaction(): started txId=%s for db=%s activeTxCount(after)=%s", transactionId,
@@ -830,11 +926,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       responseObserver.onNext(response);
       responseObserver.onCompleted();
     } catch (Throwable t) {
+      Throwable cause = (t instanceof ExecutionException && t.getCause() != null) ? t.getCause() : t;
       LogManager.instance()
           .log(this, Level.FINE, "beginTransaction(): FAILED db=%s user=%s err=%s", reqDb, (user != null ? user : "<none>"),
-              t.toString(), t);
-      LogManager.instance().log(this, Level.SEVERE, "Error beginning transaction: %s", t, t.getMessage());
-      responseObserver.onError(Status.INTERNAL.withDescription("Failed to begin transaction: " + t.getMessage()).asException());
+              cause.toString(), cause);
+      LogManager.instance().log(this, Level.SEVERE, "Error beginning transaction: %s", cause, cause.getMessage());
+      responseObserver.onError(Status.INTERNAL.withDescription("Failed to begin transaction: " + cause.getMessage()).asException());
     }
   }
 
@@ -851,14 +948,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     // remove atomically to avoid double-commit races
-    final Database db = activeTransactions.remove(txId);
+    final TransactionContext txCtx = activeTransactions.remove(txId);
 
     LogManager.instance()
         .log(this, Level.FINE, "commitTransaction(): removed txId=%s, presentPreviously=%s, remainingActiveTx=%s", txId,
-            db != null,
+            txCtx != null,
             activeTransactions.size());
 
-    if (db == null) {
+    if (txCtx == null) {
       // Idempotent no-op
       LogManager.instance()
           .log(this, Level.FINE, "commitTransaction(): no active tx for id=%s, responding committed=false", txId);
@@ -869,15 +966,25 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     try {
-      LogManager.instance().log(this, Level.FINE, "commitTransaction(): committing txId=%s on db=%s", txId, db.getName());
-      db.commit();
+      LogManager.instance().log(this, Level.FINE, "commitTransaction(): committing txId=%s on db=%s (on dedicated thread)", txId, txCtx.db.getName());
+      
+      // Execute commit ON THE SAME THREAD that began the transaction
+      Future<?> commitFuture = txCtx.executor.submit(() -> {
+        txCtx.db.commit();
+      });
+      commitFuture.get(); // Wait for commit to complete
+      
       LogManager.instance().log(this, Level.FINE, "commitTransaction(): commit OK txId=%s", txId);
       rsp.onNext(CommitTransactionResponse.newBuilder().setSuccess(true).setCommitted(true).build());
       rsp.onCompleted();
     } catch (Throwable t) {
-      LogManager.instance().log(this, Level.FINE, "commitTransaction(): commit FAILED txId=%s err=%s", txId, t.toString(), t);
+      Throwable cause = (t instanceof ExecutionException && t.getCause() != null) ? t.getCause() : t;
+      LogManager.instance().log(this, Level.FINE, "commitTransaction(): commit FAILED txId=%s err=%s", txId, cause.toString(), cause);
       // tx is unusable; do not reinsert into the map
-      rsp.onError(Status.ABORTED.withDescription("Commit failed: " + t.getMessage()).asException());
+      rsp.onError(Status.ABORTED.withDescription("Commit failed: " + cause.getMessage()).asException());
+    } finally {
+      // Always shutdown the executor
+      txCtx.shutdown();
     }
   }
 
@@ -893,14 +1000,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return;
     }
 
-    final Database db = activeTransactions.remove(txId);
+    final TransactionContext txCtx = activeTransactions.remove(txId);
 
     LogManager.instance()
         .log(this, Level.FINE, "rollbackTransaction(): removed txId=%s, presentPreviously=%s, remainingActiveTx=%s", txId,
-            db != null,
+            txCtx != null,
             activeTransactions.size());
 
-    if (db == null) {
+    if (txCtx == null) {
       LogManager.instance()
           .log(this, Level.FINE, "rollbackTransaction(): no active tx for id=%s, responding rolledBack=false", txId);
       rsp.onNext(RollbackTransactionResponse.newBuilder().setSuccess(true).setRolledBack(false)
@@ -910,14 +1017,24 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     try {
-      LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): rolling back txId=%s on db=%s", txId, db.getName());
-      db.rollback();
+      LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): rolling back txId=%s on db=%s (on dedicated thread)", txId, txCtx.db.getName());
+      
+      // Execute rollback ON THE SAME THREAD that began the transaction
+      Future<?> rollbackFuture = txCtx.executor.submit(() -> {
+        txCtx.db.rollback();
+      });
+      rollbackFuture.get(); // Wait for rollback to complete
+      
       LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): rollback OK txId=%s", txId);
       rsp.onNext(RollbackTransactionResponse.newBuilder().setSuccess(true).setRolledBack(true).build());
       rsp.onCompleted();
     } catch (Throwable t) {
-      LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): rollback FAILED txId=%s err=%s", txId, t.toString(), t);
-      rsp.onError(Status.ABORTED.withDescription("Rollback failed: " + t.getMessage()).asException());
+      Throwable cause = (t instanceof ExecutionException && t.getCause() != null) ? t.getCause() : t;
+      LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): rollback FAILED txId=%s err=%s", txId, cause.toString(), cause);
+      rsp.onError(Status.ABORTED.withDescription("Rollback failed: " + cause.getMessage()).asException());
+    } finally {
+      // Always shutdown the executor
+      txCtx.shutdown();
     }
   }
 
