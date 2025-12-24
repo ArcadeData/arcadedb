@@ -2101,6 +2101,113 @@ class LSMVectorIndexTest extends TestHelper {
     deleteDirectory(dbDir);
   }
 
+  @Test
+  void filteredSearchByRID() {
+    database.transaction(() -> {
+      // Create the schema
+      database.command("sql", "CREATE DOCUMENT TYPE FilteredDoc");
+      database.command("sql", "CREATE PROPERTY FilteredDoc.id STRING");
+      database.command("sql", "CREATE PROPERTY FilteredDoc.category STRING");
+      database.command("sql", "CREATE PROPERTY FilteredDoc.embedding ARRAY_OF_FLOATS");
+
+      // Create the LSM_VECTOR index
+      database.command("sql", """
+          CREATE INDEX ON FilteredDoc (embedding) LSM_VECTOR
+          METADATA {
+            "dimensions": 3,
+            "similarity": "COSINE",
+            "maxConnections": 8,
+            "beamWidth": 50
+          }""");
+    });
+
+    // Create test data with different categories
+    final List<com.arcadedb.database.RID> categoryARIDs = new ArrayList<>();
+    final List<com.arcadedb.database.RID> categoryBRIDs = new ArrayList<>();
+    
+    database.transaction(() -> {
+      for (int i = 0; i < 20; i++) {
+        final var doc = database.newDocument("FilteredDoc");
+        doc.set("id", "doc" + i);
+        doc.set("category", i < 10 ? "A" : "B");
+        
+        // Create vectors with some pattern based on category
+        final float[] vector = new float[3];
+        if (i < 10) {
+          // Category A: vectors around [1, 1, 1]
+          vector[0] = 1.0f + (i * 0.1f);
+          vector[1] = 1.0f + (i * 0.1f);
+          vector[2] = 1.0f + (i * 0.1f);
+        } else {
+          // Category B: vectors around [10, 10, 10]
+          vector[0] = 10.0f + ((i - 10) * 0.1f);
+          vector[1] = 10.0f + ((i - 10) * 0.1f);
+          vector[2] = 10.0f + ((i - 10) * 0.1f);
+        }
+        doc.set("embedding", vector);
+        
+        final com.arcadedb.database.RID rid = doc.save().getIdentity();
+        if (i < 10) {
+          categoryARIDs.add(rid);
+        } else {
+          categoryBRIDs.add(rid);
+        }
+      }
+    });
+
+    // Get the index
+    final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
+        .getIndexByName("FilteredDoc[embedding]");
+    final LSMVectorIndex index = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
+
+    database.transaction(() -> {
+      // Query vector close to category A
+      final float[] queryVector = {1.5f, 1.5f, 1.5f};
+
+      // Test 1: Search without filter - should return results from both categories
+      final List<com.arcadedb.utility.Pair<com.arcadedb.database.RID, Float>> unfilteredResults = 
+          index.findNeighborsFromVector(queryVector, 10);
+      assertThat(unfilteredResults).as("Unfiltered search should return results").isNotEmpty();
+      assertThat(unfilteredResults.size()).as("Should return up to 10 results").isLessThanOrEqualTo(10);
+
+      // Test 2: Search with filter for category A only
+      final Set<com.arcadedb.database.RID> allowedRIDs = new HashSet<>(categoryARIDs);
+      final List<com.arcadedb.utility.Pair<com.arcadedb.database.RID, Float>> filteredResults = 
+          index.findNeighborsFromVector(queryVector, 10, allowedRIDs);
+      
+      assertThat(filteredResults).as("Filtered search should return results").isNotEmpty();
+      assertThat(filteredResults.size()).as("Should return at most 10 results").isLessThanOrEqualTo(10);
+      
+      // Verify all results are from the allowed set
+      for (final var result : filteredResults) {
+        assertThat(allowedRIDs).as("Result RID should be in allowed set").contains(result.getFirst());
+      }
+
+      // Test 3: Search with filter for category B only  
+      final Set<com.arcadedb.database.RID> categoryBSet = new HashSet<>(categoryBRIDs);
+      final List<com.arcadedb.utility.Pair<com.arcadedb.database.RID, Float>> categoryBResults = 
+          index.findNeighborsFromVector(queryVector, 10, categoryBSet);
+      
+      // Since query vector is close to category A, but we filter to category B,
+      // we should still get results (from category B), just with higher distances
+      assertThat(categoryBResults).as("Filtered search for category B should return results").isNotEmpty();
+      
+      for (final var result : categoryBResults) {
+        assertThat(categoryBSet).as("Result RID should be from category B").contains(result.getFirst());
+      }
+
+      // Test 4: Empty filter should work like unfiltered
+      final List<com.arcadedb.utility.Pair<com.arcadedb.database.RID, Float>> emptyFilterResults = 
+          index.findNeighborsFromVector(queryVector, 10, new HashSet<>());
+      assertThat(emptyFilterResults).as("Empty filter should return results like unfiltered").isNotEmpty();
+
+      // Test 5: Null filter should work like unfiltered
+      final List<com.arcadedb.utility.Pair<com.arcadedb.database.RID, Float>> nullFilterResults = 
+          index.findNeighborsFromVector(queryVector, 10, null);
+      assertThat(nullFilterResults).as("Null filter should return results like unfiltered").isNotEmpty();
+    });
+  }
+
   /**
    * Helper method to recursively delete a directory using Files.walk() API
    */
