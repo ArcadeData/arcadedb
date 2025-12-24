@@ -141,6 +141,40 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Custom Bits implementation for filtering vector search by RID.
+   * Maps graph ordinals to vector IDs, then checks if the corresponding RID is in the allowed set.
+   */
+  private class RIDBitsFilter implements Bits {
+    private final Set<RID> allowedRIDs;
+    private final int[] ordinalToVectorIdSnapshot;
+    private final VectorLocationIndex vectorIndexSnapshot;
+
+    RIDBitsFilter(final Set<RID> allowedRIDs, final int[] ordinalToVectorIdSnapshot, final VectorLocationIndex vectorIndexSnapshot) {
+      this.allowedRIDs = allowedRIDs;
+      this.ordinalToVectorIdSnapshot = ordinalToVectorIdSnapshot;
+      this.vectorIndexSnapshot = vectorIndexSnapshot;
+    }
+
+    @Override
+    public boolean get(final int ordinal) {
+      // Check if ordinal is within bounds
+      if (ordinal < 0 || ordinal >= ordinalToVectorIdSnapshot.length)
+        return false;
+
+      // Map ordinal to vector ID
+      final int vectorId = ordinalToVectorIdSnapshot[ordinal];
+
+      // Get the RID for this vector ID
+      final VectorLocationIndex.VectorLocation loc = vectorIndexSnapshot.getLocation(vectorId);
+      if (loc == null || loc.deleted)
+        return false;
+
+      // Check if this RID is in the allowed set
+      return allowedRIDs.contains(loc.rid);
+    }
+  }
+
+  /**
    * Comparable wrapper for float[] to use in transaction tracking.
    * Vectors are compared by their hash code for uniqueness in the transaction map.
    */
@@ -1803,6 +1837,21 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return List of pairs containing RID and similarity score
    */
   public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k) {
+    return findNeighborsFromVector(queryVector, k, null);
+  }
+
+  /**
+   * Search for k nearest neighbors to the given vector within a filtered set of RIDs.
+   * This method allows restricting the search space to specific records, useful for
+   * filtering by user ID, category, or other criteria during graph traversal.
+   *
+   * @param queryVector The query vector to search for
+   * @param k           The number of neighbors to return
+   * @param allowedRIDs Optional set of RIDs to restrict search to (null means no filtering)
+   *
+   * @return List of pairs containing RID and similarity score
+   */
+  public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k, final Set<RID> allowedRIDs) {
     if (queryVector == null)
       throw new IllegalArgumentException("Query vector cannot be null");
 
@@ -1859,14 +1908,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
           this  // Pass LSM index reference for quantization support
       );
 
-      // Perform search
+      // Perform search with optional RID filtering
+      final Bits bitsFilter = (allowedRIDs != null && !allowedRIDs.isEmpty())
+          ? new RIDBitsFilter(allowedRIDs, ordinalToVectorId, vectorIndex)
+          : Bits.ALL;
+
       final SearchResult searchResult = GraphSearcher.search(
           queryVectorFloat,
           k,
           vectors,
           metadata.similarityFunction,
           graphIndex,
-          Bits.ALL
+          bitsFilter
       );
 
       LogManager.instance().log(this, Level.INFO,
