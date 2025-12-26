@@ -18,13 +18,12 @@
  */
 package com.arcadedb.query.sql.function.vector;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 /**
  * Represents a sparse vector using a map of non-zero indices to values.
  * Efficient for vectors with many zero values (typical in NLP and sparse embeddings like SPLADE).
- *
+ * <p>
  * Storage: Map<Integer, Float> where key=index, value=non-zero value
  * Supports dynamic dimensionality (dimension inferred from max index or explicitly set).
  *
@@ -32,7 +31,7 @@ import java.util.Map;
  */
 public class SparseVector {
   private final Map<Integer, Float> values;
-  private int dimensions;
+  private final int                 dimensions;
 
   /**
    * Create a sparse vector with explicit dimensions.
