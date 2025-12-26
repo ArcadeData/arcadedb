@@ -206,11 +206,31 @@ public class ContainsAnyCondition extends BooleanExpression {
 
   @Override
   public boolean isIndexAware(final IndexSearchInfo info) {
+    // For nested properties like "tags.id", we need to handle the case where isBaseIdentifier() returns false
+    // due to the presence of a suffix/modifier. We'll check both cases:
+    // 1. Simple identifiers: left.isBaseIdentifier() == true (e.g., "tags")
+    // 2. Nested identifiers: Compare the full string representation (e.g., "tags.id")
+
+    String fieldName = null;
+
     if (left.isBaseIdentifier()) {
-      if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
-        return right.isEarlyCalculated(info.getContext());
+      // Simple identifier - use default alias
+      fieldName = left.getDefaultAlias().getStringValue();
+    } else {
+      // Might be a nested property - try using the string representation
+      String leftStr = left.toString();
+      // Check if this looks like a simple property path (alphanumeric with dots)
+      if (leftStr.matches("[a-zA-Z_][a-zA-Z0-9_.]*")) {
+        fieldName = leftStr;
       }
     }
+
+    if (fieldName != null && info.getField().equals(fieldName)) {
+      // CONTAINSANY operator only works with BY-ITEM indexes, not regular list indexes
+      if (info.isIndexByItem() && right != null)
+        return right.isEarlyCalculated(info.getContext());
+    }
+
     return false;
   }
 
