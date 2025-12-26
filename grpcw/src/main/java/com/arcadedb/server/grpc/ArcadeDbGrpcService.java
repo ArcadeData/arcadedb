@@ -165,7 +165,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           txCtx.executor.submit(() -> {
             try {
               txCtx.db.rollback();
-            } catch (Exception ignore) {
+            } catch (Exception e) {
+              LogManager.instance().log(this, Level.WARNING, "Failed to rollback transaction %s during shutdown", e, txCtx.txId);
             }
           }).get();
         }
@@ -210,9 +211,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         resp.onCompleted();
       }
 
-    } catch (ExecutionException e) {
-      // Unwrap the cause from the executor
-      Throwable cause = e.getCause() != null ? e.getCause() : e;
+    } catch (Exception e) {
+      // Unwrap ExecutionException to get the root cause
+      Throwable cause = e;
+      if (e instanceof ExecutionException && e.getCause() != null) {
+        cause = e.getCause();
+      }
       LogManager.instance().log(this, Level.SEVERE, "ERROR in executeCommand", cause);
 
       final long ms = (System.nanoTime() - t0) / 1_000_000L;
@@ -220,20 +224,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           .newBuilder()
           .setSuccess(false)
           .setMessage(cause.getMessage() == null ? cause.toString() : cause.getMessage())
-          .setAffectedRecords(0L)
-          .setExecutionTimeMs(ms)
-          .build();
-      resp.onNext(err);
-      resp.onCompleted();
-
-    } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "ERROR in executeCommand", e);
-
-      final long ms = (System.nanoTime() - t0) / 1_000_000L;
-      ExecuteCommandResponse err = ExecuteCommandResponse
-          .newBuilder()
-          .setSuccess(false)
-          .setMessage(e.getMessage() == null ? e.toString() : e.getMessage())
           .setAffectedRecords(0L)
           .setExecutionTimeMs(ms)
           .build();
@@ -891,6 +881,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             (user != null ? user : "<none>"),
             activeTransactions.size());
 
+    // Declare txCtx outside try block so we can clean it up on failure
+    TransactionContext txCtx = null;
+
     try {
       final Database database = getDatabase(reqDb, request.getCredentials());
 
@@ -902,7 +895,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final String transactionId = generateTransactionId();
 
       // Create transaction context with dedicated executor thread
-      final TransactionContext txCtx = new TransactionContext(database, transactionId);
+      txCtx = new TransactionContext(database, transactionId);
 
       LogManager.instance().log(this, Level.FINE, "beginTransaction(): calling database.begin() on dedicated thread for txId=%s", transactionId);
 
@@ -926,6 +919,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       responseObserver.onNext(response);
       responseObserver.onCompleted();
     } catch (Throwable t) {
+      // Shutdown the executor if it was created but not registered (prevents thread leak)
+      if (txCtx != null) {
+        txCtx.shutdown();
+      }
       Throwable cause = (t instanceof ExecutionException && t.getCause() != null) ? t.getCause() : t;
       LogManager.instance()
           .log(this, Level.FINE, "beginTransaction(): FAILED db=%s user=%s err=%s", reqDb, (user != null ? user : "<none>"),
