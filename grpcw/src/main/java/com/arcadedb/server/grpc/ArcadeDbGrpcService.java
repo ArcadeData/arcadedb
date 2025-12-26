@@ -188,17 +188,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final boolean hasTx = req.hasTransaction();
       final var tx = hasTx ? req.getTransaction() : null;
       final String incomingTxId = (hasTx && tx != null) ? tx.getTransactionId() : null;
-      final TransactionContext txCtx = (incomingTxId != null && !incomingTxId.isBlank()) 
+      final TransactionContext txCtx = (incomingTxId != null && !incomingTxId.isBlank())
           ? activeTransactions.get(incomingTxId) : null;
 
       if (txCtx != null) {
         // External transaction - execute command on the transaction's dedicated thread
-        LogManager.instance().log(this, Level.FINE, 
+        LogManager.instance().log(this, Level.FINE,
             "executeCommand(): using external transaction %s, executing on dedicated thread", incomingTxId);
-        
-        Future<ExecuteCommandResponse> future = txCtx.executor.submit(() -> 
+
+        Future<ExecuteCommandResponse> future = txCtx.executor.submit(() ->
             executeCommandInternal(req, t0, txCtx.db, true));
-        
+
         ExecuteCommandResponse response = future.get();
         resp.onNext(response);
         resp.onCompleted();
@@ -214,7 +214,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // Unwrap the cause from the executor
       Throwable cause = e.getCause() != null ? e.getCause() : e;
       LogManager.instance().log(this, Level.SEVERE, "ERROR in executeCommand", cause);
-      
+
       final long ms = (System.nanoTime() - t0) / 1_000_000L;
       ExecuteCommandResponse err = ExecuteCommandResponse
           .newBuilder()
@@ -244,16 +244,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   /**
    * Internal implementation of executeCommand that runs on the appropriate thread.
-   * 
+   *
    * @param req the command request
    * @param t0 start time in nanos
    * @param db the database to use
    * @param isExternalTransaction true if this is part of an externally-managed transaction
    * @return the response
    */
-  private ExecuteCommandResponse executeCommandInternal(ExecuteCommandRequest req, long t0, 
+  private ExecuteCommandResponse executeCommandInternal(ExecuteCommandRequest req, long t0,
       Database db, boolean isExternalTransaction) {
-    
+
     boolean beganHere = false;
 
     try {
@@ -266,7 +266,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final boolean hasTx = req.hasTransaction();
       final var tx = hasTx ? req.getTransaction() : null;
 
-      LogManager.instance().log(this, Level.FINE, "executeCommandInternal(): hasTx = %s tx = %s isExternal = %s", 
+      LogManager.instance().log(this, Level.FINE, "executeCommandInternal(): hasTx = %s tx = %s isExternal = %s",
           hasTx, tx, isExternalTransaction);
 
       // Auto-wrap in a tx if the client didn't send a tx and none is active (only for non-external)
@@ -275,14 +275,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       if (isExternalTransaction) {
         // Transaction already started via beginTransaction() - don't begin again
-        LogManager.instance().log(this, Level.FINE, 
+        LogManager.instance().log(this, Level.FINE,
             "executeCommandInternal(): external transaction - tx already active, not beginning");
       } else if (hasTx && tx.getBegin()) {
         db.begin();
         beganHere = true;
       } else if (autoWrap) {
         // Server-side safety: keep UPDATE/UPSERT/MERGE pipelines atomic
-        LogManager.instance().log(this, Level.FINE, 
+        LogManager.instance().log(this, Level.FINE,
             "executeCommandInternal(): auto-wrapping in tx because no client tx and none active");
         db.begin();
         beganHere = true;
@@ -900,10 +900,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       // Generate transaction ID first so we can create the context
       final String transactionId = generateTransactionId();
-      
+
       // Create transaction context with dedicated executor thread
       final TransactionContext txCtx = new TransactionContext(database, transactionId);
-      
+
       LogManager.instance().log(this, Level.FINE, "beginTransaction(): calling database.begin() on dedicated thread for txId=%s", transactionId);
 
       // Begin transaction ON THE DEDICATED THREAD - this is critical because ArcadeDB
@@ -912,7 +912,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         database.begin();
       });
       beginFuture.get(); // Wait for begin to complete
-      
+
       // Register the transaction context
       activeTransactions.put(transactionId, txCtx);
 
@@ -967,13 +967,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     try {
       LogManager.instance().log(this, Level.FINE, "commitTransaction(): committing txId=%s on db=%s (on dedicated thread)", txId, txCtx.db.getName());
-      
+
       // Execute commit ON THE SAME THREAD that began the transaction
       Future<?> commitFuture = txCtx.executor.submit(() -> {
         txCtx.db.commit();
       });
       commitFuture.get(); // Wait for commit to complete
-      
+
       LogManager.instance().log(this, Level.FINE, "commitTransaction(): commit OK txId=%s", txId);
       rsp.onNext(CommitTransactionResponse.newBuilder().setSuccess(true).setCommitted(true).build());
       rsp.onCompleted();
@@ -1018,13 +1018,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     try {
       LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): rolling back txId=%s on db=%s (on dedicated thread)", txId, txCtx.db.getName());
-      
+
       // Execute rollback ON THE SAME THREAD that began the transaction
       Future<?> rollbackFuture = txCtx.executor.submit(() -> {
         txCtx.db.rollback();
       });
       rollbackFuture.get(); // Wait for rollback to complete
-      
+
       LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): rollback OK txId=%s", txId);
       rsp.onNext(RollbackTransactionResponse.newBuilder().setSuccess(true).setRolledBack(true).build());
       rsp.onCompleted();
