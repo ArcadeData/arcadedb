@@ -22,6 +22,8 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 
 /**
@@ -59,7 +61,14 @@ public class CopyDocumentStep extends AbstractExecutionStep {
           if (toCopy.isElement()) {
             final Record docToCopy = toCopy.getElement().get().getRecord();
 
-            if (docToCopy instanceof Document document) {
+            if (docToCopy instanceof Vertex vertex) {
+              if (targetType != null) {
+                resultDoc = getContext().getDatabase().newVertex(targetType);
+              } else {
+                resultDoc = getContext().getDatabase().newVertex(vertex.getTypeName());
+              }
+              ((MutableVertex) resultDoc).set(vertex.toMap(false));
+            } else if (docToCopy instanceof Document document) {
               if (targetType != null) {
                 resultDoc = getContext().getDatabase().newDocument(targetType);
               } else {
