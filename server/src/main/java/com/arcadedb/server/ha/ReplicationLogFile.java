@@ -46,10 +46,8 @@ import java.util.logging.Level;
  * ( MSG ID + COMMAND( CMD ID + MSG ID + SERIALIZATION ) )
  */
 public class ReplicationLogFile extends LockContext {
-  private static final int                           BUFFER_FOOTER_SIZE   =
-      Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
-  private static final int                           BUFFER_HEADER_SIZE   =
-      Binary.LONG_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE;
+  private static final int                           BUFFER_FOOTER_SIZE   = Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
+  private static final int                           BUFFER_HEADER_SIZE   = Binary.LONG_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE;
   private static final long                          MAGIC_NUMBER         = 93719829258702L;
   private static final long                          CHUNK_SIZE           = 64L * 1024L * 1024L;
   private final        String                        filePath;
@@ -74,18 +72,6 @@ public class ReplicationLogFile extends LockContext {
   public interface ReplicationLogArchiveCallback {
     void archiveChunk(File chunkFile, int chunkId);
   }
-
-//  public static class Entry {
-//    public final long   messageNumber;
-//    public final Binary payload;
-//    public final int    length;
-//
-//    public Entry(final long messageNumber, final Binary payload, final int length) {
-//      this.messageNumber = messageNumber;
-//      this.payload = payload;
-//      this.length = length;
-//    }
-//  }
 
   public ReplicationLogFile(final String filePath) throws FileNotFoundException {
     this.filePath = filePath;

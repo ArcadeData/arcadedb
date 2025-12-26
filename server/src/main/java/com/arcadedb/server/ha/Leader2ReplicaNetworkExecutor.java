@@ -55,16 +55,16 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   private final    HAServer                                           server;
   private final    HAServer.ServerInfo                                remoteServer;
   private final    BlockingQueue<Binary>                              senderQueue;
-  private          Thread                                             senderThread;
   private final    BlockingQueue<Pair<ReplicationMessage, HACommand>> forwarderQueue;
+  private final    Object                                             lock                  = new Object(); // NOT FINAL BECAUSE IT CAN BE MERGED FROM ANOTHER CONNECTION
+  private final    Object                                             channelOutputLock     = new Object();
+  private final    Object                                             channelInputLock      = new Object();
+  private          Thread                                             senderThread;
   private          Thread                                             forwarderThread;
   private          long                                               joinedOn;
   private          long                                               leftOn                = 0;
   private          ChannelBinaryServer                                channel;
   private          STATUS                                             status                = STATUS.JOINING;
-  private final    Object                                             lock                  = new Object(); // NOT FINAL BECAUSE IT CAN BE MERGED FROM ANOTHER CONNECTION
-  private final    Object                                             channelOutputLock     = new Object();
-  private final    Object                                             channelInputLock      = new Object();
   private volatile boolean                                            shutdownCommunication = false;
 
   // STATS
