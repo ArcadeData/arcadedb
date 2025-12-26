@@ -36,6 +36,7 @@ import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -57,11 +58,12 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
   }
 
   @Override
-  protected HAServer.SERVER_ROLE getServerRole(int serverIndex) {
-    return HAServer.SERVER_ROLE.ANY;
+  protected HAServer.ServerRole getServerRole(int serverIndex) {
+    return HAServer.ServerRole.ANY;
   }
 
   @Test
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)
   @Disabled
   void testReplication() {
     checkDatabases();
@@ -146,11 +148,11 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
   protected void onBeforeStarting(final ArcadeDBServer server) {
     server.registerTestEventListener(new ReplicationCallback() {
       @Override
-      public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
+      public void onEvent(final Type type, final Object object, final ArcadeDBServer server) {
         if (!serversSynchronized)
           return;
 
-        if (type == TYPE.REPLICA_MSG_RECEIVED) {
+        if (type == Type.REPLICA_MSG_RECEIVED) {
           if (!(((Pair) object).getSecond() instanceof TxRequest))
             return;
 
