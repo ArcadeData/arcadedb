@@ -272,6 +272,10 @@ public enum GlobalConfiguration {
   POLYGLOT_COMMAND_TIMEOUT("arcadedb.polyglotCommand.timeout", SCOPE.DATABASE, "Default timeout for polyglot commands (in ms)",
       Long.class, 10_000),
 
+  QUERY_ENGINES_USE_VIRTUAL_THREADS("arcadedb.queryEngines.useVirtualThreads", SCOPE.DATABASE,
+      "Use virtual threads for executing Java and Polyglot queries. Virtual threads provide better scalability for concurrent query execution.",
+      Boolean.class, true),
+
   QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP("arcadedb.queryMaxHeapElementsAllowedPerOp", SCOPE.DATABASE, """
       Maximum number of elements (records) allowed in a single query for memory-intensive operations (eg. ORDER BY in heap). \
       If exceeded, the query fails with an OCommandExecutionException. Negative number means no limit.\
@@ -375,6 +379,10 @@ public enum GlobalConfiguration {
       "Timeout in seconds for a HTTP session (managing a transaction) to expire. This timeout is computed from the latest command against the session",
       Long.class, 5), // 5 SECONDS DEFAULT
 
+  SERVER_HTTP_USE_VIRTUAL_THREADS("arcadedb.server.httpUseVirtualThreads", SCOPE.SERVER,
+      "Use virtual threads for HTTP request handling. Virtual threads provide better scalability for concurrent HTTP connections (requires Java 21+).",
+      Boolean.class, true),
+
   // SERVER WS
   SERVER_WS_EVENT_BUS_QUEUE_SIZE("arcadedb.server.eventBusQueueSize", SCOPE.SERVER,
       "Size of the queue used as a buffer for unserviced database change events.", Integer.class, 1000),
@@ -435,6 +443,10 @@ public enum GlobalConfiguration {
   HA_REPLICATION_INCOMING_PORTS("arcadedb.ha.replicationIncomingPorts", SCOPE.SERVER,
       "TCP/IP port number used for incoming replication connections", String.class, "2424-2433"),
 
+  HA_USE_VIRTUAL_THREADS("arcadedb.ha.useVirtualThreads", SCOPE.SERVER,
+      "Use virtual threads for HA replication network executors. Virtual threads provide better scalability for replica connections (requires Java 21+).",
+      Boolean.class, true),
+
   // KUBERNETES
   HA_K8S("arcadedb.ha.k8s", SCOPE.SERVER, "The server is running inside Kubernetes", Boolean.class, false),
 
@@ -452,12 +464,20 @@ public enum GlobalConfiguration {
   POSTGRES_DEBUG("arcadedb.postgres.debug", SCOPE.SERVER,
       "Enables the printing of Postgres protocol to the console. Default is false", Boolean.class, false),
 
+  POSTGRES_USE_VIRTUAL_THREADS("arcadedb.postgres.useVirtualThreads", SCOPE.SERVER,
+      "Use virtual threads for PostgreSQL wire protocol connections. Virtual threads provide better scalability for concurrent connections (requires Java 21+).",
+      Boolean.class, true),
+
   // REDIS
   REDIS_PORT("arcadedb.redis.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for Redis plugin. Default is 6379", Integer.class, 6379),
 
   REDIS_HOST("arcadedb.redis.host", SCOPE.SERVER,
       "TCP/IP host name used for incoming connections for Redis plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),
+
+  REDIS_USE_VIRTUAL_THREADS("arcadedb.redis.useVirtualThreads", SCOPE.SERVER,
+      "Use virtual threads for Redis wire protocol connections. Virtual threads provide better scalability for concurrent connections (requires Java 21+).",
+      Boolean.class, true),
 
   // MONGO
   MONGO_PORT("arcadedb.mongo.port", SCOPE.SERVER,

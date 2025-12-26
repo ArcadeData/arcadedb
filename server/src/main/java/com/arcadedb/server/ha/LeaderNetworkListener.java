@@ -278,7 +278,12 @@ public class LeaderNetworkListener extends Thread {
 
     ha.registerIncomingConnection(connection.getRemoteServerName(), connection);
 
-    connection.start();
+    // Use virtual threads if configured, otherwise use platform threads
+    if (ha.getServer().getConfiguration().getValueAsBoolean(com.arcadedb.GlobalConfiguration.HA_USE_VIRTUAL_THREADS)) {
+      Thread.startVirtualThread(connection);
+    } else {
+      connection.start();
+    }
   }
 
   private void readClusterName(final Socket socket, final ChannelBinaryServer channel) throws IOException {

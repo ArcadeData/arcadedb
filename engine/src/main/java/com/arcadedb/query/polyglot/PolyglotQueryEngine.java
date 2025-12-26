@@ -36,13 +36,12 @@ import java.util.*;
 import java.util.concurrent.*;
 
 public class PolyglotQueryEngine implements QueryEngine {
-  private       GraalPolyglotEngine          polyglotEngine;
-  private final String                       language;
-  private final long                         timeout;
-  private final DatabaseInternal             database;
-  private       List<String>                 allowedPackages = null;
-  private final ExecutorService              userCodeExecutor;
-  private final ArrayBlockingQueue<Runnable> userCodeExecutorQueue;
+  private       GraalPolyglotEngine polyglotEngine;
+  private final String              language;
+  private final long                timeout;
+  private final DatabaseInternal    database;
+  private       List<String>        allowedPackages = null;
+  private final ExecutorService     userCodeExecutor;
 
   private static final AnalyzedQuery ANALYZED_QUERY = new AnalyzedQuery() {
     @Override
@@ -90,10 +89,20 @@ public class PolyglotQueryEngine implements QueryEngine {
     this.allowedPackages = allowedPackages;
     this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, Engine.create()).setLanguage(language)
         .setAllowedPackages(allowedPackages).build();
-    this.userCodeExecutorQueue = new ArrayBlockingQueue<>(10000);
-    this.userCodeExecutor = new ThreadPoolExecutor(8, 8, 30, TimeUnit.SECONDS, userCodeExecutorQueue,
-        new ThreadPoolExecutor.CallerRunsPolicy());
     this.timeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT);
+    this.userCodeExecutor = createExecutor(database);
+  }
+
+  private static ExecutorService createExecutor(final DatabaseInternal database) {
+    final boolean useVirtualThreads = database.getConfiguration()
+        .getValueAsBoolean(GlobalConfiguration.QUERY_ENGINES_USE_VIRTUAL_THREADS);
+
+    if (useVirtualThreads) {
+      return Executors.newVirtualThreadPerTaskExecutor();
+    } else {
+      final ArrayBlockingQueue<Runnable> queue = new ArrayBlockingQueue<>(10_000);
+      return new ThreadPoolExecutor(8, 8, 30, TimeUnit.SECONDS, queue, new ThreadPoolExecutor.CallerRunsPolicy());
+    }
   }
 
   @Override
@@ -215,7 +224,6 @@ public class PolyglotQueryEngine implements QueryEngine {
   @Override
   public void close() {
     userCodeExecutor.shutdown();
-    userCodeExecutorQueue.clear();
     polyglotEngine.close();
   }
 

@@ -69,7 +69,13 @@ public class PostgresNetworkListener extends Thread {
           // CREATE A NEW PROTOCOL INSTANCE
           // TODO: OPEN A DATABASE
           final PostgresNetworkExecutor connection = new PostgresNetworkExecutor(server, socket, null);
-          connection.start();
+
+          // Use virtual threads if configured, otherwise use platform threads
+          if (server.getConfiguration().getValueAsBoolean(com.arcadedb.GlobalConfiguration.POSTGRES_USE_VIRTUAL_THREADS)) {
+            Thread.startVirtualThread(connection);
+          } else {
+            connection.start();
+          }
 
         } catch (final Exception e) {
           if (active)
