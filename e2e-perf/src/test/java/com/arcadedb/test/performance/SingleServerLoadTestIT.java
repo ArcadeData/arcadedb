@@ -36,7 +36,7 @@ import java.util.concurrent.TimeUnit;
 class SingleServerLoadTestIT extends ContainersTestTemplate {
 
   @DisplayName("Single server load test")
-  @ParameterizedTest
+  @ParameterizedTest(name = "Load test with {0} protocol")
   @EnumSource(DatabaseWrapper.Protocol.class)
   void singleServerLoadTest(DatabaseWrapper.Protocol protocol) throws Exception {
 
@@ -58,6 +58,7 @@ class SingleServerLoadTestIT extends ContainersTestTemplate {
     int expectedFriendshipCount = numOfFriendship;
     int expectedLikeCount = numOfLike;
     LocalDateTime startedAt = LocalDateTime.now();
+    logger.info("Starting load test on protocol {}", protocol.name());
     logger.info("Creating {} users using {} threads", expectedUsersCount, numOfThreads);
     logger.info("Expected users: {} - photos: {} - friendships: {} - likes: {}", expectedUsersCount, expectedPhotoCount,
         expectedFriendshipCount, expectedLikeCount);
