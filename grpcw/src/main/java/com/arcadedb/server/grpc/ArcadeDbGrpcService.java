@@ -305,38 +305,30 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
             while (rs.hasNext()) {
 
-              Result r = rs.next();
+              Result result = rs.next();
 
-              if (r.isElement()) {
-                affected++; // count modified/returned records
-                if (emitted < maxRows) {
-                  out.addRecords(convertToGrpcRecord(r.getElement().get(), db));
-                  emitted++;
-                }
+              if (result.isElement()) {
+                affected++;
               } else {
 
-                // Scalar / projection row (e.g., RETURN COUNT)
+                for (String p : result.getPropertyNames()) {
+                  Object v = result.getProperty(p);
+                  if (v instanceof Number n) {
+                    affected += n.longValue();
+                  }
+                }
+              }
 
                 if (emitted < maxRows) {
 
-                  GrpcRecord.Builder recB = GrpcRecord.newBuilder();
-
-                  for (String p : r.getPropertyNames()) {
-
-                    recB.putProperties(p, convertPropToGrpcValue(p, r));
-                  }
-
-                  out.addRecords(recB.build());
+                // Convert Result to GrpcRecord, preserving aliases and all properties
+                GrpcRecord grpcRecord = convertResultToGrpcRecord(result, db,
+                    new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0));
+                out.addRecords(grpcRecord);
 
                   emitted++;
                 }
 
-                for (String p : r.getPropertyNames()) {
-                  Object v = r.getProperty(p);
-                  if (v instanceof Number n)
-                    affected += n.longValue();
-                }
-              }
             }
           } else {
 
@@ -790,15 +782,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         LogManager.instance().log(this, Level.FINE, "executeQuery(): result = %s", result);
 
-        if (result.isElement()) {
-
-          LogManager.instance().log(this, Level.FINE, "executeQuery(): isElement");
-
-          Record dbRecord = result.getElement().get();
-
-          LogManager.instance().log(this, Level.FINE, "executeQuery(): dbRecord -> @rid = %s", dbRecord.getIdentity().toString());
-
-          GrpcRecord grpcRecord = convertToGrpcRecord(dbRecord, database);
+        // Convert Result to GrpcRecord, preserving aliases and all properties
+        GrpcRecord grpcRecord = convertResultToGrpcRecord(result, database, projectionConfig);
 
           LogManager.instance().log(this, Level.FINE, "executeQuery(): grpcRecord -> @rid = %s", grpcRecord.getRid());
 
@@ -810,21 +795,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           if (request.getLimit() > 0 && count >= request.getLimit()) {
             break;
           }
-        } else {
-
-          LogManager.instance().log(this, Level.FINE, "executeQuery(): NOT isElement");
-
-          // Scalar / projection row (e.g., RETURN COUNT)
-
-          GrpcRecord.Builder recB = GrpcRecord.newBuilder();
-
-          for (String p : result.getPropertyNames()) {
-
-            recB.putProperties(p, convertPropToGrpcValue(p, result, projectionConfig));
-          }
-
-          resultBuilder.addRecords(recB.build());
-        }
       }
 
       LogManager.instance().log(this, Level.FINE, "executeQuery(): count = %s", count);
@@ -2489,6 +2459,82 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     return params;
   }
 
+  /**
+   * Converts a Result to GrpcRecord, preserving all properties including aliases.
+   * This method works at the Result level (not Record level) to maintain alias information.
+   *
+   * @param result           the Result object from a query execution
+   * @param db               the database instance
+   * @param projectionConfig optional projection configuration
+   *
+   * @return GrpcRecord with all properties and aliases preserved
+   */
+  private GrpcRecord convertResultToGrpcRecord(Result result, Database db, ProjectionConfig projectionConfig) {
+    GrpcRecord.Builder builder = GrpcRecord.newBuilder();
+
+    // If this result wraps an element (Document/Vertex/Edge), get its metadata
+    if (result.isElement()) {
+      Document dbRecord = result.toElement();
+
+      if (dbRecord.getIdentity() != null) {
+        builder.setRid(dbRecord.getIdentity().toString());
+      }
+
+      if (dbRecord.getType() != null) {
+        builder.setType(dbRecord.getTypeName());
+      }
+    }
+
+    // Iterate over ALL properties from the Result, including aliases
+    for (String propertyName : result.getPropertyNames()) {
+      Object value = result.getProperty(propertyName);
+
+      if (value != null) {
+        LogManager.instance()
+            .log(this, Level.FINE, "convertResultToGrpcRecord(): Converting %s\n  value = %s\n  class = %s",
+                propertyName, value, value.getClass());
+
+        GrpcValue gv = projectionConfig != null ?
+            toGrpcValue(value, projectionConfig) :
+            toGrpcValue(value);
+
+        LogManager.instance()
+            .log(this, Level.FINE, "ENC-RES %s: %s -> %s", propertyName, summarizeJava(value), summarizeGrpc(gv));
+
+        builder.putProperties(propertyName, gv);
+      }
+    }
+
+    // Ensure @rid and @type are always in the properties map when there's an element
+    // This matches JsonSerializer behavior and works around client-side limitations
+    if (result.isElement()) {
+      final Document document = result.toElement();
+
+      if (!builder.getPropertiesMap().containsKey(Property.RID_PROPERTY) && document.getIdentity() != null) {
+        builder.putProperties(Property.RID_PROPERTY, toGrpcValue(document.getIdentity()));
+      }
+
+      if (!builder.getPropertiesMap().containsKey(Property.TYPE_PROPERTY) && document instanceof Document doc
+          && doc.getType() != null) {
+        builder.putProperties(Property.TYPE_PROPERTY, toGrpcValue(doc.getTypeName()));
+      }
+    }
+
+    // If this is an Edge and @out/@in are not already in properties, add them
+    if (result.isElement() && result.getElement().get() instanceof Edge edge) {
+      if (!builder.getPropertiesMap().containsKey("@out")) {
+        builder.putProperties("@out", toGrpcValue(edge.getOut().getIdentity()));
+      }
+      if (!builder.getPropertiesMap().containsKey("@in")) {
+        builder.putProperties("@in", toGrpcValue(edge.getIn().getIdentity()));
+      }
+    }
+
+    LogManager.instance().log(this, Level.FINE, "ENC-RES DONE rid=%s type=%s props=%s",
+        builder.getRid(), builder.getType(), builder.getPropertiesCount());
+
+    return builder.build();
+  }
   private GrpcRecord convertToGrpcRecord(Record dbRecord, Database db) {
 
     GrpcRecord.Builder builder = GrpcRecord.newBuilder().setRid(dbRecord.getIdentity().toString());
