@@ -36,7 +36,7 @@ import java.util.concurrent.TimeUnit;
 class SingleServerLoadTestIT extends ContainersTestTemplate {
 
   @DisplayName("Single server load test")
-  @ParameterizedTest
+  @ParameterizedTest(name = "Load test with {0} protocol")
   @EnumSource(DatabaseWrapper.Protocol.class)
   void singleServerLoadTest(DatabaseWrapper.Protocol protocol) throws Exception {
 

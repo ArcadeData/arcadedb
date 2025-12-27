@@ -33,7 +33,7 @@ import java.util.concurrent.TimeUnit;
 class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
 
   @DisplayName("Single server load test")
-  @ParameterizedTest
+  @ParameterizedTest(name = "Load test with {0} protocol")
   @EnumSource(DatabaseWrapper.Protocol.class)
     //to eneable only one protocol use the following annotation
     //@EnumSource(value = DatabaseWrapper.Protocol.class, names = "GRPC")
