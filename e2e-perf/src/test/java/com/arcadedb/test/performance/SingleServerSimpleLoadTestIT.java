@@ -33,7 +33,7 @@ import java.util.concurrent.TimeUnit;
 class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
 
   @DisplayName("Single server load test")
-  @ParameterizedTest
+  @ParameterizedTest(name = "Load test with {0} protocol")
   @EnumSource(DatabaseWrapper.Protocol.class)
     //to eneable only one protocol use the following annotation
     //@EnumSource(value = DatabaseWrapper.Protocol.class, names = "GRPC")
@@ -54,6 +54,7 @@ class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
     int expectedUsersCount = numOfUsers * numOfThreads;
     int expectedPhotoCount = expectedUsersCount * numOfPhotos;
 
+    logger.info("Starting load test on protocol {}", protocol.name());
     logger.info("Creating {} users using {} threads", expectedUsersCount, numOfThreads);
     ExecutorService executor = Executors.newFixedThreadPool(numOfThreads);
     for (int i = 0; i < numOfThreads; i++) {

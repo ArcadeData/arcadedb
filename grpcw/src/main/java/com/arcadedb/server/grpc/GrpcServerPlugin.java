@@ -33,6 +33,7 @@ import io.grpc.ServerBuilder;
 import io.grpc.ServerCredentials;
 import io.grpc.TlsServerCredentials;
 import io.grpc.health.v1.HealthCheckResponse;
+import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.protobuf.services.HealthStatusManager;
 import io.grpc.protobuf.services.ProtoReflectionService;
 import io.grpc.xds.XdsServerBuilder;
@@ -126,14 +127,22 @@ public class GrpcServerPlugin implements ServerPlugin {
     int port = getConfigInt(config, CONFIG_PORT, 50051);
     String host = getConfigString(config, CONFIG_HOST, "0.0.0.0");
 
-    ServerBuilder<?> serverBuilder;
+    NettyServerBuilder serverBuilder;
 
     // Configure TLS if enabled
     if (getConfigBoolean(config, CONFIG_TLS_ENABLED, false)) {
       serverBuilder = configureStandardTls(port, config);
     } else {
-      serverBuilder = ServerBuilder.forPort(port);
+      serverBuilder = NettyServerBuilder.forPort(port);
     }
+
+    // Configure keepalive settings to prevent GOAWAY ENHANCE_YOUR_CALM errors
+    // Allow clients to send keepalive pings every 10 seconds (client sends every 30s)
+    serverBuilder
+        .permitKeepAliveTime(10, TimeUnit.SECONDS)
+        .permitKeepAliveWithoutCalls(true)
+        .keepAliveTime(30, TimeUnit.SECONDS)
+        .keepAliveTimeout(10, TimeUnit.SECONDS);
 
     // Configure the server
     configureServer(serverBuilder, config);
@@ -244,14 +253,14 @@ public class GrpcServerPlugin implements ServerPlugin {
     }
   }
 
-  private ServerBuilder<?> configureStandardTls(int port, ContextConfiguration config) {
+  private NettyServerBuilder configureStandardTls(int port, ContextConfiguration config) {
     String certPath = getConfigString(config, CONFIG_TLS_CERT, null);
     String keyPath = getConfigString(config, CONFIG_TLS_KEY, null);
 
     if (certPath == null || keyPath == null) {
       LogManager.instance()
           .log(this, Level.WARNING, "TLS enabled but certificate or key path not provided. Falling back to insecure.");
-      return ServerBuilder.forPort(port);
+      return NettyServerBuilder.forPort(port);
     }
 
     File certFile = new File(certPath);
@@ -259,16 +268,18 @@ public class GrpcServerPlugin implements ServerPlugin {
 
     if (!certFile.exists() || !keyFile.exists()) {
       LogManager.instance().log(this, Level.WARNING, "TLS certificate or key file not found. Falling back to insecure.");
-      return ServerBuilder.forPort(port);
+      return NettyServerBuilder.forPort(port);
     }
 
     try {
-      ServerCredentials credentials = TlsServerCredentials.create(certFile, keyFile);
-      // Use Grpc.newServerBuilderForPort for TLS
-      return Grpc.newServerBuilderForPort(port, credentials);
+      // Configure Netty with TLS using SslContext
+      return NettyServerBuilder.forPort(port)
+          .sslContext(io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts
+              .forServer(certFile, keyFile)
+              .build());
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Failed to configure TLS", e);
-      return ServerBuilder.forPort(port);
+      return NettyServerBuilder.forPort(port);
     }
   }
 
