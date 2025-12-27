@@ -58,6 +58,7 @@ class SingleServerLoadTestIT extends ContainersTestTemplate {
     int expectedFriendshipCount = numOfFriendship;
     int expectedLikeCount = numOfLike;
     LocalDateTime startedAt = LocalDateTime.now();
+    logger.info("Starting load test on protocol {}", protocol.name());
     logger.info("Creating {} users using {} threads", expectedUsersCount, numOfThreads);
     logger.info("Expected users: {} - photos: {} - friendships: {} - likes: {}", expectedUsersCount, expectedPhotoCount,
         expectedFriendshipCount, expectedLikeCount);

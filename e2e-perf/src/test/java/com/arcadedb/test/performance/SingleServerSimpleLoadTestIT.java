@@ -54,6 +54,7 @@ class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
     int expectedUsersCount = numOfUsers * numOfThreads;
     int expectedPhotoCount = expectedUsersCount * numOfPhotos;
 
+    logger.info("Starting load test on protocol {}", protocol.name());
     logger.info("Creating {} users using {} threads", expectedUsersCount, numOfThreads);
     ExecutorService executor = Executors.newFixedThreadPool(numOfThreads);
     for (int i = 0; i < numOfThreads; i++) {
