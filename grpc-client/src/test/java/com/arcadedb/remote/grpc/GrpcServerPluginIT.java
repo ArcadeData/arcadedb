@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.test.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -108,6 +109,7 @@ public class GrpcServerPluginIT extends BaseGraphServerTest {
   }
 
   @Test
+  @DisplayName("Query should return aliases (@rid, @type) and custom projection (author AS _author)")
   void grpcQueryWithAliasesAndMetadata() {
 
     String query = "SELECT *,  @rid, @type, author AS _author FROM article";
@@ -123,6 +125,7 @@ public class GrpcServerPluginIT extends BaseGraphServerTest {
   }
 
   @Test
+  @DisplayName("UPDATE with RETURN AFTER should return modified record with alias")
   void grpcUpdateWithAlas() {
     String update = """
         UPDATE article  SET title = "My third article updated" RETURN AFTER *, author AS _author WHERE id = 3
@@ -140,6 +143,7 @@ public class GrpcServerPluginIT extends BaseGraphServerTest {
   }
 
   @Test
+  @DisplayName("INSERT with RETURN @this should return the newly created record")
   void grpcInsertWithReturn() {
     String command = """
         INSERT INTO article CONTENT {
@@ -167,6 +171,7 @@ public class GrpcServerPluginIT extends BaseGraphServerTest {
   }
 
   @Test
+  @DisplayName("CREATE VERTEX should return the newly created vertex with all properties")
   void grpcCreateVertexWithReturn() {
     String command = """
         CREATE VERTEX article CONTENT {
