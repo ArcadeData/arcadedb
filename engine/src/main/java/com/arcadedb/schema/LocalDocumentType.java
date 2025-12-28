@@ -211,6 +211,9 @@ public class LocalDocumentType implements DocumentType {
     if (name.equals(type))
       return true;
 
+    if (aliases.contains(type))
+      return true;
+
     for (final DocumentType t : superTypes) {
       if (t.instanceOf(type))
         return true;
