@@ -37,7 +37,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * Benchmark for measuring leader failover time.
  * Measures the time from leader death to new leader election and cluster recovery.
  */
-public class FailoverTimeBenchmark extends ContainersTestTemplate {
+public class FailoverTimeBenchmarkIT extends ContainersTestTemplate {
 
   private static final int WARMUP_ITERATIONS = 3;
   private static final int BENCHMARK_ITERATIONS = 10;
