@@ -36,9 +36,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * Benchmark for measuring leader election time.
  * Measures the time taken for leader election in various scenarios.
  */
-public class ElectionTimeBenchmark extends ContainersTestTemplate {
+public class ElectionTimeBenchmarkIT extends ContainersTestTemplate {
 
-  private static final int WARMUP_ITERATIONS = 3;
+  private static final int WARMUP_ITERATIONS    = 3;
   private static final int BENCHMARK_ITERATIONS = 10;
 
   @Test
@@ -61,6 +61,7 @@ public class ElectionTimeBenchmark extends ContainersTestTemplate {
    * Performs a single election cycle: start cluster, measure time until leader is elected
    *
    * @param measureTime Whether to measure and return the election time
+   *
    * @return The election time in milliseconds (or 0 if measureTime is false)
    */
   private long performElectionCycle(boolean measureTime) throws IOException, InterruptedException {
