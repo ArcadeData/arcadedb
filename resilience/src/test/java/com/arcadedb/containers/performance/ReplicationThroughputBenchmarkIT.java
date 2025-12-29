@@ -35,7 +35,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Benchmark for measuring replication throughput with various quorum settings.
  * Tests transaction throughput (tx/sec) under different HA configurations.
  */
-public class ReplicationThroughputBenchmark extends ContainersTestTemplate {
+class ReplicationThroughputBenchmarkIT extends ContainersTestTemplate {
 
   private static final int WARMUP_TRANSACTIONS = 100;
   private static final int BENCHMARK_TRANSACTIONS = 1000;
