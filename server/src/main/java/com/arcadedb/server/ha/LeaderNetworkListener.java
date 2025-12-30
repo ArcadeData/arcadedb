@@ -203,7 +203,29 @@ public class LeaderNetworkListener extends Thread {
 
     HAServer.HACluster cluster = ha.getCluster();
 
+    // Try to find the server by alias first
     Optional<HAServer.ServerInfo> serverInfo = cluster.findByAlias(remoteServerName);
+
+    // If not found by alias, try to match by the address (host:port)
+    if (serverInfo.isEmpty()) {
+      final HAServer.ServerInfo parsedAddress = HAServer.ServerInfo.fromString(remoteServerAddress);
+      serverInfo = cluster.findByHostAndPort(parsedAddress.host(), parsedAddress.port());
+
+      if (serverInfo.isPresent()) {
+        LogManager.instance().log(this, Level.INFO,
+            "Server '%s' not found by alias, but matched by address %s:%d - updating to use alias '%s'",
+            remoteServerName, parsedAddress.host(), parsedAddress.port(), remoteServerName);
+        // Update to use the actual server name as alias
+        serverInfo = Optional.of(new HAServer.ServerInfo(parsedAddress.host(), parsedAddress.port(), remoteServerName));
+      } else {
+        LogManager.instance().log(this, Level.WARNING,
+            "Server '%s' at %s not found in configured cluster %s - accepting as dynamic member",
+            remoteServerName, remoteServerAddress, cluster);
+        // Accept as dynamic cluster member
+        serverInfo = Optional.of(parsedAddress);
+      }
+    }
+
     serverInfo.ifPresent(server -> {
 
           switch (command) {

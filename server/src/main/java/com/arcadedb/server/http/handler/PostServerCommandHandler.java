@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -34,7 +35,6 @@ import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.backup.AutoBackupConfig;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.backup.BackupRetentionManager;
-import com.arcadedb.server.backup.DatabaseBackupConfig;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.Leader2ReplicaNetworkExecutor;
 import com.arcadedb.server.ha.Replica2LeaderNetworkExecutor;
@@ -43,18 +43,18 @@ import com.arcadedb.server.ha.message.ServerShutdownRequest;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
-import com.arcadedb.utility.FileUtils;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.StatusCodes;
 
-import java.io.*;
-import java.nio.file.*;
-import java.rmi.*;
-import java.time.*;
-import java.time.format.*;
-import java.util.*;
-import java.util.regex.*;
+import java.io.IOException;
+import java.rmi.ServerException;
+import java.util.HashSet;
+import java.util.Locale;
+import java.util.Set;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.logging.Level;
 
 public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final String LIST_DATABASES       = "list databases";
@@ -175,6 +175,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private void shutdownServer(final String serverName) throws IOException {
     Metrics.counter("http.server-shutdown").increment();
 
+    LogManager.instance().log(this, Level.INFO, "Shutting down server '" + serverName + "'");
     if (serverName.isEmpty()) {
       // SHUTDOWN CURRENT SERVER
       new Timer().schedule(new TimerTask() {
