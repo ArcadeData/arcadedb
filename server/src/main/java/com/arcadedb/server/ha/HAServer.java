@@ -104,6 +104,8 @@ public class HAServer implements ServerPlugin {
   private         Thread                electionThread;
   private         ReplicationLogFile    replicationLogFile;
   protected       Pair<Long, String>    lastElectionVote;
+  private final   LeaderFence           leaderFence;
+  private volatile long                 lastElectionStartTime       = 0;
 
   public record ServerInfo(String host, int port, String alias) {
 
@@ -228,6 +230,7 @@ public class HAServer implements ServerPlugin {
     this.replicationPath = server.getRootPath() + "/replication";
     this.serverRole = ServerRole.valueOf(
         configuration.getValueAsString(GlobalConfiguration.HA_SERVER_ROLE).toUpperCase(Locale.ENGLISH));
+    this.leaderFence = new LeaderFence(server.getServerName());
   }
 
   @Override
@@ -244,7 +247,10 @@ public class HAServer implements ServerPlugin {
         configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST),
         configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS));
 
-    serverAddress = new ServerInfo(server.getHostAddress(), listener.getPort(), server.getServerName());
+    // Determine the server's alias by finding it in the configured server list
+    final String configuredAlias = determineServerAlias(listener.getPort());
+
+    serverAddress = new ServerInfo(server.getHostAddress(), listener.getPort(), configuredAlias);
     LogManager.instance().log(this, Level.INFO, "Starting HA service on %s", serverAddress);
     configureCluster();
 
@@ -254,7 +260,14 @@ public class HAServer implements ServerPlugin {
   }
 
   private void waitForHttpServerConnection() {
+    final long timeout = configuration.getValueAsLong(GlobalConfiguration.HA_HTTP_STARTUP_TIMEOUT);
+    final long startTime = System.currentTimeMillis();
+
     while (!server.getHttpServer().isConnected()) {
+      if (System.currentTimeMillis() - startTime > timeout) {
+        throw new ServerException(
+            "Timeout waiting for HTTP server to start after " + timeout + "ms. Check HTTP server configuration.");
+      }
       CodeUtils.sleep(200);
     }
   }
@@ -348,7 +361,18 @@ public class HAServer implements ServerPlugin {
 
   public void startElection(final boolean waitForCompletion) {
     synchronized (this) {
+      // Check for election cooldown to prevent election storms
+      if (isInElectionCooldown()) {
+        final long remaining = getRemainingCooldown();
+        LogManager.instance().log(this, Level.INFO,
+            "Election requested but in cooldown period. %dms remaining", remaining);
+        return;
+      }
+
       if (electionThread == null) {
+        // Record the election start time for cooldown tracking
+        lastElectionStartTime = System.currentTimeMillis();
+
         electionThread = new Thread(this::startElection, getServerName() + " election");
         electionThread.start();
         if (waitForCompletion) {
@@ -378,10 +402,16 @@ public class HAServer implements ServerPlugin {
   private void sendNewLeadershipToOtherNodes() {
     lastDistributedOperationNumber.set(replicationLogFile.getLastMessageNumber());
 
+    // Create a new epoch for this leadership term.
+    // The epoch number is based on the election turn which is monotonically increasing.
+    final LeaderEpoch newEpoch = LeaderEpoch.create(lastElectionVote.getFirst(), getServerName());
+    leaderFence.becomeLeader(newEpoch);
+
     setElectionStatus(ElectionStatus.LEADER_WAITING_FOR_QUORUM);
 
     LogManager.instance()
-        .log(this, Level.INFO, "Contacting all the servers for the new leadership (turn=%d)...", lastElectionVote.getFirst());
+        .log(this, Level.INFO, "Contacting all the servers for the new leadership (turn=%d epoch=%s)...",
+            lastElectionVote.getFirst(), newEpoch);
 
     for (final ServerInfo serverAddress : cluster.servers) {
       if (isCurrentServer(serverAddress))
@@ -554,6 +584,24 @@ public class HAServer implements ServerPlugin {
     return clusterName;
   }
 
+  /**
+   * Gets the leader fence used for split-brain prevention.
+   *
+   * @return The LeaderFence instance
+   */
+  public LeaderFence getLeaderFence() {
+    return leaderFence;
+  }
+
+  /**
+   * Gets the current leader epoch, or null if not set.
+   *
+   * @return The current LeaderEpoch or null
+   */
+  public LeaderEpoch getCurrentEpoch() {
+    return leaderFence.getCurrentEpoch();
+  }
+
   public void registerIncomingConnection(final ServerInfo replicaServerName, final Leader2ReplicaNetworkExecutor connection) {
     final Leader2ReplicaNetworkExecutor previousConnection = replicaConnections.put(replicaServerName, connection);
     if (previousConnection != null && previousConnection != connection) {
@@ -565,6 +613,14 @@ public class HAServer implements ServerPlugin {
     if (1 + totReplicas > configuredServers)
       // UPDATE SERVER COUNT
       configuredServers = 1 + totReplicas;
+
+    // Build the actual cluster membership: leader + all connected replicas
+    final Set<ServerInfo> currentMembers = new HashSet<>();
+    currentMembers.add(serverAddress); // Add self (the leader)
+    currentMembers.addAll(replicaConnections.keySet()); // Add all replicas
+
+    // Update the cluster to reflect actual membership
+    cluster = new HACluster(currentMembers);
 
     sendCommandToReplicasNoLog(new UpdateClusterConfiguration(cluster));
 
@@ -578,6 +634,29 @@ public class HAServer implements ServerPlugin {
   protected void setElectionStatus(final ElectionStatus status) {
     LogManager.instance().log(this, Level.INFO, "Change election status from %s to %s", this.electionStatus, status);
     this.electionStatus = status;
+  }
+
+  /**
+   * Checks if the server is currently in an election cooldown period.
+   * This prevents election storms where nodes rapidly trigger elections.
+   *
+   * @return true if in cooldown period, false otherwise
+   */
+  public boolean isInElectionCooldown() {
+    final long cooldownMs = configuration.getValueAsLong(GlobalConfiguration.HA_ELECTION_COOLDOWN);
+    final long elapsed = System.currentTimeMillis() - lastElectionStartTime;
+    return elapsed < cooldownMs;
+  }
+
+  /**
+   * Gets the remaining cooldown time in milliseconds.
+   *
+   * @return Remaining cooldown time, or 0 if not in cooldown
+   */
+  public long getRemainingCooldown() {
+    final long cooldownMs = configuration.getValueAsLong(GlobalConfiguration.HA_ELECTION_COOLDOWN);
+    final long elapsed = System.currentTimeMillis() - lastElectionStartTime;
+    return Math.max(0, cooldownMs - elapsed);
   }
 
   public HAMessageFactory getMessageFactory() {
@@ -595,6 +674,97 @@ public class HAServer implements ServerPlugin {
       }
     }
     return servers;
+  }
+
+  /**
+   * Determines the server's alias by finding itself in the configured server list.
+   * This ensures the server uses the same alias as configured in the cluster,
+   * rather than just using the SERVER_NAME configuration.
+   *
+   * @param actualPort The actual port the server is listening on
+   * @return The alias from the server list, or SERVER_NAME as fallback
+   */
+  private String determineServerAlias(final int actualPort) {
+    final String cfgServerList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST).trim();
+    if (cfgServerList.isEmpty()) {
+      // No server list configured, use SERVER_NAME
+      return server.getServerName();
+    }
+
+    final Set<ServerInfo> configuredServers = parseServerList(cfgServerList);
+    final String currentHost = server.getHostAddress();
+
+    // Try to find ourselves in the configured server list
+    ServerInfo matchedServer = null;
+    for (ServerInfo serverInfo : configuredServers) {
+      if (isMatchingServer(serverInfo, currentHost, actualPort)) {
+        matchedServer = serverInfo;
+        break;
+      }
+    }
+
+    if (matchedServer != null) {
+      // Check if the alias is unique in the server list
+      if (isAliasUnique(matchedServer.alias(), configuredServers)) {
+        LogManager.instance().log(this, Level.INFO,
+            "Found unique server alias '%s' in configured server list for %s:%d",
+            matchedServer.alias(), currentHost, actualPort);
+        return matchedServer.alias();
+      } else {
+        // Alias is not unique (e.g., all servers have "localhost" as alias)
+        // Use SERVER_NAME to ensure uniqueness
+        LogManager.instance().log(this, Level.WARNING,
+            "Server alias '%s' from server list is not unique, using SERVER_NAME '%s' instead",
+            matchedServer.alias(), server.getServerName());
+        return server.getServerName();
+      }
+    }
+
+    // Fallback: not found in server list, use SERVER_NAME
+    LogManager.instance().log(this, Level.WARNING,
+        "Could not find %s:%d in configured server list %s, using SERVER_NAME '%s' as alias",
+        currentHost, actualPort, cfgServerList, server.getServerName());
+    return server.getServerName();
+  }
+
+  /**
+   * Checks if an alias is unique in the server list.
+   */
+  private boolean isAliasUnique(final String alias, final Set<ServerInfo> servers) {
+    long count = servers.stream().filter(s -> s.alias().equals(alias)).count();
+    return count == 1;
+  }
+
+  /**
+   * Checks if a ServerInfo matches the current server's host and port.
+   * Handles localhost variants and network aliases.
+   */
+  private boolean isMatchingServer(final ServerInfo serverInfo, final String currentHost, final int actualPort) {
+    // Port must match
+    if (serverInfo.port() != actualPort) {
+      return false;
+    }
+
+    // Exact host match
+    if (serverInfo.host().equals(currentHost)) {
+      return true;
+    }
+
+    // Handle localhost variants
+    final boolean currentIsLocalhost = isLocalhostVariant(currentHost);
+    final boolean configuredIsLocalhost = isLocalhostVariant(serverInfo.host());
+
+    return currentIsLocalhost && configuredIsLocalhost;
+  }
+
+  /**
+   * Checks if a host string represents localhost.
+   */
+  private boolean isLocalhostVariant(final String host) {
+    return host.equals("localhost") ||
+           host.equals("127.0.0.1") ||
+           host.equals("0.0.0.0") ||
+           host.equals("::1");
   }
 
   /**
@@ -664,6 +834,9 @@ public class HAServer implements ServerPlugin {
 
     LogManager.instance().log(this, Level.INFO, "Cluster configuration updated: %d servers configured",
         configuredServers);
+
+    // Print cluster topology (also on replicas, not just on leader)
+    printClusterConfiguration();
   }
 
   /**
@@ -736,6 +909,8 @@ public class HAServer implements ServerPlugin {
   }
 
   public void sendCommandToReplicasNoLog(final HACommand command) {
+    // Check if this leader has been fenced (a newer leader exists)
+    leaderFence.checkFenced();
     checkCurrentNodeIsTheLeader();
 
     final Binary buffer = new Binary();
@@ -764,6 +939,8 @@ public class HAServer implements ServerPlugin {
   }
 
   public List<Object> sendCommandToReplicasWithQuorum(final HACommand command, final int quorum, final long timeout) {
+    // Check if this leader has been fenced (a newer leader exists)
+    leaderFence.checkFenced();
     checkCurrentNodeIsTheLeader();
 
     if (quorum > getOnlineServers()) {
@@ -792,6 +969,11 @@ public class HAServer implements ServerPlugin {
 
           buffer.clear();
           messageFactory.serializeCommand(command, buffer, opNumber);
+
+          // WAL SEMANTICS: Write to replication log BEFORE sending to replicas.
+          // This ensures that if the leader crashes after getting quorum acknowledgment
+          // but before the log write, we don't lose the committed transaction.
+          replicationLogFile.appendMessage(new ReplicationMessage(opNumber, buffer));
 
           if (quorum > 1) {
             // REGISTER THE REQUEST TO WAIT FOR THE QUORUM
@@ -859,10 +1041,8 @@ public class HAServer implements ServerPlugin {
           }
         }
 
-        // WRITE THE MESSAGE INTO THE LOG FIRST
-        replicationLogFile.appendMessage(new ReplicationMessage(opNumber, buffer));
-
-        // OK
+        // Message was already written to log before sending (WAL semantics)
+        // OK - quorum reached
         break;
 
       }
@@ -1009,56 +1189,100 @@ public class HAServer implements ServerPlugin {
     final TableFormatter table = new TableFormatter((text, args) -> buffer.append(text.formatted(args)));
 
     final List<RecordTableFormatter.TableRecordRow> list = new ArrayList<>();
+    final boolean amILeader = isLeader();
+    final Replica2LeaderNetworkExecutor leaderConn = leaderConnection.get();
 
-    ResultInternal line = new ResultInternal();
-    list.add(new RecordTableFormatter.TableRecordRow(line));
-
-    Date date = new Date(startedOn);
-    String dateFormatted = startedOn > 0 ?
-        DateUtils.areSameDay(date, new Date()) ?
-            DateUtils.format(date, "HH:mm:ss") :
-            DateUtils.format(date, "yyyy-MM-dd HH:mm:ss") :
-        "";
-
-    line.setProperty("SERVER", getServerName());
-    line.setProperty("HOST:PORT", getServerAddress());
-    line.setProperty("ROLE", "Leader");
-    line.setProperty("STATUS", "ONLINE");
-    line.setProperty("JOINED ON", dateFormatted);
-    line.setProperty("LEFT ON", "");
-    line.setProperty("THROUGHPUT", "");
-    line.setProperty("LATENCY", "");
-
-    for (final Leader2ReplicaNetworkExecutor c : replicaConnections.values()) {
-      line = new ResultInternal();
+    if (amILeader) {
+      // LEADER VIEW: Show self as leader, then all replicas
+      ResultInternal line = new ResultInternal();
       list.add(new RecordTableFormatter.TableRecordRow(line));
 
-      final Leader2ReplicaNetworkExecutor.STATUS status = c.getStatus();
-
-      line.setProperty("SERVER", c.getRemoteServerName());
-      line.setProperty("HOST:PORT", c.getRemoteServerAddress());
-      line.setProperty("ROLE", "Replica");
-      line.setProperty("STATUS", status);
-
-      date = new Date(c.getJoinedOn());
-      dateFormatted = c.getJoinedOn() > 0 ?
+      Date date = new Date(startedOn);
+      String dateFormatted = startedOn > 0 ?
           DateUtils.areSameDay(date, new Date()) ?
               DateUtils.format(date, "HH:mm:ss") :
               DateUtils.format(date, "yyyy-MM-dd HH:mm:ss") :
           "";
 
+      line.setProperty("SERVER", getServerName());
+      line.setProperty("HOST:PORT", getServerAddress());
+      line.setProperty("ROLE", "Leader");
+      line.setProperty("STATUS", "ONLINE");
       line.setProperty("JOINED ON", dateFormatted);
+      line.setProperty("LEFT ON", "");
+      line.setProperty("THROUGHPUT", "");
+      line.setProperty("LATENCY", "");
 
-      date = new Date(c.getLeftOn());
-      dateFormatted = c.getLeftOn() > 0 ?
-          DateUtils.areSameDay(date, new Date()) ?
-              DateUtils.format(date, "HH:mm:ss") :
-              DateUtils.format(date, "yyyy-MM-dd HH:mm:ss") :
-          "";
+      for (final Leader2ReplicaNetworkExecutor c : replicaConnections.values()) {
+        line = new ResultInternal();
+        list.add(new RecordTableFormatter.TableRecordRow(line));
 
-      line.setProperty("LEFT ON", dateFormatted);
-      line.setProperty("THROUGHPUT", c.getThroughputStats());
-      line.setProperty("LATENCY", c.getLatencyStats());
+        final Leader2ReplicaNetworkExecutor.STATUS status = c.getStatus();
+
+        line.setProperty("SERVER", c.getRemoteServerName());
+        line.setProperty("HOST:PORT", c.getRemoteServerAddress());
+        line.setProperty("ROLE", "Replica");
+        line.setProperty("STATUS", status);
+
+        date = new Date(c.getJoinedOn());
+        dateFormatted = c.getJoinedOn() > 0 ?
+            DateUtils.areSameDay(date, new Date()) ?
+                DateUtils.format(date, "HH:mm:ss") :
+                DateUtils.format(date, "yyyy-MM-dd HH:mm:ss") :
+            "";
+
+        line.setProperty("JOINED ON", dateFormatted);
+
+        date = new Date(c.getLeftOn());
+        dateFormatted = c.getLeftOn() > 0 ?
+            DateUtils.areSameDay(date, new Date()) ?
+                DateUtils.format(date, "HH:mm:ss") :
+                DateUtils.format(date, "yyyy-MM-dd HH:mm:ss") :
+            "";
+
+        line.setProperty("LEFT ON", dateFormatted);
+        line.setProperty("THROUGHPUT", c.getThroughputStats());
+        line.setProperty("LATENCY", c.getLatencyStats());
+      }
+    } else {
+      // REPLICA VIEW: Show all servers from cluster, marking leader and self
+      if (cluster != null) {
+        for (final ServerInfo serverInfo : cluster.getServers()) {
+          ResultInternal line = new ResultInternal();
+          list.add(new RecordTableFormatter.TableRecordRow(line));
+
+          final boolean isThisServer = isCurrentServer(serverInfo);
+          final boolean isLeaderServer = leaderConn != null &&
+              serverInfo.alias().equals(leaderConn.getRemoteServerName());
+
+          line.setProperty("SERVER", serverInfo.alias());
+          line.setProperty("HOST:PORT", serverInfo.toString());
+
+          if (isLeaderServer) {
+            line.setProperty("ROLE", "Leader");
+          } else {
+            line.setProperty("ROLE", "Replica");
+          }
+
+          line.setProperty("STATUS", "ONLINE");
+
+          if (isThisServer) {
+            Date date = new Date(startedOn);
+            String dateFormatted = startedOn > 0 ?
+                DateUtils.areSameDay(date, new Date()) ?
+                    DateUtils.format(date, "HH:mm:ss") :
+                    DateUtils.format(date, "yyyy-MM-dd HH:mm:ss") :
+                "";
+            line.setProperty("JOINED ON", dateFormatted);
+          } else {
+            line.setProperty("JOINED ON", "");
+          }
+
+          line.setProperty("LEFT ON", "");
+          line.setProperty("THROUGHPUT", "");
+          line.setProperty("LATENCY", "");
+        }
+      }
     }
 
     table.writeRows(list, -1);
@@ -1238,6 +1462,12 @@ public class HAServer implements ServerPlugin {
    */
   private void connectToLeader(ServerInfo server) {
     LogManager.instance().log(this, Level.INFO, "Connecting to leader server %s", server);
+
+    // If we were the leader, we must step down (fence ourselves) to prevent split-brain
+    if (isLeader()) {
+      leaderFence.stepDown("Connecting to new leader: " + server);
+    }
+
     final Replica2LeaderNetworkExecutor lc = leaderConnection.get();
     if (lc != null) {
       // CLOSE ANY LEADER CONNECTION STILL OPEN
@@ -1442,7 +1672,20 @@ public class HAServer implements ServerPlugin {
               LogManager.instance()
                   .log(this, Level.INFO, "Trying to connect to the existing leader '%s' (turn=%d totalVotes=%d majority=%d)",
                       entry.getKey(), electionTurn, entry.getValue(), majorityOfVotes);
-              ServerInfo serverInfo = new ServerInfo(entry.getKey(), 2424, "");
+
+              // Resolve the server info - try by alias first, then parse as address
+              ServerInfo serverInfo = cluster.findByAlias(entry.getKey()).orElse(null);
+              if (serverInfo == null) {
+                // Try to parse as host:port string
+                try {
+                  serverInfo = ServerInfo.fromString(entry.getKey());
+                } catch (final Exception e) {
+                  LogManager.instance()
+                      .log(this, Level.WARNING, "Could not resolve leader address '%s', skipping", entry.getKey());
+                  continue;
+                }
+              }
+
               if (!isCurrentServer(serverInfo) && connectToLeader(serverInfo, null))
                 break;
             }

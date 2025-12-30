@@ -35,8 +35,8 @@
         <assertj-db.version>3.0.0</assertj-db.version>
     </properties>
 
-    <artifactId>arcadedb-resilience-tests</artifactId>
-    <name>ArcadeDB resilience and performance tests</name>
+    <artifactId>arcadedb-ha-tests</artifactId>
+    <name>ArcadeDB ha tests</name>
     <packaging>jar</packaging>
 
     <build>
