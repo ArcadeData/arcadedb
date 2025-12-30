@@ -26,6 +26,7 @@ import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.DateUtils;
 
 import java.math.*;
+import java.time.chrono.*;
 import java.time.temporal.*;
 import java.util.*;
 
@@ -305,7 +306,8 @@ public class BinaryComparator {
             return binary1.compareTo(binary2);
           }
         }
-        throw new IllegalArgumentException("Invalid binary type for comparison: " + value1.getClass() + " and " + value2.getClass());
+        throw new IllegalArgumentException(
+            "Invalid binary type for comparison: " + value1.getClass() + " and " + value2.getClass());
       }
       }
       throw new UnsupportedOperationException("Comparing binary types");
@@ -458,7 +460,7 @@ public class BinaryComparator {
       return 0;
     else if (a != null && b == null)
       return 1;
-    else if (a == null && b != null)
+    else if (a == null)
       return -1;
     else if (a instanceof String string && b instanceof String string1)
       return compareBytes(string.getBytes(), string1.getBytes(DatabaseFactory.getDefaultCharset()));
@@ -466,6 +468,10 @@ public class BinaryComparator {
       return compareBytes(bytes, bytes1);
     else if (a instanceof Map map && b instanceof Map map1)
       return CollectionUtils.compare(map, map1);
+    else if (a instanceof ChronoLocalDate aDate && b instanceof ChronoLocalDate bDate)
+      return aDate.compareTo(bDate);
+    else if (a instanceof ChronoLocalDateTime<?> aDate && b instanceof ChronoLocalDateTime<?> bDate)
+      return aDate.compareTo(bDate);
     else if (DateUtils.isDate(a) || DateUtils.isDate(b))
       return DateUtils.dateTimeToTimestamp(a, ChronoUnit.NANOS).compareTo(DateUtils.dateTimeToTimestamp(b, ChronoUnit.NANOS));
     return ((Comparable<Object>) a).compareTo(b);
@@ -474,5 +480,4 @@ public class BinaryComparator {
   public static int compareBytes(final byte[] buffer1, final byte[] buffer2) {
     return UnsignedBytesComparator.BEST_COMPARATOR.compare(buffer1, buffer2);
   }
-
 }
