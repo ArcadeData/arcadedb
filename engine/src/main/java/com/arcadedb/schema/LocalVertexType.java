@@ -55,13 +55,13 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
         String newBucketName;
         if (oldBucketName.endsWith(GraphEngine.OUT_EDGES_SUFFIX)) {
           newBucketName = oldBucketName.substring(0, oldBucketName.length() - GraphEngine.OUT_EDGES_SUFFIX.length());
-          newBucketName = newName + newBucketName.substring(newBucketName.lastIndexOf("_")) + GraphEngine.OUT_EDGES_SUFFIX;
         } else if (oldBucketName.endsWith(GraphEngine.IN_EDGES_SUFFIX)) {
           newBucketName = oldBucketName.substring(0, oldBucketName.length() - GraphEngine.IN_EDGES_SUFFIX.length());
-          newBucketName = newName + newBucketName.substring(newBucketName.lastIndexOf("_")) + GraphEngine.IN_EDGES_SUFFIX;
         } else
           throw new SchemaException(
               "Cannot rename bucket '" + oldBucketName + "' because it does not follow the naming convention");
+
+        newBucketName = newName + newBucketName.substring(newBucketName.lastIndexOf("_"));
 
         ((LocalBucket) bucket).rename(newBucketName);
 
