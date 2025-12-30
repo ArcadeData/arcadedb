@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -41,9 +42,14 @@ import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.StatusCodes;
 
-import java.io.*;
-import java.rmi.*;
-import java.util.*;
+import java.io.IOException;
+import java.rmi.ServerException;
+import java.util.HashSet;
+import java.util.Locale;
+import java.util.Set;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.logging.Level;
 
 public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final String LIST_DATABASES       = "list databases";
@@ -149,6 +155,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private void shutdownServer(final String serverName) throws IOException {
     Metrics.counter("http.server-shutdown").increment();
 
+    LogManager.instance().log(this, Level.INFO, "Shutting down server '" + serverName + "'");
     if (serverName.isEmpty()) {
       // SHUTDOWN CURRENT SERVER
       new Timer().schedule(new TimerTask() {
