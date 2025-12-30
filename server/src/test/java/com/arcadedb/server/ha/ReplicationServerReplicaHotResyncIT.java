@@ -31,10 +31,11 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
-  private final    CountDownLatch hotResyncLatch  = new CountDownLatch(1);
-  private final    CountDownLatch fullResyncLatch = new CountDownLatch(1);
-  private final    AtomicLong     totalMessages   = new AtomicLong();
-  private volatile boolean        slowDown        = true;
+  private final    CountDownLatch hotResyncLatch    = new CountDownLatch(1);
+  private final    CountDownLatch fullResyncLatch   = new CountDownLatch(1);
+  private final    AtomicLong     totalMessages     = new AtomicLong();
+  private volatile boolean        slowDown          = true;
+  private volatile boolean        reconnectTriggered = false;
 
   @Override
   public void setTestConfiguration() {
@@ -84,10 +85,11 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
 
           if (slowDown) {
             // SLOW DOWN A SERVER AFTER 5TH MESSAGE
-            if (totalMessages.incrementAndGet() > 5 && totalMessages.get() < 10) {
+            final long msgCount = totalMessages.incrementAndGet();
+            if (msgCount > 5 && msgCount < 10) {
               LogManager.instance()
                   .log(this, Level.INFO, "TEST: Slowing down response from replica server 2... - total messages %d",
-                      totalMessages.get());
+                      msgCount);
               try {
                 // Still need some delay to trigger the hot resync
                 Thread.sleep(1_000);
@@ -95,8 +97,40 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
                 Thread.currentThread().interrupt();
               }
             }
+
+            // After slowdown, trigger reconnection to test hot resync
+            if (msgCount == 10 && !reconnectTriggered) {
+              reconnectTriggered = true;
+              LogManager.instance().log(this, Level.INFO, "TEST: Triggering disconnect and reconnect for hot resync test...");
+              slowDown = false;
+
+              executeAsynchronously(() -> {
+                try {
+                  Thread.sleep(2000); // Wait for current messages to finish processing and slowdown to stop
+                  final ArcadeDBServer server2 = getServer(2);
+                  if (server2 != null && server2.getHA() != null) {
+                    LogManager.instance().log(this, Level.INFO, "TEST: Stopping and restarting Server 2's HA service...");
+
+                    // Stop the HA service completely
+                    server2.getHA().stopService();
+
+                    // Wait for clean shutdown
+                    Thread.sleep(2000);
+
+                    // Restart the HA service - this will trigger a fresh connection with proper resync protocol
+                    LogManager.instance().log(this, Level.INFO, "TEST: Restarting Server 2's HA service...");
+                    server2.getHA().startService();
+
+                    LogManager.instance().log(this, Level.INFO, "TEST: Server 2's HA service restarted successfully");
+                  }
+                } catch (Exception e) {
+                  LogManager.instance().log(this, Level.WARNING, "TEST: Failed to restart HA service: %s", e.getMessage());
+                }
+                return null;
+              });
+            }
           } else {
-            LogManager.instance().log(this, Level.INFO, "TEST: Slowdown is disabled");
+            // Handle hot/full resync events
             if (type == Type.REPLICA_HOT_RESYNC) {
               hotResyncLatch.countDown();
               LogManager.instance().log(this, Level.INFO, "TEST: Received hot resync request %s", hotResyncLatch.getCount());
@@ -109,19 +143,5 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
       });
     }
 
-    if (server.getServerName().equals("ArcadeDB_0")) {
-      server.registerTestEventListener(new ReplicationCallback() {
-        @Override
-        public void onEvent(final Type type, final Object object, final ArcadeDBServer server) {
-          if (!serversSynchronized)
-            return;
-
-          if ("ArcadeDB_2".equals(object) && type == Type.REPLICA_OFFLINE) {
-            LogManager.instance().log(this, Level.INFO, "TEST: Replica 2 is offline removing latency...");
-            slowDown = false;
-          }
-        }
-      });
-    }
   }
 }
