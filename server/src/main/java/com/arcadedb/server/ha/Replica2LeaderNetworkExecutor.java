@@ -523,7 +523,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   }
 
   private void shutdown() {
-    LogManager.instance().log(this, Level.FINE, "Shutting down thread %s (id=%d)...", getName(), getId());
+    LogManager.instance().log(this, Level.WARNING, "Shutting down thread %s (id=%d)...", getName(), getId());
     shutdown = true;
   }
 }
