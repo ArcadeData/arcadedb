@@ -405,13 +405,13 @@ public abstract class ContainersTestTemplate {
         .withNetwork(network)
         .withNetworkAliases(name)
         .withStartupTimeout(Duration.ofSeconds(90))
-//        .withCopyToContainer(MountableFile.forHostPath("./target/databases/" + name, 0777), "/home/arcadedb/databases")
-//        .withCopyToContainer(MountableFile.forHostPath("./target/replication/" + name, 0777), "/home/arcadedb/replication")
-//        .withCopyToContainer(MountableFile.forHostPath("./target/logs/" + name, 0777), "/home/arcadedb/logs")
+        .withCopyToContainer(MountableFile.forHostPath("./target/databases/" + name, 0777), "/home/arcadedb/databases")
+        .withCopyToContainer(MountableFile.forHostPath("./target/replication/" + name, 0777), "/home/arcadedb/replication")
+        .withCopyToContainer(MountableFile.forHostPath("./target/logs/" + name, 0777), "/home/arcadedb/logs")
 
-        .withFileSystemBind("./target/databases/" + name,  "/home/arcadedb/databases")
-        .withFileSystemBind("./target/replication/" + name,  "/home/arcadedb/replication")
-        .withFileSystemBind("./target/logs/" + name,  "/home/arcadedb/logs")
+//        .withFileSystemBind("./target/databases/" + name,  "/home/arcadedb/databases")
+//        .withFileSystemBind("./target/replication/" + name,  "/home/arcadedb/replication")
+//        .withFileSystemBind("./target/logs/" + name,  "/home/arcadedb/logs")
 
         .withEnv("JAVA_OPTS", String.format("""
             -Darcadedb.server.rootPassword=playwithdata
