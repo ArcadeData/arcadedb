@@ -35,8 +35,8 @@
         <assertj-db.version>3.0.0</assertj-db.version>
     </properties>
 
-    <artifactId>arcadedb-ha-tests</artifactId>
-    <name>ArcadeDB ha tests</name>
+    <artifactId>arcadedb-e2e-ha</artifactId>
+    <name>ArcadeDB E2E HA tests</name>
     <packaging>jar</packaging>
 
     <build>
