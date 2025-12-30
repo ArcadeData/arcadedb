@@ -30,14 +30,12 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ReplicationCallback;
 import com.arcadedb.utility.CodeUtils;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-import java.util.concurrent.TimeUnit;
-
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
@@ -68,7 +66,9 @@ public class ReplicationServerFixedClientConnectionIT extends ReplicationServerI
 
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
-  @Disabled
+  @Disabled("This test is designed for a degenerate case: MAJORITY quorum with 2 servers prevents leader election. " +
+      "With 2 servers and MAJORITY quorum, a new leader cannot be elected when the first leader fails (needs 2 votes, only has 1). " +
+      "This test demonstrates FIXED connection strategy behavior in this scenario, but it's not a realistic production configuration.")
   void testReplication() {
     checkDatabases();
 
@@ -91,8 +91,10 @@ public class ReplicationServerFixedClientConnectionIT extends ReplicationServerI
       for (int i = 0; i < getVerticesPerTx(); ++i) {
         for (int retry = 0; retry < maxRetry; ++retry) {
           try {
-            final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter,
-                "distributed-test");
+            final ResultSet resultSet = db.command("SQL",
+                "CREATE VERTEX " + VERTEX1_TYPE_NAME +
+                    " SET id = ?, name = ?",
+                ++counter, "distributed-test");
 
             assertThat(resultSet.hasNext()).isTrue();
             final Result result = resultSet.next();
@@ -122,7 +124,9 @@ public class ReplicationServerFixedClientConnectionIT extends ReplicationServerI
     }
 
     LogManager.instance().log(this, Level.FINE, "Done");
-    CodeUtils.sleep(1000);
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
+
 
     // CHECK INDEXES ARE REPLICATED CORRECTLY
     for (final int s : getServerToCheck())
@@ -130,7 +134,7 @@ public class ReplicationServerFixedClientConnectionIT extends ReplicationServerI
 
     onAfterTest();
 
-    Assertions.assertThat(errors).as("Found %d errors during the test", errors).isGreaterThanOrEqualTo(10);
+    assertThat(errors).as("Found %d errors during the test", errors).isGreaterThanOrEqualTo(10);
   }
 
   @Override

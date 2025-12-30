@@ -162,9 +162,10 @@ public class HARandomCrashIT extends ReplicationServerIT {
             getServer(serverId).stop();
 
             // Wait for server to finish shutting down using Awaitility with extended timeout
-            await("server shutdown").atMost(HATestTimeouts.SERVER_SHUTDOWN_TIMEOUT)
-                   .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL_LONG)
-                   .until(() -> getServer(serverId).getStatus() != ArcadeDBServer.Status.SHUTTING_DOWN);
+            await("server shutdown")
+                .atMost(HATestTimeouts.SERVER_SHUTDOWN_TIMEOUT)
+                .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL_LONG)
+                .until(() -> getServer(serverId).getStatus() != ArcadeDBServer.Status.SHUTTING_DOWN);
 
             LogManager.instance().log(this, getLogLevel(), "TEST: Restarting the Server %s (delay=%d)...", null, serverId, delay);
 

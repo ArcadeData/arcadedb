@@ -133,10 +133,9 @@ public class Replica2LeaderNetworkExecutor extends Thread {
         if (installDatabaseLastLogNumber > -1 && request.getSecond() instanceof TxRequest)
           ((TxRequest) request.getSecond()).installDatabaseLastLogNumber = installDatabaseLastLogNumber;
 
-        // TODO: LOG THE TX BEFORE EXECUTING TO RECOVER THE DB IN CASE OF CRASH
-
-        final HACommand response = request.getSecond().execute(server, leader, reqId);
-
+        // WAL SEMANTICS: Log the message BEFORE executing to ensure durability.
+        // If the replica crashes after logging but before executing, the message
+        // can be replayed on restart. This matches the leader's behavior.
         if (reqId > -1) {
           if (!server.getReplicationLogFile().appendMessage(message)) {
             // ERROR IN THE SEQUENCE, FORCE A RECONNECTION
@@ -146,6 +145,9 @@ public class Replica2LeaderNetworkExecutor extends Thread {
             continue;
           }
         }
+
+        // Now execute the command after it's safely logged
+        final HACommand response = request.getSecond().execute(server, leader, reqId);
 
         server.getServer().lifecycleEvent(ReplicationCallback.Type.REPLICA_MSG_RECEIVED, request);
 

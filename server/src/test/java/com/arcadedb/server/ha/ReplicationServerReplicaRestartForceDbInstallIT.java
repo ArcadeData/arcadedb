@@ -91,7 +91,9 @@ public class ReplicationServerReplicaRestartForceDbInstallIT extends Replication
             return;
 
           // AS SOON AS SERVER 2 IS OFFLINE, A CLEAN OF REPLICATION LOG AND RESTART IS EXECUTED
-          if ("ArcadeDB_2".equals(object) && type == Type.REPLICA_OFFLINE && firstTimeServerShutdown) {
+          if (object instanceof HAServer.ServerInfo serverInfo &&
+              "ArcadeDB_2".equals(serverInfo.alias()) &&
+              type == Type.REPLICA_OFFLINE && firstTimeServerShutdown) {
             LogManager.instance().log(this, Level.SEVERE,
                 "TEST: Stopping Replica 2, removing latency, delete the replication log file and restart the server...");
             slowDown = false;

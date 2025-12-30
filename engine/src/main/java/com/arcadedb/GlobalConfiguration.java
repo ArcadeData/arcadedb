@@ -535,6 +535,35 @@ public enum GlobalConfiguration {
   HA_REPLICATION_INCOMING_PORTS("arcadedb.ha.replicationIncomingPorts", SCOPE.SERVER,
       "TCP/IP port number used for incoming replication connections", String.class, "2424-2433"),
 
+  HA_HTTP_STARTUP_TIMEOUT("arcadedb.ha.httpStartupTimeout", SCOPE.SERVER,
+      "Maximum time to wait for HTTP server to start before HA service fails (in milliseconds). Default is 60000 (60 seconds)",
+      Long.class, 60000L),
+
+  HA_LEADER_LEASE_TIMEOUT("arcadedb.ha.leaderLeaseTimeout", SCOPE.SERVER,
+      "Leader lease renewal interval in milliseconds. Used for leader fencing. Default is 30000 (30 seconds)", Long.class, 30000L),
+
+  HA_ELECTION_COOLDOWN("arcadedb.ha.electionCooldown", SCOPE.SERVER,
+      "Minimum time between elections in milliseconds to prevent election storms. Default is 5000 (5 seconds)", Long.class, 5000L),
+
+  HA_ELECTION_MAX_RETRIES("arcadedb.ha.electionMaxRetries", SCOPE.SERVER,
+      "Maximum number of election retry attempts before giving up. Default is 100", Integer.class, 100),
+
+  HA_THREAD_JOIN_TIMEOUT("arcadedb.ha.threadJoinTimeout", SCOPE.SERVER,
+      "Timeout for waiting for threads to terminate during shutdown in milliseconds. Default is 5000 (5 seconds)", Long.class,
+      5000L),
+
+  HA_BACKPRESSURE_MAX_WAIT("arcadedb.ha.backpressureMaxWait", SCOPE.SERVER,
+      "Maximum wait time for backpressure when replica queue is full in milliseconds. Default is 10000 (10 seconds)", Long.class,
+      10000L),
+
+  HA_QUORUM_MESSAGE_TTL("arcadedb.ha.quorumMessageTTL", SCOPE.SERVER,
+      "Time-to-live for messages waiting for quorum in milliseconds. Messages older than this are cleaned up. Default is 300000 (5 minutes)",
+      Long.class, 300000L),
+
+  HA_REPLICATION_LOG_FLUSH("arcadedb.ha.replicationLogFlush", SCOPE.SERVER,
+      "Flush policy for replication log. Options: 'no', 'yes_full', 'yes_nometadata'. Default is 'yes_nometadata'", String.class,
+      "yes_nometadata", Set.of(new String[] { "no", "yes_full", "yes_nometadata" })),
+
   // KUBERNETES
   HA_K8S("arcadedb.ha.k8s", SCOPE.SERVER, "The server is running inside Kubernetes", Boolean.class, false),
 

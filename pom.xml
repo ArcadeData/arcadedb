@@ -145,7 +145,7 @@
         <module>package</module>
         <module>e2e</module>
         <module>load-tests</module>
-        <module>resilience</module>
+        <module>e2e-ha</module>
     </modules>
 
     <build>

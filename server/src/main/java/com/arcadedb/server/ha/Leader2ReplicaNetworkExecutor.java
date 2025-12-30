@@ -386,12 +386,17 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   }
 
   public boolean enqueueMessage(final long msgNumber, final Binary message) {
+    // Check status outside lock for fast path
     if (status == STATUS.OFFLINE)
       return false;
 
     return (boolean) executeInLock(new Callable<>() {
       @Override
       public Object call(final Object iArgument) {
+        // Double-check status inside lock to prevent race condition
+        if (status == STATUS.OFFLINE)
+          return false;
+
         // WRITE DIRECTLY TO THE MESSAGE QUEUE
         if (senderQueue.size() > 1)
           LogManager.instance()
@@ -402,14 +407,17 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
           if (status == STATUS.OFFLINE)
             return false;
 
-          // BACK-PRESSURE
+          // BACK-PRESSURE with configurable timeout
+          final long backpressureWait = server.getServer().getConfiguration()
+              .getValueAsLong(GlobalConfiguration.HA_BACKPRESSURE_MAX_WAIT);
+
           LogManager.instance()
-              .log(this, Level.WARNING, "Applying back-pressure on replicating messages to server '%s' (latency=%s buffered=%d)...",
-                  getRemoteServerName(), getLatencyStats(), senderQueue.size());
+              .log(this, Level.WARNING,
+                  "Applying back-pressure on replicating messages to server '%s' (latency=%s buffered=%d maxWait=%dms)...",
+                  getRemoteServerName(), getLatencyStats(), senderQueue.size(), backpressureWait);
           try {
-            Thread.sleep(1000);
+            Thread.sleep(backpressureWait);
           } catch (final InterruptedException e) {
-            // IGNORE IT
             Thread.currentThread().interrupt();
             throw new ReplicationException("Error on replicating to server '" + remoteServer + "'");
           }
@@ -419,15 +427,18 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
 
           if (!senderQueue.offer(message)) {
             LogManager.instance()
-                .log(this, Level.INFO, "Timeout on writing request to server '%s', setting it offline...", getRemoteServerName());
+                .log(this, Level.SEVERE,
+                    "Queue overflow for replica '%s' - removing from cluster. Manual intervention required to re-add replica.",
+                    getRemoteServerName());
 
-//            LogManager.instance().log(this, Level.INFO, "THREAD DUMP:\n%s", FileUtils.threadDump());
-
-            senderQueue.clear();
+            // DO NOT clear the queue - messages are already in the replication log (WAL semantics).
+            // Clearing would cause data inconsistency if replica reconnects later.
+            // Instead, remove the replica from cluster entirely.
             server.setReplicaStatus(remoteServer, false);
+            server.removeServer(remoteServer);
 
-            // QUEUE FULL, THE REMOTE SERVER COULD BE STUCK SOMEWHERE. REMOVE THE REPLICA
-            throw new ReplicationException("Replica '" + remoteServer + "' is not reading replication messages");
+            throw new ReplicationException(
+                "Replica '" + remoteServer + "' queue overflow - removed from cluster. Manual re-sync required.");
           }
         }
 
