@@ -23,6 +23,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.CountDownLatch;
@@ -37,6 +38,13 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
   private volatile boolean        slowDown          = true;
   private volatile boolean        reconnectTriggered = false;
 
+  @Test
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)
+  @Override
+  public void replication() throws Exception {
+    super.replication();
+  }
+
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
@@ -45,33 +53,17 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
 
   @Override
   protected void onAfterTest() {
+    // Verify hot resync was triggered
+    Awaitility.await().atMost(30, TimeUnit.SECONDS)
+        .pollInterval(1, TimeUnit.SECONDS)
+        .until(() -> hotResyncLatch.getCount() == 0);
 
-    Awaitility.await().atMost(10, TimeUnit.MINUTES)
-        .pollInterval(2, TimeUnit.SECONDS)
-        .until(() -> {
-          // Wait for the hot resync event to be received
+    // Verify full resync was NOT triggered (count should still be 1)
+    if (fullResyncLatch.getCount() == 0) {
+      throw new AssertionError("Full resync event was received but only hot resync was expected");
+    }
 
-          return hotResyncLatch.getCount() == 0;
-        });
-
-    Awaitility.await().atMost(10, TimeUnit.MINUTES)
-        .pollInterval(2, TimeUnit.SECONDS)
-        .until(() -> {
-          // Wait for the full resync event to be received
-          return fullResyncLatch.getCount() == 0;
-        });
-//    try {
-//      // Wait for hot resync event with timeout
-//      boolean hotResyncReceived = hotResyncLatch.await(30, TimeUnit.SECONDS);
-//      // Wait for full resync event with timeout
-//      boolean fullResyncReceived = fullResyncLatch.await(1, TimeUnit.SECONDS);
-//
-//      assertThat(hotResyncReceived).as("Hot resync event should have been received").isTrue();
-//      assertThat(fullResyncReceived).as("Full resync event should not have been received").isFalse();
-//    } catch (InterruptedException e) {
-//      Thread.currentThread().interrupt();
-//      fail("Test was interrupted while waiting for resync events");
-//    }
+    LogManager.instance().log(this, Level.INFO, "TEST: Hot resync verified successfully");
   }
 
   @Override
@@ -101,30 +93,26 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
             // After slowdown, trigger reconnection to test hot resync
             if (msgCount == 10 && !reconnectTriggered) {
               reconnectTriggered = true;
-              LogManager.instance().log(this, Level.INFO, "TEST: Triggering disconnect and reconnect for hot resync test...");
+              LogManager.instance().log(this, Level.INFO, "TEST: Triggering disconnect for hot resync test...");
               slowDown = false;
 
               executeAsynchronously(() -> {
                 try {
-                  Thread.sleep(2000); // Wait for current messages to finish processing and slowdown to stop
+                  // Wait a bit for current message to finish processing
+                  Thread.sleep(1000);
+
                   final ArcadeDBServer server2 = getServer(2);
-                  if (server2 != null && server2.getHA() != null) {
-                    LogManager.instance().log(this, Level.INFO, "TEST: Stopping and restarting Server 2's HA service...");
+                  if (server2 != null && server2.getHA() != null && server2.getHA().getLeader() != null) {
+                    LogManager.instance().log(this, Level.INFO, "TEST: Closing connection to trigger reconnection...");
 
-                    // Stop the HA service completely
-                    server2.getHA().stopService();
+                    // Close the channel - this will cause the next message receive to fail
+                    // and trigger automatic reconnection via the reconnect() method
+                    server2.getHA().getLeader().closeChannel();
 
-                    // Wait for clean shutdown
-                    Thread.sleep(2000);
-
-                    // Restart the HA service - this will trigger a fresh connection with proper resync protocol
-                    LogManager.instance().log(this, Level.INFO, "TEST: Restarting Server 2's HA service...");
-                    server2.getHA().startService();
-
-                    LogManager.instance().log(this, Level.INFO, "TEST: Server 2's HA service restarted successfully");
+                    LogManager.instance().log(this, Level.INFO, "TEST: Channel closed, waiting for automatic reconnection...");
                   }
                 } catch (Exception e) {
-                  LogManager.instance().log(this, Level.WARNING, "TEST: Failed to restart HA service: %s", e.getMessage());
+                  LogManager.instance().log(this, Level.WARNING, "TEST: Failed to close channel: %s", e.getMessage());
                 }
                 return null;
               });
