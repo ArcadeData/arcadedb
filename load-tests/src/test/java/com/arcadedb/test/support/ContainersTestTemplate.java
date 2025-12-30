@@ -242,7 +242,7 @@ public abstract class ContainersTestTemplate {
     logger.info("Stopping the Toxiproxy container");
     toxiproxy.stop();
 
-    deleteContainersDirectories();
+//    deleteContainersDirectories();
 
     Metrics.removeRegistry(loggingMeterRegistry);
   }
@@ -274,6 +274,77 @@ public abstract class ContainersTestTemplate {
         .peek(container -> logger.info("Stopping container {}", container.getContainerName()))
         .forEach(GenericContainer::stop);
     containers.clear();
+  }
+
+  /**
+   * Checks the health status of all containers and logs diagnostics for any that have stopped.
+   * Call this method when you suspect a container has died unexpectedly.
+   */
+  protected void diagnoseContainers() {
+    for (GenericContainer<?> container : containers) {
+      String name = container.getContainerName();
+      boolean running = container.isRunning();
+
+      if (!running) {
+        logger.error("Container {} is NOT running!", name);
+
+        try {
+          // Get container inspection info
+          var dockerClient = container.getDockerClient();
+          var info = dockerClient.inspectContainerCmd(container.getContainerId()).exec();
+
+          var state = info.getState();
+          logger.error("Container {} state: Status={}, ExitCode={}, OOMKilled={}, Error={}",
+              name,
+              state.getStatus(),
+              state.getExitCodeLong(),
+              state.getOOMKilled(),
+              state.getError());
+
+          // Log the last lines of container logs
+          String logs = container.getLogs();
+          String[] logLines = logs.split("\n");
+          int start = Math.max(0, logLines.length - 50);
+          logger.error("Last 50 log lines for container {}:", name);
+          for (int i = start; i < logLines.length; i++) {
+            logger.error("  {}", logLines[i]);
+          }
+
+        } catch (Exception e) {
+          logger.error("Failed to get diagnostics for container {}: {}", name, e.getMessage());
+        }
+      } else {
+        logger.info("Container {} is running", name);
+      }
+    }
+  }
+
+  /**
+   * Waits for a container to be healthy (running) with diagnostics on failure.
+   *
+   * @param container The container to check
+   * @param timeoutSeconds Timeout in seconds
+   * @return true if container is running, false otherwise
+   */
+  protected boolean waitForContainerHealthy(GenericContainer<?> container, int timeoutSeconds) {
+    long deadline = System.currentTimeMillis() + (timeoutSeconds * 1000L);
+
+    while (System.currentTimeMillis() < deadline) {
+      if (container.isRunning()) {
+        return true;
+      }
+      try {
+        Thread.sleep(500);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+    }
+
+    // Container not running - diagnose
+    logger.error("Container {} failed health check after {}s", container.getContainerName(), timeoutSeconds);
+    diagnoseContainers();
+    return false;
   }
 
   /**
@@ -334,9 +405,13 @@ public abstract class ContainersTestTemplate {
         .withNetwork(network)
         .withNetworkAliases(name)
         .withStartupTimeout(Duration.ofSeconds(90))
-        .withCopyToContainer(MountableFile.forHostPath("./target/databases/" + name, 0777), "/home/arcadedb/databases")
-        .withCopyToContainer(MountableFile.forHostPath("./target/replication/" + name, 0777), "/home/arcadedb/replication")
-        .withCopyToContainer(MountableFile.forHostPath("./target/logs/" + name, 0777), "/home/arcadedb/logs")
+//        .withCopyToContainer(MountableFile.forHostPath("./target/databases/" + name, 0777), "/home/arcadedb/databases")
+//        .withCopyToContainer(MountableFile.forHostPath("./target/replication/" + name, 0777), "/home/arcadedb/replication")
+//        .withCopyToContainer(MountableFile.forHostPath("./target/logs/" + name, 0777), "/home/arcadedb/logs")
+
+        .withFileSystemBind("./target/databases/" + name,  "/home/arcadedb/databases")
+        .withFileSystemBind("./target/replication/" + name,  "/home/arcadedb/replication")
+        .withFileSystemBind("./target/logs/" + name,  "/home/arcadedb/logs")
 
         .withEnv("JAVA_OPTS", String.format("""
             -Darcadedb.server.rootPassword=playwithdata
@@ -352,7 +427,7 @@ public abstract class ContainersTestTemplate {
             -Darcadedb.ha.serverList=%s
             -Darcadedb.ha.replicationQueueSize=1024
             """, name, ha, quorum, role, serverList))
-        .withEnv("ARCADEDB_OPTS_MEMORY", "-Xms8G -Xmx8G")
+        .withEnv("ARCADEDB_OPTS_MEMORY", "-Xms12G -Xmx12G")
         .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
     containers.add(container);
     return container;

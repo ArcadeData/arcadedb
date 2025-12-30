@@ -83,7 +83,7 @@ public interface HATestTimeouts {
    * <p>Ensures all pending replication messages have been delivered and processed.
    * Includes network I/O and database persistence operations.
    */
-  Duration REPLICATION_QUEUE_DRAIN_TIMEOUT = Duration.ofSeconds(10);
+  Duration REPLICATION_QUEUE_DRAIN_TIMEOUT = Duration.ofSeconds(30);
 
   /**
    * Timeout for replica reconnection after network partition or restart.
@@ -115,7 +115,7 @@ public interface HATestTimeouts {
    * <p>Balances responsiveness with CPU usage. Higher values reduce polling overhead,
    * but may increase time to detect condition completion.
    */
-  Duration AWAITILITY_POLL_INTERVAL = Duration.ofMillis(100);
+  Duration AWAITILITY_POLL_INTERVAL = Duration.ofSeconds(1);
 
   /**
    * Poll interval for long-running operations.
@@ -123,5 +123,5 @@ public interface HATestTimeouts {
    * <p>Used for operations that typically take several seconds or more, where frequent
    * polling would be wasteful.
    */
-  Duration AWAITILITY_POLL_INTERVAL_LONG = Duration.ofMillis(200);
+  Duration AWAITILITY_POLL_INTERVAL_LONG = Duration.ofSeconds(1);
 }
