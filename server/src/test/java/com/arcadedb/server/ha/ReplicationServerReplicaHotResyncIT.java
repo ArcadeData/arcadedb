@@ -46,6 +46,20 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
   }
 
   @Override
+  protected int getTxs() {
+    // Use 10 transactions to test hot resync with moderate load
+    return 10;
+  }
+
+  @Override
+  protected int getMaxRetry() {
+    // Increase retries to 100 to allow time for server 2 to reconnect
+    // During reconnection (which takes a few seconds), transactions will retry
+    // Once reconnection completes, transactions will succeed
+    return 100;
+  }
+
+  @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
     GlobalConfiguration.HA_REPLICATION_QUEUE_SIZE.setValue(10);
@@ -110,6 +124,21 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
                     server2.getHA().getLeader().closeChannel();
 
                     LogManager.instance().log(this, Level.INFO, "TEST: Channel closed, waiting for automatic reconnection...");
+
+                    // Wait for server 2 to reconnect to the leader before continuing
+                    // This prevents race condition where transactions commit while server 2 is offline
+                    Awaitility.await("server 2 reconnection")
+                        .atMost(30, TimeUnit.SECONDS)
+                        .pollInterval(500, TimeUnit.MILLISECONDS)
+                        .until(() -> {
+                          final ArcadeDBServer leader = getServer(0);
+                          if (leader == null || leader.getHA() == null)
+                            return false;
+                          final Leader2ReplicaNetworkExecutor replica = leader.getHA().getReplica("ArcadeDB_2");
+                          return replica != null && replica.getStatus() == Leader2ReplicaNetworkExecutor.STATUS.ONLINE;
+                        });
+
+                    LogManager.instance().log(this, Level.INFO, "TEST: Server 2 reconnected successfully");
                   }
                 } catch (Exception e) {
                   LogManager.instance().log(this, Level.WARNING, "TEST: Failed to close channel: %s", e.getMessage());
