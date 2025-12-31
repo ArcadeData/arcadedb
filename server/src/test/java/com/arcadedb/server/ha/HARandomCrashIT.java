@@ -183,22 +183,23 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
             LogManager.instance().log(this, getLogLevel(), "TEST: Server %s restarted (delay=%d)...", null, serverId, delay);
 
-            // Wait for replica reconnection with timeout to ensure proper recovery
+            // Wait for server to be fully ONLINE after restart
             try {
               final int finalServerId = serverId;
-              await("replica reconnection").atMost(HATestTimeouts.REPLICA_RECONNECTION_TIMEOUT)
+              await("server online after restart").atMost(HATestTimeouts.REPLICA_RECONNECTION_TIMEOUT)
                      .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL_LONG)
                      .until(() -> {
                        try {
-                         return getServer(finalServerId).getHA().getOnlineReplicas() > 0;
+                         // Check if the restarted server is ONLINE (works for both leaders and replicas)
+                         return getServer(finalServerId).getStatus() == ArcadeDBServer.Status.ONLINE;
                        } catch (Exception e) {
                          return false;
                        }
                      });
-              LogManager.instance().log(this, getLogLevel(), "TEST: Replica reconnected for server %d", null, serverId);
+              LogManager.instance().log(this, getLogLevel(), "TEST: Server %d is ONLINE after restart", null, serverId);
             } catch (Exception e) {
               LogManager.instance()
-                  .log(this, Level.WARNING, "TEST: Timeout waiting for replica reconnection on server %d", e, serverId);
+                  .log(this, Level.WARNING, "TEST: Timeout waiting for server %d to come online", e, serverId);
             }
 
             new Timer("HARandomCrashIT-DelayReset", true).schedule(new TimerTask() {
@@ -326,21 +327,33 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
     LogManager.instance().log(this, getLogLevel(), "TEST: All servers are ONLINE");
 
-    // Phase 2: Wait for cluster connectivity (each server sees all other servers as online)
+    // Phase 2: Wait for cluster connectivity (leader sees all replicas)
     await("cluster connected")
-        .atMost(Duration.ofSeconds(30))
+        .atMost(Duration.ofSeconds(60))
         .pollInterval(Duration.ofSeconds(1))
         .until(() -> {
-          final int expectedReplicas = getServerCount() - 1;
-          for (int i = 0; i < getServerCount(); i++) {
-            final int onlineReplicas = getServer(i).getHA().getOnlineReplicas();
-            if (onlineReplicas < expectedReplicas) {
-              LogManager.instance().log(this, getLogLevel(),
-                  "TEST: Server %d sees only %d/%d replicas online", i, onlineReplicas, expectedReplicas);
+          try {
+            // Get current leader (handles dynamic leader election after chaos)
+            final ArcadeDBServer leader = getLeaderServer();
+            if (leader == null || leader.getHA() == null) {
+              LogManager.instance().log(this, getLogLevel(), "TEST: No leader elected yet");
               return false;
             }
+
+            final int expectedReplicas = getServerCount() - 1;
+            final int onlineReplicas = leader.getHA().getOnlineReplicas();
+            if (onlineReplicas < expectedReplicas) {
+              LogManager.instance().log(this, getLogLevel(),
+                  "TEST: Leader %s sees only %d/%d replicas online",
+                  leader.getServerName(), onlineReplicas, expectedReplicas);
+              return false;
+            }
+            return true;
+          } catch (Exception e) {
+            LogManager.instance().log(this, getLogLevel(),
+                "TEST: Error checking cluster connectivity: %s", e.getMessage());
+            return false;
           }
-          return true;
         });
 
     LogManager.instance().log(this, getLogLevel(), "TEST: Cluster fully connected and stabilized");
