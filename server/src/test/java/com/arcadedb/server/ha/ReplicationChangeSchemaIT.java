@@ -260,24 +260,12 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
   }
 
   private void waitForReplicationQueueDrain() {
-    // Wait for leader's replication queue to drain
-    Awaitility.await("leader replication queue drain")
-        .atMost(HATestTimeouts.REPLICATION_QUEUE_DRAIN_TIMEOUT)
-        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL_LONG)
-        .until(() -> getServer(0).getHA().getReplicationLogFile().getSize() == 0);
-
-    // Wait for all replicas' replication queues to drain
-    Awaitility.await("all replicas queue drain")
-        .atMost(HATestTimeouts.REPLICATION_QUEUE_DRAIN_TIMEOUT)
-        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL_LONG)
-        .until(() -> {
-          for (int i = 1; i < getServerCount(); i++) {
-            if (getServer(i).getHA().getReplicationLogFile().getSize() > 0) {
-              return false;
-            }
-          }
-          return true;
-        });
+    // Wait for all servers (leader + replicas) to complete replication
+    // Uses the proven pattern from BaseGraphServerTest that checks getMessagesInQueue()
+    // instead of getReplicationLogFile().getSize() (which never becomes 0)
+    for (int i = 0; i < getServerCount(); i++) {
+      waitForReplicationIsCompleted(i);
+    }
   }
 
   private void testOnAllServers(final Callable<String, Database> callback) {
