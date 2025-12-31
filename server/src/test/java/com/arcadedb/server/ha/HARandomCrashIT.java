@@ -305,6 +305,47 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
     LogManager.instance().log(this, getLogLevel(), "Done, restarted %d times", null, restarts);
 
+    // Wait for cluster to fully stabilize after chaos
+    // This prevents verification from running while servers are still recovering
+    LogManager.instance().log(this, getLogLevel(), "TEST: Waiting for cluster to stabilize...");
+
+    // Phase 1: Wait for all servers to be fully ONLINE
+    await("all servers online")
+        .atMost(Duration.ofSeconds(30))
+        .pollInterval(Duration.ofSeconds(1))
+        .until(() -> {
+          for (int i = 0; i < getServerCount(); i++) {
+            if (getServer(i).getStatus() != ArcadeDBServer.Status.ONLINE) {
+              LogManager.instance().log(this, getLogLevel(),
+                  "TEST: Server %d not yet ONLINE (status=%s)", i, getServer(i).getStatus());
+              return false;
+            }
+          }
+          return true;
+        });
+
+    LogManager.instance().log(this, getLogLevel(), "TEST: All servers are ONLINE");
+
+    // Phase 2: Wait for cluster connectivity (each server sees all other servers as online)
+    await("cluster connected")
+        .atMost(Duration.ofSeconds(30))
+        .pollInterval(Duration.ofSeconds(1))
+        .until(() -> {
+          final int expectedReplicas = getServerCount() - 1;
+          for (int i = 0; i < getServerCount(); i++) {
+            final int onlineReplicas = getServer(i).getHA().getOnlineReplicas();
+            if (onlineReplicas < expectedReplicas) {
+              LogManager.instance().log(this, getLogLevel(),
+                  "TEST: Server %d sees only %d/%d replicas online", i, onlineReplicas, expectedReplicas);
+              return false;
+            }
+          }
+          return true;
+        });
+
+    LogManager.instance().log(this, getLogLevel(), "TEST: Cluster fully connected and stabilized");
+
+    // Phase 3: Wait for replication to complete (existing logic)
     for (int i = 0; i < getServerCount(); i++)
       waitForReplicationIsCompleted(i);
 
