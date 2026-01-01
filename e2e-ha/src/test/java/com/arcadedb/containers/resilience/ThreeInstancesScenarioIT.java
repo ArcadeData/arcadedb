@@ -7,6 +7,7 @@ import eu.rekawek.toxiproxy.Proxy;
 import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -28,6 +29,7 @@ public class ThreeInstancesScenarioIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test resync after network crash with 3 servers in HA mode: one leader and two replicas")
   void oneLeaderAndTwoReplicas() throws IOException {

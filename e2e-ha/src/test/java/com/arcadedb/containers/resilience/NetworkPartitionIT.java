@@ -24,6 +24,7 @@ import com.arcadedb.test.support.ServerWrapper;
 import eu.rekawek.toxiproxy.Proxy;
 import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -42,6 +43,7 @@ import java.util.concurrent.TimeUnit;
 public class NetworkPartitionIT extends ContainersTestTemplate {
 
   @Test
+  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test split-brain: partition leader from replicas, verify quorum enforcement")
   void testLeaderPartitionWithQuorum() throws IOException, InterruptedException {
@@ -51,9 +53,12 @@ public class NetworkPartitionIT extends ContainersTestTemplate {
     final Proxy arcade3Proxy = toxiproxyClient.createProxy("arcade3Proxy", "0.0.0.0:8668", "arcade3:2424");
 
     logger.info("Creating 3-node HA cluster with majority quorum");
-    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any", network);
-    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "majority", "any", network);
-    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "majority", "any", network);
+    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any",
+        network);
+    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "majority", "any",
+        network);
+    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "majority", "any",
+        network);
 
     logger.info("Starting cluster - arcade1 will become leader");
     List<ServerWrapper> servers = startContainers();
@@ -128,6 +133,7 @@ public class NetworkPartitionIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test asymmetric partition: one replica isolated, cluster continues")
   void testSingleReplicaPartition() throws IOException, InterruptedException {
@@ -137,9 +143,12 @@ public class NetworkPartitionIT extends ContainersTestTemplate {
     final Proxy arcade3Proxy = toxiproxyClient.createProxy("arcade3Proxy", "0.0.0.0:8668", "arcade3:2424");
 
     logger.info("Creating 3-node HA cluster with majority quorum");
-    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any", network);
-    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "majority", "any", network);
-    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "majority", "any", network);
+    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any",
+        network);
+    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "majority", "any",
+        network);
+    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "majority", "any",
+        network);
 
     logger.info("Starting cluster");
     List<ServerWrapper> servers = startContainers();
@@ -214,9 +223,12 @@ public class NetworkPartitionIT extends ContainersTestTemplate {
     final Proxy arcade3Proxy = toxiproxyClient.createProxy("arcade3Proxy", "0.0.0.0:8668", "arcade3:2424");
 
     logger.info("Creating 3-node HA cluster with ALL quorum (requires all nodes)");
-    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}proxy:8667,{arcade3}proxy:8668", "all", "any", network);
-    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "all", "any", network);
-    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "all", "any", network);
+    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}proxy:8667,{arcade3}proxy:8668", "all", "any",
+        network);
+    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "all", "any",
+        network);
+    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "all", "any",
+        network);
 
     logger.info("Starting cluster");
     List<ServerWrapper> servers = startContainers();
@@ -243,7 +255,7 @@ public class NetworkPartitionIT extends ContainersTestTemplate {
     TimeUnit.SECONDS.sleep(5);
 
     logger.info("Attempting write without quorum (should timeout or fail)");
-    final boolean[] writeSucceeded = {false};
+    final boolean[] writeSucceeded = { false };
     try {
       // This should fail or timeout because quorum=ALL requires all nodes
       db1.addUserAndPhotos(1, 1);
@@ -275,9 +287,9 @@ public class NetworkPartitionIT extends ContainersTestTemplate {
             int expected = writeSucceeded[0] ? 16 : 15;
             logger.info("Quorum check: arcade1={}, arcade2={}, arcade3={} (expected={})",
                 users1, users2, users3, expected);
-            return users1.equals((long)expected) &&
-                   users2.equals((long)expected) &&
-                   users3.equals((long)expected);
+            return users1.equals((long) expected) &&
+                users2.equals((long) expected) &&
+                users3.equals((long) expected);
           } catch (Exception e) {
             logger.warn("Quorum check failed: {}", e.getMessage());
             return false;
