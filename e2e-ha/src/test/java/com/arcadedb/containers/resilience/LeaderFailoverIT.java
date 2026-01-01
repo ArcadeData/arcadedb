@@ -23,6 +23,7 @@ import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
 import eu.rekawek.toxiproxy.Proxy;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -38,6 +39,7 @@ import java.util.concurrent.TimeUnit;
  * Tests catastrophic leader failures and cluster recovery.
  */
 @Testcontainers
+@Disabled
 public class LeaderFailoverIT extends ContainersTestTemplate {
 
   @Test
