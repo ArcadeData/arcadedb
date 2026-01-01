@@ -28,6 +28,9 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   public float                    neighborOverflowFactor = 1.2f;
   public float                    alphaDiversityRelaxation = 1.2f;
   public String                   idPropertyName     = "id";
+  public int                      locationCacheSize  = -1;  // -1 = use global default
+  public int                      graphBuildCacheSize = -1; // -1 = use global default
+  public int                      mutationsBeforeRebuild = -1; // -1 = use global default
 
   public LSMVectorIndexMetadata(final String typeName, final String[] propertyNames, final int bucketId) {
     super(typeName, propertyNames, bucketId);
@@ -60,5 +63,14 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
 
     if (metadata.has("idPropertyName"))
       this.idPropertyName = metadata.getString("idPropertyName");
+
+    if (metadata.has("locationCacheSize"))
+      this.locationCacheSize = metadata.getInt("locationCacheSize");
+
+    if (metadata.has("graphBuildCacheSize"))
+      this.graphBuildCacheSize = metadata.getInt("graphBuildCacheSize");
+
+    if (metadata.has("mutationsBeforeRebuild"))
+      this.mutationsBeforeRebuild = metadata.getInt("mutationsBeforeRebuild");
   }
 }
