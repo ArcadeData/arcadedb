@@ -188,6 +188,5 @@ Have fun with data!
 
 The ArcadeDB Team
 
----
-
-#### TL;DR: [ArcadeDB](https://arcadedb.com) is an open-source multi-model NoSQL database systems.
+## Stargazers over time
+[![Stargazers over time](https://starchart.cc/ArcadeData/arcadedb.svg?variant=adaptive)](https://starchart.cc/ArcadeData/arcadedb)
