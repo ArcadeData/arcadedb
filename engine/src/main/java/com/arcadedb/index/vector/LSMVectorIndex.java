@@ -117,10 +117,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private final AtomicInteger           mutationsSinceSerialize;
 
   // Thresholds for graph state transitions
-  // Phase 5+: Set to 100 for good balance between performance and freshness
   // Note: JVector's addGraphNode() is meant for pre-build additions, not post-build incremental updates
   // Therefore we use periodic rebuilds which amortize cost over many operations (10x better than rebuild-on-every-search)
-  private static final int MUTATIONS_BEFORE_SERIALIZE = 100;  // Rebuild graph after N mutations
+  // Mutation threshold is now configurable via metadata.mutationsBeforeRebuild or GlobalConfiguration
 
   // Compaction support
   private final AtomicInteger           currentMutablePages;
@@ -285,7 +284,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       this.metadata.idPropertyName = idPropertyName;
 
       this.lock = new ReentrantReadWriteLock();
-      this.vectorIndex = new VectorLocationIndex();
+      this.vectorIndex = new VectorLocationIndex(getLocationCacheSize(database));
       this.ordinalToVectorId = new int[0];
       this.nextId = new AtomicInteger(0);
       this.status = new AtomicReference<>(INDEX_STATUS.AVAILABLE);
@@ -330,7 +329,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     this.metadata = new LSMVectorIndexMetadata(null, new String[0], -1);
     this.lock = new ReentrantReadWriteLock();
-    this.vectorIndex = new VectorLocationIndex();
+    this.vectorIndex = new VectorLocationIndex(getLocationCacheSize(database));
     this.ordinalToVectorId = new int[0];
     this.nextId = new AtomicInteger(0);
     this.status = new AtomicReference<>(INDEX_STATUS.AVAILABLE);
@@ -933,9 +932,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
         return;
       }
 
+      final int graphBuildCacheSize = getGraphBuildCacheSize();
       LogManager.instance().log(this, Level.INFO,
-          "Building graph with %d vectors using property '%s' (cache enabled for performance)",
-          filteredVectorIds.length, vectorProp);
+          "Building graph with %d vectors using property '%s' (cache enabled: size=%d)",
+          filteredVectorIds.length, vectorProp, graphBuildCacheSize);
 
       // Create lazy-loading vector values that reads vectors from documents or index pages (if quantized)
       vectors = new ArcadePageVectorValues(
@@ -944,7 +944,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
           vectorProp,
           vectorLocationSnapshot,  // Use immutable snapshot
           finalActiveVectorIds,
-          this  // Pass LSM index reference for quantization support
+          this,  // Pass LSM index reference for quantization support
+          graphBuildCacheSize  // Pass configurable cache size
       );
 
       // Mark that graph building is in progress to prevent new inserts
@@ -1109,11 +1110,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (graphState != GraphState.MUTABLE)
       return;
 
-    if (mutationsSinceSerialize.get() < MUTATIONS_BEFORE_SERIALIZE)
+    if (mutationsSinceSerialize.get() < getMutationsBeforeRebuild())
       return; // Not enough mutations yet
 
     LogManager.instance().log(this, Level.INFO,
-        "Rebuilding graph after " + mutationsSinceSerialize.get() + " mutations (index: " + indexName + ")");
+        "Rebuilding graph after " + mutationsSinceSerialize.get() + " mutations (threshold: " + getMutationsBeforeRebuild() + ", index: " + indexName + ")");
 
     try {
       // Rebuild graph from current vectorIndex state
@@ -3026,6 +3027,210 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   protected void rebuildGraphAfterCompaction() {
     initializeGraphIndex();
+  }
+
+  /**
+   * Get the location cache size from configuration (per-index metadata or global default).
+   *
+   * @return Maximum number of vector locations to cache, or -1 for unlimited
+   */
+  private int getLocationCacheSize() {
+    if (metadata != null && metadata.locationCacheSize > -1) {
+      return metadata.locationCacheSize;
+    }
+    return mutable.getDatabase().getConfiguration()
+        .getValueAsInteger(com.arcadedb.GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE);
+  }
+
+  /**
+   * Get the location cache size from configuration during initialization.
+   * Used when mutable is not yet initialized.
+   *
+   * @param database The database instance
+   *
+   * @return Maximum number of vector locations to cache, or -1 for unlimited
+   */
+  private int getLocationCacheSize(final DatabaseInternal database) {
+    if (metadata != null && metadata.locationCacheSize > -1) {
+      return metadata.locationCacheSize;
+    }
+    return database.getConfiguration()
+        .getValueAsInteger(com.arcadedb.GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE);
+  }
+
+  /**
+   * Get the graph build cache size from configuration (per-index metadata or global default).
+   *
+   * @return Maximum number of vectors to cache during graph building
+   */
+  private int getGraphBuildCacheSize() {
+    if (metadata != null && metadata.graphBuildCacheSize > -1) {
+      return metadata.graphBuildCacheSize;
+    }
+    return mutable.getDatabase().getConfiguration()
+        .getValueAsInteger(com.arcadedb.GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE);
+  }
+
+  /**
+   * Get the mutations before rebuild threshold from configuration (per-index metadata or global default).
+   *
+   * @return Number of mutations before rebuilding graph index
+   */
+  private int getMutationsBeforeRebuild() {
+    if (metadata != null && metadata.mutationsBeforeRebuild > 0) {
+      return metadata.mutationsBeforeRebuild;
+    }
+    return mutable.getDatabase().getConfiguration()
+        .getValueAsInteger(com.arcadedb.GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD);
+  }
+
+  /**
+   * Get a vector location by ID, with fallback to page scanning if evicted from cache.
+   * This method provides transparent cache miss handling for bounded location caches.
+   *
+   * @param vectorId The vector ID to look up
+   *
+   * @return The vector location, or null if not found
+   */
+  private VectorLocationIndex.VectorLocation getVectorLocation(final int vectorId) {
+    // Try cache first (O(1) lookup)
+    VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
+    if (loc != null) {
+      return loc;
+    }
+
+    // Cache miss - reconstruct by scanning pages (expensive but rare for LRU cache)
+    loc = reconstructLocationFromPages(vectorId);
+    if (loc != null) {
+      // Add back to cache for future access
+      vectorIndex.addOrUpdate(vectorId, loc.isCompacted, loc.absoluteFileOffset, loc.rid, loc.deleted);
+    }
+    return loc;
+  }
+
+  /**
+   * Reconstruct a vector location from pages when evicted from cache.
+   * Scans compacted index first (more likely for old vectors), then mutable index.
+   *
+   * @param vectorId The vector ID to find
+   *
+   * @return The reconstructed location, or null if not found
+   */
+  private VectorLocationIndex.VectorLocation reconstructLocationFromPages(final int vectorId) {
+    // Scan compacted index first (more likely to contain old vectors)
+    if (compactedSubIndex != null) {
+      final VectorLocationIndex.VectorLocation loc = scanPagesForVectorId(compactedSubIndex.getFileId(),
+          compactedSubIndex.getTotalPages(), vectorId, true);
+      if (loc != null)
+        return loc;
+    }
+
+    // Scan mutable index
+    return scanPagesForVectorId(mutable.getFileId(), mutable.getTotalPages(), vectorId, false);
+  }
+
+  /**
+   * Scan pages in a specific file to find a vector by ID.
+   * Similar to loadVectorsFromFile() but stops at first match.
+   *
+   * @param fileId      The file ID to scan
+   * @param totalPages  Number of pages in the file
+   * @param vectorId    The vector ID to find
+   * @param isCompacted True if scanning compacted file
+   *
+   * @return The vector location if found, null otherwise
+   */
+  private VectorLocationIndex.VectorLocation scanPagesForVectorId(final int fileId, final int totalPages,
+      final int vectorId, final boolean isCompacted) {
+    for (int pageNum = 0; pageNum < totalPages; pageNum++) {
+      try {
+        final BasePage currentPage = mutable.getDatabase().getPageManager().getImmutablePage(
+            new PageId(mutable.getDatabase(), fileId, pageNum), getPageSize(), false, false);
+
+        if (currentPage == null)
+          continue;
+
+        final int offsetFreeContent = currentPage.readInt(OFFSET_FREE_CONTENT);
+        final int numberOfEntries = currentPage.readInt(OFFSET_NUM_ENTRIES);
+
+        if (numberOfEntries == 0)
+          continue;
+
+        // Calculate header size
+        final int headerSize;
+        if (isCompacted && pageNum == 0) {
+          headerSize = HEADER_BASE_SIZE + (4 * 4); // base + 4 ints for metadata
+        } else {
+          headerSize = HEADER_BASE_SIZE;
+        }
+
+        // Calculate absolute file offset for this page's data
+        final long pageBaseOffset = ((long) fileId << 32) | (pageNum * getPageSize());
+
+        // Parse entries in this page
+        int entryOffset = headerSize;
+        for (int i = 0; i < numberOfEntries && entryOffset < offsetFreeContent; i++) {
+          final long entryFileOffset = pageBaseOffset + entryOffset;
+          final int id = currentPage.readInt(entryOffset);
+          entryOffset += 4;
+
+          // Check if this is the vector we're looking for
+          if (id == vectorId) {
+            // Found it! Read the rest of the entry
+            final int bucketId = currentPage.readInt(entryOffset);
+            entryOffset += 4;
+            final long position = currentPage.readLong(entryOffset);
+            entryOffset += 8;
+            final RID rid = new RID(mutable.getDatabase(), bucketId, position);
+
+            final byte flags = currentPage.readByte(entryOffset);
+            entryOffset += 1;
+            final boolean deleted = (flags & 0x01) != 0;
+
+            // Skip vector data (if present)
+            // Entry format: id(4) + bucketId(4) + position(8) + flags(1) + [quantized data]
+            // We don't need to read the vector data, just return the location
+
+            return new VectorLocationIndex.VectorLocation(isCompacted, entryFileOffset, rid, deleted);
+          }
+
+          // Skip to next entry: bucketId(4) + position(8) + flags(1) + vector data
+          entryOffset += 4 + 8 + 1;
+
+          // Skip quantized vector data if present
+          if (metadata.quantizationType != VectorQuantizationType.NONE) {
+            final int quantizedSize = calculateQuantizedSize(metadata.dimensions, metadata.quantizationType);
+            entryOffset += quantizedSize;
+          }
+        }
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Error scanning page %d in file %d for vectorId %d: %s",
+            pageNum, fileId, vectorId, e.getMessage());
+      }
+    }
+
+    return null; // Not found in this file
+  }
+
+  /**
+   * Calculate the size of quantized vector data in bytes.
+   *
+   * @param dimensions       Number of vector dimensions
+   * @param quantizationType Type of quantization
+   *
+   * @return Size in bytes
+   */
+  private int calculateQuantizedSize(final int dimensions, final VectorQuantizationType quantizationType) {
+    switch (quantizationType) {
+    case INT8:
+      return dimensions; // 1 byte per dimension
+    case BINARY:
+      return (dimensions + 7) / 8; // 1 bit per dimension, rounded up to bytes
+    case NONE:
+    default:
+      return 0;
+    }
   }
 
   private void checkIsValid() {

@@ -37,6 +37,69 @@ import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 public class ArcadePageVectorValues implements RandomAccessVectorValues {
   private static final VectorTypeSupport vts = VectorizationProvider.getInstance().getVectorTypeSupport();
 
+  /**
+   * Bounded LFU (Least Frequently Used) cache for vector data during graph building.
+   * Tracks access frequency and evicts least-frequently-used entries when full.
+   * Better than LRU for graph building because vectors are accessed many times during HNSW construction.
+   */
+  private static class BoundedVectorCache {
+    private final java.util.concurrent.ConcurrentHashMap<Integer, CacheEntry> cache;
+    private final int maxSize;
+
+    private static class CacheEntry {
+      final VectorFloat<?> vector;
+      final java.util.concurrent.atomic.AtomicInteger accessCount;
+
+      CacheEntry(final VectorFloat<?> vector) {
+        this.vector = vector;
+        this.accessCount = new java.util.concurrent.atomic.AtomicInteger(1);
+      }
+    }
+
+    public BoundedVectorCache(final int maxSize) {
+      this.maxSize = maxSize;
+      this.cache = new java.util.concurrent.ConcurrentHashMap<>(Math.min(maxSize, 16));
+    }
+
+    public VectorFloat<?> get(final int vectorId) {
+      final CacheEntry entry = cache.get(vectorId);
+      if (entry != null) {
+        entry.accessCount.incrementAndGet();
+        return entry.vector;
+      }
+      return null;
+    }
+
+    public void put(final int vectorId, final VectorFloat<?> vector) {
+      if (cache.size() >= maxSize) {
+        evictLeastFrequentlyUsed();
+      }
+      cache.put(vectorId, new CacheEntry(vector));
+    }
+
+    private void evictLeastFrequentlyUsed() {
+      // Find entry with lowest access count
+      java.util.Map.Entry<Integer, CacheEntry> minEntry = null;
+      int minCount = Integer.MAX_VALUE;
+
+      for (final java.util.Map.Entry<Integer, CacheEntry> entry : cache.entrySet()) {
+        final int count = entry.getValue().accessCount.get();
+        if (count < minCount) {
+          minCount = count;
+          minEntry = entry;
+        }
+      }
+
+      if (minEntry != null) {
+        cache.remove(minEntry.getKey());
+      }
+    }
+
+    public int size() {
+      return cache.size();
+    }
+  }
+
   private final DatabaseInternal                                           database;
   private final int                                                        dimensions;
   private final String                                                     vectorPropertyName;
@@ -46,7 +109,8 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   private final LSMVectorIndex                                             lsmIndex;         // Used for reading quantized vectors
 
   // Cache for graph building - dramatically speeds up repeated vector access
-  private final java.util.concurrent.ConcurrentHashMap<Integer, VectorFloat<?>> vectorCache;
+  // Bounded LFU cache to prevent unbounded memory growth during graph construction
+  private final BoundedVectorCache vectorCache;
 
   // Constructor for live reads (uses shared vectorIndex, no cache needed)
   public ArcadePageVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
@@ -70,13 +134,20 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   // Constructor for graph building (uses immutable snapshot + cache for performance)
   public ArcadePageVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
       final java.util.Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot, final int[] ordinalToVectorId) {
-    this(database, dimensions, vectorPropertyName, vectorSnapshot, ordinalToVectorId, null);
+    this(database, dimensions, vectorPropertyName, vectorSnapshot, ordinalToVectorId, null, 10000);
   }
 
   // Constructor for graph building with LSM index reference (for quantization support)
   public ArcadePageVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
       final java.util.Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot, final int[] ordinalToVectorId,
       final LSMVectorIndex lsmIndex) {
+    this(database, dimensions, vectorPropertyName, vectorSnapshot, ordinalToVectorId, lsmIndex, 10000);
+  }
+
+  // Constructor for graph building with configurable cache size
+  public ArcadePageVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
+      final java.util.Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot, final int[] ordinalToVectorId,
+      final LSMVectorIndex lsmIndex, final int cacheSize) {
     this.database = database;
     this.dimensions = dimensions;
     this.vectorPropertyName = vectorPropertyName;
@@ -84,7 +155,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     this.vectorSnapshot = vectorSnapshot;
     this.ordinalToVectorId = ordinalToVectorId;
     this.lsmIndex = lsmIndex;
-    this.vectorCache = new java.util.concurrent.ConcurrentHashMap<>(); // Cache for graph building (vectors accessed many times)
+    this.vectorCache = new BoundedVectorCache(cacheSize); // Bounded LFU cache for graph building
   }
 
   @Override

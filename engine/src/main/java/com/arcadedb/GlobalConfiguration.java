@@ -290,6 +290,27 @@ public enum GlobalConfiguration {
   INDEX_COMPACTION_MIN_PAGES_SCHEDULE("arcadedb.indexCompactionMinPagesSchedule", SCOPE.DATABASE,
       "Minimum number of mutable pages for an index to be schedule for automatic compaction. 0 = disabled", Integer.class, 10),
 
+  VECTOR_INDEX_LOCATION_CACHE_SIZE("arcadedb.vectorIndex.locationCacheSize", SCOPE.DATABASE,
+      "Maximum number of vector locations to cache in memory per vector index. " +
+      "Set to -1 for unlimited (backward compatible). " +
+      "Each entry uses ~56 bytes. Recommended: 100000 for datasets with 1M+ vectors (~5.6MB), " +
+      "-1 for smaller datasets.",
+      Integer.class, -1),
+
+  VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE("arcadedb.vectorIndex.graphBuildCacheSize", SCOPE.DATABASE,
+      "Maximum number of vectors to cache in memory during HNSW graph building. " +
+      "Higher values speed up construction but use more RAM. " +
+      "RAM usage = cacheSize * (dimensions * 4 + 64) bytes. " +
+      "Recommended: 10000 for 768-dim vectors (~30MB), scale based on dimensionality.",
+      Integer.class, 10000),
+
+  VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD("arcadedb.vectorIndex.mutationsBeforeRebuild", SCOPE.DATABASE,
+      "Number of mutations (inserts/updates/deletes) before rebuilding the HNSW graph index. " +
+      "Higher values reduce rebuild cost but may return slightly stale results in queries. " +
+      "Lower values provide fresher results but rebuild more frequently. " +
+      "Recommended: 50-200 for read-heavy, 200-500 for write-heavy workloads.",
+      Integer.class, 100),
+
   // NETWORK
   NETWORK_SAME_SERVER_ERROR_RETRIES("arcadedb.network.sameServerErrorRetry", SCOPE.SERVER,
       "Number of automatic retries in case of IO errors with a specific server. If replica servers are configured, look also at HA_ERROR_RETRY setting. 0 (default) = no retry",

@@ -20,6 +20,7 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.database.RID;
 
+import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.stream.*;
@@ -36,8 +37,9 @@ import java.util.stream.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class VectorLocationIndex {
-  private final ConcurrentHashMap<Integer, VectorLocation> locations;
-  private final AtomicInteger                              nextId;
+  private final Map<Integer, VectorLocation> locations;
+  private final AtomicInteger                nextId;
+  private final int                          maxSize;
 
   /**
    * Represents the physical location of a vector on disk.
@@ -58,13 +60,45 @@ public class VectorLocationIndex {
     }
   }
 
+  /**
+   * Create an unlimited VectorLocationIndex (backward compatible).
+   */
   public VectorLocationIndex() {
-    this.locations = new ConcurrentHashMap<>();
-    this.nextId = new AtomicInteger(0);
+    this(-1, 16);
   }
 
-  public VectorLocationIndex(final int initialCapacity) {
-    this.locations = new ConcurrentHashMap<>(initialCapacity);
+  /**
+   * Create a VectorLocationIndex with a specific maximum size.
+   *
+   * @param maxSize Maximum number of entries to cache. Set to -1 for unlimited (backward compatible).
+   *                When the limit is reached, least-recently-used entries are evicted automatically.
+   */
+  public VectorLocationIndex(final int maxSize) {
+    this(maxSize, 16);
+  }
+
+  /**
+   * Create a VectorLocationIndex with a specific maximum size and initial capacity.
+   *
+   * @param maxSize         Maximum number of entries to cache. Set to -1 for unlimited (backward compatible).
+   * @param initialCapacity Initial capacity hint for the underlying map
+   */
+  public VectorLocationIndex(final int maxSize, final int initialCapacity) {
+    this.maxSize = maxSize;
+    if (maxSize > 0) {
+      // Bounded LRU cache with automatic eviction
+      this.locations = Collections.synchronizedMap(
+          new LinkedHashMap<Integer, VectorLocation>(initialCapacity, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(final Map.Entry<Integer, VectorLocation> eldest) {
+              return size() > maxSize;
+            }
+          }
+      );
+    } else {
+      // Unlimited mode (backward compatible)
+      this.locations = new ConcurrentHashMap<>(initialCapacity);
+    }
     this.nextId = new AtomicInteger(0);
   }
 
