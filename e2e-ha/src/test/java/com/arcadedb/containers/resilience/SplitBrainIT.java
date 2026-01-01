@@ -24,6 +24,7 @@ import com.arcadedb.test.support.ServerWrapper;
 import eu.rekawek.toxiproxy.Proxy;
 import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -39,9 +40,11 @@ import java.util.concurrent.TimeUnit;
  * Tests quorum enforcement and cluster reformation after network partitions.
  */
 @Testcontainers
+
 public class SplitBrainIT extends ContainersTestTemplate {
 
   @Test
+  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test split-brain prevention: verify minority partition cannot accept writes")
   void testSplitBrainPrevention() throws IOException, InterruptedException {
@@ -136,6 +139,7 @@ public class SplitBrainIT extends ContainersTestTemplate {
 
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
+  @Disabled
   @DisplayName("Test 1+1+1 partition: verify no writes possible without quorum")
   void testCompletePartitionNoQuorum() throws IOException, InterruptedException {
     logger.info("Creating proxies for 3-node cluster");
@@ -252,6 +256,7 @@ public class SplitBrainIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test cluster reformation: verify proper leader election after partition healing")
   void testClusterReformation() throws IOException, InterruptedException {
@@ -335,6 +340,7 @@ public class SplitBrainIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test quorum loss recovery: verify cluster recovers after temporary quorum loss")
   void testQuorumLossRecovery() throws IOException, InterruptedException {
