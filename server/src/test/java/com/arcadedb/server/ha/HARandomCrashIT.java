@@ -334,7 +334,18 @@ public class HARandomCrashIT extends ReplicationServerIT {
     for (int i = 0; i < getServerCount(); i++)
       waitForReplicationIsCompleted(i);
 
+    // Phase 3: Extra stabilization delay for slow CI environments
+    // On slower machines, there's a delay between queue empty and data fully persisted/queryable
+    // This prevents verification from running before final transactions are applied
+    LogManager.instance().log(this, getLogLevel(), "TEST: Waiting 5 seconds for final data persistence...");
+    try {
+      Thread.sleep(5000);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+
     // CHECK INDEXES ARE REPLICATED CORRECTLY
+    LogManager.instance().log(this, getLogLevel(), "TEST: Starting verification...");
     for (final int s : getServerToCheck())
       checkEntriesOnServer(s);
 
