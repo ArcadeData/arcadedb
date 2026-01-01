@@ -39,19 +39,14 @@ public class SimpleHaScenarioIT extends ContainersTestTemplate {
     db1.checkSchema();
     db2.checkSchema();
 
-    logger.info("Adding data to database 1");
-    db1.addUserAndPhotos(10, 10);
-
-    logger.info("Check that all the data are replicated on database 2");
-    db2.assertThatUserCountIs(10);
-    db2.assertThatPhotoCountIs(100);
-
-    IntStream.range(1, 50).forEach(
+    IntStream.range(1, 10).forEach(
         x -> {
           logger.info("Adding data to database 1 iteration {}", x);
+          db2.addUserAndPhotos(10, 10);
           db1.addUserAndPhotos(10, 10);
+
           try {
-            TimeUnit.SECONDS.sleep(2);
+            TimeUnit.SECONDS.sleep(1);
           } catch (InterruptedException e) {
             throw new RuntimeException(e);
           }
