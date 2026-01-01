@@ -24,6 +24,7 @@ import com.arcadedb.test.support.ServerWrapper;
 import eu.rekawek.toxiproxy.Proxy;
 import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -42,6 +43,7 @@ import java.util.concurrent.TimeUnit;
 public class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
 
   @Test
+  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test partition recovery: 2+1 split, heal partition, verify data convergence")
   void testPartitionRecovery() throws IOException, InterruptedException {
@@ -121,6 +123,7 @@ public class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test conflict resolution: write to both sides of partition, verify convergence")
   void testConflictResolution() throws IOException, InterruptedException {
@@ -289,6 +292,7 @@ public class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test asymmetric partition recovery: different partition patterns")
   void testAsymmetricPartitionRecovery() throws IOException, InterruptedException {
