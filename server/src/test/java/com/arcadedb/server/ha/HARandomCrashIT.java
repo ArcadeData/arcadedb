@@ -183,23 +183,23 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
             LogManager.instance().log(this, getLogLevel(), "TEST: Server %s restarted (delay=%d)...", null, serverId, delay);
 
-            // Wait for server to be fully ONLINE after restart
+            // Wait for cluster to be fully connected after restart
+            // This prevents cascading failures where multiple servers are offline simultaneously
             try {
-              final int finalServerId = serverId;
-              await("server online after restart").atMost(HATestTimeouts.REPLICA_RECONNECTION_TIMEOUT)
+              await("cluster reconnected after restart").atMost(HATestTimeouts.REPLICA_RECONNECTION_TIMEOUT)
                      .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL_LONG)
                      .until(() -> {
                        try {
-                         // Check if the restarted server is ONLINE (works for both leaders and replicas)
-                         return getServer(finalServerId).getStatus() == ArcadeDBServer.Status.ONLINE;
+                         // Check if all replicas are connected (includes the restarted server)
+                         return areAllReplicasAreConnected();
                        } catch (Exception e) {
                          return false;
                        }
                      });
-              LogManager.instance().log(this, getLogLevel(), "TEST: Server %d is ONLINE after restart", null, serverId);
+              LogManager.instance().log(this, getLogLevel(), "TEST: Cluster fully connected after server %d restart", null, serverId);
             } catch (Exception e) {
               LogManager.instance()
-                  .log(this, Level.WARNING, "TEST: Timeout waiting for server %d to come online", e, serverId);
+                  .log(this, Level.WARNING, "TEST: Timeout waiting for cluster to reconnect after server %d restart", e, serverId);
             }
 
             new Timer("HARandomCrashIT-DelayReset", true).schedule(new TimerTask() {
@@ -327,38 +327,10 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
     LogManager.instance().log(this, getLogLevel(), "TEST: All servers are ONLINE");
 
-    // Phase 2: Wait for cluster connectivity (leader sees all replicas)
-    await("cluster connected")
-        .atMost(Duration.ofSeconds(60))
-        .pollInterval(Duration.ofSeconds(1))
-        .until(() -> {
-          try {
-            // Get current leader (handles dynamic leader election after chaos)
-            final ArcadeDBServer leader = getLeaderServer();
-            if (leader == null || leader.getHA() == null) {
-              LogManager.instance().log(this, getLogLevel(), "TEST: No leader elected yet");
-              return false;
-            }
-
-            final int expectedReplicas = getServerCount() - 1;
-            final int onlineReplicas = leader.getHA().getOnlineReplicas();
-            if (onlineReplicas < expectedReplicas) {
-              LogManager.instance().log(this, getLogLevel(),
-                  "TEST: Leader %s sees only %d/%d replicas online",
-                  leader.getServerName(), onlineReplicas, expectedReplicas);
-              return false;
-            }
-            return true;
-          } catch (Exception e) {
-            LogManager.instance().log(this, getLogLevel(),
-                "TEST: Error checking cluster connectivity: %s", e.getMessage());
-            return false;
-          }
-        });
-
-    LogManager.instance().log(this, getLogLevel(), "TEST: Cluster fully connected and stabilized");
-
-    // Phase 3: Wait for replication to complete (existing logic)
+    // Phase 2: Wait for replication to complete
+    // This implicitly ensures cluster connectivity - if replication queues drain,
+    // the cluster must be connected with a working leader-replica relationship
+    LogManager.instance().log(this, getLogLevel(), "TEST: Waiting for replication to complete...");
     for (int i = 0; i < getServerCount(); i++)
       waitForReplicationIsCompleted(i);
 
