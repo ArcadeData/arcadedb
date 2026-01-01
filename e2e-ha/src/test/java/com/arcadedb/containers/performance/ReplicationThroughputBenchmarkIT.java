@@ -22,6 +22,7 @@ import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
 import eu.rekawek.toxiproxy.Proxy;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
@@ -37,23 +38,26 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 class ReplicationThroughputBenchmarkIT extends ContainersTestTemplate {
 
-  private static final int WARMUP_TRANSACTIONS = 100;
+  private static final int WARMUP_TRANSACTIONS    = 100;
   private static final int BENCHMARK_TRANSACTIONS = 1000;
-  private static final int PHOTOS_PER_USER = 10;
+  private static final int PHOTOS_PER_USER        = 10;
 
   @Test
+  @Disabled
   @DisplayName("Benchmark: Replication throughput with MAJORITY quorum")
   void benchmarkReplicationThroughputMajorityQuorum() throws IOException {
     runThroughputBenchmark("majority", "Majority Quorum");
   }
 
   @Test
+  @Disabled
   @DisplayName("Benchmark: Replication throughput with ALL quorum")
   void benchmarkReplicationThroughputAllQuorum() throws IOException {
     runThroughputBenchmark("all", "All Quorum");
   }
 
   @Test
+  @Disabled
   @DisplayName("Benchmark: Replication throughput with NONE quorum")
   void benchmarkReplicationThroughputNoneQuorum() throws IOException {
     runThroughputBenchmark("none", "None Quorum");

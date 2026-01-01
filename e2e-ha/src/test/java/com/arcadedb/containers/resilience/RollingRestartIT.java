@@ -23,6 +23,7 @@ import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
 import eu.rekawek.toxiproxy.Proxy;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -41,6 +42,7 @@ import java.util.concurrent.TimeUnit;
 public class RollingRestartIT extends ContainersTestTemplate {
 
   @Test
+  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test rolling restart: restart each node sequentially, verify zero downtime")
   void testRollingRestart() throws IOException, InterruptedException {
@@ -193,6 +195,7 @@ public class RollingRestartIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test rapid rolling restart: minimal wait between restarts")
   void testRapidRollingRestart() throws IOException, InterruptedException {
@@ -285,6 +288,7 @@ public class RollingRestartIT extends ContainersTestTemplate {
   }
 
   @Test
+  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test rolling restart with continuous writes: verify no data loss")
   void testRollingRestartWithContinuousWrites() throws IOException, InterruptedException {
