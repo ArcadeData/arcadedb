@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.containers.resilience;
+package com.arcadedb.containers.ha;
 
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
@@ -53,9 +53,10 @@ public class NetworkDelayIT extends ContainersTestTemplate {
     final Proxy arcade3Proxy = toxiproxyClient.createProxy("arcade3Proxy", "0.0.0.0:8668", "arcade3:2424");
 
     logger.info("Creating 3-node HA cluster");
-    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any", network);
-    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "majority", "any", network);
-    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "majority", "any", network);
+    // Include all servers in each server's list for proper proxy address resolution
+    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade1}proxy:8666,{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any", network);
+    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any", network);
+    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any", network);
 
     logger.info("Starting cluster");
     List<ServerWrapper> servers = startContainers();
@@ -129,9 +130,10 @@ public class NetworkDelayIT extends ContainersTestTemplate {
     final Proxy arcade3Proxy = toxiproxyClient.createProxy("arcade3Proxy", "0.0.0.0:8668", "arcade3:2424");
 
     logger.info("Creating 3-node HA cluster");
-    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any", network);
-    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "majority", "any", network);
-    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "majority", "any", network);
+    // Include all servers in each server's list for proper proxy address resolution
+    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade1}proxy:8666,{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any", network);
+    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any", network);
+    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any", network);
 
     logger.info("Starting cluster - arcade1 will be leader");
     List<ServerWrapper> servers = startContainers();
@@ -200,8 +202,9 @@ public class NetworkDelayIT extends ContainersTestTemplate {
     final Proxy arcade2Proxy = toxiproxyClient.createProxy("arcade2Proxy", "0.0.0.0:8667", "arcade2:2424");
 
     logger.info("Creating 2-node HA cluster");
-    createArcadeContainer("arcade1", "{arcade2}proxy:8667", "none", "any", network);
-    createArcadeContainer("arcade2", "{arcade1}proxy:8666", "none", "any", network);
+    // Include all servers in each server's list for proper proxy address resolution
+    createArcadeContainer("arcade1", "{arcade1}proxy:8666,{arcade2}proxy:8667", "none", "any", network);
+    createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade2}proxy:8667", "none", "any", network);
 
     logger.info("Starting cluster");
     List<ServerWrapper> servers = startContainers();
