@@ -251,7 +251,7 @@ public abstract class ContainersTestTemplate {
     logger.info("Deleting containers directories");
     FileUtils.deleteRecursively(Path.of("./target/databases").toFile());
     FileUtils.deleteRecursively(Path.of("./target/replication").toFile());
-    FileUtils.deleteRecursively(Path.of("./target/logs").toFile());
+    FileUtils.deleteRecursively(Path.of("./target/log").toFile());
   }
 
   private void makeContainersDirectories(String name) {
@@ -260,8 +260,8 @@ public abstract class ContainersTestTemplate {
     Path.of("./target/databases/" + name).toFile().setWritable(true, false);
     Path.of("./target/replication/" + name).toFile().mkdirs();
     Path.of("./target/replication/" + name).toFile().setWritable(true, false);
-    Path.of("./target/logs/" + name).toFile().mkdirs();
-    Path.of("./target/logs/" + name).toFile().setWritable(true, false);
+    Path.of("./target/log/" + name).toFile().mkdirs();
+    Path.of("./target/log/" + name).toFile().setWritable(true, false);
   }
 
   /**
@@ -407,11 +407,11 @@ public abstract class ContainersTestTemplate {
         .withStartupTimeout(Duration.ofSeconds(90))
         .withCopyToContainer(MountableFile.forHostPath("./target/databases/" + name, 0777), "/home/arcadedb/databases")
         .withCopyToContainer(MountableFile.forHostPath("./target/replication/" + name, 0777), "/home/arcadedb/replication")
-        .withCopyToContainer(MountableFile.forHostPath("./target/logs/" + name, 0777), "/home/arcadedb/logs")
+        .withCopyToContainer(MountableFile.forHostPath("./target/log/" + name, 0777), "/home/arcadedb/log")
 
 //        .withFileSystemBind("./target/databases/" + name,  "/home/arcadedb/databases")
 //        .withFileSystemBind("./target/replication/" + name,  "/home/arcadedb/replication")
-//        .withFileSystemBind("./target/logs/" + name,  "/home/arcadedb/logs")
+//        .withFileSystemBind("./target/log/" + name,  "/home/arcadedb/log")
 
         .withEnv("JAVA_OPTS", String.format("""
             -Darcadedb.server.rootPassword=playwithdata

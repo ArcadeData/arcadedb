@@ -1,4 +1,4 @@
-package com.arcadedb.containers.resilience;
+package com.arcadedb.containers.ha;
 
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;

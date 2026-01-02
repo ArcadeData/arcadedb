@@ -109,16 +109,69 @@ public class HAServer implements ServerPlugin {
   private final   LeaderFence           leaderFence;
   private volatile long                 lastElectionStartTime       = 0;
 
-  public record ServerInfo(String host, int port, String alias) {
+  public record ServerInfo(String host, int port, String alias, String actualHost, Integer actualPort) {
+
+    /**
+     * Constructor for configured-only address (backwards compatible).
+     * This is used when we only have the configured/stable address (e.g., from server list).
+     */
+    public ServerInfo(String host, int port, String alias) {
+      this(host, port, alias, null, null);
+    }
 
     public static ServerInfo fromString(String address) {
       final String[] parts = HostUtil.parseHostAddress(address, DEFAULT_PORT);
       return new ServerInfo(parts[0], Integer.parseInt(parts[1]), parts[2]);
     }
 
+    /**
+     * Gets the host to use for network connections.
+     * Always returns the configured address (proxy address in Docker scenarios).
+     */
+    public String getConnectHost() {
+      return host;
+    }
+
+    /**
+     * Gets the port to use for network connections.
+     * Always returns the configured port (proxy port in Docker scenarios).
+     */
+    public int getConnectPort() {
+      return port;
+    }
+
+    /**
+     * Gets the actual address for informational/debugging purposes.
+     * Returns null if no actual address is tracked.
+     */
+    public String getActualAddress() {
+      if (actualHost != null && actualPort != null && actualPort > 0) {
+        return actualHost + ":" + actualPort;
+      }
+      return null;
+    }
+
+    /**
+     * Creates a new ServerInfo with updated actual address while preserving configured address.
+     */
+    public ServerInfo withActualAddress(String actualHost, int actualPort) {
+      return new ServerInfo(this.host, this.port, this.alias, actualHost, actualPort);
+    }
+
     @Override
     public String toString() {
       return "{%s}%s:%d".formatted(alias, host, port);
+    }
+
+    /**
+     * Returns a detailed string representation showing both configured and actual addresses.
+     */
+    public String toDetailedString() {
+      final String actual = getActualAddress();
+      if (actual != null && !actual.equals(host + ":" + port)) {
+        return "{%s}%s:%d (actual: %s)".formatted(alias, host, port, actual);
+      }
+      return toString();
     }
   }
 
@@ -249,11 +302,29 @@ public class HAServer implements ServerPlugin {
         configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST),
         configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS));
 
-    // Determine the server's alias by finding it in the configured server list
-    final String configuredAlias = determineServerAlias(listener.getPort());
+    // Determine the server's alias and configured address from server list
+    final Pair<String, ServerInfo> aliasAndConfigured = determineServerAliasAndAddress(listener.getPort());
+    final String configuredAlias = aliasAndConfigured.getFirst();
+    final ServerInfo configuredInfo = aliasAndConfigured.getSecond();
 
-    serverAddress = new ServerInfo(server.getHostAddress(), listener.getPort(), configuredAlias);
-    LogManager.instance().log(this, Level.INFO, "Starting HA service on %s", serverAddress);
+    // Use configured address if found (for ToxiProxy/Docker scenarios), otherwise fall back to actual address
+    if (configuredInfo != null) {
+      // Track both configured (for communication) and actual (for info/debugging)
+      serverAddress = new ServerInfo(
+          configuredInfo.host(),           // Configured proxy address (stable)
+          configuredInfo.port(),            // Configured proxy port (stable)
+          configuredAlias,
+          server.getHostAddress(),          // Actual Docker address (volatile)
+          listener.getPort()                // Actual port
+      );
+      LogManager.instance().log(this, Level.INFO, "Starting HA service: configured=%s, actual=%s:%d",
+          serverAddress, server.getHostAddress(), listener.getPort());
+    } else {
+      // No proxy configuration, use actual address only
+      serverAddress = new ServerInfo(server.getHostAddress(), listener.getPort(), configuredAlias);
+      LogManager.instance().log(this, Level.INFO, "Starting HA service on %s", serverAddress);
+    }
+
     configureCluster();
 
     if (leaderConnection.get() == null && serverRole != ServerRole.REPLICA) {
@@ -617,11 +688,37 @@ public class HAServer implements ServerPlugin {
       configuredServers = 1 + totReplicas;
 
     // Build the actual cluster membership: leader + all connected replicas
+    // IMPORTANT: Preserve configured addresses from existing cluster knowledge
     final Set<ServerInfo> currentMembers = new HashSet<>();
-    currentMembers.add(serverAddress); // Add self (the leader)
-    currentMembers.addAll(replicaConnections.keySet()); // Add all replicas
+    currentMembers.add(serverAddress); // Add self (the leader) with configured address
 
-    // Update the cluster to reflect actual membership
+    // Add replicas, preserving configured addresses if known
+    for (ServerInfo replicaInfo : replicaConnections.keySet()) {
+      // Check if we already have this server in our cluster with a configured address
+      ServerInfo serverToAdd = replicaInfo;
+      if (cluster != null) {
+        // Try to find by alias to get configured address
+        final ServerInfo configuredInfo = cluster.findByAlias(replicaInfo.alias()).orElse(null);
+        if (configuredInfo != null && !configuredInfo.host().equals(replicaInfo.host())) {
+          // We have a configured address that differs from the connection address
+          // Preserve the configured address, but update the actual address
+          serverToAdd = new ServerInfo(
+              configuredInfo.host(),      // Keep configured proxy address
+              configuredInfo.port(),       // Keep configured proxy port
+              replicaInfo.alias(),
+              replicaInfo.host(),          // Store actual connection address
+              replicaInfo.port()           // Store actual connection port
+          );
+          LogManager.instance().log(this, Level.FINE,
+              "Preserving configured address for %s: configured=%s:%d, actual=%s:%d",
+              replicaInfo.alias(), configuredInfo.host(), configuredInfo.port(),
+              replicaInfo.host(), replicaInfo.port());
+        }
+      }
+      currentMembers.add(serverToAdd);
+    }
+
+    // Update the cluster to reflect actual membership with preserved configured addresses
     cluster = new HACluster(currentMembers);
 
     sendCommandToReplicasNoLog(new UpdateClusterConfiguration(cluster));
@@ -687,10 +784,23 @@ public class HAServer implements ServerPlugin {
    * @return The alias from the server list, or SERVER_NAME as fallback
    */
   private String determineServerAlias(final int actualPort) {
+    return determineServerAliasAndAddress(actualPort).getFirst();
+  }
+
+  /**
+   * Determines the server's alias and configured address by finding itself in the server list.
+   * This ensures we use the configured proxy address rather than the Docker container address.
+   * In Docker/ToxiProxy scenarios, the configured address (e.g., proxy:8666) is stable across
+   * container restarts, while the actual Docker address (e.g., 81014e8c51c1:2424) changes.
+   *
+   * @param actualPort The actual port the server is listening on
+   * @return Pair of (alias, configured ServerInfo) or (alias, null) if not found in server list
+   */
+  private Pair<String, ServerInfo> determineServerAliasAndAddress(final int actualPort) {
     final String cfgServerList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST).trim();
     if (cfgServerList.isEmpty()) {
       // No server list configured, use SERVER_NAME
-      return server.getServerName();
+      return new Pair<>(server.getServerName(), null);
     }
 
     final Set<ServerInfo> configuredServers = parseServerList(cfgServerList);
@@ -698,6 +808,8 @@ public class HAServer implements ServerPlugin {
 
     // Try to find ourselves in the configured server list
     ServerInfo matchedServer = null;
+
+    // First, try matching by host:port
     for (ServerInfo serverInfo : configuredServers) {
       if (isMatchingServer(serverInfo, currentHost, actualPort)) {
         matchedServer = serverInfo;
@@ -705,28 +817,42 @@ public class HAServer implements ServerPlugin {
       }
     }
 
+    // Fallback: If not found by host:port, try matching by SERVER_NAME in alias
+    if (matchedServer == null) {
+      final String serverName = server.getServerName();
+      for (ServerInfo serverInfo : configuredServers) {
+        if (serverInfo.alias().equals(serverName)) {
+          matchedServer = serverInfo;
+          LogManager.instance().log(this, Level.INFO,
+              "Matched server '%s' by SERVER_NAME (alias) - configured=%s:%d, actual=%s:%d",
+              serverName, serverInfo.host(), serverInfo.port(), currentHost, actualPort);
+          break;
+        }
+      }
+    }
+
     if (matchedServer != null) {
       // Check if the alias is unique in the server list
       if (isAliasUnique(matchedServer.alias(), configuredServers)) {
         LogManager.instance().log(this, Level.INFO,
-            "Found unique server alias '%s' in configured server list for %s:%d",
-            matchedServer.alias(), currentHost, actualPort);
-        return matchedServer.alias();
+            "Found unique server alias '%s' with configured address %s:%d for actual %s:%d",
+            matchedServer.alias(), matchedServer.host(), matchedServer.port(), currentHost, actualPort);
+        return new Pair<>(matchedServer.alias(), matchedServer);
       } else {
         // Alias is not unique (e.g., all servers have "localhost" as alias)
-        // Use SERVER_NAME to ensure uniqueness
+        // Use SERVER_NAME to ensure uniqueness, but still return the configured address
         LogManager.instance().log(this, Level.WARNING,
             "Server alias '%s' from server list is not unique, using SERVER_NAME '%s' instead",
             matchedServer.alias(), server.getServerName());
-        return server.getServerName();
+        return new Pair<>(server.getServerName(), matchedServer);
       }
     }
 
-    // Fallback: not found in server list, use SERVER_NAME
+    // Fallback: not found in server list, use SERVER_NAME and no configured address
     LogManager.instance().log(this, Level.WARNING,
         "Could not find %s:%d in configured server list %s, using SERVER_NAME '%s' as alias",
         currentHost, actualPort, cfgServerList, server.getServerName());
-    return server.getServerName();
+    return new Pair<>(server.getServerName(), null);
   }
 
   /**
@@ -789,8 +915,10 @@ public class HAServer implements ServerPlugin {
 
   /**
    * Updates the cluster configuration with a new cluster received from the leader.
-   * This method merges the received cluster with the current cluster knowledge and
-   * updates the configured servers count.
+   * This method merges the received cluster with the current cluster knowledge,
+   * preserving configured addresses and our own server address.
+   * In Docker/ToxiProxy scenarios, the received cluster may have internal Docker addresses,
+   * but we want to preserve the stable configured proxy addresses.
    *
    * @param receivedCluster the new cluster configuration received from the leader
    */
@@ -803,25 +931,46 @@ public class HAServer implements ServerPlugin {
     LogManager.instance().log(this, Level.INFO, "Updating cluster configuration: current=%s, received=%s",
         cluster, receivedCluster);
 
+    // Build merged cluster: prefer configured addresses from receivedCluster,
+    // but always preserve our own serverAddress configuration
+    final Set<ServerInfo> mergedServers = new HashSet<>();
+
+    for (ServerInfo received : receivedCluster.getServers()) {
+      if (isCurrentServer(received)) {
+        // Always use our own configured address for self (don't let others overwrite it)
+        mergedServers.add(serverAddress);
+        LogManager.instance().log(this, Level.FINE,
+            "Preserving own server address: %s (received: %s)", serverAddress, received);
+      } else {
+        // For other servers, use the received configured address
+        // The received address from the leader should already be the configured one
+        mergedServers.add(received);
+      }
+    }
+
     // Check if cluster membership has changed
     final boolean clusterChanged = cluster == null ||
-        !cluster.getServers().equals(receivedCluster.getServers());
+        !cluster.getServers().equals(mergedServers);
 
     if (clusterChanged) {
       LogManager.instance().log(this, Level.INFO, "Cluster membership changed from %d to %d servers",
-          cluster != null ? cluster.clusterSize() : 0, receivedCluster.clusterSize());
+          cluster != null ? cluster.clusterSize() : 0, mergedServers.size());
 
       // Log new servers
       if (cluster != null) {
-        for (ServerInfo server : receivedCluster.getServers()) {
-          if (!cluster.getServers().contains(server)) {
+        for (ServerInfo server : mergedServers) {
+          final boolean wasPresent = cluster.getServers().stream()
+              .anyMatch(s -> s.alias().equals(server.alias()));
+          if (!wasPresent) {
             LogManager.instance().log(this, Level.INFO, "New server joined cluster: %s", server);
           }
         }
 
         // Log removed servers
         for (ServerInfo server : cluster.getServers()) {
-          if (!receivedCluster.getServers().contains(server)) {
+          final boolean stillPresent = mergedServers.stream()
+              .anyMatch(s -> s.alias().equals(server.alias()));
+          if (!stillPresent) {
             LogManager.instance().log(this, Level.INFO, "Server left cluster: %s", server);
           }
         }
@@ -830,8 +979,8 @@ public class HAServer implements ServerPlugin {
       LogManager.instance().log(this, Level.FINE, "Cluster membership unchanged");
     }
 
-    // Update cluster configuration
-    this.cluster = receivedCluster;
+    // Update cluster configuration with merged servers
+    this.cluster = new HACluster(mergedServers);
     this.configuredServers = cluster.clusterSize();
 
     LogManager.instance().log(this, Level.INFO, "Cluster configuration updated: %d servers configured",
@@ -1207,7 +1356,7 @@ public class HAServer implements ServerPlugin {
           "";
 
       line.setProperty("SERVER", getServerName());
-      line.setProperty("HOST:PORT", getServerAddress());
+      line.setProperty("HOST:PORT", getServerAddress().toDetailedString());
       line.setProperty("ROLE", "Leader");
       line.setProperty("STATUS", "ONLINE");
       line.setProperty("JOINED ON", dateFormatted);
@@ -1215,14 +1364,17 @@ public class HAServer implements ServerPlugin {
       line.setProperty("THROUGHPUT", "");
       line.setProperty("LATENCY", "");
 
-      for (final Leader2ReplicaNetworkExecutor c : replicaConnections.values()) {
+      for (final Map.Entry<ServerInfo, Leader2ReplicaNetworkExecutor> entry : replicaConnections.entrySet()) {
+        final ServerInfo replicaInfo = entry.getKey();
+        final Leader2ReplicaNetworkExecutor c = entry.getValue();
+
         line = new ResultInternal();
         list.add(new RecordTableFormatter.TableRecordRow(line));
 
         final Leader2ReplicaNetworkExecutor.STATUS status = c.getStatus();
 
-        line.setProperty("SERVER", c.getRemoteServerName());
-        line.setProperty("HOST:PORT", c.getRemoteServerAddress());
+        line.setProperty("SERVER", replicaInfo.alias());
+        line.setProperty("HOST:PORT", replicaInfo.toDetailedString());
         line.setProperty("ROLE", "Replica");
         line.setProperty("STATUS", status);
 
@@ -1258,7 +1410,7 @@ public class HAServer implements ServerPlugin {
               serverInfo.alias().equals(leaderConn.getRemoteServerName());
 
           line.setProperty("SERVER", serverInfo.alias());
-          line.setProperty("HOST:PORT", serverInfo.toString());
+          line.setProperty("HOST:PORT", serverInfo.toDetailedString());
 
           if (isLeaderServer) {
             line.setProperty("ROLE", "Leader");
@@ -1514,6 +1666,9 @@ public class HAServer implements ServerPlugin {
     channel.writeString(getServerName());
     channel.writeString(getServerAddress().toString());
     channel.writeString(server.getHttpServer().getListeningAddress());
+    // Send actual address if different from configured (for Docker/proxy scenarios)
+    final String actualAddr = serverAddress.getActualAddress();
+    channel.writeString(actualAddr != null ? actualAddr : "");
 
     channel.writeShort(commandId);
     return channel;
