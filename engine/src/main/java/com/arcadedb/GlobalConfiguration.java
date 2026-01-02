@@ -259,8 +259,10 @@ public enum GlobalConfiguration {
       Integer.class, 100),
 
   GREMLIN_ENGINE("arcadedb.gremlin.engine", SCOPE.DATABASE,
-      "Gremlin engine to use. By default the `auto` setting uses the legacy `groovy` engine in case parameters are set, otherwise, the new native `java` is preferred. If you have compatibility issues with gremlin statements that use lambdas or in general, switch to the `groovy` one",
-      String.class, "auto", Set.of("auto", "groovy", "java")),
+      "Gremlin engine to use. 'java' (default, secure) uses the native Gremlin parser - recommended for production. " +
+      "'groovy' enables the legacy Groovy engine with security restrictions (use only if needed for compatibility). " +
+      "'auto' attempts Java first, falls back to Groovy if needed (not recommended for security-critical deployments).",
+      String.class, "java", Set.of("auto", "groovy", "java")),
 
   /**
    * Not in use anymore after removing Gremlin Executor

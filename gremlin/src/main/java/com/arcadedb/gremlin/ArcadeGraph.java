@@ -48,6 +48,7 @@ import org.apache.tinkerpop.gremlin.jsr223.DefaultGremlinScriptEngineManager;
 import org.apache.tinkerpop.gremlin.jsr223.GremlinLangScriptEngine;
 import org.apache.tinkerpop.gremlin.jsr223.ImportGremlinPlugin;
 import org.apache.tinkerpop.gremlin.process.computer.GraphComputer;
+import org.codehaus.groovy.control.customizers.SecureASTCustomizer;
 import org.apache.tinkerpop.gremlin.process.traversal.AnonymousTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategies;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
@@ -512,15 +513,114 @@ public class ArcadeGraph implements Graph, Closeable {
     importPlugin.classImports(Math.class, ArcadeCustomFunctions.class, CustomPredicate.class);
     importPlugin.methodImports(List.of("java.lang.Math#*", "com.arcadedb.gremlin.ArcadeCustomFunctions#*"));
 
-    // INITIALIZE JAVA ENGINE
+    // INITIALIZE JAVA ENGINE (secure by design)
     gremlinJavaEngine = new GremlinLangScriptEngine(importPlugin.create().getCustomizers().get());
     gremlinJavaEngine.getFactory().setCustomizerManager(new DefaultGremlinScriptEngineManager());
 
-    // INITIALIZE GROOVY ENGINE
-    gremlinGroovyEngine = new GremlinGroovyScriptEngine(importPlugin.create().getCustomizers().get());
+    // INITIALIZE GROOVY ENGINE (with attempted security restrictions - STILL VULNERABLE)
+    LogManager.instance().log(this, java.util.logging.Level.WARNING,
+        "===== CRITICAL SECURITY WARNING =====\n" +
+        "Initializing Groovy Gremlin engine which is VULNERABLE to Remote Code Execution (RCE) attacks.\n" +
+        "Despite security restrictions, authenticated users can execute arbitrary OS commands.\n" +
+        "DO NOT USE GROOVY ENGINE IN PRODUCTION OR WITH UNTRUSTED USERS.\n" +
+        "Use the secure Java engine (arcadedb.gremlin.engine=java) instead.\n" +
+        "======================================");
+    gremlinGroovyEngine = createSecureGroovyEngine(importPlugin);
     gremlinGroovyEngine.getFactory().setCustomizerManager(new DefaultGremlinScriptEngineManager());
 
     serviceRegistry = new ArcadeServiceRegistry(this);
     serviceRegistry.registerService(new VectorNeighborsFactory(this));
+  }
+
+  /**
+   * Creates a Groovy engine with ATTEMPTED security restrictions to prevent RCE attacks.
+   * WARNING: Despite these restrictions, the Groovy engine remains VULNERABLE to RCE attacks.
+   * SecureASTCustomizer has inherent limitations and cannot adequately sandbox Groovy scripts.
+   * This method attempts to block dangerous classes like Runtime, ProcessBuilder, and File I/O,
+   * but these restrictions can be bypassed. DO NOT RELY ON THIS FOR SECURITY.
+   */
+  private GremlinGroovyScriptEngine createSecureGroovyEngine(final ImportGremlinPlugin.Builder importPlugin) {
+    // Create security customizer
+    final SecureASTCustomizer secureCustomizer = new SecureASTCustomizer();
+
+    // Enable indirect import checking (critical for security)
+    secureCustomizer.setIndirectImportCheckEnabled(true);
+
+    // Use whitelist approach for star imports (more secure than blacklist)
+    // Only allow safe packages to be imported with *
+    secureCustomizer.setStarImportsWhitelist(List.of());  // Block all star imports
+
+    // Whitelist only safe specific imports (empty = allow none by default, rely on java.lang auto-import)
+    secureCustomizer.setImportsWhitelist(List.of());
+
+    // Use whitelist approach for receivers - ONLY allow safe classes for method calls
+    // This is more secure than blacklist because it blocks everything except what's explicitly allowed
+    secureCustomizer.setReceiversWhiteList(List.of(
+        // Allow Gremlin/TinkerPop classes
+        "org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource",
+        "org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal",
+        "org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__",
+        "org.apache.tinkerpop.gremlin.structure.Vertex",
+        "org.apache.tinkerpop.gremlin.structure.Edge",
+        "org.apache.tinkerpop.gremlin.structure.Property",
+        "org.apache.tinkerpop.gremlin.structure.VertexProperty",
+        // Allow safe Java classes
+        "java.lang.String",
+        "java.lang.Integer",
+        "java.lang.Long",
+        "java.lang.Double",
+        "java.lang.Float",
+        "java.lang.Boolean",
+        "java.lang.Number",
+        "java.lang.Math",
+        "java.util.List",
+        "java.util.Map",
+        "java.util.Set",
+        "java.util.Collection",
+        "java.util.Iterator",
+        "java.util.stream.Stream",
+        // Allow Groovy closures
+        "groovy.lang.Closure"
+    ));
+
+    // Block dangerous class types from being used as constants/literals
+    // This blocks code like: Runtime.getRuntime() or new File("/tmp/owned")
+    final List<Class> blockedClasses = new ArrayList<>();
+    try {
+      blockedClasses.add(Runtime.class);
+      blockedClasses.add(Class.forName("java.lang.ProcessBuilder"));
+      blockedClasses.add(java.io.File.class);
+      blockedClasses.add(Class.forName("java.lang.reflect.Method"));
+      blockedClasses.add(Class.forName("java.lang.reflect.Field"));
+      blockedClasses.add(Class.forName("java.lang.reflect.Constructor"));
+      blockedClasses.add(ClassLoader.class);
+      blockedClasses.add(Class.forName("java.net.URL"));
+      blockedClasses.add(Class.forName("java.net.Socket"));
+    } catch (ClassNotFoundException e) {
+      // Class not available, skip
+    }
+    secureCustomizer.setConstantTypesClassesBlackList(blockedClasses);
+
+    // Block all static imports for security
+    secureCustomizer.setStaticStarImportsWhitelist(List.of());
+
+    // Create a compilation customizer plugin that wraps the security customizer
+    final org.apache.tinkerpop.gremlin.jsr223.Customizer securityCustomizer =
+        new org.apache.tinkerpop.gremlin.jsr223.Customizer() {
+          public org.codehaus.groovy.control.customizers.CompilationCustomizer create() {
+            return secureCustomizer;
+          }
+        };
+
+    // Add security customizer to the plugin customizers
+    final ImportGremlinPlugin securePlugin = importPlugin.create();
+    final org.apache.tinkerpop.gremlin.jsr223.Customizer[] baseCustomizers = securePlugin.getCustomizers().get();
+    final org.apache.tinkerpop.gremlin.jsr223.Customizer[] allCustomizers =
+        new org.apache.tinkerpop.gremlin.jsr223.Customizer[baseCustomizers.length + 1];
+    System.arraycopy(baseCustomizers, 0, allCustomizers, 0, baseCustomizers.length);
+    allCustomizers[baseCustomizers.length] = securityCustomizer;
+
+    // Return secured engine
+    return new GremlinGroovyScriptEngine(allCustomizers);
   }
 }

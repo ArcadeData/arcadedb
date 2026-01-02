@@ -224,7 +224,12 @@ public class ArcadeGremlin extends ArcadeQuery {
       result = gremlinEngineImpl.eval(query, bindings);
 
     } else if ("groovy".equals(gremlinEngine)) {
-      // GROOVY ENGINE
+      // GROOVY ENGINE - INSECURE, LOG WARNING
+      LogManager.instance().log(this, Level.WARNING,
+          "SECURITY WARNING: Using insecure Groovy Gremlin engine. This engine is vulnerable to Remote Code Execution (RCE) attacks. " +
+          "Authenticated users can execute arbitrary operating system commands. DO NOT USE IN PRODUCTION. " +
+          "Switch to the secure Java engine (arcadedb.gremlin.engine=java) immediately.");
+
       final GremlinGroovyScriptEngine gremlinEngineImpl = graph.getGremlinGroovyEngine();
 
       final SimpleBindings bindings = new SimpleBindings();
