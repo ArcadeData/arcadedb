@@ -196,9 +196,11 @@ public class LeaderNetworkListener extends Thread {
     final String remoteServerName = channel.readString();
     final String remoteServerAddress = channel.readString();
     final String remoteHTTPAddress = channel.readString();
+    final String remoteActualAddress = channel.readString();
     LogManager.instance().log(this, Level.INFO,
-        "Connection from serverName '%s'  - serverAddress '%s' - httpAddress '%s'",
-        remoteServerName, remoteServerAddress, remoteHTTPAddress);
+        "Connection from serverName '%s' - serverAddress '%s' - httpAddress '%s' - actualAddress '%s'",
+        remoteServerName, remoteServerAddress, remoteHTTPAddress,
+        remoteActualAddress.isEmpty() ? "same" : remoteActualAddress);
     final short command = channel.readShort();
 
     HAServer.HACluster cluster = ha.getCluster();
@@ -215,14 +217,40 @@ public class LeaderNetworkListener extends Thread {
         LogManager.instance().log(this, Level.INFO,
             "Server '%s' not found by alias, but matched by address %s:%d - updating to use alias '%s'",
             remoteServerName, parsedAddress.host(), parsedAddress.port(), remoteServerName);
-        // Update to use the actual server name as alias
-        serverInfo = Optional.of(new HAServer.ServerInfo(parsedAddress.host(), parsedAddress.port(), remoteServerName));
+        // Update to use the actual server name as alias, preserving actual address if provided
+        if (!remoteActualAddress.isEmpty()) {
+          final HAServer.ServerInfo parsedActual = HAServer.ServerInfo.fromString(remoteActualAddress);
+          serverInfo = Optional.of(new HAServer.ServerInfo(
+              parsedAddress.host(), parsedAddress.port(), remoteServerName,
+              parsedActual.host(), parsedActual.port()));
+        } else {
+          serverInfo = Optional.of(new HAServer.ServerInfo(parsedAddress.host(), parsedAddress.port(), remoteServerName));
+        }
       } else {
         LogManager.instance().log(this, Level.WARNING,
             "Server '%s' at %s not found in configured cluster %s - accepting as dynamic member",
             remoteServerName, remoteServerAddress, cluster);
-        // Accept as dynamic cluster member
-        serverInfo = Optional.of(parsedAddress);
+        // Accept as dynamic cluster member with actual address if provided
+        if (!remoteActualAddress.isEmpty()) {
+          final HAServer.ServerInfo parsedActual = HAServer.ServerInfo.fromString(remoteActualAddress);
+          serverInfo = Optional.of(new HAServer.ServerInfo(
+              parsedAddress.host(), parsedAddress.port(), remoteServerName,
+              parsedActual.host(), parsedActual.port()));
+        } else {
+          serverInfo = Optional.of(parsedAddress);
+        }
+      }
+    } else {
+      // Found by alias - preserve configured address but update actual address if provided
+      if (!remoteActualAddress.isEmpty()) {
+        final HAServer.ServerInfo existing = serverInfo.get();
+        final HAServer.ServerInfo parsedActual = HAServer.ServerInfo.fromString(remoteActualAddress);
+        serverInfo = Optional.of(new HAServer.ServerInfo(
+            existing.host(), existing.port(), existing.alias(),
+            parsedActual.host(), parsedActual.port()));
+        LogManager.instance().log(this, Level.FINE,
+            "Server '%s' found by alias - preserving configured %s:%d, tracking actual %s",
+            remoteServerName, existing.host(), existing.port(), remoteActualAddress);
       }
     }
 
