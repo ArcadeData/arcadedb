@@ -32,7 +32,7 @@ public abstract class ArcadeContainerTemplate {
         .withStartupTimeout(Duration.ofSeconds(90))
         .withEnv("JAVA_OPTS", """
             -Darcadedb.server.rootPassword=playwithdata
-            -Darcadedb.postgres.debug=true
+            -Darcadedb.postgres.debug=false
             -Darcadedb.grpc.enabled=true
             -Darcadedb.grpc.port=50051
             -Darcadedb.grpc.mode=standard
