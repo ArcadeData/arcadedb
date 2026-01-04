@@ -36,17 +36,17 @@ public class SQLFunctionOut extends SQLFunctionMoveFiltered {
 
   @Override
   protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels) {
-    return v2v(graph, iRecord, Vertex.DIRECTION.OUT, iLabels);
+    return v2v(iRecord, Vertex.DIRECTION.OUT, iLabels);
   }
 
   protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels,
       final Iterable<Identifiable> iPossibleResults) {
     if (iPossibleResults == null)
-      return v2v(graph, iRecord, Vertex.DIRECTION.OUT, iLabels);
+      return v2v(iRecord, Vertex.DIRECTION.OUT, iLabels);
 
     if (!iPossibleResults.iterator().hasNext())
       return Collections.emptyList();
 
-    return v2v(graph, iRecord, Vertex.DIRECTION.OUT, iLabels);
+    return v2v(iRecord, Vertex.DIRECTION.OUT, iLabels);
   }
 }

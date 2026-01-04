@@ -18,6 +18,7 @@
  */
 package com.arcadedb.gremlin;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.cypher.ArcadeCypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
@@ -50,8 +51,7 @@ class CypherTest {
 
       graph.getDatabase().transaction(() -> {
         for (int i = 0; i < 50; i++)
-          graph.cypher(" CREATE (n:Person {name: $1 , age: $2 }) return n", Map.of("1", "Jay", "2", i))
-              .execute();
+          graph.cypher(" CREATE (n:Person {name: $1 , age: $2 }) return n", Map.of("1", "Jay", "2", i)).execute();
       });
 
       final ResultSet result = graph.cypher("MATCH (p:Person) WHERE p.age >= $p1 RETURN p.name, p.age ORDER BY p.age")//
@@ -85,7 +85,7 @@ class CypherTest {
       graph.getDatabase().getSchema().createVertexType("Person");
 
       assertThatThrownBy(() -> graph.cypher("MATCH (p::Person) WHERE p.age >= $p1 RETURN p.name, p.age ORDER BY p.age")//
-        .setParameter("p1", 25).execute()).isInstanceOf(CommandParsingException.class);
+          .setParameter("p1", 25).execute()).isInstanceOf(CommandParsingException.class);
 
     } finally {
       graph.drop();
@@ -215,9 +215,11 @@ class CypherTest {
   /**
    * Cypher: "delete" query causes "groovy.lang.MissingMethodException" error
    * https://github.com/ArcadeData/arcadedb/issues/734
+   * This test uses Groovy engine to reproduce the issue, it does't work with the defautl java Gremlin engine (default from v25.12.1).
    */
   @Test
   void issue734() {
+    GlobalConfiguration.GREMLIN_ENGINE.setValue("groovy");
     final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
     try {
 
@@ -228,6 +230,7 @@ class CypherTest {
       graph.cypher("MATCH (p) DELETE p").execute();
 
     } finally {
+      GlobalConfiguration.GREMLIN_ENGINE.reset();
       graph.drop();
       assertThat(graph.getGremlinJavaEngine()).isNull();
       assertThat(graph.getGremlinGroovyEngine()).isNull();
