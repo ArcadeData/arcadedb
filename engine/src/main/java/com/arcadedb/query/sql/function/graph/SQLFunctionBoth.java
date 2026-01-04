@@ -34,6 +34,6 @@ public class SQLFunctionBoth extends SQLFunctionMove {
 
   @Override
   protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels) {
-    return v2v(graph, iRecord, Vertex.DIRECTION.BOTH, iLabels);
+    return v2v(iRecord, Vertex.DIRECTION.BOTH, iLabels);
   }
 }

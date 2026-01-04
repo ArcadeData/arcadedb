@@ -29,7 +29,7 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.function.SQLFunctionConfigurableAbstract;
 import com.arcadedb.utility.FileUtils;
 
-import java.util.ArrayList;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 03/01/17.
@@ -57,7 +57,7 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
     return SQLQueryEngine.foreachRecord(iArgument -> move(context.getDatabase(), iArgument, labels), self, context);
   }
 
-  protected Object v2v(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection,
+  protected Object v2v(final Identifiable iRecord, final Vertex.DIRECTION iDirection,
       final String[] iLabels) {
     if (iRecord != null) {
       final Document rec = (Document) iRecord.getRecord();
@@ -67,7 +67,7 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
     return null;
   }
 
-  protected Object v2e(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection,
+  protected Object v2e(final Identifiable iRecord, final Vertex.DIRECTION iDirection,
       final String[] iLabels) {
     final Document rec = (Document) iRecord.getRecord();
     if (rec instanceof Vertex vertex)
@@ -76,7 +76,7 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
 
   }
 
-  protected Object e2v(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection,
+  protected Object e2v(final Identifiable iRecord, final Vertex.DIRECTION iDirection,
       final String[] iLabels) {
     final Document rec = (Document) iRecord.getRecord();
     if (rec instanceof Edge edge) {

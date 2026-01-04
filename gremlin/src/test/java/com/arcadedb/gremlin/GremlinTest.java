@@ -18,6 +18,7 @@
  */
 package com.arcadedb.gremlin;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.EmbeddedDocument;
@@ -37,11 +38,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.io.PrintStream;
-import java.math.BigInteger;
-import java.util.List;
-import java.util.UUID;
+import java.io.*;
+import java.math.*;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -139,9 +138,11 @@ class GremlinTest {
   void gremlinCountNotDefinedTypes() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
-      assertThat((Long) graph.gremlin("g.V().hasLabel ( 'foo-label' ).count ()").execute().nextIfAvailable().getProperty("result")).isEqualTo(0);
+      assertThat((Long) graph.gremlin("g.V().hasLabel ( 'foo-label' ).count ()").execute().nextIfAvailable()
+          .getProperty("result")).isEqualTo(0);
 
-      assertThat((Long) graph.gremlin("g.E().hasLabel ( 'foo-label' ).count ()").execute().nextIfAvailable().getProperty("result")).isEqualTo(0);
+      assertThat((Long) graph.gremlin("g.E().hasLabel ( 'foo-label' ).count ()").execute().nextIfAvailable()
+          .getProperty("result")).isEqualTo(0);
 
     } finally {
       graph.drop();
@@ -278,8 +279,8 @@ class GremlinTest {
       graph.getDatabase().getSchema().createVertexType("Person");
 
       assertThatThrownBy(() -> graph.getDatabase().query("gremlin",
-        "g.V().as('p').hasLabel22222('Person').where(__.choose(__.constant(p1), __.constant(p1), __.constant('  cypher.null')).is(neq('  cypher.null')).as('  GENERATED1').select('p').values('age').where(gte('  GENERATED1'))).select('p').project('p.name', 'p.age').by(__.choose(neq('  cypher.null'), __.choose(__.values('name'), __.values('name'), __.constant('  cypher.null')))).by(__.choose(neq('  cypher.null'), __.choose(__.values('age'), __.values('age'), __.constant('  cypher.null')))).order().by(__.select('p.age'), asc)",
-        "p1", 25)).isInstanceOf(CommandParsingException.class);
+          "g.V().as('p').hasLabel22222('Person').where(__.choose(__.constant(p1), __.constant(p1), __.constant('  cypher.null')).is(neq('  cypher.null')).as('  GENERATED1').select('p').values('age').where(gte('  GENERATED1'))).select('p').project('p.name', 'p.age').by(__.choose(neq('  cypher.null'), __.choose(__.values('name'), __.values('name'), __.constant('  cypher.null')))).by(__.choose(neq('  cypher.null'), __.choose(__.values('age'), __.values('age'), __.constant('  cypher.null')))).order().by(__.select('p.age'), asc)",
+          "p1", 25)).isInstanceOf(CommandParsingException.class);
 
     } finally {
       graph.drop();
@@ -424,8 +425,10 @@ class GremlinTest {
   }
 
   // ISSUE: https://github.com/ArcadeData/arcadedb/issues/911
+  // This test works only with Groovy engine, from v25.12.1 the default engine is Java
   @Test
   void longOverflow() {
+    GlobalConfiguration.GREMLIN_ENGINE.setValue("groovy");
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       Result value = graph.gremlin("g.inject(Long.MAX_VALUE, 0).sum()").execute().nextIfAvailable();
@@ -435,21 +438,26 @@ class GremlinTest {
       assertThat((long) value.getProperty("result")).isEqualTo(Long.MAX_VALUE + 1);
 
       value = graph.gremlin("g.inject(BigInteger.valueOf(Long.MAX_VALUE), 1).sum()").execute().nextIfAvailable();
-      assertThat((BigInteger) value.getProperty("result")).isEqualTo(BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.valueOf(1L)));
+      assertThat((BigInteger) value.getProperty("result")).isEqualTo(
+          BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.valueOf(1L)));
     } finally {
       graph.drop();
+      GlobalConfiguration.GREMLIN_ENGINE.reset();
     }
   }
 
   // ISSUE: https://github.com/ArcadeData/arcadedb/issues/912
+  // This test works only with Groovy engine, from v25.12.1 the default engine is Java
   @Test
   void numberConversion() {
+    GlobalConfiguration.GREMLIN_ENGINE.setValue("groovy");
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       Result value = graph.gremlin("g.inject(1).size()").execute().nextIfAvailable();
       assertThat((int) value.getProperty("result")).isEqualTo(1);
     } finally {
       graph.drop();
+      GlobalConfiguration.GREMLIN_ENGINE.reset();
     }
   }
 
@@ -511,7 +519,8 @@ class GremlinTest {
       graph.gremlin("g.addV('A')").execute().nextIfAvailable();
       assertThat(graph.gremlin("g.V().hasLabel('A')").execute().toVertices().size()).isEqualTo(4);
       assertThat(graph.gremlin("g.V().hasLabel('A').has('b',true)").execute().toVertices().size()).isEqualTo(2);
-      assertThat((Long) graph.gremlin("g.V().hasLabel('A').has('b',true).count()").execute().nextIfAvailable().getProperty("result")).isEqualTo(2);
+      assertThat((Long) graph.gremlin("g.V().hasLabel('A').has('b',true).count()").execute().nextIfAvailable()
+          .getProperty("result")).isEqualTo(2);
 
     } finally {
       graph.drop();

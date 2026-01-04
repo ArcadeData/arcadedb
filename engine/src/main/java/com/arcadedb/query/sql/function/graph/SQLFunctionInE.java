@@ -34,7 +34,7 @@ public class SQLFunctionInE extends SQLFunctionMove {
 
   @Override
   protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels) {
-    return v2e(graph, iRecord, Vertex.DIRECTION.IN, iLabels);
+    return v2e(iRecord, Vertex.DIRECTION.IN, iLabels);
   }
 
 }
