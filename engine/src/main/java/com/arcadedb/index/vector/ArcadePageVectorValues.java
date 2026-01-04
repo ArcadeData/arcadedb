@@ -232,9 +232,16 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
         return null; // Property not found
       }
 
-      if (!(vectorObj instanceof float[] vector)) {
+      float[] vector = null;
+      if (vectorObj instanceof float[] f) {
+        vector = f;
+      } else if (vectorObj instanceof java.util.List<?> list) {
+        vector = new float[list.size()];
+        for (int i = 0; i < list.size(); i++)
+          vector[i] = ((Number) list.get(i)).floatValue();
+      } else {
         com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
-            "Vector property '%s' is not float[] (type=%s, RID=%s)",
+            "Vector property '%s' is not float[] or List (type=%s, RID=%s)",
             vectorPropertyName, vectorObj.getClass().getName(), loc.rid);
         return null;
       }
