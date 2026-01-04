@@ -44,10 +44,10 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
    */
   private static class BoundedVectorCache {
     private final java.util.concurrent.ConcurrentHashMap<Integer, CacheEntry> cache;
-    private final int maxSize;
+    private final int                                                         maxSize;
 
     private static class CacheEntry {
-      final VectorFloat<?> vector;
+      final VectorFloat<?>                            vector;
       final java.util.concurrent.atomic.AtomicInteger accessCount;
 
       CacheEntry(final VectorFloat<?> vector) {
@@ -232,14 +232,8 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
         return null; // Property not found
       }
 
-      float[] vector = null;
-      if (vectorObj instanceof float[] f) {
-        vector = f;
-      } else if (vectorObj instanceof java.util.List<?> list) {
-        vector = new float[list.size()];
-        for (int i = 0; i < list.size(); i++)
-          vector[i] = ((Number) list.get(i)).floatValue();
-      } else {
+      final float[] vector = VectorUtils.convertToFloatArray(vectorObj);
+      if (vector == null) {
         com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
             "Vector property '%s' is not float[] or List (type=%s, RID=%s)",
             vectorPropertyName, vectorObj.getClass().getName(), loc.rid);
