@@ -85,7 +85,12 @@ public class InputParameter extends SimpleNode {
     if (value instanceof String) {
       return value;
     }
-    if (MultiValue.isMultiValue(value) && !(value instanceof byte[]) && !(value instanceof Byte[])) {
+    // Primitive arrays and their wrapper arrays should be passed as-is to maintain performance
+    // (especially critical for vector operations with float[] parameters)
+    if (isPrimitiveOrWrapperArray(value)) {
+      return value;
+    }
+    if (MultiValue.isMultiValue(value)) {
       final PCollection coll = new PCollection(-1);
       coll.expressions = new ArrayList<Expression>();
       final Iterator iterator = MultiValue.getMultiValueIterator(value);
@@ -147,6 +152,34 @@ public class InputParameter extends SimpleNode {
       return value.toString();
 
     return this;
+  }
+
+  /**
+   * Check if value is a primitive array or wrapper array type.
+   * These types should NOT be converted to PCollection for performance reasons.
+   * Primitive arrays are passed directly to functions to avoid boxing overhead,
+   * which is especially critical for vector operations with float[] parameters.
+   *
+   * @param value the value to check
+   * @return true if value is a primitive or wrapper array type
+   */
+  private static boolean isPrimitiveOrWrapperArray(Object value) {
+    return value instanceof byte[] ||
+           value instanceof Byte[] ||
+           value instanceof short[] ||
+           value instanceof Short[] ||
+           value instanceof int[] ||
+           value instanceof Integer[] ||
+           value instanceof long[] ||
+           value instanceof Long[] ||
+           value instanceof float[] ||
+           value instanceof Float[] ||
+           value instanceof double[] ||
+           value instanceof Double[] ||
+           value instanceof boolean[] ||
+           value instanceof Boolean[] ||
+           value instanceof char[] ||
+           value instanceof Character[];
   }
 
   public InputParameter copy() {
