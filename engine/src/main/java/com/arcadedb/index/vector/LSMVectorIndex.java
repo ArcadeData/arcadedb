@@ -878,7 +878,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
             if (record != null) {
               final com.arcadedb.database.Document doc = (com.arcadedb.database.Document) record;
               final Object vectorObj = doc.get(vectorProp);
-              if (vectorObj instanceof float[] vector && vector.length == metadata.dimensions) {
+              float[] vector = null;
+              if (vectorObj instanceof float[] f) {
+                vector = f;
+              } else if (vectorObj instanceof java.util.List<?> list) {
+                vector = new float[list.size()];
+                for (int i = 0; i < list.size(); i++)
+                  vector[i] = ((Number) list.get(i)).floatValue();
+              }
+              if (vector != null && vector.length == metadata.dimensions) {
                 // Validate vector is not all zeros (would cause NaN in cosine similarity)
                 boolean hasNonZero = false;
                 for (float v : vector) {
