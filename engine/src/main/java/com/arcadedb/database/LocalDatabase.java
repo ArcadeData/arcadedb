@@ -48,7 +48,6 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
-import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
@@ -1026,14 +1025,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     try {
       final LocalBucket bucket = schema.getBucketById(record.getIdentity().getBucketId());
 
-      if (record instanceof Document document) {
-        // For LightEdges, we need to load the full edge to get properties for index deletion
-        if (document instanceof LightEdge) {
-          // Load the full edge record to ensure properties are available for index deletion
-          document = (Document) lookupByRID(document.getIdentity(), true);
-        }
+      if (record instanceof Document document)
         indexer.deleteDocument(document);
-      }
 
       if (record instanceof Edge edge) {
         graphEngine.deleteEdge(edge);
