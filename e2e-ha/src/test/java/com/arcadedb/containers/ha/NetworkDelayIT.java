@@ -43,7 +43,7 @@ import java.util.concurrent.TimeUnit;
 public class NetworkDelayIT extends ContainersTestTemplate {
 
   @Test
-  @Disabled
+//  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test symmetric network delay: all nodes experience same latency")
   void testSymmetricDelay() throws IOException {
