@@ -36,6 +36,7 @@ import org.testcontainers.containers.ContainerState;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.ToxiproxyContainer;
+import org.testcontainers.containers.output.Slf4jLogConsumer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.lifecycle.Startables;
 import org.testcontainers.utility.MountableFile;
@@ -322,8 +323,9 @@ public abstract class ContainersTestTemplate {
   /**
    * Waits for a container to be healthy (running) with diagnostics on failure.
    *
-   * @param container The container to check
+   * @param container      The container to check
    * @param timeoutSeconds Timeout in seconds
+   *
    * @return true if container is running, false otherwise
    */
   protected boolean waitForContainerHealthy(GenericContainer<?> container, int timeoutSeconds) {
@@ -352,10 +354,15 @@ public abstract class ContainersTestTemplate {
    */
   protected List<ServerWrapper> startContainers() {
     logger.info("Starting all containers");
-    containers.stream()
-        .filter(container -> !container.isRunning())
-        .forEach(container -> Startables.deepStart(container).join());
+    Slf4jLogConsumer logConsumer = new Slf4jLogConsumer(logger);
     return containers.stream()
+        .filter(container -> !container.isRunning())
+        .peek(container ->
+            Startables.deepStart(container).join()
+        )
+//        .peek(container ->
+//            container.followOutput(logConsumer)
+//        )
         .map(ServerWrapper::new)
         .toList();
   }
@@ -429,6 +436,7 @@ public abstract class ContainersTestTemplate {
             """, name, ha, quorum, role, serverList))
         .withEnv("ARCADEDB_OPTS_MEMORY", "-Xms12G -Xmx12G")
         .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
+
     containers.add(container);
     return container;
   }
