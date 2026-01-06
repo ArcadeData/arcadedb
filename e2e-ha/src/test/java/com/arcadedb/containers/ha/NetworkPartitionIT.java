@@ -43,7 +43,7 @@ import java.util.concurrent.TimeUnit;
 public class NetworkPartitionIT extends ContainersTestTemplate {
 
   @Test
-  @Disabled
+//  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test split-brain: partition leader from replicas, verify quorum enforcement")
   void testLeaderPartitionWithQuorum() throws IOException, InterruptedException {
@@ -133,7 +133,7 @@ public class NetworkPartitionIT extends ContainersTestTemplate {
   }
 
   @Test
-  @Disabled
+//  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test asymmetric partition: one replica isolated, cluster continues")
   void testSingleReplicaPartition() throws IOException, InterruptedException {
