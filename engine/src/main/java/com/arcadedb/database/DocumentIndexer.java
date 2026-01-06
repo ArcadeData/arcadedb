@@ -371,10 +371,6 @@ public class DocumentIndexer {
 
     final List<IndexInternal> metadata = type.getPolymorphicBucketIndexByBucketId(bucketId, null);
     if (metadata != null && !metadata.isEmpty()) {
-      if (record instanceof RecordInternal internal)
-        // FORCE RESET OF ANY PROPERTY TEMPORARY SET
-        internal.unsetDirty();
-
       final List<IndexInternal> allIndexes = new ArrayList(metadata);
       for (final IndexInternal index : metadata) {
         final IndexInternal assIndex = index.getAssociatedIndex();
@@ -414,6 +410,10 @@ public class DocumentIndexer {
           deleteListItemsFromIndex(index, record, propertyNamesArray, listPropertyIndex);
         }
       }
+
+      // Reset dirty flag AFTER properties have been read for index deletion
+      if (record instanceof RecordInternal internal)
+        internal.unsetDirty();
     }
   }
 
