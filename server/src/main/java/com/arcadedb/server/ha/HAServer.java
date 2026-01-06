@@ -83,8 +83,11 @@ public class HAServer implements ServerPlugin {
   private final       ContextConfiguration                           configuration;
   private final       String                                         clusterName;
   private final       long                                           startedOn;
-  private final       Map<ServerInfo, Leader2ReplicaNetworkExecutor> replicaConnections                = new ConcurrentHashMap<>();
-  private final       Map<ServerInfo, String>                        replicaHTTPAddresses              = new ConcurrentHashMap<>();
+  // Use server name (alias) as stable identity for replica connections
+  // This prevents identity changes when ServerInfo network addresses are updated
+  private final       Map<String, Leader2ReplicaNetworkExecutor>     replicaConnections                = new ConcurrentHashMap<>();
+  private final       Map<String, ServerInfo>                        serverInfoByName                  = new ConcurrentHashMap<>();
+  private final       Map<String, String>                            replicaHTTPAddresses              = new ConcurrentHashMap<>();
   private final       AtomicReference<Replica2LeaderNetworkExecutor> leaderConnection                  = new AtomicReference<>();
   private final       AtomicLong                                     lastDistributedOperationNumber    = new AtomicLong(-1);
   private final       AtomicLong                                     lastForwardOperationNumber        = new AtomicLong(0);
@@ -201,12 +204,14 @@ public class HAServer implements ServerPlugin {
     public Optional<ServerInfo> findByAlias(String serverAlias) {
       for (ServerInfo server : servers) {
         if (server.alias.equals(serverAlias)) {
-          LogManager.instance().log(this, Level.INFO, "find by alias %s - Found server %s", serverAlias, server);
+          LogManager.instance().log(this, Level.FINE, "find by alias %s - Found server %s", serverAlias, server);
           return Optional.of(server);
         }
       }
 
-      LogManager.instance().log(this, Level.SEVERE, "NOT Found server %s on %s", serverAlias, servers);
+      // Not finding by alias is normal when servers have duplicate aliases (e.g., all "localhost")
+      // Caller should use fallback matching strategies
+      LogManager.instance().log(this, Level.FINE, "Server with alias '%s' not found in cluster %s", serverAlias, servers);
       return Optional.empty();
     }
 
@@ -507,61 +512,49 @@ public class HAServer implements ServerPlugin {
   }
 
   /**
+   * Gets a replica connection by server name (alias).
+   * This is the primary method for accessing replica connections.
+   *
+   * @param replicaName the server name (alias)
+   *
+   * @return the replica network executor, or null if not found
+   */
+  public Leader2ReplicaNetworkExecutor getReplica(final String replicaName) {
+    return replicaConnections.get(replicaName);
+  }
+
+  /**
    * Gets a replica connection by ServerInfo.
-   * This is the primary method for accessing replica connections with type-safe ServerInfo.
+   * This method extracts the alias from ServerInfo and delegates to getReplica(String).
    *
    * @param replicaInfo the ServerInfo identifying the replica server
    *
    * @return the replica network executor, or null if not found
    */
   public Leader2ReplicaNetworkExecutor getReplica(final ServerInfo replicaInfo) {
-    return replicaConnections.get(replicaInfo);
+    return getReplica(replicaInfo.alias());
   }
 
   /**
-   * Gets a replica connection by server name (alias or host:port string).
-   * This method provides backward compatibility for code that uses String identifiers.
-   * It attempts to find the ServerInfo by:
-   * 1. Looking up by alias in the cluster
-   * 2. Parsing the string as host:port and matching against replicaConnections keys
+   * Gets ServerInfo for a replica by server name.
    *
-   * @param replicaName the server name (alias) or "host:port" string
+   * @param replicaName the server name (alias)
    *
-   * @return the replica network executor, or null if not found
-   *
-   * @deprecated Use {@link #getReplica(ServerInfo)} instead for type safety
+   * @return the ServerInfo, or null if not found
    */
-  @Deprecated
-  public Leader2ReplicaNetworkExecutor getReplica(final String replicaName) {
-    ServerInfo serverInfo = null;
-
-    // First, try to find by alias in the cluster
-    if (cluster != null) {
-      serverInfo = cluster.findByAlias(replicaName).orElse(null);
-    }
-
-    // If not found by alias, try to match against existing ServerInfo keys in replicaConnections
-    if (serverInfo == null) {
-      for (ServerInfo key : replicaConnections.keySet()) {
-        if (key.alias().equals(replicaName) ||
-            (key.host() + ":" + key.port()).equals(replicaName)) {
-          serverInfo = key;
-          break;
-        }
-      }
-    }
-
-    return serverInfo != null ? getReplica(serverInfo) : null;
+  public ServerInfo getReplicaServerInfo(final String replicaName) {
+    return serverInfoByName.get(replicaName);
   }
 
   public void disconnectAllReplicas() {
     final List<Leader2ReplicaNetworkExecutor> replicas = new ArrayList<>(replicaConnections.values());
     replicaConnections.clear();
+    serverInfoByName.clear();
 
     for (Leader2ReplicaNetworkExecutor replica : replicas) {
       try {
         replica.close();
-        setReplicaStatus(replica.getRemoteServerName(), false);
+        setReplicaStatus(replica.getRemoteServerName().alias(), false);
       } catch (Exception e) {
         // IGNORE IT
       }
@@ -569,7 +562,7 @@ public class HAServer implements ServerPlugin {
     configuredServers = 1;
   }
 
-  public void setReplicaStatus(final ServerInfo remoteServerName, final boolean online) {
+  public void setReplicaStatus(final String remoteServerName, final boolean online) {
     final Leader2ReplicaNetworkExecutor c = replicaConnections.get(remoteServerName);
     if (c == null) {
       LogManager.instance().log(this, Level.SEVERE, "Replica '%s' was not registered", remoteServerName);
@@ -590,6 +583,13 @@ public class HAServer implements ServerPlugin {
         // ELECTION COMPLETED
         setElectionStatus(ElectionStatus.DONE);
     }
+  }
+
+  /**
+   * Overload for backward compatibility with ServerInfo.
+   */
+  public void setReplicaStatus(final ServerInfo remoteServerInfo, final boolean online) {
+    setReplicaStatus(remoteServerInfo.alias(), online);
   }
 
   public void receivedResponse(final ServerInfo remoteServerName, final long messageNumber, final Object payload) {
@@ -675,12 +675,62 @@ public class HAServer implements ServerPlugin {
     return leaderFence.getCurrentEpoch();
   }
 
-  public void registerIncomingConnection(final ServerInfo replicaServerName, final Leader2ReplicaNetworkExecutor connection) {
-    final Leader2ReplicaNetworkExecutor previousConnection = replicaConnections.put(replicaServerName, connection);
+  public void registerIncomingConnection(final ServerInfo replicaServerInfo, final Leader2ReplicaNetworkExecutor connection) {
+    // Use server name (alias) as stable identity
+    final String serverName = replicaServerInfo.alias();
+
+    // Register connection using server name as key
+    final Leader2ReplicaNetworkExecutor previousConnection = replicaConnections.put(serverName, connection);
     if (previousConnection != null && previousConnection != connection) {
       // MERGE CONNECTIONS
       connection.mergeFrom(previousConnection);
     }
+
+    // Update or merge ServerInfo, preserving configured addresses if known
+    serverInfoByName.compute(serverName, (name, existingInfo) -> {
+      if (existingInfo == null) {
+        // First time seeing this server - check cluster for configured address
+        if (cluster != null) {
+          final ServerInfo configuredInfo = cluster.findByAlias(serverName).orElse(null);
+          if (configuredInfo != null && !configuredInfo.host().equals(replicaServerInfo.host())) {
+            // Preserve configured address, track actual address
+            LogManager.instance().log(this, Level.FINE,
+                "Preserving configured address for %s: configured=%s:%d, actual=%s:%d",
+                serverName, configuredInfo.host(), configuredInfo.port(),
+                replicaServerInfo.host(), replicaServerInfo.port());
+            return new ServerInfo(
+                configuredInfo.host(),      // Keep configured proxy address
+                configuredInfo.port(),       // Keep configured proxy port
+                serverName,
+                replicaServerInfo.host(),    // Store actual connection address
+                replicaServerInfo.port()     // Store actual connection port
+            );
+          }
+        }
+        return replicaServerInfo;
+      } else {
+        // Update existing info: preserve configured address, update actual address if changed
+        if (replicaServerInfo.host().equals(existingInfo.host()) &&
+            replicaServerInfo.port() == existingInfo.port()) {
+          // Connection from configured address - keep as is
+          return existingInfo;
+        } else {
+          // Connection from different address - track as actual address
+          LogManager.instance().log(this, Level.FINE,
+              "Updating actual address for %s: was=%s:%d, now=%s:%d",
+              serverName,
+              existingInfo.actualHost(), existingInfo.actualPort(),
+              replicaServerInfo.host(), replicaServerInfo.port());
+          return new ServerInfo(
+              existingInfo.host(),          // Keep configured address
+              existingInfo.port(),
+              serverName,
+              replicaServerInfo.host(),     // Update actual address
+              replicaServerInfo.port()
+          );
+        }
+      }
+    });
 
     final int totReplicas = replicaConnections.size();
     if (1 + totReplicas > configuredServers)
@@ -688,35 +738,11 @@ public class HAServer implements ServerPlugin {
       configuredServers = 1 + totReplicas;
 
     // Build the actual cluster membership: leader + all connected replicas
-    // IMPORTANT: Preserve configured addresses from existing cluster knowledge
     final Set<ServerInfo> currentMembers = new HashSet<>();
     currentMembers.add(serverAddress); // Add self (the leader) with configured address
 
-    // Add replicas, preserving configured addresses if known
-    for (ServerInfo replicaInfo : replicaConnections.keySet()) {
-      // Check if we already have this server in our cluster with a configured address
-      ServerInfo serverToAdd = replicaInfo;
-      if (cluster != null) {
-        // Try to find by alias to get configured address
-        final ServerInfo configuredInfo = cluster.findByAlias(replicaInfo.alias()).orElse(null);
-        if (configuredInfo != null && !configuredInfo.host().equals(replicaInfo.host())) {
-          // We have a configured address that differs from the connection address
-          // Preserve the configured address, but update the actual address
-          serverToAdd = new ServerInfo(
-              configuredInfo.host(),      // Keep configured proxy address
-              configuredInfo.port(),       // Keep configured proxy port
-              replicaInfo.alias(),
-              replicaInfo.host(),          // Store actual connection address
-              replicaInfo.port()           // Store actual connection port
-          );
-          LogManager.instance().log(this, Level.FINE,
-              "Preserving configured address for %s: configured=%s:%d, actual=%s:%d",
-              replicaInfo.alias(), configuredInfo.host(), configuredInfo.port(),
-              replicaInfo.host(), replicaInfo.port());
-        }
-      }
-      currentMembers.add(serverToAdd);
-    }
+    // Add all replicas from serverInfoByName (which has stable, merged ServerInfo)
+    currentMembers.addAll(serverInfoByName.values());
 
     // Update the cluster to reflect actual membership with preserved configured addresses
     cluster = new HACluster(currentMembers);
@@ -1224,8 +1250,13 @@ public class HAServer implements ServerPlugin {
    * @param httpAddress the HTTP address (host:port) of the replica
    */
   public void setReplicaHTTPAddress(final ServerInfo serverInfo, final String httpAddress) {
-    replicaHTTPAddresses.put(serverInfo, httpAddress);
+    replicaHTTPAddresses.put(serverInfo.alias(), httpAddress);
     LogManager.instance().log(this, Level.FINE, "Stored HTTP address for replica %s: %s", serverInfo.alias(), httpAddress);
+  }
+
+  public void setReplicaHTTPAddress(final String serverName, final String httpAddress) {
+    replicaHTTPAddresses.put(serverName, httpAddress);
+    LogManager.instance().log(this, Level.FINE, "Stored HTTP address for replica %s: %s", serverName, httpAddress);
   }
 
   /**
@@ -1236,7 +1267,7 @@ public class HAServer implements ServerPlugin {
    */
   public String getReplicaServersHTTPAddressesList() {
     final StringBuilder list = new StringBuilder();
-    for (final Map.Entry<ServerInfo, String> entry : replicaHTTPAddresses.entrySet()) {
+    for (final Map.Entry<String, String> entry : replicaHTTPAddresses.entrySet()) {
       final String addr = entry.getValue();
       LogManager.instance().log(this, Level.FINE, "Replica http %s", addr);
       if (addr == null)
@@ -1256,55 +1287,34 @@ public class HAServer implements ServerPlugin {
    *
    * @param serverInfo the ServerInfo identifying the server to remove
    */
-  public void removeServer(final ServerInfo serverInfo) {
-    final Leader2ReplicaNetworkExecutor c = replicaConnections.remove(serverInfo);
+  /**
+   * Removes a server from the cluster by name (alias).
+   *
+   * @param remoteServerName the server name (alias)
+   */
+  public void removeServer(final String remoteServerName) {
+    final Leader2ReplicaNetworkExecutor c = replicaConnections.remove(remoteServerName);
     if (c != null) {
       LogManager.instance()
-          .log(this, Level.SEVERE, "Replica '%s' seems not active, removing it from the cluster", serverInfo);
+          .log(this, Level.SEVERE, "Replica '%s' seems not active, removing it from the cluster", remoteServerName);
       c.close();
     }
 
-    // Also remove the HTTP address mapping
-    replicaHTTPAddresses.remove(serverInfo);
+    // Also remove the ServerInfo and HTTP address mapping
+    serverInfoByName.remove(remoteServerName);
+    replicaHTTPAddresses.remove(remoteServerName);
 
     configuredServers = 1 + replicaConnections.size();
   }
 
   /**
-   * Removes a server from the cluster by name (alias or host:port string).
-   * This method provides backward compatibility for code that uses String identifiers.
-   * It attempts to find the ServerInfo by:
-   * 1. Looking up by alias in the cluster
-   * 2. Parsing the string as host:port and matching against replicaConnections keys
+   * Removes a server from the cluster by ServerInfo.
+   * Overload for backward compatibility.
    *
-   * @param remoteServerName the server name (alias) or "host:port" string
+   * @param serverInfo the ServerInfo identifying the server
    */
-  public void removeServer(final String remoteServerName) {
-    ServerInfo serverInfo = null;
-
-    // First, try to find by alias in the cluster
-    if (cluster != null) {
-      serverInfo = cluster.findByAlias(remoteServerName).orElse(null);
-    }
-
-    // If not found by alias, try to parse as host:port and find in replicaConnections
-    if (serverInfo == null) {
-      // Try to match against existing ServerInfo keys in replicaConnections
-      for (ServerInfo key : replicaConnections.keySet()) {
-        if (key.alias().equals(remoteServerName) ||
-            (key.host() + ":" + key.port()).equals(remoteServerName)) {
-          serverInfo = key;
-          break;
-        }
-      }
-    }
-
-    if (serverInfo != null) {
-      removeServer(serverInfo);
-    } else {
-      LogManager.instance()
-          .log(this, Level.WARNING, "Cannot remove server '%s' - not found in cluster", remoteServerName);
-    }
+  public void removeServer(final ServerInfo serverInfo) {
+    removeServer(serverInfo.alias());
   }
 
   public int getOnlineServers() {
@@ -1364,9 +1374,10 @@ public class HAServer implements ServerPlugin {
       line.setProperty("THROUGHPUT", "");
       line.setProperty("LATENCY", "");
 
-      for (final Map.Entry<ServerInfo, Leader2ReplicaNetworkExecutor> entry : replicaConnections.entrySet()) {
-        final ServerInfo replicaInfo = entry.getKey();
+      for (final Map.Entry<String, Leader2ReplicaNetworkExecutor> entry : replicaConnections.entrySet()) {
+        final String serverName = entry.getKey();
         final Leader2ReplicaNetworkExecutor c = entry.getValue();
+        final ServerInfo replicaInfo = serverInfoByName.get(serverName);
 
         line = new ResultInternal();
         list.add(new RecordTableFormatter.TableRecordRow(line));
@@ -1528,7 +1539,7 @@ public class HAServer implements ServerPlugin {
     return getServerName();
   }
 
-  public void resendMessagesToReplica(final long fromMessageNumber, final ServerInfo replicaName) {
+  public void resendMessagesToReplica(final long fromMessageNumber, final String replicaName) {
     // SEND THE REQUEST TO ALL THE REPLICAS
     final Leader2ReplicaNetworkExecutor replica = replicaConnections.get(replicaName);
 
@@ -1575,6 +1586,10 @@ public class HAServer implements ServerPlugin {
     LogManager.instance()
         .log(this, Level.INFO, "Recovering completed. Sent %d message(s) to replica '%s' (%d-%d)", totalSentMessages.get(),
             replicaName, min, max);
+  }
+
+  public void resendMessagesToReplica(final long fromMessageNumber, final ServerInfo replicaInfo) {
+    resendMessagesToReplica(fromMessageNumber, replicaInfo.alias());
   }
 
   public boolean connectToLeader(final ServerInfo serverEntry, final Callable<Void, Exception> errorCallback) {

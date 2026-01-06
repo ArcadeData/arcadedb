@@ -42,7 +42,7 @@ import java.util.concurrent.TimeUnit;
 public class RollingRestartIT extends ContainersTestTemplate {
 
   @Test
-  @Disabled
+//  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test rolling restart: restart each node sequentially, verify zero downtime")
   void testRollingRestart() throws IOException, InterruptedException {
@@ -195,7 +195,7 @@ public class RollingRestartIT extends ContainersTestTemplate {
   }
 
   @Test
-  @Disabled
+//  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test rapid rolling restart: minimal wait between restarts")
   void testRapidRollingRestart() throws IOException, InterruptedException {
@@ -288,7 +288,7 @@ public class RollingRestartIT extends ContainersTestTemplate {
   }
 
   @Test
-  @Disabled
+//  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test rolling restart with continuous writes: verify no data loss")
   void testRollingRestartWithContinuousWrites() throws IOException, InterruptedException {
