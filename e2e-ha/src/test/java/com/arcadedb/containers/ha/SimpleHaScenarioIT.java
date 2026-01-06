@@ -3,6 +3,8 @@ package com.arcadedb.containers.ha;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
+import eu.rekawek.toxiproxy.Proxy;
+import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -12,7 +14,6 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.IntStream;
 
 @Testcontainers
 public class SimpleHaScenarioIT extends ContainersTestTemplate {
@@ -22,14 +23,17 @@ public class SimpleHaScenarioIT extends ContainersTestTemplate {
   @DisplayName("Test resync after network crash with 2 sewers in HA mode")
   void twoInstancesResyncAfterNetworkCrash() throws InterruptedException, IOException {
 
+    logger.info("Creating a proxy for each arcade container");
+    final Proxy arcade1Proxy = toxiproxyClient.createProxy("arcade1Proxy", "0.0.0.0:8666", "arcade1:2424");
+    final Proxy arcade2Proxy = toxiproxyClient.createProxy("arcade2Proxy", "0.0.0.0:8667", "arcade2:2424");
     logger.info("Creating two arcade containers");
-    createArcadeContainer("arcade1", "{arcade2}arcade2:2424", "none", "any", network);
-    createArcadeContainer("arcade2", "{arcade1}arcade1:2424", "none", "any", network);
+    createArcadeContainer("arcade1", "{arcade2}proxy:8667", "none", "any", network);
+    createArcadeContainer("arcade2", "{arcade1}proxy:8666", "none", "any", network);
 
     logger.info("Starting the containers in sequence: arcade1 will be the leader");
     List<ServerWrapper> servers = startContainers();
 
-    logger.info("Creating the database on the first arcade container {} ", servers.getFirst().aliases());
+    logger.info("Creating the database on the first arcade container");
     DatabaseWrapper db1 = new DatabaseWrapper(servers.getFirst(), idSupplier);
     logger.info("Creating the database on arcade server 1");
     db1.createDatabase();
@@ -39,21 +43,29 @@ public class SimpleHaScenarioIT extends ContainersTestTemplate {
     db1.checkSchema();
     db2.checkSchema();
 
-    IntStream.range(1, 10).forEach(
-        x -> {
-          logger.info("Adding data to database 1 iteration {}", x);
-          db2.addUserAndPhotos(10, 10);
-          db1.addUserAndPhotos(10, 10);
+    logger.info("Adding data to database 1");
+    db1.addUserAndPhotos(10, 10);
 
-          try {
-            TimeUnit.SECONDS.sleep(1);
-          } catch (InterruptedException e) {
-            throw new RuntimeException(e);
-          }
-          logStatus(db1, db2);
-        }
+    logger.info("Check that all the data are replicated on database 2");
+    db2.assertThatUserCountIs(10);
 
-    );
+    logger.info("Disconnecting the two instances");
+    arcade1Proxy.toxics().bandwidth("CUT_CONNECTION_DOWNSTREAM", ToxicDirection.DOWNSTREAM, 0);
+    arcade1Proxy.toxics().bandwidth("CUT_CONNECTION_UPSTREAM", ToxicDirection.UPSTREAM, 0);
+
+    logger.info("Adding more data to arcade 1");
+    db1.addUserAndPhotos(10, 1000);
+
+    logger.info("Verifying 20 users on arcade 1");
+    db1.assertThatUserCountIs(20);
+
+    logger.info("Verifying still only 10 users on arcade 2");
+    db2.assertThatUserCountIs(10);
+    logStatus(db1, db2);
+
+    logger.info("Reconnecting instances");
+    arcade1Proxy.toxics().get("CUT_CONNECTION_DOWNSTREAM").remove();
+    arcade1Proxy.toxics().get("CUT_CONNECTION_UPSTREAM").remove();
 
     logger.info("Waiting for resync");
 
@@ -73,10 +85,11 @@ public class SimpleHaScenarioIT extends ContainersTestTemplate {
   }
 
   private void logStatus(DatabaseWrapper db1, DatabaseWrapper db2) {
-    Long users1 = db1.countUsers();
-    Long photos1 = db1.countPhotos();
+    logger.info("Maybe  resynced?");
     Long users2 = db2.countUsers();
     Long photos2 = db2.countPhotos();
+    Long users1 = db1.countUsers();
+    Long photos1 = db1.countPhotos();
     logger.info("Users:: {} --> {} - Photos:: {} --> {} ", users1, users2, photos1, photos2);
   }
 }
