@@ -93,12 +93,4 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
     }
   }
 
-  private ArcadeDBServer getLeader() {
-    for (int i = 0; i < getServerCount(); ++i) {
-      ArcadeDBServer server = getServer(i);
-      if (server.getHA().isLeader())
-        return server;
-    }
-    return null;
-  }
 }

@@ -34,7 +34,6 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.utility.FileUtils;
-import org.assertj.core.api.Assertions;
 import org.awaitility.Awaitility;
 import org.awaitility.core.ConditionTimeoutException;
 import org.junit.jupiter.api.AfterEach;
@@ -60,7 +59,6 @@ import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -69,16 +67,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * This class has been copied under Console project to avoid complex dependencies.
  */
 public abstract class BaseGraphServerTest extends StaticBaseServerTest {
-  protected static final String VERTEX1_TYPE_NAME = "V1";
-  protected static final String VERTEX2_TYPE_NAME = "V2";
-  protected static final String EDGE1_TYPE_NAME   = "E1";
-  protected static final String EDGE2_TYPE_NAME   = "E2";
-  private static final   int    PARALLEL_LEVEL    = 4;
-
-  protected static   RID              root;
-  private            ArcadeDBServer[] servers;
-  private            Database[]       databases;
-  protected volatile boolean          serversSynchronized = false;
+  private static final   int              PARALLEL_LEVEL      = 4;
+  protected static final String           VERTEX1_TYPE_NAME   = "V1";
+  protected static final String           VERTEX2_TYPE_NAME   = "V2";
+  protected static final String           EDGE1_TYPE_NAME     = "E1";
+  protected static final String           EDGE2_TYPE_NAME     = "E2";
+  protected static       RID              root;
+  private                ArcadeDBServer[] servers;
+  private                Database[]       databases;
+  protected volatile     boolean          serversSynchronized = false;
 
   protected interface Callback {
     void call(int serverIndex) throws Exception;
@@ -602,7 +599,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       LogManager.instance()
           .log(this, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced close before starting a new test");
 
-    assertThat(activeDatabases.isEmpty()).isTrue().as( "Found active databases: " + activeDatabases);
+    assertThat(activeDatabases.isEmpty()).isTrue().as("Found active databases: " + activeDatabases);
   }
 
   protected String command(final int serverIndex, final String command) throws Exception {
@@ -661,4 +658,14 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       connection.disconnect();
     }
   }
+
+  protected ArcadeDBServer getLeader() {
+    for (int i = 0; i < getServerCount(); ++i) {
+      ArcadeDBServer server = getServer(i);
+      if (server.getHA().isLeader())
+        return server;
+    }
+    return null;
+  }
+
 }
