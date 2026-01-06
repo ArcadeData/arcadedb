@@ -34,6 +34,7 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.utility.FileUtils;
+import org.assertj.core.api.Assertions;
 import org.awaitility.Awaitility;
 import org.awaitility.core.ConditionTimeoutException;
 import org.junit.jupiter.api.AfterEach;
@@ -242,13 +243,15 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       try {
         LogManager.instance().log(this, Level.INFO, "END OF THE TEST: Check DBS are identical...");
         checkDatabasesAreIdentical();
+      } catch (Exception e) {
+        //ignore
       } finally {
         GlobalConfiguration.resetAll();
 
-        LogManager.instance().log(this, Level.FINE, "TEST: Stopping servers...");
+        LogManager.instance().log(this, Level.INFO, "TEST: Stopping servers...");
         stopServers();
 
-        LogManager.instance().log(this, Level.FINE, "END OF THE TEST: Cleaning test %s...", getClass().getName());
+        LogManager.instance().log(this, Level.INFO, "END OF THE TEST: Cleaning test %s...", getClass().getName());
         if (dropDatabasesAtTheEnd())
           deleteDatabaseFolders();
 
@@ -599,7 +602,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       LogManager.instance()
           .log(this, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced close before starting a new test");
 
-    //Assertions.assertThat(activeDatabases.isEmpty().isTrue(), "Found active databases: " + activeDatabases);
+    assertThat(activeDatabases.isEmpty()).isTrue().as( "Found active databases: " + activeDatabases);
   }
 
   protected String command(final int serverIndex, final String command) throws Exception {

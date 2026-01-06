@@ -21,6 +21,7 @@ package com.arcadedb.containers.ha;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
+import eu.rekawek.toxiproxy.Proxy;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
@@ -38,25 +39,25 @@ import java.util.concurrent.TimeUnit;
  * Tests catastrophic leader failures and cluster recovery.
  */
 @Testcontainers
-@Disabled
+//@Disabled
 public class LeaderFailoverIT extends ContainersTestTemplate {
 
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test leader failover: kill leader, verify new election and data consistency")
   void testLeaderFailover() throws IOException, InterruptedException {
-//    logger.info("Creating proxies for 3-node cluster");
-//    final Proxy arcade1Proxy = toxiproxyClient.createProxy("arcade1Proxy", "0.0.0.0:8666", "arcade1:2424");
-//    final Proxy arcade2Proxy = toxiproxyClient.createProxy("arcade2Proxy", "0.0.0.0:8667", "arcade2:2424");
-//    final Proxy arcade3Proxy = toxiproxyClient.createProxy("arcade3Proxy", "0.0.0.0:8668", "arcade3:2424");
+    logger.info("Creating proxies for 3-node cluster");
+    final Proxy arcade1Proxy = toxiproxyClient.createProxy("arcade1Proxy", "0.0.0.0:8666", "arcade1:2424");
+    final Proxy arcade2Proxy = toxiproxyClient.createProxy("arcade2Proxy", "0.0.0.0:8667", "arcade2:2424");
+    final Proxy arcade3Proxy = toxiproxyClient.createProxy("arcade3Proxy", "0.0.0.0:8668", "arcade3:2424");
 
     logger.info("Creating 3-node HA cluster with majority quorum");
-//    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any", network);
-//    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "majority", "any", network);
-//    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "majority", "any", network);
-    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}arcade2:2424,{arcade3}arcade3:2424", "majority", "any", network);
-    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}arcade1:2424,{arcade3}arcade3:2424", "majority", "any", network);
-    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}arcade1:2424,{arcade2}arcade2:2424", "majority", "any", network);
+    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any", network);
+    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "majority", "any", network);
+    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "majority", "any", network);
+//    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}arcade2:2424,{arcade3}arcade3:2424", "majority", "any", network);
+//    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}arcade1:2424,{arcade3}arcade3:2424", "majority", "any", network);
+//    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}arcade1:2424,{arcade2}arcade2:2424", "majority", "any", network);
 
     logger.info("Starting cluster - arcade1 will become leader");
     List<ServerWrapper> servers = startContainers();
@@ -146,18 +147,18 @@ public class LeaderFailoverIT extends ContainersTestTemplate {
   @DisplayName("Test repeated leader failures: verify cluster stability under continuous failover")
   void testRepeatedLeaderFailures() throws IOException, InterruptedException {
     logger.info("Creating proxies for 3-node cluster");
-//    final Proxy arcade1Proxy = toxiproxyClient.createProxy("arcade1Proxy", "0.0.0.0:8666", "arcade1:2424");
-//    final Proxy arcade2Proxy = toxiproxyClient.createProxy("arcade2Proxy", "0.0.0.0:8667", "arcade2:2424");
-//    final Proxy arcade3Proxy = toxiproxyClient.createProxy("arcade3Proxy", "0.0.0.0:8668", "arcade3:2424");
+    final Proxy arcade1Proxy = toxiproxyClient.createProxy("arcade1Proxy", "0.0.0.0:8666", "arcade1:2424");
+    final Proxy arcade2Proxy = toxiproxyClient.createProxy("arcade2Proxy", "0.0.0.0:8667", "arcade2:2424");
+    final Proxy arcade3Proxy = toxiproxyClient.createProxy("arcade3Proxy", "0.0.0.0:8668", "arcade3:2424");
 
     logger.info("Creating 3-node HA cluster");
-//    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any", network);
-//    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "majority", "any", network);
-//    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "majority", "any", network);
+    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any", network);
+    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "majority", "any", network);
+    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "majority", "any", network);
 
-    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}arcade2:2424,{arcade3}arcade3:2424", "majority", "any", network);
-    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}arcade1:2424,{arcade3}arcade3:2424", "majority", "any", network);
-    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}arcade1:2424,{arcade2}arcade2:2424", "majority", "any", network);
+//    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}arcade2:2424,{arcade3}arcade3:2424", "majority", "any", network);
+//    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}arcade1:2424,{arcade3}arcade3:2424", "majority", "any", network);
+//    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}arcade1:2424,{arcade2}arcade2:2424", "majority", "any", network);
 
     logger.info("Starting cluster");
     List<ServerWrapper> servers = startContainers();
@@ -245,18 +246,18 @@ public class LeaderFailoverIT extends ContainersTestTemplate {
   @DisplayName("Test leader failover with active writes: verify no data loss during failover")
   void testLeaderFailoverDuringWrites() throws IOException, InterruptedException {
     logger.info("Creating proxies for 3-node cluster");
-//    final Proxy arcade1Proxy = toxiproxyClient.createProxy("arcade1Proxy", "0.0.0.0:8666", "arcade1:2424");
-//    final Proxy arcade2Proxy = toxiproxyClient.createProxy("arcade2Proxy", "0.0.0.0:8667", "arcade2:2424");
-//    final Proxy arcade3Proxy = toxiproxyClient.createProxy("arcade3Proxy", "0.0.0.0:8668", "arcade3:2424");
+    final Proxy arcade1Proxy = toxiproxyClient.createProxy("arcade1Proxy", "0.0.0.0:8666", "arcade1:2424");
+    final Proxy arcade2Proxy = toxiproxyClient.createProxy("arcade2Proxy", "0.0.0.0:8667", "arcade2:2424");
+    final Proxy arcade3Proxy = toxiproxyClient.createProxy("arcade3Proxy", "0.0.0.0:8668", "arcade3:2424");
 
     logger.info("Creating 3-node HA cluster");
-//    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any", network);
-//    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "majority", "any", network);
-//    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "majority", "any", network);
+    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}proxy:8667,{arcade3}proxy:8668", "majority", "any", network);
+    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}proxy:8666,{arcade3}proxy:8668", "majority", "any", network);
+    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}proxy:8666,{arcade2}proxy:8667", "majority", "any", network);
 
-    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}arcade2:2424,{arcade3}arcade3:2424", "majority", "any", network);
-    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}arcade1:2424,{arcade3}arcade3:2424", "majority", "any", network);
-    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}arcade1:2424,{arcade2}arcade2:2424", "majority", "any", network);
+//    GenericContainer<?> arcade1 = createArcadeContainer("arcade1", "{arcade2}arcade2:2424,{arcade3}arcade3:2424", "majority", "any", network);
+//    GenericContainer<?> arcade2 = createArcadeContainer("arcade2", "{arcade1}arcade1:2424,{arcade3}arcade3:2424", "majority", "any", network);
+//    GenericContainer<?> arcade3 = createArcadeContainer("arcade3", "{arcade1}arcade1:2424,{arcade2}arcade2:2424", "majority", "any", network);
 
     logger.info("Starting cluster");
     List<ServerWrapper> servers = startContainers();

@@ -64,7 +64,7 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
 
   @Test
   @Timeout(value = 15, unit = TimeUnit.MINUTES)
-  @Disabled
+//  @Disabled
   void testReplication() {
     checkDatabases();
 

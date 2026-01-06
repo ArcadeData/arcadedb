@@ -44,7 +44,7 @@ import java.util.concurrent.TimeUnit;
 public class SplitBrainIT extends ContainersTestTemplate {
 
   @Test
-  @Disabled
+//  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test split-brain prevention: verify minority partition cannot accept writes")
   void testSplitBrainPrevention() throws IOException, InterruptedException {
@@ -139,7 +139,7 @@ public class SplitBrainIT extends ContainersTestTemplate {
 
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
-  @Disabled
+//  @Disabled
   @DisplayName("Test 1+1+1 partition: verify no writes possible without quorum")
   void testCompletePartitionNoQuorum() throws IOException, InterruptedException {
     logger.info("Creating proxies for 3-node cluster");
@@ -256,7 +256,7 @@ public class SplitBrainIT extends ContainersTestTemplate {
   }
 
   @Test
-  @Disabled
+//  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test cluster reformation: verify proper leader election after partition healing")
   void testClusterReformation() throws IOException, InterruptedException {
@@ -340,7 +340,7 @@ public class SplitBrainIT extends ContainersTestTemplate {
   }
 
   @Test
-  @Disabled
+//  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test quorum loss recovery: verify cluster recovers after temporary quorum loss")
   void testQuorumLossRecovery() throws IOException, InterruptedException {

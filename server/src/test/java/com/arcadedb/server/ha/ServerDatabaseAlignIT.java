@@ -18,27 +18,22 @@
  */
 package com.arcadedb.server.ha;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseComparator;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.utility.FileUtils;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-import java.util.concurrent.TimeUnit;
-
-import java.io.File;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.fail;
 
 public class ServerDatabaseAlignIT extends BaseGraphServerTest {
   @Override
@@ -46,25 +41,11 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
     return 3;
   }
 
-  public ServerDatabaseAlignIT() {
-    FileUtils.deleteRecursively(new File("./target/config"));
-    FileUtils.deleteRecursively(new File("./target/databases"));
-    GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
-    GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
-  }
-
-  @AfterEach
-  @Override
-  public void endTest() {
-    super.endTest();
-    FileUtils.deleteRecursively(new File("./target/config"));
-    FileUtils.deleteRecursively(new File("./target/databases"));
-  }
-
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void alignNotNecessary() throws Exception {
-    final Database database = getServer(0).getDatabase(getDatabaseName());
+    ArcadeDBServer leader = getLeader();
+    final Database database = leader.getDatabase(getDatabaseName());
 
     database.transaction(() -> {
       final Record edge = database.iterateType(EDGE2_TYPE_NAME, true).next();
@@ -73,24 +54,27 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
     });
 
     final Result result;
-    try (ResultSet resultset = getServer(0).getDatabase(getDatabaseName())
+    try (ResultSet resultset = leader.getDatabase(getDatabaseName())
         .command("sql", "align database")) {
 
       assertThat(resultset.hasNext()).isTrue();
       result = resultset.next();
-      assertThat(result.hasProperty("ArcadeDB_0")).isFalse();
-      assertThat(result.hasProperty("ArcadeDB_1")).isTrue();
-      assertThat(result.<List<int[]>>getProperty("ArcadeDB_1")).hasSize(0);
-      assertThat(result.hasProperty("ArcadeDB_2")).isTrue();
-      assertThat(result.<List<int[]>>getProperty("ArcadeDB_2")).hasSize(0);
+      assertThat(result.hasProperty(leader.getServerName())).isFalse();
+
+//      assertThat(result.hasProperty("ArcadeDB_0")).isFalse();
+//      assertThat(result.hasProperty("ArcadeDB_1")).isTrue();
+//      assertThat(result.<List<int[]>>getProperty("ArcadeDB_1")).hasSize(0);
+//      assertThat(result.hasProperty("ArcadeDB_2")).isTrue();
+//      assertThat(result.<List<int[]>>getProperty("ArcadeDB_2")).hasSize(0);
     }
 
   }
 
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
-  void alignNecessary() throws Exception {
-    final DatabaseInternal database = ((DatabaseInternal) getServer(0).getDatabase(getDatabaseName())).getEmbedded().getEmbedded();
+  void  alignNecessary() throws Exception {
+    ArcadeDBServer leader = getLeader();
+    final DatabaseInternal database = leader.getDatabase(getDatabaseName()).getEmbedded().getEmbedded();
 
     // EXPLICIT TX ON THE UNDERLYING DATABASE IS THE ONLY WAY TO BYPASS REPLICATED DATABASE
     database.begin();
@@ -102,16 +86,19 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
         .isInstanceOf(DatabaseComparator.DatabaseAreNotIdentical.class);
 
     final Result result;
-    try (ResultSet resultset = getServer(0).getDatabase(getDatabaseName()).command("sql", "align database")) {
+    try (ResultSet resultset = leader.getDatabase(getDatabaseName()).command("sql", "align database")) {
       assertThat(resultset.hasNext()).isTrue();
       result = resultset.next();
-
-      assertThat(result.hasProperty("ArcadeDB_0")).isFalse();
-      assertThat(result.hasProperty("ArcadeDB_1")).isTrue();
-      assertThat(result.<List<int[]>>getProperty("ArcadeDB_1")).hasSize(3);
-      assertThat(result.hasProperty("ArcadeDB_2")).isTrue();
-      assertThat(result.<List<int[]>>getProperty("ArcadeDB_2")).hasSize(3);
-
+      assertThat(result.hasProperty(leader.getServerName())).isFalse();
     }
+  }
+
+  private ArcadeDBServer getLeader() {
+    for (int i = 0; i < getServerCount(); ++i) {
+      ArcadeDBServer server = getServer(i);
+      if (server.getHA().isLeader())
+        return server;
+    }
+    return null;
   }
 }

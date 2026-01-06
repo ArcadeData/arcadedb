@@ -59,7 +59,7 @@ public class ReplicationServerLeaderDownIT extends ReplicationServerIT {
   }
 
   @Test
-  @Disabled
+//  @Disabled
   @Timeout(value = 15, unit = TimeUnit.MINUTES)
   void testReplication() {
     checkDatabases();

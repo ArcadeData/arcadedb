@@ -43,7 +43,7 @@ import java.util.concurrent.TimeUnit;
 public class PacketLossIT extends ContainersTestTemplate {
 
   @Test
-  @Disabled
+//  @Disabled
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @DisplayName("Test low packet loss (5%): cluster should remain stable")
   void testLowPacketLoss() throws IOException {
