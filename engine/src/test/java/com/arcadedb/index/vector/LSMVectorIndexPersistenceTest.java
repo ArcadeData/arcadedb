@@ -91,15 +91,6 @@ class LSMVectorIndexPersistenceTest {
       database.close();
     }
 
-    // Check what files exist in the database directory
-    System.out.println("\nDatabase files after close:");
-    File dbDir = new File(DB_PATH);
-    if (dbDir.exists()) {
-      for (File f : dbDir.listFiles()) {
-        System.out.println("  - " + f.getName());
-      }
-    }
-
     // Verify schema.json contains the index definition
     String schemaPath = DB_PATH + "/schema.json";
     assertThat(new File(schemaPath).exists()).as("schema.json should exist").isTrue();
