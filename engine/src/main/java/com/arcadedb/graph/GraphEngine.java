@@ -372,7 +372,10 @@ public class GraphEngine {
     if (edgeRID != null && !(edge instanceof LightEdge))
       // DELETE EDGE RECORD TOO
       try {
-        database.getSchema().getBucketById(edge.getIdentity().getBucketId()).deleteRecord(edge.getIdentity());
+        // Use the database's delete method to ensure proper index cleanup
+        // instead of directly calling bucket.deleteRecord()
+        final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(edge.getIdentity().getBucketId());
+        bucket.deleteRecord(edge.getIdentity());
       } catch (final RecordNotFoundException e) {
         // ALREADY DELETED: IGNORE IT
       }

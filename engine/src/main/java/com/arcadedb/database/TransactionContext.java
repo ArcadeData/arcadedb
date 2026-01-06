@@ -64,6 +64,7 @@ public class TransactionContext implements Transaction {
   private final Map<RID, Record>                     modifiedRecordsCache  = new HashMap<>(1024);
   private final TransactionIndexContext              indexChanges;
   private final Map<PageId, ImmutablePage>           immutablePages        = new HashMap<>(64);
+  private final Set<RID>                             deletedRecordsInTx    = new HashSet<>();
   private       Map<PageId, MutablePage>             modifiedPages;
   private       Map<PageId, MutablePage>             newPages;
   private       boolean                              useWAL;
@@ -749,6 +750,7 @@ public class TransactionContext implements Transaction {
     immutableRecordsCache.clear();
     immutablePages.clear();
     bucketRecordDelta.clear();
+    deletedRecordsInTx.clear();
     txId = -1;
   }
 
@@ -875,5 +877,24 @@ public class TransactionContext implements Transaction {
 
     lockedFiles = explicitLockedFiles;
     explicitLockedFiles = null;
+  }
+
+  /**
+   * Marks a RID as deleted in the current transaction to prevent its reuse before commit.
+   *
+   * @param rid The RID that was deleted
+   */
+  public void addDeletedRecord(final RID rid) {
+    deletedRecordsInTx.add(rid);
+  }
+
+  /**
+   * Checks if a RID was deleted in the current transaction.
+   *
+   * @param rid The RID to check
+   * @return true if the RID was deleted in this transaction, false otherwise
+   */
+  public boolean isDeletedInTransaction(final RID rid) {
+    return deletedRecordsInTx.contains(rid);
   }
 }

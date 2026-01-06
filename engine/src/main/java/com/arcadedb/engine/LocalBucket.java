@@ -1003,6 +1003,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // POINTER = 0 MEANS DELETED
         page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0);
 
+        // Track deleted RID to prevent reuse within the same transaction
+        database.getTransaction().addDeletedRecord(rid);
+
         if (recordSize[0] > -1) {
           if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.HIGH.ordinal()) {
             // UPDATE THE STATISTICS
@@ -1583,9 +1586,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     for (int i = 0; i < pageAnalysis.totalRecordsInPage; i++) {
       final int recordPositionInPage = getRecordPositionInPage(pageAnalysis.page, i);
       if (recordPositionInPage == 0) {
-        // REUSE THE FIRST AVAILABLE POSITION FROM DELETED RECORD
-        if (pageAnalysis.availablePositionIndex == -1)
-          pageAnalysis.availablePositionIndex = i;
+        // Check if this position was deleted in the current transaction
+        final RID potentialRID = new RID(database, file.getFileId(),
+            ((long) pageAnalysis.page.getPageId().getPageNumber()) * maxRecordsInPage + i);
+
+        if (!database.getTransaction().isDeletedInTransaction(potentialRID)) {
+          // REUSE THE FIRST AVAILABLE POSITION FROM DELETED RECORD (from previous transactions only)
+          if (pageAnalysis.availablePositionIndex == -1)
+            pageAnalysis.availablePositionIndex = i;
+        }
       } else if (recordPositionInPage > pageAnalysis.lastRecordPositionInPage)
         pageAnalysis.lastRecordPositionInPage = recordPositionInPage;
     }
