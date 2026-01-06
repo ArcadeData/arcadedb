@@ -98,19 +98,19 @@ public class HAServer implements ServerPlugin {
   private final       Object                                         sendingLock                       = new Object();
 
   //  private final       Set<ServerInfo>                                serverAddressList                 = new HashSet<>();
-  private         HACluster             cluster;
-  private final   ServerRole            serverRole;
-  protected final String                replicationPath;
-  private         LeaderNetworkListener listener;
-  private         long                  lastConfigurationOutputHash = 0;
-  private         ServerInfo            serverAddress;
+  private          HACluster             cluster;
+  private final    ServerRole            serverRole;
+  protected final  String                replicationPath;
+  private          LeaderNetworkListener listener;
+  private          long                  lastConfigurationOutputHash = 0;
+  private          ServerInfo            serverAddress;
   //  private         String                replicasHTTPAddresses;
-  private         boolean               started;
-  private         Thread                electionThread;
-  private         ReplicationLogFile    replicationLogFile;
-  protected       Pair<Long, String>    lastElectionVote;
-  private final   LeaderFence           leaderFence;
-  private volatile long                 lastElectionStartTime       = 0;
+  private          boolean               started;
+  private          Thread                electionThread;
+  private          ReplicationLogFile    replicationLogFile;
+  protected        Pair<Long, String>    lastElectionVote;
+  private final    LeaderFence           leaderFence;
+  private volatile long                  lastElectionStartTime       = 0;
 
   public record ServerInfo(String host, int port, String alias, String actualHost, Integer actualPort) {
 
@@ -807,6 +807,7 @@ public class HAServer implements ServerPlugin {
    * rather than just using the SERVER_NAME configuration.
    *
    * @param actualPort The actual port the server is listening on
+   *
    * @return The alias from the server list, or SERVER_NAME as fallback
    */
   private String determineServerAlias(final int actualPort) {
@@ -820,6 +821,7 @@ public class HAServer implements ServerPlugin {
    * container restarts, while the actual Docker address (e.g., 81014e8c51c1:2424) changes.
    *
    * @param actualPort The actual port the server is listening on
+   *
    * @return Pair of (alias, configured ServerInfo) or (alias, null) if not found in server list
    */
   private Pair<String, ServerInfo> determineServerAliasAndAddress(final int actualPort) {
@@ -916,9 +918,9 @@ public class HAServer implements ServerPlugin {
    */
   private boolean isLocalhostVariant(final String host) {
     return host.equals("localhost") ||
-           host.equals("127.0.0.1") ||
-           host.equals("0.0.0.0") ||
-           host.equals("::1");
+        host.equals("127.0.0.1") ||
+        host.equals("0.0.0.0") ||
+        host.equals("::1");
   }
 
   /**
