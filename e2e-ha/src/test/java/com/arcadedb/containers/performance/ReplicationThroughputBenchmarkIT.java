@@ -43,21 +43,21 @@ class ReplicationThroughputBenchmarkIT extends ContainersTestTemplate {
   private static final int PHOTOS_PER_USER        = 10;
 
   @Test
-  @Disabled
+//  @Disabled
   @DisplayName("Benchmark: Replication throughput with MAJORITY quorum")
   void benchmarkReplicationThroughputMajorityQuorum() throws IOException {
     runThroughputBenchmark("majority", "Majority Quorum");
   }
 
   @Test
-  @Disabled
+//  @Disabled
   @DisplayName("Benchmark: Replication throughput with ALL quorum")
   void benchmarkReplicationThroughputAllQuorum() throws IOException {
     runThroughputBenchmark("all", "All Quorum");
   }
 
   @Test
-  @Disabled
+//  @Disabled
   @DisplayName("Benchmark: Replication throughput with NONE quorum")
   void benchmarkReplicationThroughputNoneQuorum() throws IOException {
     runThroughputBenchmark("none", "None Quorum");
