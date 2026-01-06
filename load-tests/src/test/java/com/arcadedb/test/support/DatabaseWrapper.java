@@ -28,6 +28,7 @@ import com.arcadedb.remote.grpc.RemoteGrpcServer;
 import com.arcadedb.utility.TableFormatter;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
+import org.awaitility.Awaitility;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -166,12 +167,19 @@ public class DatabaseWrapper implements AutoCloseable {
    * It checks if the types User, Photo, HasUploaded, FriendOf, and Likes exist.
    */
   public void checkSchema() {
-    RemoteSchema schema = db.getSchema();
-    assertThat(schema.existsType("Photo")).isTrue();
-    assertThat(schema.existsType("User")).isTrue();
-    assertThat(schema.existsType("HasUploaded")).isTrue();
-    assertThat(schema.existsType("FriendOf")).isTrue();
-    assertThat(schema.existsType("Likes")).isTrue();
+
+    Awaitility.await()
+        .atMost(5, TimeUnit.SECONDS)
+        .pollInterval(1, TimeUnit.SECONDS)
+        .until(() -> {
+          RemoteSchema schema = db.getSchema();
+          return schema.existsType("Photo") &&
+              schema.existsType("User") &&
+              schema.existsType("HasUploaded") &&
+              schema.existsType("FriendOf") &&
+              schema.existsType("Likes");
+        });
+
   }
 
   /**
