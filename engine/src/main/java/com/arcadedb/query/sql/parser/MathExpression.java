@@ -57,7 +57,11 @@ public class MathExpression extends SimpleNode {
     STAR(10) {
       @Override
       public Number apply(final Integer left, final Integer right) {
-        return left * right;
+        final long result = ((long) left) * right;
+        // Check if result fits in Integer range
+        if (result >= Integer.MIN_VALUE && result <= Integer.MAX_VALUE)
+          return (int) result;
+        return result;
       }
 
       @Override
