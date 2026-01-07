@@ -18,35 +18,14 @@
  */
 package com.arcadedb.integration.importer.vector;
 
-import com.github.jelmerk.knn.Item;
+import java.util.Arrays;
 
-import java.util.*;
+public record TextFloatsEmbedding(String id, float[] vector) {
 
-public class TextFloatsEmbedding implements Item<String, float[]> {
-  private final String  id;
-  private final float[] vector;
-
-  public TextFloatsEmbedding(String id, float[] vector) {
-    this.id = id;
-    this.vector = vector;
-  }
-
-  @Override
-  public String id() {
-    return id;
-  }
-
-  @Override
-  public float[] vector() {
-    return vector;
-  }
-
-  @Override
   public int dimensions() {
     return vector.length;
   }
 
-  @Override
   public String toString() {
     return "IndexedText{" + "id='" + id + '\'' + ", vector=" + Arrays.toString(vector) + '}';
   }

@@ -1727,8 +1727,8 @@ class LSMVectorIndexTest extends TestHelper {
   }
 
   /**
-   * Test for GitHub issue #2915: HNSW Graph Persistence Bug - File Not Closed
-   * This test verifies that the HNSW graph file is properly flushed to disk when the database closes.
+   * Test for GitHub issue #2915: Vector Index Graph Persistence Bug - File Not Closed
+   * This test verifies that the vector index graph file is properly flushed to disk when the database closes.
    *
    * Bug: graphFile.close() is never called in LSMVectorIndex.close() at line 2131,
    *      preventing graph data from being flushed to disk
@@ -1738,7 +1738,7 @@ class LSMVectorIndexTest extends TestHelper {
    * - Graph file should exist on filesystem with non-zero size
    */
   @Test
-  void testHNSWGraphFileNotClosedBug() throws Exception {
+  void testVectorIndexGraphFileNotClosedBug() throws Exception {
     final String dbPath = "databases/test-graph-file-not-closed";
     final java.io.File dbDir = new java.io.File(dbPath);
 
@@ -1757,7 +1757,7 @@ class LSMVectorIndexTest extends TestHelper {
           db.command("sql", "CREATE PROPERTY VectorTest.id STRING");
           db.command("sql", "CREATE PROPERTY VectorTest.embedding ARRAY_OF_FLOATS");
 
-          // Create LSM_VECTOR index with HNSW parameters
+          // Create LSM_VECTOR index
           db.command("sql", """
               CREATE INDEX ON VectorTest (embedding) LSM_VECTOR
               METADATA {
@@ -1768,7 +1768,7 @@ class LSMVectorIndexTest extends TestHelper {
               }""");
         });
 
-        // Insert test vectors (enough to build a meaningful HNSW graph)
+        // Insert test vectors (enough to build a meaningful vector index graph)
         db.transaction(() -> {
           for (int i = 0; i < 200; i++) {
             final float[] embedding = new float[128];
@@ -1870,7 +1870,7 @@ class LSMVectorIndexTest extends TestHelper {
   }
 
   /**
-   * Test HNSW graph file discovery mechanism.
+   * Test vector index graph file discovery mechanism.
    * This test verifies that graph files are properly discovered when loading an index.
    *
    * Bug: discoverAndLoadGraphFile() in LSMVectorIndex fails to find graph files

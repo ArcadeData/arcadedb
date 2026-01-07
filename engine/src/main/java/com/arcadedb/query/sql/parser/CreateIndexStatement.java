@@ -23,9 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
-import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
-import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
@@ -103,9 +101,6 @@ public class CreateIndexStatement extends DDLStatement {
       unique = true;
     } else if (typeAsString.equalsIgnoreCase("NOTUNIQUE")) {
       indexType = Schema.INDEX_TYPE.LSM_TREE;
-    } else if (typeAsString.equalsIgnoreCase("HNSW")) {
-      indexType = Schema.INDEX_TYPE.HNSW;
-      unique = true;
     } else if (typeAsString.equalsIgnoreCase("LSM_VECTOR")) {
       indexType = Schema.INDEX_TYPE.LSM_VECTOR;
       unique = false;

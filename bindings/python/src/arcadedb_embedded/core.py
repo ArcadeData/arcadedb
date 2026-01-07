@@ -10,7 +10,7 @@ from .exceptions import ArcadeDBError
 from .jvm import start_jvm
 from .results import ResultSet
 from .transactions import TransactionContext
-from .vector import VectorIndex, to_java_float_array
+from .vector import to_java_float_array
 
 
 class Database:
@@ -137,122 +137,6 @@ class Database:
             return self._java_db.getDatabasePath()
         except Exception as e:
             raise ArcadeDBError(f"Failed to get database path: {e}") from e
-
-    def create_vector_index(
-        self,
-        vertex_type: str,
-        vector_property: str,
-        dimensions: int,
-        id_property: str = "id",
-        edge_type: str = "VectorProximity",
-        deleted_property: str = "deleted",
-        distance_function: str = "cosine",
-        m: int = 16,
-        ef: int = 128,
-        ef_construction: int = 128,
-        max_items: int = 10000,
-    ) -> VectorIndex:
-        """
-        Create an HNSW vector index for similarity search.
-
-        This is a high-level convenience method that handles the complex
-        Java API for creating HNSW indexes.
-
-        Args:
-            vertex_type: Name of the vertex type containing vectors
-            vector_property: Name of the property storing vector arrays
-            dimensions: Dimensionality of the vectors
-            id_property: Property to use as unique ID (default: "id")
-            edge_type: Edge type for proximity graph (default: "VectorProximity")
-            deleted_property: Property marking deleted items (default: "deleted")
-            distance_function: Distance metric - "cosine", "euclidean", or
-                               "inner_product" (default: "cosine")
-            m: HNSW M parameter - number of bi-directional links per node
-               (default: 16)
-            ef: HNSW ef parameter - size of dynamic candidate list for search
-                (default: 128)
-            ef_construction: Size of dynamic candidate list during construction
-                             (default: 128)
-            max_items: Maximum number of items in the index (default: 10000)
-
-        Returns:
-            VectorIndex object for performing similarity searches
-
-        Example:
-            >>> import numpy as np
-            >>> with db.transaction():
-            ...     db.command("sql", "CREATE VERTEX TYPE Doc")
-            ...     db.command("sql",
-            ...                "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
-            ...     db.command("sql", "CREATE PROPERTY Doc.id STRING")
-            ...
-            >>> index = db.create_vector_index("Doc", "embedding", dimensions=384)
-            >>>
-            >>> # Add vectors (as NumPy arrays or Python lists)
-            >>> with db.transaction():
-            ...     for i, emb in enumerate(embeddings):
-            ...         vertex = db.new_vertex("Doc")
-            ...         vertex.set("id", f"doc_{i}")
-            ...         vertex.set("embedding", to_java_float_array(emb))
-            ...         vertex.save()
-            ...         index.add_vertex(vertex)
-            ...
-            >>> # Search
-            >>> query_vector = np.random.rand(384)
-            >>> neighbors = index.find_nearest(query_vector, k=5)
-        """
-        self._check_not_closed()
-        start_jvm()
-
-        from com.arcadedb.index.vector import HnswVectorIndexRAM
-        from com.arcadedb.schema import Type
-        from com.github.jelmerk.knn import DistanceFunctions
-
-        # Map distance function names to Java constants
-        distance_funcs = {
-            "cosine": DistanceFunctions.FLOAT_COSINE_DISTANCE,
-            "euclidean": DistanceFunctions.FLOAT_EUCLIDEAN_DISTANCE,
-            "inner_product": DistanceFunctions.FLOAT_INNER_PRODUCT,
-        }
-
-        if distance_function not in distance_funcs:
-            raise ArcadeDBError(
-                f"Invalid distance function: {distance_function}. "
-                f"Must be one of: {', '.join(distance_funcs.keys())}"
-            )
-
-        distance_func = distance_funcs[distance_function]
-
-        try:
-            # Build HNSW RAM index
-            builder = HnswVectorIndexRAM.newBuilder(
-                dimensions, distance_func, max_items
-            )
-            builder = builder.withM(m)
-            builder = builder.withEf(ef)
-            builder = builder.withEfConstruction(ef_construction)
-
-            hnsw_ram = builder.build()
-
-            # Create persistent index
-            persistent_builder = hnsw_ram.createPersistentIndex(self._java_db)
-            persistent_builder = persistent_builder.withVertexType(vertex_type)
-            persistent_builder = persistent_builder.withEdgeType(edge_type)
-            persistent_builder = persistent_builder.withVectorProperty(
-                vector_property, Type.ARRAY_OF_FLOATS
-            )
-            persistent_builder = persistent_builder.withIdProperty(id_property)
-            persistent_builder = persistent_builder.withDeletedProperty(
-                deleted_property
-            )
-
-            # Create the index
-            java_index = persistent_builder.create()
-
-            return VectorIndex(java_index, self)
-
-        except Exception as e:
-            raise ArcadeDBError(f"Failed to create vector index: {e}") from e
 
     def count_type(self, type_name: str) -> int:
         """

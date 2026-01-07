@@ -24,17 +24,17 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.Pair;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Returns the K neighbors from a vertex. This function requires a vector index has been created beforehand.
- * Supports both HnswVectorIndex and LSMVectorIndex.
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
@@ -67,15 +67,6 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       if (bucketIndexes != null && bucketIndexes.length > 0 && bucketIndexes[0] instanceof LSMVectorIndex lsmIndex) {
         return executeWithLSMVector(lsmIndex, key, limit, context);
       }
-    }
-
-    // Handle HnswVectorIndex (legacy)
-    if (index instanceof HnswVectorIndex vIndex) {
-      final List<Pair<Vertex, ? extends Number>> neighbors = vIndex.findNeighborsFromId(key, limit, null);
-      final ArrayList<Object> result = new ArrayList<>(neighbors.size());
-      for (Pair<Vertex, ? extends Number> n : neighbors)
-        result.add(Map.of("vertex", n.getFirst(), "distance", n.getSecond()));
-      return result;
     }
 
     throw new CommandSQLParsingException(
