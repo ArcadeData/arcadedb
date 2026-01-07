@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
@@ -115,7 +116,7 @@ class DatabaseGetSizeTest extends TestHelper {
       productType.createProperty("price", Type.DOUBLE);
 
       // Create an index
-      database.getSchema().createTypeIndex(com.arcadedb.schema.Schema.INDEX_TYPE.LSM_TREE, true, "Product", "sku");
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Product", "sku");
     });
 
     final long sizeBeforeInsert = database.getSize();

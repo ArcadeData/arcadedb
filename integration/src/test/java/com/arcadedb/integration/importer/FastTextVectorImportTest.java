@@ -18,15 +18,18 @@
  */
 package com.arcadedb.integration.importer;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class FastTextVectorImportTest extends com.arcadedb.TestHelper
+class FastTextVectorImportTest extends TestHelper
 {
   @Test
   void vectorNeighborsQuery() {
@@ -82,15 +85,15 @@ class FastTextVectorImportTest extends com.arcadedb.TestHelper
         final Result result = rs.next();
         final Object neighbors = result.getProperty("neighbors");
         assertThat(neighbors).isNotNull();
-        assertThat(neighbors).isInstanceOf(java.util.List.class);
+        assertThat(neighbors).isInstanceOf(List.class);
 
-        final java.util.List<?> neighborsList = (java.util.List<?>) neighbors;
+        final List<?> neighborsList = (List<?>) neighbors;
         assertThat(neighborsList).hasSizeLessThanOrEqualTo(5);
 
         // Verify each neighbor has vertex and distance
         for (Object neighbor : neighborsList) {
-            assertThat(neighbor).isInstanceOf(java.util.Map.class);
-            final java.util.Map<String, Object> neighborMap = (java.util.Map<String, Object>) neighbor;
+            assertThat(neighbor).isInstanceOf(Map.class);
+            final Map<String, Object> neighborMap = (Map<String, Object>) neighbor;
             assertThat(neighborMap).containsKey("vertex");
             assertThat(neighborMap).containsKey("distance");
             assertThat(neighborMap.get("distance")).isInstanceOf(Number.class);
@@ -111,9 +114,9 @@ class FastTextVectorImportTest extends com.arcadedb.TestHelper
         final Result result3 = rs3.next();
         final Object neighbors3 = result3.getProperty("neighbors");
         assertThat(neighbors3).isNotNull();
-        assertThat(neighbors3).isInstanceOf(java.util.List.class);
+        assertThat(neighbors3).isInstanceOf(List.class);
 
-        final java.util.List<?> neighborsList3 = (java.util.List<?>) neighbors3;
+        final List<?> neighborsList3 = (List<?>) neighbors3;
         assertThat(neighborsList3).hasSizeLessThanOrEqualTo(3);
 
         rs3.close();

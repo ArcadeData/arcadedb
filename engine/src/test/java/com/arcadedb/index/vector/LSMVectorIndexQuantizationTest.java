@@ -19,7 +19,9 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
@@ -75,7 +77,7 @@ class LSMVectorIndexQuantizationTest extends TestHelper {
 
       // Verify search works
       final float[] queryVector = generateTestVector(DIMENSIONS, 0);
-      final List<Pair<com.arcadedb.database.RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
+      final List<Pair<RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
 
       assertThat(results).isNotEmpty();
       assertThat(results.size()).isLessThanOrEqualTo(10);
@@ -117,14 +119,14 @@ class LSMVectorIndexQuantizationTest extends TestHelper {
 
       // Verify search works with quantized vectors
       final float[] queryVector = generateTestVector(DIMENSIONS, 0);
-      final List<Pair<com.arcadedb.database.RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
+      final List<Pair<RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
 
       assertThat(results).isNotEmpty();
       assertThat(results.size()).isLessThanOrEqualTo(10);
 
       // Verify we can retrieve the top result
-      final com.arcadedb.database.RID topResultRid = results.get(0).getFirst();
-      final com.arcadedb.database.Document topDoc = topResultRid.asDocument();
+      final RID topResultRid = results.get(0).getFirst();
+      final Document topDoc = topResultRid.asDocument();
       assertThat(topDoc).isNotNull();
       assertThat(topDoc.get("id")).isNotNull();
     });
@@ -165,7 +167,7 @@ class LSMVectorIndexQuantizationTest extends TestHelper {
 
       // Verify search works with binary quantized vectors
       final float[] queryVector = generateTestVector(DIMENSIONS, 0);
-      final List<Pair<com.arcadedb.database.RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
+      final List<Pair<RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
 
       assertThat(results).isNotEmpty();
       assertThat(results.size()).isLessThanOrEqualTo(10);
@@ -249,7 +251,7 @@ class LSMVectorIndexQuantizationTest extends TestHelper {
       final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Document[embedding]");
       final LSMVectorIndex lsmIndex = (LSMVectorIndex) index.getIndexesOnBuckets()[0];
 
-      final List<Pair<com.arcadedb.database.RID, Float>> results = lsmIndex.findNeighborsFromVector(vector1, 10);
+      final List<Pair<RID, Float>> results = lsmIndex.findNeighborsFromVector(vector1, 10);
 
       // Verify search returns results (detailed accuracy testing requires more investigation)
       assertThat(results).isNotEmpty();

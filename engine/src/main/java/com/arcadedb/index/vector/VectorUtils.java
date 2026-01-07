@@ -18,6 +18,8 @@
  */
 package com.arcadedb.index.vector;
 
+import java.util.List;
+
 /**
  * Utility methods for working with vectors.
  */
@@ -101,7 +103,7 @@ public final class VectorUtils {
   public static float[] convertToFloatArray(final Object vectorObj) {
     if (vectorObj instanceof float[] f)
       return f;
-    else if (vectorObj instanceof java.util.List<?> list) {
+    else if (vectorObj instanceof List<?> list) {
       final float[] vector = new float[list.size()];
       for (int i = 0; i < list.size(); i++)
         vector[i] = ((Number) list.get(i)).floatValue();

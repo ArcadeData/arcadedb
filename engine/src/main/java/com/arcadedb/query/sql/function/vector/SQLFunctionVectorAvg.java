@@ -22,6 +22,10 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import io.github.jbellis.jvector.vector.VectorUtil;
+import io.github.jbellis.jvector.vector.VectorizationProvider;
+import io.github.jbellis.jvector.vector.types.VectorFloat;
+
 /**
  * Aggregate function that computes element-wise average of vectors (centroid).
  * Returns a vector where each component is the average of corresponding components across all input vectors.
@@ -84,14 +88,14 @@ public class SQLFunctionVectorAvg extends SQLFunctionVectorAbstract {
 
     // Use JVector's SIMD-optimized scaling for averaging (2-3x faster with Vector API)
     try {
-      final io.github.jbellis.jvector.vector.VectorizationProvider vp = io.github.jbellis.jvector.vector.VectorizationProvider.getInstance();
+      final VectorizationProvider vp = VectorizationProvider.getInstance();
 
       // Create result as copy of sum vector
       final float[] avgVector = sumVector.clone();
-      final io.github.jbellis.jvector.vector.types.VectorFloat<?> avgVec = vp.getVectorTypeSupport().createFloatVector(avgVector);
+      final VectorFloat<?> avgVec = vp.getVectorTypeSupport().createFloatVector(avgVector);
 
       // Scale by 1/count to get average
-      io.github.jbellis.jvector.vector.VectorUtil.scale(avgVec, 1.0f / count);
+      VectorUtil.scale(avgVec, 1.0f / count);
 
       // Extract result
       for (int i = 0; i < avgVector.length; i++) {

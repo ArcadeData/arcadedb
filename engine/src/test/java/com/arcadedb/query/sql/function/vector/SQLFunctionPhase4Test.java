@@ -19,7 +19,10 @@
 package com.arcadedb.query.sql.function.vector;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -81,7 +84,7 @@ class SQLFunctionPhase4Test extends TestHelper {
         new Object[] { v1, v2 },
         context);
 
-    assertThat(result).isCloseTo(0.24f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result).isCloseTo(0.24f, Offset.offset(0.001f));
   }
 
   @Test
@@ -98,7 +101,7 @@ class SQLFunctionPhase4Test extends TestHelper {
         new Object[] { v, v },
         context);
 
-    assertThat(result).isCloseTo(0.34f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result).isCloseTo(0.34f, Offset.offset(0.001f));
   }
 
   @Test
@@ -109,7 +112,7 @@ class SQLFunctionPhase4Test extends TestHelper {
     // Magnitude: sqrt(0.5^2 + 0.3^2) = sqrt(0.25 + 0.09) = sqrt(0.34) ≈ 0.583
     final float magnitude = v.magnitude();
 
-    assertThat(magnitude).isCloseTo((float) Math.sqrt(0.34), org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(magnitude).isCloseTo((float) Math.sqrt(0.34), Offset.offset(0.001f));
   }
 
   @Test
@@ -178,8 +181,8 @@ class SQLFunctionPhase4Test extends TestHelper {
 
     // Check normalized values
     final float mag = (float) Math.sqrt(0.34);
-    assertThat(normalized.get(0)).isCloseTo(0.5f / mag, org.assertj.core.data.Offset.offset(0.001f));
-    assertThat(normalized.get(2)).isCloseTo(0.3f / mag, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(normalized.get(0)).isCloseTo(0.5f / mag, Offset.offset(0.001f));
+    assertThat(normalized.get(2)).isCloseTo(0.3f / mag, Offset.offset(0.001f));
   }
 
   // ========== Phase 4.2: Multi-Vector Tests ==========
@@ -195,7 +198,7 @@ class SQLFunctionPhase4Test extends TestHelper {
         new Object[] { new float[] { 0.9f, 0.7f, 0.8f }, "MAX" },
         context);
 
-    assertThat(result).isCloseTo(0.9f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result).isCloseTo(0.9f, Offset.offset(0.001f));
   }
 
   @Test
@@ -209,7 +212,7 @@ class SQLFunctionPhase4Test extends TestHelper {
         new Object[] { new float[] { 0.9f, 0.7f, 0.8f }, "MIN" },
         context);
 
-    assertThat(result).isCloseTo(0.7f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result).isCloseTo(0.7f, Offset.offset(0.001f));
   }
 
   @Test
@@ -223,7 +226,7 @@ class SQLFunctionPhase4Test extends TestHelper {
         new Object[] { new float[] { 0.9f, 0.7f, 0.8f }, "AVG" },
         context);
 
-    assertThat(result).isCloseTo(0.8f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result).isCloseTo(0.8f, Offset.offset(0.001f));
   }
 
   @Test
@@ -238,7 +241,7 @@ class SQLFunctionPhase4Test extends TestHelper {
         new Object[] { new float[] { 0.9f, 0.7f, 0.8f }, "WEIGHTED", new float[] { 0.5f, 0.3f, 0.2f } },
         context);
 
-    assertThat(result).isCloseTo(0.82f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result).isCloseTo(0.82f, Offset.offset(0.001f));
   }
 
   @Test
@@ -252,7 +255,7 @@ class SQLFunctionPhase4Test extends TestHelper {
         new Object[] { new float[] { 0.75f }, "AVG" },
         context);
 
-    assertThat(result).isCloseTo(0.75f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result).isCloseTo(0.75f, Offset.offset(0.001f));
   }
 
   @Test
@@ -266,7 +269,7 @@ class SQLFunctionPhase4Test extends TestHelper {
         new Object[] { new float[] { 0.9f, 0.7f, 0.8f }, "max" },
         context);
 
-    assertThat(result).isCloseTo(0.9f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result).isCloseTo(0.9f, Offset.offset(0.001f));
   }
 
   // ========== Error Handling Tests ==========
@@ -280,7 +283,7 @@ class SQLFunctionPhase4Test extends TestHelper {
     assertThatThrownBy(() -> function.execute(null, null, null,
         new Object[] { new int[] { 0, 2 }, new float[] { 0.5f } },
         context))
-        .isInstanceOf(com.arcadedb.exception.CommandSQLParsingException.class)
+        .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("same length");
   }
 
@@ -316,7 +319,7 @@ class SQLFunctionPhase4Test extends TestHelper {
     assertThatThrownBy(() -> function.execute(null, null, null,
         new Object[] { new float[] { 0.5f }, "INVALID" },
         context))
-        .isInstanceOf(com.arcadedb.exception.CommandSQLParsingException.class)
+        .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("Unknown fusion method");
   }
 
@@ -329,7 +332,7 @@ class SQLFunctionPhase4Test extends TestHelper {
     assertThatThrownBy(() -> function.execute(null, null, null,
         new Object[] { new float[] { 0.5f, 0.7f }, "WEIGHTED", new float[] { 0.5f } },
         context))
-        .isInstanceOf(com.arcadedb.exception.CommandSQLParsingException.class)
+        .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("same length");
   }
 

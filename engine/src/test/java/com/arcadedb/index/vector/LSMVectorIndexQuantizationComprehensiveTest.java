@@ -19,7 +19,9 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
@@ -95,7 +97,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
 
       // Verify search works
       final float[] queryVector = generateTestVector(dimensions, 0);
-      final List<Pair<com.arcadedb.database.RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
+      final List<Pair<RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
 
       // For BINARY quantization, search may return fewer results due to lossy compression
       // For INT8, we expect results
@@ -105,8 +107,8 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
       assertThat(results.size()).isLessThanOrEqualTo(10);
 
       // Verify we can retrieve the documents (if any results)
-      for (Pair<com.arcadedb.database.RID, Float> result : results) {
-        final com.arcadedb.database.Document doc = result.getFirst().asDocument();
+      for (Pair<RID, Float> result : results) {
+        final Document doc = result.getFirst().asDocument();
         assertThat(doc).isNotNull();
         assertThat(doc.get("id")).isNotNull();
       }
@@ -157,7 +159,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
 
       // Verify search still works after reload
       final float[] queryVector = generateTestVector(dimensions, 0);
-      final List<Pair<com.arcadedb.database.RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
+      final List<Pair<RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
 
       assertThat(results).isNotEmpty();
       assertThat(results.size()).isLessThanOrEqualTo(10);
@@ -208,7 +210,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
 
       // Verify search still works after reload
       final float[] queryVector = generateTestVector(dimensions, 0);
-      final List<Pair<com.arcadedb.database.RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
+      final List<Pair<RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
 
       assertThat(results).isNotEmpty();
       assertThat(results.size()).isLessThanOrEqualTo(10);
@@ -249,7 +251,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
 
       // Verify we can perform searches with INT8 quantization
       final float[] queryVector = generateTestVector(dimensions, 0);
-      final List<Pair<com.arcadedb.database.RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
+      final List<Pair<RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
 
       // Just verify search returns results (not checking specific accuracy)
       assertThat(results).isNotEmpty();
@@ -291,12 +293,12 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
 
       // Verify we can perform searches with BINARY quantization without crashing
       final float[] queryVector = generateTestVector(dimensions, 0);
-      final List<Pair<com.arcadedb.database.RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
+      final List<Pair<RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
 
       // BINARY quantization is lossy and may have lower recall
       // Just verify it doesn't crash and returns valid results (if any)
       assertThat(results.size()).isLessThanOrEqualTo(10);
-      for (Pair<com.arcadedb.database.RID, Float> result : results) {
+      for (Pair<RID, Float> result : results) {
         assertThat(result.getFirst()).isNotNull();
         assertThat(result.getSecond()).isNotNull();
       }
@@ -349,7 +351,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
       assertThat(lsmIndex.countEntries()).isEqualTo(numVectors);
 
       final float[] queryVector = generateTestVector(dimensions, 0);
-      final List<Pair<com.arcadedb.database.RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 5);
+      final List<Pair<RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 5);
 
       // Just verify search works, don't check specific results
       assertThat(results.size()).isLessThanOrEqualTo(5);
@@ -390,7 +392,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
       assertThat(lsmIndex.countEntries()).isEqualTo(numVectors);
 
       final float[] queryVector = generateTestVector(dimensions, 0);
-      final List<Pair<com.arcadedb.database.RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 5);
+      final List<Pair<RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 5);
 
       // Just verify search works, don't check specific results
       assertThat(results.size()).isLessThanOrEqualTo(5);

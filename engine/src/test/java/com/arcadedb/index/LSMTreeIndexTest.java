@@ -25,7 +25,9 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -1230,7 +1232,7 @@ class LSMTreeIndexTest extends TestHelper {
 
     try {
       // Set custom logger to capture log messages
-      LogManager.instance().setLogger(new com.arcadedb.log.Logger() {
+      LogManager.instance().setLogger(new Logger() {
         @Override
         public void log(final Object requester, final Level level, final String message, final Throwable exception, final String context,
             final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6,
@@ -1301,7 +1303,7 @@ class LSMTreeIndexTest extends TestHelper {
 
     } finally {
       // Restore default logger
-      LogManager.instance().setLogger(new com.arcadedb.log.DefaultLogger());
+      LogManager.instance().setLogger(new DefaultLogger());
     }
   }
 }

@@ -19,11 +19,20 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.log.LogManager;
+
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
+
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 /**
  * Implements JVector's RandomAccessVectorValues interface with lazy-loading from ArcadeDB pages.
@@ -43,22 +52,22 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
    * Better than LRU for graph building because vectors are accessed many times during HNSW construction.
    */
   private static class BoundedVectorCache {
-    private final java.util.concurrent.ConcurrentHashMap<Integer, CacheEntry> cache;
+    private final ConcurrentHashMap<Integer, CacheEntry> cache;
     private final int                                                         maxSize;
 
     private static class CacheEntry {
       final VectorFloat<?>                            vector;
-      final java.util.concurrent.atomic.AtomicInteger accessCount;
+      final AtomicInteger accessCount;
 
       CacheEntry(final VectorFloat<?> vector) {
         this.vector = vector;
-        this.accessCount = new java.util.concurrent.atomic.AtomicInteger(1);
+        this.accessCount = new AtomicInteger(1);
       }
     }
 
     public BoundedVectorCache(final int maxSize) {
       this.maxSize = maxSize;
-      this.cache = new java.util.concurrent.ConcurrentHashMap<>(Math.min(maxSize, 16));
+      this.cache = new ConcurrentHashMap<>(Math.min(maxSize, 16));
     }
 
     public VectorFloat<?> get(final int vectorId) {
@@ -79,10 +88,10 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
 
     private void evictLeastFrequentlyUsed() {
       // Find entry with lowest access count
-      java.util.Map.Entry<Integer, CacheEntry> minEntry = null;
+      Map.Entry<Integer, CacheEntry> minEntry = null;
       int minCount = Integer.MAX_VALUE;
 
-      for (final java.util.Map.Entry<Integer, CacheEntry> entry : cache.entrySet()) {
+      for (final Map.Entry<Integer, CacheEntry> entry : cache.entrySet()) {
         final int count = entry.getValue().accessCount.get();
         if (count < minCount) {
           minCount = count;
@@ -104,7 +113,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   private final int                                                        dimensions;
   private final String                                                     vectorPropertyName;
   private final VectorLocationIndex                                        vectorIndex;      // Used for live reads
-  private final java.util.Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot;   // Used for graph building
+  private final Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot;   // Used for graph building
   private final int[]                                                      ordinalToVectorId;
   private final LSMVectorIndex                                             lsmIndex;         // Used for reading quantized vectors
 
@@ -133,20 +142,20 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
 
   // Constructor for graph building (uses immutable snapshot + cache for performance)
   public ArcadePageVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
-      final java.util.Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot, final int[] ordinalToVectorId) {
+      final Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot, final int[] ordinalToVectorId) {
     this(database, dimensions, vectorPropertyName, vectorSnapshot, ordinalToVectorId, null, 10000);
   }
 
   // Constructor for graph building with LSM index reference (for quantization support)
   public ArcadePageVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
-      final java.util.Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot, final int[] ordinalToVectorId,
+      final Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot, final int[] ordinalToVectorId,
       final LSMVectorIndex lsmIndex) {
     this(database, dimensions, vectorPropertyName, vectorSnapshot, ordinalToVectorId, lsmIndex, 10000);
   }
 
   // Constructor for graph building with configurable cache size
   public ArcadePageVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
-      final java.util.Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot, final int[] ordinalToVectorId,
+      final Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot, final int[] ordinalToVectorId,
       final LSMVectorIndex lsmIndex, final int cacheSize) {
     this.database = database;
     this.dimensions = dimensions;
@@ -210,7 +219,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
         }
       } catch (final Exception e) {
         // Fall through to document-based retrieval
-        com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+        LogManager.instance().log(this, Level.WARNING,
             "Error reading quantized vector from index pages (ordinal=%d), falling back to document: %s",
             ordinal, e.getMessage());
       }
@@ -218,14 +227,14 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
 
     // Fall back to reading from document (for non-quantized indexes or if quantized read failed)
     try {
-      final com.arcadedb.database.Record record = database.lookupByRID(loc.rid, false);
+      final Record record = database.lookupByRID(loc.rid, false);
 
-      final com.arcadedb.database.Document doc = (com.arcadedb.database.Document) record;
+      final Document doc = (Document) record;
       final Object vectorObj = doc.get(vectorPropertyName);
       if (vectorObj == null) {
         // Log the first few failures to help debug
         if (ordinal < 5) {
-          com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.SEVERE,
+          LogManager.instance().log(this, Level.SEVERE,
               "Vector property '%s' not found in document %s (ordinal=%d). Available properties: %s",
               vectorPropertyName, loc.rid, ordinal, doc.getPropertyNames());
         }
@@ -234,14 +243,14 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
 
       final float[] vector = VectorUtils.convertToFloatArray(vectorObj);
       if (vector == null) {
-        com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+        LogManager.instance().log(this, Level.WARNING,
             "Vector property '%s' is not float[] or List (type=%s, RID=%s)",
             vectorPropertyName, vectorObj.getClass().getName(), loc.rid);
         return null;
       }
 
       if (vector.length != dimensions) {
-        com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+        LogManager.instance().log(this, Level.WARNING,
             "Vector dimension mismatch: expected %d, got %d (RID=%s)",
             dimensions, vector.length, loc.rid);
         return null;
@@ -271,7 +280,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
       // DELETED RECORD
       return null;
     } catch (final Exception e) {
-      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+      LogManager.instance().log(this, Level.WARNING,
           "Error reading vector from document (ordinal=%d, RID=%s): %s", ordinal, loc.rid, e.getMessage());
       return null;
     }

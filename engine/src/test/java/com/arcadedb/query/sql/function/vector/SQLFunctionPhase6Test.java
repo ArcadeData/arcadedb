@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.function.vector;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -390,7 +391,7 @@ class SQLFunctionPhase6Test extends TestHelper {
     assertThatThrownBy(() -> function.execute(null, null, null,
         new Object[] { new float[] { 1.0f }, "INVALID" },
         context))
-        .isInstanceOf(com.arcadedb.exception.CommandSQLParsingException.class)
+        .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("Unknown format");
   }
 
@@ -416,7 +417,7 @@ class SQLFunctionPhase6Test extends TestHelper {
     assertThatThrownBy(() -> function.execute(null, null, null,
         new Object[] { new float[] { 0.1f, 0.2f }, -1.0f },
         context))
-        .isInstanceOf(com.arcadedb.exception.CommandSQLParsingException.class)
+        .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("Threshold must be >= 0");
   }
 
@@ -429,7 +430,7 @@ class SQLFunctionPhase6Test extends TestHelper {
     assertThatThrownBy(() -> function.execute(null, null, null,
         new Object[] { new float[] { 1, 2, 3 }, 10, 5 },
         context))
-        .isInstanceOf(com.arcadedb.exception.CommandSQLParsingException.class)
+        .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("must be <=");
   }
 }

@@ -18,11 +18,15 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
+import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
@@ -295,7 +299,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Initialize compaction fields
       this.currentMutablePages = new AtomicInteger(0); // No page0 - start with 0 pages
       this.minPagesToScheduleACompaction = database.getConfiguration()
-          .getValueAsInteger(com.arcadedb.GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
+          .getValueAsInteger(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
       this.compactedSubIndex = null;
 
       // Create the component that handles page storage
@@ -350,7 +354,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // Initialize compaction fields
     this.currentMutablePages = new AtomicInteger(mutable.getTotalPages());
     this.minPagesToScheduleACompaction = database.getConfiguration()
-        .getValueAsInteger(com.arcadedb.GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
+        .getValueAsInteger(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
 
     // Discover and load compacted sub-index file if it exists (critical for replicas after compaction)
     LogManager.instance().log(this, Level.FINE, "Attempting to discover compacted sub-index for index: %s", null, name);
@@ -526,8 +530,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         if (file != null && LSMVectorIndexGraphFile.FILE_EXT.equals(file.getFileExtension()) && file.getComponentName()
             .equals(expectedGraphFileName)) {
 
-          final int pageSize = file instanceof com.arcadedb.engine.PaginatedComponentFile ?
-              ((com.arcadedb.engine.PaginatedComponentFile) file).getPageSize() :
+          final int pageSize = file instanceof PaginatedComponentFile ?
+              ((PaginatedComponentFile) file).getPageSize() :
               mutable.getPageSize();
 
           final LSMVectorIndexGraphFile graphFile = new LSMVectorIndexGraphFile(database, file.getComponentName(),
@@ -648,7 +652,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // CRITICAL FIX: Collect vectors DIRECTLY from pages instead of from vectorIndex.
     // This avoids race conditions where concurrent replication adds entries to vectorIndex
     // that don't yet exist on disk pages. We iterate pages and read what's actually persisted.
-    final java.util.Map<RID, VectorEntryForGraphBuild> ridToLatestVector = new java.util.HashMap<>();
+    final Map<RID, VectorEntryForGraphBuild> ridToLatestVector = new HashMap<>();
     int totalEntriesRead = 0;
     int filteredZeroVectors = 0;
     int filteredDeletedVectors = 0;
@@ -853,9 +857,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         if (loc != null && !loc.deleted) {
           // Validate that the document still exists and has a valid vector
           try {
-            final com.arcadedb.database.Record record = getDatabase().lookupByRID(loc.rid, false);
+            final Record record = getDatabase().lookupByRID(loc.rid, false);
             if (record != null) {
-              final com.arcadedb.database.Document doc = (com.arcadedb.database.Document) record;
+              final Document doc = (Document) record;
               final Object vectorObj = doc.get(vectorProp);
 
               final float[] vector = VectorUtils.convertToFloatArray(vectorObj);
@@ -1576,7 +1580,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private float calculateMedian(final float[] values) {
     final float[] sorted = values.clone();
-    java.util.Arrays.sort(sorted);
+    Arrays.sort(sorted);
     if (sorted.length % 2 == 0) {
       return (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2.0f;
     } else {
@@ -1902,7 +1906,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                   -score;
               default -> score;
             };
-            results.add(new com.arcadedb.utility.Pair<>(loc.rid, distance));
+            results.add(new Pair<>(loc.rid, distance));
           } else {
             skippedDeletedOrNull++;
           }
@@ -2134,14 +2138,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
           "Vector dimension " + vector.length + " does not match index dimension " + metadata.dimensions);
 
     final RID rid = values[0];
-    final com.arcadedb.database.TransactionContext.STATUS txStatus = getDatabase().getTransaction().getStatus();
+    final TransactionContext.STATUS txStatus = getDatabase().getTransaction().getStatus();
 
-    if (txStatus == com.arcadedb.database.TransactionContext.STATUS.BEGUN) {
+    if (txStatus == TransactionContext.STATUS.BEGUN) {
       // During BEGUN: Register with TransactionIndexContext for file locking and transaction tracking
       // Wrap vector in ComparableVector for TransactionIndexContext's TreeMap
       // TransactionIndexContext will replay this operation during commit, which will hit the else branch below
       getDatabase().getTransaction()
-          .addIndexOperation(this, com.arcadedb.database.TransactionIndexContext.IndexKey.IndexKeyOperation.ADD,
+          .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.ADD,
               new Object[] { new ComparableVector(vector) }, rid);
 
     } else {
@@ -2183,14 +2187,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
   @Override
   public void remove(final Object[] keys, final Identifiable value) {
     final RID rid = value.getIdentity();
-    final com.arcadedb.database.TransactionContext.STATUS txStatus = getDatabase().getTransaction().getStatus();
+    final TransactionContext.STATUS txStatus = getDatabase().getTransaction().getStatus();
 
-    if (txStatus == com.arcadedb.database.TransactionContext.STATUS.BEGUN) {
+    if (txStatus == TransactionContext.STATUS.BEGUN) {
       // During BEGUN: Register with TransactionIndexContext for file locking and transaction tracking
       // Use a dummy ComparableVector since we don't have the vector value for removes
       // TransactionIndexContext will replay this operation during commit, which will hit the else branch below
       getDatabase().getTransaction()
-          .addIndexOperation(this, com.arcadedb.database.TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
+          .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
               new Object[] { new ComparableVector(new float[metadata.dimensions]) }, rid);
 
     } else {
@@ -2638,7 +2642,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
           // Check if we need to start a transaction
           final boolean startedTransaction =
-              db.getTransaction().getStatus() != com.arcadedb.database.TransactionContext.STATUS.BEGUN;
+              db.getTransaction().getStatus() != TransactionContext.STATUS.BEGUN;
           if (startedTransaction)
             db.getWrappedDatabaseInstance().begin();
 
@@ -2682,7 +2686,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             totalRecords = total.get();
           } catch (final Exception e) {
             // Rollback if we started a transaction
-            if (startedTransaction && db.getTransaction().getStatus() == com.arcadedb.database.TransactionContext.STATUS.BEGUN)
+            if (startedTransaction && db.getTransaction().getStatus() == TransactionContext.STATUS.BEGUN)
               db.getWrappedDatabaseInstance().rollback();
             throw e;
           }
@@ -2869,7 +2873,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *
    * @param page The page that was just replicated and written
    */
-  public void applyReplicatedPageUpdate(final com.arcadedb.engine.MutablePage page) {
+  public void applyReplicatedPageUpdate(final MutablePage page) {
     try {
       final int pageNum = page.getPageId().getPageNumber();
       final int fileId = page.getPageId().getFileId();
@@ -2969,7 +2973,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return metadata.locationCacheSize;
     }
     return mutable.getDatabase().getConfiguration()
-        .getValueAsInteger(com.arcadedb.GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE);
+        .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE);
   }
 
   /**
@@ -2984,7 +2988,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (metadata != null && metadata.locationCacheSize > -1) {
       return metadata.locationCacheSize;
     }
-    return database.getConfiguration().getValueAsInteger(com.arcadedb.GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE);
+    return database.getConfiguration().getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE);
   }
 
   /**
@@ -2997,7 +3001,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return metadata.graphBuildCacheSize;
     }
     return mutable.getDatabase().getConfiguration()
-        .getValueAsInteger(com.arcadedb.GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE);
+        .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE);
   }
 
   /**
@@ -3010,7 +3014,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return metadata.mutationsBeforeRebuild;
     }
     return mutable.getDatabase().getConfiguration()
-        .getValueAsInteger(com.arcadedb.GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD);
+        .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD);
   }
 
   /**

@@ -72,7 +72,7 @@ class GraphRAGTest extends TestHelper {
               content = 'ArcadeDB is a multi-model database supporting...',
               embedding = %s,
           timestamp = sysdate();
-          """, java.util.Arrays.toString(sampleVector)));
+          """, Arrays.toString(sampleVector)));
 
       // Create entities mentioned in the document
       database.command("sql", "CREATE VERTEX User SET name = 'NASA', role = 'Creator'");
