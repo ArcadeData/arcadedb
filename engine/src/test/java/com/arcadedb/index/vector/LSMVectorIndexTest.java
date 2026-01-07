@@ -18,18 +18,34 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
+import com.arcadedb.engine.PageId;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
+import com.arcadedb.utility.Pair;
+
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -64,7 +80,7 @@ class LSMVectorIndexTest extends TestHelper {
     });
 
     // Verify the index was created
-    final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema()
         .getIndexByName("VectorVertex[embedding]");
     assertThat(typeIndex).as("Index should be created").isNotNull();
 
@@ -134,7 +150,7 @@ class LSMVectorIndexTest extends TestHelper {
 
     // Verify index was created
     // Note: TypeIndex is created with default name based on type and properties
-    final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema()
         .getIndexByName("VectorDoc[embedding]");
     assertThat(typeIndex).isNotNull();
 
@@ -192,7 +208,7 @@ class LSMVectorIndexTest extends TestHelper {
       }
     });
 
-    final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema()
         .getIndexByName("TestDoc[vec]");
     assertThat(typeIndex.countEntries()).isEqualTo(50);
   }
@@ -219,7 +235,7 @@ class LSMVectorIndexTest extends TestHelper {
       doc.save();
     });
 
-    final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("TxDoc[vec]");
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("TxDoc[vec]");
     assertThat(typeIndex.countEntries()).isEqualTo(1);
 
     // Verify transaction rollback doesn't affect committed data
@@ -258,12 +274,12 @@ class LSMVectorIndexTest extends TestHelper {
           }""");
     });
 
-    final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema()
         .getIndexByName("LSMDoc[vec]");
     assertThat(typeIndex).isNotNull();
 
     // Add first version
-    final com.arcadedb.database.RID[] docRidHolder = new com.arcadedb.database.RID[1];
+    final RID[] docRidHolder = new RID[1];
     database.transaction(() -> {
       final var doc = database.newDocument("LSMDoc");
       doc.set("id", "doc1");
@@ -271,7 +287,7 @@ class LSMVectorIndexTest extends TestHelper {
       doc.save();
       docRidHolder[0] = doc.getIdentity();
     });
-    final com.arcadedb.database.RID docRid = docRidHolder[0];
+    final RID docRid = docRidHolder[0];
 
     assertThat(typeIndex.countEntries()).isEqualTo(1);
 
@@ -351,11 +367,11 @@ class LSMVectorIndexTest extends TestHelper {
           }""");
     });
 
-    final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema()
         .getIndexByName("MergeDoc[vec]");
 
     // Add multiple documents
-    final java.util.List<com.arcadedb.database.RID> rids = new java.util.ArrayList<>();
+    final List<RID> rids = new ArrayList<>();
     database.transaction(() -> {
       for (int i = 0; i < 10; i++) {
         final var doc = database.newDocument("MergeDoc");
@@ -417,7 +433,7 @@ class LSMVectorIndexTest extends TestHelper {
           }""");
     });
 
-    final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema()
         .getIndexByName("LazyDoc[vec]");
 
     // Add documents
@@ -477,7 +493,7 @@ class LSMVectorIndexTest extends TestHelper {
           }""");
     });
 
-    final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("CompactDoc[vec]");
+    final var typeIndex = (TypeIndex) database.getSchema().getIndexByName("CompactDoc[vec]");
     assertThat(typeIndex).as("Index should exist").isNotNull();
 
     final var indexes = typeIndex.getIndexesOnBuckets();
@@ -488,7 +504,7 @@ class LSMVectorIndexTest extends TestHelper {
 
     // Get compaction threshold
     final int threshold = database.getConfiguration()
-        .getValueAsInteger(com.arcadedb.GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
+        .getValueAsInteger(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
 
     // Add enough vectors to trigger multiple page creations
     // Each page is 256KB. With variable encoding, vector metadata is ~4-10 bytes per entry
@@ -545,11 +561,11 @@ class LSMVectorIndexTest extends TestHelper {
           """);
     });
 
-    final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("MergeDoc[vec]");
+    final var typeIndex = (TypeIndex) database.getSchema().getIndexByName("MergeDoc[vec]");
     assertThat(typeIndex).as("Index should exist").isNotNull();
 
     // Add initial vectors
-    final List<com.arcadedb.database.RID> rids = new ArrayList<>();
+    final List<RID> rids = new ArrayList<>();
     database.transaction(() -> {
       for (int i = 0; i < 20; i++) {
         final var vertex = database.newVertex("MergeDoc");
@@ -611,11 +627,11 @@ class LSMVectorIndexTest extends TestHelper {
           }""");
     });
 
-    final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("DeleteDoc[vec]");
+    final var typeIndex = (TypeIndex) database.getSchema().getIndexByName("DeleteDoc[vec]");
     assertThat(typeIndex).as("Index should exist").isNotNull();
 
     // Add vectors
-    final List<com.arcadedb.database.RID> rids = new ArrayList<>();
+    final List<RID> rids = new ArrayList<>();
     database.transaction(() -> {
       for (int i = 0; i < 50; i++) {
         final var vertex = database.newVertex("DeleteDoc");
@@ -670,7 +686,7 @@ class LSMVectorIndexTest extends TestHelper {
           }""");
     });
 
-    final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("ConcurrentDoc[vec]");
+    final var typeIndex = (TypeIndex) database.getSchema().getIndexByName("ConcurrentDoc[vec]");
     assertThat(typeIndex).as("Index should exist").isNotNull();
 
     // Add initial vectors
@@ -690,10 +706,10 @@ class LSMVectorIndexTest extends TestHelper {
     final int numThreads = 5;
     final int queriesPerThread = 10;
     final List<Thread> threads = new ArrayList<>();
-    final java.util.concurrent.atomic.AtomicInteger successfulQueries =
-        new java.util.concurrent.atomic.AtomicInteger(0);
-    final java.util.concurrent.atomic.AtomicInteger failedQueries =
-        new java.util.concurrent.atomic.AtomicInteger(0);
+    final AtomicInteger successfulQueries =
+        new AtomicInteger(0);
+    final AtomicInteger failedQueries =
+        new AtomicInteger(0);
 
     for (int t = 0; t < numThreads; t++) {
       final int threadId = t;
@@ -758,11 +774,11 @@ class LSMVectorIndexTest extends TestHelper {
           }""");
     });
 
-    final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("GraphDoc[vec]");
+    final var typeIndex = (TypeIndex) database.getSchema().getIndexByName("GraphDoc[vec]");
     assertThat(typeIndex).as("Index should exist").isNotNull();
 
     // Add vectors in a pattern that creates a structure in the graph
-    final List<com.arcadedb.database.RID> rids = new ArrayList<>();
+    final List<RID> rids = new ArrayList<>();
     database.transaction(() -> {
       for (int i = 0; i < 100; i++) {
         final var vertex = database.newVertex("GraphDoc");
@@ -844,8 +860,8 @@ class LSMVectorIndexTest extends TestHelper {
           }""");
     });
 
-    final com.arcadedb.index.TypeIndex typeIndex =
-        (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("RollbackDoc[vec]");
+    final TypeIndex typeIndex =
+        (TypeIndex) database.getSchema().getIndexByName("RollbackDoc[vec]");
     assertThat(typeIndex).as("Vector index should be created").isNotNull();
 
     // Verify index is initially empty
@@ -1002,7 +1018,7 @@ class LSMVectorIndexTest extends TestHelper {
           "METADATA {dimensions: 4, similarity: 'COSINE'}");
     });
 
-    final var typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("CompactTest[vec]");
+    final var typeIndex = (TypeIndex) database.getSchema().getIndexByName("CompactTest[vec]");
     assertThat(typeIndex).as("Index should exist").isNotNull();
 
     final var indexes = typeIndex.getIndexesOnBuckets();
@@ -1017,7 +1033,7 @@ class LSMVectorIndexTest extends TestHelper {
     // With 4-dim floats: 4 * 4 bytes = 16 bytes per vector + overhead (~60 bytes total per entry)
     // Need ~4,000 vectors to fill a page, so we need significantly more to ensure at least one full page
     final int numVectors = 30000; // Enough to create multiple full pages
-    final List<com.arcadedb.database.RID> rids = new ArrayList<>();
+    final List<RID> rids = new ArrayList<>();
     database.transaction(() -> {
       for (int i = 0; i < numVectors; i++) {
         final var vertex = database.newVertex("CompactTest");
@@ -1060,14 +1076,14 @@ class LSMVectorIndexTest extends TestHelper {
 
     // Check which pages are actually immutable by reading the mutable flag directly
     database.transaction(() -> {
-      final com.arcadedb.database.DatabaseInternal dbInternal = (com.arcadedb.database.DatabaseInternal) database;
+      final DatabaseInternal dbInternal = (DatabaseInternal) database;
       int immutableCount = 0;
       for (int pageNum = 1; pageNum < pagesBeforeCompaction; pageNum++) {
         try {
           final var page = dbInternal.getTransaction().getPage(
-              new com.arcadedb.engine.PageId(dbInternal, lsmIndex.getFileId(), pageNum),
+              new PageId(dbInternal, lsmIndex.getFileId(), pageNum),
               lsmIndex.getPageSize());
-          final java.nio.ByteBuffer buffer = page.getContent();
+          final ByteBuffer buffer = page.getContent();
           buffer.position(8); // OFFSET_MUTABLE = 8
           final byte mutable = buffer.get();
           if (mutable == 0) {
@@ -1085,7 +1101,7 @@ class LSMVectorIndexTest extends TestHelper {
 //    System.out.println("Attempting to schedule compaction...");
 
     // Check pre-conditions
-    final com.arcadedb.database.DatabaseInternal dbInternal2 = (com.arcadedb.database.DatabaseInternal) database;
+    final DatabaseInternal dbInternal2 = (DatabaseInternal) database;
 //    System.out.println("Database open: " + dbInternal2.isOpen());
 //    System.out.println("Database mode: " + dbInternal2.getMode());
 //    System.out.println("Page flushing suspended: " + dbInternal2.getPageManager().isPageFlushingSuspended(dbInternal2));
@@ -1424,7 +1440,7 @@ class LSMVectorIndexTest extends TestHelper {
     });
 
     // Get the index and verify VectorLocationIndex has absolute file offsets
-    final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema()
         .getIndexByName("OffsetTest[embedding]");
     assertThat(typeIndex).as("Index should exist").isNotNull();
 
@@ -1502,7 +1518,7 @@ class LSMVectorIndexTest extends TestHelper {
     });
 
     // Get the index and check page structure
-    final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema()
         .getIndexByName("BoundaryTest[embedding]");
     final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
 
@@ -1598,7 +1614,7 @@ class LSMVectorIndexTest extends TestHelper {
     });
 
     // Get the index and trigger compaction
-    final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema()
         .getIndexByName("CompactVar[embedding]");
     final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
 
@@ -1706,7 +1722,7 @@ class LSMVectorIndexTest extends TestHelper {
     });
 
     // Get the index and verify internal structure
-    final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema()
         .getIndexByName("HeaderTest[embedding]");
     final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
     final VectorLocationIndex vectorIndex = lsmIndex.getVectorIndex();
@@ -1727,8 +1743,8 @@ class LSMVectorIndexTest extends TestHelper {
   }
 
   /**
-   * Test for GitHub issue #2915: HNSW Graph Persistence Bug - File Not Closed
-   * This test verifies that the HNSW graph file is properly flushed to disk when the database closes.
+   * Test for GitHub issue #2915: Vector Index Graph Persistence Bug - File Not Closed
+   * This test verifies that the vector index graph file is properly flushed to disk when the database closes.
    *
    * Bug: graphFile.close() is never called in LSMVectorIndex.close() at line 2131,
    *      preventing graph data from being flushed to disk
@@ -1738,9 +1754,9 @@ class LSMVectorIndexTest extends TestHelper {
    * - Graph file should exist on filesystem with non-zero size
    */
   @Test
-  void testHNSWGraphFileNotClosedBug() throws Exception {
+  void testVectorIndexGraphFileNotClosedBug() throws Exception {
     final String dbPath = "databases/test-graph-file-not-closed";
-    final java.io.File dbDir = new java.io.File(dbPath);
+    final File dbDir = new File(dbPath);
 
     // Clean up any existing database
     if (dbDir.exists()) {
@@ -1749,7 +1765,7 @@ class LSMVectorIndexTest extends TestHelper {
 
     // Create database, add vectors, close
     {
-      final var db = new com.arcadedb.database.DatabaseFactory(dbPath).create();
+      final var db = new DatabaseFactory(dbPath).create();
       try {
         db.transaction(() -> {
           // Create schema with vector index
@@ -1757,7 +1773,7 @@ class LSMVectorIndexTest extends TestHelper {
           db.command("sql", "CREATE PROPERTY VectorTest.id STRING");
           db.command("sql", "CREATE PROPERTY VectorTest.embedding ARRAY_OF_FLOATS");
 
-          // Create LSM_VECTOR index with HNSW parameters
+          // Create LSM_VECTOR index
           db.command("sql", """
               CREATE INDEX ON VectorTest (embedding) LSM_VECTOR
               METADATA {
@@ -1768,7 +1784,7 @@ class LSMVectorIndexTest extends TestHelper {
               }""");
         });
 
-        // Insert test vectors (enough to build a meaningful HNSW graph)
+        // Insert test vectors (enough to build a meaningful vector index graph)
         db.transaction(() -> {
           for (int i = 0; i < 200; i++) {
             final float[] embedding = new float[128];
@@ -1786,8 +1802,8 @@ class LSMVectorIndexTest extends TestHelper {
         });
 
         // Get the index
-        final com.arcadedb.index.TypeIndex typeIndex =
-            (com.arcadedb.index.TypeIndex) db.getSchema().getIndexByName("VectorTest[embedding]");
+        final TypeIndex typeIndex =
+            (TypeIndex) db.getSchema().getIndexByName("VectorTest[embedding]");
         assertThat(typeIndex).as("TypeIndex should exist").isNotNull();
 
         // Trigger graph build by performing a search
@@ -1796,7 +1812,7 @@ class LSMVectorIndexTest extends TestHelper {
           db.transaction(() -> {
             final float[] queryVector = new float[128];
             Arrays.fill(queryVector, 0.5f);
-            final com.arcadedb.index.IndexCursor cursor = typeIndex.get(new Object[] { queryVector }, 10);
+            final IndexCursor cursor = typeIndex.get(new Object[] { queryVector }, 10);
             int count = 0;
             while (cursor.hasNext() && count < 10) {
               cursor.next();
@@ -1836,12 +1852,12 @@ class LSMVectorIndexTest extends TestHelper {
 //    }
 
     // Look for graph files
-    final java.io.File[] graphFiles = new java.io.File(dbPath).listFiles(
+    final File[] graphFiles = new File(dbPath).listFiles(
         (dir, name) -> name.contains("vecgraph") || name.contains("lsmvecgraph"));
 
 //    System.out.println("\nGraph files found: " + (graphFiles != null ? graphFiles.length : 0));
     if (graphFiles != null && graphFiles.length > 0) {
-      for (final java.io.File f : graphFiles) {
+      for (final File f : graphFiles) {
 //        System.out.println("  " + f.getName() + " (size: " + f.length() + " bytes)");
         assertThat(f.length()).as(
             "Graph file should have non-zero size if properly flushed")
@@ -1858,7 +1874,7 @@ class LSMVectorIndexTest extends TestHelper {
         .isNotEmpty();
 
     if (graphFiles != null && graphFiles.length > 0) {
-      for (final java.io.File f : graphFiles) {
+      for (final File f : graphFiles) {
         assertThat(f.length()).as(
             "BUG: Graph file exists but has zero size because graphFile.close() was never called to flush data")
             .isGreaterThan(0);
@@ -1870,7 +1886,7 @@ class LSMVectorIndexTest extends TestHelper {
   }
 
   /**
-   * Test HNSW graph file discovery mechanism.
+   * Test vector index graph file discovery mechanism.
    * This test verifies that graph files are properly discovered when loading an index.
    *
    * Bug: discoverAndLoadGraphFile() in LSMVectorIndex fails to find graph files
@@ -1878,7 +1894,7 @@ class LSMVectorIndexTest extends TestHelper {
   @Test
   void testGraphFileDiscoveryAfterReload() throws Exception {
     final String dbPath = "databases/test-graph-file-discovery";
-    final java.io.File dbDir = new java.io.File(dbPath);
+    final File dbDir = new File(dbPath);
 
     // Clean up any existing database
     if (dbDir.exists()) {
@@ -1887,7 +1903,7 @@ class LSMVectorIndexTest extends TestHelper {
 
     // Create database with vector index
     {
-      final var db = new com.arcadedb.database.DatabaseFactory(dbPath).create();
+      final var db = new DatabaseFactory(dbPath).create();
       try {
         db.transaction(() -> {
           db.command("sql", "CREATE VERTEX TYPE DiscoveryTest");
@@ -1916,13 +1932,13 @@ class LSMVectorIndexTest extends TestHelper {
         });
 
         // Get the index and trigger graph build
-        final com.arcadedb.index.TypeIndex typeIndex =
-            (com.arcadedb.index.TypeIndex) db.getSchema().getIndexByName("DiscoveryTest[vec]");
+        final TypeIndex typeIndex =
+            (TypeIndex) db.getSchema().getIndexByName("DiscoveryTest[vec]");
 
         db.transaction(() -> {
           final float[] queryVec = new float[64];
           Arrays.fill(queryVec, 50.0f);
-          final com.arcadedb.index.IndexCursor cursor = typeIndex.get(new Object[] { queryVec }, 5);
+          final IndexCursor cursor = typeIndex.get(new Object[] { queryVec }, 5);
           while (cursor.hasNext()) {
             cursor.next();
           }
@@ -1935,10 +1951,10 @@ class LSMVectorIndexTest extends TestHelper {
 
     // Reopen and check if graph file is discovered
     {
-      final var db = new com.arcadedb.database.DatabaseFactory(dbPath).open();
+      final var db = new DatabaseFactory(dbPath).open();
       try {
-        final com.arcadedb.index.TypeIndex typeIndex =
-            (com.arcadedb.index.TypeIndex) db.getSchema().getIndexByName("DiscoveryTest[vec]");
+        final TypeIndex typeIndex =
+            (TypeIndex) db.getSchema().getIndexByName("DiscoveryTest[vec]");
         assertThat(typeIndex).as("Index should exist after reload").isNotNull();
 
         final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
@@ -1982,7 +1998,7 @@ class LSMVectorIndexTest extends TestHelper {
   // @Test - Disabled due to separate JVector bug
   void testGraphPersistenceMultipleCycles_Disabled() throws Exception {
     final String dbPath = "databases/test-graph-persistence-cycles";
-    final java.io.File dbDir = new java.io.File(dbPath);
+    final File dbDir = new File(dbPath);
 
     // Clean up
     if (dbDir.exists()) {
@@ -1995,7 +2011,7 @@ class LSMVectorIndexTest extends TestHelper {
 
     // Cycle 1: Create and populate
     {
-      final var db = new com.arcadedb.database.DatabaseFactory(dbPath).create();
+      final var db = new DatabaseFactory(dbPath).create();
       try {
         db.transaction(() -> {
           db.command("sql", "CREATE VERTEX TYPE CycleTest");
@@ -2020,12 +2036,12 @@ class LSMVectorIndexTest extends TestHelper {
         });
 
         // Get the index
-        final com.arcadedb.index.TypeIndex typeIndex =
-            (com.arcadedb.index.TypeIndex) db.getSchema().getIndexByName("CycleTest[vec]");
+        final TypeIndex typeIndex =
+            (TypeIndex) db.getSchema().getIndexByName("CycleTest[vec]");
 
         // Build graph and capture results
         db.transaction(() -> {
-          final com.arcadedb.index.IndexCursor cursor = typeIndex.get(new Object[] { queryVector }, 10);
+          final IndexCursor cursor = typeIndex.get(new Object[] { queryVector }, 10);
           while (cursor.hasNext()) {
             final var identifiable = cursor.next();
             firstQueryResults.add((String) identifiable.asDocument().get("id"));
@@ -2042,15 +2058,15 @@ class LSMVectorIndexTest extends TestHelper {
 
     // Cycle 2: Reopen and verify same results
     {
-      final var db = new com.arcadedb.database.DatabaseFactory(dbPath).open();
+      final var db = new DatabaseFactory(dbPath).open();
       try {
-        final com.arcadedb.index.TypeIndex typeIndex2 =
-            (com.arcadedb.index.TypeIndex) db.getSchema().getIndexByName("CycleTest[vec]");
+        final TypeIndex typeIndex2 =
+            (TypeIndex) db.getSchema().getIndexByName("CycleTest[vec]");
 
         final Set<String> secondQueryResults = new HashSet<>();
 
         db.transaction(() -> {
-          final com.arcadedb.index.IndexCursor cursor = typeIndex2.get(new Object[] { queryVector }, 10);
+          final IndexCursor cursor = typeIndex2.get(new Object[] { queryVector }, 10);
           while (cursor.hasNext()) {
             final var identifiable = cursor.next();
             secondQueryResults.add((String) identifiable.asDocument().get("id"));
@@ -2072,15 +2088,15 @@ class LSMVectorIndexTest extends TestHelper {
 
     // Cycle 3: Another reopen to ensure consistency
     {
-      final var db = new com.arcadedb.database.DatabaseFactory(dbPath).open();
+      final var db = new DatabaseFactory(dbPath).open();
       try {
-        final com.arcadedb.index.TypeIndex typeIndex3 =
-            (com.arcadedb.index.TypeIndex) db.getSchema().getIndexByName("CycleTest[vec]");
+        final TypeIndex typeIndex3 =
+            (TypeIndex) db.getSchema().getIndexByName("CycleTest[vec]");
 
         final Set<String> thirdQueryResults = new HashSet<>();
 
         db.transaction(() -> {
-          final com.arcadedb.index.IndexCursor cursor = typeIndex3.get(new Object[] { queryVector }, 10);
+          final IndexCursor cursor = typeIndex3.get(new Object[] { queryVector }, 10);
           while (cursor.hasNext()) {
             final var identifiable = cursor.next();
             thirdQueryResults.add((String) identifiable.asDocument().get("id"));
@@ -2122,8 +2138,8 @@ class LSMVectorIndexTest extends TestHelper {
     });
 
     // Create test data with different categories
-    final List<com.arcadedb.database.RID> categoryARIDs = new ArrayList<>();
-    final List<com.arcadedb.database.RID> categoryBRIDs = new ArrayList<>();
+    final List<RID> categoryARIDs = new ArrayList<>();
+    final List<RID> categoryBRIDs = new ArrayList<>();
 
     database.transaction(() -> {
       for (int i = 0; i < 20; i++) {
@@ -2146,7 +2162,7 @@ class LSMVectorIndexTest extends TestHelper {
         }
         doc.set("embedding", vector);
 
-        final com.arcadedb.database.RID rid = doc.save().getIdentity();
+        final RID rid = doc.save().getIdentity();
         if (i < 10) {
           categoryARIDs.add(rid);
         } else {
@@ -2156,7 +2172,7 @@ class LSMVectorIndexTest extends TestHelper {
     });
 
     // Get the index
-    final com.arcadedb.index.TypeIndex typeIndex = (com.arcadedb.index.TypeIndex) database.getSchema()
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema()
         .getIndexByName("FilteredDoc[embedding]");
     final LSMVectorIndex index = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
 
@@ -2165,14 +2181,14 @@ class LSMVectorIndexTest extends TestHelper {
       final float[] queryVector = {1.5f, 1.5f, 1.5f};
 
       // Test 1: Search without filter - should return results from both categories
-      final List<com.arcadedb.utility.Pair<com.arcadedb.database.RID, Float>> unfilteredResults =
+      final List<Pair<RID, Float>> unfilteredResults =
           index.findNeighborsFromVector(queryVector, 10);
       assertThat(unfilteredResults).as("Unfiltered search should return results").isNotEmpty();
       assertThat(unfilteredResults.size()).as("Should return up to 10 results").isLessThanOrEqualTo(10);
 
       // Test 2: Search with filter for category A only
-      final Set<com.arcadedb.database.RID> allowedRIDs = new HashSet<>(categoryARIDs);
-      final List<com.arcadedb.utility.Pair<com.arcadedb.database.RID, Float>> filteredResults =
+      final Set<RID> allowedRIDs = new HashSet<>(categoryARIDs);
+      final List<Pair<RID, Float>> filteredResults =
           index.findNeighborsFromVector(queryVector, 10, allowedRIDs);
 
       assertThat(filteredResults).as("Filtered search should return results").isNotEmpty();
@@ -2184,8 +2200,8 @@ class LSMVectorIndexTest extends TestHelper {
       }
 
       // Test 3: Search with filter for category B only
-      final Set<com.arcadedb.database.RID> categoryBSet = new HashSet<>(categoryBRIDs);
-      final List<com.arcadedb.utility.Pair<com.arcadedb.database.RID, Float>> categoryBResults =
+      final Set<RID> categoryBSet = new HashSet<>(categoryBRIDs);
+      final List<Pair<RID, Float>> categoryBResults =
           index.findNeighborsFromVector(queryVector, 10, categoryBSet);
 
       // Since query vector is close to category A, but we filter to category B,
@@ -2197,12 +2213,12 @@ class LSMVectorIndexTest extends TestHelper {
       }
 
       // Test 4: Empty filter should work like unfiltered
-      final List<com.arcadedb.utility.Pair<com.arcadedb.database.RID, Float>> emptyFilterResults =
+      final List<Pair<RID, Float>> emptyFilterResults =
           index.findNeighborsFromVector(queryVector, 10, new HashSet<>());
       assertThat(emptyFilterResults).as("Empty filter should return results like unfiltered").isNotEmpty();
 
       // Test 5: Null filter should work like unfiltered
-      final List<com.arcadedb.utility.Pair<com.arcadedb.database.RID, Float>> nullFilterResults =
+      final List<Pair<RID, Float>> nullFilterResults =
           index.findNeighborsFromVector(queryVector, 10, null);
       assertThat(nullFilterResults).as("Null filter should return results like unfiltered").isNotEmpty();
     });
@@ -2211,13 +2227,13 @@ class LSMVectorIndexTest extends TestHelper {
   /**
    * Helper method to recursively delete a directory using Files.walk() API
    */
-  private void deleteDirectory(java.io.File directory) {
+  private void deleteDirectory(File directory) {
     if (directory.exists()) {
-      try (java.util.stream.Stream<java.nio.file.Path> walk = java.nio.file.Files.walk(directory.toPath())) {
-        walk.sorted(java.util.Comparator.reverseOrder())
-            .map(java.nio.file.Path::toFile)
-            .forEach(java.io.File::delete);
-      } catch (java.io.IOException e) {
+      try (Stream<Path> walk = Files.walk(directory.toPath())) {
+        walk.sorted(Comparator.reverseOrder())
+            .map(Path::toFile)
+            .forEach(File::delete);
+      } catch (IOException e) {
         System.err.println("Error deleting directory " + directory.getAbsolutePath() + ": " + e.getMessage());
       }
     }

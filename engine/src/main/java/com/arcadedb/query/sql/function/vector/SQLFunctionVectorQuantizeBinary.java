@@ -21,6 +21,8 @@ package com.arcadedb.query.sql.function.vector;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
+
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -90,7 +92,7 @@ public class SQLFunctionVectorQuantizeBinary extends SQLFunctionVectorAbstract {
    */
   private float calculateMedian(final float[] values) {
     final float[] sorted = values.clone();
-    java.util.Arrays.sort(sorted);
+    Arrays.sort(sorted);
     if (sorted.length % 2 == 0) {
       return (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2.0f;
     } else {

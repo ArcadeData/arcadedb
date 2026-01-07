@@ -36,7 +36,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Uses the vector index HNSW to retrieve the top K neighbors from a key.
+ * Uses the vector index to retrieve the top K neighbors from a key.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

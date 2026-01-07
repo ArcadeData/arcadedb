@@ -44,10 +44,12 @@ import org.apache.commons.configuration2.Configuration;
 import org.apache.tinkerpop.gremlin.driver.Cluster;
 import org.apache.tinkerpop.gremlin.driver.remote.DriverRemoteConnection;
 import org.apache.tinkerpop.gremlin.groovy.jsr223.GremlinGroovyScriptEngine;
+import org.apache.tinkerpop.gremlin.jsr223.Customizer;
 import org.apache.tinkerpop.gremlin.jsr223.DefaultGremlinScriptEngineManager;
 import org.apache.tinkerpop.gremlin.jsr223.GremlinLangScriptEngine;
 import org.apache.tinkerpop.gremlin.jsr223.ImportGremlinPlugin;
 import org.apache.tinkerpop.gremlin.process.computer.GraphComputer;
+import org.codehaus.groovy.control.customizers.CompilationCustomizer;
 import org.codehaus.groovy.control.customizers.SecureASTCustomizer;
 import org.apache.tinkerpop.gremlin.process.traversal.AnonymousTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategies;
@@ -518,7 +520,7 @@ public class ArcadeGraph implements Graph, Closeable {
     gremlinJavaEngine.getFactory().setCustomizerManager(new DefaultGremlinScriptEngineManager());
 
     // INITIALIZE GROOVY ENGINE (with attempted security restrictions - STILL VULNERABLE)
-    LogManager.instance().log(this, java.util.logging.Level.WARNING,
+    LogManager.instance().log(this, Level.WARNING,
         "===== CRITICAL SECURITY WARNING =====\n" +
         "Initializing Groovy Gremlin engine which is VULNERABLE to Remote Code Execution (RCE) attacks.\n" +
         "Despite security restrictions, authenticated users can execute arbitrary OS commands.\n" +
@@ -589,7 +591,7 @@ public class ArcadeGraph implements Graph, Closeable {
     try {
       blockedClasses.add(Runtime.class);
       blockedClasses.add(Class.forName("java.lang.ProcessBuilder"));
-      blockedClasses.add(java.io.File.class);
+      blockedClasses.add(File.class);
       blockedClasses.add(Class.forName("java.lang.reflect.Method"));
       blockedClasses.add(Class.forName("java.lang.reflect.Field"));
       blockedClasses.add(Class.forName("java.lang.reflect.Constructor"));
@@ -605,18 +607,18 @@ public class ArcadeGraph implements Graph, Closeable {
     secureCustomizer.setStaticStarImportsWhitelist(List.of());
 
     // Create a compilation customizer plugin that wraps the security customizer
-    final org.apache.tinkerpop.gremlin.jsr223.Customizer securityCustomizer =
-        new org.apache.tinkerpop.gremlin.jsr223.Customizer() {
-          public org.codehaus.groovy.control.customizers.CompilationCustomizer create() {
+    final Customizer securityCustomizer =
+        new Customizer() {
+          public CompilationCustomizer create() {
             return secureCustomizer;
           }
         };
 
     // Add security customizer to the plugin customizers
     final ImportGremlinPlugin securePlugin = importPlugin.create();
-    final org.apache.tinkerpop.gremlin.jsr223.Customizer[] baseCustomizers = securePlugin.getCustomizers().get();
-    final org.apache.tinkerpop.gremlin.jsr223.Customizer[] allCustomizers =
-        new org.apache.tinkerpop.gremlin.jsr223.Customizer[baseCustomizers.length + 1];
+    final Customizer[] baseCustomizers = securePlugin.getCustomizers().get();
+    final Customizer[] allCustomizers =
+        new Customizer[baseCustomizers.length + 1];
     System.arraycopy(baseCustomizers, 0, allCustomizers, 0, baseCustomizers.length);
     allCustomizers[baseCustomizers.length] = securityCustomizer;
 

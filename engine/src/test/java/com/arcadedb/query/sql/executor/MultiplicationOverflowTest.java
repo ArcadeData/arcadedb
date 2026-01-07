@@ -1,6 +1,8 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -58,7 +60,7 @@ public class MultiplicationOverflowTest extends TestHelper {
       final Object ratio = r5.getProperty("ratio");
       System.out.println("Ratio $val2/$val1 = " + ratio);
       assertThat(ratio).isInstanceOf(Number.class);
-      assertThat(((Number) ratio).doubleValue()).isCloseTo(1.0, org.assertj.core.data.Offset.offset(0.0001));
+      assertThat(((Number) ratio).doubleValue()).isCloseTo(1.0, Offset.offset(0.0001));
       result5.close();
     });
   }
@@ -83,7 +85,7 @@ public class MultiplicationOverflowTest extends TestHelper {
       final Object value2 = r2.getProperty("value");
       System.out.println("1000 * 3600.5 = " + value2 + " (type: " + value2.getClass().getSimpleName() + ")");
       assertThat(value2).isInstanceOf(Number.class);
-      assertThat(((Number) value2).doubleValue()).isCloseTo(3_600_500.0, org.assertj.core.data.Offset.offset(0.001));
+      assertThat(((Number) value2).doubleValue()).isCloseTo(3_600_500.0, Offset.offset(0.001));
       result2.close();
     });
   }

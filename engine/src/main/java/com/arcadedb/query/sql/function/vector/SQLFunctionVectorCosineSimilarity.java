@@ -21,6 +21,10 @@ package com.arcadedb.query.sql.function.vector;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
+import io.github.jbellis.jvector.vector.VectorizationProvider;
+import io.github.jbellis.jvector.vector.types.VectorFloat;
+
+import static io.github.jbellis.jvector.vector.VectorUtil.cosine;
 
 /**
  * Calculates the cosine similarity between two vectors.
@@ -62,10 +66,10 @@ public class SQLFunctionVectorCosineSimilarity extends SQLFunctionVectorAbstract
 
     // Use JVector's SIMD-optimized cosine similarity (6-7x faster with Vector API)
     try {
-      final io.github.jbellis.jvector.vector.VectorizationProvider vp = io.github.jbellis.jvector.vector.VectorizationProvider.getInstance();
-      final io.github.jbellis.jvector.vector.types.VectorFloat<?> jv1 = vp.getVectorTypeSupport().createFloatVector(v1);
-      final io.github.jbellis.jvector.vector.types.VectorFloat<?> jv2 = vp.getVectorTypeSupport().createFloatVector(v2);
-      return io.github.jbellis.jvector.vector.VectorUtil.cosine(jv1, jv2);
+      final VectorizationProvider vp = VectorizationProvider.getInstance();
+      final VectorFloat<?> jv1 = vp.getVectorTypeSupport().createFloatVector(v1);
+      final VectorFloat<?> jv2 = vp.getVectorTypeSupport().createFloatVector(v2);
+      return cosine(jv1, jv2);
     } catch (final Exception e) {
       // Fallback to scalar implementation
       // Calculate dot product

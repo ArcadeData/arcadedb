@@ -18,10 +18,10 @@
  */
 package com.arcadedb.index.vector;
 
+import java.util.List;
+
 /**
- * This work is derived from the excellent work made by Jelmer Kuperus on https://github.com/jelmerk/hnswlib.
- * <p>
- * Misc utility methods for dealing with vectors.
+ * Utility methods for working with vectors.
  */
 public final class VectorUtils {
 
@@ -93,10 +93,17 @@ public final class VectorUtils {
     return result;
   }
 
+  /**
+   * Converts various object types to a float array.
+   *
+   * @param vectorObj The object to convert (float[], List, etc.)
+   *
+   * @return float array representation
+   */
   public static float[] convertToFloatArray(final Object vectorObj) {
     if (vectorObj instanceof float[] f)
       return f;
-    else if (vectorObj instanceof java.util.List<?> list) {
+    else if (vectorObj instanceof List<?> list) {
       final float[] vector = new float[list.size()];
       for (int i = 0; i < list.size(); i++)
         vector[i] = ((Number) list.get(i)).floatValue();

@@ -19,7 +19,10 @@
 package com.arcadedb.query.sql.function.vector;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -174,9 +177,9 @@ class SQLFunctionPhase5Test extends TestHelper {
 
     // Check approximate recovery (some precision loss expected - int8 has limited precision)
     // With 256 levels across a range, precision is approximately range/256
-    assertThat(recovered[0]).isCloseTo(0.1f, org.assertj.core.data.Offset.offset(0.08f));
-    assertThat(recovered[1]).isCloseTo(0.5f, org.assertj.core.data.Offset.offset(0.08f));
-    assertThat(recovered[2]).isCloseTo(0.9f, org.assertj.core.data.Offset.offset(0.08f));
+    assertThat(recovered[0]).isCloseTo(0.1f, Offset.offset(0.08f));
+    assertThat(recovered[1]).isCloseTo(0.5f, Offset.offset(0.08f));
+    assertThat(recovered[2]).isCloseTo(0.9f, Offset.offset(0.08f));
   }
 
   @Test
@@ -274,7 +277,7 @@ class SQLFunctionPhase5Test extends TestHelper {
         new Object[] { q1, q2, "BINARY" },
         context);
 
-    assertThat(distance).isCloseTo(0.0f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(distance).isCloseTo(0.0f, Offset.offset(0.001f));
   }
 
   @Test
@@ -314,7 +317,7 @@ class SQLFunctionPhase5Test extends TestHelper {
     assertThatThrownBy(() -> function.execute(null, null, null,
         new Object[] { new float[] {} },
         context))
-        .isInstanceOf(com.arcadedb.exception.CommandSQLParsingException.class)
+        .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("empty");
   }
 
@@ -327,7 +330,7 @@ class SQLFunctionPhase5Test extends TestHelper {
     assertThatThrownBy(() -> function.execute(null, null, null,
         new Object[] { new float[] {} },
         context))
-        .isInstanceOf(com.arcadedb.exception.CommandSQLParsingException.class)
+        .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("empty");
   }
 
@@ -340,7 +343,7 @@ class SQLFunctionPhase5Test extends TestHelper {
     assertThatThrownBy(() -> function.execute(null, null, null,
         new Object[] { new byte[] { 0, 1, 2 }, 1.0f, 0.5f },
         context))
-        .isInstanceOf(com.arcadedb.exception.CommandSQLParsingException.class)
+        .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("must be <=");
   }
 
@@ -353,7 +356,7 @@ class SQLFunctionPhase5Test extends TestHelper {
     assertThatThrownBy(() -> function.execute(null, null, null,
         new Object[] { new byte[] { 0, 1 }, new byte[] { 0, 1 }, "INVALID" },
         context))
-        .isInstanceOf(com.arcadedb.exception.CommandSQLParsingException.class)
+        .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("Unknown quantization type");
   }
 
@@ -366,7 +369,7 @@ class SQLFunctionPhase5Test extends TestHelper {
     assertThatThrownBy(() -> function.execute(null, null, null,
         new Object[] { new byte[] { 0, 1 }, new byte[] { 0, 1, 2 }, "INT8" },
         context))
-        .isInstanceOf(com.arcadedb.exception.CommandSQLParsingException.class)
+        .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("same length");
   }
 
@@ -415,7 +418,7 @@ class SQLFunctionPhase5Test extends TestHelper {
     // Int8 quantization has precision of approximately 1/256 = 0.004 for normalized [0,1] ranges
     assertThat(recovered.length).isEqualTo(original.length);
     for (int i = 0; i < original.length; i++) {
-      assertThat(recovered[i]).isCloseTo(original[i], org.assertj.core.data.Offset.offset(0.15f));
+      assertThat(recovered[i]).isCloseTo(original[i], Offset.offset(0.15f));
     }
   }
 }

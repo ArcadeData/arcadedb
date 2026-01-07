@@ -21,6 +21,8 @@ package com.arcadedb.query.sql.function;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
+import java.util.List;
+
 /**
  * Abstract class to extend to build Custom SQL Functions.
  *
@@ -84,7 +86,7 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
       }
       return result;
     }
-    case java.util.List<?> list -> {
+    case List<?> list -> {
       final float[] result = new float[list.size()];
       for (int i = 0; i < list.size(); i++) {
         final Object elem = list.get(i);

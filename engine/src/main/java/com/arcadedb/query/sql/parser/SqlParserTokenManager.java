@@ -13,9 +13,9 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 public class SqlParserTokenManager implements SqlParserConstants {
 
   /** Debug output. */
-  public  java.io.PrintStream debugStream = System.out;
+  public  PrintStream debugStream = System.out;
   /** Set debug output. */
-  public  void setDebugStream(java.io.PrintStream ds) { debugStream = ds; }
+  public  void setDebugStream(PrintStream ds) { debugStream = ds; }
 private final int jjStopStringLiteralDfa_0(int pos, long active0, long active1, long active2, long active3, long active4){
    switch (pos)
    {
@@ -131,7 +131,7 @@ private int jjMoveStringLiteralDfa0_0(){
 }
 private int jjMoveStringLiteralDfa1_0(long active0, long active2, long active3){
    try { curChar = input_stream.readChar(); }
-   catch(java.io.IOException e) {
+   catch(IOException e) {
       jjStopStringLiteralDfa_0(0, active0, 0L, active2, active3, 0L);
       return 1;
    }
@@ -222,7 +222,7 @@ private int jjMoveStringLiteralDfa2_0(long old0, long active0, long old2, long a
    if (((active0 &= old0) | (active2 &= old2) | (active3 &= old3)) == 0L)
       return jjStartNfa_0(0, old0, 0L, old2, old3, 0L);
    try { curChar = input_stream.readChar(); }
-   catch(java.io.IOException e) {
+   catch(IOException e) {
       jjStopStringLiteralDfa_0(1, 0L, 0L, active2, active3, 0L);
       return 2;
    }
@@ -256,7 +256,7 @@ private int jjMoveStringLiteralDfa3_0(long old2, long active2, long old3, long a
    if (((active2 &= old2) | (active3 &= old3)) == 0L)
       return jjStartNfa_0(1, 0L, 0L, old2, old3, 0L);
    try { curChar = input_stream.readChar(); }
-   catch(java.io.IOException e) {
+   catch(IOException e) {
       jjStopStringLiteralDfa_0(2, 0L, 0L, 0L, active3, 0L);
       return 3;
    }
@@ -276,7 +276,7 @@ private int jjStartNfaWithStates_0(int pos, int kind, int state)
    jjmatchedKind = kind;
    jjmatchedPos = pos;
    try { curChar = input_stream.readChar(); }
-   catch(java.io.IOException e) { return pos + 1; }
+   catch(IOException e) { return pos + 1; }
    return jjMoveNfa_0(state, pos + 1);
 }
 static final long[] jjbitVec0 = {
@@ -5721,7 +5721,7 @@ private int jjMoveNfa_0(int startState, int curPos)
       if ((i = jjnewStateCnt) == (startsAt = 1195 - (jjnewStateCnt = startsAt)))
          return curPos;
       try { curChar = input_stream.readChar(); }
-      catch(java.io.IOException e) { return curPos; }
+      catch(IOException e) { return curPos; }
    }
 }
 private int jjMoveStringLiteralDfa0_2(){
@@ -5735,7 +5735,7 @@ private int jjMoveStringLiteralDfa0_2(){
 }
 private int jjMoveStringLiteralDfa1_2(long active0){
    try { curChar = input_stream.readChar(); }
-   catch(java.io.IOException e) {
+   catch(IOException e) {
       return 1;
    }
    switch(curChar)
@@ -5760,7 +5760,7 @@ private int jjMoveStringLiteralDfa0_1(){
 }
 private int jjMoveStringLiteralDfa1_1(long active0){
    try { curChar = input_stream.readChar(); }
-   catch(java.io.IOException e) {
+   catch(IOException e) {
       return 1;
    }
    switch(curChar)
@@ -5899,7 +5899,7 @@ public Token getNextToken()
             while (curChar <= 32 && (0x100003600L & (1L << curChar)) != 0L)
                curChar = input_stream.BeginToken();
          }
-         catch (java.io.IOException e1) { continue EOFLoop; }
+         catch (IOException e1) { continue EOFLoop; }
          jjmatchedKind = 0x7fffffff;
          jjmatchedPos = 0;
          curPos = jjMoveStringLiteralDfa0_0();
@@ -5964,14 +5964,14 @@ public Token getNextToken()
            curChar = input_stream.readChar();
            continue;
         }
-        catch (java.io.IOException e1) { }
+        catch (IOException e1) { }
      }
      int error_line = input_stream.getEndLine();
      int error_column = input_stream.getEndColumn();
      String error_after = null;
      boolean EOFSeen = false;
      try { input_stream.readChar(); input_stream.backup(1); }
-     catch (java.io.IOException e1) {
+     catch (IOException e1) {
         EOFSeen = true;
         error_after = curPos <= 1 ? "" : input_stream.GetImage();
         if (curChar == '\n' || curChar == '\r') {

@@ -25,6 +25,9 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.index.vector.LSMVectorIndexCompacted;
+import com.arcadedb.index.vector.LSMVectorIndexMutable;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.LockManager;
 
@@ -370,19 +373,19 @@ public class TransactionManager {
           // Phase 5: For LSMVectorIndex, incrementally update VectorLocationIndex during replication
           // This keeps in-memory metadata synchronized with replicated pages
           // Note: LSMVectorIndexMutable is what gets registered with Schema (via index.getComponent())
-          if (component instanceof com.arcadedb.index.vector.LSMVectorIndexMutable) {
-            final com.arcadedb.index.vector.LSMVectorIndexMutable vectorMutable =
-                (com.arcadedb.index.vector.LSMVectorIndexMutable) component;
-            final com.arcadedb.index.vector.LSMVectorIndex mainIndex = vectorMutable.getMainIndex();
+          if (component instanceof LSMVectorIndexMutable) {
+            final LSMVectorIndexMutable vectorMutable =
+                (LSMVectorIndexMutable) component;
+            final LSMVectorIndex mainIndex = vectorMutable.getMainIndex();
             if (mainIndex != null) {
               mainIndex.applyReplicatedPageUpdate(modifiedPage);
             } else {
               LogManager.instance().log(this, Level.WARNING,
                   "LSMVectorIndexMutable has null mainIndex for fileId=%d", null, txPage.fileId);
             }
-          } else if (component instanceof com.arcadedb.index.vector.LSMVectorIndexCompacted) {
-            final com.arcadedb.index.vector.LSMVectorIndex mainIndex =
-                (com.arcadedb.index.vector.LSMVectorIndex) ((com.arcadedb.index.vector.LSMVectorIndexCompacted) component).getMainComponent();
+          } else if (component instanceof LSMVectorIndexCompacted) {
+            final LSMVectorIndex mainIndex =
+                (LSMVectorIndex) ((LSMVectorIndexCompacted) component).getMainComponent();
             if (mainIndex != null) {
               mainIndex.applyReplicatedPageUpdate(modifiedPage);
             }

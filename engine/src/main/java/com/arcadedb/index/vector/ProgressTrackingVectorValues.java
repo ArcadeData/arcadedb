@@ -21,7 +21,9 @@ package com.arcadedb.index.vector;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 
+import java.util.Collections;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
@@ -55,7 +57,7 @@ public class ProgressTrackingVectorValues implements RandomAccessVectorValues {
     this.uniqueOrdinalsAccessed = new AtomicInteger(0);
     this.progressCallback = progressCallback;
     this.progressInterval = progressInterval;
-    this.accessedOrdinals = java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
+    this.accessedOrdinals = Collections.newSetFromMap(new ConcurrentHashMap<>());
   }
 
   @Override

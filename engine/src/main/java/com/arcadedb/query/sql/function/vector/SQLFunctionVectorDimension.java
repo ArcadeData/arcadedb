@@ -22,6 +22,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.List;
+
 /**
  * Returns the number of dimensions in a vector.
  * Useful for validating vector dimensionality and compatibility.
@@ -46,7 +48,7 @@ public class SQLFunctionVectorDimension extends SQLFunctionVectorAbstract {
       case null -> throw new CommandSQLParsingException("Vector cannot be null");
       case float[] floatArray -> floatArray.length;
       case Object[] objArray -> objArray.length;
-      case java.util.List<?> list -> list.size();
+      case List<?> list -> list.size();
       default ->
           throw new CommandSQLParsingException("Vector must be an array or list, found: " + vector.getClass().getSimpleName());
     };

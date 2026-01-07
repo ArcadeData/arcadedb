@@ -39,12 +39,17 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.TypeBuilder;
 import com.arcadedb.schema.TypeIndexBuilder;
-import com.arcadedb.schema.VectorIndexBuilder;
 import com.arcadedb.schema.VertexType;
 
-import java.time.*;
-import java.util.*;
-import java.util.stream.*;
+import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.TimeZone;
+import java.util.stream.Collectors;
 
 /**
  * Remote Schema implementation used by Remote Database. The types are loaded from the server the first time
@@ -259,11 +264,6 @@ public class RemoteSchema implements Schema {
   @Deprecated
   @Override
   public ManualIndexBuilder buildManualIndex(final String indexName, final Type[] keyTypes) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public VectorIndexBuilder buildVectorIndex() {
     throw new UnsupportedOperationException();
   }
 
