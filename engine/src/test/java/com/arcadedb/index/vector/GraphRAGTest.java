@@ -35,7 +35,7 @@ class GraphRAGTest extends TestHelper {
   private static final int DIMENSIONS = 768;
 
   @Test
-  void test() {
+  void testHybridVectorAndGraphRetrieval() {
     // Schema: Define Publication Types and Knowledge Graph
     // Create document types with vector embeddings and entity types for your knowledge graph:
     database.transaction(() -> {
@@ -104,7 +104,7 @@ class GraphRAGTest extends TestHelper {
       ResultSet result = database.query("sql", String.format("""
               SELECT title, content, $distance AS relevance
               FROM Publication
-              LET $distance = vectorDistance( embedding, %s, 'cosine')
+              LET $distance = (1 - vectorCosineSimilarity(embedding, %s))
               WHERE $distance < 0.4
               ORDER BY $distance
               LIMIT 10;
