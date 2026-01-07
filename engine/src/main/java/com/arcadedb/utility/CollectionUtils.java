@@ -217,7 +217,7 @@ public class CollectionUtils {
     }
 
     // For object arrays, use Arrays.asList
-    return java.util.Arrays.asList((Object[]) array);
+    return Arrays.asList((Object[]) array);
   }
 
 }

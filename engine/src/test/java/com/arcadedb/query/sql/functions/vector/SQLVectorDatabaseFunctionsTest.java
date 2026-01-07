@@ -19,11 +19,20 @@
 package com.arcadedb.query.sql.functions.vector;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.index.vector.VectorQuantizationType;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.Pair;
+
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -83,7 +92,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
         magnitude += v * v;
       }
       magnitude = (float) Math.sqrt(magnitude);
-      assertThat(magnitude).isCloseTo(1.0f, org.assertj.core.data.Offset.offset(0.001f));
+      assertThat(magnitude).isCloseTo(1.0f, Offset.offset(0.001f));
     });
   }
 
@@ -107,7 +116,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
       final Result result = rs.next();
 
       assertThat(result.<Integer>getProperty("dimensions")).isEqualTo(3);
-      assertThat(result.<Float>getProperty("length")).isCloseTo(5.0f, org.assertj.core.data.Offset.offset(0.001f));
+      assertThat(result.<Float>getProperty("length")).isCloseTo(5.0f, Offset.offset(0.001f));
     });
   }
 
@@ -134,8 +143,8 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
       assertThat(rs.hasNext()).isTrue();
       final Result result = rs.next();
 
-      assertThat(result.<Float>getProperty("dot_prod")).isCloseTo(0.6f, org.assertj.core.data.Offset.offset(0.001f));
-      assertThat(result.<Float>getProperty("cosine_sim")).isCloseTo(0.6f, org.assertj.core.data.Offset.offset(0.001f));
+      assertThat(result.<Float>getProperty("dot_prod")).isCloseTo(0.6f, Offset.offset(0.001f));
+      assertThat(result.<Float>getProperty("cosine_sim")).isCloseTo(0.6f, Offset.offset(0.001f));
     });
   }
 
@@ -179,7 +188,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
         magnitude += v * v;
       }
       magnitude = (float) Math.sqrt(magnitude);
-      assertThat(magnitude).isCloseTo(1.0f, org.assertj.core.data.Offset.offset(0.001f));
+      assertThat(magnitude).isCloseTo(1.0f, Offset.offset(0.001f));
     });
   }
 
@@ -404,17 +413,17 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
 
     database.transaction(() -> {
       // Verify index has INT8 quantization
-      final com.arcadedb.index.TypeIndex index = (com.arcadedb.index.TypeIndex) database.getSchema()
+      final TypeIndex index = (TypeIndex) database.getSchema()
           .getIndexByName("Document[embedding]");
       assertThat(index).isNotNull();
 
-      final com.arcadedb.index.vector.LSMVectorIndex lsmIndex = (com.arcadedb.index.vector.LSMVectorIndex) index.getIndexesOnBuckets()[0];
+      final LSMVectorIndex lsmIndex = (LSMVectorIndex) index.getIndexesOnBuckets()[0];
       assertThat(lsmIndex.getMetadata().quantizationType)
-          .isEqualTo(com.arcadedb.index.vector.VectorQuantizationType.INT8);
+          .isEqualTo(VectorQuantizationType.INT8);
 
       // Verify search works with quantized vectors (using direct LSM index search)
       final float[] queryVector = generateTestVector(128, 0);
-      final List<com.arcadedb.utility.Pair<com.arcadedb.database.RID, Float>> results =
+      final List<Pair<RID, Float>> results =
           lsmIndex.findNeighborsFromVector(queryVector, 10);
 
       assertThat(results).isNotEmpty();
@@ -445,13 +454,13 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
     });
 
     database.transaction(() -> {
-      final com.arcadedb.index.TypeIndex index = (com.arcadedb.index.TypeIndex) database.getSchema()
+      final TypeIndex index = (TypeIndex) database.getSchema()
           .getIndexByName("Document[embedding]");
       assertThat(index).isNotNull();
 
-      final com.arcadedb.index.vector.LSMVectorIndex lsmIndex = (com.arcadedb.index.vector.LSMVectorIndex) index.getIndexesOnBuckets()[0];
+      final LSMVectorIndex lsmIndex = (LSMVectorIndex) index.getIndexesOnBuckets()[0];
       assertThat(lsmIndex.getMetadata().quantizationType)
-          .isEqualTo(com.arcadedb.index.vector.VectorQuantizationType.BINARY);
+          .isEqualTo(VectorQuantizationType.BINARY);
     });
   }
 
@@ -663,21 +672,21 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
 
     database.transaction(() -> {
       // Step 4: Vector search using LSM index
-      final com.arcadedb.index.TypeIndex index = (com.arcadedb.index.TypeIndex) database.getSchema()
+      final TypeIndex index = (TypeIndex) database.getSchema()
           .getIndexByName("Document[embedding]");
       assertThat(index).isNotNull();
 
-      final com.arcadedb.index.vector.LSMVectorIndex lsmIndex =
-          (com.arcadedb.index.vector.LSMVectorIndex) index.getIndexesOnBuckets()[0];
+      final LSMVectorIndex lsmIndex =
+          (LSMVectorIndex) index.getIndexesOnBuckets()[0];
 
       final float[] queryVector = normalizeVector(new float[] { 1.0f, 0.3f, 0.1f });
-      final List<com.arcadedb.utility.Pair<com.arcadedb.database.RID, Float>> results =
+      final List<Pair<RID, Float>> results =
           lsmIndex.findNeighborsFromVector(queryVector, 10);
 
       assertThat(results).isNotEmpty();
       // Verify we can retrieve the documents
-      for (com.arcadedb.utility.Pair<com.arcadedb.database.RID, Float> pair : results) {
-        final com.arcadedb.database.Document doc = pair.getFirst().asDocument();
+      for (Pair<RID, Float> pair : results) {
+        final Document doc = pair.getFirst().asDocument();
         assertThat(doc.<String>get("title")).isNotNull();
       }
     });
@@ -724,19 +733,19 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
           .create();
 
       // Step 4: Search across modalities using LSM index
-      final com.arcadedb.index.TypeIndex index = (com.arcadedb.index.TypeIndex) database.getSchema()
+      final TypeIndex index = (TypeIndex) database.getSchema()
           .getIndexByName("MultiModalDocument[composite_embedding]");
       assertThat(index).isNotNull();
 
-      final com.arcadedb.index.vector.LSMVectorIndex lsmIndex =
-          (com.arcadedb.index.vector.LSMVectorIndex) index.getIndexesOnBuckets()[0];
+      final LSMVectorIndex lsmIndex =
+          (LSMVectorIndex) index.getIndexesOnBuckets()[0];
 
       final float[] queryComposite = normalizeVector(new float[] { 0.6f, 0.4f, 0.0f });
-      final List<com.arcadedb.utility.Pair<com.arcadedb.database.RID, Float>> results =
+      final List<Pair<RID, Float>> results =
           lsmIndex.findNeighborsFromVector(queryComposite, 10);
 
       assertThat(results).isNotEmpty();
-      final com.arcadedb.database.Document doc = results.getFirst().getFirst().asDocument();
+      final Document doc = results.getFirst().getFirst().asDocument();
       assertThat(doc.<String>get("title")).isEqualTo("Multi-modal Doc");
     });
   }
@@ -812,19 +821,19 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
 
     database.transaction(() -> {
       // Step 4: Vector search using LSM index
-      final com.arcadedb.index.TypeIndex index = (com.arcadedb.index.TypeIndex) database.getSchema()
+      final TypeIndex index = (TypeIndex) database.getSchema()
           .getIndexByName("Document[embedding]");
       assertThat(index).isNotNull();
 
-      final com.arcadedb.index.vector.LSMVectorIndex lsmIndex =
-          (com.arcadedb.index.vector.LSMVectorIndex) index.getIndexesOnBuckets()[0];
+      final LSMVectorIndex lsmIndex =
+          (LSMVectorIndex) index.getIndexesOnBuckets()[0];
 
       final float[] queryEmbedding = generateTestVector(1536, 1);
-      final List<com.arcadedb.utility.Pair<com.arcadedb.database.RID, Float>> results =
+      final List<Pair<RID, Float>> results =
           lsmIndex.findNeighborsFromVector(queryEmbedding, 10);
 
       assertThat(results).isNotEmpty();
-      final com.arcadedb.database.Document topDoc = results.getFirst().getFirst().asDocument();
+      final Document topDoc = results.getFirst().getFirst().asDocument();
       assertThat(topDoc.<String>get("title")).isEqualTo("Introduction to RAG");
 
       // Step 5: Use vector functions (from document data)
@@ -892,7 +901,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
           }""");
 
       // Verify index was created
-      final com.arcadedb.index.Index index = database.getSchema().getIndexByName("VectorVertex[embedding]");
+      final Index index = database.getSchema().getIndexByName("VectorVertex[embedding]");
       assertThat(index).isNotNull();
     });
   }
@@ -914,14 +923,14 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
           }""");
 
       // Verify index with quantization
-      final com.arcadedb.index.TypeIndex index = (com.arcadedb.index.TypeIndex) database.getSchema()
+      final TypeIndex index = (TypeIndex) database.getSchema()
           .getIndexByName("QuantDoc[embedding]");
       assertThat(index).isNotNull();
 
-      final com.arcadedb.index.vector.LSMVectorIndex lsmIndex =
-          (com.arcadedb.index.vector.LSMVectorIndex) index.getIndexesOnBuckets()[0];
+      final LSMVectorIndex lsmIndex =
+          (LSMVectorIndex) index.getIndexesOnBuckets()[0];
       assertThat(lsmIndex.getMetadata().quantizationType)
-          .isEqualTo(com.arcadedb.index.vector.VectorQuantizationType.INT8);
+          .isEqualTo(VectorQuantizationType.INT8);
     });
   }
 

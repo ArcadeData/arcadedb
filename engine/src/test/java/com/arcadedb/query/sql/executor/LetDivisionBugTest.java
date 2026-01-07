@@ -3,6 +3,9 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
+import org.assertj.core.data.Offset;
+import org.assertj.core.data.Percentage;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -27,7 +30,7 @@ public class LetDivisionBugTest extends TestHelper {
       if (ratio instanceof Number) {
         double ratioValue = ((Number) ratio).doubleValue();
         System.out.println("Ratio value: " + ratioValue);
-        assertThat(ratioValue).isCloseTo(1.0, org.assertj.core.data.Offset.offset(0.0001));
+        assertThat(ratioValue).isCloseTo(1.0, Offset.offset(0.0001));
       }
       result1.close();
 
@@ -50,7 +53,7 @@ public class LetDivisionBugTest extends TestHelper {
         System.out.println("Calculated ratio: " + (v2 / v1));
 
         // Both should be approximately 3.17E-11
-        assertThat(v1).isCloseTo(v2, org.assertj.core.data.Percentage.withPercentage(0.01));
+        assertThat(v1).isCloseTo(v2, Percentage.withPercentage(0.01));
       }
       result2.close();
     });
@@ -104,7 +107,7 @@ public class LetDivisionBugTest extends TestHelper {
       if (val1 instanceof Number && val2 instanceof Number) {
         double v1 = ((Number) val1).doubleValue();
         double v2 = ((Number) val2).doubleValue();
-        assertThat(v1).isCloseTo(v2, org.assertj.core.data.Percentage.withPercentage(0.01));
+        assertThat(v1).isCloseTo(v2, Percentage.withPercentage(0.01));
       }
     });
   }

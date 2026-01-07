@@ -30,6 +30,7 @@ import com.arcadedb.schema.DocumentType;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 public class DocumentIndexer {
   private final LocalDatabase database;
@@ -263,7 +264,7 @@ public class DocumentIndexer {
 
     if (isNested) {
       // Build a helper to extract nested values
-      java.util.function.Function<Object, Object> extractValue = (item) -> {
+      Function<Object, Object> extractValue = (item) -> {
         Object value = item;
         for (int j = 1; j < pathParts.length; j++) {
           if (value == null)

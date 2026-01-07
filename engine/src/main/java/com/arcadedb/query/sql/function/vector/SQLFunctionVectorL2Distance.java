@@ -21,6 +21,10 @@ package com.arcadedb.query.sql.function.vector;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
+import io.github.jbellis.jvector.vector.VectorizationProvider;
+import io.github.jbellis.jvector.vector.types.VectorFloat;
+
+import static io.github.jbellis.jvector.vector.VectorUtil.squareL2Distance;
 
 /**
  * Calculates the Euclidean (L2) distance between two vectors.
@@ -58,10 +62,10 @@ public class SQLFunctionVectorL2Distance extends SQLFunctionVectorAbstract {
 
     // Use JVector's SIMD-optimized L2 distance (5-6x faster with Vector API)
     try {
-      final io.github.jbellis.jvector.vector.VectorizationProvider vp = io.github.jbellis.jvector.vector.VectorizationProvider.getInstance();
-      final io.github.jbellis.jvector.vector.types.VectorFloat<?> jv1 = vp.getVectorTypeSupport().createFloatVector(v1);
-      final io.github.jbellis.jvector.vector.types.VectorFloat<?> jv2 = vp.getVectorTypeSupport().createFloatVector(v2);
-      final float squaredDistance = io.github.jbellis.jvector.vector.VectorUtil.squareL2Distance(jv1, jv2);
+      final VectorizationProvider vp = VectorizationProvider.getInstance();
+      final VectorFloat<?> jv1 = vp.getVectorTypeSupport().createFloatVector(v1);
+      final VectorFloat<?> jv2 = vp.getVectorTypeSupport().createFloatVector(v2);
+      final float squaredDistance = squareL2Distance(jv1, jv2);
       return (float) Math.sqrt(Math.max(0.0f, squaredDistance)); // Max to avoid NaN from floating point errors
     } catch (final Exception e) {
       // Fallback to scalar implementation

@@ -22,7 +22,7 @@ def to_java_float_array(vector):
         vector: Array-like object containing float values
 
     Returns:
-        Java float array compatible with ArcadeDB HNSW indexes
+        Java float array compatible with ArcadeDB vector indexes
     """
     # Handle NumPy arrays
     try:
@@ -73,10 +73,12 @@ def to_python_array(java_vector, use_numpy=True):
 
 class VectorIndex:
     """
-    Wrapper for ArcadeDB HNSW vector index.
+    Wrapper for ArcadeDB vector index.
 
     Provides a Pythonic interface for creating and searching vector indexes,
     with native support for NumPy arrays.
+
+    Note: This class is deprecated. Use SQL commands to create and query LSMVector indexes directly.
     """
 
     def __init__(self, java_index, database):
@@ -84,7 +86,7 @@ class VectorIndex:
         Initialize VectorIndex wrapper.
 
         Args:
-            java_index: Java HnswVectorIndex object
+            java_index: Java vector index object
             database: Parent Database object
         """
         self._java_index = java_index

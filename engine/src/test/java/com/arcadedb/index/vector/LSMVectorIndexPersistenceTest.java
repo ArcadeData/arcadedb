@@ -21,6 +21,7 @@ package com.arcadedb.index.vector;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
@@ -139,7 +140,7 @@ class LSMVectorIndexPersistenceTest {
       }
 
       // Use the index's get() method directly instead of SQL function
-      com.arcadedb.index.IndexCursor cursor = reloadedIndex.get(new Object[] { queryVector }, 5);
+      IndexCursor cursor = reloadedIndex.get(new Object[] { queryVector }, 5);
       int resultCount = 0;
       while (cursor.hasNext()) {
         cursor.next();

@@ -49,7 +49,7 @@ class Word2VecImporterLSMIT {
 
     final Database db = databaseFactory.create();
     try {
-      // Import using LSMVector instead of HNSW
+      // Import using LSMVector
       db.command("sql", "import database file://src/test/resources/importer-word2vec.txt "  //
           + "with distanceFunction = cosine, m = 16, beamWidth = 100, " //
           + "vertexType = Word, vectorProperty = vector, idProperty = name" //

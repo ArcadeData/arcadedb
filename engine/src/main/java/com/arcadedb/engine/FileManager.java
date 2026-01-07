@@ -18,7 +18,6 @@
  */
 package com.arcadedb.engine;
 
-import com.arcadedb.index.vector.HnswVectorIndex;
 import com.arcadedb.log.LogManager;
 
 import java.io.*;
@@ -90,12 +89,7 @@ public class FileManager {
 
         if (supportedFileExt.contains(fileExt))
           try {
-            final ComponentFile file;
-            // TODO: MAKE THIS GENERIC
-            if (fileExt.equals(HnswVectorIndex.FILE_EXT))
-              file = new ComponentFile(f.getAbsolutePath(), mode);
-            else
-              file = new PaginatedComponentFile(f.getAbsolutePath(), mode);
+            final ComponentFile file = new PaginatedComponentFile(f.getAbsolutePath(), mode);
             registerFile(file);
 
           } catch (final FileNotFoundException e) {

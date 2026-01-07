@@ -21,8 +21,10 @@ package com.arcadedb.server.ha;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.schema.VertexType;
@@ -96,7 +98,7 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
       LogManager.instance().log(this, Level.FINE, "Verifying compaction replication on server %d...", serverIndex);
 
       final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
-      final com.arcadedb.index.Index serverIndex_idx = serverDb.getSchema().getIndexByName(indexName);
+      final Index serverIndex_idx = serverDb.getSchema().getIndexByName(indexName);
 
       // VERIFY THAT INDEX IS FUNCTIONAL AND CONTAINS ALL ENTRIES
       assertThat(serverIndex_idx.countEntries()).as("Index on server " + serverIndex + " should contain " + TOTAL_RECORDS + " entries after compaction").isEqualTo(TOTAL_RECORDS);
@@ -169,10 +171,10 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
       final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
 
       // Check if the index exists in schema
-      final com.arcadedb.index.Index serverVectorIndex = serverDb.getSchema().getIndexByName(actualIndexName);
+      final Index serverVectorIndex = serverDb.getSchema().getIndexByName(actualIndexName);
       if (serverVectorIndex == null) {
         // Index not found, check the type's indexes
-        final com.arcadedb.schema.DocumentType embeddingType = serverDb.getSchema().getType("Embedding");
+        final DocumentType embeddingType = serverDb.getSchema().getType("Embedding");
         LogManager.instance().log(this, Level.WARNING, "Vector index not found on server %d. Type has %d indexes", serverIndex,
             embeddingType.getAllIndexes(false).size());
       }
@@ -252,10 +254,10 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
       final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
 
       // Check if the index exists in schema
-      final com.arcadedb.index.Index serverVectorIndex = serverDb.getSchema().getIndexByName(actualIndexName);
+      final Index serverVectorIndex = serverDb.getSchema().getIndexByName(actualIndexName);
       if (serverVectorIndex == null) {
         // Index not found, check the type's indexes
-        final com.arcadedb.schema.DocumentType embeddingType = serverDb.getSchema().getType("Embedding");
+        final DocumentType embeddingType = serverDb.getSchema().getType("Embedding");
         LogManager.instance().log(this, Level.WARNING, "Vector index not found on server %d. Type has %d indexes", serverIndex,
             embeddingType.getAllIndexes(false).size());
       }
@@ -312,7 +314,7 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
       LogManager.instance().log(this, Level.FINE, "Verifying consistency on server %d...", serverIndex);
 
       final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
-      final com.arcadedb.index.Index serverIndex_idx = serverDb.getSchema().getIndexByName(indexName);
+      final Index serverIndex_idx = serverDb.getSchema().getIndexByName(indexName);
 
       assertThat(serverIndex_idx.countEntries()).as("Index on server " + serverIndex + " should have 2000 entries").isEqualTo(2000);
     });

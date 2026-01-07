@@ -33,6 +33,7 @@ import io.grpc.ServerBuilder;
 import io.grpc.ServerCredentials;
 import io.grpc.TlsServerCredentials;
 import io.grpc.health.v1.HealthCheckResponse;
+import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.protobuf.services.HealthStatusManager;
 import io.grpc.protobuf.services.ProtoReflectionService;
@@ -274,7 +275,7 @@ public class GrpcServerPlugin implements ServerPlugin {
     try {
       // Configure Netty with TLS using SslContext
       return NettyServerBuilder.forPort(port)
-          .sslContext(io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts
+          .sslContext(GrpcSslContexts
               .forServer(certFile, keyFile)
               .build());
     } catch (Exception e) {

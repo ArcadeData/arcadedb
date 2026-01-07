@@ -1,8 +1,11 @@
 package com.arcadedb.query.sql.function.vector;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
+
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -26,8 +29,8 @@ class SQLFunctionPhase1Test extends TestHelper {
         context);
 
     assertThat(result).hasSize(2);
-    assertThat(result[0]).isCloseTo(0.6f, org.assertj.core.data.Offset.offset(0.001f));
-    assertThat(result[1]).isCloseTo(0.8f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result[0]).isCloseTo(0.6f, Offset.offset(0.001f));
+    assertThat(result[1]).isCloseTo(0.8f, Offset.offset(0.001f));
   }
 
   @Test
@@ -41,9 +44,9 @@ class SQLFunctionPhase1Test extends TestHelper {
         context);
 
     assertThat(result).hasSize(3);
-    assertThat(result[0]).isCloseTo(1.0f, org.assertj.core.data.Offset.offset(0.001f));
-    assertThat(result[1]).isCloseTo(0.0f, org.assertj.core.data.Offset.offset(0.001f));
-    assertThat(result[2]).isCloseTo(0.0f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result[0]).isCloseTo(1.0f, Offset.offset(0.001f));
+    assertThat(result[1]).isCloseTo(0.0f, Offset.offset(0.001f));
+    assertThat(result[2]).isCloseTo(0.0f, Offset.offset(0.001f));
   }
 
   @Test
@@ -71,7 +74,7 @@ class SQLFunctionPhase1Test extends TestHelper {
         new Object[] { new float[] { 3.0f, 4.0f } },
         context);
 
-    assertThat(result).isCloseTo(5.0f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result).isCloseTo(5.0f, Offset.offset(0.001f));
   }
 
   @Test
@@ -85,7 +88,7 @@ class SQLFunctionPhase1Test extends TestHelper {
         new Object[] { new float[] { 1.0f, 0.0f, 0.0f } },
         context);
 
-    assertThat(result).isCloseTo(1.0f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result).isCloseTo(1.0f, Offset.offset(0.001f));
   }
 
   @Test
@@ -125,7 +128,7 @@ class SQLFunctionPhase1Test extends TestHelper {
         new Object[] { new float[] { 1.0f, 2.0f, 3.0f }, new float[] { 4.0f, 5.0f, 6.0f } },
         context);
 
-    assertThat(result).isCloseTo(32.0f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result).isCloseTo(32.0f, Offset.offset(0.001f));
   }
 
   @Test
@@ -139,7 +142,7 @@ class SQLFunctionPhase1Test extends TestHelper {
         new Object[] { new float[] { 1.0f, 0.0f, 0.0f }, new float[] { 0.0f, 1.0f, 0.0f } },
         context);
 
-    assertThat(result).isCloseTo(0.0f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result).isCloseTo(0.0f, Offset.offset(0.001f));
   }
 
   // ========== Phase 1.2: Similarity Scoring Tests ==========
@@ -155,7 +158,7 @@ class SQLFunctionPhase1Test extends TestHelper {
         new Object[] { new float[] { 1.0f, 0.0f, 0.0f }, new float[] { 1.0f, 0.0f, 0.0f } },
         context);
 
-    assertThat(result).isCloseTo(1.0f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result).isCloseTo(1.0f, Offset.offset(0.001f));
   }
 
   @Test
@@ -169,7 +172,7 @@ class SQLFunctionPhase1Test extends TestHelper {
         new Object[] { new float[] { 1.0f, 0.0f, 0.0f }, new float[] { 0.0f, 1.0f, 0.0f } },
         context);
 
-    assertThat(result).isCloseTo(0.0f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result).isCloseTo(0.0f, Offset.offset(0.001f));
   }
 
   @Test
@@ -183,7 +186,7 @@ class SQLFunctionPhase1Test extends TestHelper {
         new Object[] { new float[] { 1.0f, 0.0f, 0.0f }, new float[] { -1.0f, 0.0f, 0.0f } },
         context);
 
-    assertThat(result).isCloseTo(-1.0f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result).isCloseTo(-1.0f, Offset.offset(0.001f));
   }
 
   @Test
@@ -197,7 +200,7 @@ class SQLFunctionPhase1Test extends TestHelper {
         new Object[] { new float[] { 0.0f, 0.0f }, new float[] { 3.0f, 4.0f } },
         context);
 
-    assertThat(result).isCloseTo(5.0f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result).isCloseTo(5.0f, Offset.offset(0.001f));
   }
 
   @Test
@@ -211,7 +214,7 @@ class SQLFunctionPhase1Test extends TestHelper {
         new Object[] { new float[] { 1.0f, 2.0f, 3.0f }, new float[] { 1.0f, 2.0f, 3.0f } },
         context);
 
-    assertThat(result).isCloseTo(0.0f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result).isCloseTo(0.0f, Offset.offset(0.001f));
   }
 
   @Test
@@ -225,7 +228,7 @@ class SQLFunctionPhase1Test extends TestHelper {
         new Object[] { new float[] { 1.0f, 2.0f, 3.0f }, new float[] { 4.0f, 5.0f, 6.0f } },
         context);
 
-    assertThat(result).isCloseTo(32.0f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result).isCloseTo(32.0f, Offset.offset(0.001f));
   }
 
   @Test
@@ -239,7 +242,7 @@ class SQLFunctionPhase1Test extends TestHelper {
         new Object[] { new float[] { 1.0f, 0.0f }, new float[] { -1.0f, 0.0f } },
         context);
 
-    assertThat(result).isCloseTo(-1.0f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result).isCloseTo(-1.0f, Offset.offset(0.001f));
   }
 
   // ========== SQL Integration Tests ==========
@@ -254,8 +257,8 @@ class SQLFunctionPhase1Test extends TestHelper {
       final float[] normalized = result.getProperty("normalized");
 
       assertThat(normalized).hasSize(2);
-      assertThat(normalized[0]).isCloseTo(0.6f, org.assertj.core.data.Offset.offset(0.001f));
-      assertThat(normalized[1]).isCloseTo(0.8f, org.assertj.core.data.Offset.offset(0.001f));
+      assertThat(normalized[0]).isCloseTo(0.6f, Offset.offset(0.001f));
+      assertThat(normalized[1]).isCloseTo(0.8f, Offset.offset(0.001f));
     }
   }
 
@@ -268,7 +271,7 @@ class SQLFunctionPhase1Test extends TestHelper {
       var result = results.next();
       final float magnitude = result.getProperty("magnitude");
 
-      assertThat(magnitude).isCloseTo(5.0f, org.assertj.core.data.Offset.offset(0.001f));
+      assertThat(magnitude).isCloseTo(5.0f, Offset.offset(0.001f));
     }
   }
 
@@ -294,7 +297,7 @@ class SQLFunctionPhase1Test extends TestHelper {
       var result = results.next();
       final float dot = result.getProperty("dot");
 
-      assertThat(dot).isCloseTo(32.0f, org.assertj.core.data.Offset.offset(0.001f));
+      assertThat(dot).isCloseTo(32.0f, Offset.offset(0.001f));
     }
   }
 
@@ -307,7 +310,7 @@ class SQLFunctionPhase1Test extends TestHelper {
       var result = results.next();
       final float similarity = result.getProperty("similarity");
 
-      assertThat(similarity).isCloseTo(1.0f, org.assertj.core.data.Offset.offset(0.001f));
+      assertThat(similarity).isCloseTo(1.0f, Offset.offset(0.001f));
     }
   }
 
@@ -320,7 +323,7 @@ class SQLFunctionPhase1Test extends TestHelper {
       var result = results.next();
       final float distance = result.getProperty("distance");
 
-      assertThat(distance).isCloseTo(5.0f, org.assertj.core.data.Offset.offset(0.001f));
+      assertThat(distance).isCloseTo(5.0f, Offset.offset(0.001f));
     }
   }
 
@@ -340,10 +343,10 @@ class SQLFunctionPhase1Test extends TestHelper {
 
       var result = results.next();
       assertThat(result.<Integer>getProperty("dims")).isEqualTo(3);
-      assertThat(result.<Float>getProperty("magnitude")).isCloseTo(2.236f, org.assertj.core.data.Offset.offset(0.01f));
-      assertThat(result.<Float>getProperty("dot")).isCloseTo(11.0f, org.assertj.core.data.Offset.offset(0.001f));
-      assertThat(result.<Float>getProperty("distance")).isCloseTo(5.0f, org.assertj.core.data.Offset.offset(0.001f));
-      assertThat(result.<Float>getProperty("cosine")).isCloseTo(1.0f, org.assertj.core.data.Offset.offset(0.001f));
+      assertThat(result.<Float>getProperty("magnitude")).isCloseTo(2.236f, Offset.offset(0.01f));
+      assertThat(result.<Float>getProperty("dot")).isCloseTo(11.0f, Offset.offset(0.001f));
+      assertThat(result.<Float>getProperty("distance")).isCloseTo(5.0f, Offset.offset(0.001f));
+      assertThat(result.<Float>getProperty("cosine")).isCloseTo(1.0f, Offset.offset(0.001f));
     }
   }
 
@@ -358,7 +361,7 @@ class SQLFunctionPhase1Test extends TestHelper {
     assertThatThrownBy(() -> function.execute(null, null, null,
         new Object[] { null },
         context))
-        .isInstanceOf(com.arcadedb.exception.CommandSQLParsingException.class)
+        .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("null");
   }
 
@@ -371,7 +374,7 @@ class SQLFunctionPhase1Test extends TestHelper {
     assertThatThrownBy(() -> function.execute(null, null, null,
         new Object[] { new float[] { 1.0f, 2.0f }, new float[] { 1.0f, 2.0f, 3.0f } },
         context))
-        .isInstanceOf(com.arcadedb.exception.CommandSQLParsingException.class)
+        .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("dimension");
   }
 
@@ -384,7 +387,7 @@ class SQLFunctionPhase1Test extends TestHelper {
     assertThatThrownBy(() -> function.execute(null, null, null,
         new Object[] { new float[] { 1.0f }, new float[] { 1.0f, 2.0f } },
         context))
-        .isInstanceOf(com.arcadedb.exception.CommandSQLParsingException.class)
+        .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("dimension");
   }
 }

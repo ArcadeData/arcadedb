@@ -32,6 +32,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.data.Offset.*;
 
 /**
  * Test suite for "Advanced Search & Reranking" examples from the JVector blog post.
@@ -104,7 +105,7 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
           .execute(0.3, true, 0.7);
 
       // Expected: (1.0 - 0.3) * 0.7 + 1.0 * 0.3 = 0.7 * 0.7 + 0.3 = 0.49 + 0.3 = 0.79
-      assertThat(result).isCloseTo(0.79, org.assertj.core.data.Offset.offset(0.01));
+      assertThat(result).isCloseTo(0.79, offset(0.01));
       // RESULT: ✅ DEFINE FUNCTION with JavaScript WORKS!
     });
   }
@@ -222,7 +223,7 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
 
       // Expected: 0.8 * 0.7 + 0.5 * 0.3 = 0.56 + 0.15 = 0.71
       assertThat(score).isNotNull();
-      assertThat(score).isCloseTo(0.71f, org.assertj.core.data.Offset.offset(0.01f));
+      assertThat(score).isCloseTo(0.71f, offset(0.01f));
       // RESULT: ✅ Built-in vectorHybridScore function works
     });
   }
@@ -234,14 +235,14 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
     database.transaction(() -> {
       // ✅ vectorDistance with literal arrays DOES work
       final ResultSet rs = database.query("sql",
-          "SELECT vectorDistance([1.0, 0.0, 0.0], [1.0, 0.0, 0.0], 'COSINE') as dist");
+          "SELECT (1 - vectorCosineSimilarity([1.0, 0.0, 0.0], [1.0, 0.0, 0.0])) as dist");
 
       assertThat(rs.hasNext()).isTrue();
       final Result result = rs.next();
       final Float distance = result.getProperty("dist");
 
       assertThat(distance).isNotNull();
-      assertThat(distance).isCloseTo(0.0f, org.assertj.core.data.Offset.offset(0.001f));
+      assertThat(distance).isCloseTo(0.0f, offset(0.001f));
       // RESULT: ✅ vectorDistance with literal arrays works
     });
   }

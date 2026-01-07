@@ -28,9 +28,11 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 import io.github.jbellis.jvector.disk.IndexWriter;
+import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
 import io.github.jbellis.jvector.graph.disk.OnDiskSequentialGraphIndexWriter;
+import io.github.jbellis.jvector.graph.disk.feature.Feature;
 import io.github.jbellis.jvector.graph.disk.feature.FeatureId;
 import io.github.jbellis.jvector.graph.disk.feature.InlineVectors;
 import io.github.jbellis.jvector.vector.JVectorUtils;
@@ -124,7 +126,7 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
    * - Caller is responsible for committing the transaction
    * - Graph data starts at page 0 (no metadata page needed - JVector format is self-describing)
    */
-  public void writeGraph(final io.github.jbellis.jvector.graph.ImmutableGraphIndex graph, final RandomAccessVectorValues vectors) {
+  public void writeGraph(final ImmutableGraphIndex graph, final RandomAccessVectorValues vectors) {
 
     if (!database.isTransactionActive())
       throw new IllegalStateException("writeGraph() must be called within an active transaction");
@@ -149,7 +151,7 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
 
         // Write empty vectors with correct dimension (JVector requires vectors even though we don't use them)
         indexWriter.write(Map.of(FeatureId.INLINE_VECTORS,
-            (IntFunction<io.github.jbellis.jvector.graph.disk.feature.Feature.State>) ordinal -> new InlineVectors.State(
+            (IntFunction<Feature.State>) ordinal -> new InlineVectors.State(
                 emptyVector)));
       }
 
@@ -184,8 +186,8 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
       // Load graph using JVector's OnDiskGraphIndex
       final OnDiskGraphIndex graph = OnDiskGraphIndex.load(supplier);
 
-      com.arcadedb.log.LogManager.instance()
-          .log(this, java.util.logging.Level.INFO, "Loaded graph from disk: %d nodes, %d bytes (%d pages)", graph.getIdUpperBound(),
+      LogManager.instance()
+          .log(this, Level.INFO, "Loaded graph from disk: %d nodes, %d bytes (%d pages)", graph.getIdUpperBound(),
               totalBytes, getTotalPages());
 
       return graph;

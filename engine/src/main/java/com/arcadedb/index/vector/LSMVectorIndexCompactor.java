@@ -29,6 +29,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
 
 import java.io.*;
+import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
@@ -173,7 +174,7 @@ public class LSMVectorIndexCompactor {
 
         // Read the mutable flag - OFFSET_MUTABLE is absolute, not content-relative
         // So we need to read from the buffer directly without adding PAGE_HEADER_SIZE again
-        final java.nio.ByteBuffer buffer = page.getContent();
+        final ByteBuffer buffer = page.getContent();
         buffer.position(LSMVectorIndex.OFFSET_MUTABLE);
         final byte mutable = buffer.get();
 
@@ -241,7 +242,7 @@ public class LSMVectorIndexCompactor {
         final int numberOfEntries = page.readInt(LSMVectorIndex.OFFSET_NUM_ENTRIES);
 
         // Read mutable flag - OFFSET_MUTABLE is absolute, not content-relative
-        final java.nio.ByteBuffer pageBuffer = page.getContent();
+        final ByteBuffer pageBuffer = page.getContent();
         pageBuffer.position(LSMVectorIndex.OFFSET_MUTABLE);
         final byte mutable = pageBuffer.get();
 

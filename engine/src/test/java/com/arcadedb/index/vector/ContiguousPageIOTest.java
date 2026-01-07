@@ -22,6 +22,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.ComponentFile;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -63,7 +65,7 @@ class ContiguousPageIOTest {
           dbInternal,
           fileName,
           dbInternal.getDatabasePath(),
-          com.arcadedb.engine.ComponentFile.MODE.READ_WRITE,
+          ComponentFile.MODE.READ_WRITE,
           pageSize
       );
 

@@ -1,8 +1,11 @@
 package com.arcadedb.query.sql.function.vector;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
+
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -127,8 +130,8 @@ class SQLFunctionPhase2Test extends TestHelper {
     function.execute(null, null, null, new Object[] { new float[] { 3.0f, 4.0f } }, context);
 
     final float[] result = (float[]) function.getResult();
-    assertThat(result[0]).isCloseTo(2.0f, org.assertj.core.data.Offset.offset(0.001f));
-    assertThat(result[1]).isCloseTo(3.0f, org.assertj.core.data.Offset.offset(0.001f));
+    assertThat(result[0]).isCloseTo(2.0f, Offset.offset(0.001f));
+    assertThat(result[1]).isCloseTo(3.0f, Offset.offset(0.001f));
   }
 
   @Test
@@ -243,8 +246,8 @@ class SQLFunctionPhase2Test extends TestHelper {
       var result = results.next();
       final float[] norm = result.getProperty("normalized");
 
-      assertThat(norm[0]).isCloseTo(0.707f, org.assertj.core.data.Offset.offset(0.01f));
-      assertThat(norm[1]).isCloseTo(0.707f, org.assertj.core.data.Offset.offset(0.01f));
+      assertThat(norm[0]).isCloseTo(0.707f, Offset.offset(0.01f));
+      assertThat(norm[1]).isCloseTo(0.707f, Offset.offset(0.01f));
     }
   }
 
@@ -259,7 +262,7 @@ class SQLFunctionPhase2Test extends TestHelper {
     assertThatThrownBy(() -> function.execute(null, null, null,
         new Object[] { new float[] { 1.0f, 2.0f }, new float[] { 1.0f, 2.0f, 3.0f } },
         context))
-        .isInstanceOf(com.arcadedb.exception.CommandSQLParsingException.class)
+        .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("dimension");
   }
 
@@ -272,7 +275,7 @@ class SQLFunctionPhase2Test extends TestHelper {
     assertThatThrownBy(() -> function.execute(null, null, null,
         new Object[] { new float[] { 1.0f, 2.0f }, "not a number" },
         context))
-        .isInstanceOf(com.arcadedb.exception.CommandSQLParsingException.class);
+        .isInstanceOf(CommandSQLParsingException.class);
   }
 
   @Test
@@ -284,7 +287,7 @@ class SQLFunctionPhase2Test extends TestHelper {
     assertThatThrownBy(() -> function.execute(null, null, null,
         new Object[] { new float[] { 1.0f }, new float[] { 1.0f, 2.0f } },
         context))
-        .isInstanceOf(com.arcadedb.exception.CommandSQLParsingException.class)
+        .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("dimension");
   }
 
@@ -316,7 +319,7 @@ class SQLFunctionPhase2Test extends TestHelper {
     assertThatThrownBy(() -> function.execute(null, null, null,
         new Object[] { new float[] { 1.0f, 2.0f, 3.0f } },
         context))
-        .isInstanceOf(com.arcadedb.exception.CommandSQLParsingException.class)
+        .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("dimension");
   }
 
