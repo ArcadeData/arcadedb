@@ -39,7 +39,13 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 /**
- * JMH Microbenchmark comparing vector search performance with and without storeVectorsInGraph.
+ * JMH Microbenchmark comparing vector search performance across different quantization strategies.
+ *
+ * This benchmark measures:
+ * - Search latency (k=10, k=100)
+ * - Search accuracy (recall@10, recall@100)
+ * - Memory usage
+ * - Vector fetch sources (graph vs documents vs quantized pages)
  *
  * Run with:
  * mvn clean test-compile exec:java -Dexec.mainClass="com.arcadedb.index.vector.LSMVectorIndexStorageJMHBenchmark" -Dexec.classpathScope=test
@@ -51,7 +57,7 @@ import java.util.concurrent.TimeUnit;
  */
 @State(Scope.Benchmark)
 @BenchmarkMode(Mode.AverageTime)
-@OutputTimeUnit(TimeUnit.MILLISECONDS)
+@OutputTimeUnit(TimeUnit.MICROSECONDS)
 @Warmup(iterations = 3, time = 2, timeUnit = TimeUnit.SECONDS)
 @Measurement(iterations = 5, time = 3, timeUnit = TimeUnit.SECONDS)
 @Fork(value = 1, jvmArgs = {"-Xms4G", "-Xmx4G"})
@@ -59,23 +65,32 @@ public class LSMVectorIndexStorageJMHBenchmark {
 
   @State(Scope.Benchmark)
   public static class DatabaseState {
-    @Param({"false", "true"})
+    @Param({"false"})
     public String storeVectorsInGraph;
 
-    @Param({"NONE", "INT8"})
+    @Param({"NONE", "INT8", "BINARY"})
     public String quantization;
 
-    @Param({"1000", "10000", "100000"})
+    @Param({"10000", "100000"})
     public int numVectors;
 
     private static final int DIMENSIONS = 384;
     private static final String DB_PATH_PREFIX = "target/jmh-vector-bench-";
+    private static final int NUM_QUERY_VECTORS = 100;
+    private static final int RECALL_TEST_QUERIES = 50; // Subset for recall calculation
 
     private Database database;
     private DatabaseFactory factory;
     private LSMVectorIndex index;
     private List<float[]> queryVectors;
     private String dbPath;
+
+    // Shared ground truth across all configurations (computed once per numVectors)
+    private static final Map<String, Map<Integer, List<RID>>> GROUND_TRUTH_K10 = new HashMap<>();
+    private static final Map<String, Map<Integer, List<RID>>> GROUND_TRUTH_K100 = new HashMap<>();
+
+    private long memoryUsedBytes;
+    private long setupTimeMs;
 
     @Setup(Level.Trial)
     public void setupTrial() {
@@ -131,8 +146,7 @@ public class LSMVectorIndexStorageJMHBenchmark {
         }
       }
 
-      final long setupTime = System.currentTimeMillis() - setupStart;
-      System.out.println("Database setup completed in " + setupTime + "ms");
+      System.out.println("Database setup completed in " + (System.currentTimeMillis() - setupStart) + "ms");
 
       // Reopen database for benchmarking
       factory = new DatabaseFactory(dbPath);
@@ -142,16 +156,22 @@ public class LSMVectorIndexStorageJMHBenchmark {
       final DocumentType type = schema.getType("VectorDoc");
       index = (LSMVectorIndex) type.getPolymorphicIndexByProperties("embedding").getIndexesOnBuckets()[0];
 
-      // Generate query vectors
+      // Generate query vectors (same seed for all configurations)
       queryVectors = new ArrayList<>();
       final Random queryRand = new Random(99999);
-      for (int i = 0; i < 100; i++) {
+      for (int i = 0; i < NUM_QUERY_VECTORS; i++) {
         final float[] query = new float[DIMENSIONS];
         for (int j = 0; j < DIMENSIONS; j++) {
           query[j] = queryRand.nextFloat() * 2.0f - 1.0f;
         }
         queryVectors.add(query);
       }
+
+      // Measure memory usage
+      System.gc();
+      try { Thread.sleep(100); } catch (InterruptedException e) { }
+      final Runtime runtime = Runtime.getRuntime();
+      memoryUsedBytes = runtime.totalMemory() - runtime.freeMemory();
 
       // Print initial stats
       final Map<String, Long> stats = index.getStats();
@@ -161,20 +181,89 @@ public class LSMVectorIndexStorageJMHBenchmark {
       System.out.println("  Graph nodes: " + stats.get("graphNodeCount"));
       System.out.println("  storeVectorsInGraph config: " + index.metadata.storeVectorsInGraph);
       System.out.println("  Quantization: " + index.metadata.quantizationType);
+      System.out.println("  Memory used: " + (memoryUsedBytes / 1024 / 1024) + " MB");
+
+      // Compute ground truth for NONE quantization (for recall calculation)
+      final String gtKey = String.valueOf(numVectors);
+      if (quantization.equals("NONE") && !GROUND_TRUTH_K10.containsKey(gtKey)) {
+        System.out.println("Computing ground truth for recall measurement...");
+        final Map<Integer, List<RID>> gtK10 = new HashMap<>();
+        final Map<Integer, List<RID>> gtK100 = new HashMap<>();
+
+        for (int i = 0; i < RECALL_TEST_QUERIES; i++) {
+          final float[] query = queryVectors.get(i);
+
+          final List<Pair<RID, Float>> resultsK10 = index.findNeighborsFromVector(query, 10);
+          gtK10.put(i, resultsK10.stream().map(p -> p.getFirst()).toList());
+
+          final List<Pair<RID, Float>> resultsK100 = index.findNeighborsFromVector(query, 100);
+          gtK100.put(i, resultsK100.stream().map(p -> p.getFirst()).toList());
+        }
+
+        GROUND_TRUTH_K10.put(gtKey, gtK10);
+        GROUND_TRUTH_K100.put(gtKey, gtK100);
+        System.out.println("Ground truth computed and cached for " + RECALL_TEST_QUERIES + " queries");
+      }
+
+      setupTimeMs = System.currentTimeMillis() - setupStart;
+      System.out.println("Setup completed in " + setupTimeMs + "ms");
     }
 
     @TearDown(Level.Trial)
     public void teardownTrial() {
+      // Calculate recall metrics against ground truth
+      final String gtKey = String.valueOf(numVectors);
+      double recallK10 = 1.0;
+      double recallK100 = 1.0;
+
+      if (!quantization.equals("NONE") && GROUND_TRUTH_K10.containsKey(gtKey)) {
+        final Map<Integer, List<RID>> gtK10 = GROUND_TRUTH_K10.get(gtKey);
+        final Map<Integer, List<RID>> gtK100 = GROUND_TRUTH_K100.get(gtKey);
+
+        double sumRecallK10 = 0.0;
+        double sumRecallK100 = 0.0;
+
+        for (int i = 0; i < RECALL_TEST_QUERIES; i++) {
+          final float[] query = queryVectors.get(i);
+
+          final List<Pair<RID, Float>> resultsK10 = index.findNeighborsFromVector(query, 10);
+          sumRecallK10 += calculateRecall(resultsK10.stream().map(p -> p.getFirst()).toList(), gtK10.get(i));
+
+          final List<Pair<RID, Float>> resultsK100 = index.findNeighborsFromVector(query, 100);
+          sumRecallK100 += calculateRecall(resultsK100.stream().map(p -> p.getFirst()).toList(), gtK100.get(i));
+        }
+
+        recallK10 = sumRecallK10 / RECALL_TEST_QUERIES;
+        recallK100 = sumRecallK100 / RECALL_TEST_QUERIES;
+      }
+
       // Print final metrics
+      System.out.println("\n" + "=".repeat(70));
+      System.out.println("FINAL RESULTS - " + quantization + " (vectors=" + numVectors + ")");
+      System.out.println("=".repeat(70));
+
       if (index != null) {
         final Map<String, Long> stats = index.getStats();
-        System.out.println("\nFinal Metrics:");
+        System.out.println("Performance Metrics:");
         System.out.println("  Search operations: " + stats.get("searchOperations"));
-        System.out.println("  Vectors from graph: " + stats.get("vectorFetchFromGraph"));
-        System.out.println("  Vectors from docs: " + stats.get("vectorFetchFromDocuments"));
-        System.out.println("  Vectors from quantized: " + stats.get("vectorFetchFromQuantized"));
         System.out.println("  Avg search latency: " + stats.get("avgSearchLatencyMs") + "ms");
+        System.out.println();
+
+        System.out.println("Vector Fetch Sources:");
+        System.out.println("  From graph file:     " + stats.get("vectorFetchFromGraph"));
+        System.out.println("  From documents:      " + stats.get("vectorFetchFromDocuments"));
+        System.out.println("  From quantized pages: " + stats.get("vectorFetchFromQuantized"));
+        System.out.println();
+
+        System.out.println("Accuracy Metrics (vs NONE quantization baseline):");
+        System.out.println(String.format("  Recall@10:  %.4f (%.2f%%)", recallK10, recallK10 * 100));
+        System.out.println(String.format("  Recall@100: %.4f (%.2f%%)", recallK100, recallK100 * 100));
+        System.out.println();
+
+        System.out.println("Memory Usage:");
+        System.out.println("  Estimated memory: " + (memoryUsedBytes / 1024 / 1024) + " MB");
       }
+      System.out.println("=".repeat(70) + "\n");
 
       if (database != null) {
         database.close();
@@ -206,6 +295,19 @@ public class LSMVectorIndexStorageJMHBenchmark {
     final float[] query = state.queryVectors.get(ThreadLocalRandom.current().nextInt(state.queryVectors.size()));
     final List<Pair<RID, Float>> results = state.index.findNeighborsFromVector(query, 100);
     blackhole.consume(results);
+  }
+
+  /**
+   * Helper method to calculate recall against ground truth
+   */
+  private static double calculateRecall(List<RID> results, List<RID> groundTruth) {
+    if (groundTruth == null || groundTruth.isEmpty()) {
+      return 1.0; // No ground truth available (for NONE quantization itself)
+    }
+
+    final Set<RID> groundTruthSet = new HashSet<>(groundTruth);
+    long matches = results.stream().filter(groundTruthSet::contains).count();
+    return (double) matches / groundTruth.size();
   }
 
   /**

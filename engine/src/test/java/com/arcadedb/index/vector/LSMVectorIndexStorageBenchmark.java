@@ -128,14 +128,16 @@ public class LSMVectorIndexStorageBenchmark {
           final String quantizationStr = quantization == VectorQuantizationType.NONE ? "" :
               String.format(",\n                \"quantization\": \"%s\"", quantization.name());
 
-          db.command("sql", """
+          final String sql = """
               CREATE INDEX ON VectorDoc (embedding) LSM_VECTOR
               METADATA {
                 "dimensions": %d,
                 "similarity": "COSINE",
                 "storeVectorsInGraph": %s%s
               }
-              """.formatted(DIMENSIONS, storeVectorsInGraph, quantizationStr));
+              """.formatted(DIMENSIONS, storeVectorsInGraph, quantizationStr);
+
+          db.command("sql", sql);
         });
 
         // Insert vectors
