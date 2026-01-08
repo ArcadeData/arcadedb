@@ -31,6 +31,7 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   public int                      locationCacheSize  = -1;  // -1 = use global default
   public int                      graphBuildCacheSize = -1; // -1 = use global default
   public int                      mutationsBeforeRebuild = -1; // -1 = use global default
+  public boolean                  storeVectorsInGraph = false; // Phase 2: Store vectors inline in graph file
 
   public LSMVectorIndexMetadata(final String typeName, final String[] propertyNames, final int bucketId) {
     super(typeName, propertyNames, bucketId);
@@ -72,5 +73,8 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
 
     if (metadata.has("mutationsBeforeRebuild"))
       this.mutationsBeforeRebuild = metadata.getInt("mutationsBeforeRebuild");
+
+    if (metadata.has("storeVectorsInGraph"))
+      this.storeVectorsInGraph = metadata.getBoolean("storeVectorsInGraph");
   }
 }

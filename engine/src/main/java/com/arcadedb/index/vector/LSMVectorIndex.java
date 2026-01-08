@@ -99,7 +99,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private final String                 indexName;
   protected     LSMVectorIndexMutable  mutable;
   private final ReentrantReadWriteLock lock;
-  private       LSMVectorIndexMetadata metadata;
+  LSMVectorIndexMetadata metadata; // Package-private for Phase 2 access from ArcadePageVectorValues and LSMVectorIndexGraphFile
 
   // Graph lifecycle management (Phase 2: Disk-based graph storage)
   enum GraphState {
@@ -130,6 +130,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private final int                     minPagesToScheduleACompaction;
   private       LSMVectorIndexCompacted compactedSubIndex;
   private       boolean                 valid = true;
+
+  // Metrics tracking (Phase 1: JVector metrics extraction)
+  // Package-private to allow access from ArcadePageVectorValues
+  final AtomicLong searchOperations       = new AtomicLong(0);
+  final AtomicLong insertOperations       = new AtomicLong(0);
+  final AtomicLong graphRebuildCount      = new AtomicLong(0);
+  final AtomicLong compactionCount        = new AtomicLong(0);
+  final AtomicLong vectorCacheHits        = new AtomicLong(0);
+  final AtomicLong vectorCacheMisses      = new AtomicLong(0);
+  final AtomicLong vectorFetchFromQuantized = new AtomicLong(0);
+  final AtomicLong vectorFetchFromDocuments = new AtomicLong(0);
+  final AtomicLong vectorFetchFromGraph   = new AtomicLong(0);
+  final AtomicLong searchLatencyMs        = new AtomicLong(0);
+  final AtomicLong insertLatencyMs        = new AtomicLong(0);
 
   public interface GraphBuildCallback {
     /**
@@ -251,7 +265,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return new LSMVectorIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(), ComponentFile.MODE.READ_WRITE,
           builder.getPageSize(), vectorBuilder.getTypeName(), vectorBuilder.getPropertyNames(), vectorBuilder.dimensions,
           vectorBuilder.similarityFunction, vectorBuilder.maxConnections, vectorBuilder.beamWidth, vectorBuilder.idPropertyName,
-          vectorBuilder.quantizationType);
+          vectorBuilder.quantizationType, vectorBuilder.locationCacheSize, vectorBuilder.graphBuildCacheSize,
+          vectorBuilder.mutationsBeforeRebuild, vectorBuilder.storeVectorsInGraph);
     }
   }
 
@@ -274,7 +289,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public LSMVectorIndex(final DatabaseInternal database, final String name, final String filePath, final ComponentFile.MODE mode,
       final int pageSize, final String typeName, final String[] propertyNames, final int dimensions,
       final VectorSimilarityFunction similarityFunction, final int maxConnections, final int beamWidth, final String idPropertyName,
-      final VectorQuantizationType quantizationType) {
+      final VectorQuantizationType quantizationType, final int locationCacheSize, final int graphBuildCacheSize,
+      final int mutationsBeforeRebuild, final boolean storeVectorsInGraph) {
     try {
       this.indexName = name;
 
@@ -285,6 +301,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       this.metadata.maxConnections = maxConnections;
       this.metadata.beamWidth = beamWidth;
       this.metadata.idPropertyName = idPropertyName;
+      this.metadata.locationCacheSize = locationCacheSize;
+      this.metadata.graphBuildCacheSize = graphBuildCacheSize;
+      this.metadata.mutationsBeforeRebuild = mutationsBeforeRebuild;
+      this.metadata.storeVectorsInGraph = storeVectorsInGraph;
 
       this.lock = new ReentrantReadWriteLock();
       this.vectorIndex = new VectorLocationIndex(getLocationCacheSize(database));
@@ -1008,6 +1028,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       try {
         this.graphIndex = builtGraph;
         this.graphState = GraphState.IMMUTABLE;
+        // Track graph rebuild metric
+        graphRebuildCount.incrementAndGet();
       } finally {
         lock.writeLock().unlock();
       }
@@ -1043,6 +1065,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
           } else {
             LogManager.instance()
                 .log(this, Level.FINE, "Vector graph persisted (transaction managed by caller) for index: %s", indexName);
+          }
+
+          // Phase 2: Note - we don't reload the graph immediately as OnDiskGraphIndex here because:
+          // 1. The in-memory OnHeapGraphIndex works perfectly for searches
+          // 2. Page visibility issues after commit make immediate reload unreliable
+          // 3. On next database restart, ensureGraphAvailable() will load it as OnDiskGraphIndex
+          // 4. The inline vectors will be available when loaded from disk on restart
+          if (metadata.storeVectorsInGraph) {
+            LogManager.instance().log(this, Level.INFO,
+                "Graph persisted with inline vectors - will use OnDiskGraphIndex on next database open");
           }
         } catch (final Exception e) {
           // Rollback on error
@@ -1819,20 +1851,25 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return List of pairs containing RID and similarity score
    */
   public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k, final Set<RID> allowedRIDs) {
-    if (queryVector == null)
-      throw new IllegalArgumentException("Query vector cannot be null");
+    // Track search metrics
+    final long startTime = System.currentTimeMillis();
+    searchOperations.incrementAndGet();
 
-    if (queryVector.length != metadata.dimensions)
-      throw new IllegalArgumentException(
-          "Query vector dimension " + queryVector.length + " does not match index dimension " + metadata.dimensions);
-
-    // Ensure graph is available (lazy-load from disk if needed, or build if not persisted)
-    ensureGraphAvailable();
-
-    boolean readLockHeld = false;
-    lock.readLock().lock();
-    readLockHeld = true;
     try {
+      if (queryVector == null)
+        throw new IllegalArgumentException("Query vector cannot be null");
+
+      if (queryVector.length != metadata.dimensions)
+        throw new IllegalArgumentException(
+            "Query vector dimension " + queryVector.length + " does not match index dimension " + metadata.dimensions);
+
+      // Ensure graph is available (lazy-load from disk if needed, or build if not persisted)
+      ensureGraphAvailable();
+
+      boolean readLockHeld = false;
+      lock.readLock().lock();
+      readLockHeld = true;
+      try {
       // Phase 5+: Check if graph needs rebuilding due to pending mutations
       // With periodic rebuilds (threshold=1000), we may have some pending mutations
       if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0) {
@@ -1920,13 +1957,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
               skippedOutOfBounds, skippedDeletedOrNull);
       return results;
 
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error performing vector search", e);
-      throw new IndexException("Error performing vector search", e);
-    } finally {
-      if (readLockHeld) {
-        lock.readLock().unlock();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error performing vector search", e);
+        throw new IndexException("Error performing vector search", e);
+      } finally {
+        if (readLockHeld) {
+          lock.readLock().unlock();
+        }
       }
+    } finally {
+      // Track search latency
+      final long elapsed = System.currentTimeMillis() - startTime;
+      searchLatencyMs.addAndGet(elapsed);
     }
   }
 
@@ -2114,15 +2156,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public void put(final Object[] keys, final RID[] values) {
+    // Track insert metrics
+    final long startTime = System.currentTimeMillis();
+    insertOperations.incrementAndGet();
 
-    if (keys == null || keys.length == 0)
-      throw new IllegalArgumentException("Keys cannot be null or empty");
+    try {
+      if (keys == null || keys.length == 0)
+        throw new IllegalArgumentException("Keys cannot be null or empty");
 
-    if (values == null || values.length == 0)
-      throw new IllegalArgumentException("Values cannot be null or empty");
+      if (values == null || values.length == 0)
+        throw new IllegalArgumentException("Values cannot be null or empty");
 
-    // Validate vector - can be either float[] or ComparableVector (from transaction replay)
-    final float[] vector;
+      // Validate vector - can be either float[] or ComparableVector (from transaction replay)
+      final float[] vector;
     if (keys[0] instanceof ComparableVector c)
       vector = c.vector;
     else
@@ -2171,9 +2217,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // rebuildGraphIfNeeded() calls buildGraphFromScratch() which clears vectorIndex and
         // tries to reload from pages, but pages aren't visible yet during commit phase
         // The graph will be rebuilt on the next query via ensureGraphAvailable() / get()
+        // Phase 2: When storeVectorsInGraph is enabled, the rebuilt graph will fetch updated vectors
+        // from documents/quantized pages and store them inline in the new graph file
         // rebuildGraphIfNeeded();
       } finally {
         lock.writeLock().unlock();
+      }
+    }
+    } finally {
+      // Track insert latency (only for actual writes, not transaction registration)
+      final TransactionContext.STATUS txStatus = getDatabase().getTransaction().getStatus();
+      if (txStatus != TransactionContext.STATUS.BEGUN) {
+        final long elapsed = System.currentTimeMillis() - startTime;
+        insertLatencyMs.addAndGet(elapsed);
       }
     }
   }
@@ -2294,6 +2350,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return mutable.getName();
   }
 
+  /**
+   * Get the current graph index (for Phase 2: reading vectors from graph file).
+   * Package-private to allow access from ArcadePageVectorValues.
+   *
+   * @return The current graph index (may be OnHeapGraphIndex or OnDiskGraphIndex)
+   */
+  ImmutableGraphIndex getGraphIndex() {
+    return graphIndex;
+  }
+
   @Override
   public IndexInternal getAssociatedIndex() {
     return null;
@@ -2406,7 +2472,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     try {
       LogManager.instance().log(this, Level.INFO, "compact() calling LSMVectorIndexCompactor.compact()");
-      return LSMVectorIndexCompactor.compact(this);
+      final boolean success = LSMVectorIndexCompactor.compact(this);
+      if (success) {
+        // Track successful compaction
+        compactionCount.incrementAndGet();
+      }
+      return success;
     } catch (final TimeoutException e) {
       LogManager.instance().log(this, Level.INFO, "compact() caught TimeoutException: %s", e.getMessage());
       // IGNORE IT, WILL RETRY LATER
@@ -2437,6 +2508,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     json.put("maxConnections", metadata.maxConnections);
     json.put("beamWidth", metadata.beamWidth);
     json.put("idPropertyName", metadata.idPropertyName);
+    json.put("storeVectorsInGraph", metadata.storeVectorsInGraph);
     json.put("version", CURRENT_VERSION);
     return json;
   }
@@ -2579,12 +2651,56 @@ public class LSMVectorIndex implements Index, IndexInternal {
   @Override
   public Map<String, Long> getStats() {
     final Map<String, Long> stats = new HashMap<>();
+
+    // Existing metrics
     stats.put("totalVectors", (long) vectorIndex.size());
     stats.put("activeVectors", vectorIndex.getActiveCount());
     stats.put("deletedVectors", (long) vectorIndex.size() - vectorIndex.getActiveCount());
     stats.put("dimensions", (long) metadata.dimensions);
     stats.put("maxConnections", (long) metadata.maxConnections);
     stats.put("beamWidth", (long) metadata.beamWidth);
+
+    // NEW: Graph state metrics
+    stats.put("graphState", (long) graphState.ordinal()); // LOADING=0, IMMUTABLE=1, MUTABLE=2
+    stats.put("graphNodeCount", graphIndex != null ? (long) graphIndex.getIdUpperBound() : 0L);
+    stats.put("mutationsSinceRebuild", (long) mutationsSinceSerialize.get());
+
+    // Calculate mutations threshold (use configured value or default)
+    final int defaultMutationsThreshold = getDatabase().getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD);
+    stats.put("mutationsThreshold", metadata.mutationsBeforeRebuild > 0 ?
+        (long) metadata.mutationsBeforeRebuild : (long) defaultMutationsThreshold);
+
+    // NEW: Operation counters
+    stats.put("searchOperations", searchOperations.get());
+    stats.put("insertOperations", insertOperations.get());
+    stats.put("graphRebuildCount", graphRebuildCount.get());
+    stats.put("compactionCount", compactionCount.get());
+
+    // NEW: Cache statistics
+    stats.put("vectorCacheHits", vectorCacheHits.get());
+    stats.put("vectorCacheMisses", vectorCacheMisses.get());
+
+    // NEW: Vector fetch source tracking
+    stats.put("vectorFetchFromQuantized", vectorFetchFromQuantized.get());
+    stats.put("vectorFetchFromDocuments", vectorFetchFromDocuments.get());
+    stats.put("vectorFetchFromGraph", vectorFetchFromGraph.get());
+
+    // NEW: Performance metrics (average latencies)
+    final long searchOps = searchOperations.get();
+    final long insertOps = insertOperations.get();
+    stats.put("avgSearchLatencyMs", searchOps > 0 ? searchLatencyMs.get() / searchOps : 0L);
+    stats.put("avgInsertLatencyMs", insertOps > 0 ? insertLatencyMs.get() / insertOps : 0L);
+
+    // NEW: Memory estimates
+    stats.put("estimatedLocationIndexBytes", (long) vectorIndex.size() * 24L);
+    stats.put("estimatedOrdinalMapBytes", ordinalToVectorId != null ?
+        (long) ordinalToVectorId.length * 4L : 0L);
+
+    // NEW: Page statistics
+    stats.put("mutablePages", (long) currentMutablePages.get());
+    stats.put("compactedPages", compactedSubIndex != null ? (long) compactedSubIndex.getTotalPages() : 0L);
+
     return stats;
   }
 

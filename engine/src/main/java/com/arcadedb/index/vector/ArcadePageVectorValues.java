@@ -203,6 +203,33 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     if (loc == null || loc.deleted)
       return null;
 
+    // Phase 2: Try reading from graph file first if vectors are stored inline
+    // Only during search (vectorSnapshot == null), NOT during graph building (vectorSnapshot != null)
+    if (lsmIndex != null && lsmIndex.metadata.storeVectorsInGraph && vectorSnapshot == null) {
+      try {
+        final io.github.jbellis.jvector.graph.ImmutableGraphIndex graph = lsmIndex.getGraphIndex();
+        if (graph instanceof io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex) {
+          final io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex diskGraph =
+              (io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex) graph;
+          // Read vector directly from graph file (no RID lookup needed!)
+          final io.github.jbellis.jvector.vector.types.VectorFloat<?> vector = diskGraph.getView().getVector(ordinal);
+          if (vector != null) {
+            // Track fetch source for metrics
+            lsmIndex.vectorFetchFromGraph.incrementAndGet();
+
+            if (vectorCache != null)
+              vectorCache.put(vectorId, vector);
+
+            return vector;
+          }
+        }
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Error reading vector from graph file (ordinal=%d), falling back: %s",
+            ordinal, e.getMessage());
+      }
+    }
+
     // If LSM index is available and quantization is enabled, try reading from index pages first
     if (lsmIndex != null) {
       try {
@@ -210,6 +237,9 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
         if (vector != null) {
           // Successfully read quantized vector from index pages
           final VectorFloat<?> result = vts.createFloatVector(vector);
+
+          // Track fetch source for metrics
+          lsmIndex.vectorFetchFromQuantized.incrementAndGet();
 
           // Cache the result if caching is enabled
           if (vectorCache != null)
@@ -269,6 +299,10 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
         return null; // Zero vectors cause NaN in cosine similarity
 
       final VectorFloat<?> result = vts.createFloatVector(vector);
+
+      // Track fetch source for metrics
+      if (lsmIndex != null)
+        lsmIndex.vectorFetchFromDocuments.incrementAndGet();
 
       // Cache the result if caching is enabled (for graph building performance)
       if (vectorCache != null)
