@@ -591,7 +591,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
 
       // No persisted graph - build now for new indexes
-      LogManager.instance().log(this, Level.INFO, "Building graph from scratch for index: %s", indexName);
+      LogManager.instance().log(this, Level.SEVERE, "DEBUG: initializeGraphIndex building graph for %s, vectorIndex.size=%d", indexName, vectorIndex.size());
 
       // NOTE: buildGraphFromScratch() manages locking internally
       // Don't hold lock here - JVector uses parallel threads during graph build
@@ -730,6 +730,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
             final boolean deleted = page.readByte(currentOffset) == 1;
             currentOffset += 1;
 
+            // CRITICAL: Skip over quantization type byte (always present after my fix)
+            final byte quantTypeOrdinal = page.readByte(currentOffset);
+            currentOffset += 1;
+
+            // CRITICAL: Skip over quantized vector data if quantization is enabled
+            if (quantTypeOrdinal == VectorQuantizationType.INT8.ordinal()) {
+              // Skip vector length (4 bytes)
+              final int vectorLength = page.readInt(currentOffset);
+              currentOffset += 4;
+              // Skip quantized bytes
+              currentOffset += vectorLength;
+              // Skip min and max (2 floats = 8 bytes)
+              currentOffset += 8;
+            } else if (quantTypeOrdinal == VectorQuantizationType.BINARY.ordinal()) {
+              // Skip original length (4 bytes)
+              final int originalLength = page.readInt(currentOffset);
+              currentOffset += 4;
+              // Skip packed bytes
+              final int byteCount = (originalLength + 7) / 8;
+              currentOffset += byteCount;
+              // Skip median (4 bytes)
+              currentOffset += 4;
+            }
+            // If quantType is NONE (0), no additional data to skip
+
             totalEntriesRead++;
 
             if (deleted) {
@@ -794,6 +819,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Read deleted flag (fixed 1 byte)
           final boolean deleted = page.readByte(currentOffset) == 1;
           currentOffset += 1;
+
+          // CRITICAL: Skip over quantization type byte (always present after my fix)
+          final byte quantTypeOrdinal = page.readByte(currentOffset);
+          currentOffset += 1;
+
+          // CRITICAL: Skip over quantized vector data if quantization is enabled
+          if (quantTypeOrdinal == VectorQuantizationType.INT8.ordinal()) {
+            // Skip vector length (4 bytes)
+            final int vectorLength = page.readInt(currentOffset);
+            currentOffset += 4;
+            // Skip quantized bytes
+            currentOffset += vectorLength;
+            // Skip min and max (2 floats = 8 bytes)
+            currentOffset += 8;
+          } else if (quantTypeOrdinal == VectorQuantizationType.BINARY.ordinal()) {
+            // Skip original length (4 bytes)
+            final int originalLength = page.readInt(currentOffset);
+            currentOffset += 4;
+            // Skip packed bytes
+            final int byteCount = (originalLength + 7) / 8;
+            currentOffset += byteCount;
+            // Skip median (4 bytes)
+            currentOffset += 4;
+          }
+          // If quantType is NONE (0), no additional data to skip
 
           totalEntriesRead++;
 
@@ -872,20 +922,26 @@ public class LSMVectorIndex implements Index, IndexInternal {
       int validatedCount = 0;
       final long VALIDATION_PROGRESS_INTERVAL = 1000;
 
+      int validationAttempts = 0;
+      int validationSuccesses = 0;
+      int validationNullVectors = 0;
+      int validationWrongDimensions = 0;
+      int validationAllZeros = 0;
+
       for (int vectorId : vectorIds) {
         final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
         if (loc != null && !loc.deleted) {
-          // Validate that the document still exists and has a valid vector
-          try {
-            final Record record = getDatabase().lookupByRID(loc.rid, false);
-            if (record != null) {
-              final Document doc = (Document) record;
-              final Object vectorObj = doc.get(vectorProp);
+          validationAttempts++;
 
-              final float[] vector = VectorUtils.convertToFloatArray(vectorObj);
-
+          // CRITICAL FIX: When quantization is enabled, vectors are stored in index pages, not documents
+          // Skip expensive document validation and trust the page data we already read
+          if (metadata.quantizationType != VectorQuantizationType.NONE) {
+            // With quantization: vectors are in index pages, document validation not needed
+            // Just validate that we can read the quantized vector
+            try {
+              final float[] vector = readVectorFromOffset(loc.absoluteFileOffset, loc.isCompacted);
               if (vector != null && vector.length == metadata.dimensions) {
-                // Validate vector is not all zeros (would cause NaN in cosine similarity)
+                // Validate vector is not all zeros
                 boolean hasNonZero = false;
                 for (float v : vector) {
                   if (v != 0.0f) {
@@ -896,15 +952,56 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 if (hasNonZero) {
                   vectorLocationSnapshot.put(vectorId, loc);
                   validVectorIds.add(vectorId);
+                  validationSuccesses++;
+                } else {
+                  validationAllZeros++;
+                  skippedDeletedDocs++;
+                }
+              } else {
+                // Could not read quantized vector - skip
+                if (vector == null) {
+                  validationNullVectors++;
+                } else {
+                  validationWrongDimensions++;
+                }
+                skippedDeletedDocs++;
+              }
+            } catch (final Exception e) {
+              // Error reading quantized vector - skip
+              skippedDeletedDocs++;
+            }
+          } else {
+            // Without quantization: validate by reading from document
+            try {
+              final Record record = getDatabase().lookupByRID(loc.rid, false);
+              if (record != null) {
+                final Document doc = (Document) record;
+                final Object vectorObj = doc.get(vectorProp);
+
+                final float[] vector = VectorUtils.convertToFloatArray(vectorObj);
+
+                if (vector != null && vector.length == metadata.dimensions) {
+                  // Validate vector is not all zeros (would cause NaN in cosine similarity)
+                  boolean hasNonZero = false;
+                  for (float v : vector) {
+                    if (v != 0.0f) {
+                      hasNonZero = true;
+                      break;
+                    }
+                  }
+                  if (hasNonZero) {
+                    vectorLocationSnapshot.put(vectorId, loc);
+                    validVectorIds.add(vectorId);
+                  }
                 }
               }
+            } catch (final RecordNotFoundException e) {
+              // Document was deleted - skip this vector
+              skippedDeletedDocs++;
+            } catch (final Exception e) {
+              // Other errors - skip this vector
+              skippedDeletedDocs++;
             }
-          } catch (final RecordNotFoundException e) {
-            // Document was deleted - skip this vector
-            skippedDeletedDocs++;
-          } catch (final Exception e) {
-            // Other errors - skip this vector
-            skippedDeletedDocs++;
           }
         }
 
@@ -1313,10 +1410,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final int bucketIdSize = Binary.getNumberSpace(rid.getBucketId());
       final int positionSize = Binary.getNumberSpace(rid.getPosition());
       int entrySize = vectorIdSize + positionSize + bucketIdSize + 1; // +1 for deleted byte
+      entrySize += 1; // +1 for quantization type flag (ALWAYS written, even if NONE)
 
       // Add size for quantized vector data if quantization is enabled
       if (qmeta != null) {
-        entrySize += 1; // quantization type flag
         if (qmeta.getType() == VectorQuantizationType.INT8) {
           final VectorQuantizationMetadata.Int8QuantizationMetadata int8meta = (VectorQuantizationMetadata.Int8QuantizationMetadata) qmeta;
           entrySize += 4; // vector length (int)
@@ -1382,10 +1479,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
       bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, rid.getPosition());
       bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, (byte) 0); // not deleted
 
+      // CRITICAL FIX: Always write quantization type byte, even if NONE
+      // This ensures readVectorFromOffset() can always read a consistent format
+      final VectorQuantizationType quantType = (qmeta != null) ? qmeta.getType() : VectorQuantizationType.NONE;
+      final byte quantOrdinal = (byte) quantType.ordinal();
+      bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, quantOrdinal);
+
       // Write quantized vector data if quantization is enabled
       if (qmeta != null) {
-        // Write quantization type flag
-        bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, (byte) qmeta.getType().ordinal());
 
         if (qmeta.getType() == VectorQuantizationType.INT8) {
           final VectorQuantizationMetadata.Int8QuantizationMetadata int8meta = (VectorQuantizationMetadata.Int8QuantizationMetadata) qmeta;
@@ -1714,8 +1815,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
         return null;
 
       // Calculate page number and offset within page
-      final int pageNum = (int) (fileOffset / getPageSize());
-      final int offsetInPage = (int) (fileOffset % getPageSize()) - BasePage.PAGE_HEADER_SIZE;
+      final int pageSize = getPageSize();
+      final int pageNum = (int) (fileOffset / pageSize);
+      // NOTE: BasePage read methods automatically add PAGE_HEADER_SIZE, so we don't subtract it here
+      final int offsetInPage = (int) (fileOffset % pageSize);
+
+      // CRITICAL: BasePage.read methods automatically add PAGE_HEADER_SIZE to the index,
+      // so we need to pass the offset relative to the start of the page CONTENT (after header)
+      final int contentOffset = offsetInPage - BasePage.PAGE_HEADER_SIZE;
 
       // Get the appropriate file ID
       final int fileId = isCompacted ? compactedSubIndex.getFileId() : getFileId();
@@ -1727,7 +1834,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       try {
         // Skip over the entry header (vectorId, bucketId, position, deleted flag)
         // These are variable-sized, so we need to read and skip them
-        int pos = offsetInPage;
+        // NOTE: All positions here are relative to page content (after PAGE_HEADER_SIZE)
+        int pos = contentOffset;
 
         // Read and skip vectorId
         final long[] vectorIdAndSize = page.readNumberAndSize(pos);
@@ -1744,6 +1852,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Read quantization type flag
         final byte quantTypeOrdinal = page.readByte(pos);
         pos += 1;
+
+        // Validate quantization type ordinal before converting to enum
+        if (quantTypeOrdinal < 0 || quantTypeOrdinal >= VectorQuantizationType.values().length)
+          return null;
 
         final VectorQuantizationType quantType = VectorQuantizationType.values()[quantTypeOrdinal];
 
@@ -1791,6 +1903,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           return dequantizeFromBinary(packed, qmeta);
         }
 
+        // quantType is NONE - return null (caller should fetch from document)
         return null;
 
       } finally {
@@ -2503,6 +2616,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     json.put("properties", metadata.propertyNames);
     json.put("dimensions", metadata.dimensions);
     json.put("similarityFunction", metadata.similarityFunction.name());
+
     if (metadata.quantizationType != VectorQuantizationType.NONE)
       json.put("quantization", metadata.quantizationType.name());
     json.put("maxConnections", metadata.maxConnections);
@@ -2510,6 +2624,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     json.put("idPropertyName", metadata.idPropertyName);
     json.put("storeVectorsInGraph", metadata.storeVectorsInGraph);
     json.put("version", CURRENT_VERSION);
+
     return json;
   }
 
@@ -2721,6 +2836,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public void setMetadata(final IndexMetadata metadata) {
     checkIsValid();
     this.metadata = (LSMVectorIndexMetadata) metadata;
+
+    // DEBUG: Log metadata being set
+    LogManager.instance().log(this, Level.SEVERE,
+        "DEBUG: setMetadata called for index %s, quantizationType=%s", indexName, this.metadata.quantizationType);
   }
 
   @Override
