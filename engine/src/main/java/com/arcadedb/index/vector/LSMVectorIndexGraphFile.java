@@ -138,30 +138,52 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
       // This is critical: JVector assumes contiguous file layout with no gaps
       final IndexWriter writer = new ContiguousPageWriter(database, getFileId(), getPageSize());
 
-      // Write graph topology WITHOUT inline vectors
-      // Vectors will be read on-demand from ArcadeDB documents (no duplication)
-      // Use InlineVectors but write zeros with correct dimension to satisfy JVector's format requirements
+      // Phase 2: Optionally store vectors inline in graph file
+      final boolean storeVectors = mainIndex != null && mainIndex.metadata.storeVectorsInGraph;
       final int dimension = vectors.dimension();
       final VectorFloat<?> emptyVector = JVectorUtils.createVectorFloat(dimension);
+
+      if (storeVectors) {
+        LogManager.instance().log(this, Level.INFO,
+            "Writing graph WITH inline vectors (storeVectorsInGraph=true, quantization=%s)",
+            mainIndex.metadata.quantizationType);
+      } else {
+        LogManager.instance().log(this, Level.INFO,
+            "Writing graph WITHOUT inline vectors (vectors fetched from documents on-demand)");
+      }
 
       try (final OnDiskSequentialGraphIndexWriter indexWriter = new OnDiskSequentialGraphIndexWriter.Builder(graph, writer).with(
           new InlineVectors(dimension)).build()) {
         // Write header with startOffset 0 (graph data starts at beginning of file)
         indexWriter.writeHeader(graph.getView(), 0L);
 
-        // Write empty vectors with correct dimension (JVector requires vectors even though we don't use them)
+        // Write vectors (either actual or empty depending on storeVectorsInGraph flag)
         indexWriter.write(Map.of(FeatureId.INLINE_VECTORS,
-            (IntFunction<Feature.State>) ordinal -> new InlineVectors.State(
-                emptyVector)));
+            (IntFunction<Feature.State>) ordinal -> {
+              if (storeVectors) {
+                // Store actual vectors from documents/quantized pages
+                final VectorFloat<?> vector = vectors.getVector(ordinal);
+                return new InlineVectors.State(vector != null ? vector : emptyVector);
+              } else {
+                // Original behavior: empty vectors (fetched from documents on-demand)
+                return new InlineVectors.State(emptyVector);
+              }
+            }));
       }
 
       writer.close();
 
       final long totalBytes = writer.position();
 
-      LogManager.instance().log(this, Level.INFO,
-          "Graph written to pages (sequential): %d nodes, %d bytes, %d pages (topology only, vectors in documents)",
-          graph.getIdUpperBound(), totalBytes, getTotalPages());
+      if (storeVectors) {
+        LogManager.instance().log(this, Level.INFO,
+            "Graph written to pages (sequential): %d nodes, %d bytes, %d pages (WITH inline vectors, quantization=%s)",
+            graph.getIdUpperBound(), totalBytes, getTotalPages(), mainIndex.metadata.quantizationType);
+      } else {
+        LogManager.instance().log(this, Level.INFO,
+            "Graph written to pages (sequential): %d nodes, %d bytes, %d pages (topology only, vectors in documents)",
+            graph.getIdUpperBound(), totalBytes, getTotalPages());
+      }
 
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error writing graph to pages: %s", e.getMessage());
@@ -174,8 +196,9 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
    * Load a graph from pages as OnDiskGraphIndex for lazy-loading.
    */
   public OnDiskGraphIndex loadGraph() throws IOException {
+    final int totalPages = getTotalPages();
     final long totalBytes = computeTotalGraphBytes();
-    if (getTotalPages() == 0 || totalBytes == 0)
+    if (totalPages == 0 || totalBytes == 0)
       return null;
 
     try {

@@ -38,6 +38,10 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
   public float                    neighborOverflowFactor = 1.2f;
   public float                    alphaDiversityRelaxation = 1.2f;
   public String                   idPropertyName     = "id";
+  public int                      locationCacheSize  = -1;  // -1 = use global default
+  public int                      graphBuildCacheSize = -1; // -1 = use global default
+  public int                      mutationsBeforeRebuild = -1; // -1 = use global default
+  public boolean                  storeVectorsInGraph = false; // Phase 2: Store vectors inline in graph file
 
   protected BucketLSMVectorIndexBuilder(DatabaseInternal database, String typeName, String bucketName,
       String[] propertyNames) {
@@ -193,6 +197,11 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
       this.neighborOverflowFactor = v.neighborOverflowFactor;
       this.alphaDiversityRelaxation = v.alphaDiversityRelaxation;
       this.idPropertyName = v.idPropertyName;
+      // Phase 2: New configuration options
+      this.locationCacheSize = v.locationCacheSize;
+      this.graphBuildCacheSize = v.graphBuildCacheSize;
+      this.mutationsBeforeRebuild = v.mutationsBeforeRebuild;
+      this.storeVectorsInGraph = v.storeVectorsInGraph;
     }
     return this;
   }
@@ -221,5 +230,18 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
 
     if (metadata.has("idPropertyName"))
       this.idPropertyName = metadata.getString("idPropertyName");
+
+    // Phase 2: New configuration options
+    if (metadata.has("locationCacheSize"))
+      this.locationCacheSize = metadata.getInt("locationCacheSize");
+
+    if (metadata.has("graphBuildCacheSize"))
+      this.graphBuildCacheSize = metadata.getInt("graphBuildCacheSize");
+
+    if (metadata.has("mutationsBeforeRebuild"))
+      this.mutationsBeforeRebuild = metadata.getInt("mutationsBeforeRebuild");
+
+    if (metadata.has("storeVectorsInGraph"))
+      this.storeVectorsInGraph = metadata.getBoolean("storeVectorsInGraph");
   }
 }
