@@ -68,13 +68,14 @@ function importGraph(format) {
       case "json":
         globalResultset = JSON.parse($("#importContent").val());
 
-        globalGraphSettings = globalResultset.settings;
-        delete globalResultset.settings;
+        if (globalResultset.settings) {
+          globalGraphSettings = globalResultset.settings;
+          delete globalResultset.settings;
+        }
 
         renderGraph();
         break;
     }
-    renderGraph();
     $("#popup").modal("hide");
   });
 
