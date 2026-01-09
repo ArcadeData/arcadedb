@@ -18,12 +18,15 @@
  */
 package com.arcadedb.utility;
 
+import com.arcadedb.log.LogManager;
+
 import java.util.*;
+import java.util.logging.Level;
 
 /**
  * A frequency-based cache that keeps the most frequently accessed elements.
- * When the cache reaches maxSize, it performs a batch eviction removing 90% of entries,
- * keeping only the 10% most frequently accessed elements.
+ * When the cache reaches maxSize, it performs a batch eviction removing 25% of entries,
+ * keeping the 75% most frequently accessed elements. maxSize less than 1 means unlimited size.
  * <p>
  * This design avoids frequent single-entry evictions and is optimized for scenarios where
  * batch cleanup is more efficient than incremental eviction.
@@ -34,30 +37,16 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class MostUsedCache<K, V> extends AbstractMap<K, V> {
+  private static final float RETENTION_RATIO = 0.75f; // Keep 75% most used
 
-  private static final float RETENTION_RATIO = 0.1f; // Keep 10% most used
-
-  private final int                       maxSize;
-  private final int                       targetSizeAfterEviction;
+  private final int maxSize;
+  private final int targetSizeAfterEviction;
   private final HashMap<K, CacheEntry<V>> cache;
 
-  private static class CacheEntry<V> {
-    V    value;
-    long accessCount;
-
-    CacheEntry(final V value) {
-      this.value = value;
-      this.accessCount = 1;
-    }
-  }
-
   public MostUsedCache(final int maxSize) {
-    if (maxSize <= 0)
-      throw new IllegalArgumentException("maxSize must be positive");
-
     this.maxSize = maxSize;
     this.targetSizeAfterEviction = Math.max(1, (int) (maxSize * RETENTION_RATIO));
-    this.cache = new HashMap<>((int) (maxSize / 0.75f) + 1);
+    this.cache = maxSize > 0 ? new HashMap<>((int) (maxSize / 0.75f) + 1) : new HashMap<>();
   }
 
   @Override
@@ -82,9 +71,9 @@ public class MostUsedCache<K, V> extends AbstractMap<K, V> {
       return oldValue;
     } else {
       // Add new entry
-      if (cache.size() >= maxSize) {
+      if (maxSize > 0 && cache.size() >= maxSize)
         evictEntries();
-      }
+
       cache.put(key, new CacheEntry<>(value));
       return null;
     }
@@ -123,7 +112,7 @@ public class MostUsedCache<K, V> extends AbstractMap<K, V> {
 
   /**
    * Performs batch eviction, removing the least frequently accessed entries.
-   * Keeps only the top 10% most frequently accessed entries.
+   * Keeps the top 75% most frequently accessed entries.
    */
   private void evictEntries() {
     if (cache.isEmpty())
@@ -131,6 +120,9 @@ public class MostUsedCache<K, V> extends AbstractMap<K, V> {
 
     // Create list of entries sorted by access count (descending)
     final List<Map.Entry<K, CacheEntry<V>>> entries = new ArrayList<>(cache.entrySet());
+
+    LogManager.instance().log(this, Level.FINE, "Cache reached max size of %d. Performing eviction to reduce to %d entries",
+            maxSize, targetSizeAfterEviction);
 
     // Sort by access count in descending order (most accessed first)
     entries.sort((e1, e2) -> Long.compare(e2.getValue().accessCount, e1.getValue().accessCount));
@@ -177,23 +169,22 @@ public class MostUsedCache<K, V> extends AbstractMap<K, V> {
     return new CacheStats(cache.size(), avgAccess, minAccess, maxAccess);
   }
 
-  public static class CacheStats {
-    public final int  size;
-    public final long avgAccessCount;
-    public final long minAccessCount;
-    public final long maxAccessCount;
+  private static class CacheEntry<V> {
+    V value;
+    long accessCount;
 
-    public CacheStats(final int size, final long avgAccessCount, final long minAccessCount, final long maxAccessCount) {
-      this.size = size;
-      this.avgAccessCount = avgAccessCount;
-      this.minAccessCount = minAccessCount;
-      this.maxAccessCount = maxAccessCount;
+    CacheEntry(final V value) {
+      this.value = value;
+      this.accessCount = 1;
     }
+  }
+
+  public record CacheStats(int size, long avgAccessCount, long minAccessCount, long maxAccessCount) {
 
     @Override
     public String toString() {
       return String.format("CacheStats{size=%d, avg=%d, min=%d, max=%d}",
-          size, avgAccessCount, minAccessCount, maxAccessCount);
+              size, avgAccessCount, minAccessCount, maxAccessCount);
     }
   }
 }

@@ -102,24 +102,24 @@ public class MostUsedCacheTest {
     // Now add one more entry to trigger eviction
     cache.put(100, "value100");
 
-    // Cache should now have ~10 entries (10% of 100)
+    // Cache should now have ~75 entries (75% of 100)
     final int sizeAfterEviction = cache.size();
-    assertTrue(sizeAfterEviction >= 10 && sizeAfterEviction <= 11,
-      "Expected size ~10-11 after eviction, got: " + sizeAfterEviction);
+    assertTrue(sizeAfterEviction >= 75 && sizeAfterEviction <= 76,
+      "Expected size ~75-76 after eviction, got: " + sizeAfterEviction);
 
     // The most frequently accessed entries should still be present
     for (int i = 0; i < 10; i++) {
       assertNotNull(cache.get(i), "Key " + i + " should be retained after eviction");
     }
 
-    // Most of the rarely accessed entries should be gone
+    // Some of the rarely accessed entries should be gone (25% evicted)
     int removedCount = 0;
     for (int i = 50; i < 100; i++) {
       if (cache.get(i) == null) {
         removedCount++;
       }
     }
-    assertTrue(removedCount > 40, "Expected many rarely-accessed entries to be evicted, removed: " + removedCount);
+    assertTrue(removedCount >= 10, "Expected some rarely-accessed entries to be evicted, removed: " + removedCount);
   }
 
   @Test
@@ -135,10 +135,10 @@ public class MostUsedCacheTest {
     // Trigger eviction
     cache.put(1000, "value1000");
 
-    // Should keep approximately 10% (100 entries)
+    // Should keep approximately 75% (750 entries)
     final int sizeAfterEviction = cache.size();
-    assertTrue(sizeAfterEviction >= 100 && sizeAfterEviction <= 101,
-      "Expected ~100-101 entries after eviction, got: " + sizeAfterEviction);
+    assertTrue(sizeAfterEviction >= 750 && sizeAfterEviction <= 751,
+      "Expected ~750-751 entries after eviction, got: " + sizeAfterEviction);
   }
 
   @Test
@@ -151,7 +151,7 @@ public class MostUsedCacheTest {
     }
 
     final int sizeAfterFirst = cache.size();
-    assertTrue(sizeAfterFirst <= 6, "First eviction should reduce size to ~5, got: " + sizeAfterFirst);
+    assertTrue(sizeAfterFirst >= 37 && sizeAfterFirst <= 38, "First eviction should reduce size to ~37-38 (75% of 50), got: " + sizeAfterFirst);
 
     // Mark some entries as "hot" by accessing them many times
     for (int i = 0; i < Math.min(3, sizeAfterFirst); i++) {
@@ -191,7 +191,7 @@ public class MostUsedCacheTest {
 
     // Empty cache stats
     MostUsedCache.CacheStats stats = cache.getStats();
-    assertEquals(0, stats.size);
+    assertEquals(0, stats.size());
 
     // Add entries with different access patterns
     cache.put("hot", "value1");
@@ -211,10 +211,10 @@ public class MostUsedCacheTest {
     // Don't access cold entry (count = 1 from put)
 
     stats = cache.getStats();
-    assertEquals(3, stats.size);
-    assertTrue(stats.maxAccessCount >= 100, "Max should be at least 100");
-    assertTrue(stats.minAccessCount == 1, "Min should be 1");
-    assertTrue(stats.avgAccessCount > 1, "Average should be > 1");
+    assertEquals(3, stats.size());
+    assertTrue(stats.maxAccessCount() >= 100, "Max should be at least 100");
+    assertTrue(stats.minAccessCount() == 1, "Min should be 1");
+    assertTrue(stats.avgAccessCount() > 1, "Average should be > 1");
   }
 
   @Test
@@ -292,6 +292,33 @@ public class MostUsedCacheTest {
   }
 
   @Test
+  public void testUnlimitedSize() {
+    // Test with maxSize = -1 (unlimited)
+    final MostUsedCache<Integer, String> cache = new MostUsedCache<>(-1);
+
+    // Add many entries - should never trigger eviction
+    for (int i = 0; i < 10000; i++) {
+      cache.put(i, "value" + i);
+    }
+
+    assertEquals(10000, cache.size(), "Unlimited cache should hold all entries");
+
+    // Verify all entries are still present
+    for (int i = 0; i < 10000; i++) {
+      assertNotNull(cache.get(i), "Entry " + i + " should still be present in unlimited cache");
+    }
+
+    // Test with maxSize = 0 (also unlimited)
+    final MostUsedCache<Integer, String> cache2 = new MostUsedCache<>(0);
+
+    for (int i = 0; i < 5000; i++) {
+      cache2.put(i, "value" + i);
+    }
+
+    assertEquals(5000, cache2.size(), "Cache with maxSize=0 should be unlimited");
+  }
+
+  @Test
   public void testPerformance() {
     final MostUsedCache<Integer, String> cache = new MostUsedCache<>(10000);
 
@@ -317,7 +344,7 @@ public class MostUsedCacheTest {
     System.out.println("Performance test:");
     System.out.println("  Insert 10K entries: " + insertTime + "ms");
     System.out.println("  100K accesses: " + accessTime + "ms");
-    System.out.println("  Batch eviction (90%): " + evictionTime + "ms");
+    System.out.println("  Batch eviction (25% removed, 75% kept): " + evictionTime + "ms");
     System.out.println("  Final size: " + cache.size());
     System.out.println("  " + cache.getStats());
 

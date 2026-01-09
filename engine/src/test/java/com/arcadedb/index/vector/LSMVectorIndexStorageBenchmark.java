@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
@@ -37,15 +38,19 @@ import java.util.*;
  * Microbenchmark comparing search performance with and without storeVectorsInGraph.
  * Tests measure:
  * - Search latency in microseconds (P50, P95, P99)
+ * - Search quality (Recall@K) compared against ground truth
  * - Vector fetch sources (graph vs documents vs quantized)
  * - Memory usage patterns
  * - Graph loading time
+ *
+ * Quality metrics are computed by comparing approximate search results against ground truth
+ * (exact nearest neighbors via brute-force linear scan).
  */
 public class LSMVectorIndexStorageBenchmark {
   private static final String DB_PATH = "target/test-databases/LSMVectorIndexStorageBenchmark";
 
   // Benchmark parameters
-  private static final int NUM_VECTORS = 20_000;   // Number of vectors to insert
+  private static final int NUM_VECTORS = 200_000;   // Number of vectors to insert
   private static final int DIMENSIONS  = 100;         // Vector dimensions (moderate size)
   private static final int NUM_QUERIES = 100;         // Number of search queries to run
   private static final int K_NEIGHBORS = 10;          // Number of neighbors to retrieve
@@ -53,6 +58,7 @@ public class LSMVectorIndexStorageBenchmark {
   @BeforeEach
   public void setup() {
     FileUtils.deleteRecursively(new File(DB_PATH));
+    GlobalConfiguration.PROFILE.setValue("high-performance");
   }
 
   @AfterEach
@@ -91,7 +97,7 @@ public class LSMVectorIndexStorageBenchmark {
    * Best of both worlds: inline storage + 4x compression.
    */
   @Test
-  public void benchmarkWithGraphStorageAndQuantization() {
+  public void benchmarkWithGraphStorageAndInt8Quantization() {
     System.out.println("\n========================================");
     System.out.println("Benchmark 3: WITH storeVectorsInGraph + INT8");
     System.out.println("========================================");
@@ -179,6 +185,8 @@ public class LSMVectorIndexStorageBenchmark {
         System.out.println(String.format("Setup: %d μs (insert: %d μs)", setupTime, insertTime));
       }
 
+      System.out.println("Reopening database index...");
+
       // Phase 2: Reopen database and run benchmark
       final long reopenStart = System.nanoTime();
       try (final Database db = factory.open()) {
@@ -197,18 +205,23 @@ public class LSMVectorIndexStorageBenchmark {
         // Get stats before benchmark
         final Map<String, Long> statsBefore = index.getStats();
 
-        // Run timed queries
+        // Run timed queries and collect results for quality measurement
         System.out.println(String.format("Running %d queries...", NUM_QUERIES));
         final long[] latencies = new long[NUM_QUERIES];
+        final float[][] queryVectors = new float[NUM_QUERIES][];
+        final List<List<Pair<RID, Float>>> approximateResults = new ArrayList<>(NUM_QUERIES);
         final long benchmarkStart = System.nanoTime();
 
         for (int i = 0; i < NUM_QUERIES; i++) {
           final float[] queryVector = generateRandomVector(DIMENSIONS, 10000 + i);
+          queryVectors[i] = queryVector;
+
           final long queryStart = System.nanoTime();
           final List<Pair<RID, Float>> results = index.findNeighborsFromVector(queryVector, K_NEIGHBORS);
           final long queryEnd = System.nanoTime();
 
           latencies[i] = (queryEnd - queryStart) / 1_000; // Convert to microseconds
+          approximateResults.add(results);
 
           // Verify we got results
           if (results.isEmpty()) {
@@ -220,6 +233,10 @@ public class LSMVectorIndexStorageBenchmark {
 
         // Get stats after benchmark
         final Map<String, Long> statsAfter = index.getStats();
+
+        // Phase 3: Compute ground truth and quality metrics
+        System.out.println("Computing ground truth for quality measurement...");
+        final QualityMetrics qualityMetrics = computeQualityMetrics(db, queryVectors, approximateResults);
 
         // Compute statistics
         Arrays.sort(latencies);
@@ -253,6 +270,7 @@ public class LSMVectorIndexStorageBenchmark {
         System.out.println(String.format("  - Database reopen: %d μs", reopenTime));
         System.out.println(String.format("  - Total benchmark: %d μs", benchmarkTime));
         System.out.println(String.format("  - Avg per query: %.2f μs", benchmarkTime / (double) NUM_QUERIES));
+        System.out.println(String.format("  - Ground truth time: %d μs", qualityMetrics.groundTruthTime));
         System.out.println();
         System.out.println(String.format("Search Latency (microseconds):"));
         System.out.println(String.format("  - Min:  %d μs", min));
@@ -261,6 +279,17 @@ public class LSMVectorIndexStorageBenchmark {
         System.out.println(String.format("  - P95:  %d μs", p95));
         System.out.println(String.format("  - P99:  %d μs", p99));
         System.out.println(String.format("  - Max:  %d μs", max));
+        System.out.println();
+        System.out.println(String.format("Search Quality:"));
+        System.out.println(String.format("  - Recall@%d (avg):     %.2f%%", K_NEIGHBORS,
+            qualityMetrics.avgRecall * 100));
+        System.out.println(String.format("  - Recall@%d (min):     %.2f%%", K_NEIGHBORS,
+            qualityMetrics.minRecall * 100));
+        System.out.println(String.format("  - Recall@%d (max):     %.2f%%", K_NEIGHBORS,
+            qualityMetrics.maxRecall * 100));
+        System.out.println(String.format("  - Perfect matches:     %d/%d (%.2f%%)",
+            qualityMetrics.perfectMatches, NUM_QUERIES,
+            (qualityMetrics.perfectMatches * 100.0 / NUM_QUERIES)));
         System.out.println();
         System.out.println(String.format("Vector Fetch Sources:"));
         System.out.println(String.format("  - From graph file:     %d", fetchFromGraph));
@@ -295,5 +324,126 @@ public class LSMVectorIndexStorageBenchmark {
     final Schema schema = db.getSchema();
     final DocumentType type = schema.getType(typeName);
     return (LSMVectorIndex) type.getPolymorphicIndexByProperties(propertyName).getIndexesOnBuckets()[0];
+  }
+
+  /**
+   * Compute quality metrics by comparing approximate search results against ground truth.
+   * Ground truth is computed via brute-force linear scan with exact distance calculations.
+   */
+  private QualityMetrics computeQualityMetrics(final Database db, final float[][] queryVectors,
+      final List<List<Pair<RID, Float>>> approximateResults) {
+    final long startTime = System.nanoTime();
+
+    // Load all vectors from database for ground truth computation
+    final Map<RID, float[]> allVectors = new HashMap<>();
+    db.transaction(() -> {
+      db.scanType("VectorDoc", true, record -> {
+        final var doc = record.asDocument();
+        final RID rid = doc.getIdentity();
+        final Object vectorObj = doc.get("embedding");
+        final float[] vector = VectorUtils.convertToFloatArray(vectorObj);
+        if (vector != null) {
+          allVectors.put(rid, vector);
+        }
+        return true;
+      });
+    });
+
+    System.out.println(String.format("  Loaded %d vectors for ground truth computation", allVectors.size()));
+
+    // Compute ground truth and recall for each query
+    final double[] recalls = new double[queryVectors.length];
+    int perfectMatches = 0;
+
+    for (int q = 0; q < queryVectors.length; q++) {
+      final float[] queryVector = queryVectors[q];
+      final List<Pair<RID, Float>> approximateResult = approximateResults.get(q);
+
+      // Compute ground truth: exact nearest neighbors via brute force
+      final List<Pair<RID, Float>> groundTruth = new ArrayList<>();
+      for (final Map.Entry<RID, float[]> entry : allVectors.entrySet()) {
+        final float distance = computeCosineDistance(queryVector, entry.getValue());
+        groundTruth.add(new Pair<>(entry.getKey(), distance));
+      }
+
+      // Sort by distance (ascending) and take top K
+      groundTruth.sort(Comparator.comparing(Pair::getSecond));
+      final List<RID> groundTruthRIDs = groundTruth.stream()
+          .limit(K_NEIGHBORS)
+          .map(Pair::getFirst)
+          .toList();
+
+      // Compute recall: how many of the approximate results are in ground truth
+      final Set<RID> groundTruthSet = new HashSet<>(groundTruthRIDs);
+      final Set<RID> approximateSet = approximateResult.stream()
+          .map(Pair::getFirst)
+          .collect(java.util.stream.Collectors.toSet());
+
+      int matches = 0;
+      for (final RID rid : approximateSet) {
+        if (groundTruthSet.contains(rid)) {
+          matches++;
+        }
+      }
+
+      final double recall = (double) matches / K_NEIGHBORS;
+      recalls[q] = recall;
+
+      if (recall == 1.0) {
+        perfectMatches++;
+      }
+    }
+
+    // Compute aggregate metrics
+    final double avgRecall = Arrays.stream(recalls).average().orElse(0.0);
+    final double minRecall = Arrays.stream(recalls).min().orElse(0.0);
+    final double maxRecall = Arrays.stream(recalls).max().orElse(0.0);
+
+    final long groundTruthTime = (System.nanoTime() - startTime) / 1_000;
+
+    return new QualityMetrics(avgRecall, minRecall, maxRecall, perfectMatches, groundTruthTime);
+  }
+
+  /**
+   * Compute cosine distance between two vectors.
+   * Distance = 1 - cosine_similarity
+   */
+  private float computeCosineDistance(final float[] v1, final float[] v2) {
+    if (v1.length != v2.length) {
+      throw new IllegalArgumentException("Vector dimensions must match");
+    }
+
+    float dotProduct = 0.0f;
+    float norm1 = 0.0f;
+    float norm2 = 0.0f;
+
+    for (int i = 0; i < v1.length; i++) {
+      dotProduct += v1[i] * v2[i];
+      norm1 += v1[i] * v1[i];
+      norm2 += v2[i] * v2[i];
+    }
+
+    final float cosineSimilarity = dotProduct / (float) (Math.sqrt(norm1) * Math.sqrt(norm2));
+    return 1.0f - cosineSimilarity;
+  }
+
+  /**
+   * Container for quality metrics computed against ground truth.
+   */
+  private static class QualityMetrics {
+    final double avgRecall;
+    final double minRecall;
+    final double maxRecall;
+    final int perfectMatches;
+    final long groundTruthTime; // in microseconds
+
+    QualityMetrics(final double avgRecall, final double minRecall, final double maxRecall,
+        final int perfectMatches, final long groundTruthTime) {
+      this.avgRecall = avgRecall;
+      this.minRecall = minRecall;
+      this.maxRecall = maxRecall;
+      this.perfectMatches = perfectMatches;
+      this.groundTruthTime = groundTruthTime;
+    }
   }
 }

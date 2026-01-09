@@ -88,6 +88,8 @@ public enum GlobalConfiguration {
         // NOT MUCH TO DO HERE, THIS IS THE DEFAULT OPTION
       } else if (v.equalsIgnoreCase("high-performance")) {
         ASYNC_OPERATIONS_QUEUE_IMPL.setValue("fast");
+        VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(-1);
+        VECTOR_INDEX_LOCATION_CACHE_SIZE.setValue(-1);
 
         if (cores > 1)
           // USE ONLY HALF OF THE CORES MINUS ONE
@@ -107,6 +109,8 @@ public enum GlobalConfiguration {
         HA_REPLICATION_QUEUE_SIZE.setValue(8);
         ASYNC_OPERATIONS_QUEUE_IMPL.setValue("standard");
         SERVER_HTTP_IO_THREADS.setValue(cores > 8 ? 4 : 2);
+        VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(10_000);
+        VECTOR_INDEX_LOCATION_CACHE_SIZE.setValue(10_000);
 
         PageManager.INSTANCE.configure();
 
@@ -303,8 +307,8 @@ public enum GlobalConfiguration {
       "Maximum number of vectors to cache in memory during HNSW graph building. " +
       "Higher values speed up construction but use more RAM. " +
       "RAM usage = cacheSize * (dimensions * 4 + 64) bytes. " +
-      "Recommended: 10000 for 768-dim vectors (~30MB), scale based on dimensionality.",
-      Integer.class, 10000),
+      "Recommended: 100000 for 768-dim vectors (~30MB), scale based on dimensionality.",
+      Integer.class, 100_000),
 
   VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD("arcadedb.vectorIndex.mutationsBeforeRebuild", SCOPE.DATABASE,
       "Number of mutations (inserts/updates/deletes) before rebuilding the HNSW graph index. " +
