@@ -131,6 +131,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private       LSMVectorIndexCompacted compactedSubIndex;
   private       boolean                 valid = true;
 
+  // Page tracking for inserts (avoids getTotalPages() issue with transaction-local pages)
+  // Protected by write lock, reset to -1 after transaction commits or graph rebuilds
+  private int currentInsertPageNum = -1;
+
   // Metrics tracking (Phase 1: JVector metrics extraction)
   // Package-private to allow access from ArcadePageVectorValues
   final AtomicLong searchOperations       = new AtomicLong(0);
@@ -1127,6 +1131,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         this.graphState = GraphState.IMMUTABLE;
         // Track graph rebuild metric
         graphRebuildCount.incrementAndGet();
+        // Reset page tracking since we rebuilt from persisted pages
+        currentInsertPageNum = -1;
       } finally {
         lock.writeLock().unlock();
       }
@@ -1269,6 +1275,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
               ", compactedFileId=" + compactedSubIndex.getFileId() + ", compactedPages=" + compactedSubIndex.getTotalPages() :
               ""));
 
+      // Reset page tracking after loading from disk
+      currentInsertPageNum = -1;
+
       // NOTE: Do NOT call initializeGraphIndex() here - it would cause infinite recursion
       // because buildGraphFromScratch() calls loadVectorsFromPages()
       // Graph initialization is handled separately by the constructor and ensureGraphAvailable()
@@ -1354,13 +1363,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final boolean deleted = currentPage.readByte(currentOffset) == 1;
           currentOffset += 1;
 
+          // CRITICAL FIX: Always read quantization type byte (matches writer that always writes it)
+          // The writer ALWAYS writes this byte, even when quantization is NONE
+          final byte quantTypeOrdinal = currentPage.readByte(currentOffset);
+          currentOffset += 1;
+
           // Skip quantized vector data if quantization is enabled
           // This data is not needed for location index, only for vector retrieval
-          if (metadata.quantizationType != VectorQuantizationType.NONE) {
-            // Read quantization type flag
-            final byte quantTypeOrdinal = currentPage.readByte(currentOffset);
-            currentOffset += 1;
-
+          if (quantTypeOrdinal > 0) {
             final VectorQuantizationType quantType = VectorQuantizationType.values()[quantTypeOrdinal];
 
             if (quantType == VectorQuantizationType.INT8) {
@@ -1427,11 +1437,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
       }
 
-      // Get or create the last mutable page
-      int lastPageNum = getTotalPages() - 1;
+      // CRITICAL FIX: Use tracked page number to handle transaction-local pages correctly
+      // Initialize from persisted pages only if not set (-1)
+      int lastPageNum = currentInsertPageNum;
       if (lastPageNum < 0) {
-        lastPageNum = 0;
-        createNewVectorDataPage(lastPageNum);
+        // First insert in this session - initialize from persisted pages
+        lastPageNum = getTotalPages() - 1;
+        if (lastPageNum < 0) {
+          lastPageNum = 0;
+          createNewVectorDataPage(lastPageNum);
+        }
+        currentInsertPageNum = lastPageNum;
       }
 
       // Get current page
@@ -1450,6 +1466,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 offsetFreeContent, lastPageNum, HEADER_BASE_SIZE, currentPage.getMaxContentSize());
         currentPage.writeByte(OFFSET_MUTABLE, (byte) 0);
         lastPageNum++;
+        currentInsertPageNum = lastPageNum; // Track the new page number
         currentPage = createNewVectorDataPage(lastPageNum);
         offsetFreeContent = currentPage.readInt(OFFSET_FREE_CONTENT);
         numberOfEntries = 0;
@@ -1463,6 +1480,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         currentPage.writeByte(OFFSET_MUTABLE, (byte) 0); // mutable = 0
 
         lastPageNum++;
+        currentInsertPageNum = lastPageNum; // Track the new page number
         currentPage = createNewVectorDataPage(lastPageNum);
         offsetFreeContent = currentPage.readInt(OFFSET_FREE_CONTENT);
         numberOfEntries = 0;
@@ -1543,11 +1561,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (deletedIds.isEmpty())
         return;
 
-      // Get or create the last mutable page
-      int lastPageNum = getTotalPages() - 1;
+      // Use tracked page number to handle transaction-local pages correctly
+      int lastPageNum = currentInsertPageNum;
       if (lastPageNum < 0) {
-        lastPageNum = 0;
-        createNewVectorDataPage(lastPageNum);
+        // First operation in this session - initialize from persisted pages
+        lastPageNum = getTotalPages() - 1;
+        if (lastPageNum < 0) {
+          lastPageNum = 0;
+          createNewVectorDataPage(lastPageNum);
+        }
+        currentInsertPageNum = lastPageNum;
       }
 
       // Append deletion tombstones to pages
@@ -1578,6 +1601,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                   offsetFreeContent, lastPageNum, HEADER_BASE_SIZE, currentPage.getMaxContentSize());
           currentPage.writeByte(OFFSET_MUTABLE, (byte) 0);
           lastPageNum++;
+          currentInsertPageNum = lastPageNum; // Track the new page number
           currentPage = createNewVectorDataPage(lastPageNum);
           offsetFreeContent = currentPage.readInt(OFFSET_FREE_CONTENT);
           numberOfEntries = 0;
@@ -1591,6 +1615,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           currentPage.writeByte(OFFSET_MUTABLE, (byte) 0);
 
           lastPageNum++;
+          currentInsertPageNum = lastPageNum; // Track the new page number
           currentPage = createNewVectorDataPage(lastPageNum);
           offsetFreeContent = currentPage.readInt(OFFSET_FREE_CONTENT);
           numberOfEntries = 0;
@@ -2702,6 +2727,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Clear all vector locations
       vectorIndex.clear();
       ordinalToVectorId = new int[0];
+      currentInsertPageNum = -1;
 
       final DatabaseInternal db = mutable != null ? mutable.getDatabase() : null;
 

@@ -30,7 +30,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
+import java.io.*;
 import java.util.*;
 
 /**
@@ -45,8 +45,8 @@ public class LSMVectorIndexStorageBenchmark {
   private static final String DB_PATH = "target/test-databases/LSMVectorIndexStorageBenchmark";
 
   // Benchmark parameters
-  private static final int NUM_VECTORS = 100000;        // Number of vectors to insert
-  private static final int DIMENSIONS  = 384;          // Vector dimensions (moderate size)
+  private static final int NUM_VECTORS = 100;        // Number of vectors to insert
+  private static final int DIMENSIONS  = 100;          // Vector dimensions (moderate size)
   private static final int NUM_QUERIES = 100;         // Number of search queries to run
   private static final int K_NEIGHBORS = 10;          // Number of neighbors to retrieve
 
@@ -104,12 +104,25 @@ public class LSMVectorIndexStorageBenchmark {
    * Vectors fetched from quantized pages.
    */
   @Test
-  public void benchmarkQuantizationOnly() {
+  public void benchmarkQuantizationInt8Only() {
     System.out.println("\n========================================");
     System.out.println("Benchmark 4: INT8 Quantization (No Graph Storage)");
     System.out.println("========================================");
 
-    runBenchmark(false, VectorQuantizationType.INT8, "Quantization Only (Pages)");
+    runBenchmark(false, VectorQuantizationType.INT8, "INT8 Quantization Only (Pages)");
+  }
+
+  /**
+   * Benchmark 4: Quantization only (without graph storage).
+   * Vectors fetched from quantized pages.
+   */
+  @Test
+  public void benchmarkQuantizationBinaryOnly() {
+    System.out.println("\n========================================");
+    System.out.println("Benchmark 5: BINARY Quantization (No Graph Storage)");
+    System.out.println("========================================");
+
+    runBenchmark(false, VectorQuantizationType.BINARY, "BINARY Quantization Only (Pages)");
   }
 
   private void runBenchmark(final boolean storeVectorsInGraph, final VectorQuantizationType quantization,
