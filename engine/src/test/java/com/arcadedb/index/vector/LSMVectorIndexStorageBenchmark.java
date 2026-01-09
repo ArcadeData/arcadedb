@@ -36,7 +36,7 @@ import java.util.*;
 /**
  * Microbenchmark comparing search performance with and without storeVectorsInGraph.
  * Tests measure:
- * - Search latency (P50, P95, P99)
+ * - Search latency in microseconds (P50, P95, P99)
  * - Vector fetch sources (graph vs documents vs quantized)
  * - Memory usage patterns
  * - Graph loading time
@@ -45,8 +45,8 @@ public class LSMVectorIndexStorageBenchmark {
   private static final String DB_PATH = "target/test-databases/LSMVectorIndexStorageBenchmark";
 
   // Benchmark parameters
-  private static final int NUM_VECTORS = 100;        // Number of vectors to insert
-  private static final int DIMENSIONS  = 100;          // Vector dimensions (moderate size)
+  private static final int NUM_VECTORS = 20_000;   // Number of vectors to insert
+  private static final int DIMENSIONS  = 100;         // Vector dimensions (moderate size)
   private static final int NUM_QUERIES = 100;         // Number of search queries to run
   private static final int K_NEIGHBORS = 10;          // Number of neighbors to retrieve
 
@@ -106,7 +106,7 @@ public class LSMVectorIndexStorageBenchmark {
   @Test
   public void benchmarkQuantizationInt8Only() {
     System.out.println("\n========================================");
-    System.out.println("Benchmark 4: INT8 Quantization (No Graph Storage)");
+    System.out.println("Benchmark 4: INT8 Quantization");
     System.out.println("========================================");
 
     runBenchmark(false, VectorQuantizationType.INT8, "INT8 Quantization Only (Pages)");
@@ -119,7 +119,7 @@ public class LSMVectorIndexStorageBenchmark {
   @Test
   public void benchmarkQuantizationBinaryOnly() {
     System.out.println("\n========================================");
-    System.out.println("Benchmark 5: BINARY Quantization (No Graph Storage)");
+    System.out.println("Benchmark 5: BINARY Quantization");
     System.out.println("========================================");
 
     runBenchmark(false, VectorQuantizationType.BINARY, "BINARY Quantization Only (Pages)");
@@ -128,7 +128,7 @@ public class LSMVectorIndexStorageBenchmark {
   private void runBenchmark(final boolean storeVectorsInGraph, final VectorQuantizationType quantization,
       final String label) {
 
-    final long setupStart = System.currentTimeMillis();
+    final long setupStart = System.nanoTime();
 
     try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
       // Phase 1: Create database and insert vectors
@@ -154,27 +154,37 @@ public class LSMVectorIndexStorageBenchmark {
         });
 
         // Insert vectors
-        final long insertStart = System.currentTimeMillis();
-        db.transaction(() -> {
-          for (int i = 0; i < NUM_VECTORS; i++) {
-            final float[] vector = generateRandomVector(DIMENSIONS, i);
-            final var doc = db.newDocument("VectorDoc");
-            doc.set("id", i);
-            doc.set("embedding", vector);
-            doc.save();
-          }
-        });
-        final long insertTime = System.currentTimeMillis() - insertStart;
+        final long insertStart = System.nanoTime();
+        db.begin();
 
-        final long setupTime = System.currentTimeMillis() - setupStart;
-        System.out.println(String.format("Setup: %d ms (insert: %d ms)", setupTime, insertTime));
+        for (int i = 0; i < NUM_VECTORS; i++) {
+          final float[] vector = generateRandomVector(DIMENSIONS, i);
+          final var doc = db.newDocument("VectorDoc");
+          doc.set("id", i);
+          doc.set("embedding", vector);
+          doc.save();
+
+          if ((i + 1) % 20_000 == 0) {
+            db.commit();
+            System.out.println("Inserted " + (i + 1) + " vectors...");
+            db.begin();
+          }
+        }
+
+        db.commit();
+
+        final long insertTime = (System.nanoTime() - insertStart) / 1_000;
+
+        final long setupTime = (System.nanoTime() - setupStart) / 1_000;
+        System.out.println(String.format("Setup: %d μs (insert: %d μs)", setupTime, insertTime));
       }
 
       // Phase 2: Reopen database and run benchmark
-      final long reopenStart = System.currentTimeMillis();
+      final long reopenStart = System.nanoTime();
       try (final Database db = factory.open()) {
-        final long reopenTime = System.currentTimeMillis() - reopenStart;
+        final long reopenTime = (System.nanoTime() - reopenStart) / 1_000;
 
+        System.out.println("Building index...");
         final LSMVectorIndex index = getVectorIndex(db, "VectorDoc", "embedding");
 
         // Warm-up queries (not measured)
@@ -190,7 +200,7 @@ public class LSMVectorIndexStorageBenchmark {
         // Run timed queries
         System.out.println(String.format("Running %d queries...", NUM_QUERIES));
         final long[] latencies = new long[NUM_QUERIES];
-        final long benchmarkStart = System.currentTimeMillis();
+        final long benchmarkStart = System.nanoTime();
 
         for (int i = 0; i < NUM_QUERIES; i++) {
           final float[] queryVector = generateRandomVector(DIMENSIONS, 10000 + i);
@@ -198,7 +208,7 @@ public class LSMVectorIndexStorageBenchmark {
           final List<Pair<RID, Float>> results = index.findNeighborsFromVector(queryVector, K_NEIGHBORS);
           final long queryEnd = System.nanoTime();
 
-          latencies[i] = (queryEnd - queryStart) / 1_000_000; // Convert to milliseconds
+          latencies[i] = (queryEnd - queryStart) / 1_000; // Convert to microseconds
 
           // Verify we got results
           if (results.isEmpty()) {
@@ -206,7 +216,7 @@ public class LSMVectorIndexStorageBenchmark {
           }
         }
 
-        final long benchmarkTime = System.currentTimeMillis() - benchmarkStart;
+        final long benchmarkTime = (System.nanoTime() - benchmarkStart) / 1_000;
 
         // Get stats after benchmark
         final Map<String, Long> statsAfter = index.getStats();
@@ -240,17 +250,17 @@ public class LSMVectorIndexStorageBenchmark {
         System.out.println(String.format("  - Quantization: %s", quantization));
         System.out.println();
         System.out.println(String.format("Timing:"));
-        System.out.println(String.format("  - Database reopen: %d ms", reopenTime));
-        System.out.println(String.format("  - Total benchmark: %d ms", benchmarkTime));
-        System.out.println(String.format("  - Avg per query: %.2f ms", benchmarkTime / (double) NUM_QUERIES));
+        System.out.println(String.format("  - Database reopen: %d μs", reopenTime));
+        System.out.println(String.format("  - Total benchmark: %d μs", benchmarkTime));
+        System.out.println(String.format("  - Avg per query: %.2f μs", benchmarkTime / (double) NUM_QUERIES));
         System.out.println();
-        System.out.println(String.format("Search Latency (milliseconds):"));
-        System.out.println(String.format("  - Min:  %d ms", min));
-        System.out.println(String.format("  - P50:  %d ms", p50));
-        System.out.println(String.format("  - Avg:  %.2f ms", avg));
-        System.out.println(String.format("  - P95:  %d ms", p95));
-        System.out.println(String.format("  - P99:  %d ms", p99));
-        System.out.println(String.format("  - Max:  %d ms", max));
+        System.out.println(String.format("Search Latency (microseconds):"));
+        System.out.println(String.format("  - Min:  %d μs", min));
+        System.out.println(String.format("  - P50:  %d μs", p50));
+        System.out.println(String.format("  - Avg:  %.2f μs", avg));
+        System.out.println(String.format("  - P95:  %d μs", p95));
+        System.out.println(String.format("  - P99:  %d μs", p99));
+        System.out.println(String.format("  - Max:  %d μs", max));
         System.out.println();
         System.out.println(String.format("Vector Fetch Sources:"));
         System.out.println(String.format("  - From graph file:     %d", fetchFromGraph));
