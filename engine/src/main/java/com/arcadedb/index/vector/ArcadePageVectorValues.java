@@ -43,6 +43,7 @@ import java.util.logging.*;
  */
 public class ArcadePageVectorValues implements RandomAccessVectorValues {
   private static final VectorTypeSupport vts = VectorizationProvider.getInstance().getVectorTypeSupport();
+  public static final int DEFAULT_CACHE_SIZE = 100_000;
 
   private final DatabaseInternal                                 database;
   private final int                                              dimensions;
@@ -78,14 +79,14 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   // Constructor for graph building (uses immutable snapshot + cache for performance)
   public ArcadePageVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
       final Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot, final int[] ordinalToVectorId) {
-    this(database, dimensions, vectorPropertyName, vectorSnapshot, ordinalToVectorId, null, 10000);
+    this(database, dimensions, vectorPropertyName, vectorSnapshot, ordinalToVectorId, null, DEFAULT_CACHE_SIZE);
   }
 
   // Constructor for graph building with LSM index reference (for quantization support)
   public ArcadePageVectorValues(final DatabaseInternal database, final int dimensions, final String vectorPropertyName,
       final Map<Integer, VectorLocationIndex.VectorLocation> vectorSnapshot, final int[] ordinalToVectorId,
       final LSMVectorIndex lsmIndex) {
-    this(database, dimensions, vectorPropertyName, vectorSnapshot, ordinalToVectorId, lsmIndex, 10000);
+    this(database, dimensions, vectorPropertyName, vectorSnapshot, ordinalToVectorId, lsmIndex, DEFAULT_CACHE_SIZE);
   }
 
   // Constructor for graph building with configurable cache size
