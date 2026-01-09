@@ -18,11 +18,13 @@
  */
 package com.arcadedb.utility;
 
-import java.io.Serial;
+import java.io.*;
 import java.util.*;
 
 /**
- * The most simpler LRU cache implementation in Java.
+ * The simplest LRU cache implementation in Java. Not thread safe, wrap it in Collections.synchronizedMap() for thread-safety.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class LRUCache<K, V> extends LinkedHashMap<K, V> {
 
@@ -32,7 +34,7 @@ public class LRUCache<K, V> extends LinkedHashMap<K, V> {
   final private int cacheSize;
 
   public LRUCache(final int iCacheSize) {
-    super(16, (float) 0.75, true);
+    super(Math.max(16, (int) (iCacheSize / 0.75) + 1), 0.75f, true);
     this.cacheSize = iCacheSize;
   }
 
