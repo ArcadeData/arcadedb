@@ -1027,7 +1027,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
 
       // Use validated vector IDs instead of unfiltered ones
-      final int[] filteredVectorIds = validVectorIds.stream().mapToInt(Integer::intValue).toArray();
+      // IMPORTANT: Must be sorted to match the ordinal order used when loading from disk
+      final int[] filteredVectorIds = validVectorIds.stream().sorted().mapToInt(Integer::intValue).toArray();
       this.ordinalToVectorId = filteredVectorIds;
       finalActiveVectorIds = filteredVectorIds;
 
