@@ -337,38 +337,67 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
 
     try {
       Awaitility.await()
-          .atMost(30, TimeUnit.SECONDS)
-          .pollInterval(500, TimeUnit.MILLISECONDS)
+          .atMost(60, TimeUnit.SECONDS)
+          .pollInterval(200, TimeUnit.MILLISECONDS)
           .until(() -> {
+            // First, ensure all servers are ONLINE
+            boolean allOnline = true;
             for (int i = 0; i < serverCount; ++i) {
-              if (getServerRole(i) == HAServer.ServerRole.ANY) {
-                // ONLY FOR CANDIDATE LEADERS
-                if (servers[i].getHA() != null) {
-                  if (servers[i].getHA().isLeader()) {
-                    final int onlineReplicas = servers[i].getHA().getOnlineReplicas();
-                    if (onlineReplicas >= serverCount - 1) {
-                      // ALL CONNECTED
-                      serversSynchronized = true;
-                      LogManager.instance().log(this, Level.WARNING, "All %d replicas are online", onlineReplicas);
-                      return true;
-                    }
-                  }
-                }
+              if (getServer(i).getStatus() != ArcadeDBServer.Status.ONLINE) {
+                allOnline = false;
+                break;
               }
             }
-            return false;
+
+            if (!allOnline) {
+              LogManager.instance().log(this, Level.FINER, "Waiting for all servers to come online...");
+              return false;
+            }
+
+            // All servers are online, now check if leader is elected and all replicas connected
+            ArcadeDBServer leader = null;
+            for (int i = 0; i < serverCount; i++) {
+              if (servers[i] != null && servers[i].getHA() != null && servers[i].getHA().isLeader()) {
+                leader = servers[i];
+                break;
+              }
+            }
+
+            if (leader == null) {
+              LogManager.instance().log(this, Level.FINER, "Waiting for leader election...");
+              return false;
+            }
+
+            // Leader elected, check if all replicas are connected
+            final int onlineReplicas = leader.getHA().getOnlineReplicas();
+            if (onlineReplicas >= serverCount - 1) {
+              // ALL CONNECTED
+              serversSynchronized = true;
+              LogManager.instance().log(this, Level.INFO, "All %d replicas are online (leader: %s)", onlineReplicas, leader.getServerName());
+              return true;
+            } else {
+              LogManager.instance().log(this, Level.FINER, "Waiting for replicas: %d/%d online", onlineReplicas, serverCount - 1);
+              return false;
+            }
           });
     } catch (ConditionTimeoutException e) {
+      LogManager.instance().log(this, Level.SEVERE, "Timeout waiting for cluster to stabilize");
       int lastTotalConnectedReplica = 0;
+      ArcadeDBServer leaderAtTimeout = null;
       for (int i = 0; i < serverCount; ++i) {
         if (getServerRole(i) == HAServer.ServerRole.ANY && servers[i].getHA() != null && servers[i].getHA().isLeader()) {
+          leaderAtTimeout = servers[i];
           lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
           break;
         }
       }
       LogManager.instance()
-          .log(this, Level.SEVERE, "Timeout on waiting for all servers to get online %d < %d", 1 + lastTotalConnectedReplica,
-              serverCount);
+          .log(this, Level.SEVERE, "Timeout waiting for cluster to stabilize. Leader: %s, Online replicas: %d/%d",
+              leaderAtTimeout != null ? leaderAtTimeout.getServerName() : "NONE",
+              lastTotalConnectedReplica,
+              serverCount - 1);
+      throw new RuntimeException("Cluster failed to stabilize: expected " + serverCount + " servers, only " +
+          (lastTotalConnectedReplica + 1) + " connected", e);
     }
   }
 
@@ -522,6 +551,34 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
         return getServer(leaderName);
       }
     return null;
+  }
+
+  /**
+   * Get the current leader server.
+   * Returns null if no leader is currently elected.
+   */
+  protected ArcadeDBServer getLeader() {
+    for (int i = 0; i < getServerCount(); ++i) {
+      ArcadeDBServer server = getServer(i);
+      if (server != null && server.getHA() != null && server.getHA().isLeader())
+        return server;
+    }
+    return null;
+  }
+
+  /**
+   * Get leader with retry logic during election phase.
+   * Waits up to 30 seconds for a leader to be elected.
+   */
+  protected ArcadeDBServer getLeaderWithRetry() {
+    try {
+      return Awaitility.await()
+          .atMost(30, TimeUnit.SECONDS)
+          .pollInterval(100, TimeUnit.MILLISECONDS)
+          .until(() -> getLeader(), java.util.Objects::nonNull);
+    } catch (ConditionTimeoutException e) {
+      throw new RuntimeException("No leader elected after 30 seconds", e);
+    }
   }
 
   protected int[] getServerToCheck() {
