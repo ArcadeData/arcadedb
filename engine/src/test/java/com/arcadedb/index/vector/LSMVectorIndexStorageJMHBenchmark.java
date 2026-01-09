@@ -26,32 +26,46 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
-import org.openjdk.jmh.annotations.*;
+import org.openjdk.jmh.annotations.Benchmark;
+import org.openjdk.jmh.annotations.BenchmarkMode;
+import org.openjdk.jmh.annotations.Fork;
+import org.openjdk.jmh.annotations.Level;
+import org.openjdk.jmh.annotations.Measurement;
+import org.openjdk.jmh.annotations.Mode;
+import org.openjdk.jmh.annotations.OutputTimeUnit;
+import org.openjdk.jmh.annotations.Param;
+import org.openjdk.jmh.annotations.Scope;
+import org.openjdk.jmh.annotations.Setup;
+import org.openjdk.jmh.annotations.State;
+import org.openjdk.jmh.annotations.TearDown;
+import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
 import org.openjdk.jmh.runner.Runner;
 import org.openjdk.jmh.runner.RunnerException;
 import org.openjdk.jmh.runner.options.Options;
 import org.openjdk.jmh.runner.options.OptionsBuilder;
 
-import java.io.File;
+import java.io.*;
 import java.util.*;
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 
 /**
  * JMH Microbenchmark comparing vector search performance across different quantization strategies.
- *
+ * <p>
  * This benchmark measures:
  * - Search latency (k=10, k=100)
  * - Search accuracy (recall@10, recall@100)
  * - Memory usage
  * - Vector fetch sources (graph vs documents vs quantized pages)
- *
- * Run with:
- * mvn clean test-compile exec:java -Dexec.mainClass="com.arcadedb.index.vector.LSMVectorIndexStorageJMHBenchmark" -Dexec.classpathScope=test
- *
+ * <p>
+ * Requirements:
+ * - Java 21+ (Java 25+ recommended for best Panama Vector API performance)
+ * <p>
  * Or from IDE:
- * Just run the main() method
+ * Just run the main() method (IntelliJ IDEA has good JMH support)
+ * <p>
+ * To use Java 25, set JAVA_HOME before running:
+ * export JAVA_HOME=$(/usr/libexec/java_home -v 25)
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -60,33 +74,38 @@ import java.util.concurrent.TimeUnit;
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
 @Warmup(iterations = 3, time = 2, timeUnit = TimeUnit.SECONDS)
 @Measurement(iterations = 5, time = 3, timeUnit = TimeUnit.SECONDS)
-@Fork(value = 1, jvmArgs = {"-Xms4G", "-Xmx4G"})
+@Fork(value = 1, jvmArgs = {
+    "-Xms24G",
+    "-Xmx24G",
+    "--enable-native-access=ALL-UNNAMED",
+    "--add-modules", "jdk.incubator.vector" // Split this into two strings
+})
 public class LSMVectorIndexStorageJMHBenchmark {
 
   @State(Scope.Benchmark)
   public static class DatabaseState {
-    @Param({"false"})
+    @Param({ "false" })
     public String storeVectorsInGraph;
 
-    @Param({"NONE", "INT8", "BINARY"})
+    @Param({ "NONE", "INT8", "BINARY" })
     public String quantization;
 
-    @Param({"10000", "100000"})
+    @Param({ "200000" })
     public int numVectors;
 
-    private static final int DIMENSIONS = 384;
-    private static final String DB_PATH_PREFIX = "target/jmh-vector-bench-";
-    private static final int NUM_QUERY_VECTORS = 100;
-    private static final int RECALL_TEST_QUERIES = 50; // Subset for recall calculation
+    private static final int    DIMENSIONS          = 100;
+    private static final String DB_PATH_PREFIX      = "target/jmh-vector-bench-";
+    private static final int    NUM_QUERY_VECTORS   = 100;
+    private static final int    RECALL_TEST_QUERIES = 50; // Subset for recall calculation
 
-    private Database database;
+    private Database        database;
     private DatabaseFactory factory;
-    private LSMVectorIndex index;
-    private List<float[]> queryVectors;
-    private String dbPath;
+    private LSMVectorIndex  index;
+    private List<float[]>   queryVectors;
+    private String          dbPath;
 
     // Shared ground truth across all configurations (computed once per numVectors)
-    private static final Map<String, Map<Integer, List<RID>>> GROUND_TRUTH_K10 = new HashMap<>();
+    private static final Map<String, Map<Integer, List<RID>>> GROUND_TRUTH_K10  = new HashMap<>();
     private static final Map<String, Map<Integer, List<RID>>> GROUND_TRUTH_K100 = new HashMap<>();
 
     private long memoryUsedBytes;
@@ -99,9 +118,8 @@ public class LSMVectorIndexStorageJMHBenchmark {
       FileUtils.deleteRecursively(new File(dbPath));
 
       System.out.println("\n========================================");
-      System.out.println("Setting up: storeVectorsInGraph=" + storeVectorsInGraph +
-                        ", quantization=" + quantization +
-                        ", vectors=" + numVectors);
+      System.out.println(
+          "Setting up: storeVectorsInGraph=" + storeVectorsInGraph + ", quantization=" + quantization + ", vectors=" + numVectors);
       System.out.println("========================================");
 
       final long setupStart = System.currentTimeMillis();
@@ -130,19 +148,28 @@ public class LSMVectorIndexStorageJMHBenchmark {
 
           // Insert vectors
           final Random rand = new Random(12345);
-          db.transaction(() -> {
-            for (int i = 0; i < numVectors; i++) {
-              final float[] vector = new float[DIMENSIONS];
-              for (int j = 0; j < DIMENSIONS; j++) {
-                vector[j] = rand.nextFloat() * 2.0f - 1.0f;
-              }
 
-              final var doc = db.newDocument("VectorDoc");
-              doc.set("id", i);
-              doc.set("embedding", vector);
-              doc.save();
+          db.begin();
+
+          for (int i = 0; i < numVectors; i++) {
+            final float[] vector = new float[DIMENSIONS];
+            for (int j = 0; j < DIMENSIONS; j++) {
+              vector[j] = rand.nextFloat() * 2.0f - 1.0f;
             }
-          });
+
+            final var doc = db.newDocument("VectorDoc");
+            doc.set("id", i);
+            doc.set("embedding", vector);
+            doc.save();
+
+            if ((i + 1) % 20000 == 0) {
+              db.commit();
+              System.out.println("Inserted vectors: " + (i + 1));
+              db.begin();
+            }
+          }
+
+          db.commit();
         }
       }
 
@@ -169,7 +196,10 @@ public class LSMVectorIndexStorageJMHBenchmark {
 
       // Measure memory usage
       System.gc();
-      try { Thread.sleep(100); } catch (InterruptedException e) { }
+      try {
+        Thread.sleep(100);
+      } catch (InterruptedException e) {
+      }
       final Runtime runtime = Runtime.getRuntime();
       memoryUsedBytes = runtime.totalMemory() - runtime.freeMemory();
 
@@ -314,11 +344,8 @@ public class LSMVectorIndexStorageJMHBenchmark {
    * Run the benchmark from main method
    */
   public static void main(String[] args) throws RunnerException {
-    Options opt = new OptionsBuilder()
-        .include(LSMVectorIndexStorageJMHBenchmark.class.getSimpleName())
-        .shouldFailOnError(true)
-        .shouldDoGC(true)
-        .build();
+    Options opt = new OptionsBuilder().include(LSMVectorIndexStorageJMHBenchmark.class.getSimpleName()).shouldFailOnError(true)
+        .shouldDoGC(true).build();
 
     new Runner(opt).run();
   }
