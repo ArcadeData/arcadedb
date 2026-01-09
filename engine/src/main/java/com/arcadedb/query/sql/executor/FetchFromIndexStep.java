@@ -339,8 +339,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (convertedTo.length == 0)
         convertedTo = null;
 
-      if (secondValue.equals(thirdValue) && fromKeyIncluded && toKeyIncluded
-          && index.getPropertyNames().size() == convertedFrom.length)
+      if (java.util.Arrays.equals(convertedFrom, convertedTo) && fromKeyIncluded && toKeyIncluded
+          && convertedFrom != null && index.getPropertyNames().size() == convertedFrom.length)
         cursor = index.get(convertedFrom);
       else if (index.supportsOrderedIterations()) {
         if (orderAsc)
