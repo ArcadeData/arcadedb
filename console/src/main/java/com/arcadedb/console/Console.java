@@ -72,7 +72,6 @@ public class Console {
   private static final String               REMOTE_PREFIX            = "remote:";
   private static final String               LOCAL_PREFIX             = "local:";
   private static final String               SQL_LANGUAGE             = "SQL";
-  private final        boolean              system                   = System.console() != null;
   private final        Terminal             terminal;
   private final        TerminalParser       parser                   = new TerminalParser();
   private              ConsoleOutput        output;
@@ -82,11 +81,9 @@ public class Console {
   private              int                  maxMultiValueEntries     = 10;
   private              int                  maxWidth                 = TableFormatter.DEFAULT_MAX_WIDTH;
   private              Boolean              expandResultSet;
-  private              ResultSet            resultSet;
   private              String               databaseDirectory;
   private              int                  verboseLevel             = 3;
   private              String               language                 = SQL_LANGUAGE;
-  private final        ContextConfiguration configuration            = new ContextConfiguration();
   private              boolean              asyncMode                = false;
   private              long                 transactionBatchSize     = 0L;
   protected            long                 currentOperationsInBatch = 0L;
@@ -107,6 +104,7 @@ public class Console {
   }
 
   public Console() throws IOException {
+    final ContextConfiguration configuration = new ContextConfiguration();
     IntegrationUtils.setRootPath(configuration);
     databaseDirectory = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
     if (!databaseDirectory.endsWith(File.separator))
@@ -114,6 +112,7 @@ public class Console {
 
     GlobalConfiguration.PROFILE.setValue("low-cpu");
 
+    boolean system = System.console() != null;
     terminal = TerminalBuilder.builder().system(system).streams(System.in, System.out).jni(true).build();
 
     output(3, "%s Console v%s - %s (%s)", Constants.PRODUCT, Constants.getRawVersion(), Constants.COPYRIGHT, Constants.URL);
@@ -611,7 +610,7 @@ public class Console {
 
     final long beginTime = System.currentTimeMillis();
 
-    resultSet = null;
+    ResultSet resultSet = null;
 
     if (transactionBatchSize > 0 && !databaseProxy.isTransactionActive())
       databaseProxy.begin();
@@ -620,6 +619,7 @@ public class Console {
       ((DatabaseInternal) databaseProxy).async().command(language, line, new AsyncResultsetCallback() {
         @Override
         public void onComplete(final ResultSet resultset) {
+          // NO ACTIONS
         }
 
         @Override
