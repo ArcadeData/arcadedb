@@ -123,6 +123,7 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
   /**
    * Appends a vector entry during compaction using variable-sized encoding.
    * Entries are written sequentially without pointer tables for maximum space efficiency.
+   * Preserves quantized data to maintain search performance for quantization-enabled indexes.
    *
    * @param currentPage                 The current page being written to (or null to create new)
    * @param compactedPageNumberOfSeries Counter for page series numbering
@@ -130,12 +131,20 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
    * @param vectorId                    The vector ID
    * @param rid                         The record ID
    * @param deleted                     Whether this entry is deleted
+   * @param quantType                   The quantization type
+   * @param quantizedData               The quantized vector data (null if NONE)
+   * @param quantMin                    Min value for INT8 quantization
+   * @param quantMax                    Max value for INT8 quantization
+   * @param quantMedian                 Median value for BINARY quantization
+   * @param originalLength              Original vector length for BINARY quantization
    *
    * @return CompactionAppendResult containing new pages and absolute file offset of the written entry
    */
   public CompactionAppendResult appendDuringCompaction(MutablePage currentPage,
       final AtomicInteger compactedPageNumberOfSeries, final AtomicLong currentFileOffset,
-      final int vectorId, final RID rid, final boolean deleted) throws IOException, InterruptedException {
+      final int vectorId, final RID rid, final boolean deleted, final VectorQuantizationType quantType,
+      final byte[] quantizedData, final float quantMin, final float quantMax, final float quantMedian,
+      final int originalLength) throws IOException, InterruptedException {
 
     final List<MutablePage> newPages = new ArrayList<>();
 
@@ -149,7 +158,18 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
     final int vectorIdSize = Binary.getNumberSpace(vectorId);
     final int bucketIdSize = Binary.getNumberSpace(rid.getBucketId());
     final int positionSize = Binary.getNumberSpace(rid.getPosition());
-    final int entrySize = vectorIdSize + positionSize + bucketIdSize + 1 + 1; // +1 for deleted byte, +1 for quantTypeOrdinal
+    int entrySize = vectorIdSize + positionSize + bucketIdSize + 1 + 1; // +1 for deleted byte, +1 for quantTypeOrdinal
+
+    // Add size for quantized data if present
+    if (quantType == VectorQuantizationType.INT8 && quantizedData != null) {
+      entrySize += 4; // vector length
+      entrySize += quantizedData.length; // quantized bytes
+      entrySize += 8; // min + max (2 floats)
+    } else if (quantType == VectorQuantizationType.BINARY && quantizedData != null) {
+      entrySize += 4; // original length
+      entrySize += quantizedData.length; // packed bytes
+      entrySize += 4; // median (float)
+    }
 
     // Read page header using BasePage methods (accounts for PAGE_HEADER_SIZE automatically)
     int offsetFreeContent = currentPage.readInt(LSMVectorIndex.OFFSET_FREE_CONTENT);
@@ -178,16 +198,35 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
     // Record the absolute file offset where this entry will be written
     final long entryFileOffset = currentFileOffset.get();
 
-    // Write entry sequentially using variable-sized encoding (vectors stored in documents, not index)
+    // Write entry sequentially using variable-sized encoding
     int bytesWritten = 0;
     bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, vectorId);
     bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, rid.getBucketId());
     bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, rid.getPosition());
     bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, (byte) (deleted ? 1 : 0));
 
-    // CRITICAL FIX: Always write quantization type byte (NONE for compacted pages)
-    // Compacted pages store metadata only; vectors remain in documents
-    bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, (byte) VectorQuantizationType.NONE.ordinal());
+    // Write quantization type byte (preserving quantization from source pages)
+    bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, (byte) quantType.ordinal());
+
+    // Write quantized vector data if present (preserving for search performance)
+    if (quantType == VectorQuantizationType.INT8 && quantizedData != null) {
+      // Write INT8 quantized data: length + bytes + min + max
+      bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, quantizedData.length);
+      for (byte b : quantizedData) {
+        bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, b);
+      }
+      bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, Float.floatToIntBits(quantMin));
+      bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, Float.floatToIntBits(quantMax));
+
+    } else if (quantType == VectorQuantizationType.BINARY && quantizedData != null) {
+      // Write BINARY quantized data: original length + packed bytes + median
+      bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, originalLength);
+      for (byte b : quantizedData) {
+        bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, b);
+      }
+      bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, Float.floatToIntBits(quantMedian));
+    }
+    // When quantType is NONE, vectors remain in documents (no quantized data to write)
 
     // Update page header
     numberOfEntries++;
@@ -283,14 +322,30 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
           final boolean deleted = page.readByte(currentOffset) == 1;
           currentOffset += 1;
 
-          // CRITICAL FIX: Always read quantization type byte (matches writer that always writes it)
+          // CRITICAL: Always read quantization type byte (matches writer that always writes it)
           final byte quantTypeOrdinal = page.readByte(currentOffset);
           currentOffset += 1;
 
-          // Note: Compacted pages always have quantization=NONE (vectors stored in documents)
-          // So we don't need to skip any quantized vector data here
+          // Compacted pages preserve quantization from source pages for search performance
+          // Skip quantized data (we'll load vectors from documents for getAllVectors)
+          if (quantTypeOrdinal > 0 && quantTypeOrdinal < VectorQuantizationType.values().length) {
+            final VectorQuantizationType quantType = VectorQuantizationType.values()[quantTypeOrdinal];
 
-          // Load vector from document (vectors are NOT stored in index pages)
+            if (quantType == VectorQuantizationType.INT8) {
+              // Skip: vector length + quantized bytes + min + max
+              final int vectorLength = page.readInt(currentOffset);
+              currentOffset += 4 + vectorLength + 8;
+
+            } else if (quantType == VectorQuantizationType.BINARY) {
+              // Skip: original length + packed bytes + median
+              final int origLength = page.readInt(currentOffset);
+              currentOffset += 4;
+              final int byteCount = (origLength + 7) / 8;
+              currentOffset += byteCount + 4;
+            }
+          }
+
+          // Load vector from document (for getAllVectors, we fetch from documents)
           float[] vector = null;
           if (!deleted) {
             try {

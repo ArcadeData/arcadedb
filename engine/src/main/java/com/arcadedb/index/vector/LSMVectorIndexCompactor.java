@@ -286,37 +286,64 @@ public class LSMVectorIndexCompactor {
             final boolean deleted = page.readByte(currentOffset) == 1;
             currentOffset += 1;
 
-            // CRITICAL FIX: Always skip quantization type byte (matches writer that always writes it)
+            // CRITICAL: Always read quantization type byte (matches writer that always writes it)
             final byte quantTypeOrdinal = page.readByte(currentOffset);
             currentOffset += 1;
 
-            // Skip quantized vector data if quantization is enabled
+            // Read and preserve quantized vector data if quantization is enabled
+            VectorQuantizationType quantType = VectorQuantizationType.NONE;
+            byte[] quantizedData = null;
+            float quantMin = 0.0f;
+            float quantMax = 0.0f;
+            float quantMedian = 0.0f;
+            int originalLength = 0;
+
             if (quantTypeOrdinal > 0 && quantTypeOrdinal < VectorQuantizationType.values().length) {
-              final VectorQuantizationType quantType = VectorQuantizationType.values()[quantTypeOrdinal];
+              quantType = VectorQuantizationType.values()[quantTypeOrdinal];
 
               if (quantType == VectorQuantizationType.INT8) {
-                // Skip: vector length (4 bytes) + quantized bytes + min (4 bytes) + max (4 bytes)
+                // Read: vector length (4 bytes) + quantized bytes + min (4 bytes) + max (4 bytes)
                 final int vectorLength = page.readInt(currentOffset);
-                currentOffset += 4; // vector length
-                currentOffset += vectorLength; // quantized bytes
-                currentOffset += 8; // min + max (2 floats)
+                currentOffset += 4;
+
+                // Read quantized bytes
+                quantizedData = new byte[vectorLength];
+                for (int j = 0; j < vectorLength; j++) {
+                  quantizedData[j] = page.readByte(currentOffset);
+                  currentOffset += 1;
+                }
+
+                // Read min and max
+                quantMin = Float.intBitsToFloat(page.readInt(currentOffset));
+                currentOffset += 4;
+                quantMax = Float.intBitsToFloat(page.readInt(currentOffset));
+                currentOffset += 4;
 
               } else if (quantType == VectorQuantizationType.BINARY) {
-                // Skip: original length (4 bytes) + packed bytes + median (4 bytes)
-                final int originalLength = page.readInt(currentOffset);
-                currentOffset += 4; // original length
-                final int byteCount = (originalLength + 7) / 8; // packed bytes
-                currentOffset += byteCount; // packed bytes
-                currentOffset += 4; // median (float)
+                // Read: original length (4 bytes) + packed bytes + median (4 bytes)
+                originalLength = page.readInt(currentOffset);
+                currentOffset += 4;
+
+                final int byteCount = (originalLength + 7) / 8;
+                quantizedData = new byte[byteCount];
+                for (int j = 0; j < byteCount; j++) {
+                  quantizedData[j] = page.readByte(currentOffset);
+                  currentOffset += 1;
+                }
+
+                // Read median
+                quantMedian = Float.intBitsToFloat(page.readInt(currentOffset));
+                currentOffset += 4;
               }
             }
 
-            // NOTE: Vectors are stored in documents when quantization is NONE.
-            // During compaction, we only need to copy metadata (id, rid, deleted flag).
-            // We don't need to load vectors from documents - they remain in the documents.
+            // NOTE: When quantization is NONE, vectors are stored in documents.
+            // When quantization is enabled (INT8/BINARY), we preserve the quantized data
+            // in compacted pages to maintain search performance.
 
             // Last write wins: keep entry with highest vectorId for each RID
-            final VectorEntryData entry = new VectorEntryData(id, rid, deleted);
+            final VectorEntryData entry = new VectorEntryData(id, rid, deleted, quantType, quantizedData, quantMin,
+                quantMax, quantMedian, originalLength);
             final VectorEntryData existing = vectorMap.get(rid);
             if (existing == null || id > existing.id) {
               // This entry is newer (higher vectorId), keep it
@@ -356,9 +383,10 @@ public class LSMVectorIndexCompactor {
         continue;
       }
 
-      // Write to compacted index with file offset tracking
+      // Write to compacted index with file offset tracking, preserving quantized data
       final LSMVectorIndexCompacted.CompactionAppendResult result = compactedIndex.appendDuringCompaction(
-          currentPage, compactedPageSeries, currentFileOffset, entry.id, entry.rid, entry.deleted);
+          currentPage, compactedPageSeries, currentFileOffset, entry.id, entry.rid, entry.deleted, entry.quantType,
+          entry.quantizedData, entry.quantMin, entry.quantMax, entry.quantMedian, entry.originalLength);
 
       if (!result.newPages.isEmpty()) {
         // New page(s) were created
@@ -391,14 +419,28 @@ public class LSMVectorIndexCompactor {
    * Temporary data structure for vector entries during compaction.
    */
   private static class VectorEntryData {
-    final int     id;
-    final RID     rid;
-    final boolean deleted;
+    final int                    id;
+    final RID                    rid;
+    final boolean                deleted;
+    final VectorQuantizationType quantType;
+    final byte[]                 quantizedData;  // For INT8: quantized bytes; For BINARY: packed bits
+    final float                  quantMin;       // For INT8: min value
+    final float                  quantMax;       // For INT8: max value
+    final float                  quantMedian;    // For BINARY: median value
+    final int                    originalLength; // For BINARY: original vector length
 
-    VectorEntryData(final int id, final RID rid, final boolean deleted) {
+    VectorEntryData(final int id, final RID rid, final boolean deleted, final VectorQuantizationType quantType,
+        final byte[] quantizedData, final float quantMin, final float quantMax, final float quantMedian,
+        final int originalLength) {
       this.id = id;
       this.rid = rid;
       this.deleted = deleted;
+      this.quantType = quantType;
+      this.quantizedData = quantizedData;
+      this.quantMin = quantMin;
+      this.quantMax = quantMax;
+      this.quantMedian = quantMedian;
+      this.originalLength = originalLength;
     }
   }
 }
