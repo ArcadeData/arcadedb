@@ -219,9 +219,19 @@ public class ContainsAnyCondition extends BooleanExpression {
     } else {
       // Might be a nested property - try using the string representation
       String leftStr = left.toString();
-      // Check if this looks like a simple property path (alphanumeric with dots)
-      if (leftStr.matches("[a-zA-Z_][a-zA-Z0-9_.]*")) {
-        fieldName = leftStr;
+      // Remove backticks for comparison (they're used for quoting identifiers with special chars)
+      String normalizedLeftStr = leftStr.replace("`", "");
+
+      // Check if this looks like a valid property path:
+      // - No consecutive dots (invalid syntax)
+      // - No leading or trailing dots
+      // Since the SQL parser already validated the expression syntax, we mainly need to ensure
+      // it's a simple property path (not a complex expression) and normalize it for comparison
+      if (!normalizedLeftStr.contains("..") &&
+          !normalizedLeftStr.startsWith(".") &&
+          !normalizedLeftStr.endsWith(".") &&
+          !normalizedLeftStr.isEmpty()) {
+        fieldName = normalizedLeftStr;
       }
     }
 
