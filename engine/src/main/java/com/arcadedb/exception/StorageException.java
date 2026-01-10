@@ -36,7 +36,7 @@ package com.arcadedb.exception;
  * try {
  *     fileChannel.write(buffer);
  * } catch (IOException e) {
- *     throw new StorageException(ErrorCode.IO_ERROR, "Failed to write to file")
+ *     throw new StorageException(ErrorCode.STORAGE_IO_ERROR, "Failed to write to file")
  *         .withContext("filePath", file.getAbsolutePath())
  *         .withContext("bufferSize", buffer.remaining())
  *         .withContext("bytesWritten", bytesWritten);
@@ -73,27 +73,10 @@ public class StorageException extends ArcadeDBException {
   /**
    * Returns the default error code for storage exceptions.
    *
-   * @return IO_ERROR
+   * @return STORAGE_IO_ERROR
    */
   @Override
   protected ErrorCode getDefaultErrorCode() {
-    return ErrorCode.IO_ERROR;
-  }
-
-  /**
-   * Returns the HTTP status code for this exception.
-   * Storage exceptions typically map to 500 (Internal Server Error),
-   * except for corruption which may indicate 503 (Service Unavailable).
-   *
-   * @return the HTTP status code
-   */
-  @Override
-  public int getHttpStatus() {
-    return switch (getErrorCode()) {
-      case CORRUPTION_DETECTED -> 503; // Service Unavailable
-      case IO_ERROR, WAL_ERROR, SERIALIZATION_ERROR, ENCRYPTION_ERROR -> 500; // Internal Server Error
-      case BACKUP_ERROR, RESTORE_ERROR -> 500; // Internal Server Error
-      default -> 500;
-    };
+    return ErrorCode.STORAGE_IO_ERROR;
   }
 }

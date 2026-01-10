@@ -30,4 +30,9 @@ public class EncryptionException extends ArcadeDBException {
   public EncryptionException(final Throwable cause) {
     super(cause);
   }
+
+  @Override
+  protected ErrorCode getDefaultErrorCode() {
+    return ErrorCode.STORAGE_ENCRYPTION_ERROR;
+  }
 }

@@ -32,7 +32,7 @@ package com.arcadedb.exception;
  * <p>
  * Example usage:
  * <pre>{@code
- * throw new DatabaseException(ErrorCode.DATABASE_NOT_FOUND, "Database 'mydb' not found")
+ * throw new DatabaseException(ErrorCode.DB_NOT_FOUND, "Database 'mydb' not found")
  *     .withContext("databaseName", "mydb")
  *     .withContext("searchPath", "/data/databases");
  * }</pre>
@@ -67,27 +67,10 @@ public class DatabaseException extends ArcadeDBException {
   /**
    * Returns the default error code for database exceptions.
    *
-   * @return DATABASE_OPERATION_ERROR
+   * @return DB_OPERATION_ERROR
    */
   @Override
   protected ErrorCode getDefaultErrorCode() {
-    return ErrorCode.DATABASE_OPERATION_ERROR;
-  }
-
-  /**
-   * Returns the HTTP status code for this exception.
-   * Database exceptions typically map to 500 (Internal Server Error),
-   * except for DATABASE_NOT_FOUND which maps to 404.
-   *
-   * @return the HTTP status code
-   */
-  @Override
-  public int getHttpStatus() {
-    return switch (getErrorCode()) {
-      case DATABASE_NOT_FOUND -> 404; // Not Found
-      case DATABASE_ALREADY_EXISTS -> 409; // Conflict
-      case DATABASE_IS_READONLY -> 403; // Forbidden
-      default -> 500; // Internal Server Error
-    };
+    return ErrorCode.DB_OPERATION_ERROR;
   }
 }

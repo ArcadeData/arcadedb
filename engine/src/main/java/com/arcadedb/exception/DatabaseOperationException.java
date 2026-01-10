@@ -26,4 +26,9 @@ public class DatabaseOperationException extends ArcadeDBException {
   public DatabaseOperationException(final String s, final Throwable e) {
     super(s, e);
   }
+
+  @Override
+  protected ErrorCode getDefaultErrorCode() {
+    return ErrorCode.DB_OPERATION_ERROR;
+  }
 }
