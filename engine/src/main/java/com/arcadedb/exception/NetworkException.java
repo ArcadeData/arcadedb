@@ -34,7 +34,7 @@ package com.arcadedb.exception;
  * <p>
  * Example usage:
  * <pre>{@code
- * throw new NetworkException(ErrorCode.CONNECTION_ERROR, "Failed to connect to server")
+ * throw new NetworkException(ErrorCode.INTERNAL_ERROR, "Failed to connect to server")
  *     .withContext("server", serverAddress)
  *     .withContext("port", port)
  *     .withContext("timeout", connectionTimeout);
@@ -70,28 +70,10 @@ public class NetworkException extends ArcadeDBException {
   /**
    * Returns the default error code for network exceptions.
    *
-   * @return CONNECTION_ERROR
+   * @return INTERNAL_ERROR (network-specific codes are in the network module)
    */
   @Override
   protected ErrorCode getDefaultErrorCode() {
-    return ErrorCode.CONNECTION_ERROR;
-  }
-
-  /**
-   * Returns the HTTP status code for this exception.
-   * Network exceptions typically map to 503 (Service Unavailable) or 502 (Bad Gateway).
-   *
-   * @return the HTTP status code
-   */
-  @Override
-  public int getHttpStatus() {
-    return switch (getErrorCode()) {
-      case CONNECTION_ERROR, CONNECTION_LOST -> 503; // Service Unavailable
-      case NETWORK_PROTOCOL_ERROR -> 502; // Bad Gateway
-      case REMOTE_ERROR -> 502; // Bad Gateway
-      case REPLICATION_ERROR, QUORUM_NOT_REACHED -> 503; // Service Unavailable
-      case SERVER_NOT_LEADER -> 307; // Temporary Redirect (to leader)
-      default -> 503;
-    };
+    return ErrorCode.INTERNAL_ERROR;
   }
 }

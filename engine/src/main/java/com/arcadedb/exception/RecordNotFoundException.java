@@ -36,4 +36,9 @@ public class RecordNotFoundException extends ArcadeDBException {
   public RID getRID() {
     return rid;
   }
+
+  @Override
+  protected ErrorCode getDefaultErrorCode() {
+    return ErrorCode.DB_OPERATION_ERROR;
+  }
 }

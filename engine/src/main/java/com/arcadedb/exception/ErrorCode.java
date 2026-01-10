@@ -18,209 +18,188 @@
  */
 package com.arcadedb.exception;
 
-import java.util.Map;
-import java.util.stream.Collectors;
-
 /**
- * Standardized error codes for ArcadeDB exceptions.
- * Error codes are organized in categories based on the first digit(s):
+ * Core error codes for ArcadeDB engine exceptions.
+ * <p>
+ * Error codes are organized by category using enum name prefixes:
  * <ul>
- *   <li>1xxx - Database errors (lifecycle, operations, metadata)</li>
- *   <li>2xxx - Transaction errors (concurrency, locking, timeouts)</li>
- *   <li>3xxx - Query errors (parsing, execution, functions)</li>
- *   <li>4xxx - Security errors (authentication, authorization)</li>
- *   <li>5xxx - Storage errors (I/O, serialization, encryption)</li>
- *   <li>6xxx - Network errors (connections, replication, clustering)</li>
- *   <li>7xxx - Schema errors (types, properties, validation)</li>
- *   <li>8xxx - Index errors (operations, constraints)</li>
- *   <li>9xxx - Graph errors (algorithms, traversals)</li>
- *   <li>10xxx - Import/Export errors</li>
- *   <li>99xxx - Internal errors</li>
+ *   <li>DB_* - Database lifecycle and operations</li>
+ *   <li>TX_* - Transaction management</li>
+ *   <li>QUERY_* - Query parsing and execution</li>
+ *   <li>SEC_* - Security (authentication, authorization)</li>
+ *   <li>STORAGE_* - I/O and persistence</li>
+ *   <li>SCHEMA_* - Schema and type system</li>
+ *   <li>INDEX_* - Index operations</li>
+ *   <li>GRAPH_* - Graph algorithms and traversal</li>
+ *   <li>IMPORT_* / EXPORT_* - Data import/export</li>
+ *   <li>INTERNAL_* - Internal system errors</li>
  * </ul>
+ * <p>
+ * Note: Network errors (CONNECTION_*, REPLICATION_*, etc.) are NOT in this enum.
+ * They are defined in the network module to maintain proper layering.
  *
- * @since 25.12
+ * @since 26.1
  * @see ArcadeDBException
  */
 public enum ErrorCode {
 
-  // ========== Static cache for O(1) lookup ==========
-  // Populated at class loading time to detect duplicate codes early
-
-  // ========== Database Errors (1xxx) ==========
+  // ========== Database Errors ==========
   /** Database not found in the file system or registry */
-  DATABASE_NOT_FOUND(1001, "Database not found"),
+  DB_NOT_FOUND(ErrorCategory.DATABASE, "Database not found"),
 
   /** Attempt to create a database that already exists */
-  DATABASE_ALREADY_EXISTS(1002, "Database already exists"),
+  DB_ALREADY_EXISTS(ErrorCategory.DATABASE, "Database already exists"),
 
   /** Operation attempted on a closed database */
-  DATABASE_IS_CLOSED(1003, "Database is closed"),
+  DB_IS_CLOSED(ErrorCategory.DATABASE, "Database is closed"),
 
   /** Write operation attempted on a read-only database */
-  DATABASE_IS_READONLY(1004, "Database is read-only"),
+  DB_IS_READONLY(ErrorCategory.DATABASE, "Database is read-only"),
 
   /** Database metadata corruption or inconsistency */
-  DATABASE_METADATA_ERROR(1005, "Database metadata error"),
+  DB_METADATA_ERROR(ErrorCategory.DATABASE, "Database metadata error"),
 
   /** General database operation failure */
-  DATABASE_OPERATION_ERROR(1006, "Database operation error"),
+  DB_OPERATION_ERROR(ErrorCategory.DATABASE, "Database operation error"),
 
   /** Invalid or stale database instance reference */
-  INVALID_DATABASE_INSTANCE(1007, "Invalid database instance"),
+  DB_INVALID_INSTANCE(ErrorCategory.DATABASE, "Invalid database instance"),
 
   /** Database configuration error */
-  CONFIGURATION_ERROR(1008, "Configuration error"),
+  DB_CONFIG_ERROR(ErrorCategory.DATABASE, "Configuration error"),
 
-  // ========== Transaction Errors (2xxx) ==========
+  // ========== Transaction Errors ==========
   /** Transaction exceeded time limit */
-  TRANSACTION_TIMEOUT(2001, "Transaction timeout"),
+  TX_TIMEOUT(ErrorCategory.TRANSACTION, "Transaction timeout"),
 
   /** Optimistic locking conflict detected */
-  TRANSACTION_CONFLICT(2002, "Transaction conflict detected"),
+  TX_CONFLICT(ErrorCategory.TRANSACTION, "Transaction conflict detected"),
 
   /** Operation requires retry (optimistic concurrency) */
-  TRANSACTION_RETRY_NEEDED(2003, "Transaction needs retry"),
+  TX_RETRY_NEEDED(ErrorCategory.TRANSACTION, "Transaction needs retry"),
 
   /** Concurrent modification of the same record */
-  CONCURRENT_MODIFICATION(2004, "Concurrent modification detected"),
+  TX_CONCURRENT_MODIFICATION(ErrorCategory.TRANSACTION, "Concurrent modification detected"),
 
   /** Failed to acquire lock within timeout period */
-  LOCK_TIMEOUT(2005, "Lock acquisition timeout"),
+  TX_LOCK_TIMEOUT(ErrorCategory.TRANSACTION, "Lock acquisition timeout"),
 
   /** General transaction management error */
-  TRANSACTION_ERROR(2006, "Transaction error"),
+  TX_ERROR(ErrorCategory.TRANSACTION, "Transaction error"),
 
-  // ========== Query Errors (3xxx) ==========
+  // ========== Query Errors ==========
   /** Query syntax is invalid or malformed */
-  QUERY_SYNTAX_ERROR(3001, "Query syntax error"),
+  QUERY_SYNTAX_ERROR(ErrorCategory.QUERY, "Query syntax error"),
 
   /** Query execution failed during runtime */
-  QUERY_EXECUTION_ERROR(3002, "Query execution error"),
+  QUERY_EXECUTION_ERROR(ErrorCategory.QUERY, "Query execution error"),
 
   /** Command parsing error (generic) */
-  COMMAND_PARSING_ERROR(3003, "Command parsing error"),
+  QUERY_PARSING_ERROR(ErrorCategory.QUERY, "Command parsing error"),
 
   /** Command execution error */
-  COMMAND_EXECUTION_ERROR(3004, "Command execution error"),
+  QUERY_COMMAND_ERROR(ErrorCategory.QUERY, "Command execution error"),
 
   /** User-defined function execution failed */
-  FUNCTION_EXECUTION_ERROR(3005, "Function execution error"),
+  QUERY_FUNCTION_ERROR(ErrorCategory.QUERY, "Function execution error"),
 
-  // ========== Security Errors (4xxx) ==========
+  // ========== Security Errors ==========
   /** User is not authenticated */
-  UNAUTHORIZED(4001, "Unauthorized access"),
+  SEC_UNAUTHORIZED(ErrorCategory.SECURITY, "Unauthorized access"),
 
   /** User lacks required permissions */
-  FORBIDDEN(4002, "Access forbidden"),
+  SEC_FORBIDDEN(ErrorCategory.SECURITY, "Access forbidden"),
 
   /** Authentication credentials are invalid */
-  AUTHENTICATION_FAILED(4003, "Authentication failed"),
+  SEC_AUTHENTICATION_FAILED(ErrorCategory.SECURITY, "Authentication failed"),
 
   /** User is not authorized for the requested operation */
-  AUTHORIZATION_FAILED(4004, "Authorization failed"),
+  SEC_AUTHORIZATION_FAILED(ErrorCategory.SECURITY, "Authorization failed"),
 
-  // ========== Storage Errors (5xxx) ==========
+  // ========== Storage Errors ==========
   /** File system I/O operation failed */
-  IO_ERROR(5001, "I/O error"),
+  STORAGE_IO_ERROR(ErrorCategory.STORAGE, "I/O error"),
 
   /** Data corruption detected in storage files */
-  CORRUPTION_DETECTED(5002, "Data corruption detected"),
+  STORAGE_CORRUPTION(ErrorCategory.STORAGE, "Data corruption detected"),
 
   /** Write-ahead log operation failed */
-  WAL_ERROR(5003, "Write-ahead log error"),
+  STORAGE_WAL_ERROR(ErrorCategory.STORAGE, "Write-ahead log error"),
 
   /** Binary serialization/deserialization failed */
-  SERIALIZATION_ERROR(5004, "Serialization error"),
+  STORAGE_SERIALIZATION_ERROR(ErrorCategory.STORAGE, "Serialization error"),
 
   /** Encryption or decryption operation failed */
-  ENCRYPTION_ERROR(5005, "Encryption error"),
+  STORAGE_ENCRYPTION_ERROR(ErrorCategory.STORAGE, "Encryption error"),
 
   /** Database backup operation failed */
-  BACKUP_ERROR(5006, "Backup operation error"),
+  STORAGE_BACKUP_ERROR(ErrorCategory.STORAGE, "Backup operation error"),
 
   /** Database restore operation failed */
-  RESTORE_ERROR(5007, "Restore operation error"),
+  STORAGE_RESTORE_ERROR(ErrorCategory.STORAGE, "Restore operation error"),
 
-  // ========== Network Errors (6xxx) ==========
-  /** Failed to establish or maintain connection */
-  CONNECTION_ERROR(6001, "Connection error"),
-
-  /** Network connection was lost */
-  CONNECTION_LOST(6002, "Connection lost"),
-
-  /** Network protocol violation or incompatibility */
-  NETWORK_PROTOCOL_ERROR(6003, "Network protocol error"),
-
-  /** Remote operation failed on the server side */
-  REMOTE_ERROR(6004, "Remote operation error"),
-
-  /** Replication operation failed */
-  REPLICATION_ERROR(6005, "Replication error"),
-
-  /** Cluster quorum not reached for operation */
-  QUORUM_NOT_REACHED(6006, "Quorum not reached"),
-
-  /** Current server is not the cluster leader */
-  SERVER_NOT_LEADER(6007, "Server is not the leader"),
-
-  // ========== Schema Errors (7xxx) ==========
+  // ========== Schema Errors ==========
   /** General schema definition error */
-  SCHEMA_ERROR(7001, "Schema error"),
+  SCHEMA_ERROR(ErrorCategory.SCHEMA, "Schema error"),
 
   /** Referenced type does not exist */
-  TYPE_NOT_FOUND(7002, "Type not found"),
+  SCHEMA_TYPE_NOT_FOUND(ErrorCategory.SCHEMA, "Type not found"),
 
   /** Referenced property does not exist */
-  PROPERTY_NOT_FOUND(7003, "Property not found"),
+  SCHEMA_PROPERTY_NOT_FOUND(ErrorCategory.SCHEMA, "Property not found"),
 
   /** Data validation failed against schema constraints */
-  VALIDATION_ERROR(7004, "Validation error"),
+  SCHEMA_VALIDATION_ERROR(ErrorCategory.SCHEMA, "Validation error"),
 
-  // ========== Index Errors (8xxx) ==========
+  // ========== Index Errors ==========
   /** General index operation error */
-  INDEX_ERROR(8001, "Index error"),
+  INDEX_ERROR(ErrorCategory.INDEX, "Index error"),
 
   /** Referenced index does not exist */
-  INDEX_NOT_FOUND(8002, "Index not found"),
+  INDEX_NOT_FOUND(ErrorCategory.INDEX, "Index not found"),
 
   /** Unique constraint violation */
-  DUPLICATE_KEY(8003, "Duplicate key violation"),
+  INDEX_DUPLICATE_KEY(ErrorCategory.INDEX, "Duplicate key violation"),
 
-  // ========== Graph Errors (9xxx) ==========
+  // ========== Graph Errors ==========
   /** Graph algorithm execution failed */
-  GRAPH_ALGORITHM_ERROR(9001, "Graph algorithm error"),
+  GRAPH_ALGORITHM_ERROR(ErrorCategory.GRAPH, "Graph algorithm error"),
 
-  // ========== Import/Export Errors (10xxx) ==========
+  // ========== Import/Export Errors ==========
   /** Data import operation failed */
-  IMPORT_ERROR(10001, "Import error"),
+  IMPORT_ERROR(ErrorCategory.IMPORT_EXPORT, "Import error"),
 
   /** Data export operation failed */
-  EXPORT_ERROR(10002, "Export error"),
+  EXPORT_ERROR(ErrorCategory.IMPORT_EXPORT, "Export error"),
 
-  // ========== General Errors (99xxx) ==========
+  // ========== Internal Errors ==========
   /** Unexpected internal error (should not normally occur) */
-  INTERNAL_ERROR(99999, "Internal error");
+  INTERNAL_ERROR(ErrorCategory.INTERNAL, "Internal error");
 
-  // Static map for efficient O(1) error code lookup
-  private static final Map<Integer, ErrorCode> CODE_MAP =
-      java.util.stream.Stream.of(values())
-          .collect(Collectors.toUnmodifiableMap(ErrorCode::getCode, e -> e));
-
-  private final int code;
+  private final ErrorCategory category;
   private final String defaultMessage;
 
-  ErrorCode(final int code, final String defaultMessage) {
-    this.code = code;
+  ErrorCode(final ErrorCategory category, final String defaultMessage) {
+    this.category = category;
     this.defaultMessage = defaultMessage;
   }
 
   /**
-   * Returns the numeric error code.
+   * Returns the error category.
    *
-   * @return the error code (e.g., 1001, 2001, etc.)
+   * @return the error category
    */
-  public int getCode() {
-    return code;
+  public ErrorCategory getCategory() {
+    return category;
+  }
+
+  /**
+   * Returns the category name as a string.
+   *
+   * @return the category name
+   */
+  public String getCategoryName() {
+    return category.getDisplayName();
   }
 
   /**
@@ -233,44 +212,8 @@ public enum ErrorCode {
     return defaultMessage;
   }
 
-  /**
-   * Returns the error category based on the error code range.
-   *
-   * @return the error category name
-   */
-  public String getCategory() {
-    final int category = code / 1000;
-    return switch (category) {
-      case 1 -> "Database";
-      case 2 -> "Transaction";
-      case 3 -> "Query";
-      case 4 -> "Security";
-      case 5 -> "Storage";
-      case 6 -> "Network";
-      case 7 -> "Schema";
-      case 8 -> "Index";
-      case 9 -> "Graph";
-      case 10 -> "Import/Export";
-      case 99 -> "Internal";
-      default -> "Unknown";
-    };
-  }
-
-  /**
-   * Finds an ErrorCode by its numeric code.
-   * <p>
-   * Uses a static map for O(1) lookup efficiency. This also allows
-   * detection of duplicate error codes at class-loading time.
-   *
-   * @param code the numeric error code to look up
-   * @return the matching ErrorCode, or INTERNAL_ERROR if not found
-   */
-  public static ErrorCode fromCode(final int code) {
-    return CODE_MAP.getOrDefault(code, INTERNAL_ERROR);
-  }
-
   @Override
   public String toString() {
-    return String.format("%s(%d): %s", name(), code, defaultMessage);
+    return String.format("%s [%s]: %s", name(), category.getDisplayName(), defaultMessage);
   }
 }

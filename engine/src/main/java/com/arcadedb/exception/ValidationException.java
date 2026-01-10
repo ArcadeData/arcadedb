@@ -35,4 +35,9 @@ public class ValidationException extends ArcadeDBException {
   public ValidationException(final Throwable cause) {
     super(cause);
   }
+
+  @Override
+  protected ErrorCode getDefaultErrorCode() {
+    return ErrorCode.SCHEMA_VALIDATION_ERROR;
+  }
 }

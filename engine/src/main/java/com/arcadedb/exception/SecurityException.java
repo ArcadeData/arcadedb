@@ -31,7 +31,7 @@ package com.arcadedb.exception;
  * <p>
  * Example usage:
  * <pre>{@code
- * throw new SecurityException(ErrorCode.UNAUTHORIZED, "Invalid credentials")
+ * throw new SecurityException(ErrorCode.SEC_UNAUTHORIZED, "Invalid credentials")
  *     .withContext("user", username)
  *     .withContext("ipAddress", clientIP);
  * }</pre>
@@ -69,25 +69,10 @@ public class SecurityException extends ArcadeDBException {
   /**
    * Returns the default error code for security exceptions.
    *
-   * @return AUTHORIZATION_FAILED
+   * @return SEC_AUTHORIZATION_FAILED
    */
   @Override
   protected ErrorCode getDefaultErrorCode() {
-    return ErrorCode.AUTHORIZATION_FAILED;
-  }
-
-  /**
-   * Returns the HTTP status code for this exception.
-   * Security exceptions map to 401 (Unauthorized) or 403 (Forbidden).
-   *
-   * @return the HTTP status code
-   */
-  @Override
-  public int getHttpStatus() {
-    return switch (getErrorCode()) {
-      case UNAUTHORIZED, AUTHENTICATION_FAILED -> 401; // Unauthorized
-      case FORBIDDEN, AUTHORIZATION_FAILED -> 403; // Forbidden
-      default -> 403;
-    };
+    return ErrorCode.SEC_AUTHORIZATION_FAILED;
   }
 }

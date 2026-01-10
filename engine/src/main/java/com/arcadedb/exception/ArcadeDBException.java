@@ -40,7 +40,7 @@ import java.util.stream.Collectors;
  * <p>
  * Example usage:
  * <pre>{@code
- * throw new DatabaseException(ErrorCode.DATABASE_NOT_FOUND, "Database 'mydb' not found")
+ * throw new DatabaseException(ErrorCode.DB_NOT_FOUND, "Database 'mydb' not found")
  *     .withContext("databaseName", "mydb")
  *     .withContext("user", currentUser);
  * }</pre>
@@ -164,21 +164,30 @@ public abstract class ArcadeDBException extends RuntimeException {
   }
 
   /**
-   * Returns the numeric value of the error code.
+   * Returns the error code name (enum name).
    *
-   * @return the error code number (e.g., 1001, 2001, etc.)
+   * @return the error code name (e.g., "DB_NOT_FOUND")
    */
-  public int getErrorCodeValue() {
-    return errorCode.getCode();
+  public String getErrorCodeName() {
+    return errorCode.name();
   }
 
   /**
-   * Returns the error category (e.g., "Database", "Transaction", "Query").
+   * Returns the error category.
    *
-   * @return the error category name
+   * @return the error category
    */
-  public String getErrorCategory() {
+  public ErrorCategory getErrorCategory() {
     return errorCode.getCategory();
+  }
+
+  /**
+   * Returns the error category name as a string.
+   *
+   * @return the category name (e.g., "Database")
+   */
+  public String getErrorCategoryName() {
+    return errorCode.getCategoryName();
   }
 
   /**
@@ -199,17 +208,6 @@ public abstract class ArcadeDBException extends RuntimeException {
     return timestamp;
   }
 
-  /**
-   * Returns the HTTP status code appropriate for this exception.
-   * <p>
-   * Default implementation returns 500 (Internal Server Error).
-   * Subclasses can override to provide more specific status codes.
-   *
-   * @return the HTTP status code (e.g., 404, 500, 503)
-   */
-  public int getHttpStatus() {
-    return 500; // Internal Server Error by default
-  }
 
   /**
    * Serializes this exception to a JSON string.
@@ -217,7 +215,6 @@ public abstract class ArcadeDBException extends RuntimeException {
    * The JSON includes:
    * <ul>
    *   <li>error: the error code name</li>
-   *   <li>code: the numeric error code</li>
    *   <li>category: the error category</li>
    *   <li>message: the error message</li>
    *   <li>timestamp: creation timestamp</li>
@@ -228,8 +225,7 @@ public abstract class ArcadeDBException extends RuntimeException {
    * Example output:
    * <pre>{@code
    * {
-   *   "error": "DATABASE_NOT_FOUND",
-   *   "code": 1001,
+   *   "error": "DB_NOT_FOUND",
    *   "category": "Database",
    *   "message": "Database 'mydb' not found",
    *   "timestamp": 1702834567890,
@@ -245,8 +241,7 @@ public abstract class ArcadeDBException extends RuntimeException {
   public String toJSON() {
     final JSONObject json = new JSONObject();
     json.put("error", errorCode.name());
-    json.put("code", errorCode.getCode());
-    json.put("category", errorCode.getCategory());
+    json.put("category", errorCode.getCategoryName());
     json.put("message", getMessage());
     json.put("timestamp", timestamp);
 
@@ -271,8 +266,7 @@ public abstract class ArcadeDBException extends RuntimeException {
   public String toString() {
     final StringBuilder sb = new StringBuilder();
     sb.append(getClass().getSimpleName())
-      .append("[").append(errorCode.name())
-      .append("(").append(errorCode.getCode()).append(")]: ")
+      .append("[").append(errorCode.name()).append("]: ")
       .append(getMessage());
 
     if (!context.isEmpty()) {

@@ -26,4 +26,9 @@ public class NeedRetryException extends ArcadeDBException {
   public NeedRetryException(final String s, final Throwable e) {
     super(s, e);
   }
+
+  @Override
+  protected ErrorCode getDefaultErrorCode() {
+    return ErrorCode.TX_RETRY_NEEDED;
+  }
 }

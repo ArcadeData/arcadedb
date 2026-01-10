@@ -18,19 +18,36 @@
  */
 package com.arcadedb.exception;
 
-import java.io.*;
+/**
+ * Categories for organizing error codes.
+ * Each error belongs to exactly one category.
+ *
+ * @since 26.1
+ */
+public enum ErrorCategory {
+  DATABASE("Database"),
+  TRANSACTION("Transaction"),
+  QUERY("Query"),
+  SECURITY("Security"),
+  STORAGE("Storage"),
+  SCHEMA("Schema"),
+  INDEX("Index"),
+  GRAPH("Graph"),
+  IMPORT_EXPORT("Import/Export"),
+  INTERNAL("Internal");
 
-public class DatabaseIsReadOnlyException extends ArcadeDBException {
-  public DatabaseIsReadOnlyException(final String s) {
-    super(s);
+  private final String displayName;
+
+  ErrorCategory(final String displayName) {
+    this.displayName = displayName;
   }
 
-  public DatabaseIsReadOnlyException(final String s, final IOException e) {
-    super(s, e);
+  public String getDisplayName() {
+    return displayName;
   }
 
   @Override
-  protected ErrorCode getDefaultErrorCode() {
-    return ErrorCode.DB_IS_READONLY;
+  public String toString() {
+    return displayName;
   }
 }

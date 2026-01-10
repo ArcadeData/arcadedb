@@ -26,4 +26,9 @@ public class DatabaseMetadataException extends ArcadeDBException {
   public DatabaseMetadataException(final String s, final Exception e) {
     super(s, e);
   }
+
+  @Override
+  protected ErrorCode getDefaultErrorCode() {
+    return ErrorCode.DB_METADATA_ERROR;
+  }
 }
