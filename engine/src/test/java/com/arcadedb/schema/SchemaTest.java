@@ -233,4 +233,75 @@ class SchemaTest extends TestHelper {
     assertThat(database.getSchema().existsType("V11")).isFalse();
     assertThat(database.getSchema().existsType("V111")).isFalse();
   }
+
+  @Test
+  void testDropNonExistentIndexThenCreateProperty() {
+    // Reproduce the issue where DROP INDEX IF EXISTS for a non-existent index
+    // prevents subsequent schema changes from being persisted
+    database.command("sql", "CREATE DOCUMENT TYPE PSM_StructuralEntity IF NOT EXISTS");
+    database.command("sql", "CREATE VERTEX TYPE PSM_PolicyUserCommentInfo IF NOT EXISTS EXTENDS PSM_StructuralEntity");
+
+    // Add some initial properties
+    database.command("sql", "CREATE PROPERTY PSM_PolicyUserCommentInfo.userIdentifier IF NOT EXISTS STRING (MIN 3, MAX 100)");
+    database.command("sql", "CREATE PROPERTY PSM_PolicyUserCommentInfo.userEmail IF NOT EXISTS STRING (MANDATORY TRUE, NOTNULL TRUE, MIN 3, MAX 100)");
+
+    // Verify the initial properties exist
+    assertThat(database.getSchema().getType("PSM_PolicyUserCommentInfo").existsProperty("userIdentifier")).isTrue();
+    assertThat(database.getSchema().getType("PSM_PolicyUserCommentInfo").existsProperty("userEmail")).isTrue();
+
+    reopenDatabase();
+
+    // Verify persistence after reopen
+    assertThat(database.getSchema().getType("PSM_PolicyUserCommentInfo").existsProperty("userIdentifier")).isTrue();
+    assertThat(database.getSchema().getType("PSM_PolicyUserCommentInfo").existsProperty("userEmail")).isTrue();
+
+    // This is the problematic command - dropping a non-existent index
+    database.command("sql", "DROP INDEX `IdentifiableEntity[uniqueId]` IF EXISTS");
+
+    // Now create additional properties - these should be persisted
+    database.command("sql", "CREATE PROPERTY PSM_PolicyUserCommentInfo.text IF NOT EXISTS STRING (MIN 3, MAX 3000)");
+    database.command("sql", "CREATE PROPERTY PSM_PolicyUserCommentInfo.commenterType IF NOT EXISTS STRING (MANDATORY TRUE, NOTNULL TRUE, MIN 3, MAX 3000)");
+
+    // Verify the new properties exist before closing
+    assertThat(database.getSchema().getType("PSM_PolicyUserCommentInfo").existsProperty("text")).isTrue();
+    assertThat(database.getSchema().getType("PSM_PolicyUserCommentInfo").existsProperty("commenterType")).isTrue();
+
+    reopenDatabase();
+
+    // Verify properties persist after database reopen
+    assertThat(database.getSchema().getType("PSM_PolicyUserCommentInfo").existsProperty("text"))
+        .as("Property 'text' should persist after database reopen")
+        .isTrue();
+    assertThat(database.getSchema().getType("PSM_PolicyUserCommentInfo").existsProperty("commenterType"))
+        .as("Property 'commenterType' should persist after database reopen")
+        .isTrue();
+  }
+
+  @Test
+  void testDropTypeWithIndexesAndBuckets() {
+    // Test that dropType() properly manages multipleUpdate flag when dropping indexes and buckets
+    database.command("sql", "CREATE VERTEX TYPE TestType");
+    database.command("sql", "CREATE PROPERTY TestType.prop1 STRING");
+    database.command("sql", "CREATE PROPERTY TestType.prop2 INTEGER");
+    database.command("sql", "CREATE INDEX ON TestType (prop1) UNIQUE");
+    database.command("sql", "CREATE INDEX ON TestType (prop2) NOTUNIQUE");
+
+    assertThat(database.getSchema().existsType("TestType")).isTrue();
+    assertThat(database.getSchema().existsIndex("TestType[prop1]")).isTrue();
+    assertThat(database.getSchema().existsIndex("TestType[prop2]")).isTrue();
+
+    // Drop the type (which internally calls dropIndex multiple times)
+    database.command("sql", "DROP TYPE TestType");
+
+    // Create a new type to verify schema saves work after dropType
+    database.command("sql", "CREATE DOCUMENT TYPE NewTypeAfterDrop");
+    database.command("sql", "CREATE PROPERTY NewTypeAfterDrop.field STRING");
+
+    reopenDatabase();
+
+    // Verify the type was dropped and new type persisted
+    assertThat(database.getSchema().existsType("TestType")).isFalse();
+    assertThat(database.getSchema().existsType("NewTypeAfterDrop")).isTrue();
+    assertThat(database.getSchema().getType("NewTypeAfterDrop").existsProperty("field")).isTrue();
+  }
 }
