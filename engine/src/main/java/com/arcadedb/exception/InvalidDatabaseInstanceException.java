@@ -22,4 +22,9 @@ public class InvalidDatabaseInstanceException extends ArcadeDBException {
   public InvalidDatabaseInstanceException(final String s) {
     super(s);
   }
+
+  @Override
+  protected ErrorCode getDefaultErrorCode() {
+    return ErrorCode.DB_INVALID_INSTANCE;
+  }
 }

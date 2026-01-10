@@ -33,4 +33,9 @@ public class CommandParsingException extends ArcadeDBException {
   public CommandParsingException(final Throwable cause) {
     super(cause);
   }
+
+  @Override
+  protected ErrorCode getDefaultErrorCode() {
+    return ErrorCode.QUERY_PARSING_ERROR;
+  }
 }

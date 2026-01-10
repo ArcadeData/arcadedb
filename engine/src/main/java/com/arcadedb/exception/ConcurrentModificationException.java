@@ -22,4 +22,9 @@ public class ConcurrentModificationException extends NeedRetryException {
   public ConcurrentModificationException(final String s) {
     super(s);
   }
+
+  @Override
+  protected ErrorCode getDefaultErrorCode() {
+    return ErrorCode.TX_CONCURRENT_MODIFICATION;
+  }
 }

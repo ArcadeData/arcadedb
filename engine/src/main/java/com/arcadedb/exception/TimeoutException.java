@@ -26,4 +26,9 @@ public class TimeoutException extends ArcadeDBException {
   public TimeoutException(final String message, final Throwable cause) {
     super(message, cause);
   }
+
+  @Override
+  protected ErrorCode getDefaultErrorCode() {
+    return ErrorCode.TX_TIMEOUT;
+  }
 }
