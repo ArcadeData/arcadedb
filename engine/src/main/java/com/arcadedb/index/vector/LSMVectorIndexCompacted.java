@@ -149,7 +149,7 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
     final int vectorIdSize = Binary.getNumberSpace(vectorId);
     final int bucketIdSize = Binary.getNumberSpace(rid.getBucketId());
     final int positionSize = Binary.getNumberSpace(rid.getPosition());
-    final int entrySize = vectorIdSize + positionSize + bucketIdSize + 1; // +1 for deleted byte
+    final int entrySize = vectorIdSize + positionSize + bucketIdSize + 1 + 1; // +1 for deleted byte, +1 for quantTypeOrdinal
 
     // Read page header using BasePage methods (accounts for PAGE_HEADER_SIZE automatically)
     int offsetFreeContent = currentPage.readInt(LSMVectorIndex.OFFSET_FREE_CONTENT);
@@ -185,6 +185,10 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
     bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, rid.getPosition());
     bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, (byte) (deleted ? 1 : 0));
 
+    // CRITICAL FIX: Always write quantization type byte (NONE for compacted pages)
+    // Compacted pages store metadata only; vectors remain in documents
+    bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, (byte) VectorQuantizationType.NONE.ordinal());
+
     // Update page header
     numberOfEntries++;
     offsetFreeContent += bytesWritten;
@@ -218,9 +222,6 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
     pos += currentPage.writeInt(pos, 0);
     // mutable flag (IMMUTABLE for compacted pages)
     pos += currentPage.writeByte(pos, (byte) 0);
-
-    // compacted page number of series
-    pos += currentPage.writeInt(pos, compactedPageNumberOfSeries);
 
     // If page 0, write metadata
     if (txPageCounter == 0) {
@@ -282,6 +283,13 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
           final boolean deleted = page.readByte(currentOffset) == 1;
           currentOffset += 1;
 
+          // CRITICAL FIX: Always read quantization type byte (matches writer that always writes it)
+          final byte quantTypeOrdinal = page.readByte(currentOffset);
+          currentOffset += 1;
+
+          // Note: Compacted pages always have quantization=NONE (vectors stored in documents)
+          // So we don't need to skip any quantized vector data here
+
           // Load vector from document (vectors are NOT stored in index pages)
           float[] vector = null;
           if (!deleted) {
@@ -322,11 +330,11 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
    */
   private int getHeaderSize(final int pageNum) {
     if (pageNum == 0) {
-      // page0: offsetFree + count + mutable + series + dimensions + similarity + maxConn + beamWidth
-      return 4 + 4 + 1 + 4 + 4 + 4 + 4 + 4;
+      // page 0: offsetFree + count + mutable + dimensions + similarity + maxConn + beamWidth
+      return 4 + 4 + 1 + 4 + 4 + 4 + 4; // 25 bytes (removed series field)
     } else {
-      // other pages: offsetFree + count + mutable + series
-      return 4 + 4 + 1 + 4;
+      // other pages: offsetFree + count + mutable
+      return 4 + 4 + 1; // 9 bytes = LSMVectorIndex.HEADER_BASE_SIZE (removed series field)
     }
   }
 

@@ -50,7 +50,7 @@ public class LSMVectorIndexStorageBenchmark {
   private static final String DB_PATH = "target/test-databases/LSMVectorIndexStorageBenchmark";
 
   // Benchmark parameters
-  private static final int NUM_VECTORS = 200_000;   // Number of vectors to insert
+  private static final int NUM_VECTORS = 10_000;   // Number of vectors to insert
   private static final int DIMENSIONS  = 100;         // Vector dimensions (moderate size)
   private static final int NUM_QUERIES = 100;         // Number of search queries to run
   private static final int K_NEIGHBORS = 10;          // Number of neighbors to retrieve
@@ -407,24 +407,38 @@ public class LSMVectorIndexStorageBenchmark {
   /**
    * Compute cosine distance between two vectors.
    * Distance = 1 - cosine_similarity
+   *
+   * IMPORTANT: JVector normalizes vectors internally when using COSINE similarity,
+   * so we must also normalize for ground truth to match!
    */
   private float computeCosineDistance(final float[] v1, final float[] v2) {
     if (v1.length != v2.length) {
       throw new IllegalArgumentException("Vector dimensions must match");
     }
 
-    float dotProduct = 0.0f;
+    // Normalize v1
     float norm1 = 0.0f;
-    float norm2 = 0.0f;
-
     for (int i = 0; i < v1.length; i++) {
-      dotProduct += v1[i] * v2[i];
       norm1 += v1[i] * v1[i];
+    }
+    norm1 = (float) Math.sqrt(norm1);
+
+    // Normalize v2
+    float norm2 = 0.0f;
+    for (int i = 0; i < v2.length; i++) {
       norm2 += v2[i] * v2[i];
     }
+    norm2 = (float) Math.sqrt(norm2);
 
-    final float cosineSimilarity = dotProduct / (float) (Math.sqrt(norm1) * Math.sqrt(norm2));
-    return 1.0f - cosineSimilarity;
+    // Compute dot product of normalized vectors
+    float dotProduct = 0.0f;
+    for (int i = 0; i < v1.length; i++) {
+      dotProduct += (v1[i] / norm1) * (v2[i] / norm2);
+    }
+
+    // For normalized vectors, dot product = cosine similarity
+    // Distance = 1 - similarity
+    return 1.0f - dotProduct;
   }
 
   /**

@@ -25,6 +25,7 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   public VectorQuantizationType   quantizationType   = VectorQuantizationType.NONE;
   public int                      maxConnections     = 16;
   public int                      beamWidth          = 100;
+  public int                      efSearch           = 100;  // Search beam width (higher = better recall but slower)
   public float                    neighborOverflowFactor = 1.2f;
   public float                    alphaDiversityRelaxation = 1.2f;
   public String                   idPropertyName     = "id";
@@ -55,6 +56,9 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
 
     if (metadata.has("beamWidth"))
       this.beamWidth = metadata.getInt("beamWidth");
+
+    if (metadata.has("efSearch"))
+      this.efSearch = metadata.getInt("efSearch");
 
     if (metadata.has("neighborOverflowFactor"))
       this.neighborOverflowFactor = ((Number) metadata.get("neighborOverflowFactor")).floatValue();

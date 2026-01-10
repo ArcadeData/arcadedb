@@ -229,7 +229,9 @@ public class LSMVectorIndexCompactor {
     }
 
     // Read all vector entries from pages being compacted
-    final Map<Integer, VectorEntryData> vectorMap = new HashMap<>();
+    // Use RID as key for deduplication (same document updated multiple times gets multiple vectorIds)
+    // Keep the entry with the highest vectorId (latest write wins)
+    final Map<RID, VectorEntryData> vectorMap = new HashMap<>();
     int totalEntriesRead = 0;
 
     for (int pageNum = startPage; pageNum < startPage + pagesToCompact && pageNum <= endPage; pageNum++) {
@@ -284,13 +286,42 @@ public class LSMVectorIndexCompactor {
             final boolean deleted = page.readByte(currentOffset) == 1;
             currentOffset += 1;
 
-            // NOTE: Vectors are stored in documents, not in index pages.
+            // CRITICAL FIX: Always skip quantization type byte (matches writer that always writes it)
+            final byte quantTypeOrdinal = page.readByte(currentOffset);
+            currentOffset += 1;
+
+            // Skip quantized vector data if quantization is enabled
+            if (quantTypeOrdinal > 0 && quantTypeOrdinal < VectorQuantizationType.values().length) {
+              final VectorQuantizationType quantType = VectorQuantizationType.values()[quantTypeOrdinal];
+
+              if (quantType == VectorQuantizationType.INT8) {
+                // Skip: vector length (4 bytes) + quantized bytes + min (4 bytes) + max (4 bytes)
+                final int vectorLength = page.readInt(currentOffset);
+                currentOffset += 4; // vector length
+                currentOffset += vectorLength; // quantized bytes
+                currentOffset += 8; // min + max (2 floats)
+
+              } else if (quantType == VectorQuantizationType.BINARY) {
+                // Skip: original length (4 bytes) + packed bytes + median (4 bytes)
+                final int originalLength = page.readInt(currentOffset);
+                currentOffset += 4; // original length
+                final int byteCount = (originalLength + 7) / 8; // packed bytes
+                currentOffset += byteCount; // packed bytes
+                currentOffset += 4; // median (float)
+              }
+            }
+
+            // NOTE: Vectors are stored in documents when quantization is NONE.
             // During compaction, we only need to copy metadata (id, rid, deleted flag).
             // We don't need to load vectors from documents - they remain in the documents.
 
-            // Last write wins: later pages override earlier entries
+            // Last write wins: keep entry with highest vectorId for each RID
             final VectorEntryData entry = new VectorEntryData(id, rid, deleted);
-            vectorMap.put(id, entry);
+            final VectorEntryData existing = vectorMap.get(rid);
+            if (existing == null || id > existing.id) {
+              // This entry is newer (higher vectorId), keep it
+              vectorMap.put(rid, entry);
+            }
             totalEntriesRead++;
 
           } catch (final Exception e) {
@@ -307,8 +338,9 @@ public class LSMVectorIndexCompactor {
     }
 
     // Write merged entries to compacted index (sorted by vector ID, skip deleted)
-    final List<Integer> sortedIds = new ArrayList<>(vectorMap.keySet());
-    Collections.sort(sortedIds);
+    final List<VectorEntryData> entries = new ArrayList<>(vectorMap.values());
+    // Sort by vectorId to maintain some ordering in compacted pages
+    entries.sort((a, b) -> Integer.compare(a.id, b.id));
 
     MutablePage currentPage = null;
     final AtomicInteger compactedPageSeries = new AtomicInteger(0);
@@ -316,8 +348,7 @@ public class LSMVectorIndexCompactor {
     int entriesWritten = 0;
     int deletedSkipped = 0;
 
-    for (final Integer vectorId : sortedIds) {
-      final VectorEntryData entry = vectorMap.get(vectorId);
+    for (final VectorEntryData entry : entries) {
 
       // Skip deleted entries
       if (entry.deleted) {
