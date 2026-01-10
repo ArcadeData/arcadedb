@@ -30,7 +30,7 @@ import java.util.Map;
  * The builder pattern provides an ergonomic way to create exceptions with rich diagnostic information:
  * <pre>{@code
  * throw ExceptionBuilder.database()
- *     .code(ErrorCode.DATABASE_NOT_FOUND)
+ *     .code(ErrorCode.DB_NOT_FOUND)
  *     .message("Database '%s' not found", dbName)
  *     .context("databaseName", dbName)
  *     .context("user", currentUser)
@@ -44,7 +44,7 @@ import java.util.Map;
  *     fileChannel.write(buffer);
  * } catch (IOException e) {
  *     throw ExceptionBuilder.storage()
- *         .code(ErrorCode.IO_ERROR)
+ *         .code(ErrorCode.STORAGE_IO_ERROR)
  *         .message("Failed to write to file: %s", file.getName())
  *         .cause(e)
  *         .context("filePath", file.getAbsolutePath())
@@ -254,7 +254,7 @@ public class ExceptionBuilder {
    * Example usage:
    * <pre>{@code
    * ExceptionBuilder.database()
-   *     .code(ErrorCode.DATABASE_NOT_FOUND)
+   *     .code(ErrorCode.DB_NOT_FOUND)
    *     .message("Database not found")
    *     .throwException();
    * }</pre>

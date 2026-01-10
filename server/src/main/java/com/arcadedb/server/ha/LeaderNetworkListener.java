@@ -143,7 +143,7 @@ public class LeaderNetworkListener extends Thread {
       } catch (final SocketException se) {
         LogManager.instance().log(this, Level.SEVERE, "Unable to create socket", se);
         throw ExceptionBuilder.network()
-            .code(ErrorCode.CONNECTION_ERROR)
+            .code(ErrorCode.STORAGE_IO_ERROR)
             .message("Unable to create socket")
             .cause(se)
             .context("hostName", hostName)
@@ -152,7 +152,7 @@ public class LeaderNetworkListener extends Thread {
       } catch (final IOException ioe) {
         LogManager.instance().log(this, Level.SEVERE, "Unable to read data from an open socket", ioe);
         throw ExceptionBuilder.storage()
-            .code(ErrorCode.IO_ERROR)
+            .code(ErrorCode.STORAGE_IO_ERROR)
             .message("Unable to read data from an open socket")
             .cause(ioe)
             .context("hostName", hostName)
@@ -236,7 +236,7 @@ public class LeaderNetworkListener extends Thread {
         ha.getServer().lifecycleEvent(ReplicationCallback.TYPE.LEADER_ELECTED, remoteServerName);
       } catch (final Exception e) {
         throw ExceptionBuilder.database()
-            .code(ErrorCode.DATABASE_OPERATION_ERROR)
+            .code(ErrorCode.DB_OPERATION_ERROR)
             .message("Error on propagating election status")
             .cause(e)
             .context("remoteServerName", remoteServerName)

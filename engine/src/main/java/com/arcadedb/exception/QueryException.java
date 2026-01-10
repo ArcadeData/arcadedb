@@ -74,20 +74,4 @@ public class QueryException extends ArcadeDBException {
   protected ErrorCode getDefaultErrorCode() {
     return ErrorCode.QUERY_EXECUTION_ERROR;
   }
-
-  /**
-   * Returns the HTTP status code for this exception.
-   * Query exceptions typically map to 400 (Bad Request) for syntax errors,
-   * or 500 (Internal Server Error) for execution errors.
-   *
-   * @return the HTTP status code
-   */
-  @Override
-  public int getHttpStatus() {
-    return switch (getErrorCode()) {
-      case QUERY_SYNTAX_ERROR, COMMAND_PARSING_ERROR -> 400; // Bad Request
-      case QUERY_EXECUTION_ERROR, COMMAND_EXECUTION_ERROR, FUNCTION_EXECUTION_ERROR -> 500; // Internal Server Error
-      default -> 500;
-    };
-  }
 }
