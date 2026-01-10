@@ -448,47 +448,51 @@ public class LocalSchema implements Schema {
       if (!multipleUpdate)
         multipleUpdate = true;
 
-      final IndexInternal index = indexMap.get(indexName);
-      if (index == null)
+      try {
+        final IndexInternal index = indexMap.get(indexName);
+        if (index == null)
+          return null;
+
+        if (index.getTypeName() != null && existsType(index.getTypeName())) {
+          final DocumentType type = getType(index.getTypeName());
+          final BucketSelectionStrategy strategy = type.getBucketSelectionStrategy();
+          if (strategy instanceof PartitionedBucketSelectionStrategy selectionStrategy) {
+            if (List.of(selectionStrategy.getProperties()).equals(index.getPropertyNames()))
+              // CURRENT INDEX WAS USED FOR PARTITION, SETTING DEFAULT STRATEGY
+              type.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
+          }
+        }
+
+        try {
+          database.executeLockingFiles(index.getFileIds(), () -> {
+            if (index.getTypeIndex() != null)
+              index.getTypeIndex().removeIndexOnBucket(index);
+
+            index.drop();
+            indexMap.remove(indexName);
+
+            if (index.getTypeName() != null) {
+              final LocalDocumentType type = getType(index.getTypeName());
+              if (index instanceof TypeIndex typeIndex)
+                type.removeTypeIndexInternal(typeIndex);
+              else
+                type.removeBucketIndexInternal(index);
+            }
+            return null;
+          });
+
+        } catch (final NeedRetryException e) {
+          throw e;
+        } catch (final Exception e) {
+          throw new SchemaException("Cannot drop the index '" + indexName + "' (error=" + e + ")", e);
+        }
+
         return null;
 
-      if (index.getTypeName() != null && existsType(index.getTypeName())) {
-        final DocumentType type = getType(index.getTypeName());
-        final BucketSelectionStrategy strategy = type.getBucketSelectionStrategy();
-        if (strategy instanceof PartitionedBucketSelectionStrategy selectionStrategy) {
-          if (List.of(selectionStrategy.getProperties()).equals(index.getPropertyNames()))
-            // CURRENT INDEX WAS USED FOR PARTITION, SETTING DEFAULT STRATEGY
-            type.setBucketSelectionStrategy(new RoundRobinBucketSelectionStrategy());
-        }
-      }
-
-      try {
-        database.executeLockingFiles(index.getFileIds(), () -> {
-          if (index.getTypeIndex() != null)
-            index.getTypeIndex().removeIndexOnBucket(index);
-
-          index.drop();
-          indexMap.remove(indexName);
-
-          if (index.getTypeName() != null) {
-            final LocalDocumentType type = getType(index.getTypeName());
-            if (index instanceof TypeIndex typeIndex)
-              type.removeTypeIndexInternal(typeIndex);
-            else
-              type.removeBucketIndexInternal(index);
-          }
-          return null;
-        });
-
-      } catch (final NeedRetryException e) {
-        throw e;
-      } catch (final Exception e) {
-        throw new SchemaException("Cannot drop the index '" + indexName + "' (error=" + e + ")", e);
       } finally {
         if (setMultipleUpdate)
           multipleUpdate = false;
       }
-      return null;
     });
   }
 
@@ -723,7 +727,10 @@ public class LocalSchema implements Schema {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     recordFileChanges(() -> {
-      multipleUpdate = true;
+      boolean setMultipleUpdate = !multipleUpdate;
+      if (!multipleUpdate)
+        multipleUpdate = true;
+
       try {
         final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(typeName);
 
@@ -756,7 +763,8 @@ public class LocalSchema implements Schema {
         if (types.remove(typeName) == null)
           throw new SchemaException("Type '" + typeName + "' not found");
       } finally {
-        multipleUpdate = false;
+        if (setMultipleUpdate)
+          multipleUpdate = false;
         saveConfiguration();
         updateSecurity();
       }
@@ -771,30 +779,40 @@ public class LocalSchema implements Schema {
     final Bucket bucket = getBucketByName(bucketName);
 
     recordFileChanges(() -> {
-      for (final LocalDocumentType type : types.values()) {
-        if (type.buckets.contains(bucket))
-          throw new SchemaException(
-              "Error on dropping bucket '" + bucketName + "' because it is assigned to type '" + type.getName()
-                  + "'. Remove the association first");
-      }
+      boolean setMultipleUpdate = !multipleUpdate;
+      if (!multipleUpdate)
+        multipleUpdate = true;
 
-      database.getPageManager().deleteFile(database, bucket.getFileId());
       try {
-        database.getFileManager().dropFile(bucket.getFileId());
-      } catch (final IOException e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on deleting bucket '%s'", e, bucketName);
+        for (final LocalDocumentType type : types.values()) {
+          if (type.buckets.contains(bucket))
+            throw new SchemaException(
+                "Error on dropping bucket '" + bucketName + "' because it is assigned to type '" + type.getName()
+                    + "'. Remove the association first");
+        }
+
+        database.getPageManager().deleteFile(database, bucket.getFileId());
+        try {
+          database.getFileManager().dropFile(bucket.getFileId());
+        } catch (final IOException e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on deleting bucket '%s'", e, bucketName);
+        }
+        removeFile(bucket.getFileId());
+
+        bucketMap.remove(bucketName);
+
+        for (final Index idx : new ArrayList<>(indexMap.values())) {
+          if (idx.getAssociatedBucketId() == bucket.getFileId())
+            dropIndex(idx.getName());
+        }
+
+        return null;
+
+      } finally {
+        if (setMultipleUpdate)
+          multipleUpdate = false;
+        saveConfiguration();
       }
-      removeFile(bucket.getFileId());
-
-      bucketMap.remove(bucketName);
-
-      for (final Index idx : new ArrayList<>(indexMap.values())) {
-        if (idx.getAssociatedBucketId() == bucket.getFileId())
-          dropIndex(idx.getName());
-      }
-
-      saveConfiguration();
-      return null;
     });
   }
 
