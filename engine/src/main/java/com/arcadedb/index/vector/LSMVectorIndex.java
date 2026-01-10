@@ -624,9 +624,58 @@ public class LSMVectorIndex implements Index, IndexInternal {
           this.graphState = GraphState.IMMUTABLE;
 
           // Rebuild ordinalToVectorId from vectorIndex
+          // IMPORTANT: Must match the validation logic used during graph building
+          final String vectorProp =
+              metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() : "vector";
+
           this.ordinalToVectorId = vectorIndex.getAllVectorIds().filter(id -> {
             final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(id);
-            return loc != null && !loc.deleted;
+            if (loc == null || loc.deleted) {
+              return false;
+            }
+
+            // Re-validate vectors to match graph building logic
+            if (metadata.quantizationType != VectorQuantizationType.NONE) {
+              // With quantization: verify we can read the quantized vector
+              try {
+                final float[] vector = readVectorFromOffset(loc.absoluteFileOffset, loc.isCompacted);
+                if (vector == null || vector.length != metadata.dimensions) {
+                  return false;
+                }
+                // Check not all zeros
+                for (float v : vector) {
+                  if (v != 0.0f) {
+                    return true;
+                  }
+                }
+                return false;  // All zeros
+              } catch (final Exception e) {
+                return false;
+              }
+            } else {
+              // Without quantization: validate by reading from document
+              try {
+                final Record record = getDatabase().lookupByRID(loc.rid, false);
+                if (record == null) {
+                  return false;
+                }
+                final Document doc = (Document) record;
+                final Object vectorObj = doc.get(vectorProp);
+                final float[] vector = VectorUtils.convertToFloatArray(vectorObj);
+                if (vector == null || vector.length != metadata.dimensions) {
+                  return false;
+                }
+                // Check not all zeros
+                for (float v : vector) {
+                  if (v != 0.0f) {
+                    return true;
+                  }
+                }
+                return false;  // All zeros
+              } catch (final Exception e) {
+                return false;
+              }
+            }
           }).sorted().toArray();
 
           LogManager.instance().log(this, Level.INFO,
@@ -1371,7 +1420,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
           // Skip quantized vector data if quantization is enabled
           // This data is not needed for location index, only for vector retrieval
-          if (quantTypeOrdinal > 0) {
+          if (quantTypeOrdinal > 0 && quantTypeOrdinal < VectorQuantizationType.values().length) {
             final VectorQuantizationType quantType = VectorQuantizationType.values()[quantTypeOrdinal];
 
             if (quantType == VectorQuantizationType.INT8) {
@@ -2051,6 +2100,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
           new RIDBitsFilter(allowedRIDs, ordinalToVectorId, vectorIndex) :
           Bits.ALL;
 
+      // TODO: Use instance GraphSearcher method with metadata.efSearch parameter for better recall control
+      // Current static method uses default efSearch behavior
       final SearchResult searchResult = GraphSearcher.search(queryVectorFloat, k, vectors, metadata.similarityFunction, graphIndex,
           bitsFilter);
 
