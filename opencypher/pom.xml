@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+
+    SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+    SPDX-License-Identifier: Apache-2.0
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.arcadedb</groupId>
+        <artifactId>arcadedb-parent</artifactId>
+        <version>26.1.1-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>arcadedb-opencypher</artifactId>
+    <packaging>jar</packaging>
+    <name>ArcadeDB Native OpenCypher</name>
+
+    <properties>
+        <antlr4.version>4.13.2</antlr4.version>
+    </properties>
+
+    <dependencies>
+        <!-- Core ArcadeDB - MUST be provided scope per CLAUDE.md -->
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-server</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- ANTLR4 Runtime -->
+        <dependency>
+            <groupId>org.antlr</groupId>
+            <artifactId>antlr4-runtime</artifactId>
+            <version>${antlr4.version}</version>
+        </dependency>
+
+        <!-- Test dependencies -->
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-test-utils</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- ANTLR4 Maven Plugin -->
+            <plugin>
+                <groupId>org.antlr</groupId>
+                <artifactId>antlr4-maven-plugin</artifactId>
+                <version>${antlr4.version}</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>antlr4</goal>
+                        </goals>
+                        <configuration>
+                            <sourceDirectory>${basedir}/src/main/antlr4</sourceDirectory>
+                            <outputDirectory>${basedir}/target/generated-sources/antlr4</outputDirectory>
+                            <visitor>true</visitor>
+                            <listener>true</listener>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Test JAR for cross-module testing -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Shade Plugin -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

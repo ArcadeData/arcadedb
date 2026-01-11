@@ -133,6 +133,7 @@
         <module>integration</module>
         <module>console</module>
         <module>gremlin</module>
+        <module>opencypher</module>
         <module>graphql</module>
         <module>mongodbw</module>
         <module>redisw</module>

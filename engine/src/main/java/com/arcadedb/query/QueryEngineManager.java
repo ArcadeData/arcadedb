@@ -43,6 +43,7 @@ public class QueryEngineManager {
     // REGISTER QUERY ENGINES IF AVAILABLE ON CLASSPATH AT RUN-TIME
     register("com.arcadedb.gremlin.query.GremlinQueryEngineFactory");
     register("com.arcadedb.cypher.query.CypherQueryEngineFactory");
+    register("com.arcadedb.opencypher.query.OpenCypherQueryEngineFactory");
     register("com.arcadedb.mongo.query.MongoQueryEngineFactory");
     register("com.arcadedb.graphql.query.GraphQLQueryEngineFactory");
   }
