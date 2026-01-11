@@ -325,6 +325,41 @@ public enum Type {
         return binary.toByteArray();
       else if (byte[].class.isAssignableFrom(valueClass)) {
         return value;
+      } else if (targetClass.equals(float[].class) && value instanceof Collection<?> collection) {
+        // Convert Collection to float[]
+        final float[] array = new float[collection.size()];
+        int i = 0;
+        for (final Object item : collection)
+          array[i++] = ((Number) item).floatValue();
+        return array;
+      } else if (targetClass.equals(double[].class) && value instanceof Collection<?> collection) {
+        // Convert Collection to double[]
+        final double[] array = new double[collection.size()];
+        int i = 0;
+        for (final Object item : collection)
+          array[i++] = ((Number) item).doubleValue();
+        return array;
+      } else if (targetClass.equals(int[].class) && value instanceof Collection<?> collection) {
+        // Convert Collection to int[]
+        final int[] array = new int[collection.size()];
+        int i = 0;
+        for (final Object item : collection)
+          array[i++] = ((Number) item).intValue();
+        return array;
+      } else if (targetClass.equals(long[].class) && value instanceof Collection<?> collection) {
+        // Convert Collection to long[]
+        final long[] array = new long[collection.size()];
+        int i = 0;
+        for (final Object item : collection)
+          array[i++] = ((Number) item).longValue();
+        return array;
+      } else if (targetClass.equals(short[].class) && value instanceof Collection<?> collection) {
+        // Convert Collection to short[]
+        final short[] array = new short[collection.size()];
+        int i = 0;
+        for (final Object item : collection)
+          array[i++] = ((Number) item).shortValue();
+        return array;
       } else if (targetClass.isEnum()) {
         if (value instanceof Number number)
           return ((Class<Enum>) targetClass).getEnumConstants()[number.intValue()];

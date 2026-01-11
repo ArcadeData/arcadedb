@@ -237,6 +237,55 @@ class CypherTest {
     }
   }
 
+  /**
+   * Issue #2908: Cannot create a node with cypher when there is an LSM vector index existing for it
+   * https://github.com/ArcadeData/arcadedb/issues/2908
+   */
+  @Test
+  void issue2908_vectorIndexWithCypher() {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
+    try {
+      graph.getDatabase().transaction(() -> {
+        // Create vertex type with vector property and LSM vector index
+        graph.getDatabase().command("sql", "CREATE VERTEX TYPE EmbeddingNode");
+        graph.getDatabase().command("sql", "CREATE PROPERTY EmbeddingNode.vector ARRAY_OF_FLOATS");
+        graph.getDatabase().command("sql",
+            "CREATE INDEX ON EmbeddingNode (vector) LSM_VECTOR METADATA {dimensions: 4, similarity: 'COSINE'}");
+
+        // Create vertex type without index for comparison
+        graph.getDatabase().command("sql", "CREATE VERTEX TYPE EmbeddingNode2");
+        graph.getDatabase().command("sql", "CREATE PROPERTY EmbeddingNode2.vector ARRAY_OF_FLOATS");
+      });
+
+      // First test with SQL INSERT to ensure the index works
+      graph.getDatabase().transaction(() -> {
+        graph.getDatabase().command("sql", "INSERT INTO EmbeddingNode SET vector = [1.0, 2.0, 3.0, 4.0]");
+      });
+
+      // Verify SQL insert worked
+      final com.arcadedb.query.sql.executor.ResultSet sqlResult = graph.getDatabase().query("sql", "SELECT FROM EmbeddingNode");
+      assertThat(sqlResult.hasNext()).as("SQL insert should have created a node").isTrue();
+      sqlResult.close();
+
+      // Now test direct Gremlin/TinkerPop vertex creation with properties in addVertex
+      graph.getDatabase().transaction(() -> {
+        final org.apache.tinkerpop.gremlin.structure.Vertex v = graph.addVertex(
+            org.apache.tinkerpop.gremlin.structure.T.label, "EmbeddingNode",
+            "vector", java.util.List.of(2.0f, 3.0f, 4.0f, 5.0f)
+        );
+      });
+
+      // Now test Cypher with vector index
+      final ResultSet result1 = graph.cypher("CREATE (node1:EmbeddingNode {vector: [0.0, 0.0, 0.0, 0.0]}) RETURN node1").execute();
+      assertThat(result1.hasNext()).as("Should create node with vector index").isTrue();
+      final Result row1 = result1.next();
+      assertThat(row1.getIdentity().isPresent()).as("Node should have an identity").isTrue();
+
+    } finally {
+      graph.drop();
+    }
+  }
+
   @BeforeEach
   @AfterEach
   void clean() {
