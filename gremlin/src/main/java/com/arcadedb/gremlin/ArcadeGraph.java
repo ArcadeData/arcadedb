@@ -250,10 +250,16 @@ public class ArcadeGraph implements Graph, Closeable {
 
     final MutableVertex modifiableVertex = this.database.newVertex(typeName);
     final ArcadeVertex vertex = new ArcadeVertex(this, modifiableVertex, keyValues);
+
+    // After attachProperties in the constructor, the vertex's baseElement might be different from modifiableVertex
+    // We need to save the actual baseElement, not the original modifiableVertex reference
+    final MutableVertex vertexToSave = (MutableVertex) vertex.getBaseElement();
+
+    // Always save the vertex to assign it an ID
     if (bucketName != null)
-      modifiableVertex.save(bucketName);
+      vertexToSave.save(bucketName);
     else
-      modifiableVertex.save();
+      vertexToSave.save();
     return vertex;
   }
 

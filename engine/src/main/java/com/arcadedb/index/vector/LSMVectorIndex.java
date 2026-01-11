@@ -2354,6 +2354,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (keys == null || keys.length == 0)
         throw new IllegalArgumentException("Keys cannot be null or empty");
 
+      // Handle null keys according to null strategy
+      if (keys[0] == null) {
+        // Vector indexes always use SKIP strategy - silently skip null values
+        return;
+      }
+
       if (values == null || values.length == 0)
         throw new IllegalArgumentException("Values cannot be null or empty");
 
