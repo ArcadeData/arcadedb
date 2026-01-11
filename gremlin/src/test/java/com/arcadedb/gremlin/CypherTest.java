@@ -286,6 +286,70 @@ class CypherTest {
     }
   }
 
+  /**
+   * Issue #2342: java.lang.UnsupportedOperationException on Cypher query with ALL() and keys()
+   * https://github.com/ArcadeData/arcadedb/issues/2342
+   */
+  @Test
+  void issue2342_allWithKeys() {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
+    try {
+      graph.getDatabase().getSchema().getOrCreateVertexType("Person");
+
+      // Create test data with various properties
+      graph.getDatabase().transaction(() -> {
+        graph.getDatabase().newVertex("Person").set("name", "Alice").set("age", 30).set("city", "NYC").save();
+        graph.getDatabase().newVertex("Person").set("name", "Bob").set("age", 25).set("city", "LA").save();
+        graph.getDatabase().newVertex("Person").set("name", "Charlie").set("age", 30).set("city", "NYC").save();
+      });
+
+      // Test 1: Match with multiple properties
+      final Map<String, Object> props = Map.of("age", 30, "city", "NYC");
+
+      final ResultSet result = graph.cypher(
+          "MATCH (n:Person) WHERE ALL(k IN keys($props) WHERE n[k] = $props[k]) RETURN n"
+      ).setParameter("props", props).execute();
+
+      // Should return Alice and Charlie who both have age=30 and city="NYC"
+      int count = 0;
+      while (result.hasNext()) {
+        final Result row = result.next();
+        // Verify the matched nodes have the correct properties
+        assertThat(row.<String>getProperty("name")).isIn("Alice", "Charlie");
+        assertThat(row.<Integer>getProperty("age")).isEqualTo(30);
+        assertThat(row.<String>getProperty("city")).isEqualTo("NYC");
+        count++;
+      }
+      assertThat(count == 2).isTrue();
+
+      // Test 2: Match with single property
+      final Map<String, Object> singleProp = Map.of("city", "LA");
+      final ResultSet result2 = graph.cypher(
+          "MATCH (n:Person) WHERE ALL(k IN keys($props) WHERE n[k] = $props[k]) RETURN n"
+      ).setParameter("props", singleProp).execute();
+
+      count = 0;
+      while (result2.hasNext()) {
+        final Result row = result2.next();
+        assertThat(row.<String>getProperty("name")).isEqualTo("Bob");
+        assertThat(row.<String>getProperty("city")).isEqualTo("LA");
+        count++;
+      }
+      assertThat(count == 1).isTrue();
+
+      // Test 3: Match with property that doesn't exist on any node - should return no results
+      final Map<String, Object> nonExistentProp = Map.of("country", "USA");
+      final ResultSet result3 = graph.cypher(
+          "MATCH (n:Person) WHERE ALL(k IN keys($props) WHERE n[k] = $props[k]) RETURN n"
+      ).setParameter("props", nonExistentProp).execute();
+
+      assertThat(result3.hasNext()).isFalse();
+
+    } finally {
+      graph.drop();
+    }
+  }
+
   @BeforeEach
   @AfterEach
   void clean() {

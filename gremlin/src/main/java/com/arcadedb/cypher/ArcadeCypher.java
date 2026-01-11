@@ -123,6 +123,9 @@ public class ArcadeCypher extends ArcadeGremlin {
 
     CypherQueryAndParameters queryAndParameters = replaceParameterNames(cypher, Optional.ofNullable(parameters).orElse(Map.of()));
 
+    // Expand ALL(k IN keys($param) WHERE ...) patterns before translation
+    queryAndParameters = expandAllKeysPattern(queryAndParameters);
+
     this.parameters = queryAndParameters.parameters;
     if (CACHE_SIZE == 0)
       // NO CACHE
@@ -154,6 +157,76 @@ public class ArcadeCypher extends ArcadeGremlin {
     cacheLastStatement(cypher, gremlin);
 
     query = gremlin;
+  }
+
+  /**
+   * Expands ALL(k IN keys($param) WHERE var[k] = $param[k]) patterns into explicit property comparisons.
+   * This works around opencypher-gremlin's lack of support for this pattern.
+   * <p>
+   * Example: ALL(k IN keys($props) WHERE n[k] = $props[k]) with $props={age:30, city:"NYC"}
+   * becomes: n.age = $props_age AND n.city = $props_city
+   */
+  private static CypherQueryAndParameters expandAllKeysPattern(CypherQueryAndParameters queryAndParams) {
+    String query = queryAndParams.cypherQuery;
+    Map<String, Object> parameters = new HashMap<>(queryAndParams.parameters);
+
+    // Pattern: ALL(variableName IN keys($paramName) WHERE nodeVar[variableName] = $paramName[variableName])
+    // We need to match this pattern and expand it
+    java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(
+        "ALL\\s*\\(\\s*(\\w+)\\s+IN\\s+keys\\s*\\(\\s*\\$([\\w]+)\\s*\\)\\s+WHERE\\s+(\\w+)\\s*\\[\\s*\\1\\s*\\]\\s*=\\s*\\$\\2\\s*\\[\\s*\\1\\s*\\]\\s*\\)",
+        java.util.regex.Pattern.CASE_INSENSITIVE
+    );
+
+    java.util.regex.Matcher matcher = pattern.matcher(query);
+    StringBuilder result = new StringBuilder();
+    int lastEnd = 0;
+
+    while (matcher.find()) {
+      String iterVar = matcher.group(1);        // e.g., "k"
+      String paramName = matcher.group(2);      // e.g., "props" (the randomized parameter name)
+      String nodeVar = matcher.group(3);        // e.g., "n"
+
+      // Get the parameter value (should be a Map)
+      Object paramValue = parameters.get(paramName);
+
+      if (paramValue instanceof Map<?, ?> paramMap) {
+        // Build the expanded condition
+        StringBuilder expanded = new StringBuilder();
+        boolean first = true;
+
+        for (Map.Entry<?, ?> entry : paramMap.entrySet()) {
+          String key = entry.getKey().toString();
+          Object value = entry.getValue();
+
+          if (!first) {
+            expanded.append(" AND ");
+          }
+          first = false;
+
+          // Create a new parameter for this specific key
+          String newParamName = paramName + "_" + key;
+          expanded.append(nodeVar).append(".").append(key).append(" = $").append(newParamName);
+          parameters.put(newParamName, value);
+        }
+
+        // If the map is empty, this should always be true (vacuous truth)
+        if (paramMap.isEmpty()) {
+          expanded.append("true");
+        }
+
+        // Replace the ALL pattern with the expanded condition
+        result.append(query, lastEnd, matcher.start());
+        result.append("(").append(expanded).append(")");
+        lastEnd = matcher.end();
+      } else {
+        // If parameter is not a map, leave the pattern as is (will likely fail during translation)
+        result.append(query, lastEnd, matcher.end());
+        lastEnd = matcher.end();
+      }
+    }
+
+    result.append(query.substring(lastEnd));
+    return new CypherQueryAndParameters(result.toString(), parameters);
   }
 
   public static CypherQueryAndParameters replaceParameterNames(String cypher, Map<String, Object> parameters) {
