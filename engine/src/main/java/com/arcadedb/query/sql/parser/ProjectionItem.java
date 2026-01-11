@@ -173,6 +173,8 @@ public class ProjectionItem extends SimpleNode {
   public ProjectionItem getExpandContent() {
     final ProjectionItem result = new ProjectionItem(-1);
     result.setExpression(expression.getExpandContent());
+    // Ad-hoc support for issue #2965: preserve nested projection when expanding
+    result.nestedProjection = this.nestedProjection;
     return result;
   }
 
