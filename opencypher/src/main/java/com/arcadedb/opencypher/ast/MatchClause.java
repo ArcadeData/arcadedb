@@ -18,24 +18,79 @@
  */
 package com.arcadedb.opencypher.ast;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
 /**
  * Represents a MATCH clause in a Cypher query.
  * Contains graph patterns to match against the database.
  */
 public class MatchClause {
-  private final String pattern;
+  private final String pattern; // Raw pattern string (Phase 1)
   private final boolean optional;
+  private final List<PathPattern> pathPatterns; // Parsed path patterns (Phase 2+)
 
+  /**
+   * Creates a match clause with raw pattern string (Phase 1).
+   */
   public MatchClause(final String pattern, final boolean optional) {
     this.pattern = pattern;
     this.optional = optional;
+    this.pathPatterns = new ArrayList<>();
   }
 
+  /**
+   * Creates a match clause with parsed path patterns (Phase 2+).
+   */
+  public MatchClause(final List<PathPattern> pathPatterns, final boolean optional) {
+    this.pattern = null;
+    this.optional = optional;
+    this.pathPatterns = pathPatterns != null ? new ArrayList<>(pathPatterns) : new ArrayList<>();
+  }
+
+  /**
+   * Returns the raw pattern string (Phase 1).
+   *
+   * @return raw pattern string
+   */
   public String getPattern() {
     return pattern;
   }
 
+  /**
+   * Returns true if this is an OPTIONAL MATCH.
+   *
+   * @return true if optional
+   */
   public boolean isOptional() {
     return optional;
+  }
+
+  /**
+   * Returns the list of path patterns (Phase 2+).
+   *
+   * @return list of path patterns
+   */
+  public List<PathPattern> getPathPatterns() {
+    return Collections.unmodifiableList(pathPatterns);
+  }
+
+  /**
+   * Returns true if this match clause has parsed path patterns.
+   *
+   * @return true if has path patterns
+   */
+  public boolean hasPathPatterns() {
+    return !pathPatterns.isEmpty();
+  }
+
+  /**
+   * Adds a path pattern to this match clause.
+   *
+   * @param pathPattern path pattern to add
+   */
+  public void addPathPattern(final PathPattern pathPattern) {
+    this.pathPatterns.add(pathPattern);
   }
 }
