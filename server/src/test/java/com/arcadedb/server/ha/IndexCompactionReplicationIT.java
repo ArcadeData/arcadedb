@@ -31,8 +31,10 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -67,6 +69,7 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
    * and verifies that the compacted index is consistent across all servers.
    */
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void lsmTreeCompactionReplication() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
 
@@ -91,7 +94,8 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
     // The important thing is that it doesn't throw an exception
 
     // WAIT FOR REPLICATION TO COMPLETE
-    Thread.sleep(2000);
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
 
     // VERIFY THAT COMPACTION WAS REPLICATED BY CHECKING INDEX CONSISTENCY ON ALL SERVERS
     testEachServer((serverIndex) -> {
@@ -119,6 +123,7 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
    * correctly stored in schema JSON and replicated to all replicas.
    */
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void lsmVectorReplication() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
 
@@ -161,7 +166,8 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
     // WAIT FOR REPLICATION TO COMPLETE
     LogManager.instance().log(this, Level.FINE, "Waiting for replication...");
-    Thread.sleep(2000);
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
 
     // VERIFY THAT VECTOR INDEX DEFINITION IS REPLICATED TO ALL SERVERS
     final String actualIndexName = vectorIndex.getName();
@@ -193,6 +199,7 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
    * correctly stored in schema JSON and replicated to all replicas.
    */
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void lsmVectorCompactionReplication() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
 
@@ -244,7 +251,8 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
     // WAIT FOR REPLICATION TO COMPLETE
     LogManager.instance().log(this, Level.FINE, "Waiting for replication...");
-    Thread.sleep(2000);
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
 
     // VERIFY THAT VECTOR INDEX DEFINITION IS REPLICATED TO ALL SERVERS
     final String actualIndexName = vectorIndex.getName();
@@ -273,6 +281,7 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
    * on replicas (eventual consistency scenario).
    */
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void compactionReplicationWithConcurrentWrites() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
 
@@ -307,7 +316,8 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
     });
 
     // WAIT FOR REPLICATION
-    Thread.sleep(2000);
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
 
     // VERIFY CONSISTENCY ON ALL SERVERS
     testEachServer((serverIndex) -> {

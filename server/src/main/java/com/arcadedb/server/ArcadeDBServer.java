@@ -75,23 +75,22 @@ import static com.arcadedb.engine.ComponentFile.MODE.READ_ONLY;
 import static com.arcadedb.engine.ComponentFile.MODE.READ_WRITE;
 
 public class ArcadeDBServer {
-  public enum STATUS {OFFLINE, STARTING, ONLINE, SHUTTING_DOWN}
+  public enum Status {OFFLINE, STARTING, ONLINE, SHUTTING_DOWN}
 
   public static final String                                CONFIG_SERVER_CONFIGURATION_FILENAME = "config/server-configuration.json";
+  private volatile    Status                                status                               = Status.OFFLINE;
   private final       ContextConfiguration                  configuration;
   private final       String                                serverName;
-  private             String                                hostAddress;
   private final       boolean                               replicationLifecycleEventsEnabled;
-  private             FileServerEventLog                    eventLog;
   private final       Map<String, ServerPlugin>             plugins                              = new LinkedHashMap<>();
+  private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
+  private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
+  private             String                                hostAddress;
+  private             FileServerEventLog                    eventLog;
   private             String                                serverRootPath;
   private             HAServer                              haServer;
   private             ServerSecurity                        security;
   private             HttpServer                            httpServer;
-  private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
-  private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
-  private volatile    STATUS                                status                               = STATUS.OFFLINE;
-//  private             ServerMonitor                         serverMonitor;
 
   static {
     // must be called before any Logger method is used.
@@ -130,15 +129,15 @@ public class ArcadeDBServer {
 
     welcomeBanner();
 
-    if (status != STATUS.OFFLINE)
+    if (status != Status.OFFLINE)
       return;
 
-    status = STATUS.STARTING;
+    status = Status.STARTING;
 
     eventLog.start();
 
     try {
-      lifecycleEvent(ReplicationCallback.TYPE.SERVER_STARTING, null);
+      lifecycleEvent(ReplicationCallback.Type.SERVER_STARTING, null);
     } catch (final Exception e) {
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
@@ -193,7 +192,7 @@ public class ArcadeDBServer {
 
     registerPlugins(ServerPlugin.INSTALLATION_PRIORITY.AFTER_DATABASES_OPEN);
 
-    status = STATUS.ONLINE;
+    status = Status.ONLINE;
 
     LogManager.instance().log(this, Level.INFO, "Available query languages: %s", new QueryEngineManager().getAvailableLanguages());
 
@@ -213,7 +212,7 @@ public class ArcadeDBServer {
     }
 
     try {
-      lifecycleEvent(ReplicationCallback.TYPE.SERVER_UP, null);
+      lifecycleEvent(ReplicationCallback.Type.SERVER_UP, null);
     } catch (final Exception e) {
       stop();
       throw new ServerException("Error on starting the server '" + serverName + "'");
@@ -307,18 +306,18 @@ public class ArcadeDBServer {
   }
 
   public synchronized void stop() {
-    if (status == STATUS.OFFLINE || status == STATUS.SHUTTING_DOWN)
+    if (status == Status.OFFLINE || status == Status.SHUTTING_DOWN)
       return;
 
     LogManager.instance().log(this, Level.INFO, "Shutting down ArcadeDB Server...");
 
     try {
-      lifecycleEvent(ReplicationCallback.TYPE.SERVER_SHUTTING_DOWN, null);
+      lifecycleEvent(ReplicationCallback.Type.SERVER_SHUTTING_DOWN, null);
     } catch (final Exception e) {
       throw new ServerException("Error on stopping the server '" + serverName + "'");
     }
 
-    status = STATUS.SHUTTING_DOWN;
+    status = Status.SHUTTING_DOWN;
 
     for (final Map.Entry<String, ServerPlugin> pEntry : plugins.entrySet()) {
       LogManager.instance().log(this, Level.INFO, "- Stop %s plugin", pEntry.getKey());
@@ -346,13 +345,13 @@ public class ArcadeDBServer {
     LogManager.instance().log(this, Level.INFO, "ArcadeDB Server is down");
 
     try {
-      lifecycleEvent(ReplicationCallback.TYPE.SERVER_DOWN, null);
+      lifecycleEvent(ReplicationCallback.Type.SERVER_DOWN, null);
     } catch (final Exception e) {
       throw new ServerException("Error on stopping the server '" + serverName + "'");
     }
 
     LogManager.instance().setContext(null);
-    status = STATUS.OFFLINE;
+    status = Status.OFFLINE;
 
     getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.INFO, "Server", null, "Server shutdown correctly");
 
@@ -376,10 +375,10 @@ public class ArcadeDBServer {
   }
 
   public boolean isStarted() {
-    return status == STATUS.ONLINE;
+    return status == Status.ONLINE;
   }
 
-  public STATUS getStatus() {
+  public Status getStatus() {
     return status;
   }
 
@@ -447,7 +446,7 @@ public class ArcadeDBServer {
     testEventListeners.add(callback);
   }
 
-  public void lifecycleEvent(final ReplicationCallback.TYPE type, final Object object) throws Exception {
+  public void lifecycleEvent(final ReplicationCallback.Type type, final Object object) throws Exception {
     if (replicationLifecycleEventsEnabled)
       for (final ReplicationCallback c : testEventListeners)
         c.onEvent(type, object, this);

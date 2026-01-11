@@ -30,32 +30,45 @@ class HostUtilTest {
   @Test
   void iPv4() {
     final String[] parts = HostUtil.parseHostAddress("10.33.5.22", HostUtil.CLIENT_DEFAULT_PORT);
-    assertThat(parts.length).isEqualTo(2);
+    assertThat(parts.length).isEqualTo(3);
     assertThat(parts[0]).isEqualTo("10.33.5.22");
     assertThat(parts[1]).isEqualTo(HostUtil.CLIENT_DEFAULT_PORT);
+    assertThat(parts[2]).isEqualTo("10.33.5.22");
+  }
+
+  @Test
+  public void testIPv4WithAliasAndPort() {
+    final String[] parts = HostUtil.parseHostAddress("{alias}10.33.5.22:1234", HostUtil.CLIENT_DEFAULT_PORT);
+    assertThat(parts.length).isEqualTo(3);
+    assertThat(parts[0]).isEqualTo("10.33.5.22");
+    assertThat(parts[1]).isEqualTo("1234");
+    assertThat(parts[2]).isEqualTo("alias");
   }
 
   @Test
   void iPv4WithPort() {
     final String[] parts = HostUtil.parseHostAddress("10.33.5.22:33", HostUtil.CLIENT_DEFAULT_PORT);
-    assertThat(parts.length).isEqualTo(2);
+    assertThat(parts.length).isEqualTo(3);
     assertThat(parts[0]).isEqualTo("10.33.5.22");
     assertThat(parts[1]).isEqualTo("33");
+    assertThat(parts[2]).isEqualTo("10.33.5.22");
   }
 
   @Test
   void iPv6() {
     final String[] parts = HostUtil.parseHostAddress("fe80:0:0:0:250:56ff:fe9a:6990", HostUtil.CLIENT_DEFAULT_PORT);
-    assertThat(parts.length).isEqualTo(2);
+    assertThat(parts.length).isEqualTo(3);
     assertThat(parts[0]).isEqualTo("fe80:0:0:0:250:56ff:fe9a:6990");
     assertThat(parts[1]).isEqualTo(HostUtil.CLIENT_DEFAULT_PORT);
+    assertThat(parts[2]).isEqualTo("fe80:0:0:0:250:56ff:fe9a:6990");
   }
 
   @Test
   void iPv6WithPort() {
     final String[] parts = HostUtil.parseHostAddress("fe80:0:0:0:250:56ff:fe9a:6990:22", HostUtil.CLIENT_DEFAULT_PORT);
-    assertThat(parts.length).isEqualTo(2);
+    assertThat(parts.length).isEqualTo(3);
     assertThat(parts[0]).isEqualTo("fe80:0:0:0:250:56ff:fe9a:6990");
     assertThat(parts[1]).isEqualTo("22");
+    assertThat(parts[2]).isEqualTo("fe80:0:0:0:250:56ff:fe9a:6990");
   }
 }

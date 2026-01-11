@@ -34,11 +34,13 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -61,6 +63,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)
   public void replication() throws Exception {
     testReplication(0);
   }

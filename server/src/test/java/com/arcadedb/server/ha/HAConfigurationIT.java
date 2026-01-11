@@ -20,8 +20,6 @@ package com.arcadedb.server.ha;
 
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerException;
-
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -37,6 +35,10 @@ class HAConfigurationIT extends BaseGraphServerTest {
     return "192.168.0.1:2424,192.168.0.1:2425,localhost:2424";
   }
 
+  @Override
+  public void beginTest() {
+    //noop
+  }
 
   @Test
   void replication() {

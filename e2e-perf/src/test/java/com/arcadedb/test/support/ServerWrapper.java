@@ -20,13 +20,19 @@ package com.arcadedb.test.support;
 
 import org.testcontainers.containers.GenericContainer;
 
+import java.util.List;
+
 public record ServerWrapper(String host,
                             int httpPort,
-                            int grpcPort
+                            int grpcPort,
+                            List<String> aliases
 ) {
   public ServerWrapper(GenericContainer<?> container) {
     this(container.getHost(),
         container.getMappedPort(2480),
-        container.getMappedPort(50051));
+        container.getMappedPort(50051),
+        container.getNetworkAliases());
   }
+
+
 }
