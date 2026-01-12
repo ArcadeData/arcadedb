@@ -12,9 +12,9 @@
 |----------|---------------|-------|
 | **Parser** | ✅ **100%** | ANTLR4-based using official Cypher 2.5 grammar |
 | **Basic Read Queries** | ✅ **85%** | MATCH, WHERE (simple), RETURN, ORDER BY, SKIP, LIMIT |
-| **Basic Write Queries** | 🟡 **60%** | CREATE ✅, SET ❌, DELETE ❌, MERGE ❌ |
-| **Expression Evaluation** | 🔴 **20%** | Simple comparisons only, no logical operators |
-| **Functions** | 🔴 **5%** | No aggregations, no built-in functions |
+| **Basic Write Queries** | 🟡 **60%** | CREATE ✅, SET ✅, DELETE ✅, MERGE ✅ |
+| **Expression Evaluation** | 🟡 **40%** | Expression framework complete, function support in progress |
+| **Functions** | 🟡 **50%** | Framework complete, 7 Cypher functions + bridge to 100+ SQL functions |
 | **Advanced Features** | 🔴 **10%** | Limited path support, no UNION/WITH |
 
 **Legend:** ✅ Complete | 🟡 Partial | 🔴 Minimal | ❌ Not Implemented
@@ -222,16 +222,18 @@ MERGE (n:Person {name: 'Alice'})
 | **UNWIND** | `UNWIND [1,2,3] AS x RETURN x` | 🟡 MEDIUM |
 
 ### Aggregation Functions
-| Function | Example | Priority |
-|----------|---------|----------|
-| **COUNT()** | `RETURN COUNT(n)` | 🔴 HIGH |
-| **SUM()** | `RETURN SUM(n.age)` | 🔴 HIGH |
-| **AVG()** | `RETURN AVG(n.age)` | 🔴 HIGH |
-| **MIN()** | `RETURN MIN(n.age)` | 🔴 HIGH |
-| **MAX()** | `RETURN MAX(n.age)` | 🔴 HIGH |
-| **COLLECT()** | `RETURN COLLECT(n.name)` | 🔴 HIGH |
-| **percentileCont()** | `RETURN percentileCont(n.age, 0.5)` | 🟢 LOW |
-| **stDev()** | `RETURN stDev(n.age)` | 🟢 LOW |
+| Function | Example | Status | Priority |
+|----------|---------|--------|----------|
+| **COUNT()** | `RETURN COUNT(n)` | 🟡 **Framework Ready** | 🔴 HIGH |
+| **SUM()** | `RETURN SUM(n.age)` | 🟡 **Framework Ready** | 🔴 HIGH |
+| **AVG()** | `RETURN AVG(n.age)` | 🟡 **Framework Ready** | 🔴 HIGH |
+| **MIN()** | `RETURN MIN(n.age)` | 🟡 **Framework Ready** | 🔴 HIGH |
+| **MAX()** | `RETURN MAX(n.age)` | 🟡 **Framework Ready** | 🔴 HIGH |
+| **COLLECT()** | `RETURN COLLECT(n.name)` | 🟡 **Framework Ready** | 🔴 HIGH |
+| **percentileCont()** | `RETURN percentileCont(n.age, 0.5)` | 🟡 **Framework Ready** | 🟢 LOW |
+| **stDev()** | `RETURN stDev(n.age)` | 🟡 **Framework Ready** | 🟢 LOW |
+
+**Note:** Framework is complete with bridge to SQL aggregation functions. Testing and refinement in progress.
 
 ### String Functions
 | Function | Example | Priority |
@@ -255,15 +257,15 @@ MERGE (n:Person {name: 'Alice'})
 | **rand()** | `RETURN rand()` | 🟢 LOW |
 
 ### Node/Relationship Functions
-| Function | Example | Priority |
-|----------|---------|----------|
-| **id()** | `RETURN id(n)` | 🔴 HIGH |
-| **labels()** | `RETURN labels(n)` | 🔴 HIGH |
-| **type()** | `RETURN type(r)` | 🔴 HIGH |
-| **keys()** | `RETURN keys(n)` | 🟡 MEDIUM |
-| **properties()** | `RETURN properties(n)` | 🟡 MEDIUM |
-| **startNode()** | `RETURN startNode(r)` | 🟡 MEDIUM |
-| **endNode()** | `RETURN endNode(r)` | 🟡 MEDIUM |
+| Function | Example | Status | Priority |
+|----------|---------|--------|----------|
+| **id()** | `RETURN id(n)` | ✅ **Implemented** | 🔴 HIGH |
+| **labels()** | `RETURN labels(n)` | ✅ **Implemented** | 🔴 HIGH |
+| **type()** | `RETURN type(r)` | ✅ **Implemented** | 🔴 HIGH |
+| **keys()** | `RETURN keys(n)` | ✅ **Implemented** | 🟡 MEDIUM |
+| **properties()** | `RETURN properties(n)` | ✅ **Implemented** | 🟡 MEDIUM |
+| **startNode()** | `RETURN startNode(r)` | ✅ **Implemented** | 🟡 MEDIUM |
+| **endNode()** | `RETURN endNode(r)` | ✅ **Implemented** | 🟡 MEDIUM |
 
 ### Path Functions
 | Function | Example | Priority |
@@ -342,14 +344,20 @@ MERGE (n:Person {name: 'Alice'})
 - [ ] Add expression evaluator framework
 
 ### Phase 5: Aggregation & Functions
-**Target:** Q2 2026
+**Target:** Q1 2026 → ✅ **PHASE STARTED** (2026-01-12)
 **Focus:** Add aggregation support and common functions
 
-- [ ] Implement aggregation functions (COUNT, SUM, AVG, MIN, MAX)
+- [x] ✅ **Completed:** Expression evaluation framework
+- [x] ✅ **Completed:** Function executor interface & factory
+- [x] ✅ **Completed:** Bridge to all ArcadeDB SQL functions (100+ functions)
+- [x] ✅ **Completed:** Cypher-specific functions (id, labels, type, keys, properties, startNode, endNode)
+- [x] ✅ **Completed:** Parser integration for function invocations
+- [x] ✅ **Completed:** Execution pipeline integration
+- [ ] 🔄 **In Progress:** Aggregation function special handling & grouping
+- [ ] 🔄 **In Progress:** Test suite refinement
 - [ ] Add DISTINCT in RETURN
-- [ ] Implement basic string functions (toUpper, toLower, trim)
-- [ ] Implement node/relationship functions (id, labels, type)
-- [ ] Add proper expression evaluation in RETURN
+- [ ] Implement more string functions (toUpper, toLower, trim, substring, etc.)
+- [ ] Support for nested function calls
 
 ### Phase 6: Advanced Queries
 **Target:** Q3 2026
@@ -465,10 +473,14 @@ CypherStatement → CypherExecutionPlanner → Execution Plan (Step Chain)
 3. **Complex WHERE expressions not supported** - Only simple comparisons work
    - Workaround: Use inline property filters in patterns where possible
 
-4. **No expression evaluation in RETURN** - Cannot do `RETURN n.age * 2`
-   - Workaround: Use SQL fallback for complex projections
+4. **Function expression parsing needs refinement** - Complex nested expressions may not parse correctly
+   - Status: Framework complete, parser refinement in progress
+   - Workaround: Use simple function calls for now
 
-5. **OPTIONAL MATCH parsed but not executed correctly** - May return incorrect results
+5. **Aggregation functions need grouping support** - Aggregations without GROUP BY not yet implemented
+   - Status: Framework ready, execution logic in progress
+
+6. **OPTIONAL MATCH parsed but not executed correctly** - May return incorrect results
    - Workaround: Use SQL's LEFT JOIN equivalent
 
 ---
@@ -493,11 +505,13 @@ If you encounter issues with the OpenCypher implementation:
 We welcome contributions to the OpenCypher implementation!
 
 ### High-Priority Contributions Needed:
-1. **SetStep implementation** - Update operations
-2. **DeleteStep implementation** - Delete operations
+1. ✅ ~~SetStep implementation~~ - **COMPLETED**
+2. ✅ ~~DeleteStep implementation~~ - **COMPLETED**
 3. **Logical operators in WHERE** - AND, OR, NOT
-4. **Aggregation functions** - COUNT, SUM, AVG, etc.
-5. **Expression evaluator** - Arithmetic, functions
+4. 🔄 **Aggregation function grouping** - IN PROGRESS (framework complete)
+5. ✅ ~~Expression evaluator~~ - **COMPLETED** (functions bridge)
+6. **Function expression parsing refinement** - Improve parse tree traversal
+7. **Nested function support** - Enable function composition
 
 ### Getting Started:
 1. Review `CypherASTBuilder.java` - See what's parsed

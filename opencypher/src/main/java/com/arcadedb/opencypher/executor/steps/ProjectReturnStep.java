@@ -20,7 +20,10 @@ package com.arcadedb.opencypher.executor.steps;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.opencypher.ast.Expression;
 import com.arcadedb.opencypher.ast.ReturnClause;
+import com.arcadedb.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -44,13 +47,21 @@ import java.util.regex.Pattern;
  */
 public class ProjectReturnStep extends AbstractExecutionStep {
   private final ReturnClause returnClause;
+  private final ExpressionEvaluator evaluator;
 
   // Pattern for property access: variable.property
   private static final Pattern PROPERTY_PATTERN = Pattern.compile("(\\w+)\\.(\\w+)");
 
-  public ProjectReturnStep(final ReturnClause returnClause, final CommandContext context) {
+  public ProjectReturnStep(final ReturnClause returnClause, final CommandContext context,
+      final CypherFunctionFactory functionFactory) {
     super(context);
     this.returnClause = returnClause;
+    this.evaluator = new ExpressionEvaluator(functionFactory);
+  }
+
+  // Backward compatibility constructor
+  public ProjectReturnStep(final ReturnClause returnClause, final CommandContext context) {
+    this(returnClause, context, null);
   }
 
   @Override
@@ -132,7 +143,20 @@ public class ProjectReturnStep extends AbstractExecutionStep {
       return result;
     }
 
-    // Project each return item (adds projected properties alongside originals)
+    // Use expression-based projection if available
+    if (evaluator != null && returnClause.getReturnItems() != null && !returnClause.getReturnItems().isEmpty()) {
+      for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
+        final Expression expr = item.getExpression();
+        final String outputName = item.getOutputName();
+
+        // Evaluate expression
+        final Object value = evaluator.evaluate(expr, inputResult, context);
+        result.setProperty(outputName, value);
+      }
+      return result;
+    }
+
+    // Fallback: Legacy string-based projection
     for (final String item : returnClause.getItems()) {
       final String trimmedItem = item.trim();
 

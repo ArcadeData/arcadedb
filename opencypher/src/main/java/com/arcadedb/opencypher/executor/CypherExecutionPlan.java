@@ -37,6 +37,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -108,6 +109,10 @@ public class CypherExecutionPlan {
    */
   private AbstractExecutionStep buildExecutionSteps(final CommandContext context) {
     AbstractExecutionStep currentStep = null;
+
+    // Initialize function factory for expression evaluation
+    final DefaultSQLFunctionFactory sqlFunctionFactory = new DefaultSQLFunctionFactory();
+    final CypherFunctionFactory functionFactory = new CypherFunctionFactory(sqlFunctionFactory);
 
     // Step 1: MATCH clause - fetch nodes
     if (!statement.getMatchClauses().isEmpty()) {
@@ -220,7 +225,7 @@ public class CypherExecutionPlan {
 
     // Step 7: RETURN clause - project results
     if (statement.getReturnClause() != null && currentStep != null) {
-      final ProjectReturnStep returnStep = new ProjectReturnStep(statement.getReturnClause(), context);
+      final ProjectReturnStep returnStep = new ProjectReturnStep(statement.getReturnClause(), context, functionFactory);
       returnStep.setPrevious(currentStep);
       currentStep = returnStep;
     }

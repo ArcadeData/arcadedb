@@ -217,24 +217,20 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   @Override
   public ReturnClause visitReturnClause(final Cypher25Parser.ReturnClauseContext ctx) {
     final Cypher25Parser.ReturnBodyContext body = ctx.returnBody();
-    final List<String> items = new ArrayList<>();
+    final List<ReturnClause.ReturnItem> items = new ArrayList<>();
 
     if (body.returnItems().TIMES() != null) {
       // RETURN *
-      items.add("*");
+      items.add(new ReturnClause.ReturnItem(new VariableExpression("*"), "*"));
     } else {
       for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
-        final String expr = itemCtx.expression().getText();
-        if (itemCtx.variable() != null) {
-          // RETURN expression AS variable
-          items.add(expr + " AS " + itemCtx.variable().getText());
-        } else {
-          items.add(expr);
-        }
+        final Expression expr = parseExpression(itemCtx.expression());
+        final String alias = itemCtx.variable() != null ? itemCtx.variable().getText() : null;
+        items.add(new ReturnClause.ReturnItem(expr, alias));
       }
     }
 
-    return new ReturnClause(items);
+    return new ReturnClause(items, true);
   }
 
   @Override
@@ -459,5 +455,91 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       // Keep as string
       return text;
     }
+  }
+
+  /**
+   * Parse an expression into an Expression AST node.
+   * Handles variables, property access, function calls, and literals.
+   *
+   * NOTE: This is a simplified parser that uses text patterns.
+   * A full implementation would traverse the complete ANTLR parse tree.
+   */
+  private Expression parseExpression(final Cypher25Parser.ExpressionContext ctx) {
+    final String text = ctx.getText();
+
+    // Check for function call: name(...)
+    if (text.contains("(") && text.contains(")")) {
+      // Try to find function invocation in the parse tree
+      final Cypher25Parser.FunctionInvocationContext funcCtx = findFunctionInvocation(ctx);
+      if (funcCtx != null) {
+        return parseFunctionInvocation(funcCtx);
+      }
+    }
+
+    // Check for property access: variable.property
+    if (text.contains(".") && !text.contains("(")) {
+      final String[] parts = text.split("\\.", 2);
+      return new PropertyAccessExpression(parts[0], parts[1]);
+    }
+
+    // Simple variable
+    return new VariableExpression(text);
+  }
+
+  /**
+   * Find function invocation context by traversing the parse tree.
+   */
+  private Cypher25Parser.FunctionInvocationContext findFunctionInvocation(final Cypher25Parser.ExpressionContext ctx) {
+    // Traverse the expression tree looking for a function invocation
+    // This is a depth-first search through the parse tree
+    if (ctx.getChildCount() == 0) {
+      return null;
+    }
+
+    for (int i = 0; i < ctx.getChildCount(); i++) {
+      final var child = ctx.getChild(i);
+      if (child instanceof Cypher25Parser.FunctionInvocationContext) {
+        return (Cypher25Parser.FunctionInvocationContext) child;
+      }
+      if (child instanceof Cypher25Parser.ExpressionContext) {
+        final Cypher25Parser.FunctionInvocationContext found = findFunctionInvocation(
+            (Cypher25Parser.ExpressionContext) child);
+        if (found != null) {
+          return found;
+        }
+      }
+    }
+
+    // Recursively search all children
+    for (int i = 0; i < ctx.getChildCount(); i++) {
+      final var child = ctx.getChild(i);
+      if (child instanceof org.antlr.v4.runtime.tree.RuleNode) {
+        // Check if any child is a function invocation
+        for (int j = 0; j < child.getChildCount(); j++) {
+          final var grandchild = child.getChild(j);
+          if (grandchild instanceof Cypher25Parser.FunctionInvocationContext) {
+            return (Cypher25Parser.FunctionInvocationContext) grandchild;
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Parse a function invocation into a FunctionCallExpression.
+   */
+  private FunctionCallExpression parseFunctionInvocation(final Cypher25Parser.FunctionInvocationContext ctx) {
+    final String functionName = ctx.functionName().getText();
+    final boolean distinct = ctx.DISTINCT() != null;
+    final List<Expression> arguments = new ArrayList<>();
+
+    // Parse arguments
+    for (final Cypher25Parser.FunctionArgumentContext argCtx : ctx.functionArgument()) {
+      arguments.add(parseExpression(argCtx.expression()));
+    }
+
+    return new FunctionCallExpression(functionName, arguments, distinct);
   }
 }
