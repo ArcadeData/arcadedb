@@ -21,21 +21,75 @@ package com.arcadedb.network.exception;
 /**
  * Network-specific error codes for ArcadeDB network layer.
  * <p>
- * These codes are separate from core engine codes to maintain proper layering and
- * architectural separation. Network errors use string-based codes organized by
- * networking concept categories.
+ * This enum defines all network-layer error codes, separate from the core engine error codes
+ * ({@code com.arcadedb.exception.ErrorCode}). This separation maintains proper architectural
+ * layering: the engine module has no knowledge of network concepts, while the network module
+ * provides its own error taxonomy.
  * <p>
- * Error codes are organized by category:
+ * <strong>Design Principles:</strong>
  * <ul>
- *   <li>CONNECTION_* - Network connection establishment and management</li>
- *   <li>PROTOCOL_* - Network protocol violations and incompatibilities</li>
- *   <li>REPLICATION_* - Cluster replication and synchronization</li>
- *   <li>REMOTE_* - Remote server operations</li>
- *   <li>CHANNEL_* - Network channel operations</li>
+ *   <li><strong>String-based:</strong> Error codes are enum names (e.g., "CONNECTION_LOST"), not numeric values</li>
+ *   <li><strong>Layer-specific:</strong> Only network-level errors; engine errors are separate</li>
+ *   <li><strong>Self-documenting:</strong> Names clearly indicate the network condition</li>
+ *   <li><strong>Categorized:</strong> Organized by networking concepts (connection, protocol, replication, etc.)</li>
+ * </ul>
+ * <p>
+ * <strong>Error Code Categories:</strong>
+ * <ul>
+ *   <li><strong>CONNECTION_*</strong> - Network connection establishment, management, and lifecycle</li>
+ *   <li><strong>PROTOCOL_*</strong> - Network protocol violations, incompatibilities, and message format errors</li>
+ *   <li><strong>REPLICATION_*</strong> - Cluster replication, synchronization, quorum, and leader election</li>
+ *   <li><strong>REMOTE_*</strong> - Remote server operations and responses</li>
+ *   <li><strong>CHANNEL_*</strong> - Network channel I/O operations</li>
+ * </ul>
+ * <p>
+ * <strong>Architectural Context:</strong>
+ * Network errors occur when:
+ * <ul>
+ *   <li>TCP/IP connections fail or are interrupted</li>
+ *   <li>Binary protocol messages are malformed or incompatible</li>
+ *   <li>Cluster replication operations encounter issues</li>
+ *   <li>Remote database operations fail at the transport level</li>
+ *   <li>Network channels experience I/O errors</li>
+ * </ul>
+ * <p>
+ * <strong>Usage Examples:</strong>
+ * <pre>{@code
+ * // Throwing a network exception
+ * throw new NetworkException(
+ *     NetworkErrorCode.CONNECTION_LOST,
+ *     "Connection to server lost"
+ * ).withContext("server", "192.168.1.100:2424")
+ *  .withContext("reconnectAttempts", 3);
+ *
+ * // Accessing error code information
+ * NetworkErrorCode code = NetworkErrorCode.CONNECTION_LOST;
+ * String name = code.name();                    // "CONNECTION_LOST"
+ * String category = code.getCategory();         // "Network"
+ * String message = code.getDefaultMessage();    // "Connection lost"
+ *
+ * // In exception handlers
+ * try {
+ *     remoteDatabase.query("SELECT * FROM users");
+ * } catch (NetworkException e) {
+ *     if (e.getNetworkErrorCode() == NetworkErrorCode.CONNECTION_TIMEOUT) {
+ *         // Handle timeout - maybe retry with backoff
+ *     }
+ * }
+ * }</pre>
+ * <p>
+ * <strong>Translation to HTTP:</strong>
+ * Network errors are translated to HTTP status codes in the server module via
+ * {@code HttpExceptionTranslator}. This maintains separation of concerns:
+ * <ul>
+ *   <li>Network module: Knows about network errors, not HTTP</li>
+ *   <li>Server module: Translates network errors to HTTP status codes</li>
  * </ul>
  *
  * @since 26.1
- * @see com.arcadedb.network.exception.NetworkException
+ * @see NetworkException
+ * @see com.arcadedb.exception.ErrorCode
+ * @see com.arcadedb.server.http.HttpExceptionTranslator
  */
 public enum NetworkErrorCode {
 
