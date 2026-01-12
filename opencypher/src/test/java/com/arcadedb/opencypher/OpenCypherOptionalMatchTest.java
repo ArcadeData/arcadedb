@@ -174,12 +174,11 @@ public class OpenCypherOptionalMatchTest {
 
   @Test
   public void testOptionalMatchWithWhere() {
-    // NOTE: WHERE clause scoping for OPTIONAL MATCH is a known limitation
-    // WHERE currently applies globally rather than within the OPTIONAL MATCH scope
-    // This test verifies current behavior - will be updated when scoped WHERE is implemented
+    // WHERE clause is now correctly scoped to OPTIONAL MATCH
+    // It filters the optional match results but keeps rows where the match failed
 
-    // Query: MATCH all people, try to find their KNOWS relationships, then filter
-    // Currently WHERE filters after OPTIONAL MATCH, removing NULL rows
+    // Query: MATCH all people, try to find their KNOWS relationships with WHERE filter
+    // WHERE filters within OPTIONAL MATCH, so people without matches still appear
     final ResultSet result = database.query("opencypher",
         "MATCH (a:Person) " +
             "OPTIONAL MATCH (a)-[:KNOWS]->(b:Person) " +
@@ -193,17 +192,20 @@ public class OpenCypherOptionalMatchTest {
     }
     result.close();
 
-    // Current behavior: WHERE filters globally, so only Alice (who has a match) is returned
-    assertEquals(1, results.size(), "Current behavior: WHERE filters globally");
+    // Correct behavior: WHERE filters within OPTIONAL MATCH
+    // All people are returned, but only matches passing the filter are shown
+    assertEquals(3, results.size(), "All people should be returned");
 
-    // Alice -> Bob (age 25 > 20)
+    // Alice -> Bob (matched and passed filter: age 25 > 20)
     assertEquals("Alice", results.get(0).getProperty("person"));
     assertEquals("Bob", results.get(0).getProperty("knows"));
 
-    // TODO: Implement scoped WHERE for OPTIONAL MATCH
-    // Expected behavior with scoped WHERE:
-    // - Alice -> Bob (matched and passed filter)
-    // - Bob -> NULL (no relationships)
-    // - Charlie -> NULL (no relationships)
+    // Bob -> NULL (no outgoing relationships)
+    assertEquals("Bob", results.get(1).getProperty("person"));
+    assertNull(results.get(1).getProperty("knows"));
+
+    // Charlie -> NULL (no outgoing relationships)
+    assertEquals("Charlie", results.get(2).getProperty("person"));
+    assertNull(results.get(2).getProperty("knows"));
   }
 }

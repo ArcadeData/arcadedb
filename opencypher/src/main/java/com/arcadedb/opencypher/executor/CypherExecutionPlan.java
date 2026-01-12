@@ -253,9 +253,8 @@ public class CypherExecutionPlan {
 
               AbstractExecutionStep nextStep;
               if (relPattern.isVariableLength()) {
-                // Variable-length path
-                nextStep = new ExpandPathStep(sourceVar, relVar, targetVar, relPattern, context);
-                // ExpandPathStep already handles path variables internally
+                // Variable-length path - pass path variable for named path support
+                nextStep = new ExpandPathStep(sourceVar, pathVariable, targetVar, relPattern, context);
               } else {
                 // Fixed-length relationship - pass path variable
                 nextStep = new MatchRelationshipStep(sourceVar, relVar, targetVar, relPattern, pathVariable, context);
@@ -278,6 +277,26 @@ public class CypherExecutionPlan {
               }
             }
           }
+          }
+
+          // Apply WHERE clause scoped to this MATCH (if present)
+          // For OPTIONAL MATCH, this filters within the optional match chain
+          if (matchClause.hasWhereClause() && currentStep != null) {
+            final FilterPropertiesStep filterStep = new FilterPropertiesStep(matchClause.getWhereClause(), context);
+
+            if (isOptional) {
+              // For OPTIONAL MATCH: apply WHERE within the match chain (before wrapping)
+              filterStep.setPrevious(currentStep);
+              currentStep = filterStep;
+              // Update matchChainStart if this is the first step
+              if (matchChainStart == null) {
+                matchChainStart = filterStep;
+              }
+            } else {
+              // For regular MATCH: apply WHERE after the match
+              filterStep.setPrevious(currentStep);
+              currentStep = filterStep;
+            }
           }
 
           // Wrap in OptionalMatchStep if this is an OPTIONAL MATCH
@@ -305,7 +324,8 @@ public class CypherExecutionPlan {
       }
     }
 
-    // Step 2: WHERE clause - filter results
+    // Step 2: WHERE clause - now scoped to individual MATCH clauses (applied above)
+    // Statement-level WHERE is only for non-MATCH contexts (WITH, etc.)
     if (statement.getWhereClause() != null && currentStep != null) {
       final FilterPropertiesStep filterStep = new FilterPropertiesStep(statement.getWhereClause(), context);
       filterStep.setPrevious(currentStep);

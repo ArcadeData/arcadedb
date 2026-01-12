@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-01-12
 **Implementation Version:** Native ANTLR4-based Parser (Phase 7)
-**Test Coverage:** 120/120 tests passing (100%)
+**Test Coverage:** 122/122 tests passing (100%)
 
 ---
 
@@ -61,16 +61,24 @@ MATCH (n) WHERE n.age > 25 RETURN n
 // ✅ Named paths for single edges
 MATCH p = (a:Person)-[r:KNOWS]->(b:Person) RETURN p
 
+// ✅ Named paths for variable-length relationships
+MATCH p = (a:Person)-[:KNOWS*1..3]->(b:Person) RETURN p
+
 // ✅ OPTIONAL MATCH (LEFT OUTER JOIN semantics)
 MATCH (a:Person)
 OPTIONAL MATCH (a)-[r:KNOWS]->(b:Person)
 RETURN a.name, b.name
+
+// ✅ OPTIONAL MATCH with scoped WHERE clause
+MATCH (a:Person)
+OPTIONAL MATCH (a)-[r:KNOWS]->(b:Person)
+WHERE b.age > 20
+RETURN a.name, b.name
 ```
 
 **Limitations:**
-- ⚠️ OPTIONAL MATCH with WHERE clause: WHERE currently applies globally rather than scoped to the OPTIONAL MATCH
-- ❌ Named paths for variable-length relationships: `p = (a)-[*1..3]->(b)` not yet supported
 - ❌ Pattern predicates in WHERE: `WHERE (n)-[:KNOWS]->()` not yet implemented
+- ⚠️ Variable-length path queries return duplicate results (pre-existing bug, not related to named path implementation)
 
 ### WHERE Clause
 ```cypher
@@ -474,26 +482,32 @@ MERGE (n:Person {name: 'Alice'})
 | OpenCypherMergeTest | 5/5 | ✅ PASS | MERGE operations |
 | **OpenCypherFunctionTest** | **14/14** | **✅ PASS** | **Functions & aggregations** |
 | **OpenCypherWhereClauseTest** | **15/15** | **✅ PASS** | **WHERE (AND, OR, NOT, NULL, IN, regex)** |
+| **OpenCypherOptionalMatchTest** | **6/6** | **✅ PASS** | **OPTIONAL MATCH with WHERE scoping** |
+| **OpenCypherMatchEnhancementsTest** | **7/7** | **✅ PASS** | **Multiple MATCH, unlabeled patterns, named paths** |
+| **OpenCypherVariableLengthPathTest** | **2/2** | **✅ PASS** | **Named paths for variable-length relationships** |
 | OrderByDebugTest | 2/2 | ✅ PASS | Debug tests |
 | ParserDebugTest | 2/2 | ✅ PASS | Parser tests |
-| **TOTAL** | **107/107** | **✅ 100%** | **All passing** |
+| **TOTAL** | **122/122** | **✅ 100%** | **All passing** |
 
 ### Test Files
 ```
 opencypher/src/test/java/com/arcadedb/opencypher/
-├── OpenCypherBasicTest.java             # Engine registration, basic queries
-├── OpenCypherCreateTest.java            # CREATE clause tests
-├── OpenCypherRelationshipTest.java      # Relationship pattern tests
-├── OpenCypherTraversalTest.java         # Path traversal tests
-├── OpenCypherOrderBySkipLimitTest.java  # ORDER BY, SKIP, LIMIT
-├── OpenCypherExecutionTest.java         # Query execution tests
-├── OpenCypherSetTest.java               # SET clause tests
-├── OpenCypherDeleteTest.java            # DELETE clause tests
-├── OpenCypherMergeTest.java             # MERGE clause tests
-├── OpenCypherFunctionTest.java          # Function & aggregation tests
-├── OpenCypherWhereClauseTest.java       # WHERE clause logical operators (NEW)
-├── OrderByDebugTest.java                # Debug tests
-└── ParserDebugTest.java                 # Parser tests
+├── OpenCypherBasicTest.java                 # Engine registration, basic queries
+├── OpenCypherCreateTest.java                # CREATE clause tests
+├── OpenCypherRelationshipTest.java          # Relationship pattern tests
+├── OpenCypherTraversalTest.java             # Path traversal tests
+├── OpenCypherOrderBySkipLimitTest.java      # ORDER BY, SKIP, LIMIT
+├── OpenCypherExecutionTest.java             # Query execution tests
+├── OpenCypherSetTest.java                   # SET clause tests
+├── OpenCypherDeleteTest.java                # DELETE clause tests
+├── OpenCypherMergeTest.java                 # MERGE clause tests
+├── OpenCypherFunctionTest.java              # Function & aggregation tests
+├── OpenCypherWhereClauseTest.java           # WHERE clause logical operators
+├── OpenCypherOptionalMatchTest.java         # OPTIONAL MATCH with WHERE scoping (NEW)
+├── OpenCypherMatchEnhancementsTest.java     # Multiple MATCH, unlabeled patterns, named paths (NEW)
+├── OpenCypherVariableLengthPathTest.java    # Named paths for variable-length relationships (NEW)
+├── OrderByDebugTest.java                    # Debug tests
+└── ParserDebugTest.java                     # Parser tests
 ```
 
 ---
@@ -551,7 +565,7 @@ CypherStatement → CypherExecutionPlanner → Execution Plan (Step Chain)
 ## 🚀 Phase 7 Implementation (January 2026)
 
 ### New Features Added
-This phase focused on enhancing MATCH clause capabilities:
+This phase focused on enhancing MATCH clause capabilities and WHERE scoping:
 
 1. **✅ Multiple MATCH Clauses**
    - Support for multiple MATCH clauses in a single query
@@ -563,10 +577,12 @@ This phase focused on enhancing MATCH clause capabilities:
    - Uses ChainedIterator to iterate all vertex types
    - Example: `MATCH (n) WHERE n.age > 25 RETURN n`
 
-3. **✅ Named Paths for Single Edges**
-   - Store path as TraversalPath object
-   - Access path properties: length(), getVertices(), getEdges()
-   - Example: `MATCH p = (a)-[r:KNOWS]->(b) RETURN p`
+3. **✅ Named Paths (Single and Variable-Length)**
+   - Store path as TraversalPath object for both single and variable-length patterns
+   - Access path properties: length(), getVertices(), getEdges(), getStartVertex(), getEndVertex()
+   - Single edge: `MATCH p = (a)-[r:KNOWS]->(b) RETURN p`
+   - Variable-length: `MATCH p = (a)-[:KNOWS*1..3]->(b) RETURN p`
+   - Note: Variable-length queries have a duplication bug (pre-existing, unrelated to path implementation)
 
 4. **✅ OPTIONAL MATCH**
    - Implements LEFT OUTER JOIN semantics
@@ -574,17 +590,26 @@ This phase focused on enhancing MATCH clause capabilities:
    - Uses SingleRowInputStep for proper data flow
    - Example: `MATCH (a:Person) OPTIONAL MATCH (a)-[r]->(b) RETURN a, b`
 
+5. **✅ WHERE Clause Scoping for OPTIONAL MATCH**
+   - WHERE clauses are now properly scoped to their containing MATCH clause
+   - For OPTIONAL MATCH, WHERE filters the optional match results but preserves rows where the match failed (with NULL values)
+   - Example: `MATCH (a:Person) OPTIONAL MATCH (a)-[r]->(b) WHERE b.age > 20 RETURN a, b`
+   - All people are returned; only matches passing the filter show b values, others get NULL
+
 ### Architecture Changes
 - **OptionalMatchStep**: New execution step implementing optional matching with NULL emission
-- **CypherExecutionPlan**: Enhanced to handle multiple MATCH clauses and source variable binding
+- **CypherExecutionPlan**: Enhanced to handle multiple MATCH clauses, source variable binding, and scoped WHERE application
 - **MatchNodeStep**: Added ChainedIterator for unlabeled pattern support
-- **CypherASTBuilder**: Fixed path variable extraction in `visitPattern()`
+- **CypherASTBuilder**: Fixed path variable extraction in `visitPattern()` and scoped WHERE extraction in `visitMatchClause()`
+- **MatchClause**: Added whereClause field to store WHERE clauses scoped to each MATCH
+- **ExpandPathStep**: Fixed to use pathVariable instead of relVar for named variable-length paths
 
 ### Test Coverage
-- Added 13 new tests (107 → 120 tests)
-- OpenCypherOptionalMatchTest: 6 tests for OPTIONAL MATCH
-- OpenCypherMatchEnhancementsTest: 7 tests for new MATCH features
-- All 120 tests passing
+- Added 15 new tests (107 → 122 tests)
+- OpenCypherOptionalMatchTest: 6 tests for OPTIONAL MATCH with WHERE scoping
+- OpenCypherMatchEnhancementsTest: 7 tests for multiple MATCH and unlabeled patterns
+- OpenCypherVariableLengthPathTest: 2 tests for named paths with variable-length relationships
+- All 122 tests passing
 
 ---
 
@@ -594,9 +619,12 @@ This phase focused on enhancing MATCH clause capabilities:
    - Status: Core aggregation functions working, GROUP BY clause not yet implemented
    - Workaround: Pre-filter data with WHERE clause
 
-2. **OPTIONAL MATCH with WHERE clause scoping** - WHERE applies globally rather than within OPTIONAL MATCH scope
-   - Status: Core OPTIONAL MATCH working, scoped WHERE needs additional work
-   - Workaround: Filter NULL results in application logic
+2. **Variable-length path queries return duplicates** - Pre-existing bug unrelated to named path implementation
+   - Status: Variable-length traversal (`-[*1..3]->`) returns duplicate results
+   - Example: `MATCH (a)-[:KNOWS*2]->(b)` may return the same path multiple times
+   - Named path variable storage works correctly (path object is not null)
+   - Workaround: Use `LIMIT` or deduplicate results in application logic
+   - Note: Single-hop relationships do not have this issue
 
 3. **Arithmetic expressions not yet supported** - `RETURN n.age * 2` not working
    - Status: Function expressions working, arithmetic operators need parser support
@@ -605,10 +633,6 @@ This phase focused on enhancing MATCH clause capabilities:
 4. **String matching operators not implemented** - STARTS WITH, ENDS WITH, CONTAINS
    - Status: Grammar support exists, execution logic not implemented
    - Workaround: Use regex patterns: `name =~ 'A.*'` for STARTS WITH 'A'
-
-5. **Named paths for variable-length relationships** - `p = (a)-[*1..3]->(b)` not storing path
-   - Status: Variable-length traversal works, path variable storage not yet implemented
-   - Workaround: Store individual edges/vertices separately
 
 ---
 

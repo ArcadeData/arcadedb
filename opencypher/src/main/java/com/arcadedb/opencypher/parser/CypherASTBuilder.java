@@ -88,10 +88,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         final MatchClause match = visitMatchClause(clauseCtx.matchClause());
         matchClauses.add(match);
 
-        // Extract WHERE clause from MATCH if present
-        if (clauseCtx.matchClause().whereClause() != null) {
-          whereClause = visitWhereClause(clauseCtx.matchClause().whereClause());
-        }
+        // WHERE clause is now scoped to the MatchClause itself, not extracted at statement level
       } else if (clauseCtx.createClause() != null) {
         createClause = visitCreateClause(clauseCtx.createClause());
       } else if (clauseCtx.setClause() != null) {
@@ -164,10 +161,13 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final List<PathPattern> pathPatterns = visitPatternList(ctx.patternList());
     final boolean optional = ctx.OPTIONAL() != null;
 
-    // TODO: Handle WHERE clause embedded in MATCH
-    // For now, WHERE is handled separately at statement level
+    // Extract WHERE clause if present and scoped to this MATCH
+    WhereClause whereClause = null;
+    if (ctx.whereClause() != null) {
+      whereClause = visitWhereClause(ctx.whereClause());
+    }
 
-    return new MatchClause(pathPatterns, optional);
+    return new MatchClause(pathPatterns, optional, whereClause);
   }
 
   @Override

@@ -30,23 +30,40 @@ public class MatchClause {
   private final String pattern; // Raw pattern string (Phase 1)
   private final boolean optional;
   private final List<PathPattern> pathPatterns; // Parsed path patterns (Phase 2+)
+  private final WhereClause whereClause; // Optional WHERE clause scoped to this MATCH
 
   /**
    * Creates a match clause with raw pattern string (Phase 1).
    */
   public MatchClause(final String pattern, final boolean optional) {
+    this(pattern, optional, null);
+  }
+
+  /**
+   * Creates a match clause with raw pattern string and WHERE clause (Phase 1).
+   */
+  public MatchClause(final String pattern, final boolean optional, final WhereClause whereClause) {
     this.pattern = pattern;
     this.optional = optional;
     this.pathPatterns = new ArrayList<>();
+    this.whereClause = whereClause;
   }
 
   /**
    * Creates a match clause with parsed path patterns (Phase 2+).
    */
   public MatchClause(final List<PathPattern> pathPatterns, final boolean optional) {
+    this(pathPatterns, optional, null);
+  }
+
+  /**
+   * Creates a match clause with parsed path patterns and WHERE clause (Phase 2+).
+   */
+  public MatchClause(final List<PathPattern> pathPatterns, final boolean optional, final WhereClause whereClause) {
     this.pattern = null;
     this.optional = optional;
     this.pathPatterns = pathPatterns != null ? new ArrayList<>(pathPatterns) : new ArrayList<>();
+    this.whereClause = whereClause;
   }
 
   /**
@@ -92,5 +109,23 @@ public class MatchClause {
    */
   public void addPathPattern(final PathPattern pathPattern) {
     this.pathPatterns.add(pathPattern);
+  }
+
+  /**
+   * Returns the WHERE clause scoped to this MATCH, if any.
+   *
+   * @return WHERE clause or null if not present
+   */
+  public WhereClause getWhereClause() {
+    return whereClause;
+  }
+
+  /**
+   * Returns true if this MATCH has a WHERE clause.
+   *
+   * @return true if has WHERE clause
+   */
+  public boolean hasWhereClause() {
+    return whereClause != null;
   }
 }
