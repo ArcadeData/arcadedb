@@ -51,6 +51,7 @@ import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.data.Offset.*;
 
 public class PostgresWJdbcIT extends BaseGraphServerTest {
   @Override
@@ -505,6 +506,10 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
       return IntStream.range(0, PostgresWJdbcIT.DEFAULT_SIZE)
           .mapToObj(i -> RANDOM.nextDouble() * 200 - 100)
           .collect(Collectors.toList());
+    } else if (type == Float.class) {
+      return IntStream.range(0, PostgresWJdbcIT.DEFAULT_SIZE)
+          .mapToObj(i -> RANDOM.nextFloat() * 200 - 100)
+          .collect(Collectors.toList());
     } else if (type == Integer.class) {
       return IntStream.range(0, PostgresWJdbcIT.DEFAULT_SIZE)
           .mapToObj(i -> RANDOM.nextInt(201) - 100)
@@ -532,8 +537,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @ParameterizedTest
-  //  @ValueSource(classes = { Boolean.class, Double.class, Integer.class, String.class })
-  @ValueSource(classes = {String.class})
+  @ValueSource(classes = { Boolean.class, Float.class, Double.class, Integer.class, String.class })
   void returnArray(Class<?> typeToTest) throws Exception {
     try (var conn = getConnection()) {
       conn.setAutoCommit(true);
@@ -589,7 +593,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
 
       assertThat(rs.next()).isTrue();
       assertThat(rs.getString("name")).isEqualTo("TestItem");
-      assertThat(rs.getDouble("price")).isEqualTo(29.99);
+      assertThat(rs.getFloat("price")).isEqualTo(29.99);
 
     }
   }
@@ -696,6 +700,39 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
           assertThat(rs.getString("text")).isEqualTo("chunk3");
           assertThat(rs.next()).isFalse();
         }
+      }
+    }
+  }
+
+  @Test
+  void floatArrayPropertyRoundTrip() throws SQLException, ClassNotFoundException {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("create vertex type `TEXT_EMBEDDING` if not exists;");
+        st.execute("create property TEXT_EMBEDDING.str if not exists STRING;");
+        st.execute("create property TEXT_EMBEDDING.embedding if not exists LIST;");
+
+        // Use explicit float casting to ensure values are stored as floats, not doubles
+        st.execute("INSERT INTO `TEXT_EMBEDDING` SET str = \"meow\", embedding = [0.1f, 0.2f, 0.3f]");
+        ResultSet resultSet = st.executeQuery("SELECT embedding FROM `TEXT_EMBEDDING` WHERE str = \"meow\"");
+
+        assertThat(resultSet.next()).isTrue();
+        Array embeddingArray = resultSet.getArray("embedding");
+        assertThat(embeddingArray).isNotNull();
+
+        Object[] embeddings = (Object[]) embeddingArray.getArray();
+        assertThat(embeddings).isNotNull();
+        assertThat(embeddings).hasSize(3);
+
+        // Verify all elements are Float instances (not Double)
+        for (Object item : embeddings) {
+          assertThat(item).isInstanceOf(Float.class);
+        }
+
+        // Verify the actual values
+        assertThat((Float) embeddings[0]).isEqualTo(0.1f, offset(0.0001f));
+        assertThat((Float) embeddings[1]).isEqualTo(0.2f, offset(0.0001f));
+        assertThat((Float) embeddings[2]).isEqualTo(0.3f, offset(0.0001f));
       }
     }
   }
