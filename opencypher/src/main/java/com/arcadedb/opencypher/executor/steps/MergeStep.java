@@ -29,6 +29,7 @@ import com.arcadedb.opencypher.ast.MergeClause;
 import com.arcadedb.opencypher.ast.NodePattern;
 import com.arcadedb.opencypher.ast.PathPattern;
 import com.arcadedb.opencypher.ast.RelationshipPattern;
+import com.arcadedb.opencypher.ast.SetClause;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -62,20 +63,28 @@ public class MergeStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    // MERGE is a standalone operation (no previous step required)
+    final boolean hasInput = prev != null;
 
     return new ResultSet() {
-      private boolean executed = false;
-      private Result mergedResult = null;
+      private ResultSet prevResults = null;
+      private final List<Result> buffer = new ArrayList<>();
+      private int bufferIndex = 0;
+      private boolean finished = false;
+      private boolean mergedStandalone = false;
 
       @Override
       public boolean hasNext() {
-        if (!executed) {
-          // Execute MERGE operation
-          mergedResult = executeMerge();
-          executed = true;
+        if (bufferIndex < buffer.size()) {
+          return true;
         }
-        return mergedResult != null;
+
+        if (finished) {
+          return false;
+        }
+
+        // Fetch more results
+        fetchMore(nRecords);
+        return bufferIndex < buffer.size();
       }
 
       @Override
@@ -83,9 +92,37 @@ public class MergeStep extends AbstractExecutionStep {
         if (!hasNext()) {
           throw new NoSuchElementException();
         }
-        final Result result = mergedResult;
-        mergedResult = null; // Consume the result
-        return result;
+        return buffer.get(bufferIndex++);
+      }
+
+      private void fetchMore(final int n) {
+        buffer.clear();
+        bufferIndex = 0;
+
+        if (hasInput) {
+          // Chained MERGE: merge for each input result
+          if (prevResults == null) {
+            prevResults = prev.syncPull(context, nRecords);
+          }
+
+          while (buffer.size() < n && prevResults.hasNext()) {
+            final Result inputResult = prevResults.next();
+            final Result mergedResult = executeMerge(inputResult);
+            buffer.add(mergedResult);
+          }
+
+          if (!prevResults.hasNext()) {
+            finished = true;
+          }
+        } else {
+          // Standalone MERGE: merge once
+          if (!mergedStandalone) {
+            final Result mergedResult = executeMerge(null);
+            buffer.add(mergedResult);
+            mergedStandalone = true;
+          }
+          finished = true;
+        }
       }
 
       @Override
@@ -98,9 +135,10 @@ public class MergeStep extends AbstractExecutionStep {
   /**
    * Executes the MERGE operation: tries to match, creates if not found.
    *
+   * @param inputResult input result from previous step (may be null for standalone MERGE)
    * @return result containing matched or created elements
    */
-  private Result executeMerge() {
+  private Result executeMerge(final Result inputResult) {
     final PathPattern pathPattern = mergeClause.getPathPattern();
 
     // Check if we're already in a transaction
@@ -112,13 +150,28 @@ public class MergeStep extends AbstractExecutionStep {
         context.getDatabase().begin();
       }
 
-      final Result result;
+      // Create result and copy input properties if present
+      final ResultInternal result = new ResultInternal();
+      if (inputResult != null) {
+        for (final String prop : inputResult.getPropertyNames()) {
+          result.setProperty(prop, inputResult.getProperty(prop));
+        }
+      }
+
+      final boolean wasCreated;
       if (pathPattern.isSingleNode()) {
         // Simple node merge: MERGE (n:Person {name: 'Alice'})
-        result = mergeSingleNode(pathPattern.getFirstNode());
+        wasCreated = mergeSingleNode(pathPattern.getFirstNode(), result);
       } else {
         // Path merge with relationships: MERGE (a)-[r:KNOWS]->(b)
-        result = mergePath(pathPattern);
+        wasCreated = mergePath(pathPattern, result);
+      }
+
+      // Apply ON CREATE SET or ON MATCH SET based on what happened
+      if (wasCreated && mergeClause.hasOnCreateSet()) {
+        applySetClause(mergeClause.getOnCreateSet(), result);
+      } else if (!wasCreated && mergeClause.hasOnMatchSet()) {
+        applySetClause(mergeClause.getOnMatchSet(), result);
       }
 
       // Commit transaction if we started it
@@ -140,25 +193,35 @@ public class MergeStep extends AbstractExecutionStep {
    * Merges a single node: finds or creates it.
    *
    * @param nodePattern node pattern to merge
-   * @return result containing the merged node
+   * @param result result to store the merged node in
+   * @return true if the node was created, false if it was matched
    */
-  private Result mergeSingleNode(final NodePattern nodePattern) {
-    final ResultInternal result = new ResultInternal();
+  private boolean mergeSingleNode(final NodePattern nodePattern, final ResultInternal result) {
     final String variable = nodePattern.getVariable() != null ? nodePattern.getVariable() : "n";
 
-    // Try to find existing node
-    Vertex existing = findNode(nodePattern);
-
-    if (existing != null) {
-      // Node exists - return it
-      result.setProperty(variable, existing);
-    } else {
-      // Node doesn't exist - create it
-      final Vertex created = createVertex(nodePattern);
-      result.setProperty(variable, created);
+    // Check if the variable is already bound from a previous step (e.g., MATCH)
+    final Object existing = result.getProperty(variable);
+    if (existing instanceof Vertex) {
+      // Variable already bound - this is a matched node
+      return false;
     }
 
-    return result;
+    // Try to find existing node
+    Vertex vertex = findNode(nodePattern);
+
+    final boolean wasCreated;
+    if (vertex != null) {
+      // Node exists - matched
+      result.setProperty(variable, vertex);
+      wasCreated = false;
+    } else {
+      // Node doesn't exist - create it
+      vertex = createVertex(nodePattern);
+      result.setProperty(variable, vertex);
+      wasCreated = true;
+    }
+
+    return wasCreated;
   }
 
   /**
@@ -166,27 +229,42 @@ public class MergeStep extends AbstractExecutionStep {
    * For now, this is a simplified implementation that creates if any part doesn't exist.
    *
    * @param pathPattern path pattern to merge
-   * @return result containing merged elements
+   * @param result result to store merged elements in
+   * @return true if any element was created, false if all were matched
    */
-  private Result mergePath(final PathPattern pathPattern) {
-    final ResultInternal result = new ResultInternal();
+  private boolean mergePath(final PathPattern pathPattern, final ResultInternal result) {
     final List<Vertex> vertices = new ArrayList<>();
+    boolean anyCreated = false;
 
     // Merge all vertices in the path
     for (int i = 0; i <= pathPattern.getRelationshipCount(); i++) {
       final NodePattern nodePattern = pathPattern.getNode(i);
-      Vertex vertex = findNode(nodePattern);
+      Vertex vertex = null;
 
+      // Check if vertex already exists in result (from MATCH or previous MERGE)
+      if (nodePattern.getVariable() != null) {
+        final Object existing = result.getProperty(nodePattern.getVariable());
+        if (existing instanceof Vertex) {
+          vertex = (Vertex) existing;
+        }
+      }
+
+      // Try to find or create vertex if not already bound
       if (vertex == null) {
-        // Create vertex if not found
-        vertex = createVertex(nodePattern);
+        vertex = findNode(nodePattern);
+
+        if (vertex == null) {
+          // Create vertex if not found
+          vertex = createVertex(nodePattern);
+          anyCreated = true;
+        }
+
+        if (nodePattern.getVariable() != null) {
+          result.setProperty(nodePattern.getVariable(), vertex);
+        }
       }
 
       vertices.add(vertex);
-
-      if (nodePattern.getVariable() != null) {
-        result.setProperty(nodePattern.getVariable(), vertex);
-      }
     }
 
     // Merge relationships between vertices
@@ -201,6 +279,7 @@ public class MergeStep extends AbstractExecutionStep {
       if (edge == null) {
         // Create relationship if not found
         edge = createEdge(fromVertex, toVertex, relPattern);
+        anyCreated = true;
       }
 
       if (relPattern.getVariable() != null) {
@@ -208,7 +287,7 @@ public class MergeStep extends AbstractExecutionStep {
       }
     }
 
-    return result;
+    return anyCreated;
   }
 
   /**
@@ -354,6 +433,120 @@ public class MergeStep extends AbstractExecutionStep {
 
       document.set(key, value);
     }
+  }
+
+  /**
+   * Applies a SET clause to the result (used for ON CREATE SET / ON MATCH SET).
+   *
+   * @param setClause the SET clause to apply
+   * @param result the result containing variables to update
+   */
+  private void applySetClause(final SetClause setClause, final Result result) {
+    if (setClause == null || setClause.isEmpty()) {
+      return;
+    }
+
+    for (final SetClause.SetItem item : setClause.getItems()) {
+      final String variable = item.getVariable();
+      final String property = item.getProperty();
+      final String valueExpression = item.getValueExpression();
+
+      // Get the object from the result
+      final Object obj = result.getProperty(variable);
+      if (obj == null) {
+        // Variable not found in result - skip this SET item
+        continue;
+      }
+
+      if (!(obj instanceof com.arcadedb.database.Document)) {
+        // Not a document - skip
+        continue;
+      }
+
+      final com.arcadedb.database.Document doc = (com.arcadedb.database.Document) obj;
+
+      // Make document mutable
+      final com.arcadedb.database.MutableDocument mutableDoc = doc.modify();
+
+      // Evaluate the value expression and set the property
+      final Object value = evaluateSetExpression(valueExpression, result);
+      mutableDoc.set(property, value);
+
+      // Save the modified document
+      mutableDoc.save();
+
+      // Update the result with the modified document
+      ((ResultInternal) result).setProperty(variable, mutableDoc);
+    }
+  }
+
+  /**
+   * Evaluates a simple expression for SET clauses.
+   * Currently supports:
+   * - String literals: 'Alice', "Bob"
+   * - Numbers: 42, 3.14
+   * - Booleans: true, false
+   * - null
+   * - Variable references
+   * - Property access: variable.property
+   */
+  private Object evaluateSetExpression(final String expression, final Result result) {
+    if (expression == null || expression.trim().isEmpty()) {
+      return null;
+    }
+
+    final String trimmed = expression.trim();
+
+    // Null literal
+    if (trimmed.equalsIgnoreCase("null")) {
+      return null;
+    }
+
+    // Boolean literals
+    if (trimmed.equalsIgnoreCase("true")) {
+      return Boolean.TRUE;
+    }
+    if (trimmed.equalsIgnoreCase("false")) {
+      return Boolean.FALSE;
+    }
+
+    // String literals (single or double quotes)
+    if ((trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+        (trimmed.startsWith("\"") && trimmed.endsWith("\""))) {
+      return trimmed.substring(1, trimmed.length() - 1);
+    }
+
+    // Property access: variable.property (e.g., "existing.age")
+    // Check this before numeric parsing to avoid confusion with decimals
+    if (trimmed.contains(".")) {
+      final String[] parts = trimmed.split("\\.", 2);
+      if (parts.length == 2) {
+        final Object varObj = result.getProperty(parts[0]);
+        if (varObj instanceof com.arcadedb.database.Document) {
+          return ((com.arcadedb.database.Document) varObj).get(parts[1]);
+        }
+      }
+    }
+
+    // Numeric literals (check after property access to avoid confusion)
+    try {
+      if (trimmed.contains(".")) {
+        return Double.parseDouble(trimmed);
+      } else {
+        return Long.parseLong(trimmed);
+      }
+    } catch (final NumberFormatException e) {
+      // Not a number - might be a variable reference
+    }
+
+    // Variable reference: just the variable name (e.g., "myVar")
+    // Check if it exists in the result
+    if (result.getPropertyNames().contains(trimmed)) {
+      return result.getProperty(trimmed);
+    }
+
+    // If we can't evaluate it, return the expression as a string
+    return trimmed;
   }
 
   @Override

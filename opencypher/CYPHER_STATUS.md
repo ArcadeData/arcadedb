@@ -1,8 +1,8 @@
 # OpenCypher Implementation Status
 
 **Last Updated:** 2026-01-12
-**Implementation Version:** Native ANTLR4-based Parser (Phase 7 + Transaction Enhancements)
-**Test Coverage:** 139/139 tests passing (100%)
+**Implementation Version:** Native ANTLR4-based Parser (Phase 7 + Transaction Enhancements + ON CREATE/MATCH SET)
+**Test Coverage:** 148/148 tests passing (100%)
 
 ---
 
@@ -154,7 +154,6 @@ CREATE (n:Person {name: 'Alice'})
 
 **Limitations:**
 - ❌ CREATE with variable-length patterns
-- ❌ ON CREATE SET (part of MERGE)
 
 ### RETURN Clause
 ```cypher
@@ -287,17 +286,43 @@ MERGE (a:Person {name: 'Alice'})-[r:KNOWS]->(b:Person {name: 'Bob'})
 // ✅ MERGE complex patterns
 MERGE (a)-[r:WORKS_AT]->(c:Company {name: 'ArcadeDB'})
 
+// ✅ Chained MERGE after MATCH (uses bound variables)
+MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'})
+MERGE (a)-[r:KNOWS]->(b)
+
+// ✅ ON CREATE SET - executed when creating new elements
+MERGE (n:Person {name: 'Charlie'})
+ON CREATE SET n.created = true, n.timestamp = 1234567890
+
+// ✅ ON MATCH SET - executed when matching existing elements
+MERGE (n:Person {name: 'Alice'})
+ON MATCH SET n.lastSeen = 1234567890, n.visits = 5
+
+// ✅ ON CREATE SET and ON MATCH SET combined
+MERGE (n:Person {name: 'David'})
+ON CREATE SET n.created = true, n.count = 1
+ON MATCH SET n.count = 2, n.updated = true
+
+// ✅ ON CREATE/MATCH SET with property references
+MATCH (existing:Person {name: 'Alice'})
+MERGE (n:Person {name: 'Bob'})
+ON CREATE SET n.age = existing.age
+
+// ✅ ON CREATE/MATCH SET on relationships
+MATCH (a:Person), (b:Company)
+MERGE (a)-[r:WORKS_AT]->(b)
+ON CREATE SET r.since = 2020, r.role = 'Engineer'
+ON MATCH SET r.promoted = true
+
 // ✅ Automatic transaction handling
 // - Creates transaction if none exists
 // - Reuses existing transaction when already active
 // - Auto-commits when command completes (if transaction was created)
-
-// ❌ ON CREATE SET / ON MATCH SET not yet implemented
 ```
 
-**Status:** ✅ **Fully Implemented** - MergeStep with automatic transaction handling
-**Test Coverage:** 5 tests in `OpenCypherMergeTest.java`
-**Note:** ON CREATE SET and ON MATCH SET sub-clauses not yet implemented
+**Status:** ✅ **Fully Implemented** - MergeStep with automatic transaction handling and ON CREATE/MATCH SET support
+**Test Coverage:** 14 tests (5 in `OpenCypherMergeTest.java`, 9 in `OpenCypherMergeActionsTest.java`)
+**Expression Evaluation:** Supports literals (string, number, boolean, null), variable references, and property access (e.g., `existing.age`)
 
 ---
 
@@ -476,9 +501,9 @@ MERGE (a)-[r:WORKS_AT]->(c:Company {name: 'ArcadeDB'})
 **Focus:** Query composition and advanced features
 
 - [ ] Implement WITH clause (query chaining)
-- [ ] Implement MERGE with ON CREATE/ON MATCH
-- [ ] Implement OPTIONAL MATCH
-- [ ] Add string matching (STARTS WITH, ENDS WITH, CONTAINS)
+- [x] ✅ **Completed:** MERGE with ON CREATE/ON MATCH SET (Phase 7)
+- [x] ✅ **Completed:** OPTIONAL MATCH (Phase 7)
+- [x] ✅ **Completed:** String matching (STARTS WITH, ENDS WITH, CONTAINS) (Phase 7)
 - [ ] Implement UNWIND
 
 ### Phase 7: Optimization & Performance
@@ -512,7 +537,8 @@ MERGE (a)-[r:WORKS_AT]->(c:Company {name: 'ArcadeDB'})
 | OpenCypherExecutionTest | 6/6 | ✅ PASS | Query execution |
 | OpenCypherSetTest | 11/11 | ✅ PASS | SET clause operations |
 | OpenCypherDeleteTest | 9/9 | ✅ PASS | DELETE operations |
-| OpenCypherMergeTest | 5/5 | ✅ PASS | MERGE operations |
+| OpenCypherMergeTest | 5/5 | ✅ PASS | MERGE operations (basic) |
+| **OpenCypherMergeActionsTest** | **9/9** | **✅ PASS** | **MERGE with ON CREATE/MATCH SET** |
 | **OpenCypherFunctionTest** | **14/14** | **✅ PASS** | **Functions & aggregations** |
 | **OpenCypherWhereClauseTest** | **23/23** | **✅ PASS** | **WHERE (string matching, parenthesized expressions)** |
 | **OpenCypherOptionalMatchTest** | **6/6** | **✅ PASS** | **OPTIONAL MATCH with WHERE scoping** |
@@ -521,7 +547,7 @@ MERGE (a)-[r:WORKS_AT]->(c:Company {name: 'ArcadeDB'})
 | **OpenCypherTransactionTest** | **9/9** | **✅ PASS** | **Automatic transaction handling** |
 | OrderByDebugTest | 2/2 | ✅ PASS | Debug tests |
 | ParserDebugTest | 2/2 | ✅ PASS | Parser tests |
-| **TOTAL** | **139/139** | **✅ 100%** | **All passing** |
+| **TOTAL** | **148/148** | **✅ 100%** | **All passing** |
 
 ### Test Files
 ```
@@ -534,13 +560,14 @@ opencypher/src/test/java/com/arcadedb/opencypher/
 ├── OpenCypherExecutionTest.java             # Query execution tests
 ├── OpenCypherSetTest.java                   # SET clause tests
 ├── OpenCypherDeleteTest.java                # DELETE clause tests
-├── OpenCypherMergeTest.java                 # MERGE clause tests
+├── OpenCypherMergeTest.java                 # MERGE clause tests (basic)
+├── OpenCypherMergeActionsTest.java          # MERGE with ON CREATE/MATCH SET (NEW)
 ├── OpenCypherFunctionTest.java              # Function & aggregation tests
 ├── OpenCypherWhereClauseTest.java           # WHERE clause logical operators
-├── OpenCypherOptionalMatchTest.java         # OPTIONAL MATCH with WHERE scoping (NEW)
-├── OpenCypherMatchEnhancementsTest.java     # Multiple MATCH, unlabeled patterns, named paths (NEW)
-├── OpenCypherVariableLengthPathTest.java    # Named paths for variable-length relationships (NEW)
-├── OpenCypherTransactionTest.java           # Automatic transaction handling (NEW)
+├── OpenCypherOptionalMatchTest.java         # OPTIONAL MATCH with WHERE scoping
+├── OpenCypherMatchEnhancementsTest.java     # Multiple MATCH, unlabeled patterns, named paths
+├── OpenCypherVariableLengthPathTest.java    # Named paths for variable-length relationships
+├── OpenCypherTransactionTest.java           # Automatic transaction handling
 ├── OrderByDebugTest.java                    # Debug tests
 └── ParserDebugTest.java                     # Parser tests
 ```

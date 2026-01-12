@@ -25,17 +25,42 @@ package com.arcadedb.opencypher.ast;
  * Examples:
  * - MERGE (n:Person {name: 'Alice'})
  * - MERGE (a:Person {name: 'Alice'})-[r:KNOWS]->(b:Person {name: 'Bob'})
+ * - MERGE (n:Person {name: 'Alice'}) ON CREATE SET n.created = timestamp() ON MATCH SET n.updated = timestamp()
  * <p>
- * Optional ON CREATE and ON MATCH sub-clauses can be added later.
+ * Supports ON CREATE SET and ON MATCH SET sub-clauses.
  */
 public class MergeClause {
   private final PathPattern pathPattern;
+  private final SetClause onCreateSet;
+  private final SetClause onMatchSet;
 
   public MergeClause(final PathPattern pathPattern) {
+    this(pathPattern, null, null);
+  }
+
+  public MergeClause(final PathPattern pathPattern, final SetClause onCreateSet, final SetClause onMatchSet) {
     this.pathPattern = pathPattern;
+    this.onCreateSet = onCreateSet;
+    this.onMatchSet = onMatchSet;
   }
 
   public PathPattern getPathPattern() {
     return pathPattern;
+  }
+
+  public SetClause getOnCreateSet() {
+    return onCreateSet;
+  }
+
+  public SetClause getOnMatchSet() {
+    return onMatchSet;
+  }
+
+  public boolean hasOnCreateSet() {
+    return onCreateSet != null && !onCreateSet.isEmpty();
+  }
+
+  public boolean hasOnMatchSet() {
+    return onMatchSet != null && !onMatchSet.isEmpty();
   }
 }
