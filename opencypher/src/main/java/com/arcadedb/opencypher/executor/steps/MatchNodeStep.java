@@ -188,9 +188,52 @@ public class MatchNodeStep extends AbstractExecutionStep {
       final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
       return iter;
     } else {
-      // No label specified - would need to iterate all vertex types
-      // For now, throw an exception
-      throw new UnsupportedOperationException("MATCH without label not yet supported. Use (n:TypeName)");
+      // No label specified - iterate ALL vertex types
+      // Get all vertex types from schema and chain their iterators
+      final java.util.List<Iterator<Identifiable>> iterators = new java.util.ArrayList<>();
+
+      for (final com.arcadedb.schema.DocumentType type : context.getDatabase().getSchema().getTypes()) {
+        // Only include vertex types (not edge types or document types)
+        if (type instanceof com.arcadedb.schema.VertexType) {
+          @SuppressWarnings("unchecked")
+          final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(type.getName(), false);
+          iterators.add(iter);
+        }
+      }
+
+      // Chain all iterators together
+      return new ChainedIterator(iterators);
+    }
+  }
+
+  /**
+   * Iterator that chains multiple iterators together.
+   */
+  private static class ChainedIterator implements Iterator<Identifiable> {
+    private final java.util.List<Iterator<Identifiable>> iterators;
+    private int currentIndex = 0;
+
+    public ChainedIterator(final java.util.List<Iterator<Identifiable>> iterators) {
+      this.iterators = iterators;
+    }
+
+    @Override
+    public boolean hasNext() {
+      while (currentIndex < iterators.size()) {
+        if (iterators.get(currentIndex).hasNext()) {
+          return true;
+        }
+        currentIndex++;
+      }
+      return false;
+    }
+
+    @Override
+    public Identifiable next() {
+      if (!hasNext()) {
+        throw new java.util.NoSuchElementException();
+      }
+      return iterators.get(currentIndex).next();
     }
   }
 

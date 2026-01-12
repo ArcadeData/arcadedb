@@ -48,6 +48,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   private final String relationshipVariable;
   private final String targetVariable;
   private final RelationshipPattern pattern;
+  private final String pathVariable;
 
   /**
    * Creates a match relationship step.
@@ -60,11 +61,27 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
    */
   public MatchRelationshipStep(final String sourceVariable, final String relationshipVariable, final String targetVariable,
       final RelationshipPattern pattern, final CommandContext context) {
+    this(sourceVariable, relationshipVariable, targetVariable, pattern, null, context);
+  }
+
+  /**
+   * Creates a match relationship step with path variable support.
+   *
+   * @param sourceVariable       variable name for source vertex
+   * @param relationshipVariable variable name for relationship (can be null)
+   * @param targetVariable       variable name for target vertex
+   * @param pattern              relationship pattern to match
+   * @param pathVariable         path variable name (e.g., p in p = (a)-[r]->(b)), can be null
+   * @param context              command context
+   */
+  public MatchRelationshipStep(final String sourceVariable, final String relationshipVariable, final String targetVariable,
+      final RelationshipPattern pattern, final String pathVariable, final CommandContext context) {
     super(context);
     this.sourceVariable = sourceVariable;
     this.relationshipVariable = relationshipVariable;
     this.targetVariable = targetVariable;
     this.pattern = pattern;
+    this.pathVariable = pathVariable;
   }
 
   @Override
@@ -132,6 +149,15 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
 
             // Add target vertex binding
             result.setProperty(targetVariable, targetVertex);
+
+            // Add path binding if path variable is specified (e.g., p = (a)-[r]->(b))
+            if (pathVariable != null && !pathVariable.isEmpty()) {
+              // Create a TraversalPath with source vertex, edge, and target vertex
+              final com.arcadedb.opencypher.traversal.TraversalPath path =
+                  new com.arcadedb.opencypher.traversal.TraversalPath((Vertex) lastResult.getProperty(sourceVariable));
+              path.addStep(edge, targetVertex);
+              result.setProperty(pathVariable, path);
+            }
 
             buffer.add(result);
           } else {

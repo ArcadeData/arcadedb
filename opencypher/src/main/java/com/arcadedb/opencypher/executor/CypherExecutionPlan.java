@@ -143,67 +143,131 @@ public class CypherExecutionPlan {
       };
     }
 
-    // Step 1: MATCH clause - fetch nodes
+    // Step 1: MATCH clauses - fetch nodes
+    // Process ALL MATCH clauses (not just the first)
     if (!statement.getMatchClauses().isEmpty()) {
-      final MatchClause matchClause = statement.getMatchClauses().get(0);
+      for (final MatchClause matchClause : statement.getMatchClauses()) {
+        if (matchClause.hasPathPatterns()) {
+          // Phase 2+: Use parsed path patterns
+          final List<PathPattern> pathPatterns = matchClause.getPathPatterns();
 
-      if (matchClause.hasPathPatterns()) {
-        // Phase 2+: Use parsed path patterns
-        final List<PathPattern> pathPatterns = matchClause.getPathPatterns();
+          // Track the step before this MATCH clause for OPTIONAL MATCH wrapping
+          final AbstractExecutionStep stepBeforeMatch = currentStep;
+          final java.util.Set<String> matchVariables = new java.util.HashSet<>();
+          final boolean isOptional = matchClause.isOptional();
 
-        // Process all comma-separated patterns in the MATCH clause
-        for (int patternIndex = 0; patternIndex < pathPatterns.size(); patternIndex++) {
-          final PathPattern pathPattern = pathPatterns.get(patternIndex);
+          // For optional match, we build the match chain separately (not chained to stepBeforeMatch)
+          // Then wrap it in OptionalMatchStep which manages the input
+          AbstractExecutionStep matchChainStart = null;
+
+          // Process all comma-separated patterns in the MATCH clause
+          for (int patternIndex = 0; patternIndex < pathPatterns.size(); patternIndex++) {
+            final PathPattern pathPattern = pathPatterns.get(patternIndex);
 
           if (pathPattern.isSingleNode()) {
             // Simple node pattern: MATCH (n:Person) or MATCH (a), (b)
             final NodePattern nodePattern = pathPattern.getFirstNode();
             final String variable = nodePattern.getVariable() != null ? nodePattern.getVariable() : ("n" + patternIndex);
+            matchVariables.add(variable); // Track variable for OPTIONAL MATCH
             final MatchNodeStep matchStep = new MatchNodeStep(variable, nodePattern, context);
 
-            if (currentStep != null) {
-              // Chain with previous pattern (Cartesian product for comma-separated patterns)
-              matchStep.setPrevious(currentStep);
+            if (isOptional) {
+              // For optional match, chain within the match steps only
+              if (matchChainStart == null) {
+                matchChainStart = matchStep;
+                currentStep = matchStep;
+              } else {
+                matchStep.setPrevious(currentStep);
+                currentStep = matchStep;
+              }
+            } else {
+              // For regular match, chain to previous step
+              if (currentStep != null) {
+                matchStep.setPrevious(currentStep);
+              }
+              currentStep = matchStep;
             }
-            currentStep = matchStep;
           } else {
             // Relationship pattern: MATCH (a)-[r]->(b)
             final NodePattern sourceNode = pathPattern.getFirstNode();
             final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() : "a";
+            matchVariables.add(sourceVar); // Track variable for OPTIONAL MATCH
 
             // Start with source node (or chain if we have previous patterns)
             final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context);
-            if (currentStep != null) {
-              sourceStep.setPrevious(currentStep);
+
+            if (isOptional) {
+              // For optional match, chain within the match steps only
+              if (matchChainStart == null) {
+                matchChainStart = sourceStep;
+                currentStep = sourceStep;
+              } else {
+                sourceStep.setPrevious(currentStep);
+                currentStep = sourceStep;
+              }
+            } else {
+              // For regular match, chain to previous step
+              if (currentStep != null) {
+                sourceStep.setPrevious(currentStep);
+              }
+              currentStep = sourceStep;
             }
-            currentStep = sourceStep;
 
             // Add relationship traversal for each relationship in the path
+            // Check if this path has a named variable (e.g., p = (a)-[r]->(b))
+            final String pathVariable = pathPattern.hasPathVariable() ? pathPattern.getPathVariable() : null;
+            if (pathVariable != null) {
+              matchVariables.add(pathVariable); // Track path variable
+            }
+
             for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
               final RelationshipPattern relPattern = pathPattern.getRelationship(i);
               final NodePattern targetNode = pathPattern.getNode(i + 1);
               final String relVar = relPattern.getVariable();
               final String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() : ("n" + i);
 
+              // Track variables for OPTIONAL MATCH
+              if (relVar != null && !relVar.isEmpty()) {
+                matchVariables.add(relVar);
+              }
+              matchVariables.add(targetVar);
+
               AbstractExecutionStep nextStep;
               if (relPattern.isVariableLength()) {
                 // Variable-length path
                 nextStep = new ExpandPathStep(sourceVar, relVar, targetVar, relPattern, context);
+                // ExpandPathStep already handles path variables internally
               } else {
-                // Fixed-length relationship
-                nextStep = new MatchRelationshipStep(sourceVar, relVar, targetVar, relPattern, context);
+                // Fixed-length relationship - pass path variable
+                nextStep = new MatchRelationshipStep(sourceVar, relVar, targetVar, relPattern, pathVariable, context);
               }
 
               nextStep.setPrevious(currentStep);
               currentStep = nextStep;
             }
           }
+          }
+
+          // Wrap in OptionalMatchStep if this is an OPTIONAL MATCH
+          if (isOptional && matchChainStart != null) {
+            // We built a separate match chain - wrap it in OptionalMatchStep
+            // matchChainStart is the first step, currentStep is the last step
+            final com.arcadedb.opencypher.executor.steps.OptionalMatchStep optionalStep =
+                new com.arcadedb.opencypher.executor.steps.OptionalMatchStep(currentStep, matchVariables, context);
+
+            // OptionalMatchStep pulls from stepBeforeMatch and feeds to the match chain
+            if (stepBeforeMatch != null) {
+              optionalStep.setPrevious(stepBeforeMatch);
+            }
+
+            currentStep = optionalStep;
+          }
+        } else {
+          // Phase 1: Use raw pattern string - create a simple stub
+          final ResultInternal stubResult = new ResultInternal();
+          stubResult.setProperty("message", "Pattern parsing not available for: " + matchClause.getPattern());
+          return null;
         }
-      } else {
-        // Phase 1: Use raw pattern string - create a simple stub
-        final ResultInternal stubResult = new ResultInternal();
-        stubResult.setProperty("message", "Pattern parsing not available for: " + matchClause.getPattern());
-        return null;
       }
     }
 
