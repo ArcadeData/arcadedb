@@ -82,16 +82,21 @@ public class CypherExecutionPlan {
     // Execute the step chain
     final ResultSet resultSet = rootStep.syncPull(context, 100);
 
-    // IMPORTANT: For CREATE without RETURN, we need to consume the ResultSet
-    // to force execution (since ResultSet is lazy). Otherwise vertices/edges
-    // won't be created until the ResultSet is consumed by the caller.
-    if (statement.getReturnClause() == null && statement.getCreateClause() != null) {
-      // Consume the ResultSet to force CREATE execution
+    // IMPORTANT: For write operations without RETURN, we need to consume the ResultSet
+    // to force execution (since ResultSet is lazy). Otherwise operations won't execute
+    // until the ResultSet is consumed by the caller.
+    final boolean hasWriteOps = statement.getCreateClause() != null ||
+                                 (statement.getSetClause() != null && !statement.getSetClause().isEmpty()) ||
+                                 (statement.getDeleteClause() != null && !statement.getDeleteClause().isEmpty()) ||
+                                 statement.getMergeClause() != null;
+
+    if (statement.getReturnClause() == null && hasWriteOps) {
+      // Consume the ResultSet to force write operation execution
       final List<ResultInternal> materializedResults = new ArrayList<>();
       while (resultSet.hasNext()) {
         materializedResults.add((ResultInternal) resultSet.next());
       }
-      // Return the created elements so they're available in the result
+      // Return the modified/created elements so they're available in the result
       return new IteratorResultSet(materializedResults.iterator());
     }
 
@@ -175,7 +180,18 @@ public class CypherExecutionPlan {
       currentStep = filterStep;
     }
 
-    // Step 3: CREATE clause - create vertices/edges
+    // Step 3: MERGE clause - find or create pattern
+    if (statement.getMergeClause() != null) {
+      final com.arcadedb.opencypher.executor.steps.MergeStep mergeStep = new com.arcadedb.opencypher.executor.steps.MergeStep(
+          statement.getMergeClause(), context);
+      // MERGE is typically standalone, but can be chained
+      if (currentStep != null) {
+        mergeStep.setPrevious(currentStep);
+      }
+      currentStep = mergeStep;
+    }
+
+    // Step 4: CREATE clause - create vertices/edges
     if (statement.getCreateClause() != null && !statement.getCreateClause().isEmpty()) {
       final CreateStep createStep = new CreateStep(statement.getCreateClause(), context);
       if (currentStep != null) {
@@ -186,14 +202,30 @@ public class CypherExecutionPlan {
       currentStep = createStep;
     }
 
-    // Step 4: RETURN clause - project results
+    // Step 5: SET clause - update properties
+    if (statement.getSetClause() != null && !statement.getSetClause().isEmpty() && currentStep != null) {
+      final com.arcadedb.opencypher.executor.steps.SetStep setStep = new com.arcadedb.opencypher.executor.steps.SetStep(
+          statement.getSetClause(), context);
+      setStep.setPrevious(currentStep);
+      currentStep = setStep;
+    }
+
+    // Step 6: DELETE clause - delete vertices/edges
+    if (statement.getDeleteClause() != null && !statement.getDeleteClause().isEmpty() && currentStep != null) {
+      final com.arcadedb.opencypher.executor.steps.DeleteStep deleteStep = new com.arcadedb.opencypher.executor.steps.DeleteStep(
+          statement.getDeleteClause(), context);
+      deleteStep.setPrevious(currentStep);
+      currentStep = deleteStep;
+    }
+
+    // Step 7: RETURN clause - project results
     if (statement.getReturnClause() != null && currentStep != null) {
       final ProjectReturnStep returnStep = new ProjectReturnStep(statement.getReturnClause(), context);
       returnStep.setPrevious(currentStep);
       currentStep = returnStep;
     }
 
-    // Step 5: ORDER BY clause - sort results
+    // Step 8: ORDER BY clause - sort results
     if (statement.getOrderByClause() != null && currentStep != null) {
       final com.arcadedb.opencypher.executor.steps.OrderByStep orderByStep = new com.arcadedb.opencypher.executor.steps.OrderByStep(
           statement.getOrderByClause(), context);
@@ -201,7 +233,7 @@ public class CypherExecutionPlan {
       currentStep = orderByStep;
     }
 
-    // Step 6: SKIP clause - skip first N results
+    // Step 9: SKIP clause - skip first N results
     if (statement.getSkip() != null && currentStep != null) {
       final com.arcadedb.opencypher.executor.steps.SkipStep skipStep = new com.arcadedb.opencypher.executor.steps.SkipStep(
           statement.getSkip(), context);
@@ -209,7 +241,7 @@ public class CypherExecutionPlan {
       currentStep = skipStep;
     }
 
-    // Step 7: LIMIT clause - limit number of results
+    // Step 10: LIMIT clause - limit number of results
     if (statement.getLimit() != null && currentStep != null) {
       final com.arcadedb.opencypher.executor.steps.LimitStep limitStep = new com.arcadedb.opencypher.executor.steps.LimitStep(
           statement.getLimit(), context);
