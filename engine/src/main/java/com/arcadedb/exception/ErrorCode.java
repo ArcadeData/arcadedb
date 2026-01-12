@@ -21,25 +21,62 @@ package com.arcadedb.exception;
 /**
  * Core error codes for ArcadeDB engine exceptions.
  * <p>
- * Error codes are organized by category using enum name prefixes:
+ * This enum defines all engine-level error codes, organized by category using systematic
+ * enum name prefixes. Each error code is associated with an {@link ErrorCategory} and
+ * includes a default human-readable message.
+ * <p>
+ * <strong>Design Principles:</strong>
  * <ul>
- *   <li>DB_* - Database lifecycle and operations</li>
- *   <li>TX_* - Transaction management</li>
- *   <li>QUERY_* - Query parsing and execution</li>
- *   <li>SEC_* - Security (authentication, authorization)</li>
- *   <li>STORAGE_* - I/O and persistence</li>
- *   <li>SCHEMA_* - Schema and type system</li>
- *   <li>INDEX_* - Index operations</li>
- *   <li>GRAPH_* - Graph algorithms and traversal</li>
- *   <li>IMPORT_* / EXPORT_* - Data import/export</li>
- *   <li>INTERNAL_* - Internal system errors</li>
+ *   <li><strong>String-based:</strong> Error codes are enum names (e.g., "DB_NOT_FOUND"), not numeric values</li>
+ *   <li><strong>Self-documenting:</strong> Names clearly indicate the error condition</li>
+ *   <li><strong>Categorized:</strong> Each code belongs to a category for organization</li>
+ *   <li><strong>Layer-specific:</strong> Only engine-level errors; network errors are separate</li>
  * </ul>
  * <p>
- * Note: Network errors (CONNECTION_*, REPLICATION_*, etc.) are NOT in this enum.
- * They are defined in the network module to maintain proper layering.
+ * <strong>Error Code Prefixes by Category:</strong>
+ * <ul>
+ *   <li><strong>DB_*</strong> - Database lifecycle and operations ({@link ErrorCategory#DATABASE})</li>
+ *   <li><strong>TX_*</strong> - Transaction management ({@link ErrorCategory#TRANSACTION})</li>
+ *   <li><strong>QUERY_*</strong> - Query parsing and execution ({@link ErrorCategory#QUERY})</li>
+ *   <li><strong>SEC_*</strong> - Security, authentication, authorization ({@link ErrorCategory#SECURITY})</li>
+ *   <li><strong>STORAGE_*</strong> - I/O, persistence, serialization ({@link ErrorCategory#STORAGE})</li>
+ *   <li><strong>SCHEMA_*</strong> - Schema and type system ({@link ErrorCategory#SCHEMA})</li>
+ *   <li><strong>INDEX_*</strong> - Index operations ({@link ErrorCategory#INDEX})</li>
+ *   <li><strong>GRAPH_*</strong> - Graph algorithms and traversal ({@link ErrorCategory#GRAPH})</li>
+ *   <li><strong>IMPORT_* / EXPORT_*</strong> - Data import/export ({@link ErrorCategory#IMPORT_EXPORT})</li>
+ *   <li><strong>INTERNAL_*</strong> - Internal system errors ({@link ErrorCategory#INTERNAL})</li>
+ * </ul>
+ * <p>
+ * <strong>Important Note:</strong> Network errors (CONNECTION_*, REPLICATION_*, etc.) are NOT in this enum.
+ * They are defined in {@code com.arcadedb.network.exception.NetworkErrorCode} to maintain proper
+ * architectural layering. The engine module has no knowledge of network concepts.
+ * <p>
+ * <strong>Usage Examples:</strong>
+ * <pre>{@code
+ * // Throwing an exception with error code
+ * throw new DatabaseException(ErrorCode.DB_NOT_FOUND, "Database 'mydb' not found")
+ *     .withContext("databaseName", "mydb");
+ *
+ * // Accessing error code information
+ * ErrorCode code = ErrorCode.DB_NOT_FOUND;
+ * String name = code.name();                      // "DB_NOT_FOUND"
+ * ErrorCategory category = code.getCategory();    // ErrorCategory.DATABASE
+ * String message = code.getDefaultMessage();      // "Database not found"
+ *
+ * // In exception handlers
+ * try {
+ *     database.open();
+ * } catch (ArcadeDBException e) {
+ *     if (e.getErrorCode() == ErrorCode.DB_NOT_FOUND) {
+ *         // Handle database not found
+ *     }
+ * }
+ * }</pre>
  *
  * @since 26.1
+ * @see ErrorCategory
  * @see ArcadeDBException
+ * @see com.arcadedb.network.exception.NetworkErrorCode
  */
 public enum ErrorCode {
 
@@ -179,39 +216,71 @@ public enum ErrorCode {
   private final ErrorCategory category;
   private final String defaultMessage;
 
+  /**
+   * Constructs an error code with category and default message.
+   *
+   * @param category the error category this code belongs to
+   * @param defaultMessage the default human-readable error message
+   */
   ErrorCode(final ErrorCategory category, final String defaultMessage) {
     this.category = category;
     this.defaultMessage = defaultMessage;
   }
 
   /**
-   * Returns the error category.
+   * Returns the error category this code belongs to.
+   * <p>
+   * Error categories provide high-level classification of errors (e.g., DATABASE,
+   * TRANSACTION, QUERY). This allows filtering, grouping, and analyzing errors
+   * by category.
    *
-   * @return the error category
+   * @return the error category (never null)
+   * @see ErrorCategory
    */
   public ErrorCategory getCategory() {
     return category;
   }
 
   /**
-   * Returns the category name as a string.
+   * Returns the category display name as a string.
+   * <p>
+   * This is a convenience method equivalent to {@code getCategory().getDisplayName()}.
+   * It returns the human-readable category name (e.g., "Database", "Transaction").
    *
-   * @return the category name
+   * @return the category display name (never null)
    */
   public String getCategoryName() {
     return category.getDisplayName();
   }
 
   /**
-   * Returns the default human-readable error message.
-   * This can be overridden when throwing exceptions with custom messages.
+   * Returns the default human-readable error message for this code.
+   * <p>
+   * This message provides a generic description of the error condition. It can be
+   * overridden when throwing exceptions to provide more specific context:
+   * <pre>{@code
+   * // Using default message
+   * throw new DatabaseException(ErrorCode.DB_NOT_FOUND);
    *
-   * @return the default error message
+   * // Overriding with custom message
+   * throw new DatabaseException(ErrorCode.DB_NOT_FOUND, "Database 'mydb' not found in /data");
+   * }</pre>
+   *
+   * @return the default error message (never null)
    */
   public String getDefaultMessage() {
     return defaultMessage;
   }
 
+  /**
+   * Returns a formatted string representation of this error code.
+   * <p>
+   * The format is: "ERROR_CODE_NAME [Category]: default message"
+   * <p>
+   * Example: "DB_NOT_FOUND [Database]: Database not found"
+   *
+   * @return formatted string representation (never null)
+   */
   @Override
   public String toString() {
     return String.format("%s [%s]: %s", name(), category.getDisplayName(), defaultMessage);
