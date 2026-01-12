@@ -121,7 +121,7 @@ public interface Result {
       if (val instanceof Result result) {
         return result.toJSON();
       } else if (val instanceof Record record) {
-        return record.getIdentity().toString();
+        return record.getIdentity() != null ? record.getIdentity().toString() : null;
       } else if (val instanceof Iterable<?> iterable) {
         final JSONArray array = new JSONArray();
         for (final Object o : iterable)
