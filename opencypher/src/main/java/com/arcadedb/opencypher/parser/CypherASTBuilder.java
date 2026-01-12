@@ -460,20 +460,23 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   /**
    * Parse an expression into an Expression AST node.
    * Handles variables, property access, function calls, and literals.
-   *
-   * NOTE: This is a simplified parser that uses text patterns.
-   * A full implementation would traverse the complete ANTLR parse tree.
    */
   private Expression parseExpression(final Cypher25Parser.ExpressionContext ctx) {
     final String text = ctx.getText();
 
-    // Check for function call: name(...)
-    if (text.contains("(") && text.contains(")")) {
-      // Try to find function invocation in the parse tree
-      final Cypher25Parser.FunctionInvocationContext funcCtx = findFunctionInvocation(ctx);
-      if (funcCtx != null) {
-        return parseFunctionInvocation(funcCtx);
-      }
+    // Check for count(*) special case - has its own grammar rule
+    final Cypher25Parser.CountStarContext countStarCtx = findCountStarRecursive(ctx);
+    if (countStarCtx != null) {
+      // count(*) is treated as count(asterisk) where asterisk evaluates to a non-null marker
+      final List<Expression> args = new ArrayList<>();
+      args.add(new com.arcadedb.opencypher.ast.StarExpression());
+      return new FunctionCallExpression("count", args, false);
+    }
+
+    // Recursively search for function invocations
+    final Cypher25Parser.FunctionInvocationContext funcCtx = findFunctionInvocationRecursive(ctx);
+    if (funcCtx != null) {
+      return parseFunctionInvocation(funcCtx);
     }
 
     // Check for property access: variable.property
@@ -482,45 +485,101 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return new PropertyAccessExpression(parts[0], parts[1]);
     }
 
+    // Try to parse as literal
+    final Object literalValue = tryParseLiteral(text);
+    if (literalValue != null) {
+      return new LiteralExpression(literalValue, text);
+    }
+
     // Simple variable
     return new VariableExpression(text);
   }
 
   /**
-   * Find function invocation context by traversing the parse tree.
+   * Try to parse text as a literal value (number, string, boolean, null).
    */
-  private Cypher25Parser.FunctionInvocationContext findFunctionInvocation(final Cypher25Parser.ExpressionContext ctx) {
-    // Traverse the expression tree looking for a function invocation
-    // This is a depth-first search through the parse tree
-    if (ctx.getChildCount() == 0) {
+  private Object tryParseLiteral(final String text) {
+    // Null
+    if ("null".equalsIgnoreCase(text)) {
+      return null; // Return null as a marker that we found a literal
+    }
+
+    // Boolean
+    if ("true".equalsIgnoreCase(text)) {
+      return Boolean.TRUE;
+    }
+    if ("false".equalsIgnoreCase(text)) {
+      return Boolean.FALSE;
+    }
+
+    // String (quoted)
+    if (text.startsWith("'") && text.endsWith("'") && text.length() >= 2) {
+      return text.substring(1, text.length() - 1);
+    }
+    if (text.startsWith("\"") && text.endsWith("\"") && text.length() >= 2) {
+      return text.substring(1, text.length() - 1);
+    }
+
+    // Number
+    try {
+      // Handle negative numbers
+      if (text.startsWith("-") || text.startsWith("+") || Character.isDigit(text.charAt(0))) {
+        if (text.contains(".")) {
+          return Double.parseDouble(text);
+        } else {
+          return Long.parseLong(text);
+        }
+      }
+    } catch (final NumberFormatException e) {
+      // Not a number
+    }
+
+    return null; // Not a literal
+  }
+
+  /**
+   * Recursively find countStar context in the parse tree.
+   * count(*) has special grammar handling as CountStarContext.
+   */
+  private Cypher25Parser.CountStarContext findCountStarRecursive(
+      final org.antlr.v4.runtime.tree.ParseTree node) {
+    if (node == null) {
       return null;
     }
 
-    for (int i = 0; i < ctx.getChildCount(); i++) {
-      final var child = ctx.getChild(i);
-      if (child instanceof Cypher25Parser.FunctionInvocationContext) {
-        return (Cypher25Parser.FunctionInvocationContext) child;
-      }
-      if (child instanceof Cypher25Parser.ExpressionContext) {
-        final Cypher25Parser.FunctionInvocationContext found = findFunctionInvocation(
-            (Cypher25Parser.ExpressionContext) child);
-        if (found != null) {
-          return found;
-        }
-      }
+    // Check if this node is count(*)
+    if (node instanceof Cypher25Parser.CountStarContext) {
+      return (Cypher25Parser.CountStarContext) node;
     }
 
     // Recursively search all children
-    for (int i = 0; i < ctx.getChildCount(); i++) {
-      final var child = ctx.getChild(i);
-      if (child instanceof org.antlr.v4.runtime.tree.RuleNode) {
-        // Check if any child is a function invocation
-        for (int j = 0; j < child.getChildCount(); j++) {
-          final var grandchild = child.getChild(j);
-          if (grandchild instanceof Cypher25Parser.FunctionInvocationContext) {
-            return (Cypher25Parser.FunctionInvocationContext) grandchild;
-          }
-        }
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.CountStarContext found = findCountStarRecursive(node.getChild(i));
+      if (found != null) {
+        return found;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Recursively find function invocation in the parse tree using depth-first search.
+   */
+  private Cypher25Parser.FunctionInvocationContext findFunctionInvocationRecursive(
+      final org.antlr.v4.runtime.tree.ParseTree node) {
+    if (node == null) {
+      return null;
+    }
+
+    if (node instanceof Cypher25Parser.FunctionInvocationContext) {
+      return (Cypher25Parser.FunctionInvocationContext) node;
+    }
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.FunctionInvocationContext found = findFunctionInvocationRecursive(node.getChild(i));
+      if (found != null) {
+        return found;
       }
     }
 
@@ -537,7 +596,14 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     // Parse arguments
     for (final Cypher25Parser.FunctionArgumentContext argCtx : ctx.functionArgument()) {
-      arguments.add(parseExpression(argCtx.expression()));
+      final String argText = argCtx.expression().getText();
+
+      // Special handling for asterisk (though count(*) is typically handled by CountStarContext)
+      if ("*".equals(argText)) {
+        arguments.add(new com.arcadedb.opencypher.ast.StarExpression());
+      } else {
+        arguments.add(parseExpression(argCtx.expression()));
+      }
     }
 
     return new FunctionCallExpression(functionName, arguments, distinct);

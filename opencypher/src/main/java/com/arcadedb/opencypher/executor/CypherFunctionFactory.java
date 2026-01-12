@@ -276,7 +276,9 @@ public class CypherFunctionFactory {
         throw new CommandExecutionException("startNode() requires exactly one argument");
       }
       if (args[0] instanceof Edge) {
-        return ((Edge) args[0]).getOut();
+        final Edge edge = (Edge) args[0];
+        // getOutVertex() returns the actual Vertex, not just a RID
+        return edge.getOutVertex();
       }
       return null;
     }
@@ -297,7 +299,9 @@ public class CypherFunctionFactory {
         throw new CommandExecutionException("endNode() requires exactly one argument");
       }
       if (args[0] instanceof Edge) {
-        return ((Edge) args[0]).getIn();
+        final Edge edge = (Edge) args[0];
+        // getInVertex() returns the actual Vertex, not just a RID
+        return edge.getInVertex();
       }
       return null;
     }
@@ -310,14 +314,24 @@ public class CypherFunctionFactory {
 
   /**
    * Bridge from Cypher function to SQL function.
+   * For aggregation functions, we configure them to enable proper state accumulation.
    */
   private static class SQLFunctionBridge implements CypherFunctionExecutor {
     private final SQLFunction sqlFunction;
     private final String cypherFunctionName;
+    private final boolean isAggregation;
 
     SQLFunctionBridge(final SQLFunction sqlFunction, final String cypherFunctionName) {
       this.sqlFunction = sqlFunction;
       this.cypherFunctionName = cypherFunctionName;
+
+      // Configure the function to enable aggregation mode
+      // SQL aggregation functions check configuredParameters in aggregateResults()
+      // We configure with a dummy parameter since the actual values come through execute() args
+      sqlFunction.config(new Object[]{"dummy"});
+
+      // Cache whether this is an aggregation function
+      this.isAggregation = sqlFunction.aggregateResults();
     }
 
     @Override
@@ -329,7 +343,7 @@ public class CypherFunctionFactory {
 
     @Override
     public boolean isAggregation() {
-      return sqlFunction.aggregateResults();
+      return isAggregation;
     }
 
     @Override

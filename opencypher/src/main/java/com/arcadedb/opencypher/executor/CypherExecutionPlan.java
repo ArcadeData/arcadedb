@@ -25,6 +25,7 @@ import com.arcadedb.opencypher.ast.MatchClause;
 import com.arcadedb.opencypher.ast.NodePattern;
 import com.arcadedb.opencypher.ast.PathPattern;
 import com.arcadedb.opencypher.ast.RelationshipPattern;
+import com.arcadedb.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.opencypher.executor.steps.CreateStep;
 import com.arcadedb.opencypher.executor.steps.ExpandPathStep;
 import com.arcadedb.opencypher.executor.steps.FilterPropertiesStep;
@@ -35,6 +36,7 @@ import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
@@ -113,6 +115,33 @@ public class CypherExecutionPlan {
     // Initialize function factory for expression evaluation
     final DefaultSQLFunctionFactory sqlFunctionFactory = new DefaultSQLFunctionFactory();
     final CypherFunctionFactory functionFactory = new CypherFunctionFactory(sqlFunctionFactory);
+
+    // Special case: RETURN without MATCH (standalone expressions)
+    // E.g., RETURN abs(-42), RETURN 1+1
+    if (statement.getMatchClauses().isEmpty() && statement.getReturnClause() != null) {
+      // Create a dummy row to evaluate expressions against
+      final ResultInternal dummyRow = new ResultInternal();
+      final List<Result> singleRow = List.of(dummyRow);
+
+      // Return the single row via an initial step
+      currentStep = new AbstractExecutionStep(context) {
+        private boolean consumed = false;
+
+        @Override
+        public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
+          if (consumed) {
+            return new IteratorResultSet(List.<ResultInternal>of().iterator());
+          }
+          consumed = true;
+          return new IteratorResultSet(singleRow.iterator());
+        }
+
+        @Override
+        public String prettyPrint(final int depth, final int indent) {
+          return "  ".repeat(Math.max(0, depth * indent)) + "+ DUMMY ROW (for standalone expressions)";
+        }
+      };
+    }
 
     // Step 1: MATCH clause - fetch nodes
     if (!statement.getMatchClauses().isEmpty()) {
@@ -223,11 +252,20 @@ public class CypherExecutionPlan {
       currentStep = deleteStep;
     }
 
-    // Step 7: RETURN clause - project results
+    // Step 7: RETURN clause - project results or aggregate
     if (statement.getReturnClause() != null && currentStep != null) {
-      final ProjectReturnStep returnStep = new ProjectReturnStep(statement.getReturnClause(), context, functionFactory);
-      returnStep.setPrevious(currentStep);
-      currentStep = returnStep;
+      // Check if RETURN contains aggregation functions
+      if (statement.getReturnClause().hasAggregations()) {
+        // Use aggregation step for aggregation functions
+        final AggregationStep aggStep = new AggregationStep(statement.getReturnClause(), context, functionFactory);
+        aggStep.setPrevious(currentStep);
+        currentStep = aggStep;
+      } else {
+        // Use regular projection for non-aggregation expressions
+        final ProjectReturnStep returnStep = new ProjectReturnStep(statement.getReturnClause(), context, functionFactory);
+        returnStep.setPrevious(currentStep);
+        currentStep = returnStep;
+      }
     }
 
     // Step 8: ORDER BY clause - sort results
