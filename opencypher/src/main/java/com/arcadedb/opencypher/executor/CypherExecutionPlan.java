@@ -80,8 +80,22 @@ public class CypherExecutionPlan {
     }
 
     // Execute the step chain
-    // Use default batch size instead of Integer.MAX_VALUE for lazy evaluation
-    return rootStep.syncPull(context, 100);
+    final ResultSet resultSet = rootStep.syncPull(context, 100);
+
+    // IMPORTANT: For CREATE without RETURN, we need to consume the ResultSet
+    // to force execution (since ResultSet is lazy). Otherwise vertices/edges
+    // won't be created until the ResultSet is consumed by the caller.
+    if (statement.getReturnClause() == null && statement.getCreateClause() != null) {
+      // Consume the ResultSet to force CREATE execution
+      final List<ResultInternal> materializedResults = new ArrayList<>();
+      while (resultSet.hasNext()) {
+        materializedResults.add((ResultInternal) resultSet.next());
+      }
+      // Return the created elements so they're available in the result
+      return new IteratorResultSet(materializedResults.iterator());
+    }
+
+    return resultSet;
   }
 
   /**
@@ -96,39 +110,54 @@ public class CypherExecutionPlan {
 
       if (matchClause.hasPathPatterns()) {
         // Phase 2+: Use parsed path patterns
-        final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
+        final List<PathPattern> pathPatterns = matchClause.getPathPatterns();
 
-        if (pathPattern.isSingleNode()) {
-          // Simple node pattern: MATCH (n:Person)
-          final NodePattern nodePattern = pathPattern.getFirstNode();
-          final String variable = nodePattern.getVariable() != null ? nodePattern.getVariable() : "n";
-          currentStep = new MatchNodeStep(variable, nodePattern, context);
-        } else {
-          // Relationship pattern: MATCH (a)-[r]->(b)
-          final NodePattern sourceNode = pathPattern.getFirstNode();
-          final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() : "a";
+        // Process all comma-separated patterns in the MATCH clause
+        for (int patternIndex = 0; patternIndex < pathPatterns.size(); patternIndex++) {
+          final PathPattern pathPattern = pathPatterns.get(patternIndex);
 
-          // Start with source node
-          currentStep = new MatchNodeStep(sourceVar, sourceNode, context);
+          if (pathPattern.isSingleNode()) {
+            // Simple node pattern: MATCH (n:Person) or MATCH (a), (b)
+            final NodePattern nodePattern = pathPattern.getFirstNode();
+            final String variable = nodePattern.getVariable() != null ? nodePattern.getVariable() : ("n" + patternIndex);
+            final MatchNodeStep matchStep = new MatchNodeStep(variable, nodePattern, context);
 
-          // Add relationship traversal for each relationship in the path
-          for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
-            final RelationshipPattern relPattern = pathPattern.getRelationship(i);
-            final NodePattern targetNode = pathPattern.getNode(i + 1);
-            final String relVar = relPattern.getVariable();
-            final String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() : ("n" + i);
-
-            AbstractExecutionStep nextStep;
-            if (relPattern.isVariableLength()) {
-              // Variable-length path
-              nextStep = new ExpandPathStep(sourceVar, relVar, targetVar, relPattern, context);
-            } else {
-              // Fixed-length relationship
-              nextStep = new MatchRelationshipStep(sourceVar, relVar, targetVar, relPattern, context);
+            if (currentStep != null) {
+              // Chain with previous pattern (Cartesian product for comma-separated patterns)
+              matchStep.setPrevious(currentStep);
             }
+            currentStep = matchStep;
+          } else {
+            // Relationship pattern: MATCH (a)-[r]->(b)
+            final NodePattern sourceNode = pathPattern.getFirstNode();
+            final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() : "a";
 
-            nextStep.setPrevious(currentStep);
-            currentStep = nextStep;
+            // Start with source node (or chain if we have previous patterns)
+            final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context);
+            if (currentStep != null) {
+              sourceStep.setPrevious(currentStep);
+            }
+            currentStep = sourceStep;
+
+            // Add relationship traversal for each relationship in the path
+            for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
+              final RelationshipPattern relPattern = pathPattern.getRelationship(i);
+              final NodePattern targetNode = pathPattern.getNode(i + 1);
+              final String relVar = relPattern.getVariable();
+              final String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() : ("n" + i);
+
+              AbstractExecutionStep nextStep;
+              if (relPattern.isVariableLength()) {
+                // Variable-length path
+                nextStep = new ExpandPathStep(sourceVar, relVar, targetVar, relPattern, context);
+              } else {
+                // Fixed-length relationship
+                nextStep = new MatchRelationshipStep(sourceVar, relVar, targetVar, relPattern, context);
+              }
+
+              nextStep.setPrevious(currentStep);
+              currentStep = nextStep;
+            }
           }
         }
       } else {

@@ -51,14 +51,21 @@ public class OpenCypherBasicTest {
   @Test
   void testOpenCypherEngineRegistered() {
     // Test that the opencypher engine is registered
-    final ResultSet result = database.query("opencypher", "MATCH (n) RETURN n");
+    database.getSchema().createVertexType("TestVertex");
+
+    // Create a test vertex
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (n:TestVertex {name: 'Test'})");
+    });
+
+    final ResultSet result = database.query("opencypher", "MATCH (n:TestVertex) RETURN n");
 
     assertThat((Object) result).isNotNull();
     assertThat(result.hasNext()).as("Result set should have results").isTrue();
 
     final Result firstResult = result.next();
     assertThat((Object) firstResult).isNotNull();
-    assertThat((Object) firstResult.getProperty("message")).isNotNull();
+    assertThat((Object) firstResult.getProperty("n")).isNotNull();
   }
 
   @Test

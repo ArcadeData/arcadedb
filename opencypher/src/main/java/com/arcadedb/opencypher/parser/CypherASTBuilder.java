@@ -87,6 +87,11 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       if (clauseCtx.matchClause() != null) {
         final MatchClause match = visitMatchClause(clauseCtx.matchClause());
         matchClauses.add(match);
+
+        // Extract WHERE clause from MATCH if present
+        if (clauseCtx.matchClause().whereClause() != null) {
+          whereClause = visitWhereClause(clauseCtx.matchClause().whereClause());
+        }
       } else if (clauseCtx.createClause() != null) {
         createClause = visitCreateClause(clauseCtx.createClause());
       } else if (clauseCtx.setClause() != null) {
@@ -254,6 +259,12 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   @Override
   public Integer visitLimit(final Cypher25Parser.LimitContext ctx) {
     return Integer.parseInt(ctx.expression().getText());
+  }
+
+  public WhereClause visitWhereClause(final Cypher25Parser.WhereClauseContext ctx) {
+    // Extract the WHERE condition expression
+    final String condition = ctx.expression().getText();
+    return new WhereClause(condition);
   }
 
   public List<PathPattern> visitPatternList(final Cypher25Parser.PatternListContext ctx) {

@@ -60,13 +60,15 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    // This is a starting step - no previous step required
+    final boolean hasInput = prev != null;
 
     return new ResultSet() {
+      private ResultSet prevResults = null;
       private Iterator<Identifiable> iterator = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
+      private Result currentInputResult = null;
 
       @Override
       public boolean hasNext() {
@@ -95,27 +97,76 @@ public class MatchNodeStep extends AbstractExecutionStep {
         buffer.clear();
         bufferIndex = 0;
 
-        // Initialize iterator on first call
-        if (iterator == null) {
-          iterator = getVertexIterator();
-        }
-
-        // Fetch up to n vertices
-        while (buffer.size() < n && iterator.hasNext()) {
-          final Identifiable identifiable = iterator.next();
-
-          if (identifiable instanceof Vertex) {
-            final Vertex vertex = (Vertex) identifiable;
-
-            // Create result with vertex bound to variable
-            final ResultInternal result = new ResultInternal();
-            result.setProperty(variable, vertex);
-            buffer.add(result);
+        if (hasInput) {
+          // Chained mode: for each input result, add matched nodes
+          if (prevResults == null) {
+            prevResults = prev.syncPull(context, nRecords);
           }
-        }
 
-        if (!iterator.hasNext()) {
-          finished = true;
+          // Process input results and add our matched nodes
+          while (buffer.size() < n) {
+            // If we've exhausted nodes for current input, get next input
+            if (iterator == null || !iterator.hasNext()) {
+              if (!prevResults.hasNext()) {
+                finished = true;
+                break;
+              }
+              currentInputResult = prevResults.next();
+              iterator = getVertexIterator();
+            }
+
+            // Match nodes and add to input result
+            if (iterator.hasNext()) {
+              final Identifiable identifiable = iterator.next();
+              if (identifiable instanceof Vertex) {
+                final Vertex vertex = (Vertex) identifiable;
+
+                // Apply property filters if specified in pattern
+                if (!matchesProperties(vertex)) {
+                  continue;
+                }
+
+                // Copy input result and add our vertex
+                final ResultInternal result = new ResultInternal();
+                if (currentInputResult != null) {
+                  for (final String prop : currentInputResult.getPropertyNames()) {
+                    result.setProperty(prop, currentInputResult.getProperty(prop));
+                  }
+                }
+                result.setProperty(variable, vertex);
+                buffer.add(result);
+              }
+            }
+          }
+        } else {
+          // Standalone mode: no input, create fresh results
+          // Initialize iterator on first call
+          if (iterator == null) {
+            iterator = getVertexIterator();
+          }
+
+          // Fetch up to n vertices
+          while (buffer.size() < n && iterator.hasNext()) {
+            final Identifiable identifiable = iterator.next();
+
+            if (identifiable instanceof Vertex) {
+              final Vertex vertex = (Vertex) identifiable;
+
+              // Apply property filters if specified in pattern
+              if (!matchesProperties(vertex)) {
+                continue;
+              }
+
+              // Create result with vertex bound to variable
+              final ResultInternal result = new ResultInternal();
+              result.setProperty(variable, vertex);
+              buffer.add(result);
+            }
+          }
+
+          if (!iterator.hasNext()) {
+            finished = true;
+          }
         }
       }
 
@@ -141,6 +192,43 @@ public class MatchNodeStep extends AbstractExecutionStep {
       // For now, throw an exception
       throw new UnsupportedOperationException("MATCH without label not yet supported. Use (n:TypeName)");
     }
+  }
+
+  /**
+   * Checks if a vertex matches the property filters in the pattern.
+   *
+   * @param vertex vertex to check
+   * @return true if matches or no properties specified
+   */
+  private boolean matchesProperties(final Vertex vertex) {
+    if (!pattern.hasProperties()) {
+      return true; // No property filters
+    }
+
+    // Check each property filter
+    for (final java.util.Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
+      final String key = entry.getKey();
+      Object expectedValue = entry.getValue();
+
+      // Handle string literals: remove quotes
+      if (expectedValue instanceof String) {
+        final String strValue = (String) expectedValue;
+        if (strValue.startsWith("'") && strValue.endsWith("'")) {
+          expectedValue = strValue.substring(1, strValue.length() - 1);
+        } else if (strValue.startsWith("\"") && strValue.endsWith("\"")) {
+          expectedValue = strValue.substring(1, strValue.length() - 1);
+        }
+      }
+
+      final Object actualValue = vertex.get(key);
+
+      // Compare values
+      if (actualValue == null || !actualValue.equals(expectedValue)) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   @Override
