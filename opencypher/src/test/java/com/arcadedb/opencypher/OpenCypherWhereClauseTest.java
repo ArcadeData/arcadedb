@@ -255,4 +255,105 @@ public class OpenCypherWhereClauseTest {
     assertThat(result.next().<String>getProperty("p.name")).isEqualTo("Alice");
     assertThat(result.hasNext()).isFalse();
   }
+
+  @Test
+  void testWhereStartsWith() {
+    // Test STARTS WITH operator
+    final ResultSet result = database.query("opencypher",
+        "MATCH (p:Person) WHERE p.name STARTS WITH 'A' RETURN p.name ORDER BY p.name");
+
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("p.name")).isEqualTo("Alice");
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  @Test
+  void testWhereEndsWith() {
+    // Test ENDS WITH operator
+    final ResultSet result = database.query("opencypher",
+        "MATCH (p:Person) WHERE p.name ENDS WITH 'e' RETURN p.name ORDER BY p.name");
+
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("p.name")).isEqualTo("Alice");
+    assertThat(result.next().<String>getProperty("p.name")).isEqualTo("Charlie");
+    assertThat(result.next().<String>getProperty("p.name")).isEqualTo("Eve");
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  @Test
+  void testWhereContains() {
+    // Test CONTAINS operator
+    final ResultSet result = database.query("opencypher",
+        "MATCH (p:Person) WHERE p.name CONTAINS 'li' RETURN p.name ORDER BY p.name");
+
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("p.name")).isEqualTo("Alice");
+    assertThat(result.next().<String>getProperty("p.name")).isEqualTo("Charlie");
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  @Test
+  void testWhereStartsWithEmailDomain() {
+    // Test STARTS WITH on email property
+    final ResultSet result = database.query("opencypher",
+        "MATCH (p:Person) WHERE p.email STARTS WITH 'alice' RETURN p.name");
+
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("p.name")).isEqualTo("Alice");
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  @Test
+  void testWhereEndsWithEmailDomain() {
+    // Test ENDS WITH on email domain
+    final ResultSet result = database.query("opencypher",
+        "MATCH (p:Person) WHERE p.email ENDS WITH '@example.com' RETURN p.name ORDER BY p.name");
+
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("p.name")).isEqualTo("Alice");
+    assertThat(result.next().<String>getProperty("p.name")).isEqualTo("David");
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  @Test
+  void testWhereStringMatchWithAND() {
+    // Test string matching combined with AND
+    final ResultSet result = database.query("opencypher",
+        "MATCH (p:Person) WHERE p.name STARTS WITH 'A' AND p.age > 28 RETURN p.name");
+
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("p.name")).isEqualTo("Alice");
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  @Test
+  void testWhereParenthesizedOR() {
+    // Test parenthesized OR with AND (operator precedence)
+    // (age < 26 OR age > 35) AND email IS NOT NULL
+    final ResultSet result = database.query("opencypher",
+        "MATCH (p:Person) WHERE (p.age < 26 OR p.age > 35) AND p.email IS NOT NULL RETURN p.name ORDER BY p.name");
+
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("p.name")).isEqualTo("Bob");
+    assertThat(result.next().<String>getProperty("p.name")).isEqualTo("David");
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  @Test
+  void testWhereComplexParenthesizedExpressions() {
+    // Test nested parentheses with multiple OR and AND
+    // ((age < 28 OR age > 35) AND email IS NOT NULL) OR (name CONTAINS 'li' AND age = 35)
+    final ResultSet result = database.query("opencypher",
+        "MATCH (p:Person) WHERE ((p.age < 28 OR p.age > 35) AND p.email IS NOT NULL) OR (p.name CONTAINS 'li' AND p.age = 35) RETURN p.name ORDER BY p.name");
+
+    // Should match:
+    // - Bob (age 25 < 28, has email)
+    // - David (age 40 > 35, has email)
+    // - Charlie (name contains 'li', age 35, but no email - still matches)
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("p.name")).isEqualTo("Bob");
+    assertThat(result.next().<String>getProperty("p.name")).isEqualTo("Charlie");
+    assertThat(result.next().<String>getProperty("p.name")).isEqualTo("David");
+    assertThat(result.hasNext()).isFalse();
+  }
 }

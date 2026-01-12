@@ -303,6 +303,17 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     return null;
   }
 
+  private Cypher25Parser.ParenthesizedExpressionContext findParenthesizedExpression(final org.antlr.v4.runtime.tree.ParseTree node) {
+    if (node instanceof Cypher25Parser.ParenthesizedExpressionContext) {
+      return (Cypher25Parser.ParenthesizedExpressionContext) node;
+    }
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.ParenthesizedExpressionContext found = findParenthesizedExpression(node.getChild(i));
+      if (found != null) return found;
+    }
+    return null;
+  }
+
   private BooleanExpression parseBooleanFromExpression11(final Cypher25Parser.Expression11Context ctx) {
     // expression11: expression10 (XOR expression10)*
     // Note: XOR is rare, for now we just delegate to expression10 if there's only one
@@ -389,6 +400,15 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // expression7: expression6 comparisonExpression6?
     final Cypher25Parser.ComparisonExpression6Context compCtx = ctx.comparisonExpression6();
 
+    // Check if expression6 contains a parenthesized expression
+    // This handles cases like: (p.age < 26 OR p.age > 35)
+    final Cypher25Parser.Expression6Context expr6 = ctx.expression6();
+    final Cypher25Parser.ParenthesizedExpressionContext parenExpr = findParenthesizedExpression(expr6);
+    if (parenExpr != null && compCtx == null) {
+      // Recursively parse the inner expression
+      return parseBooleanExpression(parenExpr.expression());
+    }
+
     if (compCtx != null) {
       final Expression leftExpr = parseExpressionFromText(ctx.expression6());
 
@@ -419,8 +439,25 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
           return new RegexExpression(leftExpr, pattern);
         }
 
-        // TODO: Handle STARTS WITH, ENDS WITH, CONTAINS
-        // For now, use fallback for these
+        // Check for STARTS WITH
+        if (strListCtx.STARTS() != null && strListCtx.WITH() != null) {
+          final Expression pattern = parseExpressionFromText(strListCtx.expression6());
+          return new StringMatchExpression(leftExpr, pattern, StringMatchExpression.MatchType.STARTS_WITH);
+        }
+
+        // Check for ENDS WITH
+        if (strListCtx.ENDS() != null && strListCtx.WITH() != null) {
+          final Expression pattern = parseExpressionFromText(strListCtx.expression6());
+          return new StringMatchExpression(leftExpr, pattern, StringMatchExpression.MatchType.ENDS_WITH);
+        }
+
+        // Check for CONTAINS
+        if (strListCtx.CONTAINS() != null) {
+          final Expression pattern = parseExpressionFromText(strListCtx.expression6());
+          return new StringMatchExpression(leftExpr, pattern, StringMatchExpression.MatchType.CONTAINS);
+        }
+
+        // Fallback for any unhandled operators
         return createFallbackComparison(ctx);
       }
 

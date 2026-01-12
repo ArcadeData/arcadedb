@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-01-12
 **Implementation Version:** Native ANTLR4-based Parser (Phase 7)
-**Test Coverage:** 122/122 tests passing (100%)
+**Test Coverage:** 130/130 tests passing (100%)
 
 ---
 
@@ -11,11 +11,11 @@
 | Category | Implementation | Notes |
 |----------|---------------|-------|
 | **Parser** | ✅ **100%** | ANTLR4-based using official Cypher 2.5 grammar |
-| **Basic Read Queries** | ✅ **90%** | MATCH (multiple, optional), WHERE, RETURN, ORDER BY, SKIP, LIMIT |
+| **Basic Read Queries** | ✅ **95%** | MATCH (multiple, optional), WHERE (string matching, parentheses), RETURN, ORDER BY, SKIP, LIMIT |
 | **Basic Write Queries** | ✅ **80%** | CREATE ✅, SET ✅, DELETE ✅, MERGE ✅ |
 | **Expression Evaluation** | ✅ **95%** | Expression framework complete, functions fully working |
 | **Functions** | ✅ **95%** | 7 Cypher functions + bridge to 100+ SQL functions, all tests passing |
-| **Advanced Features** | 🟡 **25%** | Named paths ✅, OPTIONAL MATCH ✅, no UNION/WITH |
+| **Advanced Features** | 🟡 **30%** | Named paths ✅, OPTIONAL MATCH ✅, WHERE scoping ✅, no UNION/WITH |
 
 **Legend:** ✅ Complete | 🟡 Partial | 🔴 Minimal | ❌ Not Implemented
 
@@ -106,16 +106,23 @@ MATCH (n:Person) WHERE n.age IN [25, 30, 35] RETURN n
 MATCH (n:Person) WHERE n.name =~ 'A.*' RETURN n
 MATCH (n:Person) WHERE n.email =~ '.*@example.com' RETURN n
 
+// ✅ String matching operators
+MATCH (n:Person) WHERE n.name STARTS WITH 'A' RETURN n
+MATCH (n:Person) WHERE n.email ENDS WITH '@example.com' RETURN n
+MATCH (n:Person) WHERE n.name CONTAINS 'li' RETURN n
+
 // ✅ Complex boolean expressions with combinations
 MATCH (n:Person) WHERE n.age > 25 AND n.age < 35 AND n.email IS NOT NULL RETURN n
 MATCH (n:Person) WHERE n.name IN ['Alice', 'Bob'] AND n.age > 28 RETURN n
 MATCH (n:Person) WHERE n.name =~ 'A.*' AND n.age = 30 RETURN n
+
+// ✅ Parenthesized expressions for operator precedence
+MATCH (n:Person) WHERE (n.age < 26 OR n.age > 35) AND n.email IS NOT NULL RETURN n
+MATCH (n:Person) WHERE ((n.age < 28 OR n.age > 35) AND n.email IS NOT NULL) OR (n.name CONTAINS 'li' AND n.age = 35) RETURN n
 ```
 
 **Limitations:**
-- ❌ String matching: STARTS WITH, ENDS WITH, CONTAINS - Grammar support exists, not yet implemented
 - ❌ Pattern predicates: `WHERE (n)-[:KNOWS]->()` - Not yet implemented
-- ❌ Complex parenthesized OR expressions - Needs additional parser work
 
 ### CREATE Clause
 ```cypher
@@ -362,9 +369,10 @@ MERGE (n:Person {name: 'Alice'})
 | **IS NOT NULL** | `WHERE n.age IS NOT NULL` | ✅ **Implemented** | 🔴 HIGH |
 | **IN operator** | `WHERE n.name IN ['Alice', 'Bob']` | ✅ **Implemented** | 🔴 HIGH |
 | **Regular expressions** | `WHERE n.name =~ '.*Smith'` | ✅ **Implemented** | 🟡 MEDIUM |
-| **STARTS WITH** | `WHERE n.name STARTS WITH 'A'` | 🔴 Not Implemented | 🟡 MEDIUM |
-| **ENDS WITH** | `WHERE n.name ENDS WITH 'son'` | 🔴 Not Implemented | 🟡 MEDIUM |
-| **CONTAINS** | `WHERE n.name CONTAINS 'li'` | 🔴 Not Implemented | 🟡 MEDIUM |
+| **STARTS WITH** | `WHERE n.name STARTS WITH 'A'` | ✅ **Implemented** | 🟡 MEDIUM |
+| **ENDS WITH** | `WHERE n.name ENDS WITH 'son'` | ✅ **Implemented** | 🟡 MEDIUM |
+| **CONTAINS** | `WHERE n.name CONTAINS 'li'` | ✅ **Implemented** | 🟡 MEDIUM |
+| **Parenthesized expressions** | `WHERE (n.age < 26 OR n.age > 35) AND n.email IS NOT NULL` | ✅ **Implemented** | 🔴 HIGH |
 | **Pattern predicates** | `WHERE (n)-[:KNOWS]->()` | 🔴 Not Implemented | 🟡 MEDIUM |
 | **EXISTS()** | `WHERE EXISTS(n.email)` | 🔴 Not Implemented | 🟡 MEDIUM |
 
@@ -481,13 +489,13 @@ MERGE (n:Person {name: 'Alice'})
 | OpenCypherDeleteTest | 9/9 | ✅ PASS | DELETE operations |
 | OpenCypherMergeTest | 5/5 | ✅ PASS | MERGE operations |
 | **OpenCypherFunctionTest** | **14/14** | **✅ PASS** | **Functions & aggregations** |
-| **OpenCypherWhereClauseTest** | **15/15** | **✅ PASS** | **WHERE (AND, OR, NOT, NULL, IN, regex)** |
+| **OpenCypherWhereClauseTest** | **23/23** | **✅ PASS** | **WHERE (string matching, parenthesized expressions)** |
 | **OpenCypherOptionalMatchTest** | **6/6** | **✅ PASS** | **OPTIONAL MATCH with WHERE scoping** |
 | **OpenCypherMatchEnhancementsTest** | **7/7** | **✅ PASS** | **Multiple MATCH, unlabeled patterns, named paths** |
 | **OpenCypherVariableLengthPathTest** | **2/2** | **✅ PASS** | **Named paths for variable-length relationships** |
 | OrderByDebugTest | 2/2 | ✅ PASS | Debug tests |
 | ParserDebugTest | 2/2 | ✅ PASS | Parser tests |
-| **TOTAL** | **122/122** | **✅ 100%** | **All passing** |
+| **TOTAL** | **130/130** | **✅ 100%** | **All passing** |
 
 ### Test Files
 ```
@@ -596,20 +604,38 @@ This phase focused on enhancing MATCH clause capabilities and WHERE scoping:
    - Example: `MATCH (a:Person) OPTIONAL MATCH (a)-[r]->(b) WHERE b.age > 20 RETURN a, b`
    - All people are returned; only matches passing the filter show b values, others get NULL
 
+6. **✅ String Matching Operators**
+   - Implemented STARTS WITH, ENDS WITH, and CONTAINS operators
+   - Native string matching without regex overhead
+   - Example: `MATCH (n:Person) WHERE n.name STARTS WITH 'A' RETURN n`
+   - Example: `MATCH (n:Person) WHERE n.email ENDS WITH '@example.com' RETURN n`
+   - Example: `MATCH (n:Person) WHERE n.name CONTAINS 'li' RETURN n`
+
+7. **✅ Parenthesized Boolean Expressions**
+   - Support for complex nested parentheses with proper operator precedence
+   - Enables explicit control over AND/OR evaluation order
+   - Example: `MATCH (n) WHERE (n.age < 26 OR n.age > 35) AND n.email IS NOT NULL RETURN n`
+   - Example: `MATCH (n) WHERE ((n.age < 28 OR n.age > 35) AND n.email IS NOT NULL) OR (n.name CONTAINS 'li' AND n.age = 35) RETURN n`
+
 ### Architecture Changes
 - **OptionalMatchStep**: New execution step implementing optional matching with NULL emission
 - **CypherExecutionPlan**: Enhanced to handle multiple MATCH clauses, source variable binding, and scoped WHERE application
 - **MatchNodeStep**: Added ChainedIterator for unlabeled pattern support
-- **CypherASTBuilder**: Fixed path variable extraction in `visitPattern()` and scoped WHERE extraction in `visitMatchClause()`
+- **CypherASTBuilder**:
+  - Fixed path variable extraction in `visitPattern()` and scoped WHERE extraction in `visitMatchClause()`
+  - Added `findParenthesizedExpression()` to recursively parse parenthesized boolean expressions
+  - Implemented string matching operators (STARTS WITH, ENDS WITH, CONTAINS)
 - **MatchClause**: Added whereClause field to store WHERE clauses scoped to each MATCH
 - **ExpandPathStep**: Fixed to use pathVariable instead of relVar for named variable-length paths
+- **StringMatchExpression**: New expression class for string matching operations
 
 ### Test Coverage
-- Added 15 new tests (107 → 122 tests)
+- Added 23 new tests (107 → 130 tests)
 - OpenCypherOptionalMatchTest: 6 tests for OPTIONAL MATCH with WHERE scoping
 - OpenCypherMatchEnhancementsTest: 7 tests for multiple MATCH and unlabeled patterns
 - OpenCypherVariableLengthPathTest: 2 tests for named paths with variable-length relationships
-- All 122 tests passing
+- OpenCypherWhereClauseTest: Enhanced with 8 new tests for string matching and parenthesized expressions
+- All 130 tests passing
 
 ---
 
@@ -629,10 +655,6 @@ This phase focused on enhancing MATCH clause capabilities and WHERE scoping:
 3. **Arithmetic expressions not yet supported** - `RETURN n.age * 2` not working
    - Status: Function expressions working, arithmetic operators need parser support
    - Workaround: Use SQL functions or pre-compute values
-
-4. **String matching operators not implemented** - STARTS WITH, ENDS WITH, CONTAINS
-   - Status: Grammar support exists, execution logic not implemented
-   - Workaround: Use regex patterns: `name =~ 'A.*'` for STARTS WITH 'A'
 
 ---
 
@@ -665,11 +687,12 @@ We welcome contributions to the OpenCypher implementation!
 7. ✅ ~~IS NULL / IS NOT NULL in WHERE~~ - **COMPLETED**
 8. ✅ ~~IN operator~~ - **COMPLETED** (with list literal parsing)
 9. ✅ ~~Regular expression matching~~ - **COMPLETED** (=~ operator with patterns)
-10. **String matching operators** - STARTS WITH, ENDS WITH, CONTAINS
-11. **GROUP BY aggregation grouping** - Aggregate by groups
-12. **Arithmetic expressions** - Support n.age * 2, n.value + 10, etc.
-13. **Nested function support** - Enable function composition
-14. **DISTINCT in RETURN** - Remove duplicate results
+10. ✅ ~~String matching operators~~ - **COMPLETED** (STARTS WITH, ENDS WITH, CONTAINS)
+11. ✅ ~~Parenthesized boolean expressions~~ - **COMPLETED** (complex nested expressions)
+12. **GROUP BY aggregation grouping** - Aggregate by groups
+13. **Arithmetic expressions** - Support n.age * 2, n.value + 10, etc.
+14. **Nested function support** - Enable function composition
+15. **DISTINCT in RETURN** - Remove duplicate results
 
 ### Getting Started:
 1. Review `CypherASTBuilder.java` - See what's parsed
