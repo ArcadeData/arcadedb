@@ -138,21 +138,42 @@ public class CreateStep extends AbstractExecutionStep {
    * @return result containing all created elements
    */
   private Result createPatterns(final Result inputResult) {
-    final ResultInternal result = new ResultInternal();
+    // Check if we're already in a transaction
+    final boolean wasInTransaction = context.getDatabase().isTransactionActive();
 
-    // Copy input properties if present
-    if (inputResult != null) {
-      for (final String prop : inputResult.getPropertyNames()) {
-        result.setProperty(prop, inputResult.getProperty(prop));
+    try {
+      // Begin transaction if not already active
+      if (!wasInTransaction) {
+        context.getDatabase().begin();
       }
-    }
 
-    // Create each path pattern
-    for (final PathPattern pathPattern : createClause.getPathPatterns()) {
-      createPath(pathPattern, result);
-    }
+      final ResultInternal result = new ResultInternal();
 
-    return result;
+      // Copy input properties if present
+      if (inputResult != null) {
+        for (final String prop : inputResult.getPropertyNames()) {
+          result.setProperty(prop, inputResult.getProperty(prop));
+        }
+      }
+
+      // Create each path pattern
+      for (final PathPattern pathPattern : createClause.getPathPatterns()) {
+        createPath(pathPattern, result);
+      }
+
+      // Commit transaction if we started it
+      if (!wasInTransaction) {
+        context.getDatabase().commit();
+      }
+
+      return result;
+    } catch (final Exception e) {
+      // Rollback if we started the transaction
+      if (!wasInTransaction && context.getDatabase().isTransactionActive()) {
+        context.getDatabase().rollback();
+      }
+      throw e;
+    }
   }
 
   /**

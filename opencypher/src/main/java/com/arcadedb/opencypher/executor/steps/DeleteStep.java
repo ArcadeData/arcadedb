@@ -129,22 +129,43 @@ public class DeleteStep extends AbstractExecutionStep {
       return;
     }
 
-    for (final String variable : deleteClause.getVariables()) {
-      // Get the object from the result
-      final Object obj = result.getProperty(variable);
-      if (obj == null) {
-        // Variable not found in result - skip
-        continue;
+    // Check if we're already in a transaction
+    final boolean wasInTransaction = context.getDatabase().isTransactionActive();
+
+    try {
+      // Begin transaction if not already active
+      if (!wasInTransaction) {
+        context.getDatabase().begin();
       }
 
-      if (obj instanceof Vertex) {
-        deleteVertex((Vertex) obj);
-      } else if (obj instanceof Edge) {
-        deleteEdge((Edge) obj);
-      } else if (obj instanceof Document) {
-        // Generic document - try to delete
-        ((Document) obj).delete();
+      for (final String variable : deleteClause.getVariables()) {
+        // Get the object from the result
+        final Object obj = result.getProperty(variable);
+        if (obj == null) {
+          // Variable not found in result - skip
+          continue;
+        }
+
+        if (obj instanceof Vertex) {
+          deleteVertex((Vertex) obj);
+        } else if (obj instanceof Edge) {
+          deleteEdge((Edge) obj);
+        } else if (obj instanceof Document) {
+          // Generic document - try to delete
+          ((Document) obj).delete();
+        }
       }
+
+      // Commit transaction if we started it
+      if (!wasInTransaction) {
+        context.getDatabase().commit();
+      }
+    } catch (final Exception e) {
+      // Rollback if we started the transaction
+      if (!wasInTransaction && context.getDatabase().isTransactionActive()) {
+        context.getDatabase().rollback();
+      }
+      throw e;
     }
   }
 

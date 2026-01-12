@@ -126,37 +126,61 @@ public class SetStep extends AbstractExecutionStep {
       return;
     }
 
-    for (final SetClause.SetItem item : setClause.getItems()) {
-      final String variable = item.getVariable();
-      final String property = item.getProperty();
-      final String valueExpression = item.getValueExpression();
+    // Check if we're already in a transaction
+    final boolean wasInTransaction = context.getDatabase().isTransactionActive();
+    boolean success = false;
 
-      // Get the object from the result
-      final Object obj = result.getProperty(variable);
-      if (obj == null) {
-        // Variable not found in result - skip this SET item
-        continue;
+    try {
+      // Begin transaction if not already active
+      if (!wasInTransaction) {
+        context.getDatabase().begin();
       }
 
-      if (!(obj instanceof Document)) {
-        // Not a document - skip
-        continue;
+      for (final SetClause.SetItem item : setClause.getItems()) {
+        final String variable = item.getVariable();
+        final String property = item.getProperty();
+        final String valueExpression = item.getValueExpression();
+
+        // Get the object from the result
+        final Object obj = result.getProperty(variable);
+        if (obj == null) {
+          // Variable not found in result - skip this SET item
+          continue;
+        }
+
+        if (!(obj instanceof Document)) {
+          // Not a document - skip
+          continue;
+        }
+
+        final Document doc = (Document) obj;
+
+        // Make document mutable
+        final MutableDocument mutableDoc = doc.modify();
+
+        // Evaluate the value expression and set the property
+        final Object value = evaluateExpression(valueExpression, result);
+        mutableDoc.set(property, value);
+
+        // Save the modified document
+        mutableDoc.save();
+
+        // Update the result with the modified document
+        ((ResultInternal) result).setProperty(variable, mutableDoc);
       }
 
-      final Document doc = (Document) obj;
+      success = true;
 
-      // Make document mutable
-      final MutableDocument mutableDoc = doc.modify();
-
-      // Evaluate the value expression and set the property
-      final Object value = evaluateExpression(valueExpression, result);
-      mutableDoc.set(property, value);
-
-      // Save the modified document
-      mutableDoc.save();
-
-      // Update the result with the modified document
-      ((ResultInternal) result).setProperty(variable, mutableDoc);
+      // Commit transaction if we started it
+      if (!wasInTransaction) {
+        context.getDatabase().commit();
+      }
+    } catch (final Exception e) {
+      // Rollback if we started the transaction
+      if (!wasInTransaction && context.getDatabase().isTransactionActive()) {
+        context.getDatabase().rollback();
+      }
+      throw e;
     }
   }
 

@@ -103,12 +103,36 @@ public class MergeStep extends AbstractExecutionStep {
   private Result executeMerge() {
     final PathPattern pathPattern = mergeClause.getPathPattern();
 
-    if (pathPattern.isSingleNode()) {
-      // Simple node merge: MERGE (n:Person {name: 'Alice'})
-      return mergeSingleNode(pathPattern.getFirstNode());
-    } else {
-      // Path merge with relationships: MERGE (a)-[r:KNOWS]->(b)
-      return mergePath(pathPattern);
+    // Check if we're already in a transaction
+    final boolean wasInTransaction = context.getDatabase().isTransactionActive();
+
+    try {
+      // Begin transaction if not already active
+      if (!wasInTransaction) {
+        context.getDatabase().begin();
+      }
+
+      final Result result;
+      if (pathPattern.isSingleNode()) {
+        // Simple node merge: MERGE (n:Person {name: 'Alice'})
+        result = mergeSingleNode(pathPattern.getFirstNode());
+      } else {
+        // Path merge with relationships: MERGE (a)-[r:KNOWS]->(b)
+        result = mergePath(pathPattern);
+      }
+
+      // Commit transaction if we started it
+      if (!wasInTransaction) {
+        context.getDatabase().commit();
+      }
+
+      return result;
+    } catch (final Exception e) {
+      // Rollback if we started the transaction
+      if (!wasInTransaction && context.getDatabase().isTransactionActive()) {
+        context.getDatabase().rollback();
+      }
+      throw e;
     }
   }
 
