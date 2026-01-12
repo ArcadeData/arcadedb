@@ -36,7 +36,10 @@ import java.util.regex.Pattern;
 public class AntlrCypherParser {
   private static final Pattern MATCH_PATTERN = Pattern.compile("MATCH\\s+(.+?)(?:WHERE|RETURN|$)", Pattern.CASE_INSENSITIVE);
   private static final Pattern WHERE_PATTERN = Pattern.compile("WHERE\\s+(.+?)(?:RETURN|$)", Pattern.CASE_INSENSITIVE);
-  private static final Pattern RETURN_PATTERN = Pattern.compile("RETURN\\s+(.+?)$", Pattern.CASE_INSENSITIVE);
+  private static final Pattern RETURN_PATTERN = Pattern.compile("RETURN\\s+(.+?)(?:ORDER BY|SKIP|LIMIT|$)", Pattern.CASE_INSENSITIVE);
+  private static final Pattern ORDER_BY_PATTERN = Pattern.compile("ORDER BY\\s+(.+?)(?:SKIP|LIMIT|$)", Pattern.CASE_INSENSITIVE);
+  private static final Pattern SKIP_PATTERN = Pattern.compile("SKIP\\s+(\\d+)", Pattern.CASE_INSENSITIVE);
+  private static final Pattern LIMIT_PATTERN = Pattern.compile("LIMIT\\s+(\\d+)", Pattern.CASE_INSENSITIVE);
   private static final Pattern CREATE_PATTERN = Pattern.compile("\\bCREATE\\b", Pattern.CASE_INSENSITIVE);
   private static final Pattern MERGE_PATTERN = Pattern.compile("\\bMERGE\\b", Pattern.CASE_INSENSITIVE);
   private static final Pattern DELETE_PATTERN = Pattern.compile("\\bDELETE\\b", Pattern.CASE_INSENSITIVE);
@@ -90,15 +93,69 @@ public class AntlrCypherParser {
         returnClause = new ReturnClause(itemList);
       }
 
+      // Extract ORDER BY clause
+      OrderByClause orderByClause = null;
+      final Matcher orderByMatcher = ORDER_BY_PATTERN.matcher(trimmedQuery);
+      if (orderByMatcher.find()) {
+        final String orderByStr = orderByMatcher.group(1).trim();
+        orderByClause = parseOrderBy(orderByStr);
+      }
+
+      // Extract SKIP clause
+      Integer skip = null;
+      final Matcher skipMatcher = SKIP_PATTERN.matcher(trimmedQuery);
+      if (skipMatcher.find()) {
+        skip = Integer.parseInt(skipMatcher.group(1));
+      }
+
+      // Extract LIMIT clause
+      Integer limit = null;
+      final Matcher limitMatcher = LIMIT_PATTERN.matcher(trimmedQuery);
+      if (limitMatcher.find()) {
+        limit = Integer.parseInt(limitMatcher.group(1));
+      }
+
       // Check for write operations
       final boolean hasCreate = CREATE_PATTERN.matcher(trimmedQuery).find();
       final boolean hasMerge = MERGE_PATTERN.matcher(trimmedQuery).find();
       final boolean hasDelete = DELETE_PATTERN.matcher(trimmedQuery).find();
 
-      return new SimpleCypherStatement(query, matchClauses, whereClause, returnClause, hasCreate, hasMerge, hasDelete);
+      return new SimpleCypherStatement(query, matchClauses, whereClause, returnClause, orderByClause, skip, limit,
+          hasCreate, hasMerge, hasDelete);
 
     } catch (final Exception e) {
       throw new CommandParsingException("Failed to parse Cypher query: " + query, e);
     }
+  }
+
+  /**
+   * Parses ORDER BY string into OrderByClause.
+   * Example: "n.name ASC, n.age DESC" or "n.name, n.age DESC"
+   *
+   * @param orderByStr ORDER BY string
+   * @return parsed OrderByClause
+   */
+  private OrderByClause parseOrderBy(final String orderByStr) {
+    final List<OrderByClause.OrderByItem> items = new ArrayList<>();
+    final String[] parts = orderByStr.split(",");
+
+    for (final String part : parts) {
+      final String trimmed = part.trim();
+      boolean ascending = true;
+      String expression = trimmed;
+
+      // Check for explicit ASC/DESC
+      if (trimmed.toUpperCase().endsWith(" DESC")) {
+        ascending = false;
+        expression = trimmed.substring(0, trimmed.length() - 5).trim();
+      } else if (trimmed.toUpperCase().endsWith(" ASC")) {
+        ascending = true;
+        expression = trimmed.substring(0, trimmed.length() - 4).trim();
+      }
+
+      items.add(new OrderByClause.OrderByItem(expression, ascending));
+    }
+
+    return new OrderByClause(items);
   }
 }

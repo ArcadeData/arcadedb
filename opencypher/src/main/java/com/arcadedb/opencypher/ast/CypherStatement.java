@@ -73,4 +73,25 @@ public interface CypherStatement {
    * @return true if contains DELETE
    */
   boolean hasDelete();
+
+  /**
+   * Returns the ORDER BY clause if present.
+   *
+   * @return ORDER BY clause or null
+   */
+  OrderByClause getOrderByClause();
+
+  /**
+   * Returns the SKIP value if present.
+   *
+   * @return SKIP value or null
+   */
+  Integer getSkip();
+
+  /**
+   * Returns the LIMIT value if present.
+   *
+   * @return LIMIT value or null
+   */
+  Integer getLimit();
 }

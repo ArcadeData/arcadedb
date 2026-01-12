@@ -152,6 +152,30 @@ public class CypherExecutionPlan {
       currentStep = returnStep;
     }
 
+    // Step 4: ORDER BY clause - sort results
+    if (statement.getOrderByClause() != null && currentStep != null) {
+      final com.arcadedb.opencypher.executor.steps.OrderByStep orderByStep = new com.arcadedb.opencypher.executor.steps.OrderByStep(
+          statement.getOrderByClause(), context);
+      orderByStep.setPrevious(currentStep);
+      currentStep = orderByStep;
+    }
+
+    // Step 5: SKIP clause - skip first N results
+    if (statement.getSkip() != null && currentStep != null) {
+      final com.arcadedb.opencypher.executor.steps.SkipStep skipStep = new com.arcadedb.opencypher.executor.steps.SkipStep(
+          statement.getSkip(), context);
+      skipStep.setPrevious(currentStep);
+      currentStep = skipStep;
+    }
+
+    // Step 6: LIMIT clause - limit number of results
+    if (statement.getLimit() != null && currentStep != null) {
+      final com.arcadedb.opencypher.executor.steps.LimitStep limitStep = new com.arcadedb.opencypher.executor.steps.LimitStep(
+          statement.getLimit(), context);
+      limitStep.setPrevious(currentStep);
+      currentStep = limitStep;
+    }
+
     return currentStep;
   }
 }

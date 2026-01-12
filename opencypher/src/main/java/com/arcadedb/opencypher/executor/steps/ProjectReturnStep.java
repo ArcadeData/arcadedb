@@ -116,19 +116,23 @@ public class ProjectReturnStep extends AbstractExecutionStep {
 
   /**
    * Projects a result according to the RETURN clause.
+   * Note: Preserves original variables for ORDER BY access.
    */
   private ResultInternal projectResult(final Result inputResult) {
     final ResultInternal result = new ResultInternal();
 
+    // IMPORTANT: Copy all original properties first
+    // This ensures ORDER BY can access variables even after projection
+    for (final String prop : inputResult.getPropertyNames()) {
+      result.setProperty(prop, inputResult.getProperty(prop));
+    }
+
     if (returnClause == null || returnClause.getItems().isEmpty()) {
-      // No RETURN clause - return everything
-      for (final String prop : inputResult.getPropertyNames()) {
-        result.setProperty(prop, inputResult.getProperty(prop));
-      }
+      // No RETURN clause - return everything (already copied above)
       return result;
     }
 
-    // Project each return item
+    // Project each return item (adds projected properties alongside originals)
     for (final String item : returnClause.getItems()) {
       final String trimmedItem = item.trim();
 
@@ -145,9 +149,8 @@ public class ProjectReturnStep extends AbstractExecutionStep {
           result.setProperty(variable + "." + property, value);
         }
       } else {
-        // It's a simple variable: n
-        final Object value = inputResult.getProperty(trimmedItem);
-        result.setProperty(trimmedItem, value);
+        // It's a simple variable: n (already copied above)
+        // No need to set again
       }
     }
 
