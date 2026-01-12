@@ -22,7 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
-import com.arcadedb.opencypher.parser.AntlrCypherParser;
+import com.arcadedb.opencypher.parser.Cypher25AntlrParser;
 import com.arcadedb.opencypher.ast.CypherStatement;
 import com.arcadedb.opencypher.planner.CypherExecutionPlanner;
 import com.arcadedb.opencypher.executor.CypherExecutionPlan;
@@ -34,17 +34,17 @@ import java.util.Map;
 
 /**
  * Native OpenCypher query engine for ArcadeDB.
- * Implements direct Cypher query execution without Gremlin translation layer.
+ * Implements direct Cypher query execution using ANTLR4 grammar-based parser.
  */
 public class OpenCypherQueryEngine implements QueryEngine {
   public static final String ENGINE_NAME = "opencypher";
 
   private final DatabaseInternal database;
-  private final AntlrCypherParser parser;
+  private final Cypher25AntlrParser parser;
 
   protected OpenCypherQueryEngine(final DatabaseInternal database) {
     this.database = database;
-    this.parser = new AntlrCypherParser(database);
+    this.parser = new Cypher25AntlrParser(database);
   }
 
   @Override

@@ -80,6 +80,16 @@ public class PathPattern {
   }
 
   /**
+   * Creates a path pattern with nodes and relationships (no path variable).
+   *
+   * @param nodes         list of node patterns
+   * @param relationships list of relationship patterns
+   */
+  public PathPattern(final List<NodePattern> nodes, final List<RelationshipPattern> relationships) {
+    this(nodes, relationships, null);
+  }
+
+  /**
    * Returns the list of node patterns in this path.
    *
    * @return list of node patterns
