@@ -20,6 +20,7 @@ package com.arcadedb.opencypher.executor.steps;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.opencypher.ast.BooleanExpression;
 import com.arcadedb.opencypher.ast.WhereClause;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -115,13 +116,20 @@ public class FilterPropertiesStep extends AbstractExecutionStep {
 
   /**
    * Evaluates the WHERE condition for a result.
-   * Phase 3: Simple implementation for basic comparisons.
+   * Uses new BooleanExpression framework with fallback to legacy string parsing.
    */
   private boolean evaluateCondition(final Result result) {
     if (whereClause == null) {
       return true;
     }
 
+    // Try new BooleanExpression approach first
+    final BooleanExpression conditionExpr = whereClause.getConditionExpression();
+    if (conditionExpr != null) {
+      return conditionExpr.evaluate(result, context);
+    }
+
+    // Fall back to legacy string-based parsing for backward compatibility
     final String condition = whereClause.getCondition();
     if (condition == null || condition.trim().isEmpty()) {
       return true;

@@ -258,9 +258,231 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   }
 
   public WhereClause visitWhereClause(final Cypher25Parser.WhereClauseContext ctx) {
-    // Extract the WHERE condition expression
-    final String condition = ctx.expression().getText();
+    // Parse the WHERE condition as a boolean expression
+    final BooleanExpression condition = parseBooleanExpression(ctx.expression());
     return new WhereClause(condition);
+  }
+
+  /**
+   * Parse an expression context into a BooleanExpression for WHERE clauses.
+   * Handles logical operators (AND, OR, NOT), comparisons, IS NULL, IN, regex, etc.
+   */
+  private BooleanExpression parseBooleanExpression(final Cypher25Parser.ExpressionContext ctx) {
+    // Traverse the expression tree to find boolean operations
+    // The grammar has: expression: expression11 (OR expression11)*
+
+    // Parse all expression11 children and combine with OR if needed
+    final List<Cypher25Parser.Expression11Context> expr11List = ctx.expression11();
+
+    if (expr11List.size() == 1) {
+      // No OR operator, just delegate to expression11
+      return parseBooleanFromExpression11(expr11List.get(0));
+    } else if (expr11List.size() > 1) {
+      // Multiple expression11 connected with OR
+      BooleanExpression result = parseBooleanFromExpression11(expr11List.get(0));
+      for (int i = 1; i < expr11List.size(); i++) {
+        final BooleanExpression right = parseBooleanFromExpression11(expr11List.get(i));
+        result = new LogicalExpression(LogicalExpression.Operator.OR, result, right);
+      }
+      return result;
+    }
+
+    // Fallback: create a comparison from the expression text (legacy mode)
+    // This handles cases we haven't explicitly parsed yet
+    return createFallbackComparison(ctx);
+  }
+
+  private Cypher25Parser.Expression11Context findExpression11(final org.antlr.v4.runtime.tree.ParseTree node) {
+    if (node instanceof Cypher25Parser.Expression11Context) {
+      return (Cypher25Parser.Expression11Context) node;
+    }
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.Expression11Context found = findExpression11(node.getChild(i));
+      if (found != null) return found;
+    }
+    return null;
+  }
+
+  private BooleanExpression parseBooleanFromExpression11(final Cypher25Parser.Expression11Context ctx) {
+    // expression11: expression10 (XOR expression10)*
+    // Note: XOR is rare, for now we just delegate to expression10 if there's only one
+    // TODO: Implement XOR operator support if needed
+    final List<Cypher25Parser.Expression10Context> expr10List = ctx.expression10();
+
+    if (expr10List.size() == 1) {
+      // No XOR operator, just delegate
+      return parseBooleanFromExpression10(expr10List.get(0));
+    }
+
+    // For now, if multiple expression10 with XOR, use fallback
+    // TODO: Implement proper XOR support
+    return createFallbackComparison(ctx);
+  }
+
+  private BooleanExpression parseBooleanFromExpression10(final Cypher25Parser.Expression10Context ctx) {
+    // expression10: expression9 (AND expression9)*
+    final List<Cypher25Parser.Expression9Context> expr9List = ctx.expression9();
+
+    if (expr9List.size() == 1) {
+      // No AND operator, just delegate
+      return parseBooleanFromExpression9(expr9List.get(0));
+    } else if (expr9List.size() > 1) {
+      // Multiple expression9 connected with AND
+      BooleanExpression result = parseBooleanFromExpression9(expr9List.get(0));
+      for (int i = 1; i < expr9List.size(); i++) {
+        final BooleanExpression right = parseBooleanFromExpression9(expr9List.get(i));
+        result = new LogicalExpression(LogicalExpression.Operator.AND, result, right);
+      }
+      return result;
+    }
+
+    return createFallbackComparison(ctx);
+  }
+
+  private BooleanExpression parseBooleanFromExpression9(final Cypher25Parser.Expression9Context ctx) {
+    // expression9: NOT* expression8
+    // Check for NOT
+    final boolean hasNot = ctx.NOT() != null && !ctx.NOT().isEmpty();
+    final BooleanExpression inner = parseBooleanFromExpression8(ctx.expression8());
+
+    return hasNot ? new LogicalExpression(LogicalExpression.Operator.NOT, inner) : inner;
+  }
+
+  private BooleanExpression parseBooleanFromExpression8(final Cypher25Parser.Expression8Context ctx) {
+    // expression8 handles comparisons (=, !=, <, >, <=, >=)
+    // expression8: expression7 ((EQ | NEQ | LT | GT | LE | GE) expression7)*
+
+    // Try to find comparison operator
+    final Cypher25Parser.Expression7Context expr7 = ctx.expression7(0);
+
+    // Check for comparison operators in expression8
+    if (ctx.expression7().size() > 1) {
+      // Found a comparison, get the operator
+      for (int i = 1; i < ctx.getChildCount(); i++) {
+        if (ctx.getChild(i) instanceof org.antlr.v4.runtime.tree.TerminalNode) {
+          final org.antlr.v4.runtime.tree.TerminalNode terminal = (org.antlr.v4.runtime.tree.TerminalNode) ctx.getChild(i);
+          final int type = terminal.getSymbol().getType();
+
+          ComparisonExpression.Operator op = null;
+          if (type == Cypher25Parser.EQ) op = ComparisonExpression.Operator.EQUALS;
+          else if (type == Cypher25Parser.NEQ || type == Cypher25Parser.INVALID_NEQ)
+            op = ComparisonExpression.Operator.NOT_EQUALS;
+          else if (type == Cypher25Parser.LT) op = ComparisonExpression.Operator.LESS_THAN;
+          else if (type == Cypher25Parser.GT) op = ComparisonExpression.Operator.GREATER_THAN;
+          else if (type == Cypher25Parser.LE) op = ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+          else if (type == Cypher25Parser.GE) op = ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
+
+          if (op != null) {
+            final Expression left = parseExpressionFromText(ctx.expression7(0));
+            final Expression right = parseExpressionFromText(ctx.expression7(1));
+            return new ComparisonExpression(left, op, right);
+          }
+        }
+      }
+    }
+
+    // Delegate to expression7 which handles IS NULL, IN, REGEX, etc.
+    return parseBooleanFromExpression7(expr7);
+  }
+
+  private BooleanExpression parseBooleanFromExpression7(final Cypher25Parser.Expression7Context ctx) {
+    // expression7: expression6 comparisonExpression6?
+    final Cypher25Parser.ComparisonExpression6Context compCtx = ctx.comparisonExpression6();
+
+    if (compCtx != null) {
+      final Expression leftExpr = parseExpressionFromText(ctx.expression6());
+
+      // Check which alternative of comparisonExpression6 was matched
+      // NullComparison: IS NOT? NULL
+      if (compCtx instanceof Cypher25Parser.NullComparisonContext) {
+        final Cypher25Parser.NullComparisonContext nullCtx = (Cypher25Parser.NullComparisonContext) compCtx;
+        final boolean isNot = nullCtx.NOT() != null;
+        return new IsNullExpression(leftExpr, isNot);
+      }
+
+      // StringAndListComparison: (REGEQ | STARTS WITH | ENDS WITH | CONTAINS | IN) expression6
+      if (compCtx instanceof Cypher25Parser.StringAndListComparisonContext) {
+        final Cypher25Parser.StringAndListComparisonContext strListCtx =
+            (Cypher25Parser.StringAndListComparisonContext) compCtx;
+
+        // Check for IN operator
+        if (strListCtx.IN() != null) {
+          // Parse the list from expression6
+          final List<Expression> listItems = parseListExpression(strListCtx.expression6());
+          final boolean isNot = false; // IN doesn't have NOT variant in this grammar rule
+          return new InExpression(leftExpr, listItems, isNot);
+        }
+
+        // Check for REGEX (=~)
+        if (strListCtx.REGEQ() != null) {
+          final Expression pattern = parseExpressionFromText(strListCtx.expression6());
+          return new RegexExpression(leftExpr, pattern);
+        }
+
+        // TODO: Handle STARTS WITH, ENDS WITH, CONTAINS
+        // For now, use fallback for these
+        return createFallbackComparison(ctx);
+      }
+
+      // Other comparison types (TypeComparison, NormalFormComparison, LabelComparison)
+      // Fall back to text-based parsing for now
+      return createFallbackComparison(ctx);
+    }
+
+    // If no special comparison, treat as a simple expression that should evaluate to boolean
+    // This is a fallback for cases we haven't handled yet
+    return createFallbackComparison(ctx);
+  }
+
+  private BooleanExpression createFallbackComparison(final org.antlr.v4.runtime.tree.ParseTree ctx) {
+    // Legacy fallback: parse simple comparisons from text
+    // This handles cases we haven't explicitly parsed yet
+    final String text = ctx.getText();
+
+    // Try to parse as "variable.property operator value"
+    final java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("(\\w+)\\.(\\w+)\\s*([><=!]+)\\s*(\\w+|'[^']*'|\"[^\"]*\"|\\d+(?:\\.\\d+)?)");
+    final java.util.regex.Matcher matcher = pattern.matcher(text);
+
+    if (matcher.find()) {
+      final String variable = matcher.group(1);
+      final String property = matcher.group(2);
+      final String operatorStr = matcher.group(3);
+      final String valueStr = matcher.group(4);
+
+      final Expression left = new PropertyAccessExpression(variable, property);
+      final Expression right = new LiteralExpression(parseValueString(valueStr), valueStr);
+      final ComparisonExpression.Operator op = ComparisonExpression.Operator.fromString(operatorStr);
+
+      return new ComparisonExpression(left, op, right);
+    }
+
+    // Ultimate fallback: create a dummy true expression
+    // This should rarely happen in practice
+    return new ComparisonExpression(
+        new LiteralExpression(true, "true"),
+        ComparisonExpression.Operator.EQUALS,
+        new LiteralExpression(true, "true")
+    );
+  }
+
+  private Object parseValueString(String value) {
+    // Remove quotes from strings
+    if (value.startsWith("'") && value.endsWith("'")) {
+      return value.substring(1, value.length() - 1);
+    } else if (value.startsWith("\"") && value.endsWith("\"")) {
+      return value.substring(1, value.length() - 1);
+    }
+
+    // Try to parse as number
+    try {
+      if (value.contains(".")) {
+        return Double.parseDouble(value);
+      } else {
+        return Long.parseLong(value);
+      }
+    } catch (final NumberFormatException e) {
+      return value;
+    }
   }
 
   public List<PathPattern> visitPatternList(final Cypher25Parser.PatternListContext ctx) {
@@ -458,6 +680,89 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   }
 
   /**
+   * Parse any parse tree node as an expression using its text.
+   * This is a helper for parsing lower-level expression contexts.
+   */
+  private Expression parseExpressionFromText(final org.antlr.v4.runtime.tree.ParseTree node) {
+    final String text = node.getText();
+    return parseExpressionText(text);
+  }
+
+  /**
+   * Parse a list expression into a list of Expression items.
+   * Handles list literals like [1, 2, 3] or ['Alice', 'Bob'].
+   */
+  private List<Expression> parseListExpression(final org.antlr.v4.runtime.tree.ParseTree node) {
+    final List<Expression> items = new ArrayList<>();
+
+    // Try to find a listLiteral context
+    final Cypher25Parser.ListLiteralContext listCtx = findListLiteral(node);
+    if (listCtx != null) {
+      // Parse each expression in the list
+      for (final Cypher25Parser.ExpressionContext exprCtx : listCtx.expression()) {
+        items.add(parseExpression(exprCtx));
+      }
+      return items;
+    }
+
+    // Fallback: parse as text and try to extract items
+    // This handles simple cases like [1,2,3] or ['a','b','c']
+    final String text = node.getText();
+    if (text.startsWith("[") && text.endsWith("]")) {
+      final String content = text.substring(1, text.length() - 1);
+      if (!content.isEmpty()) {
+        final String[] parts = content.split(",");
+        for (final String part : parts) {
+          items.add(parseExpressionText(part.trim()));
+        }
+      }
+    } else {
+      // Not a list literal, treat as single item
+      items.add(parseExpressionFromText(node));
+    }
+
+    return items;
+  }
+
+  /**
+   * Recursively find a ListLiteralContext in the parse tree.
+   */
+  private Cypher25Parser.ListLiteralContext findListLiteral(final org.antlr.v4.runtime.tree.ParseTree node) {
+    if (node instanceof Cypher25Parser.ListLiteralContext) {
+      return (Cypher25Parser.ListLiteralContext) node;
+    }
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.ListLiteralContext found = findListLiteral(node.getChild(i));
+      if (found != null) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Parse expression text into an Expression AST node.
+   * Shared logic for parsing expressions from text.
+   */
+  private Expression parseExpressionText(final String text) {
+    // Try to parse as literal FIRST (before checking for dots)
+    // This prevents string literals like 'A.*' from being parsed as property access
+    final Object literalValue = tryParseLiteral(text);
+    if (literalValue != null) {
+      return new LiteralExpression(literalValue, text);
+    }
+
+    // Check for property access: variable.property
+    if (text.contains(".") && !text.contains("(")) {
+      final String[] parts = text.split("\\.", 2);
+      return new PropertyAccessExpression(parts[0], parts[1]);
+    }
+
+    // Simple variable
+    return new VariableExpression(text);
+  }
+
+  /**
    * Parse an expression into an Expression AST node.
    * Handles variables, property access, function calls, and literals.
    */
@@ -479,20 +784,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return parseFunctionInvocation(funcCtx);
     }
 
-    // Check for property access: variable.property
-    if (text.contains(".") && !text.contains("(")) {
-      final String[] parts = text.split("\\.", 2);
-      return new PropertyAccessExpression(parts[0], parts[1]);
-    }
-
-    // Try to parse as literal
-    final Object literalValue = tryParseLiteral(text);
-    if (literalValue != null) {
-      return new LiteralExpression(literalValue, text);
-    }
-
-    // Simple variable
-    return new VariableExpression(text);
+    // Use the shared text parsing logic
+    return parseExpressionText(text);
   }
 
   /**

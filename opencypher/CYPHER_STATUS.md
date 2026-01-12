@@ -1,8 +1,8 @@
 # OpenCypher Implementation Status
 
 **Last Updated:** 2026-01-12
-**Implementation Version:** Native ANTLR4-based Parser (Phase 5)
-**Test Coverage:** 92/92 tests passing (100%)
+**Implementation Version:** Native ANTLR4-based Parser (Phase 6)
+**Test Coverage:** 107/107 tests passing (100%)
 
 ---
 
@@ -62,18 +62,36 @@ MATCH (a)-[r:WORKS_AT {since: 2020}]->(b) RETURN r
 MATCH (n:Person) WHERE n.age > 30 RETURN n
 MATCH (n:Person) WHERE n.name = 'Alice' RETURN n
 
-// ✅ Numeric comparisons: >, <, >=, <=, =, !=
-MATCH (n:Person) WHERE n.age >= 25 RETURN n
+// ✅ All comparison operators: =, !=, <, >, <=, >=
+MATCH (n:Person) WHERE n.age >= 25 AND n.age <= 40 RETURN n
+
+// ✅ Logical operators: AND, OR, NOT
+MATCH (n:Person) WHERE n.age > 25 AND n.city = 'NYC' RETURN n
+MATCH (n:Person) WHERE n.age < 20 OR n.age > 60 RETURN n
+MATCH (n:Person) WHERE NOT n.retired = true RETURN n
+
+// ✅ IS NULL / IS NOT NULL
+MATCH (n:Person) WHERE n.email IS NULL RETURN n
+MATCH (n:Person) WHERE n.phone IS NOT NULL RETURN n
+
+// ✅ IN operator with lists
+MATCH (n:Person) WHERE n.name IN ['Alice', 'Bob', 'Charlie'] RETURN n
+MATCH (n:Person) WHERE n.age IN [25, 30, 35] RETURN n
+
+// ✅ Regular expression matching (=~)
+MATCH (n:Person) WHERE n.name =~ 'A.*' RETURN n
+MATCH (n:Person) WHERE n.email =~ '.*@example.com' RETURN n
+
+// ✅ Complex boolean expressions with combinations
+MATCH (n:Person) WHERE n.age > 25 AND n.age < 35 AND n.email IS NOT NULL RETURN n
+MATCH (n:Person) WHERE n.name IN ['Alice', 'Bob'] AND n.age > 28 RETURN n
+MATCH (n:Person) WHERE n.name =~ 'A.*' AND n.age = 30 RETURN n
 ```
 
 **Limitations:**
-- ❌ Logical operators: AND, OR, NOT
-- ❌ IN operator: `WHERE n.name IN ['Alice', 'Bob']`
-- ❌ IS NULL / IS NOT NULL
-- ❌ String matching: STARTS WITH, ENDS WITH, CONTAINS
-- ❌ Regular expressions: `n.name =~ '.*Smith'`
-- ❌ Pattern predicates: `WHERE (n)-[:KNOWS]->()`
-- ❌ Complex expressions with functions
+- ❌ String matching: STARTS WITH, ENDS WITH, CONTAINS - Grammar support exists, not yet implemented
+- ❌ Pattern predicates: `WHERE (n)-[:KNOWS]->()` - Not yet implemented
+- ❌ Complex parenthesized OR expressions - Needs additional parser work
 
 ### CREATE Clause
 ```cypher
@@ -313,18 +331,18 @@ MERGE (n:Person {name: 'Alice'})
 | **duration()** | `RETURN duration('P1Y')` | 🟢 LOW |
 
 ### WHERE Enhancements
-| Feature | Example | Priority |
-|---------|---------|----------|
-| **AND/OR/NOT** | `WHERE n.age > 25 AND n.city = 'NYC'` | 🔴 HIGH |
-| **IN operator** | `WHERE n.name IN ['Alice', 'Bob']` | 🔴 HIGH |
-| **IS NULL** | `WHERE n.age IS NULL` | 🔴 HIGH |
-| **IS NOT NULL** | `WHERE n.age IS NOT NULL` | 🔴 HIGH |
-| **STARTS WITH** | `WHERE n.name STARTS WITH 'A'` | 🟡 MEDIUM |
-| **ENDS WITH** | `WHERE n.name ENDS WITH 'son'` | 🟡 MEDIUM |
-| **CONTAINS** | `WHERE n.name CONTAINS 'li'` | 🟡 MEDIUM |
-| **Regular expressions** | `WHERE n.name =~ '.*Smith'` | 🟢 LOW |
-| **Pattern predicates** | `WHERE (n)-[:KNOWS]->()` | 🟡 MEDIUM |
-| **EXISTS()** | `WHERE EXISTS(n.email)` | 🟡 MEDIUM |
+| Feature | Example | Status | Priority |
+|---------|---------|--------|----------|
+| **AND/OR/NOT** | `WHERE n.age > 25 AND n.city = 'NYC'` | ✅ **Implemented** | 🔴 HIGH |
+| **IS NULL** | `WHERE n.age IS NULL` | ✅ **Implemented** | 🔴 HIGH |
+| **IS NOT NULL** | `WHERE n.age IS NOT NULL` | ✅ **Implemented** | 🔴 HIGH |
+| **IN operator** | `WHERE n.name IN ['Alice', 'Bob']` | ✅ **Implemented** | 🔴 HIGH |
+| **Regular expressions** | `WHERE n.name =~ '.*Smith'` | ✅ **Implemented** | 🟡 MEDIUM |
+| **STARTS WITH** | `WHERE n.name STARTS WITH 'A'` | 🔴 Not Implemented | 🟡 MEDIUM |
+| **ENDS WITH** | `WHERE n.name ENDS WITH 'son'` | 🔴 Not Implemented | 🟡 MEDIUM |
+| **CONTAINS** | `WHERE n.name CONTAINS 'li'` | 🔴 Not Implemented | 🟡 MEDIUM |
+| **Pattern predicates** | `WHERE (n)-[:KNOWS]->()` | 🔴 Not Implemented | 🟡 MEDIUM |
+| **EXISTS()** | `WHERE EXISTS(n.email)` | 🔴 Not Implemented | 🟡 MEDIUM |
 
 ### Expression Features
 | Feature | Example | Priority |
@@ -351,16 +369,27 @@ MERGE (n:Person {name: 'Alice'})
 
 ## 🗺️ Implementation Roadmap
 
-### Phase 4 (Current): Write Operations & Expressions
-**Target:** Q1 2026
-**Focus:** Complete basic write operations and enhance WHERE clause
+### Phase 4: Write Operations ✅ **COMPLETED** (2026-01-12)
+**Target:** Q1 2026 → ✅ **COMPLETED**
+**Focus:** Complete basic write operations
 
-- [ ] Implement `SetStep` for SET clause
-- [ ] Implement `DeleteStep` for DELETE/DETACH DELETE
-- [ ] Implement logical operators (AND, OR, NOT) in WHERE
-- [ ] Implement IS NULL / IS NOT NULL
-- [ ] Implement IN operator
-- [ ] Add expression evaluator framework
+- [x] ✅ **Completed:** `SetStep` for SET clause
+- [x] ✅ **Completed:** `DeleteStep` for DELETE/DETACH DELETE
+- [x] ✅ **Completed:** `MergeStep` for MERGE operations
+
+### Phase 6 (Current): WHERE Clause Enhancements ✅ **COMPLETED** (2026-01-12)
+**Target:** Q1 2026 → ✅ **COMPLETED**
+**Focus:** Enhance WHERE clause with logical operators, NULL checks, IN, and regex
+
+- [x] ✅ **Completed:** Boolean expression framework (BooleanExpression interface)
+- [x] ✅ **Completed:** Logical operators (AND, OR, NOT)
+- [x] ✅ **Completed:** IS NULL / IS NOT NULL support
+- [x] ✅ **Completed:** All comparison operators (=, !=, <, >, <=, >=)
+- [x] ✅ **Completed:** Complex boolean expressions with operator precedence
+- [x] ✅ **Completed:** FilterPropertiesStep integration
+- [x] ✅ **Completed:** IN operator with list literal parsing
+- [x] ✅ **Completed:** Regular expression matching (=~) with pattern compilation
+- [x] ✅ **Completed:** Comprehensive WHERE clause tests (15 tests)
 
 ### Phase 5: Aggregation & Functions ✅ **COMPLETED** (2026-01-12)
 **Target:** Q1 2026 → ✅ **COMPLETED**
@@ -428,9 +457,10 @@ MERGE (n:Person {name: 'Alice'})
 | OpenCypherDeleteTest | 9/9 | ✅ PASS | DELETE operations |
 | OpenCypherMergeTest | 5/5 | ✅ PASS | MERGE operations |
 | **OpenCypherFunctionTest** | **14/14** | **✅ PASS** | **Functions & aggregations** |
+| **OpenCypherWhereClauseTest** | **15/15** | **✅ PASS** | **WHERE (AND, OR, NOT, NULL, IN, regex)** |
 | OrderByDebugTest | 2/2 | ✅ PASS | Debug tests |
 | ParserDebugTest | 2/2 | ✅ PASS | Parser tests |
-| **TOTAL** | **92/92** | **✅ 100%** | **All passing** |
+| **TOTAL** | **107/107** | **✅ 100%** | **All passing** |
 
 ### Test Files
 ```
@@ -444,7 +474,8 @@ opencypher/src/test/java/com/arcadedb/opencypher/
 ├── OpenCypherSetTest.java               # SET clause tests
 ├── OpenCypherDeleteTest.java            # DELETE clause tests
 ├── OpenCypherMergeTest.java             # MERGE clause tests
-├── OpenCypherFunctionTest.java          # Function & aggregation tests (NEW)
+├── OpenCypherFunctionTest.java          # Function & aggregation tests
+├── OpenCypherWhereClauseTest.java       # WHERE clause logical operators (NEW)
 ├── OrderByDebugTest.java                # Debug tests
 └── ParserDebugTest.java                 # Parser tests
 ```
@@ -509,19 +540,20 @@ CypherStatement → CypherExecutionPlanner → Execution Plan (Step Chain)
 2. **Only first MATCH clause processed** - Multiple MATCH clauses ignored
    - Workaround: Use comma-separated patterns in single MATCH
 
-3. **Complex WHERE expressions not supported** - Only simple comparisons work
-   - Workaround: Use inline property filters in patterns where possible
-
-4. **GROUP BY not implemented** - Aggregations work on entire result set only
+3. **GROUP BY not implemented** - Aggregations work on entire result set only
    - Status: Core aggregation functions working, GROUP BY clause not yet implemented
    - Workaround: Pre-filter data with WHERE clause
 
-5. **OPTIONAL MATCH parsed but not executed correctly** - May return incorrect results
+4. **OPTIONAL MATCH parsed but not executed correctly** - May return incorrect results
    - Workaround: Use SQL's LEFT JOIN equivalent
 
-6. **Arithmetic expressions not yet supported** - `RETURN n.age * 2` not working
+5. **Arithmetic expressions not yet supported** - `RETURN n.age * 2` not working
    - Status: Function expressions working, arithmetic operators need parser support
    - Workaround: Use SQL functions or pre-compute values
+
+6. **String matching operators not implemented** - STARTS WITH, ENDS WITH, CONTAINS
+   - Status: Grammar support exists, execution logic not implemented
+   - Workaround: Use regex patterns: `name =~ 'A.*'` for STARTS WITH 'A'
 
 ---
 
@@ -550,11 +582,15 @@ We welcome contributions to the OpenCypher implementation!
 3. ✅ ~~Expression evaluator~~ - **COMPLETED** (functions bridge)
 4. ✅ ~~Aggregation functions~~ - **COMPLETED** (count, sum, avg, min, max)
 5. ✅ ~~Function expression parsing~~ - **COMPLETED** (with count(*) support)
-6. **Logical operators in WHERE** - AND, OR, NOT
-7. **GROUP BY aggregation grouping** - Aggregate by groups
-8. **Arithmetic expressions** - Support n.age * 2, n.value + 10, etc.
-9. **Nested function support** - Enable function composition
-10. **DISTINCT in RETURN** - Remove duplicate results
+6. ✅ ~~Logical operators in WHERE~~ - **COMPLETED** (AND, OR, NOT)
+7. ✅ ~~IS NULL / IS NOT NULL in WHERE~~ - **COMPLETED**
+8. ✅ ~~IN operator~~ - **COMPLETED** (with list literal parsing)
+9. ✅ ~~Regular expression matching~~ - **COMPLETED** (=~ operator with patterns)
+10. **String matching operators** - STARTS WITH, ENDS WITH, CONTAINS
+11. **GROUP BY aggregation grouping** - Aggregate by groups
+12. **Arithmetic expressions** - Support n.age * 2, n.value + 10, etc.
+13. **Nested function support** - Enable function composition
+14. **DISTINCT in RETURN** - Remove duplicate results
 
 ### Getting Started:
 1. Review `CypherASTBuilder.java` - See what's parsed

@@ -23,13 +23,28 @@ package com.arcadedb.opencypher.ast;
  * Contains filter expressions to apply to matched patterns.
  */
 public class WhereClause {
-  private final String condition;
+  private final BooleanExpression condition;
 
-  public WhereClause(final String condition) {
+  // Legacy constructor for backward compatibility (deprecated)
+  private final String conditionString;
+
+  public WhereClause(final BooleanExpression condition) {
     this.condition = condition;
+    this.conditionString = condition != null ? condition.getText() : null;
   }
 
-  public String getCondition() {
+  // Legacy constructor - kept for backward compatibility
+  public WhereClause(final String condition) {
+    this.conditionString = condition;
+    this.condition = null;
+  }
+
+  public BooleanExpression getConditionExpression() {
     return condition;
+  }
+
+  // Legacy method - kept for backward compatibility
+  public String getCondition() {
+    return conditionString;
   }
 }
