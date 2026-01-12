@@ -67,15 +67,15 @@
         <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
         <maven-clean-plugin.version>3.5.0</maven-clean-plugin.version>
         <license-maven-plugin.version>5.0.0</license-maven-plugin.version>
-        <maven-central-publishing-plugin.version>0.9.0</maven-central-publishing-plugin.version>
+        <maven-central-publishing-plugin.version>0.10.0</maven-central-publishing-plugin.version>
 
         <testcontainers.version>2.0.3</testcontainers.version>
-        <logback-classic.version>1.5.23</logback-classic.version>
+        <logback-classic.version>1.5.24</logback-classic.version>
         <micrometer.version>1.16.1</micrometer.version>
         <postgres.version>42.7.8</postgres.version>
 
         <assertj-core.version>3.27.6</assertj-core.version>
-        <junit.jupiter.version>6.0.1</junit.jupiter.version>
+        <junit.jupiter.version>6.0.2</junit.jupiter.version>
         <awaitility.version>4.3.0</awaitility.version>
         <mockito-core.version>5.16.0</mockito-core.version>
         <json-path.version>2.10.0</json-path.version>
@@ -96,7 +96,7 @@
         <protobuf-maven-plugin.version>4.1.2</protobuf-maven-plugin.version>
         <grpc.version>1.78.0</grpc.version>
         <protoc.version>4.33.0</protoc.version>
-        <protobuf-java.version>4.33.2</protobuf-java.version>
+        <protobuf-java.version>4.33.3</protobuf-java.version>
         <com.google.api.grpc.version>2.63.2</com.google.api.grpc.version>
         <javax.annotation-api.version>1.3.2</javax.annotation-api.version>
 
