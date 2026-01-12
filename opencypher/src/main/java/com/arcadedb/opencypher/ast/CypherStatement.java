@@ -94,4 +94,32 @@ public interface CypherStatement {
    * @return LIMIT value or null
    */
   Integer getLimit();
+
+  /**
+   * Returns the CREATE clause if present.
+   *
+   * @return CREATE clause or null
+   */
+  CreateClause getCreateClause();
+
+  /**
+   * Returns the SET clause if present.
+   *
+   * @return SET clause or null
+   */
+  SetClause getSetClause();
+
+  /**
+   * Returns the DELETE clause if present.
+   *
+   * @return DELETE clause or null
+   */
+  DeleteClause getDeleteClause();
+
+  /**
+   * Returns the MERGE clause if present.
+   *
+   * @return MERGE clause or null
+   */
+  MergeClause getMergeClause();
 }

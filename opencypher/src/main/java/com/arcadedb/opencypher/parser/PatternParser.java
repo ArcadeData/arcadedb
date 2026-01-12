@@ -25,7 +25,9 @@ import com.arcadedb.opencypher.ast.RelationshipPattern;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -80,7 +82,7 @@ public class PatternParser {
   }
 
   /**
-   * Parses a node pattern string: n:Label or n or :Label
+   * Parses a node pattern string: n:Label or n or :Label or n:Label {prop: value}
    *
    * @param nodeStr node pattern string
    * @return parsed NodePattern
@@ -92,10 +94,23 @@ public class PatternParser {
 
     String variable = null;
     List<String> labels = null;
+    Map<String, Object> properties = null;
+
+    // Extract properties if present: {...}
+    String remainingStr = nodeStr;
+    if (nodeStr.contains("{")) {
+      final int braceStart = nodeStr.indexOf('{');
+      final int braceEnd = nodeStr.lastIndexOf('}');
+      if (braceEnd > braceStart) {
+        final String propsStr = nodeStr.substring(braceStart + 1, braceEnd);
+        properties = parseProperties(propsStr);
+        remainingStr = nodeStr.substring(0, braceStart).trim();
+      }
+    }
 
     // Check for label: n:Label or :Label
-    if (nodeStr.contains(":")) {
-      final String[] parts = nodeStr.split(":", 2);
+    if (remainingStr.contains(":")) {
+      final String[] parts = remainingStr.split(":", 2);
       if (!parts[0].trim().isEmpty()) {
         variable = parts[0].trim();
       }
@@ -103,14 +118,63 @@ public class PatternParser {
         labels = Arrays.asList(parts[1].trim());
       }
     } else {
-      variable = nodeStr.trim();
+      variable = remainingStr.trim();
     }
 
-    return new NodePattern(variable, labels, null);
+    return new NodePattern(variable, labels, properties);
   }
 
   /**
-   * Parses a relationship pattern string: r:TYPE or r or :TYPE or *1..3
+   * Parses property map from string: name: 'Alice', age: 30
+   *
+   * @param propsStr properties string
+   * @return parsed property map
+   */
+  private static Map<String, Object> parseProperties(final String propsStr) {
+    final Map<String, Object> properties = new HashMap<>();
+    if (propsStr.trim().isEmpty()) {
+      return properties;
+    }
+
+    // Simple comma-split (doesn't handle nested objects or arrays)
+    final String[] parts = propsStr.split(",");
+    for (final String part : parts) {
+      final String[] keyValue = part.split(":", 2);
+      if (keyValue.length == 2) {
+        final String key = keyValue[0].trim();
+        String value = keyValue[1].trim();
+
+        // Parse value type
+        Object parsedValue;
+        if (value.startsWith("'") || value.startsWith("\"")) {
+          // String literal - keep quotes for later processing
+          parsedValue = value;
+        } else if (value.equalsIgnoreCase("true") || value.equalsIgnoreCase("false")) {
+          // Boolean
+          parsedValue = Boolean.parseBoolean(value);
+        } else {
+          // Try to parse as number
+          try {
+            if (value.contains(".")) {
+              parsedValue = Double.parseDouble(value);
+            } else {
+              parsedValue = Integer.parseInt(value);
+            }
+          } catch (final NumberFormatException e) {
+            // Keep as string if parsing fails
+            parsedValue = value;
+          }
+        }
+
+        properties.put(key, parsedValue);
+      }
+    }
+
+    return properties;
+  }
+
+  /**
+   * Parses a relationship pattern string: r:TYPE or r or :TYPE or *1..3 or r:TYPE {prop: value}
    *
    * @param relStr     relationship pattern string
    * @param leftArrow  left arrow indicator ("<" or empty)
@@ -123,6 +187,7 @@ public class PatternParser {
     List<String> types = null;
     Integer minHops = null;
     Integer maxHops = null;
+    Map<String, Object> properties = null;
 
     // Determine direction
     final Direction direction;
@@ -138,9 +203,21 @@ public class PatternParser {
       return new RelationshipPattern(null, null, direction, null, minHops, maxHops);
     }
 
+    // Extract properties if present: {...}
+    String remainingStr = relStr;
+    if (relStr.contains("{")) {
+      final int braceStart = relStr.indexOf('{');
+      final int braceEnd = relStr.lastIndexOf('}');
+      if (braceEnd > braceStart) {
+        final String propsStr = relStr.substring(braceStart + 1, braceEnd);
+        properties = parseProperties(propsStr);
+        remainingStr = relStr.substring(0, braceStart).trim();
+      }
+    }
+
     // Check for variable-length: *1..3 or *..3 or *1.. or *
-    if (relStr.contains("*")) {
-      final String[] parts = relStr.split("\\*", 2);
+    if (remainingStr.contains("*")) {
+      final String[] parts = remainingStr.split("\\*", 2);
 
       // Parse variable and type before *
       if (!parts[0].trim().isEmpty()) {
@@ -175,8 +252,8 @@ public class PatternParser {
       }
     } else {
       // Fixed-length relationship
-      if (relStr.contains(":")) {
-        final String[] parts = relStr.split(":", 2);
+      if (remainingStr.contains(":")) {
+        final String[] parts = remainingStr.split(":", 2);
         if (!parts[0].trim().isEmpty()) {
           variable = parts[0].trim();
         }
@@ -184,10 +261,10 @@ public class PatternParser {
           types = Arrays.asList(parts[1].trim());
         }
       } else {
-        variable = relStr.trim();
+        variable = remainingStr.trim();
       }
     }
 
-    return new RelationshipPattern(variable, types, direction, null, minHops, maxHops);
+    return new RelationshipPattern(variable, types, direction, properties, minHops, maxHops);
   }
 }

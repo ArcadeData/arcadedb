@@ -34,15 +34,19 @@ import java.util.regex.Pattern;
  * TODO: Integrate full ANTLR4-generated parser from Cypher25Lexer/Parser grammars.
  */
 public class AntlrCypherParser {
-  private static final Pattern MATCH_PATTERN = Pattern.compile("MATCH\\s+(.+?)(?:WHERE|RETURN|$)", Pattern.CASE_INSENSITIVE);
-  private static final Pattern WHERE_PATTERN = Pattern.compile("WHERE\\s+(.+?)(?:RETURN|$)", Pattern.CASE_INSENSITIVE);
+  private static final Pattern MATCH_PATTERN = Pattern.compile("MATCH\\s+(.+?)(?:WHERE|RETURN|SET|DELETE|$)", Pattern.CASE_INSENSITIVE);
+  private static final Pattern CREATE_PATTERN = Pattern.compile("CREATE\\s+(.+?)(?:SET|RETURN|$)", Pattern.CASE_INSENSITIVE);
+  private static final Pattern MERGE_PATTERN = Pattern.compile("MERGE\\s+(.+?)(?:SET|RETURN|$)", Pattern.CASE_INSENSITIVE);
+  private static final Pattern SET_PATTERN = Pattern.compile("SET\\s+(.+?)(?:RETURN|DELETE|$)", Pattern.CASE_INSENSITIVE);
+  private static final Pattern DELETE_PATTERN = Pattern.compile("(DETACH\\s+)?DELETE\\s+(.+?)(?:RETURN|$)", Pattern.CASE_INSENSITIVE);
+  private static final Pattern WHERE_PATTERN = Pattern.compile("WHERE\\s+(.+?)(?:RETURN|SET|DELETE|$)", Pattern.CASE_INSENSITIVE);
   private static final Pattern RETURN_PATTERN = Pattern.compile("RETURN\\s+(.+?)(?:ORDER BY|SKIP|LIMIT|$)", Pattern.CASE_INSENSITIVE);
   private static final Pattern ORDER_BY_PATTERN = Pattern.compile("ORDER BY\\s+(.+?)(?:SKIP|LIMIT|$)", Pattern.CASE_INSENSITIVE);
   private static final Pattern SKIP_PATTERN = Pattern.compile("SKIP\\s+(\\d+)", Pattern.CASE_INSENSITIVE);
   private static final Pattern LIMIT_PATTERN = Pattern.compile("LIMIT\\s+(\\d+)", Pattern.CASE_INSENSITIVE);
-  private static final Pattern CREATE_PATTERN = Pattern.compile("\\bCREATE\\b", Pattern.CASE_INSENSITIVE);
-  private static final Pattern MERGE_PATTERN = Pattern.compile("\\bMERGE\\b", Pattern.CASE_INSENSITIVE);
-  private static final Pattern DELETE_PATTERN = Pattern.compile("\\bDELETE\\b", Pattern.CASE_INSENSITIVE);
+  private static final Pattern HAS_CREATE_PATTERN = Pattern.compile("\\bCREATE\\b", Pattern.CASE_INSENSITIVE);
+  private static final Pattern HAS_MERGE_PATTERN = Pattern.compile("\\bMERGE\\b", Pattern.CASE_INSENSITIVE);
+  private static final Pattern HAS_DELETE_PATTERN = Pattern.compile("\\bDELETE\\b", Pattern.CASE_INSENSITIVE);
 
   private final DatabaseInternal database;
 
@@ -74,6 +78,44 @@ public class AntlrCypherParser {
         // Phase 2+: Parse pattern into PathPattern objects
         final List<PathPattern> pathPatterns = PatternParser.parsePathPatterns(pattern);
         matchClauses.add(new MatchClause(pathPatterns, false));
+      }
+
+      // Extract CREATE clause
+      CreateClause createClause = null;
+      final Matcher createMatcher = CREATE_PATTERN.matcher(trimmedQuery);
+      if (createMatcher.find()) {
+        final String pattern = createMatcher.group(1).trim();
+        final List<PathPattern> pathPatterns = PatternParser.parsePathPatterns(pattern);
+        createClause = new CreateClause(pathPatterns);
+      }
+
+      // Extract MERGE clause
+      MergeClause mergeClause = null;
+      final Matcher mergeMatcher = MERGE_PATTERN.matcher(trimmedQuery);
+      if (mergeMatcher.find()) {
+        final String pattern = mergeMatcher.group(1).trim();
+        final List<PathPattern> pathPatterns = PatternParser.parsePathPatterns(pattern);
+        if (!pathPatterns.isEmpty()) {
+          mergeClause = new MergeClause(pathPatterns.get(0));
+        }
+      }
+
+      // Extract SET clause
+      SetClause setClause = null;
+      final Matcher setMatcher = SET_PATTERN.matcher(trimmedQuery);
+      if (setMatcher.find()) {
+        final String setStr = setMatcher.group(1).trim();
+        setClause = parseSet(setStr);
+      }
+
+      // Extract DELETE clause
+      DeleteClause deleteClause = null;
+      final Matcher deleteMatcher = DELETE_PATTERN.matcher(trimmedQuery);
+      if (deleteMatcher.find()) {
+        final boolean detach = deleteMatcher.group(1) != null;
+        final String variables = deleteMatcher.group(2).trim();
+        final List<String> variableList = Arrays.asList(variables.split("\\s*,\\s*"));
+        deleteClause = new DeleteClause(variableList, detach);
       }
 
       // Extract WHERE clause
@@ -116,12 +158,12 @@ public class AntlrCypherParser {
       }
 
       // Check for write operations
-      final boolean hasCreate = CREATE_PATTERN.matcher(trimmedQuery).find();
-      final boolean hasMerge = MERGE_PATTERN.matcher(trimmedQuery).find();
-      final boolean hasDelete = DELETE_PATTERN.matcher(trimmedQuery).find();
+      final boolean hasCreate = HAS_CREATE_PATTERN.matcher(trimmedQuery).find();
+      final boolean hasMerge = HAS_MERGE_PATTERN.matcher(trimmedQuery).find();
+      final boolean hasDelete = HAS_DELETE_PATTERN.matcher(trimmedQuery).find();
 
       return new SimpleCypherStatement(query, matchClauses, whereClause, returnClause, orderByClause, skip, limit,
-          hasCreate, hasMerge, hasDelete);
+          createClause, setClause, deleteClause, mergeClause, hasCreate, hasMerge, hasDelete);
 
     } catch (final Exception e) {
       throw new CommandParsingException("Failed to parse Cypher query: " + query, e);
@@ -157,5 +199,36 @@ public class AntlrCypherParser {
     }
 
     return new OrderByClause(items);
+  }
+
+  /**
+   * Parses SET string into SetClause.
+   * Example: "n.name = 'Alice', n.age = 30"
+   *
+   * @param setStr SET string
+   * @return parsed SetClause
+   */
+  private SetClause parseSet(final String setStr) {
+    final List<SetClause.SetItem> items = new ArrayList<>();
+    final String[] parts = setStr.split(",");
+
+    for (final String part : parts) {
+      final String trimmed = part.trim();
+      final String[] assignParts = trimmed.split("=", 2);
+      if (assignParts.length == 2) {
+        final String left = assignParts[0].trim();
+        final String right = assignParts[1].trim();
+
+        // Parse left side: variable.property
+        if (left.contains(".")) {
+          final String[] propParts = left.split("\\.", 2);
+          final String variable = propParts[0].trim();
+          final String property = propParts[1].trim();
+          items.add(new SetClause.SetItem(variable, property, right));
+        }
+      }
+    }
+
+    return new SetClause(items);
   }
 }

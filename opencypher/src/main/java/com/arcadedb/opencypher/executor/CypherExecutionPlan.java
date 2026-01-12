@@ -25,6 +25,7 @@ import com.arcadedb.opencypher.ast.MatchClause;
 import com.arcadedb.opencypher.ast.NodePattern;
 import com.arcadedb.opencypher.ast.PathPattern;
 import com.arcadedb.opencypher.ast.RelationshipPattern;
+import com.arcadedb.opencypher.executor.steps.CreateStep;
 import com.arcadedb.opencypher.executor.steps.ExpandPathStep;
 import com.arcadedb.opencypher.executor.steps.FilterPropertiesStep;
 import com.arcadedb.opencypher.executor.steps.MatchNodeStep;
@@ -145,14 +146,25 @@ public class CypherExecutionPlan {
       currentStep = filterStep;
     }
 
-    // Step 3: RETURN clause - project results
+    // Step 3: CREATE clause - create vertices/edges
+    if (statement.getCreateClause() != null && !statement.getCreateClause().isEmpty()) {
+      final CreateStep createStep = new CreateStep(statement.getCreateClause(), context);
+      if (currentStep != null) {
+        // Chained CREATE (after MATCH/WHERE)
+        createStep.setPrevious(currentStep);
+      }
+      // else: Standalone CREATE (no previous step)
+      currentStep = createStep;
+    }
+
+    // Step 4: RETURN clause - project results
     if (statement.getReturnClause() != null && currentStep != null) {
       final ProjectReturnStep returnStep = new ProjectReturnStep(statement.getReturnClause(), context);
       returnStep.setPrevious(currentStep);
       currentStep = returnStep;
     }
 
-    // Step 4: ORDER BY clause - sort results
+    // Step 5: ORDER BY clause - sort results
     if (statement.getOrderByClause() != null && currentStep != null) {
       final com.arcadedb.opencypher.executor.steps.OrderByStep orderByStep = new com.arcadedb.opencypher.executor.steps.OrderByStep(
           statement.getOrderByClause(), context);
@@ -160,7 +172,7 @@ public class CypherExecutionPlan {
       currentStep = orderByStep;
     }
 
-    // Step 5: SKIP clause - skip first N results
+    // Step 6: SKIP clause - skip first N results
     if (statement.getSkip() != null && currentStep != null) {
       final com.arcadedb.opencypher.executor.steps.SkipStep skipStep = new com.arcadedb.opencypher.executor.steps.SkipStep(
           statement.getSkip(), context);
@@ -168,7 +180,7 @@ public class CypherExecutionPlan {
       currentStep = skipStep;
     }
 
-    // Step 6: LIMIT clause - limit number of results
+    // Step 7: LIMIT clause - limit number of results
     if (statement.getLimit() != null && currentStep != null) {
       final com.arcadedb.opencypher.executor.steps.LimitStep limitStep = new com.arcadedb.opencypher.executor.steps.LimitStep(
           statement.getLimit(), context);
