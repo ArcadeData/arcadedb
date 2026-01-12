@@ -593,7 +593,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
 
       assertThat(rs.next()).isTrue();
       assertThat(rs.getString("name")).isEqualTo("TestItem");
-      assertThat(rs.getFloat("price")).isEqualTo(29.99);
+      assertThat(rs.getFloat("price")).isEqualTo(29.99f);
 
     }
   }
