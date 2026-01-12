@@ -1,8 +1,8 @@
 # OpenCypher Implementation Status
 
 **Last Updated:** 2026-01-12
-**Implementation Version:** Native ANTLR4-based Parser (Phase 6)
-**Test Coverage:** 107/107 tests passing (100%)
+**Implementation Version:** Native ANTLR4-based Parser (Phase 7)
+**Test Coverage:** 120/120 tests passing (100%)
 
 ---
 
@@ -11,11 +11,11 @@
 | Category | Implementation | Notes |
 |----------|---------------|-------|
 | **Parser** | ✅ **100%** | ANTLR4-based using official Cypher 2.5 grammar |
-| **Basic Read Queries** | ✅ **85%** | MATCH, WHERE (simple), RETURN, ORDER BY, SKIP, LIMIT |
+| **Basic Read Queries** | ✅ **90%** | MATCH (multiple, optional), WHERE, RETURN, ORDER BY, SKIP, LIMIT |
 | **Basic Write Queries** | ✅ **80%** | CREATE ✅, SET ✅, DELETE ✅, MERGE ✅ |
 | **Expression Evaluation** | ✅ **95%** | Expression framework complete, functions fully working |
 | **Functions** | ✅ **95%** | 7 Cypher functions + bridge to 100+ SQL functions, all tests passing |
-| **Advanced Features** | 🔴 **10%** | Limited path support, no UNION/WITH |
+| **Advanced Features** | 🟡 **25%** | Named paths ✅, OPTIONAL MATCH ✅, no UNION/WITH |
 
 **Legend:** ✅ Complete | 🟡 Partial | 🔴 Minimal | ❌ Not Implemented
 
@@ -48,13 +48,29 @@ MATCH (a)-[r]-(b) RETURN a, b
 
 // ✅ Relationship with properties
 MATCH (a)-[r:WORKS_AT {since: 2020}]->(b) RETURN r
+
+// ✅ Multiple MATCH clauses (Cartesian product or chained)
+MATCH (a:Person {name: 'Alice'})
+MATCH (b:Person {name: 'Bob'})
+RETURN a, b
+
+// ✅ Pattern without labels (matches all vertices)
+MATCH (n) RETURN n
+MATCH (n) WHERE n.age > 25 RETURN n
+
+// ✅ Named paths for single edges
+MATCH p = (a:Person)-[r:KNOWS]->(b:Person) RETURN p
+
+// ✅ OPTIONAL MATCH (LEFT OUTER JOIN semantics)
+MATCH (a:Person)
+OPTIONAL MATCH (a)-[r:KNOWS]->(b:Person)
+RETURN a.name, b.name
 ```
 
 **Limitations:**
-- ❌ OPTIONAL MATCH (parsed but not executed correctly)
-- ❌ Multiple MATCH clauses (only first is processed)
-- ❌ Pattern without labels: `MATCH (n)` not supported
-- ❌ Named paths: `p = (a)-[*]->(b)` not stored
+- ⚠️ OPTIONAL MATCH with WHERE clause: WHERE currently applies globally rather than scoped to the OPTIONAL MATCH
+- ❌ Named paths for variable-length relationships: `p = (a)-[*1..3]->(b)` not yet supported
+- ❌ Pattern predicates in WHERE: `WHERE (n)-[:KNOWS]->()` not yet implemented
 
 ### WHERE Clause
 ```cypher
@@ -532,28 +548,67 @@ CypherStatement → CypherExecutionPlanner → Execution Plan (Step Chain)
 
 ---
 
+## 🚀 Phase 7 Implementation (January 2026)
+
+### New Features Added
+This phase focused on enhancing MATCH clause capabilities:
+
+1. **✅ Multiple MATCH Clauses**
+   - Support for multiple MATCH clauses in a single query
+   - Cartesian product or chained matching
+   - Example: `MATCH (a:Person) MATCH (b:Company) RETURN a, b`
+
+2. **✅ Patterns Without Labels**
+   - Support for unlabeled patterns that match all vertices
+   - Uses ChainedIterator to iterate all vertex types
+   - Example: `MATCH (n) WHERE n.age > 25 RETURN n`
+
+3. **✅ Named Paths for Single Edges**
+   - Store path as TraversalPath object
+   - Access path properties: length(), getVertices(), getEdges()
+   - Example: `MATCH p = (a)-[r:KNOWS]->(b) RETURN p`
+
+4. **✅ OPTIONAL MATCH**
+   - Implements LEFT OUTER JOIN semantics
+   - Returns NULL for unmatched patterns
+   - Uses SingleRowInputStep for proper data flow
+   - Example: `MATCH (a:Person) OPTIONAL MATCH (a)-[r]->(b) RETURN a, b`
+
+### Architecture Changes
+- **OptionalMatchStep**: New execution step implementing optional matching with NULL emission
+- **CypherExecutionPlan**: Enhanced to handle multiple MATCH clauses and source variable binding
+- **MatchNodeStep**: Added ChainedIterator for unlabeled pattern support
+- **CypherASTBuilder**: Fixed path variable extraction in `visitPattern()`
+
+### Test Coverage
+- Added 13 new tests (107 → 120 tests)
+- OpenCypherOptionalMatchTest: 6 tests for OPTIONAL MATCH
+- OpenCypherMatchEnhancementsTest: 7 tests for new MATCH features
+- All 120 tests passing
+
+---
+
 ## 🐛 Known Issues
 
-1. **MATCH without label not supported** - `MATCH (n) RETURN n` throws error
-   - Workaround: Always specify label `MATCH (n:TypeName) RETURN n`
-
-2. **Only first MATCH clause processed** - Multiple MATCH clauses ignored
-   - Workaround: Use comma-separated patterns in single MATCH
-
-3. **GROUP BY not implemented** - Aggregations work on entire result set only
+1. **GROUP BY not implemented** - Aggregations work on entire result set only
    - Status: Core aggregation functions working, GROUP BY clause not yet implemented
    - Workaround: Pre-filter data with WHERE clause
 
-4. **OPTIONAL MATCH parsed but not executed correctly** - May return incorrect results
-   - Workaround: Use SQL's LEFT JOIN equivalent
+2. **OPTIONAL MATCH with WHERE clause scoping** - WHERE applies globally rather than within OPTIONAL MATCH scope
+   - Status: Core OPTIONAL MATCH working, scoped WHERE needs additional work
+   - Workaround: Filter NULL results in application logic
 
-5. **Arithmetic expressions not yet supported** - `RETURN n.age * 2` not working
+3. **Arithmetic expressions not yet supported** - `RETURN n.age * 2` not working
    - Status: Function expressions working, arithmetic operators need parser support
    - Workaround: Use SQL functions or pre-compute values
 
-6. **String matching operators not implemented** - STARTS WITH, ENDS WITH, CONTAINS
+4. **String matching operators not implemented** - STARTS WITH, ENDS WITH, CONTAINS
    - Status: Grammar support exists, execution logic not implemented
    - Workaround: Use regex patterns: `name =~ 'A.*'` for STARTS WITH 'A'
+
+5. **Named paths for variable-length relationships** - `p = (a)-[*1..3]->(b)` not storing path
+   - Status: Variable-length traversal works, path variable storage not yet implemented
+   - Workaround: Store individual edges/vertices separately
 
 ---
 
@@ -604,7 +659,7 @@ We welcome contributions to the OpenCypher implementation!
 - Follow existing code style (see `CLAUDE.md`)
 - Use Low-Level Java optimizations
 - Minimize garbage collection pressure
-- All tests must pass (92/92)
+- All tests must pass (120/120)
 - Add tests for new features
 
 ---

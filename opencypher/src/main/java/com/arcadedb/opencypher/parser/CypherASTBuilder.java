@@ -498,9 +498,22 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   public PathPattern visitPattern(final Cypher25Parser.PatternContext ctx) {
     // Pattern: (variable =)? pathPatternPrefix? anonymousPattern
-    // For now, focus on simple patterns without path prefix
+    // Extract path variable if present (e.g., p = (a)-[r]->(b))
 
-    return visitAnonymousPattern(ctx.anonymousPattern());
+    String pathVariable = null;
+    if (ctx.variable() != null) {
+      pathVariable = ctx.variable().getText();
+    }
+
+    // Visit the anonymous pattern to get the base path
+    final PathPattern basePath = visitAnonymousPattern(ctx.anonymousPattern());
+
+    // If there's a path variable, create a new PathPattern with it
+    if (pathVariable != null) {
+      return new PathPattern(basePath.getNodes(), basePath.getRelationships(), pathVariable);
+    }
+
+    return basePath;
   }
 
   public PathPattern visitAnonymousPattern(final Cypher25Parser.AnonymousPatternContext ctx) {

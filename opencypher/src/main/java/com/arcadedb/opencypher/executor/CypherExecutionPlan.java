@@ -191,26 +191,45 @@ public class CypherExecutionPlan {
             // Relationship pattern: MATCH (a)-[r]->(b)
             final NodePattern sourceNode = pathPattern.getFirstNode();
             final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() : "a";
-            matchVariables.add(sourceVar); // Track variable for OPTIONAL MATCH
 
-            // Start with source node (or chain if we have previous patterns)
-            final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context);
+            // Check if source node is already bound (for multiple MATCH clauses or OPTIONAL MATCH)
+            // If the source node has no labels/properties and there's a previous step,
+            // it's likely referring to an already-bound variable - skip creating MatchNodeStep
+            final boolean sourceAlreadyBound = stepBeforeMatch != null &&
+                !sourceNode.hasLabels() && !sourceNode.hasProperties();
 
-            if (isOptional) {
-              // For optional match, chain within the match steps only
-              if (matchChainStart == null) {
-                matchChainStart = sourceStep;
-                currentStep = sourceStep;
+            if (!sourceAlreadyBound) {
+              // Only track the source variable if we're creating a new binding for it
+              matchVariables.add(sourceVar);
+
+              // Start with source node (or chain if we have previous patterns)
+              final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context);
+
+              if (isOptional) {
+                // For optional match, chain within the match steps only
+                if (matchChainStart == null) {
+                  matchChainStart = sourceStep;
+                  currentStep = sourceStep;
+                } else {
+                  sourceStep.setPrevious(currentStep);
+                  currentStep = sourceStep;
+                }
               } else {
-                sourceStep.setPrevious(currentStep);
+                // For regular match, chain to previous step
+                if (currentStep != null) {
+                  sourceStep.setPrevious(currentStep);
+                }
                 currentStep = sourceStep;
               }
             } else {
-              // For regular match, chain to previous step
-              if (currentStep != null) {
-                sourceStep.setPrevious(currentStep);
+              // Source is already bound - for optional match, start the chain with
+              // a dummy step or set currentStep to null to indicate we'll start
+              // directly with the relationship step
+              // The relationship step will look for sourceVar in the input
+              if (isOptional && matchChainStart == null) {
+                // We'll start the optional chain with the relationship step
+                currentStep = null;
               }
-              currentStep = sourceStep;
             }
 
             // Add relationship traversal for each relationship in the path
@@ -242,8 +261,21 @@ public class CypherExecutionPlan {
                 nextStep = new MatchRelationshipStep(sourceVar, relVar, targetVar, relPattern, pathVariable, context);
               }
 
-              nextStep.setPrevious(currentStep);
-              currentStep = nextStep;
+              // Chain the relationship step
+              if (isOptional && matchChainStart == null) {
+                // This is the first step in the optional match chain
+                matchChainStart = nextStep;
+                // Don't set previous yet - OptionalMatchStep will manage the input
+                currentStep = nextStep;
+              } else if (sourceAlreadyBound && currentStep == null) {
+                // For non-optional match where source is already bound and we didn't create a MatchNodeStep
+                // The relationship step becomes the first step, but it will pull from stepBeforeMatch
+                nextStep.setPrevious(stepBeforeMatch);
+                currentStep = nextStep;
+              } else {
+                nextStep.setPrevious(currentStep);
+                currentStep = nextStep;
+              }
             }
           }
           }
@@ -251,15 +283,17 @@ public class CypherExecutionPlan {
           // Wrap in OptionalMatchStep if this is an OPTIONAL MATCH
           if (isOptional && matchChainStart != null) {
             // We built a separate match chain - wrap it in OptionalMatchStep
-            // matchChainStart is the first step, currentStep is the last step
+            // Pass matchChainStart (first step) not currentStep (last step)
+            // because OptionalMatchStep needs to feed input into the start of the chain
             final com.arcadedb.opencypher.executor.steps.OptionalMatchStep optionalStep =
-                new com.arcadedb.opencypher.executor.steps.OptionalMatchStep(currentStep, matchVariables, context);
+                new com.arcadedb.opencypher.executor.steps.OptionalMatchStep(matchChainStart, matchVariables, context);
 
-            // OptionalMatchStep pulls from stepBeforeMatch and feeds to the match chain
+            // OptionalMatchStep pulls from stepBeforeMatch
             if (stepBeforeMatch != null) {
               optionalStep.setPrevious(stepBeforeMatch);
             }
 
+            // The output of OptionalMatchStep becomes currentStep
             currentStep = optionalStep;
           }
         } else {

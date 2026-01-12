@@ -21,40 +21,41 @@ package com.arcadedb.opencypher.executor.steps;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
 
 /**
  * Execution step for OPTIONAL MATCH clauses.
- * Wraps a chain of match steps and ensures that if no matches are found,
- * the input rows are returned with NULL values for the pattern variables.
+ * Implements LEFT OUTER JOIN semantics: for each input row, try to match the pattern.
+ * If matches found, return them. If no matches, return input row with NULL values.
  * <p>
- * Example: OPTIONAL MATCH (n:Person)-[r:KNOWS]->(m:Person)
- * - If matches found: returns input rows expanded with matched vertices/edges
- * - If no matches: returns input rows with n, r, m set to NULL
+ * Example: MATCH (a) OPTIONAL MATCH (a)-[r:KNOWS]->(b)
+ * - For each 'a' from first MATCH, try to find (a)-[r:KNOWS]->(b)
+ * - If found: return a, r, b
+ * - If not found: return a, null, null
  */
 public class OptionalMatchStep extends AbstractExecutionStep {
-  private final AbstractExecutionStep matchStep;
+  private final AbstractExecutionStep matchChainStart;
   private final Set<String> variableNames;
 
   /**
    * Creates an optional match step.
    *
-   * @param matchStep     the chain of match steps to execute
-   * @param variableNames names of variables that should be set to NULL if no match
-   * @param context       command context
+   * @param matchChainStart first step in the optional match chain
+   * @param variableNames   names of variables that should be set to NULL if no match
+   * @param context         command context
    */
-  public OptionalMatchStep(final AbstractExecutionStep matchStep, final Set<String> variableNames,
+  public OptionalMatchStep(final AbstractExecutionStep matchChainStart, final Set<String> variableNames,
       final CommandContext context) {
     super(context);
-    this.matchStep = matchStep;
+    this.matchChainStart = matchChainStart;
     this.variableNames = variableNames;
   }
 
@@ -64,12 +65,9 @@ public class OptionalMatchStep extends AbstractExecutionStep {
 
     return new ResultSet() {
       private ResultSet prevResults = null;
-      private ResultSet matchResults = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
-      private Result currentInputResult = null;
-      private boolean currentInputHadMatch = false;
 
       @Override
       public boolean hasNext() {
@@ -98,76 +96,110 @@ public class OptionalMatchStep extends AbstractExecutionStep {
         bufferIndex = 0;
 
         if (hasInput) {
-          // With input: for each input row, try to match, or return with NULLs
+          // With input: process each input row through the optional match chain
           if (prevResults == null) {
             prevResults = prev.syncPull(context, nRecords);
           }
 
-          while (buffer.size() < n) {
-            // Try to get matches for current input
-            if (matchResults != null && matchResults.hasNext()) {
+          while (buffer.size() < n && prevResults.hasNext()) {
+            final Result inputRow = prevResults.next();
+
+            // Feed this single input row into the match chain
+            // Create a single-row input provider for the match chain
+            final SingleRowInputStep singleRowInput = new SingleRowInputStep(inputRow, context);
+            matchChainStart.setPrevious(singleRowInput);
+
+            // Execute the match chain with this input
+            final ResultSet matchResults = matchChainStart.syncPull(context, 100);
+
+            // Collect all matches for this input
+            boolean foundMatch = false;
+            while (matchResults.hasNext()) {
               buffer.add(matchResults.next());
-              currentInputHadMatch = true;
-            } else {
-              // No more matches for current input - check if we need to emit NULL row
-              if (currentInputResult != null && !currentInputHadMatch) {
-                // Emit input row with NULL values for pattern variables
-                final ResultInternal nullResult = new ResultInternal();
-                for (final String prop : currentInputResult.getPropertyNames()) {
-                  nullResult.setProperty(prop, currentInputResult.getProperty(prop));
-                }
-                for (final String varName : variableNames) {
-                  nullResult.setProperty(varName, null);
-                }
-                buffer.add(nullResult);
+              foundMatch = true;
+            }
+            matchResults.close();
+
+            // If no matches found, emit input row with NULL values for match variables
+            if (!foundMatch) {
+              final ResultInternal nullResult = new ResultInternal();
+              // Copy all properties from input row
+              for (final String prop : inputRow.getPropertyNames()) {
+                nullResult.setProperty(prop, inputRow.getProperty(prop));
               }
-
-              // Move to next input
-              if (!prevResults.hasNext()) {
-                finished = true;
-                break;
+              // Add NULL values for optional match variables
+              for (final String varName : variableNames) {
+                nullResult.setProperty(varName, null);
               }
-
-              currentInputResult = prevResults.next();
-              currentInputHadMatch = false;
-
-              // Execute match step with this input
-              matchResults = matchStep.syncPull(context, nRecords);
+              buffer.add(nullResult);
             }
           }
-        } else {
-          // No input: standalone OPTIONAL MATCH (rare, but valid)
-          if (matchResults == null) {
-            matchResults = matchStep.syncPull(context, nRecords);
-          }
 
-          // If there are matches, return them
+          if (!prevResults.hasNext()) {
+            finished = true;
+          }
+        } else {
+          // No input: standalone OPTIONAL MATCH
+          // Execute match chain without input
+          matchChainStart.setPrevious(null);
+          final ResultSet matchResults = matchChainStart.syncPull(context, nRecords);
+
+          // Collect matches
+          boolean foundAnyMatch = false;
           while (buffer.size() < n && matchResults.hasNext()) {
             buffer.add(matchResults.next());
+            foundAnyMatch = true;
           }
 
           // If no matches at all, return a single row with NULL values
-          if (buffer.isEmpty() && !matchResults.hasNext()) {
+          if (!foundAnyMatch && buffer.isEmpty()) {
             final ResultInternal nullResult = new ResultInternal();
             for (final String varName : variableNames) {
               nullResult.setProperty(varName, null);
             }
             buffer.add(nullResult);
-            finished = true;
-          } else if (!matchResults.hasNext()) {
+          }
+
+          if (!matchResults.hasNext()) {
             finished = true;
           }
+          matchResults.close();
         }
       }
 
       @Override
       public void close() {
-        if (matchResults != null) {
-          matchResults.close();
-        }
         OptionalMatchStep.this.close();
       }
     };
+  }
+
+  /**
+   * Helper step that provides a single row as input to the match chain.
+   * This allows us to feed one input row at a time into the optional match chain.
+   */
+  private static class SingleRowInputStep extends AbstractExecutionStep {
+    private final Result singleRow;
+    private boolean consumed = false;
+
+    public SingleRowInputStep(final Result row, final CommandContext context) {
+      super(context);
+      this.singleRow = row;
+    }
+
+    @Override
+    public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+      if (consumed) {
+        return new IteratorResultSet(List.<Result>of().iterator());
+      }
+      consumed = true;
+      return new IteratorResultSet(List.of(singleRow).iterator());
+    }
+
+    @Override
+    public String prettyPrint(final int depth, final int indent) {
+      return "  ".repeat(Math.max(0, depth * indent)) + "+ SINGLE ROW INPUT";
+    }
   }
 
   @Override
@@ -180,7 +212,7 @@ public class OptionalMatchStep extends AbstractExecutionStep {
       builder.append(" (").append(getCostFormatted()).append(")");
     }
     builder.append("\n");
-    builder.append(matchStep.prettyPrint(depth + 1, indent));
+    builder.append(matchChainStart.prettyPrint(depth + 1, indent));
     return builder.toString();
   }
 
