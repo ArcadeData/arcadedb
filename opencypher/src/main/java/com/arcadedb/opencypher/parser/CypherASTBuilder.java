@@ -331,6 +331,61 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     return null;
   }
 
+  /**
+   * Recursively find a PatternExpressionContext in the parse tree.
+   * Pattern expressions are used for pattern predicates in WHERE clauses.
+   */
+  private Cypher25Parser.PatternExpressionContext findPatternExpression(final org.antlr.v4.runtime.tree.ParseTree node) {
+    if (node instanceof Cypher25Parser.PatternExpressionContext) {
+      return (Cypher25Parser.PatternExpressionContext) node;
+    }
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.PatternExpressionContext found = findPatternExpression(node.getChild(i));
+      if (found != null) return found;
+    }
+    return null;
+  }
+
+  /**
+   * Visit a PatternExpressionContext and convert it to a PathPattern.
+   */
+  @Override
+  public PathPattern visitPatternExpression(final Cypher25Parser.PatternExpressionContext ctx) {
+    // patternExpression: pathPatternNonEmpty
+    final Cypher25Parser.PathPatternNonEmptyContext pathCtx = ctx.pathPatternNonEmpty();
+    if (pathCtx != null) {
+      return visitPathPatternNonEmpty(pathCtx);
+    }
+    throw new CommandParsingException("Pattern expression must contain a path pattern");
+  }
+
+  /**
+   * Visit a PathPatternNonEmptyContext and convert it to a PathPattern.
+   */
+  @Override
+  public PathPattern visitPathPatternNonEmpty(final Cypher25Parser.PathPatternNonEmptyContext ctx) {
+    // pathPatternNonEmpty: nodePattern (relationshipPattern nodePattern)*
+    final List<NodePattern> nodes = new ArrayList<>();
+    final List<RelationshipPattern> relationships = new ArrayList<>();
+
+    // Parse first node
+    if (ctx.nodePattern() != null && !ctx.nodePattern().isEmpty()) {
+      nodes.add(visitNodePattern(ctx.nodePattern(0)));
+    }
+
+    // Parse relationships and subsequent nodes
+    if (ctx.relationshipPattern() != null) {
+      for (int i = 0; i < ctx.relationshipPattern().size(); i++) {
+        relationships.add(visitRelationshipPattern(ctx.relationshipPattern(i)));
+        if (i + 1 < ctx.nodePattern().size()) {
+          nodes.add(visitNodePattern(ctx.nodePattern(i + 1)));
+        }
+      }
+    }
+
+    return new PathPattern(nodes, relationships, null);
+  }
+
   private BooleanExpression parseBooleanFromExpression11(final Cypher25Parser.Expression11Context ctx) {
     // expression11: expression10 (XOR expression10)*
     // Note: XOR is rare, for now we just delegate to expression10 if there's only one
@@ -417,9 +472,18 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // expression7: expression6 comparisonExpression6?
     final Cypher25Parser.ComparisonExpression6Context compCtx = ctx.comparisonExpression6();
 
+    // Check if expression6 contains a pattern expression (pattern predicate)
+    // This handles cases like: WHERE (n)-[:KNOWS]->()
+    final Cypher25Parser.Expression6Context expr6 = ctx.expression6();
+    final Cypher25Parser.PatternExpressionContext patternExpr = findPatternExpression(expr6);
+    if (patternExpr != null && compCtx == null) {
+      // Parse the pattern and create a pattern predicate expression
+      final PathPattern pathPattern = visitPatternExpression(patternExpr);
+      return new PatternPredicateExpression(pathPattern, false);
+    }
+
     // Check if expression6 contains a parenthesized expression
     // This handles cases like: (p.age < 26 OR p.age > 35)
-    final Cypher25Parser.Expression6Context expr6 = ctx.expression6();
     final Cypher25Parser.ParenthesizedExpressionContext parenExpr = findParenthesizedExpression(expr6);
     if (parenExpr != null && compCtx == null) {
       // Recursively parse the inner expression

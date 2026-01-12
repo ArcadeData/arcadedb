@@ -1,8 +1,8 @@
 # OpenCypher Implementation Status
 
 **Last Updated:** 2026-01-12
-**Implementation Version:** Native ANTLR4-based Parser (Phase 7 + Transaction Enhancements + ON CREATE/MATCH SET)
-**Test Coverage:** 148/148 tests passing (100%)
+**Implementation Version:** Native ANTLR4-based Parser (Phase 7 + Transaction Enhancements + ON CREATE/MATCH SET + Pattern Predicates)
+**Test Coverage:** 157/157 tests passing (100%)
 
 ---
 
@@ -77,7 +77,6 @@ RETURN a.name, b.name
 ```
 
 **Limitations:**
-- ❌ Pattern predicates in WHERE: `WHERE (n)-[:KNOWS]->()` not yet implemented
 - ⚠️ Variable-length path queries return duplicate results (pre-existing bug, not related to named path implementation)
 
 ### WHERE Clause
@@ -119,10 +118,24 @@ MATCH (n:Person) WHERE n.name =~ 'A.*' AND n.age = 30 RETURN n
 // ✅ Parenthesized expressions for operator precedence
 MATCH (n:Person) WHERE (n.age < 26 OR n.age > 35) AND n.email IS NOT NULL RETURN n
 MATCH (n:Person) WHERE ((n.age < 28 OR n.age > 35) AND n.email IS NOT NULL) OR (n.name CONTAINS 'li' AND n.age = 35) RETURN n
-```
 
-**Limitations:**
-- ❌ Pattern predicates: `WHERE (n)-[:KNOWS]->()` - Not yet implemented
+// ✅ Pattern predicates - existence checks
+MATCH (n:Person) WHERE (n)-[:KNOWS]->() RETURN n // n has outgoing KNOWS relationship
+MATCH (n:Person) WHERE (n)<-[:KNOWS]-() RETURN n // n has incoming KNOWS relationship
+MATCH (n:Person) WHERE (n)-[:KNOWS]-() RETURN n // n has any KNOWS relationship (bidirectional)
+MATCH (n:Person) WHERE NOT (n)-[:KNOWS]->() RETURN n // n doesn't know anyone
+
+// ✅ Pattern predicates with specific endpoints
+MATCH (alice:Person {name: 'Alice'}), (bob:Person {name: 'Bob'})
+WHERE (alice)-[:KNOWS]->(bob)
+RETURN alice, bob
+
+// ✅ Pattern predicates with multiple relationship types
+MATCH (n:Person) WHERE (n)-[:KNOWS|LIKES]->() RETURN n
+
+// ✅ Pattern predicates combined with property filters
+MATCH (n:Person) WHERE n.name STARTS WITH 'A' AND (n)-[:KNOWS]->() RETURN n
+```
 
 ### CREATE Clause
 ```cypher
@@ -545,9 +558,10 @@ ON MATCH SET r.promoted = true
 | **OpenCypherMatchEnhancementsTest** | **7/7** | **✅ PASS** | **Multiple MATCH, unlabeled patterns, named paths** |
 | **OpenCypherVariableLengthPathTest** | **2/2** | **✅ PASS** | **Named paths for variable-length relationships** |
 | **OpenCypherTransactionTest** | **9/9** | **✅ PASS** | **Automatic transaction handling** |
+| **OpenCypherPatternPredicateTest** | **9/9** | **✅ PASS** | **Pattern predicates in WHERE clauses** |
 | OrderByDebugTest | 2/2 | ✅ PASS | Debug tests |
 | ParserDebugTest | 2/2 | ✅ PASS | Parser tests |
-| **TOTAL** | **148/148** | **✅ 100%** | **All passing** |
+| **TOTAL** | **157/157** | **✅ 100%** | **All passing** |
 
 ### Test Files
 ```
@@ -568,6 +582,7 @@ opencypher/src/test/java/com/arcadedb/opencypher/
 ├── OpenCypherMatchEnhancementsTest.java     # Multiple MATCH, unlabeled patterns, named paths
 ├── OpenCypherVariableLengthPathTest.java    # Named paths for variable-length relationships
 ├── OpenCypherTransactionTest.java           # Automatic transaction handling
+├── OpenCypherPatternPredicateTest.java      # Pattern predicates in WHERE (NEW)
 ├── OrderByDebugTest.java                    # Debug tests
 └── ParserDebugTest.java                     # Parser tests
 ```
