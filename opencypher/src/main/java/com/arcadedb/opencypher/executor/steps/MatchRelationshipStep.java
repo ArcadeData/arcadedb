@@ -72,6 +72,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     checkForPrevious("MatchRelationshipStep requires a previous step");
 
     return new ResultSet() {
+      private ResultSet prevResults = null;
       private Result lastResult = null;
       private Iterator<Edge> currentEdges = null;
       private final List<Result> buffer = new ArrayList<>();
@@ -134,8 +135,12 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
 
             buffer.add(result);
           } else {
+            // Initialize prevResults on first call
+            if (prevResults == null) {
+              prevResults = prev.syncPull(context, nRecords);
+            }
+
             // Get next source vertex from previous step
-            final ResultSet prevResults = prev.syncPull(context, 1);
             if (!prevResults.hasNext()) {
               finished = true;
               break;

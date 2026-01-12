@@ -68,7 +68,9 @@ public class AntlrCypherParser {
       final Matcher matchMatcher = MATCH_PATTERN.matcher(trimmedQuery);
       if (matchMatcher.find()) {
         final String pattern = matchMatcher.group(1).trim();
-        matchClauses.add(new MatchClause(pattern, false));
+        // Phase 2+: Parse pattern into PathPattern objects
+        final List<PathPattern> pathPatterns = PatternParser.parsePathPatterns(pattern);
+        matchClauses.add(new MatchClause(pathPatterns, false));
       }
 
       // Extract WHERE clause

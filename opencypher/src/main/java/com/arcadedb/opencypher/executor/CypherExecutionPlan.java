@@ -21,6 +21,18 @@ package com.arcadedb.opencypher.executor;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.opencypher.ast.CypherStatement;
+import com.arcadedb.opencypher.ast.MatchClause;
+import com.arcadedb.opencypher.ast.NodePattern;
+import com.arcadedb.opencypher.ast.PathPattern;
+import com.arcadedb.opencypher.ast.RelationshipPattern;
+import com.arcadedb.opencypher.executor.steps.ExpandPathStep;
+import com.arcadedb.opencypher.executor.steps.FilterPropertiesStep;
+import com.arcadedb.opencypher.executor.steps.MatchNodeStep;
+import com.arcadedb.opencypher.executor.steps.MatchRelationshipStep;
+import com.arcadedb.opencypher.executor.steps.ProjectReturnStep;
+import com.arcadedb.query.sql.executor.AbstractExecutionStep;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -49,22 +61,97 @@ public class CypherExecutionPlan {
 
   /**
    * Executes the query plan and returns results.
-   * Phase 1: Stub implementation that returns an empty result set.
-   * TODO: Implement actual execution step chain.
+   * Phase 3: Builds and executes the step chain.
    *
    * @return result set
    */
   public ResultSet execute() {
-    // Phase 1: Return empty result set as placeholder
-    // TODO: Build and execute execution step chain
-    final List<ResultInternal> results = new ArrayList<>();
+    // Build execution step chain
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    context.setInputParameters(parameters);
 
-    // Placeholder: add a simple result showing the query was parsed
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("message", "OpenCypher query parsed successfully (Phase 1 - execution not yet implemented)");
-    result.setProperty("query", statement.getClass().getSimpleName());
-    results.add(result);
+    AbstractExecutionStep rootStep = buildExecutionSteps(context);
 
-    return new IteratorResultSet(results.iterator());
+    if (rootStep == null) {
+      // No steps to execute - return empty result
+      return new IteratorResultSet(new ArrayList<ResultInternal>().iterator());
+    }
+
+    // Execute the step chain
+    // Use default batch size instead of Integer.MAX_VALUE for lazy evaluation
+    return rootStep.syncPull(context, 100);
+  }
+
+  /**
+   * Builds the execution step chain from the parsed statement.
+   */
+  private AbstractExecutionStep buildExecutionSteps(final CommandContext context) {
+    AbstractExecutionStep currentStep = null;
+
+    // Step 1: MATCH clause - fetch nodes
+    if (!statement.getMatchClauses().isEmpty()) {
+      final MatchClause matchClause = statement.getMatchClauses().get(0);
+
+      if (matchClause.hasPathPatterns()) {
+        // Phase 2+: Use parsed path patterns
+        final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
+
+        if (pathPattern.isSingleNode()) {
+          // Simple node pattern: MATCH (n:Person)
+          final NodePattern nodePattern = pathPattern.getFirstNode();
+          final String variable = nodePattern.getVariable() != null ? nodePattern.getVariable() : "n";
+          currentStep = new MatchNodeStep(variable, nodePattern, context);
+        } else {
+          // Relationship pattern: MATCH (a)-[r]->(b)
+          final NodePattern sourceNode = pathPattern.getFirstNode();
+          final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() : "a";
+
+          // Start with source node
+          currentStep = new MatchNodeStep(sourceVar, sourceNode, context);
+
+          // Add relationship traversal for each relationship in the path
+          for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
+            final RelationshipPattern relPattern = pathPattern.getRelationship(i);
+            final NodePattern targetNode = pathPattern.getNode(i + 1);
+            final String relVar = relPattern.getVariable();
+            final String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() : ("n" + i);
+
+            AbstractExecutionStep nextStep;
+            if (relPattern.isVariableLength()) {
+              // Variable-length path
+              nextStep = new ExpandPathStep(sourceVar, relVar, targetVar, relPattern, context);
+            } else {
+              // Fixed-length relationship
+              nextStep = new MatchRelationshipStep(sourceVar, relVar, targetVar, relPattern, context);
+            }
+
+            nextStep.setPrevious(currentStep);
+            currentStep = nextStep;
+          }
+        }
+      } else {
+        // Phase 1: Use raw pattern string - create a simple stub
+        final ResultInternal stubResult = new ResultInternal();
+        stubResult.setProperty("message", "Pattern parsing not available for: " + matchClause.getPattern());
+        return null;
+      }
+    }
+
+    // Step 2: WHERE clause - filter results
+    if (statement.getWhereClause() != null && currentStep != null) {
+      final FilterPropertiesStep filterStep = new FilterPropertiesStep(statement.getWhereClause(), context);
+      filterStep.setPrevious(currentStep);
+      currentStep = filterStep;
+    }
+
+    // Step 3: RETURN clause - project results
+    if (statement.getReturnClause() != null && currentStep != null) {
+      final ProjectReturnStep returnStep = new ProjectReturnStep(statement.getReturnClause(), context);
+      returnStep.setPrevious(currentStep);
+      currentStep = returnStep;
+    }
+
+    return currentStep;
   }
 }
