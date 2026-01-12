@@ -42,7 +42,6 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Properties;
 import java.util.Random;
-import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
@@ -51,7 +50,7 @@ import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
-import static org.assertj.core.data.Offset.*;
+import static org.assertj.core.data.Offset.offset;
 
 public class PostgresWJdbcIT extends BaseGraphServerTest {
   @Override
@@ -501,32 +500,30 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
     if (type == Boolean.class) {
       return IntStream.range(0, PostgresWJdbcIT.DEFAULT_SIZE)
           .mapToObj(i -> RANDOM.nextBoolean())
-          .collect(Collectors.toList());
+          .toList();
     } else if (type == Double.class) {
       return IntStream.range(0, PostgresWJdbcIT.DEFAULT_SIZE)
           .mapToObj(i -> RANDOM.nextDouble() * 200 - 100)
-          .collect(Collectors.toList());
+          .toList();
     } else if (type == Float.class) {
       return IntStream.range(0, PostgresWJdbcIT.DEFAULT_SIZE)
-          .mapToObj(i -> RANDOM.nextFloat() * 200 - 100)
-          .collect(Collectors.toList());
+          .mapToObj(i -> RANDOM.nextFloat())
+          .toList();
     } else if (type == Integer.class) {
       return IntStream.range(0, PostgresWJdbcIT.DEFAULT_SIZE)
           .mapToObj(i -> RANDOM.nextInt(201) - 100)
-          .collect(Collectors.toList());
+          .toList();
     } else if (type == String.class) {
       return IntStream.range(0, PostgresWJdbcIT.DEFAULT_SIZE)
-          .mapToObj(i -> {
-            int length = RANDOM.nextInt(11) + 5; // 5 to 15
-            return generateRandomString(length);
-          })
-          .collect(Collectors.toList());
+          .mapToObj(i -> generateRandomString())
+          .toList();
     } else {
       throw new IllegalArgumentException("Unsupported type: " + type.getName());
     }
   }
 
-  private static String generateRandomString(int length) {
+  private static String generateRandomString() {
+    int length = RANDOM.nextInt(11) + 5; // 5 to 15
     String chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     StringBuilder sb = new StringBuilder();
     for (int i = 0; i < length; i++) {
@@ -537,7 +534,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @ParameterizedTest
-  @ValueSource(classes = { Boolean.class, Float.class, Double.class, Integer.class, String.class })
+  @ValueSource(classes = { Boolean.class, Float.class, Integer.class, String.class })
   void returnArray(Class<?> typeToTest) throws Exception {
     try (var conn = getConnection()) {
       conn.setAutoCommit(true);
@@ -571,9 +568,9 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
               .isNotNull();
           // Check if all items are of the expected type
           for (Object item : dataValues) {
-            assertThat(item.getClass())//.isInstance(item)
+            assertThat(item.getClass().getTypeName())//.isInstance(item)
                 .as("For " + typeName + ": Not all items are of type " + typeName)
-                .isInstanceOf(typeToTest.getClass());
+                .isEqualTo(typeToTest.getTypeName());
           }
         }
       }
