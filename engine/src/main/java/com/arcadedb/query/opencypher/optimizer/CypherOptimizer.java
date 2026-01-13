@@ -208,7 +208,7 @@ public class CypherOptimizer {
         logicalPlan, anchor.getVariable());
 
     // Order relationships by estimated cardinality
-    final List<com.arcadedb.opencypher.optimizer.plan.LogicalRelationship> orderedRels =
+    final List<com.arcadedb.query.opencypher.optimizer.plan.LogicalRelationship> orderedRels =
         joinOrderRule.orderRelationships(
             logicalPlan.getRelationships(),
             anchor.getVariable(),
@@ -218,7 +218,7 @@ public class CypherOptimizer {
     // Build operator chain
     PhysicalOperator currentOp = anchorOperator;
 
-    for (final com.arcadedb.opencypher.optimizer.plan.LogicalRelationship rel : orderedRels) {
+    for (final com.arcadedb.query.opencypher.optimizer.plan.LogicalRelationship rel : orderedRels) {
       // Check if we should use ExpandInto (both endpoints bound)
       if (expandIntoRule.shouldUseExpandInto(rel, boundVariables)) {
         // Use ExpandInto for bounded patterns
@@ -249,14 +249,14 @@ public class CypherOptimizer {
    * @return ExpandAll operator
    */
   private PhysicalOperator createExpandAllOperator(
-      final com.arcadedb.opencypher.optimizer.plan.LogicalRelationship relationship,
+      final com.arcadedb.query.opencypher.optimizer.plan.LogicalRelationship relationship,
       final PhysicalOperator input,
       final java.util.Set<String> boundVariables) {
     // Extract parameters from relationship
     String sourceVariable = relationship.getSourceVariable();
     final String edgeVariable = relationship.getVariable();
     String targetVariable = relationship.getTargetVariable();
-    com.arcadedb.opencypher.ast.Direction direction = relationship.getDirection();
+    com.arcadedb.query.opencypher.ast.Direction direction = relationship.getDirection();
     final String[] edgeTypes = relationship.getTypes().toArray(new String[0]);
 
     // Determine which variable is bound and adjust direction if needed
@@ -281,7 +281,7 @@ public class CypherOptimizer {
     final double expansionCost = inputCardinality * avgDegree * costModel.EXPAND_COST_PER_ROW;
     final double totalCost = input.getEstimatedCost() + expansionCost;
 
-    return new com.arcadedb.opencypher.executor.operators.ExpandAll(
+    return new com.arcadedb.query.opencypher.executor.operators.ExpandAll(
         input,
         sourceVariable,
         edgeVariable,
@@ -297,12 +297,12 @@ public class CypherOptimizer {
    * Reverses a relationship direction.
    * OUT → IN, IN → OUT, BOTH → BOTH
    */
-  private com.arcadedb.opencypher.ast.Direction reverseDirection(
-      final com.arcadedb.opencypher.ast.Direction direction) {
+  private com.arcadedb.query.opencypher.ast.Direction reverseDirection(
+      final com.arcadedb.query.opencypher.ast.Direction direction) {
     return switch (direction) {
-      case OUT -> com.arcadedb.opencypher.ast.Direction.IN;
-      case IN -> com.arcadedb.opencypher.ast.Direction.OUT;
-      case BOTH -> com.arcadedb.opencypher.ast.Direction.BOTH;
+      case OUT -> com.arcadedb.query.opencypher.ast.Direction.IN;
+      case IN -> com.arcadedb.query.opencypher.ast.Direction.OUT;
+      case BOTH -> com.arcadedb.query.opencypher.ast.Direction.BOTH;
     };
   }
 
@@ -315,14 +315,14 @@ public class CypherOptimizer {
    * @return ExpandInto operator
    */
   private PhysicalOperator createExpandIntoOperator(
-      final com.arcadedb.opencypher.optimizer.plan.LogicalRelationship relationship,
+      final com.arcadedb.query.opencypher.optimizer.plan.LogicalRelationship relationship,
       final PhysicalOperator input,
       final java.util.Set<String> boundVariables) {
     // Extract parameters from relationship
     final String sourceVariable = relationship.getSourceVariable();
     final String targetVariable = relationship.getTargetVariable();
     final String edgeVariable = relationship.getVariable();
-    final com.arcadedb.opencypher.ast.Direction direction = relationship.getDirection();
+    final com.arcadedb.query.opencypher.ast.Direction direction = relationship.getDirection();
     final String[] edgeTypes = relationship.getTypes().toArray(new String[0]);
 
     // Estimate cost and cardinality for ExpandInto
@@ -333,7 +333,7 @@ public class CypherOptimizer {
     final double expandIntoCost = inputCardinality * 1.0; // O(1) per input row for existence check
     final double totalCost = input.getEstimatedCost() + expandIntoCost;
 
-    return new com.arcadedb.opencypher.executor.operators.ExpandInto(
+    return new com.arcadedb.query.opencypher.executor.operators.ExpandInto(
         input,
         sourceVariable,
         targetVariable,
@@ -361,8 +361,8 @@ public class CypherOptimizer {
 
     PhysicalOperator currentOp = rootOperator;
 
-    for (final com.arcadedb.opencypher.ast.WhereClause whereClause : logicalPlan.getWhereFilters()) {
-      final com.arcadedb.opencypher.ast.BooleanExpression filterExpression = whereClause.getConditionExpression();
+    for (final com.arcadedb.query.opencypher.ast.WhereClause whereClause : logicalPlan.getWhereFilters()) {
+      final com.arcadedb.query.opencypher.ast.BooleanExpression filterExpression = whereClause.getConditionExpression();
 
       if (filterExpression != null) {
         // Estimate cost and cardinality for this filter
@@ -373,7 +373,7 @@ public class CypherOptimizer {
         final double totalCost = currentOp.getEstimatedCost() + filterCost;
 
         // Wrap with FilterOperator
-        currentOp = new com.arcadedb.opencypher.executor.operators.FilterOperator(
+        currentOp = new com.arcadedb.query.opencypher.executor.operators.FilterOperator(
             currentOp,
             filterExpression,
             totalCost,
@@ -395,13 +395,13 @@ public class CypherOptimizer {
    * @return operator with label filter applied (or original if no filter needed)
    */
   private PhysicalOperator addTargetLabelFilter(final LogicalPlan logicalPlan,
-                                                 final com.arcadedb.opencypher.optimizer.plan.LogicalRelationship rel,
+                                                 final com.arcadedb.query.opencypher.optimizer.plan.LogicalRelationship rel,
                                                  final PhysicalOperator input) {
     // Get the target variable
     final String targetVariable = rel.getTargetVariable();
 
     // Look up the LogicalNode for the target variable
-    final com.arcadedb.opencypher.optimizer.plan.LogicalNode targetNode =
+    final com.arcadedb.query.opencypher.optimizer.plan.LogicalNode targetNode =
         logicalPlan.getNodes().get(targetVariable);
 
     if (targetNode == null || !targetNode.hasLabels()) {
@@ -418,7 +418,7 @@ public class CypherOptimizer {
 
     // Create a label filter expression: vertex.getTypeName() == targetLabel
     // We create a custom BooleanExpression that checks the vertex type
-    final com.arcadedb.opencypher.ast.BooleanExpression labelFilter = new com.arcadedb.opencypher.ast.BooleanExpression() {
+    final com.arcadedb.query.opencypher.ast.BooleanExpression labelFilter = new com.arcadedb.query.opencypher.ast.BooleanExpression() {
       @Override
       public boolean evaluate(final com.arcadedb.query.sql.executor.Result result,
                               final com.arcadedb.query.sql.executor.CommandContext context) {
@@ -444,7 +444,7 @@ public class CypherOptimizer {
     final double totalCost = input.getEstimatedCost() + filterCost;
 
     // Wrap with FilterOperator
-    return new com.arcadedb.opencypher.executor.operators.FilterOperator(
+    return new com.arcadedb.query.opencypher.executor.operators.FilterOperator(
         input,
         labelFilter,
         totalCost,

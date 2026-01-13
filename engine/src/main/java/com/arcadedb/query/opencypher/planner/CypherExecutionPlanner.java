@@ -102,20 +102,20 @@ public class CypherExecutionPlanner {
     // - Unlabeled nodes (optimizer requires labels for physical operators)
 
     // Check for OPTIONAL MATCH and unlabeled nodes
-    for (final com.arcadedb.opencypher.ast.MatchClause match : statement.getMatchClauses()) {
+    for (final com.arcadedb.query.opencypher.ast.MatchClause match : statement.getMatchClauses()) {
       if (match.isOptional()) {
         return false; // Not yet supported in optimizer
       }
 
       // Check if all nodes have labels, no named path variables, and no unsupported property constraints
       if (match.hasPathPatterns()) {
-        for (final com.arcadedb.opencypher.ast.PathPattern path : match.getPathPatterns()) {
+        for (final com.arcadedb.query.opencypher.ast.PathPattern path : match.getPathPatterns()) {
           // Named path variables not yet supported (e.g., "p = (a)-[r]->(b)")
           if (path.hasPathVariable()) {
             return false;
           }
 
-          for (final com.arcadedb.opencypher.ast.NodePattern node : path.getNodes()) {
+          for (final com.arcadedb.query.opencypher.ast.NodePattern node : path.getNodes()) {
             if (!node.hasLabels()) {
               return false; // Unlabeled nodes not supported yet
             }

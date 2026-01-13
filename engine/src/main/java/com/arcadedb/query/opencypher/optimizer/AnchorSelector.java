@@ -213,39 +213,39 @@ public class AnchorSelector {
       return predicates;
     }
 
-    for (final com.arcadedb.opencypher.ast.WhereClause whereClause : plan.getWhereFilters()) {
-      final com.arcadedb.opencypher.ast.BooleanExpression condition = whereClause.getConditionExpression();
+    for (final com.arcadedb.query.opencypher.ast.WhereClause whereClause : plan.getWhereFilters()) {
+      final com.arcadedb.query.opencypher.ast.BooleanExpression condition = whereClause.getConditionExpression();
       if (condition == null) {
         continue;
       }
 
       // Check if it's a comparison expression
-      if (condition instanceof com.arcadedb.opencypher.ast.ComparisonExpression) {
-        final com.arcadedb.opencypher.ast.ComparisonExpression comparison =
-            (com.arcadedb.opencypher.ast.ComparisonExpression) condition;
+      if (condition instanceof com.arcadedb.query.opencypher.ast.ComparisonExpression) {
+        final com.arcadedb.query.opencypher.ast.ComparisonExpression comparison =
+            (com.arcadedb.query.opencypher.ast.ComparisonExpression) condition;
 
         // Only handle EQUALS comparisons
-        if (comparison.getOperator() != com.arcadedb.opencypher.ast.ComparisonExpression.Operator.EQUALS) {
+        if (comparison.getOperator() != com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator.EQUALS) {
           continue;
         }
 
         // Check if left side is a property access on our variable
-        final com.arcadedb.opencypher.ast.Expression left = comparison.getLeft();
-        final com.arcadedb.opencypher.ast.Expression right = comparison.getRight();
+        final com.arcadedb.query.opencypher.ast.Expression left = comparison.getLeft();
+        final com.arcadedb.query.opencypher.ast.Expression right = comparison.getRight();
 
-        if (left instanceof com.arcadedb.opencypher.ast.PropertyAccessExpression) {
-          final com.arcadedb.opencypher.ast.PropertyAccessExpression propAccess =
-              (com.arcadedb.opencypher.ast.PropertyAccessExpression) left;
+        if (left instanceof com.arcadedb.query.opencypher.ast.PropertyAccessExpression) {
+          final com.arcadedb.query.opencypher.ast.PropertyAccessExpression propAccess =
+              (com.arcadedb.query.opencypher.ast.PropertyAccessExpression) left;
 
           if (propAccess.getVariableName().equals(variable)) {
             // Extract the property name and value
             final String propertyName = propAccess.getPropertyName();
 
             // Try to extract constant value from right side
-            if (right instanceof com.arcadedb.opencypher.ast.LiteralExpression) {
-              final Object value = ((com.arcadedb.opencypher.ast.LiteralExpression) right).getValue();
+            if (right instanceof com.arcadedb.query.opencypher.ast.LiteralExpression) {
+              final Object value = ((com.arcadedb.query.opencypher.ast.LiteralExpression) right).getValue();
               predicates.put(propertyName, value);
-            } else if (right instanceof com.arcadedb.opencypher.ast.ParameterExpression) {
+            } else if (right instanceof com.arcadedb.query.opencypher.ast.ParameterExpression) {
               // For parameters, we'll mark it as having a predicate but value unknown
               // The index can still be used at runtime
               predicates.put(propertyName, null);
@@ -254,17 +254,17 @@ public class AnchorSelector {
         }
 
         // Also check reverse: value = property (e.g., 500 = p.id)
-        if (right instanceof com.arcadedb.opencypher.ast.PropertyAccessExpression) {
-          final com.arcadedb.opencypher.ast.PropertyAccessExpression propAccess =
-              (com.arcadedb.opencypher.ast.PropertyAccessExpression) right;
+        if (right instanceof com.arcadedb.query.opencypher.ast.PropertyAccessExpression) {
+          final com.arcadedb.query.opencypher.ast.PropertyAccessExpression propAccess =
+              (com.arcadedb.query.opencypher.ast.PropertyAccessExpression) right;
 
           if (propAccess.getVariableName().equals(variable)) {
             final String propertyName = propAccess.getPropertyName();
 
-            if (left instanceof com.arcadedb.opencypher.ast.LiteralExpression) {
-              final Object value = ((com.arcadedb.opencypher.ast.LiteralExpression) left).getValue();
+            if (left instanceof com.arcadedb.query.opencypher.ast.LiteralExpression) {
+              final Object value = ((com.arcadedb.query.opencypher.ast.LiteralExpression) left).getValue();
               predicates.put(propertyName, value);
-            } else if (left instanceof com.arcadedb.opencypher.ast.ParameterExpression) {
+            } else if (left instanceof com.arcadedb.query.opencypher.ast.ParameterExpression) {
               predicates.put(propertyName, null);
             }
           }

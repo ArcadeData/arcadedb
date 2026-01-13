@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.opencypher.optimizer;
+package com.arcadedb.query.opencypher.optimizer;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
@@ -222,11 +222,11 @@ public class CypherOptimizerIntegrationTest {
     final CostModel costModel = new CostModel(stats);
 
     // When: Create rules
-    final var rules = new java.util.ArrayList<com.arcadedb.opencypher.optimizer.rules.OptimizationRule>();
-    rules.add(new com.arcadedb.opencypher.optimizer.rules.IndexSelectionRule(stats, costModel));
-    rules.add(new com.arcadedb.opencypher.optimizer.rules.FilterPushdownRule());
-    rules.add(new com.arcadedb.opencypher.optimizer.rules.ExpandIntoRule());
-    rules.add(new com.arcadedb.opencypher.optimizer.rules.JoinOrderRule(stats, costModel));
+    final var rules = new java.util.ArrayList<com.arcadedb.query.opencypher.optimizer.rules.OptimizationRule>();
+    rules.add(new com.arcadedb.query.opencypher.optimizer.rules.IndexSelectionRule(stats, costModel));
+    rules.add(new com.arcadedb.query.opencypher.optimizer.rules.FilterPushdownRule());
+    rules.add(new com.arcadedb.query.opencypher.optimizer.rules.ExpandIntoRule());
+    rules.add(new com.arcadedb.query.opencypher.optimizer.rules.JoinOrderRule(stats, costModel));
 
     // Then: Rules should be in priority order
     assertThat(rules.get(0).getPriority()).isEqualTo(10); // IndexSelection

@@ -936,7 +936,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     if (countStarCtx != null) {
       // count(*) is treated as count(asterisk) where asterisk evaluates to a non-null marker
       final List<Expression> args = new ArrayList<>();
-      args.add(new com.arcadedb.opencypher.ast.StarExpression());
+      args.add(new com.arcadedb.query.opencypher.ast.StarExpression());
       return new FunctionCallExpression("count", args, false);
     }
 
@@ -1054,7 +1054,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    * Parse a list literal context into a ListExpression.
    * Example: [1, 2, 3] or ['a', 'b', 'c']
    */
-  private com.arcadedb.opencypher.ast.ListExpression parseListLiteral(
+  private com.arcadedb.query.opencypher.ast.ListExpression parseListLiteral(
       final Cypher25Parser.ListLiteralContext ctx) {
     final List<Expression> elements = new ArrayList<>();
 
@@ -1065,7 +1065,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       }
     }
 
-    return new com.arcadedb.opencypher.ast.ListExpression(elements, ctx.getText());
+    return new com.arcadedb.query.opencypher.ast.ListExpression(elements, ctx.getText());
   }
 
   /**
@@ -1105,7 +1105,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
       // Special handling for asterisk (though count(*) is typically handled by CountStarContext)
       if ("*".equals(argText)) {
-        arguments.add(new com.arcadedb.opencypher.ast.StarExpression());
+        arguments.add(new com.arcadedb.query.opencypher.ast.StarExpression());
       } else {
         arguments.add(parseExpression(argCtx.expression()));
       }

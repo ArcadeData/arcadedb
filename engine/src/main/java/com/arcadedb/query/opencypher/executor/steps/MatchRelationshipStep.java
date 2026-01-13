@@ -153,8 +153,8 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
             // Add path binding if path variable is specified (e.g., p = (a)-[r]->(b))
             if (pathVariable != null && !pathVariable.isEmpty()) {
               // Create a TraversalPath with source vertex, edge, and target vertex
-              final com.arcadedb.opencypher.traversal.TraversalPath path =
-                  new com.arcadedb.opencypher.traversal.TraversalPath((Vertex) lastResult.getProperty(sourceVariable));
+              final com.arcadedb.query.opencypher.traversal.TraversalPath path =
+                  new com.arcadedb.query.opencypher.traversal.TraversalPath((Vertex) lastResult.getProperty(sourceVariable));
               path.addStep(edge, targetVertex);
               result.setProperty(pathVariable, path);
             }

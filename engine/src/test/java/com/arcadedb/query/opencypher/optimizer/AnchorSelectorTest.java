@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.opencypher.optimizer;
+package com.arcadedb.query.opencypher.optimizer;
 
 import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalNode;
@@ -336,12 +336,12 @@ class AnchorSelectorTest {
     }
 
     @Override
-    public com.arcadedb.opencypher.optimizer.statistics.TypeStatistics getTypeStatistics(final String typeName) {
+    public com.arcadedb.query.opencypher.optimizer.statistics.TypeStatistics getTypeStatistics(final String typeName) {
       final long cardinality = cardinalities.getOrDefault(typeName, 0L);
       if (cardinality == 0) {
         return null;
       }
-      return new com.arcadedb.opencypher.optimizer.statistics.TypeStatistics(typeName, cardinality, true);
+      return new com.arcadedb.query.opencypher.optimizer.statistics.TypeStatistics(typeName, cardinality, true);
     }
 
     @Override
