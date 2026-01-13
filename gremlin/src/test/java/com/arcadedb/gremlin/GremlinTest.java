@@ -19,6 +19,7 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.cypher.ArcadeCypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.EmbeddedDocument;
@@ -501,6 +502,40 @@ class GremlinTest {
 
     } finally {
       graph.drop();
+    }
+  }
+
+  // https://github.com/ArcadeData/arcadedb/issues/3118
+  @Test
+  void testUnwindEmptyArrayWithMerge() {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
+    try {
+      // Test with AUTO engine first to see the fallback behavior
+      // Force Groovy engine to see if that fixes the issue
+      GlobalConfiguration.GREMLIN_ENGINE.setValue("groovy");
+
+      graph.database.command("sqlscript",//
+          "CREATE VERTEX TYPE CHUNK;" + //
+              "CREATE PROPERTY CHUNK.subtype STRING;" +//
+              "CREATE PROPERTY CHUNK.name STRING;" +//
+              "CREATE PROPERTY CHUNK.text STRING;" +//
+              "CREATE PROPERTY CHUNK.index INTEGER;" +//
+              "CREATE PROPERTY CHUNK.pages STRING;");
+
+      // Test the original failing query from issue #3118
+      String originalQuery = "UNWIND [] AS BatchEntry " +
+          "MERGE (n:CHUNK { subtype: BatchEntry.subtype, name: BatchEntry.name, " +
+          "text: BatchEntry.text, index: BatchEntry.index, pages: BatchEntry.pages }) " +
+          "return ID(n) as id";
+
+      final ResultSet result = graph.cypher(originalQuery).execute();
+
+      // Empty array should return no results
+      assertThat(result.hasNext()).isFalse();
+
+    } finally {
+      graph.drop();
+      GlobalConfiguration.GREMLIN_ENGINE.reset();
     }
   }
 
