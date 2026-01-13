@@ -163,7 +163,7 @@ public class AntlrCypherParser {
       final boolean hasDelete = HAS_DELETE_PATTERN.matcher(trimmedQuery).find();
 
       return new SimpleCypherStatement(query, matchClauses, whereClause, returnClause, orderByClause, skip, limit,
-          createClause, setClause, deleteClause, mergeClause, hasCreate, hasMerge, hasDelete);
+          createClause, setClause, deleteClause, mergeClause, null, hasCreate, hasMerge, hasDelete);
 
     } catch (final Exception e) {
       throw new CommandParsingException("Failed to parse Cypher query: " + query, e);

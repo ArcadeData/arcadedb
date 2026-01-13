@@ -141,6 +141,8 @@ public class CypherFunctionFactory {
       case "left", "right", "reverse", "split" -> true;
       // Type conversion functions
       case "tostring", "tointeger", "tofloat", "toboolean" -> true;
+      // Aggregation functions
+      case "collect" -> true;
       default -> false;
     };
   }
@@ -178,6 +180,8 @@ public class CypherFunctionFactory {
       case "tointeger" -> new ToIntegerFunction();
       case "tofloat" -> new ToFloatFunction();
       case "toboolean" -> new ToBooleanFunction();
+      // Aggregation functions
+      case "collect" -> new CollectFunction();
       default -> throw new CommandExecutionException("Cypher function not implemented: " + functionName);
     };
   }
@@ -781,6 +785,34 @@ public class CypherFunctionFactory {
     @Override
     public boolean isAggregation() {
       return false;
+    }
+  }
+
+  /**
+   * collect() aggregation function - collects values into a list.
+   * Example: MATCH (n:Person) RETURN collect(n.name)
+   */
+  private static class CollectFunction implements CypherFunctionExecutor {
+    private final List<Object> collectedValues = new ArrayList<>();
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1) {
+        throw new CommandExecutionException("collect() requires exactly one argument");
+      }
+      // Collect the value (including nulls)
+      collectedValues.add(args[0]);
+      return null; // Intermediate result doesn't matter
+    }
+
+    @Override
+    public boolean isAggregation() {
+      return true;
+    }
+
+    @Override
+    public Object getAggregatedResult() {
+      return new ArrayList<>(collectedValues);
     }
   }
 

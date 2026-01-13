@@ -77,6 +77,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     SetClause setClause = null;
     DeleteClause deleteClause = null;
     MergeClause mergeClause = null;
+    UnwindClause unwindClause = null;
     WhereClause whereClause = null;
     ReturnClause returnClause = null;
     OrderByClause orderByClause = null;
@@ -97,6 +98,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         deleteClause = visitDeleteClause(clauseCtx.deleteClause());
       } else if (clauseCtx.mergeClause() != null) {
         mergeClause = visitMergeClause(clauseCtx.mergeClause());
+      } else if (clauseCtx.unwindClause() != null) {
+        unwindClause = visitUnwindClause(clauseCtx.unwindClause());
       } else if (clauseCtx.returnClause() != null) {
         // RETURN clause with embedded ORDER BY, SKIP, LIMIT
         final Cypher25Parser.ReturnBodyContext body = clauseCtx.returnClause().returnBody();
@@ -150,6 +153,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         setClause,
         deleteClause,
         mergeClause,
+        unwindClause,
         hasCreate,
         hasMerge,
         hasDelete
@@ -229,6 +233,14 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
 
     return new MergeClause(pathPattern, onCreateSet, onMatchSet);
+  }
+
+  @Override
+  public UnwindClause visitUnwindClause(final Cypher25Parser.UnwindClauseContext ctx) {
+    // Grammar: UNWIND expression AS variable
+    final Expression listExpression = parseExpression(ctx.expression());
+    final String variable = ctx.variable().getText();
+    return new UnwindClause(listExpression, variable);
   }
 
   @Override

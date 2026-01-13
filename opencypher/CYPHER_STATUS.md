@@ -1,8 +1,8 @@
 # OpenCypher Implementation Status
 
 **Last Updated:** 2026-01-12
-**Implementation Version:** Native ANTLR4-based Parser (Phase 8 + Functions + GROUP BY + Pattern Predicates)
-**Test Coverage:** 182/186 tests passing (98% - 4 skipped for unimplemented features)
+**Implementation Version:** Native ANTLR4-based Parser (Phase 8 + Functions + GROUP BY + Pattern Predicates + COLLECT + UNWIND)
+**Test Coverage:** 190/194 tests passing (98% - 4 skipped for unimplemented features)
 
 ---
 
@@ -138,6 +138,32 @@ MATCH (n:Person) WHERE (n)-[:KNOWS|LIKES]->() RETURN n
 MATCH (n:Person) WHERE n.name STARTS WITH 'A' AND (n)-[:KNOWS]->() RETURN n
 ```
 
+### UNWIND Clause
+```cypher
+// ✅ Unwind literal list
+UNWIND [1, 2, 3] AS x RETURN x
+
+// ✅ Unwind string list
+UNWIND ['a', 'b', 'c'] AS letter RETURN letter
+
+// ✅ Unwind with range function
+UNWIND range(1, 10) AS num RETURN num
+
+// ✅ Unwind null (produces no rows)
+UNWIND null AS x RETURN x
+
+// ✅ Unwind empty list (produces no rows)
+UNWIND [] AS x RETURN x
+
+// ✅ Combine with MATCH
+MATCH (n:Person) UNWIND [1, 2, 3] AS x RETURN n.name, x
+```
+
+**Limitations:**
+- ⚠️ Property array unwinding needs investigation (arrays stored as properties return string representations)
+- ❌ Multiple UNWIND clauses in single query not yet tested
+- ❌ UNWIND with WITH clause (WITH clause not implemented yet)
+
 ### CREATE Clause
 ```cypher
 // ✅ Create single vertex with properties
@@ -195,6 +221,9 @@ MATCH (n:Person) RETURN count(n), sum(n.age), avg(n.age), min(n.age), max(n.age)
 // ✅ Return count(*)
 MATCH (n:Person) RETURN count(*)
 
+// ✅ Return collect() aggregation
+MATCH (n:Person) RETURN collect(n.name) AS names
+
 // ✅ Return Cypher-specific functions
 MATCH (n:Person) RETURN id(n), labels(n), keys(n)
 MATCH (a)-[r]->(b) RETURN type(r), startNode(r), endNode(r)
@@ -205,7 +234,6 @@ RETURN abs(-42), sqrt(16)
 
 **Limitations:**
 - ❌ DISTINCT: `RETURN DISTINCT n.name`
-- ❌ COLLECT(): `RETURN COLLECT(n.name)`
 - ❌ Map projections: `RETURN n{.name, .age}`
 - ❌ List comprehensions: `RETURN [x IN list | x.name]`
 - ❌ CASE expressions
@@ -347,7 +375,6 @@ ON MATCH SET r.promoted = true
 | **WITH** | `MATCH (n) WITH n.name AS name RETURN name` | 🟡 MEDIUM |
 | **UNION** | `MATCH (n:Person) RETURN n UNION MATCH (n:Company) RETURN n` | 🟢 LOW |
 | **UNION ALL** | `... UNION ALL ...` | 🟢 LOW |
-| **UNWIND** | `UNWIND [1,2,3] AS x RETURN x` | 🟡 MEDIUM |
 
 ### Aggregation Functions
 | Function | Example | Status | Priority |
@@ -358,11 +385,11 @@ ON MATCH SET r.promoted = true
 | **AVG()** | `RETURN AVG(n.age)` | ✅ **Implemented** | 🔴 HIGH |
 | **MIN()** | `RETURN MIN(n.age)` | ✅ **Implemented** | 🔴 HIGH |
 | **MAX()** | `RETURN MAX(n.age)` | ✅ **Implemented** | 🔴 HIGH |
-| **COLLECT()** | `RETURN COLLECT(n.name)` | 🟡 **Framework Ready** | 🔴 HIGH |
+| **COLLECT()** | `RETURN COLLECT(n.name)` | ✅ **Implemented** | 🔴 HIGH |
 | **percentileCont()** | `RETURN percentileCont(n.age, 0.5)` | 🟡 **Bridge Available** | 🟢 LOW |
 | **stDev()** | `RETURN stDev(n.age)` | 🟡 **Bridge Available** | 🟢 LOW |
 
-**Note:** Core aggregation functions (count, sum, avg, min, max) fully implemented and tested. Bridge to SQL aggregation functions complete. ✅ **Implicit GROUP BY fully implemented** - non-aggregated expressions in RETURN automatically become grouping keys.
+**Note:** Core aggregation functions (count, sum, avg, min, max, collect) fully implemented and tested. Bridge to SQL aggregation functions complete. ✅ **Implicit GROUP BY fully implemented** - non-aggregated expressions in RETURN automatically become grouping keys.
 
 ### String Functions
 | Function | Example | Status | Priority |
@@ -582,7 +609,8 @@ RETURN count(n), avg(n.age)
 - [x] ✅ **Completed:** MERGE with ON CREATE/ON MATCH SET (Phase 7)
 - [x] ✅ **Completed:** OPTIONAL MATCH (Phase 7)
 - [x] ✅ **Completed:** String matching (STARTS WITH, ENDS WITH, CONTAINS) (Phase 7)
-- [ ] Implement UNWIND
+- [x] ✅ **Completed:** UNWIND clause (2026-01-12)
+- [x] ✅ **Completed:** COLLECT aggregation function (2026-01-12)
 
 ### Phase 7: Optimization & Performance
 **Target:** Q4 2026
@@ -692,13 +720,13 @@ CypherStatement → CypherExecutionPlanner → Execution Plan (Step Chain)
 - `MergeStep` - MERGE clause (upsert) ✅
 - `AggregationStep` - Aggregation functions ✅ **NEW**
 - `ProjectReturnStep` - RETURN projection (with expression evaluation) ✅
+- `UnwindStep` - UNWIND clause (list expansion) ✅ **NEW**
 - `OrderByStep` - Result sorting
 - `SkipStep` - Skip N results
 - `LimitStep` - Limit N results
 
 **Missing Steps:**
 - `WithStep` - WITH clause (query chaining)
-- `UnwindStep` - UNWIND clause (list expansion)
 - `OptionalMatchStep` - OPTIONAL MATCH
 - `GroupByStep` - GROUP BY aggregation grouping
 

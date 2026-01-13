@@ -332,6 +332,18 @@ public class CypherExecutionPlan {
       currentStep = filterStep;
     }
 
+    // Step 2.5: UNWIND clause - expand lists into rows
+    if (statement.getUnwindClause() != null) {
+      final ExpressionEvaluator evaluator = new ExpressionEvaluator(functionFactory);
+      final com.arcadedb.opencypher.executor.steps.UnwindStep unwindStep =
+          new com.arcadedb.opencypher.executor.steps.UnwindStep(statement.getUnwindClause(), context, evaluator);
+      if (currentStep != null) {
+        unwindStep.setPrevious(currentStep);
+      }
+      // else: Standalone UNWIND (no previous step)
+      currentStep = unwindStep;
+    }
+
     // Step 3: MERGE clause - find or create pattern
     if (statement.getMergeClause() != null) {
       final com.arcadedb.opencypher.executor.steps.MergeStep mergeStep = new com.arcadedb.opencypher.executor.steps.MergeStep(
