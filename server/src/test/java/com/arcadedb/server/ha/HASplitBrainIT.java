@@ -122,30 +122,40 @@ public class HASplitBrainIT extends ReplicationServerIT {
     if (split && rejoining) {
       testLog("Waiting for minority partition to resync after split-brain...");
       try {
-        // Wait for all replication queues to drain (minority servers catching up)
-        Awaitility.await("replication after split-brain")
-            .atMost(Duration.ofMinutes(3))
+        // Use centralized cluster stabilization - includes queue drain and replica connectivity check
+        waitForClusterStable(getServerCount());
+        testLog("Cluster stabilization complete - all servers synced");
+
+        // Wait for all servers to report consistent record counts
+        // This replaces the fixed 10-second sleep with condition-based waiting
+        testLog("Waiting for final data persistence after resync...");
+        Awaitility.await("final data persistence")
+            .atMost(Duration.ofSeconds(30))
             .pollInterval(Duration.ofSeconds(2))
             .until(() -> {
+              // Check if all servers have consistent record counts
+              long expectedCount = 1 + (long) getTxs() * getVerticesPerTx();
               for (int i = 0; i < getServerCount(); i++) {
                 try {
-                  final long queueSize = getServer(i).getHA().getMessagesInQueue();
-                  if (queueSize > 0) {
-                    testLog("Server " + i + " still has " + queueSize + " messages in queue");
-                    return false;
+                  final com.arcadedb.database.Database serverDb = getServerDatabase(i, getDatabaseName());
+                  serverDb.begin();
+                  try {
+                    long count = serverDb.countType(VERTEX1_TYPE_NAME, true);
+                    if (count != expectedCount) {
+                      testLog("Server " + i + " has " + count + " vertices, expected " + expectedCount);
+                      return false;  // Not yet consistent
+                    }
+                  } finally {
+                    serverDb.rollback();
                   }
                 } catch (Exception e) {
-                  testLog("Error checking queue for server " + i + ": " + e.getMessage());
+                  testLog("Error checking count for server " + i + ": " + e.getMessage());
                   return false;
                 }
               }
-              return true;
+              return true;  // All servers have correct count
             });
-        testLog("All servers have empty replication queues - resync complete");
-
-        // Additional stabilization delay for slow CI environments
-        testLog("Waiting 10 seconds for final data persistence after resync...");
-        Thread.sleep(10000);
+        testLog("All servers have consistent data - resync verification complete");
       } catch (Exception e) {
         testLog("Timeout waiting for resync after split-brain: " + e.getMessage());
         LogManager.instance().log(this, Level.WARNING, "Timeout waiting for resync", e);
