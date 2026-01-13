@@ -310,39 +310,39 @@ public class HARandomCrashIT extends ReplicationServerIT {
     // This prevents verification from running while servers are still recovering
     LogManager.instance().log(this, getLogLevel(), "TEST: Waiting for cluster to stabilize...");
 
-    // Phase 1: Wait for all servers to be fully ONLINE
-    await("all servers online")
+    // Use centralized stabilization helper - performs 3-phase check:
+    // Phase 1: All servers ONLINE
+    // Phase 2: All replication queues empty
+    // Phase 3: All replicas connected to leader
+    waitForClusterStable(getServerCount());
+
+    LogManager.instance().log(this, getLogLevel(), "TEST: Cluster fully stable");
+
+    // Wait for all servers to report consistent record counts
+    // This replaces the fixed 5-second sleep with condition-based waiting
+    LogManager.instance().log(this, getLogLevel(), "TEST: Waiting for final data persistence...");
+    await("final data persistence")
         .atMost(Duration.ofSeconds(30))
         .pollInterval(Duration.ofSeconds(1))
         .until(() -> {
+          // Check if all servers have consistent record counts
+          long expectedCount = 1 + (long) getTxs() * getVerticesPerTx();
           for (int i = 0; i < getServerCount(); i++) {
-            if (getServer(i).getStatus() != ArcadeDBServer.Status.ONLINE) {
-              LogManager.instance().log(this, getLogLevel(),
-                  "TEST: Server %d not yet ONLINE (status=%s)", i, getServer(i).getStatus());
-              return false;
+            Database serverDb = getServerDatabase(i, getDatabaseName());
+            serverDb.begin();
+            try {
+              long count = serverDb.countType(VERTEX1_TYPE_NAME, true);
+              if (count != expectedCount) {
+                LogManager.instance().log(this, getLogLevel(),
+                    "TEST: Server %d has %d vertices, expected %d", i, count, expectedCount);
+                return false;  // Not yet consistent
+              }
+            } finally {
+              serverDb.rollback();
             }
           }
-          return true;
+          return true;  // All servers have correct count
         });
-
-    LogManager.instance().log(this, getLogLevel(), "TEST: All servers are ONLINE");
-
-    // Phase 2: Wait for replication to complete
-    // This implicitly ensures cluster connectivity - if replication queues drain,
-    // the cluster must be connected with a working leader-replica relationship
-    LogManager.instance().log(this, getLogLevel(), "TEST: Waiting for replication to complete...");
-    for (int i = 0; i < getServerCount(); i++)
-      waitForReplicationIsCompleted(i);
-
-    // Phase 3: Extra stabilization delay for slow CI environments
-    // On slower machines, there's a delay between queue empty and data fully persisted/queryable
-    // This prevents verification from running before final transactions are applied
-    LogManager.instance().log(this, getLogLevel(), "TEST: Waiting 5 seconds for final data persistence...");
-    try {
-      Thread.sleep(5000);
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-    }
 
     // CHECK INDEXES ARE REPLICATED CORRECTLY
     LogManager.instance().log(this, getLogLevel(), "TEST: Starting verification...");
