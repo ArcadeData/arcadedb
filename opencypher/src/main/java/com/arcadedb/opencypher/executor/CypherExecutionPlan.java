@@ -374,10 +374,20 @@ public class CypherExecutionPlan {
     if (statement.getReturnClause() != null && currentStep != null) {
       // Check if RETURN contains aggregation functions
       if (statement.getReturnClause().hasAggregations()) {
-        // Use aggregation step for aggregation functions
-        final AggregationStep aggStep = new AggregationStep(statement.getReturnClause(), context, functionFactory);
-        aggStep.setPrevious(currentStep);
-        currentStep = aggStep;
+        // Check if there are also non-aggregated expressions (implicit GROUP BY)
+        if (statement.getReturnClause().hasNonAggregations()) {
+          // Use GROUP BY aggregation step (implicit grouping)
+          final com.arcadedb.opencypher.executor.steps.GroupByAggregationStep groupByAggStep =
+              new com.arcadedb.opencypher.executor.steps.GroupByAggregationStep(
+                  statement.getReturnClause(), context, functionFactory);
+          groupByAggStep.setPrevious(currentStep);
+          currentStep = groupByAggStep;
+        } else {
+          // Use aggregation step for pure aggregations (no grouping)
+          final AggregationStep aggStep = new AggregationStep(statement.getReturnClause(), context, functionFactory);
+          aggStep.setPrevious(currentStep);
+          currentStep = aggStep;
+        }
       } else {
         // Use regular projection for non-aggregation expressions
         final ProjectReturnStep returnStep = new ProjectReturnStep(statement.getReturnClause(), context, functionFactory);

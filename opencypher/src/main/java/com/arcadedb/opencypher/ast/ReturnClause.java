@@ -82,6 +82,19 @@ public class ReturnClause {
   }
 
   /**
+   * Check if any return item is NOT an aggregation function.
+   * Used to detect implicit GROUP BY (when RETURN has both aggregations and non-aggregations).
+   */
+  public boolean hasNonAggregations() {
+    for (final ReturnItem item : items) {
+      if (!item.getExpression().isAggregation()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Represents a single item in the RETURN clause.
    * Can have an optional alias (AS alias).
    */

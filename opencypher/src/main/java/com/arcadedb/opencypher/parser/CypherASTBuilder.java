@@ -895,7 +895,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   /**
    * Parse an expression into an Expression AST node.
-   * Handles variables, property access, function calls, and literals.
+   * Handles variables, property access, function calls, list literals, and literals.
    */
   private Expression parseExpression(final Cypher25Parser.ExpressionContext ctx) {
     final String text = ctx.getText();
@@ -909,10 +909,17 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return new FunctionCallExpression("count", args, false);
     }
 
-    // Recursively search for function invocations
+    // Check for function invocations BEFORE list literals
+    // (tail([1,2,3]) should be parsed as a function call, not as a list literal)
     final Cypher25Parser.FunctionInvocationContext funcCtx = findFunctionInvocationRecursive(ctx);
     if (funcCtx != null) {
       return parseFunctionInvocation(funcCtx);
+    }
+
+    // Check for list literals
+    final Cypher25Parser.ListLiteralContext listCtx = findListLiteralRecursive(ctx);
+    if (listCtx != null) {
+      return parseListLiteral(listCtx);
     }
 
     // Use the shared text parsing logic
@@ -985,6 +992,49 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
 
     return null;
+  }
+
+  /**
+   * Recursively find list literal context in the parse tree.
+   */
+  private Cypher25Parser.ListLiteralContext findListLiteralRecursive(
+      final org.antlr.v4.runtime.tree.ParseTree node) {
+    if (node == null) {
+      return null;
+    }
+
+    // Check if this node is a list literal
+    if (node instanceof Cypher25Parser.ListLiteralContext) {
+      return (Cypher25Parser.ListLiteralContext) node;
+    }
+
+    // Recursively search all children
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.ListLiteralContext found = findListLiteralRecursive(node.getChild(i));
+      if (found != null) {
+        return found;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Parse a list literal context into a ListExpression.
+   * Example: [1, 2, 3] or ['a', 'b', 'c']
+   */
+  private com.arcadedb.opencypher.ast.ListExpression parseListLiteral(
+      final Cypher25Parser.ListLiteralContext ctx) {
+    final List<Expression> elements = new ArrayList<>();
+
+    // Parse each expression in the list
+    if (ctx.expression() != null) {
+      for (final Cypher25Parser.ExpressionContext exprCtx : ctx.expression()) {
+        elements.add(parseExpression(exprCtx));
+      }
+    }
+
+    return new com.arcadedb.opencypher.ast.ListExpression(elements, ctx.getText());
   }
 
   /**

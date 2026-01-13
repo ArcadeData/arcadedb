@@ -131,7 +131,16 @@ public class CypherFunctionFactory {
    */
   private boolean isCypherSpecificFunction(final String functionName) {
     return switch (functionName) {
-      case "id", "labels", "type", "keys", "properties", "startnode", "endnode", "nodes", "relationships" -> true;
+      // Graph functions
+      case "id", "labels", "type", "keys", "properties", "startnode", "endnode" -> true;
+      // Path functions
+      case "nodes", "relationships", "length" -> true;
+      // List functions
+      case "size", "head", "tail", "last", "range" -> true;
+      // String functions
+      case "left", "right", "reverse", "split" -> true;
+      // Type conversion functions
+      case "tostring", "tointeger", "tofloat", "toboolean" -> true;
       default -> false;
     };
   }
@@ -141,6 +150,7 @@ public class CypherFunctionFactory {
    */
   private CypherFunctionExecutor createCypherSpecificExecutor(final String functionName) {
     return switch (functionName) {
+      // Graph functions
       case "id" -> new IdFunction();
       case "labels" -> new LabelsFunction();
       case "type" -> new TypeFunction();
@@ -148,6 +158,26 @@ public class CypherFunctionFactory {
       case "properties" -> new PropertiesFunction();
       case "startnode" -> new StartNodeFunction();
       case "endnode" -> new EndNodeFunction();
+      // Path functions
+      case "nodes" -> new NodesFunction();
+      case "relationships" -> new RelationshipsFunction();
+      case "length" -> new LengthFunction();
+      // List functions
+      case "size" -> new SizeFunction();
+      case "head" -> new HeadFunction();
+      case "tail" -> new TailFunction();
+      case "last" -> new LastFunction();
+      case "range" -> new RangeFunction();
+      // String functions
+      case "left" -> new LeftFunction();
+      case "right" -> new RightFunction();
+      case "reverse" -> new ReverseFunction();
+      case "split" -> new SplitFunction();
+      // Type conversion functions
+      case "tostring" -> new ToStringFunction();
+      case "tointeger" -> new ToIntegerFunction();
+      case "tofloat" -> new ToFloatFunction();
+      case "toboolean" -> new ToBooleanFunction();
       default -> throw new CommandExecutionException("Cypher function not implemented: " + functionName);
     };
   }
@@ -302,6 +332,448 @@ public class CypherFunctionFactory {
         final Edge edge = (Edge) args[0];
         // getInVertex() returns the actual Vertex, not just a RID
         return edge.getInVertex();
+      }
+      return null;
+    }
+
+    @Override
+    public boolean isAggregation() {
+      return false;
+    }
+  }
+
+  // Path Functions
+
+  /**
+   * nodes() function - returns all nodes in a path.
+   */
+  private static class NodesFunction implements CypherFunctionExecutor {
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1) {
+        throw new CommandExecutionException("nodes() requires exactly one argument");
+      }
+      if (args[0] instanceof List) {
+        // Path is represented as a list of alternating vertices and edges
+        final List<?> path = (List<?>) args[0];
+        final List<Vertex> nodes = new ArrayList<>();
+        for (final Object element : path) {
+          if (element instanceof Vertex) {
+            nodes.add((Vertex) element);
+          }
+        }
+        return nodes;
+      }
+      return Collections.emptyList();
+    }
+
+    @Override
+    public boolean isAggregation() {
+      return false;
+    }
+  }
+
+  /**
+   * relationships() function - returns all relationships in a path.
+   */
+  private static class RelationshipsFunction implements CypherFunctionExecutor {
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1) {
+        throw new CommandExecutionException("relationships() requires exactly one argument");
+      }
+      if (args[0] instanceof List) {
+        // Path is represented as a list of alternating vertices and edges
+        final List<?> path = (List<?>) args[0];
+        final List<Edge> edges = new ArrayList<>();
+        for (final Object element : path) {
+          if (element instanceof Edge) {
+            edges.add((Edge) element);
+          }
+        }
+        return edges;
+      }
+      return Collections.emptyList();
+    }
+
+    @Override
+    public boolean isAggregation() {
+      return false;
+    }
+  }
+
+  /**
+   * length() function - returns the length of a path (number of relationships).
+   */
+  private static class LengthFunction implements CypherFunctionExecutor {
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1) {
+        throw new CommandExecutionException("length() requires exactly one argument");
+      }
+      if (args[0] instanceof List) {
+        // Path is represented as a list of alternating vertices and edges
+        // Length = number of edges
+        final List<?> path = (List<?>) args[0];
+        long edgeCount = 0;
+        for (final Object element : path) {
+          if (element instanceof Edge) {
+            edgeCount++;
+          }
+        }
+        return edgeCount;
+      } else if (args[0] instanceof String) {
+        // Also support string length for compatibility
+        return (long) ((String) args[0]).length();
+      }
+      return 0L;
+    }
+
+    @Override
+    public boolean isAggregation() {
+      return false;
+    }
+  }
+
+  // List Functions
+
+  /**
+   * size() function - returns the size of a list or string.
+   */
+  private static class SizeFunction implements CypherFunctionExecutor {
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1) {
+        throw new CommandExecutionException("size() requires exactly one argument");
+      }
+      if (args[0] instanceof List) {
+        return (long) ((List<?>) args[0]).size();
+      } else if (args[0] instanceof String) {
+        return (long) ((String) args[0]).length();
+      }
+      return 0L;
+    }
+
+    @Override
+    public boolean isAggregation() {
+      return false;
+    }
+  }
+
+  /**
+   * head() function - returns the first element of a list.
+   */
+  private static class HeadFunction implements CypherFunctionExecutor {
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1) {
+        throw new CommandExecutionException("head() requires exactly one argument");
+      }
+      if (args[0] instanceof List) {
+        final List<?> list = (List<?>) args[0];
+        return list.isEmpty() ? null : list.get(0);
+      }
+      return null;
+    }
+
+    @Override
+    public boolean isAggregation() {
+      return false;
+    }
+  }
+
+  /**
+   * tail() function - returns all elements except the first.
+   */
+  private static class TailFunction implements CypherFunctionExecutor {
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1) {
+        throw new CommandExecutionException("tail() requires exactly one argument");
+      }
+      if (args[0] instanceof List) {
+        final List<?> list = (List<?>) args[0];
+        return list.size() <= 1 ? Collections.emptyList() : list.subList(1, list.size());
+      }
+      return Collections.emptyList();
+    }
+
+    @Override
+    public boolean isAggregation() {
+      return false;
+    }
+  }
+
+  /**
+   * last() function - returns the last element of a list.
+   */
+  private static class LastFunction implements CypherFunctionExecutor {
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1) {
+        throw new CommandExecutionException("last() requires exactly one argument");
+      }
+      if (args[0] instanceof List) {
+        final List<?> list = (List<?>) args[0];
+        return list.isEmpty() ? null : list.get(list.size() - 1);
+      }
+      return null;
+    }
+
+    @Override
+    public boolean isAggregation() {
+      return false;
+    }
+  }
+
+  /**
+   * range() function - creates a list of numbers from start to end (optionally with step).
+   */
+  private static class RangeFunction implements CypherFunctionExecutor {
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length < 2 || args.length > 3) {
+        throw new CommandExecutionException("range() requires 2 or 3 arguments: range(start, end) or range(start, end, step)");
+      }
+      final long start = ((Number) args[0]).longValue();
+      final long end = ((Number) args[1]).longValue();
+      final long step = args.length == 3 ? ((Number) args[2]).longValue() : 1L;
+
+      if (step == 0) {
+        throw new CommandExecutionException("range() step cannot be zero");
+      }
+
+      final List<Long> result = new ArrayList<>();
+      if (step > 0) {
+        for (long i = start; i <= end; i += step) {
+          result.add(i);
+        }
+      } else {
+        for (long i = start; i >= end; i += step) {
+          result.add(i);
+        }
+      }
+      return result;
+    }
+
+    @Override
+    public boolean isAggregation() {
+      return false;
+    }
+  }
+
+  // String Functions
+
+  /**
+   * left() function - returns the leftmost n characters of a string.
+   */
+  private static class LeftFunction implements CypherFunctionExecutor {
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 2) {
+        throw new CommandExecutionException("left() requires exactly 2 arguments: left(string, length)");
+      }
+      if (args[0] == null) {
+        return null;
+      }
+      final String str = args[0].toString();
+      final int length = ((Number) args[1]).intValue();
+      return str.substring(0, Math.min(length, str.length()));
+    }
+
+    @Override
+    public boolean isAggregation() {
+      return false;
+    }
+  }
+
+  /**
+   * right() function - returns the rightmost n characters of a string.
+   */
+  private static class RightFunction implements CypherFunctionExecutor {
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 2) {
+        throw new CommandExecutionException("right() requires exactly 2 arguments: right(string, length)");
+      }
+      if (args[0] == null) {
+        return null;
+      }
+      final String str = args[0].toString();
+      final int length = ((Number) args[1]).intValue();
+      return str.substring(Math.max(0, str.length() - length));
+    }
+
+    @Override
+    public boolean isAggregation() {
+      return false;
+    }
+  }
+
+  /**
+   * reverse() function - reverses a string or list.
+   */
+  private static class ReverseFunction implements CypherFunctionExecutor {
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1) {
+        throw new CommandExecutionException("reverse() requires exactly one argument");
+      }
+      if (args[0] == null) {
+        return null;
+      }
+      if (args[0] instanceof String) {
+        final String str = (String) args[0];
+        return new StringBuilder(str).reverse().toString();
+      } else if (args[0] instanceof List) {
+        final List<?> list = (List<?>) args[0];
+        final List<Object> reversed = new ArrayList<>(list);
+        Collections.reverse(reversed);
+        return reversed;
+      }
+      return null;
+    }
+
+    @Override
+    public boolean isAggregation() {
+      return false;
+    }
+  }
+
+  /**
+   * split() function - splits a string by a delimiter.
+   */
+  private static class SplitFunction implements CypherFunctionExecutor {
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 2) {
+        throw new CommandExecutionException("split() requires exactly 2 arguments: split(string, delimiter)");
+      }
+      if (args[0] == null) {
+        return null;
+      }
+      final String str = args[0].toString();
+      final String delimiter = args[1].toString();
+      return List.of(str.split(java.util.regex.Pattern.quote(delimiter)));
+    }
+
+    @Override
+    public boolean isAggregation() {
+      return false;
+    }
+  }
+
+  // Type Conversion Functions
+
+  /**
+   * toString() function - converts a value to a string.
+   */
+  private static class ToStringFunction implements CypherFunctionExecutor {
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1) {
+        throw new CommandExecutionException("toString() requires exactly one argument");
+      }
+      return args[0] == null ? null : args[0].toString();
+    }
+
+    @Override
+    public boolean isAggregation() {
+      return false;
+    }
+  }
+
+  /**
+   * toInteger() function - converts a value to an integer.
+   */
+  private static class ToIntegerFunction implements CypherFunctionExecutor {
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1) {
+        throw new CommandExecutionException("toInteger() requires exactly one argument");
+      }
+      if (args[0] == null) {
+        return null;
+      }
+      if (args[0] instanceof Number) {
+        return ((Number) args[0]).longValue();
+      }
+      if (args[0] instanceof String) {
+        try {
+          return Long.parseLong((String) args[0]);
+        } catch (final NumberFormatException e) {
+          return null;
+        }
+      }
+      return null;
+    }
+
+    @Override
+    public boolean isAggregation() {
+      return false;
+    }
+  }
+
+  /**
+   * toFloat() function - converts a value to a float.
+   */
+  private static class ToFloatFunction implements CypherFunctionExecutor {
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1) {
+        throw new CommandExecutionException("toFloat() requires exactly one argument");
+      }
+      if (args[0] == null) {
+        return null;
+      }
+      if (args[0] instanceof Number) {
+        return ((Number) args[0]).doubleValue();
+      }
+      if (args[0] instanceof String) {
+        try {
+          return Double.parseDouble((String) args[0]);
+        } catch (final NumberFormatException e) {
+          return null;
+        }
+      }
+      return null;
+    }
+
+    @Override
+    public boolean isAggregation() {
+      return false;
+    }
+  }
+
+  /**
+   * toBoolean() function - converts a value to a boolean.
+   * Numbers: 0 is false, non-zero is true.
+   * Strings: "true" is true, "false" is false (case-insensitive).
+   */
+  private static class ToBooleanFunction implements CypherFunctionExecutor {
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1) {
+        throw new CommandExecutionException("toBoolean() requires exactly one argument");
+      }
+      if (args[0] == null) {
+        return null;
+      }
+      if (args[0] instanceof Boolean) {
+        return args[0];
+      }
+      if (args[0] instanceof Number) {
+        // In Cypher: 0 is false, non-zero is true
+        final double value = ((Number) args[0]).doubleValue();
+        return value != 0.0;
+      }
+      if (args[0] instanceof String) {
+        final String str = ((String) args[0]).toLowerCase();
+        if ("true".equals(str)) {
+          return Boolean.TRUE;
+        } else if ("false".equals(str)) {
+          return Boolean.FALSE;
+        }
       }
       return null;
     }
