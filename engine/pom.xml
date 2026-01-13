@@ -44,6 +44,7 @@
         <spatial4j.version>0.8</spatial4j.version>
         <jts-core.version>1.20.0</jts-core.version>
         <buildnumber-maven-plugin.version>3.2.1</buildnumber-maven-plugin.version>
+        <antlr4.version>4.13.2</antlr4.version>
     </properties>
 
     <build>
@@ -91,6 +92,35 @@
             <plugin>
                 <artifactId>maven-resources-plugin</artifactId>
                 <version>${maven-resources-plugin.version}</version>
+            </plugin>
+            <plugin>
+                <groupId>org.antlr</groupId>
+                <artifactId>antlr4-maven-plugin</artifactId>
+                <version>${antlr4.version}</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>antlr4</goal>
+                        </goals>
+                        <configuration>
+                            <sourceDirectory>${basedir}/src/main/antlr4</sourceDirectory>
+                            <outputDirectory>${basedir}/target/generated-sources/antlr4</outputDirectory>
+                            <visitor>true</visitor>
+                            <listener>true</listener>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>
@@ -141,6 +171,11 @@
             <groupId>io.github.jbellis</groupId>
             <artifactId>jvector</artifactId>
             <version>${jvector.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.antlr</groupId>
+            <artifactId>antlr4-runtime</artifactId>
+            <version>${antlr4.version}</version>
         </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>
