@@ -1,1 +1,1 @@
-com.arcadedb.opencypher.query.OpenCypherQueryEngineFactory
+com.arcadedb.query.opencypher.query.OpenCypherQueryEngineFactory
