@@ -26,19 +26,19 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 @ExcludeFromJacocoGeneratedReport
 public interface RangeIndex extends Index {
   /**
-   * The returning iterator does not skip deleted entries and it might contains duplicated entries.
+   * The returning iterator does not skip deleted entries and it might contain duplicated entries.
    * WARNING: this method does not read pending changes in transaction.
    */
   IndexCursor iterator(boolean ascendingOrder);
 
   /**
-   * The returning iterator does not skip deleted entries and it might contains duplicated entries.
+   * The returning iterator does not skip deleted entries and it might contain duplicated entries.
    * WARNING: this method does not read pending changes in transaction.
    */
   IndexCursor iterator(boolean ascendingOrder, Object[] fromKeys, boolean inclusive);
 
   /**
-   * The returning iterator does not skip deleted entries and it might contains duplicated entries.
+   * The returning iterator does not skip deleted entries and it might contain duplicated entries.
    * WARNING: this method does not read pending changes in transaction.
    */
   IndexCursor range(boolean ascending, Object[] beginKeys, boolean beginKeysInclusive, Object[] endKeys, boolean endKeysInclusive);
