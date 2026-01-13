@@ -192,7 +192,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       if (itemCtx instanceof Cypher25Parser.SetPropContext) {
         final Cypher25Parser.SetPropContext propCtx = (Cypher25Parser.SetPropContext) itemCtx;
         final String propExpr = propCtx.propertyExpression().getText();
-        final String valueExpr = propCtx.expression().getText();
+        final Expression valueExpr = parseExpression(propCtx.expression());
 
         // Parse property expression: variable.property
         if (propExpr.contains(".")) {

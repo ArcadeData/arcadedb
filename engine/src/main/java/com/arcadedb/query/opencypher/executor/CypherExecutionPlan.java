@@ -229,7 +229,7 @@ public class CypherExecutionPlan {
     // Step 3: SET clause (if any)
     if (statement.getSetClause() != null && !statement.getSetClause().isEmpty()) {
       final com.arcadedb.query.opencypher.executor.steps.SetStep setStep =
-          new com.arcadedb.query.opencypher.executor.steps.SetStep(statement.getSetClause(), context);
+          new com.arcadedb.query.opencypher.executor.steps.SetStep(statement.getSetClause(), context, functionFactory);
       setStep.setPrevious(currentStep);
       currentStep = setStep;
     }
@@ -245,7 +245,7 @@ public class CypherExecutionPlan {
     // Step 5: MERGE clause (if any)
     if (statement.getMergeClause() != null) {
       final com.arcadedb.query.opencypher.executor.steps.MergeStep mergeStep =
-          new com.arcadedb.query.opencypher.executor.steps.MergeStep(statement.getMergeClause(), context);
+          new com.arcadedb.query.opencypher.executor.steps.MergeStep(statement.getMergeClause(), context, functionFactory);
       mergeStep.setPrevious(currentStep);
       currentStep = mergeStep;
     }
@@ -639,7 +639,7 @@ public class CypherExecutionPlan {
     // Step 3: MERGE clause - find or create pattern
     if (statement.getMergeClause() != null) {
       final com.arcadedb.query.opencypher.executor.steps.MergeStep mergeStep = new com.arcadedb.query.opencypher.executor.steps.MergeStep(
-          statement.getMergeClause(), context);
+          statement.getMergeClause(), context, functionFactory);
       // MERGE is typically standalone, but can be chained
       if (currentStep != null) {
         mergeStep.setPrevious(currentStep);
@@ -661,7 +661,7 @@ public class CypherExecutionPlan {
     // Step 5: SET clause - update properties
     if (statement.getSetClause() != null && !statement.getSetClause().isEmpty() && currentStep != null) {
       final com.arcadedb.query.opencypher.executor.steps.SetStep setStep = new com.arcadedb.query.opencypher.executor.steps.SetStep(
-          statement.getSetClause(), context);
+          statement.getSetClause(), context, functionFactory);
       setStep.setPrevious(currentStep);
       currentStep = setStep;
     }

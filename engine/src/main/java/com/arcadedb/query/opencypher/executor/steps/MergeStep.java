@@ -25,11 +25,14 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.MergeClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.SetClause;
+import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -55,10 +58,13 @@ import java.util.NoSuchElementException;
  */
 public class MergeStep extends AbstractExecutionStep {
   private final MergeClause mergeClause;
+  private final ExpressionEvaluator evaluator;
 
-  public MergeStep(final MergeClause mergeClause, final CommandContext context) {
+  public MergeStep(final MergeClause mergeClause, final CommandContext context,
+                   final CypherFunctionFactory functionFactory) {
     super(context);
     this.mergeClause = mergeClause;
+    this.evaluator = new ExpressionEvaluator(functionFactory);
   }
 
   @Override
@@ -449,7 +455,7 @@ public class MergeStep extends AbstractExecutionStep {
     for (final SetClause.SetItem item : setClause.getItems()) {
       final String variable = item.getVariable();
       final String property = item.getProperty();
-      final String valueExpression = item.getValueExpression();
+      final Expression valueExpression = item.getValueExpression();
 
       // Get the object from the result
       final Object obj = result.getProperty(variable);
@@ -469,7 +475,7 @@ public class MergeStep extends AbstractExecutionStep {
       final com.arcadedb.database.MutableDocument mutableDoc = doc.modify();
 
       // Evaluate the value expression and set the property
-      final Object value = evaluateSetExpression(valueExpression, result);
+      final Object value = evaluator.evaluate(valueExpression, result, context);
       mutableDoc.set(property, value);
 
       // Save the modified document
@@ -490,65 +496,6 @@ public class MergeStep extends AbstractExecutionStep {
    * - Variable references
    * - Property access: variable.property
    */
-  private Object evaluateSetExpression(final String expression, final Result result) {
-    if (expression == null || expression.trim().isEmpty()) {
-      return null;
-    }
-
-    final String trimmed = expression.trim();
-
-    // Null literal
-    if (trimmed.equalsIgnoreCase("null")) {
-      return null;
-    }
-
-    // Boolean literals
-    if (trimmed.equalsIgnoreCase("true")) {
-      return Boolean.TRUE;
-    }
-    if (trimmed.equalsIgnoreCase("false")) {
-      return Boolean.FALSE;
-    }
-
-    // String literals (single or double quotes)
-    if ((trimmed.startsWith("'") && trimmed.endsWith("'")) ||
-        (trimmed.startsWith("\"") && trimmed.endsWith("\""))) {
-      return trimmed.substring(1, trimmed.length() - 1);
-    }
-
-    // Property access: variable.property (e.g., "existing.age")
-    // Check this before numeric parsing to avoid confusion with decimals
-    if (trimmed.contains(".")) {
-      final String[] parts = trimmed.split("\\.", 2);
-      if (parts.length == 2) {
-        final Object varObj = result.getProperty(parts[0]);
-        if (varObj instanceof com.arcadedb.database.Document) {
-          return ((com.arcadedb.database.Document) varObj).get(parts[1]);
-        }
-      }
-    }
-
-    // Numeric literals (check after property access to avoid confusion)
-    try {
-      if (trimmed.contains(".")) {
-        return Double.parseDouble(trimmed);
-      } else {
-        return Long.parseLong(trimmed);
-      }
-    } catch (final NumberFormatException e) {
-      // Not a number - might be a variable reference
-    }
-
-    // Variable reference: just the variable name (e.g., "myVar")
-    // Check if it exists in the result
-    if (result.getPropertyNames().contains(trimmed)) {
-      return result.getProperty(trimmed);
-    }
-
-    // If we can't evaluate it, return the expression as a string
-    return trimmed;
-  }
-
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final StringBuilder builder = new StringBuilder();

@@ -21,7 +21,10 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.SetClause;
+import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -45,10 +48,13 @@ import java.util.NoSuchElementException;
  */
 public class SetStep extends AbstractExecutionStep {
   private final SetClause setClause;
+  private final ExpressionEvaluator evaluator;
 
-  public SetStep(final SetClause setClause, final CommandContext context) {
+  public SetStep(final SetClause setClause, final CommandContext context,
+                 final CypherFunctionFactory functionFactory) {
     super(context);
     this.setClause = setClause;
+    this.evaluator = new ExpressionEvaluator(functionFactory);
   }
 
   @Override
@@ -139,7 +145,7 @@ public class SetStep extends AbstractExecutionStep {
       for (final SetClause.SetItem item : setClause.getItems()) {
         final String variable = item.getVariable();
         final String property = item.getProperty();
-        final String valueExpression = item.getValueExpression();
+        final Expression valueExpression = item.getValueExpression();
 
         // Get the object from the result
         final Object obj = result.getProperty(variable);
@@ -159,7 +165,7 @@ public class SetStep extends AbstractExecutionStep {
         final MutableDocument mutableDoc = doc.modify();
 
         // Evaluate the value expression and set the property
-        final Object value = evaluateExpression(valueExpression, result);
+        final Object value = evaluator.evaluate(valueExpression, result, context);
         mutableDoc.set(property, value);
 
         // Save the modified document
@@ -184,74 +190,6 @@ public class SetStep extends AbstractExecutionStep {
     }
   }
 
-  /**
-   * Evaluates a simple expression to get a value.
-   * Currently supports:
-   * - String literals: 'Alice', "Bob"
-   * - Numbers: 42, 3.14
-   * - Booleans: true, false
-   * - null
-   * <p>
-   * TODO: Support variable references, property access, functions, arithmetic
-   */
-  private Object evaluateExpression(final String expression, final Result result) {
-    if (expression == null || expression.trim().isEmpty()) {
-      return null;
-    }
-
-    final String trimmed = expression.trim();
-
-    // Null literal
-    if (trimmed.equalsIgnoreCase("null")) {
-      return null;
-    }
-
-    // Boolean literals
-    if (trimmed.equalsIgnoreCase("true")) {
-      return Boolean.TRUE;
-    }
-    if (trimmed.equalsIgnoreCase("false")) {
-      return Boolean.FALSE;
-    }
-
-    // String literals (single or double quotes)
-    if ((trimmed.startsWith("'") && trimmed.endsWith("'")) ||
-        (trimmed.startsWith("\"") && trimmed.endsWith("\""))) {
-      return trimmed.substring(1, trimmed.length() - 1);
-    }
-
-    // Numeric literals
-    try {
-      if (trimmed.contains(".")) {
-        return Double.parseDouble(trimmed);
-      } else {
-        return Integer.parseInt(trimmed);
-      }
-    } catch (final NumberFormatException e) {
-      // Not a number - might be a variable or property reference
-    }
-
-    // Variable reference: just the variable name (e.g., "age")
-    // Check if it exists in the result
-    if (result.getPropertyNames().contains(trimmed)) {
-      return result.getProperty(trimmed);
-    }
-
-    // Property access: variable.property (e.g., "n.age")
-    if (trimmed.contains(".")) {
-      final String[] parts = trimmed.split("\\.", 2);
-      if (parts.length == 2) {
-        final Object varObj = result.getProperty(parts[0]);
-        if (varObj instanceof Document) {
-          return ((Document) varObj).get(parts[1]);
-        }
-      }
-    }
-
-    // If we can't evaluate it, return the expression as a string
-    // This allows for future extension to support more complex expressions
-    return trimmed;
-  }
 
   @Override
   public String prettyPrint(final int depth, final int indent) {

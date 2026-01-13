@@ -51,9 +51,9 @@ public class SetClause {
   public static class SetItem {
     private final String variable;
     private final String property;
-    private final String valueExpression;
+    private final Expression valueExpression;
 
-    public SetItem(final String variable, final String property, final String valueExpression) {
+    public SetItem(final String variable, final String property, final Expression valueExpression) {
       this.variable = variable;
       this.property = property;
       this.valueExpression = valueExpression;
@@ -67,7 +67,7 @@ public class SetClause {
       return property;
     }
 
-    public String getValueExpression() {
+    public Expression getValueExpression() {
       return valueExpression;
     }
   }
