@@ -733,4 +733,46 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
       }
     }
   }
+
+  @Test
+  void arrayOfFloatsPropertyRoundTrip() throws SQLException, ClassNotFoundException {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("create vertex type `TEXT_EMBEDDING_2` if not exists;");
+        st.execute("create property TEXT_EMBEDDING_2.str if not exists STRING;");
+        st.execute("create property TEXT_EMBEDDING_2.embedding if not exists ARRAY_OF_FLOATS;");
+
+        // Test INSERT with RETURN - this matches the Python e2e test scenario
+        ResultSet resultSet = st.executeQuery("INSERT INTO `TEXT_EMBEDDING_2` SET str = \"meow\", embedding = [0.1,0.2,0.3] RETURN embedding");
+
+        assertThat(resultSet.next()).isTrue();
+        Array embeddingArray = resultSet.getArray("embedding");
+        assertThat(embeddingArray).isNotNull();
+
+        Object[] embeddings = (Object[]) embeddingArray.getArray();
+        assertThat(embeddings).isNotNull();
+        assertThat(embeddings).hasSize(3);
+
+        // Verify all elements are Float instances (not Double)
+        for (Object item : embeddings) {
+          assertThat(item).isInstanceOf(Float.class);
+        }
+
+        // Verify the actual values
+        assertThat((Float) embeddings[0]).isEqualTo(0.1f, offset(0.0001f));
+        assertThat((Float) embeddings[1]).isEqualTo(0.2f, offset(0.0001f));
+        assertThat((Float) embeddings[2]).isEqualTo(0.3f, offset(0.0001f));
+
+        // Also test regular SELECT query
+        resultSet = st.executeQuery("SELECT embedding FROM `TEXT_EMBEDDING_2` WHERE str = \"meow\"");
+        assertThat(resultSet.next()).isTrue();
+        embeddingArray = resultSet.getArray("embedding");
+        assertThat(embeddingArray).isNotNull();
+
+        embeddings = (Object[]) embeddingArray.getArray();
+        assertThat(embeddings).hasSize(3);
+        assertThat((Float) embeddings[0]).isEqualTo(0.1f, offset(0.0001f));
+      }
+    }
+  }
 }

@@ -217,6 +217,10 @@ public enum PostgresType {
     } else if (value instanceof Collection<?> collection) {
       // Handle array serialization
       serializedValue = serializeArrayToString(collection, pgType);
+    } else if (value != null && value.getClass().isArray()) {
+      // Handle primitive arrays by converting them to Collections
+      Collection<?> collection = convertPrimitiveArrayToCollection(value);
+      serializedValue = serializeArrayToString(collection, pgType);
     } else if (value instanceof JSONObject json) {
       serializedValue = json.toString();
     } else if (value instanceof Map map) {
@@ -292,6 +296,69 @@ public enum PostgresType {
     }
     sb.append("}");
     return sb.toString();
+  }
+
+  /**
+   * Converts a primitive array to a Collection for serialization.
+   * Handles all primitive array types: int[], long[], float[], double[], short[], boolean[], char[], byte[]
+   * and object arrays like String[].
+   */
+  private Collection<?> convertPrimitiveArrayToCollection(Object array) {
+    if (array instanceof int[] intArray) {
+      List<Integer> list = new ArrayList<>(intArray.length);
+      for (int val : intArray) {
+        list.add(val);
+      }
+      return list;
+    } else if (array instanceof long[] longArray) {
+      List<Long> list = new ArrayList<>(longArray.length);
+      for (long val : longArray) {
+        list.add(val);
+      }
+      return list;
+    } else if (array instanceof float[] floatArray) {
+      List<Float> list = new ArrayList<>(floatArray.length);
+      for (float val : floatArray) {
+        list.add(val);
+      }
+      return list;
+    } else if (array instanceof double[] doubleArray) {
+      List<Double> list = new ArrayList<>(doubleArray.length);
+      for (double val : doubleArray) {
+        list.add(val);
+      }
+      return list;
+    } else if (array instanceof short[] shortArray) {
+      List<Short> list = new ArrayList<>(shortArray.length);
+      for (short val : shortArray) {
+        list.add(val);
+      }
+      return list;
+    } else if (array instanceof boolean[] booleanArray) {
+      List<Boolean> list = new ArrayList<>(booleanArray.length);
+      for (boolean val : booleanArray) {
+        list.add(val);
+      }
+      return list;
+    } else if (array instanceof char[] charArray) {
+      List<Character> list = new ArrayList<>(charArray.length);
+      for (char val : charArray) {
+        list.add(val);
+      }
+      return list;
+    } else if (array instanceof byte[] byteArray) {
+      List<Byte> list = new ArrayList<>(byteArray.length);
+      for (byte val : byteArray) {
+        list.add(val);
+      }
+      return list;
+    } else if (array instanceof Object[] objectArray) {
+      // Handle object arrays like String[]
+      return Arrays.asList(objectArray);
+    } else {
+      // Fallback: should not happen, but return empty list
+      return new ArrayList<>();
+    }
   }
 
   /**
