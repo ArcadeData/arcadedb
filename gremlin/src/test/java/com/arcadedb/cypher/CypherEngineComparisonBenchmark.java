@@ -18,6 +18,7 @@
  */
 package com.arcadedb.cypher;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -43,6 +44,10 @@ import java.io.File;
  * - Index selection: 10-100x speedup
  * - ExpandInto: 5-10x speedup
  * - Join ordering: 10-100x speedup
+ * <p>
+ * Note: You may see an ANTLR warning about version mismatch (4.9.1 vs 4.13.2).
+ * This is harmless - the legacy Cypher translator library was compiled with ANTLR 4.9.1,
+ * but we use ANTLR 4.13.2 for native OpenCypher. ANTLR 4.13.2 is backward compatible.
  */
 public class CypherEngineComparisonBenchmark {
   private Database database;
@@ -56,6 +61,9 @@ public class CypherEngineComparisonBenchmark {
 
   @BeforeEach
   void setup() {
+    // Use Java engine for Gremlin (secure, not Groovy)
+    GlobalConfiguration.GREMLIN_ENGINE.setValue("java");
+
     FileUtils.deleteRecursively(new File("./databases/test-comparison-benchmark"));
     database = new DatabaseFactory("./databases/test-comparison-benchmark").create();
 
@@ -99,6 +107,7 @@ public class CypherEngineComparisonBenchmark {
       database.drop();
       database = null;
     }
+    GlobalConfiguration.GREMLIN_ENGINE.reset();
   }
 
   /**

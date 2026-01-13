@@ -44,7 +44,7 @@
         <spatial4j.version>0.8</spatial4j.version>
         <jts-core.version>1.20.0</jts-core.version>
         <buildnumber-maven-plugin.version>3.2.1</buildnumber-maven-plugin.version>
-        <antlr4.version>4.13.2</antlr4.version>
+        <antlr4.version>4.9.1</antlr4.version>
     </properties>
 
     <build>
