@@ -259,18 +259,10 @@ class ReplicationChangeSchemaIT extends ReplicationServerIT {
     testOnAllServers((database) -> isInSchemaFile(database, "RuntimeVertexTx0"));
   }
 
-  private void waitForReplicationQueueDrain() {
-    // Wait for all servers (leader + replicas) to complete replication
-    // Uses the proven pattern from BaseGraphServerTest that checks getMessagesInQueue()
-    // instead of getReplicationLogFile().getSize() (which never becomes 0)
-    for (int i = 0; i < getServerCount(); i++) {
-      waitForReplicationIsCompleted(i);
-    }
-  }
-
   private void testOnAllServers(final Callable<String, Database> callback) {
-    // Wait for replication queue to drain before checking schema
-    waitForReplicationQueueDrain();
+    // Wait for cluster stabilization before checking schema files
+    // This ensures all servers are online, queues are empty, and replicas are connected
+    waitForClusterStable(getServerCount());
 
     // CREATE NEW TYPE
     schemaFiles.clear();
