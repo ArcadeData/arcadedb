@@ -1593,7 +1593,7 @@ fragment FIVE
    ;
 
 fragment SIX
-   : [16]
+   : [6]
    ;
 
 fragment SEVEN
