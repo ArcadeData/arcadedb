@@ -32,6 +32,8 @@ import com.arcadedb.opencypher.executor.steps.FilterPropertiesStep;
 import com.arcadedb.opencypher.executor.steps.MatchNodeStep;
 import com.arcadedb.opencypher.executor.steps.MatchRelationshipStep;
 import com.arcadedb.opencypher.executor.steps.ProjectReturnStep;
+import com.arcadedb.opencypher.optimizer.plan.PhysicalPlan;
+import com.arcadedb.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -48,34 +50,68 @@ import java.util.Map;
 /**
  * Execution plan for a Cypher query.
  * Contains the chain of execution steps and executes them.
+ *
+ * Phase 4: Enhanced with Cost-Based Query Optimizer support.
  */
 public class CypherExecutionPlan {
   private final DatabaseInternal database;
   private final CypherStatement statement;
   private final Map<String, Object> parameters;
   private final ContextConfiguration configuration;
+  private final PhysicalPlan physicalPlan;
 
+  /**
+   * Constructor for backward compatibility (without optimizer).
+   */
   public CypherExecutionPlan(final DatabaseInternal database, final CypherStatement statement,
       final Map<String, Object> parameters, final ContextConfiguration configuration) {
+    this(database, statement, parameters, configuration, null);
+  }
+
+  /**
+   * Constructor with optional physical plan from optimizer.
+   * Phase 4: Supports optimized execution when physicalPlan is provided.
+   *
+   * @param database      database instance
+   * @param statement     parsed Cypher statement
+   * @param parameters    query parameters
+   * @param configuration context configuration
+   * @param physicalPlan  optional optimized physical plan (null for non-optimized)
+   */
+  public CypherExecutionPlan(final DatabaseInternal database, final CypherStatement statement,
+      final Map<String, Object> parameters, final ContextConfiguration configuration,
+      final PhysicalPlan physicalPlan) {
     this.database = database;
     this.statement = statement;
     this.parameters = parameters;
     this.configuration = configuration;
+    this.physicalPlan = physicalPlan;
   }
 
   /**
    * Executes the query plan and returns results.
-   * Phase 3: Builds and executes the step chain.
+   * Phase 4: Uses optimized physical plan when available, falls back to step chain otherwise.
    *
    * @return result set
    */
   public ResultSet execute() {
-    // Build execution step chain
+    // Build execution context
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     context.setInputParameters(parameters);
 
-    AbstractExecutionStep rootStep = buildExecutionSteps(context);
+    AbstractExecutionStep rootStep;
+
+    // Phase 4: Use optimized physical plan if available
+    if (physicalPlan != null && physicalPlan.getRootOperator() != null) {
+      // Use optimizer - execute physical operators directly
+      // Note: For Phase 4, we only optimize MATCH patterns
+      // RETURN, ORDER BY, LIMIT are still handled by execution steps
+      rootStep = buildExecutionStepsWithOptimizer(context);
+    } else {
+      // Fall back to non-optimized execution
+      rootStep = buildExecutionSteps(context);
+    }
 
     if (rootStep == null) {
       // No steps to execute - return empty result
@@ -104,6 +140,140 @@ public class CypherExecutionPlan {
     }
 
     return resultSet;
+  }
+
+  /**
+   * Builds execution steps using the optimized physical plan.
+   * Phase 4: Integrates physical operators with execution steps.
+   *
+   * Strategy:
+   * - Physical operators handle MATCH pattern execution (optimized)
+   * - Execution steps handle RETURN, ORDER BY, SKIP, LIMIT (unchanged)
+   *
+   * @param context command context
+   * @return root execution step
+   */
+  private AbstractExecutionStep buildExecutionStepsWithOptimizer(final CommandContext context) {
+    // Initialize function factory for expression evaluation
+    final DefaultSQLFunctionFactory sqlFunctionFactory = new DefaultSQLFunctionFactory();
+    final CypherFunctionFactory functionFactory = new CypherFunctionFactory(sqlFunctionFactory);
+    final ExpressionEvaluator evaluator = new ExpressionEvaluator(functionFactory);
+
+    // Create a wrapper step that executes the physical operators
+    AbstractExecutionStep currentStep = new AbstractExecutionStep(context) {
+      private ResultSet operatorResults = null;
+
+      @Override
+      public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
+        if (operatorResults == null) {
+          // Execute physical operators on first pull
+          operatorResults = physicalPlan.getRootOperator().execute(ctx, nRecords);
+        }
+        return operatorResults;
+      }
+
+      @Override
+      public String prettyPrint(final int depth, final int indent) {
+        return "  ".repeat(Math.max(0, depth * indent)) + "+ OPTIMIZED MATCH (physical operators)\n" +
+               physicalPlan.explain();
+      }
+    };
+
+    // Apply post-MATCH operations using existing execution steps
+    // These are not yet optimized and use the original implementation
+
+    // Step 2: CREATE clause (if any)
+    if (statement.getCreateClause() != null && !statement.getCreateClause().isEmpty()) {
+      final CreateStep createStep = new CreateStep(statement.getCreateClause(), context);
+      createStep.setPrevious(currentStep);
+      currentStep = createStep;
+    }
+
+    // Step 3: SET clause (if any)
+    if (statement.getSetClause() != null && !statement.getSetClause().isEmpty()) {
+      final com.arcadedb.opencypher.executor.steps.SetStep setStep =
+          new com.arcadedb.opencypher.executor.steps.SetStep(statement.getSetClause(), context);
+      setStep.setPrevious(currentStep);
+      currentStep = setStep;
+    }
+
+    // Step 4: DELETE clause (if any)
+    if (statement.getDeleteClause() != null && !statement.getDeleteClause().isEmpty()) {
+      final com.arcadedb.opencypher.executor.steps.DeleteStep deleteStep =
+          new com.arcadedb.opencypher.executor.steps.DeleteStep(statement.getDeleteClause(), context);
+      deleteStep.setPrevious(currentStep);
+      currentStep = deleteStep;
+    }
+
+    // Step 5: MERGE clause (if any)
+    if (statement.getMergeClause() != null) {
+      final com.arcadedb.opencypher.executor.steps.MergeStep mergeStep =
+          new com.arcadedb.opencypher.executor.steps.MergeStep(statement.getMergeClause(), context);
+      mergeStep.setPrevious(currentStep);
+      currentStep = mergeStep;
+    }
+
+    // Step 6: UNWIND clause (if any)
+    if (!statement.getUnwindClauses().isEmpty()) {
+      for (final com.arcadedb.opencypher.ast.UnwindClause unwind : statement.getUnwindClauses()) {
+        final com.arcadedb.opencypher.executor.steps.UnwindStep unwindStep =
+            new com.arcadedb.opencypher.executor.steps.UnwindStep(unwind, context, evaluator);
+        unwindStep.setPrevious(currentStep);
+        currentStep = unwindStep;
+      }
+    }
+
+    // Step 7: RETURN clause (if any)
+    if (statement.getReturnClause() != null) {
+      // Check if RETURN contains aggregation functions
+      if (statement.getReturnClause().hasAggregations()) {
+        // Check if there are also non-aggregated expressions (implicit GROUP BY)
+        if (statement.getReturnClause().hasNonAggregations()) {
+          // Use GROUP BY aggregation step (implicit grouping)
+          final com.arcadedb.opencypher.executor.steps.GroupByAggregationStep groupByAggStep =
+              new com.arcadedb.opencypher.executor.steps.GroupByAggregationStep(
+                  statement.getReturnClause(), context, functionFactory);
+          groupByAggStep.setPrevious(currentStep);
+          currentStep = groupByAggStep;
+        } else {
+          // Use aggregation step for pure aggregations (no grouping)
+          final AggregationStep aggStep = new AggregationStep(statement.getReturnClause(), context, functionFactory);
+          aggStep.setPrevious(currentStep);
+          currentStep = aggStep;
+        }
+      } else {
+        // Use regular projection for non-aggregation expressions
+        final ProjectReturnStep returnStep = new ProjectReturnStep(statement.getReturnClause(), context, functionFactory);
+        returnStep.setPrevious(currentStep);
+        currentStep = returnStep;
+      }
+    }
+
+    // Step 8: ORDER BY (if any)
+    if (statement.getOrderByClause() != null) {
+      final com.arcadedb.opencypher.executor.steps.OrderByStep orderByStep =
+          new com.arcadedb.opencypher.executor.steps.OrderByStep(statement.getOrderByClause(), context);
+      orderByStep.setPrevious(currentStep);
+      currentStep = orderByStep;
+    }
+
+    // Step 9: SKIP (if any)
+    if (statement.getSkip() != null) {
+      final com.arcadedb.opencypher.executor.steps.SkipStep skipStep =
+          new com.arcadedb.opencypher.executor.steps.SkipStep(statement.getSkip(), context);
+      skipStep.setPrevious(currentStep);
+      currentStep = skipStep;
+    }
+
+    // Step 10: LIMIT (if any)
+    if (statement.getLimit() != null) {
+      final com.arcadedb.opencypher.executor.steps.LimitStep limitStep =
+          new com.arcadedb.opencypher.executor.steps.LimitStep(statement.getLimit(), context);
+      limitStep.setPrevious(currentStep);
+      currentStep = limitStep;
+    }
+
+    return currentStep;
   }
 
   /**

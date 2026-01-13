@@ -152,9 +152,8 @@ public class NodeHashJoin extends AbstractPhysicalOperator {
           final Result leftResult = leftResults.next();
           final Object joinValue = leftResult.getProperty(joinVariable);
 
-          if (joinValue != null) {
-            hashTable.computeIfAbsent(joinValue, k -> new ArrayList<>()).add(leftResult);
-          }
+          // Add to hash table (allow null join values for Cartesian products)
+          hashTable.computeIfAbsent(joinValue, k -> new ArrayList<>()).add(leftResult);
         }
         leftResults.close();
       }

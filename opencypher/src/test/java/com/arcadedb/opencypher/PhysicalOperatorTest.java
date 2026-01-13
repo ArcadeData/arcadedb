@@ -49,24 +49,23 @@ public class PhysicalOperatorTest {
   public void setUp() {
     database = new DatabaseFactory("./target/databases/PhysicalOperatorTest").create();
 
+    // Create schema and data in separate transactions for proper index building
     database.transaction(() -> {
-      // Create schema
+      // Create schema without index first
       if (!database.getSchema().existsType("Person")) {
         database.getSchema().createVertexType("Person");
         database.getSchema().getType("Person").createProperty("id", Integer.class);
         database.getSchema().getType("Person").createProperty("name", String.class);
         database.getSchema().getType("Person").createProperty("age", Integer.class);
-
-        // Create index on id property
-        database.getSchema().getType("Person")
-            .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
       }
 
       if (!database.getSchema().existsType("KNOWS")) {
         database.getSchema().createEdgeType("KNOWS");
       }
+    });
 
-      // Create test vertices
+    // Create test data
+    database.transaction(() -> {
       final MutableVertex alice = database.newVertex("Person");
       alice.set("id", 1);
       alice.set("name", "Alice");
@@ -89,6 +88,14 @@ public class PhysicalOperatorTest {
       alice.newEdge("KNOWS", bob, true, (Object[]) null);
       alice.newEdge("KNOWS", charlie, true, (Object[]) null);
       bob.newEdge("KNOWS", charlie, true, (Object[]) null);
+    });
+
+    // Create index after data exists
+    database.transaction(() -> {
+      if (database.getSchema().getType("Person").getAllIndexes(false).isEmpty()) {
+        database.getSchema().getType("Person")
+            .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
+      }
     });
   }
 

@@ -117,14 +117,13 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
         while (buffer.size() < n && cursor.hasNext()) {
           final Identifiable identifiable = cursor.next();
 
-          if (identifiable instanceof Vertex) {
-            final Vertex vertex = (Vertex) identifiable;
+          // Load the actual record from the identifiable (may be RID)
+          final Vertex vertex = identifiable.asVertex();
 
-            // Create result with vertex bound to variable
-            final ResultInternal result = new ResultInternal();
-            result.setProperty(variable, vertex);
-            buffer.add(result);
-          }
+          // Create result with vertex bound to variable
+          final ResultInternal result = new ResultInternal();
+          result.setProperty(variable, vertex);
+          buffer.add(result);
         }
 
         if (!cursor.hasNext()) {
