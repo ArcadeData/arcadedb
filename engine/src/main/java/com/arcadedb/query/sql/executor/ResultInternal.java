@@ -18,16 +18,12 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.Document;
-import com.arcadedb.database.EmbeddedDocument;
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.RID;
+import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
 import com.arcadedb.schema.Property;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 
@@ -37,12 +33,12 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
  * Created by luigidellaquila on 06/07/16.
  */
 public class ResultInternal implements Result {
-  protected final Database            database;
-  protected final Object              value;
-  protected       Map<String, Object> content;
-  protected       Map<String, Object> temporaryContent;
-  protected       Map<String, Object> metadata;
-  protected       Document            element;
+  protected final Database database;
+  protected final Object value;
+  protected Map<String, Object> content;
+  protected Map<String, Object> temporaryContent;
+  protected Map<String, Object> metadata;
+  protected Document element;
 
   public ResultInternal() {
     // Memory optimization: Use smaller initial capacity to reduce memory footprint
@@ -135,8 +131,8 @@ public class ResultInternal implements Result {
       result = null;
 
     if (!(result instanceof Record) &&
-        result instanceof Identifiable identifiable &&
-        identifiable.getIdentity() != null)
+            result instanceof Identifiable identifiable &&
+            identifiable.getIdentity() != null)
       result = (T) identifiable.getIdentity();
 
     return result;
@@ -298,8 +294,8 @@ public class ResultInternal implements Result {
     else if (element != null)
       return element.toString();
     else if (content != null)
-      return "{ " + content.entrySet().stream().map(x -> x.getKey() + ": " + x.getValue()).reduce("", (a, b) -> a + b + "\n")
-          + " }";
+      return "{" + content.entrySet().stream().map(x -> x.getKey() + ": " + x.getValue()).reduce("", (a, b) -> a + b)
+              + "}";
     return "{}";
   }
 
