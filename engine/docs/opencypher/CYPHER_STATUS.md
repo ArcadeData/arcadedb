@@ -1,8 +1,8 @@
 # OpenCypher Implementation Status
 
 **Last Updated:** 2026-01-13
-**Implementation Version:** Native ANTLR4-based Parser (Phase 8 + Functions + GROUP BY + Pattern Predicates + COLLECT + UNWIND + Optimizer Phase 4 Complete + All Tests Fixed)
-**Test Coverage:** 273/273 tests passing (100% - All tests passing! 🎉✅)
+**Implementation Version:** Native ANTLR4-based Parser (Phase 8 + Functions + GROUP BY + Pattern Predicates + COLLECT + UNWIND + WITH + Optimizer Phase 4 Complete + All Tests Fixed)
+**Test Coverage:** 285/285 tests passing (100% - All tests passing! 🎉✅)
 
 ---
 
@@ -16,7 +16,7 @@
 | **Expression Evaluation** | ✅ **100%** | Expression framework complete, list literals ✅, all functions working ✅ |
 | **Functions** | ✅ **100%** | 23 Cypher functions + bridge to 100+ SQL functions, all tests passing ✅ |
 | **Aggregations & Grouping** | ✅ **100%** | Implicit GROUP BY ✅, all aggregation functions working ✅ |
-| **Advanced Features** | 🟡 **35%** | Named paths ✅, OPTIONAL MATCH ✅, WHERE scoping ✅, no UNION/WITH |
+| **Advanced Features** | 🟡 **40%** | Named paths ✅, OPTIONAL MATCH ✅, WHERE scoping ✅, WITH ✅, no UNION |
 
 **Legend:** ✅ Complete | 🟡 Partial | 🔴 Minimal | ❌ Not Implemented
 
@@ -176,8 +176,87 @@ RETURN num
 // Returns: 1, 2, 3, 4
 ```
 
-**Limitations:**
-- ❌ UNWIND with WITH clause (WITH clause not implemented yet)
+**Status:** ✅ **Fully Implemented** - UNWIND clause with list expansion support
+
+### WITH Clause
+```cypher
+// ✅ Basic projection (select and alias columns)
+MATCH (p:Person)
+WITH p.name AS name, p.age AS age
+RETURN name, age ORDER BY name
+
+// ✅ WITH + WHERE filtering (after projection)
+MATCH (p:Person)
+WITH p.name AS name, p.age AS age
+WHERE age > 28
+RETURN name ORDER BY name
+
+// ✅ WITH + DISTINCT (remove duplicates)
+MATCH (p:Person)
+WITH DISTINCT p.age AS age
+RETURN age ORDER BY age
+
+// ✅ WITH + ORDER BY + LIMIT (pagination)
+MATCH (p:Person)
+WITH p.name AS name
+ORDER BY name
+LIMIT 2
+RETURN name
+
+// ✅ WITH + SKIP (skip first N results)
+MATCH (p:Person)
+WITH p.name AS name
+ORDER BY name
+SKIP 2
+RETURN name
+
+// ✅ WITH + Aggregation (pure aggregation)
+MATCH (p:Person)
+WITH count(p) AS personCount
+RETURN personCount
+
+// ✅ WITH + Implicit GROUP BY (mixed aggregation + non-aggregation)
+MATCH (p:Person)-[:LIVES_IN]->(c:City)
+WITH c.name AS city, count(p) AS residents
+RETURN city, residents
+ORDER BY city
+
+// ✅ Multiple WITH clauses (query chaining)
+MATCH (p:Person)
+WITH p.name AS name, p.age AS age
+WHERE age > 25
+WITH name, age
+WHERE age < 35
+RETURN name ORDER BY name
+
+// ✅ WITH after relationship match
+MATCH (a:Person)-[:KNOWS]->(b:Person)
+WHERE a.name = 'Alice'
+WITH a.name AS aname, b.name AS bname
+RETURN aname, bname ORDER BY bname
+
+// ✅ WITH * (pass through all variables)
+MATCH (p:Person)
+WITH *
+WHERE p.age > 30
+RETURN p.name
+```
+
+**Features:**
+- ✅ Projection (select and alias columns)
+- ✅ DISTINCT (remove duplicates)
+- ✅ WHERE filtering (applied after projection)
+- ✅ ORDER BY, SKIP, LIMIT
+- ✅ Aggregation support (pure aggregation and implicit GROUP BY)
+- ✅ Multiple WITH clauses (query chaining)
+- ✅ WITH * (pass through all variables)
+
+**Status:** ✅ **Fully Implemented** - WITH clause with all major features
+**Test Coverage:** 12 tests in `WithAndUnwindTest.java`
+
+**Known Limitations:**
+- ⚠️ UNWIND after WITH: Variable passing from WITH to UNWIND needs additional work
+- ⚠️ MATCH after WITH: Chaining another MATCH clause after WITH not yet fully implemented
 
 ### CREATE Clause
 ```cypher
@@ -411,11 +490,11 @@ ON MATCH SET r.promoted = true
 ## ❌ Not Implemented
 
 ### Query Composition
-| Feature | Example | Priority |
-|---------|---------|----------|
-| **WITH** | `MATCH (n) WITH n.name AS name RETURN name` | 🟡 MEDIUM |
-| **UNION** | `MATCH (n:Person) RETURN n UNION MATCH (n:Company) RETURN n` | 🟢 LOW |
-| **UNION ALL** | `... UNION ALL ...` | 🟢 LOW |
+| Feature | Example | Status | Priority |
+|---------|---------|--------|----------|
+| **WITH** | `MATCH (n) WITH n.name AS name RETURN name` | ✅ **Implemented** | 🟡 MEDIUM |
+| **UNION** | `MATCH (n:Person) RETURN n UNION MATCH (n:Company) RETURN n` | ❌ Not Implemented | 🟢 LOW |
+| **UNION ALL** | `... UNION ALL ...` | ❌ Not Implemented | 🟢 LOW |
 
 ### Aggregation Functions
 | Function | Example | Status | Priority |
@@ -642,11 +721,11 @@ RETURN count(n), avg(n.age)
 - [ ] Support for nested function calls
 - [ ] Arithmetic expressions (n.age * 2)
 
-### Phase 6: Advanced Queries
-**Target:** Q3 2026
+### Phase 6: Advanced Queries ✅ **COMPLETED** (2026-01-13)
+**Target:** Q3 2026 → ✅ **COMPLETED**
 **Focus:** Query composition and advanced features
 
-- [ ] Implement WITH clause (query chaining)
+- [x] ✅ **Completed:** WITH clause (query chaining) (2026-01-13)
 - [x] ✅ **Completed:** MERGE with ON CREATE/ON MATCH SET (Phase 7)
 - [x] ✅ **Completed:** OPTIONAL MATCH (Phase 7)
 - [x] ✅ **Completed:** String matching (STARTS WITH, ENDS WITH, CONTAINS) (Phase 7)
@@ -738,13 +817,13 @@ RETURN count(n), avg(n.age)
 - ✅ 1 test with aggregation (excluded from optimizer)
 - ✅ 1 test with cross-type relationship (fixed ExpandAll direction handling)
 
-**Note:** All 273 tests now pass! The optimizer handles simple read-only MATCH queries, while complex queries use the traditional execution path.
+**Note:** All 285 tests now pass! The optimizer handles simple read-only MATCH queries, while complex queries use the traditional execution path.
 
 ---
 
 ## 🧪 Test Coverage
 
-**Overall:** 273/273 tests passing (100%) 🎉 - All tests passing!
+**Overall:** 285/285 tests passing (100%) 🎉 - All tests passing!
 
 | Test Suite | Tests | Status | Coverage |
 |------------|-------|--------|----------|
@@ -768,6 +847,7 @@ RETURN count(n), avg(n.age)
 | OpenCypherPatternPredicateTest | 9/9 | ✅ PASS | Pattern predicates in WHERE clauses |
 | OpenCypherGroupByTest | 5/5 | ✅ PASS | Implicit GROUP BY with aggregations |
 | OpenCypherCollectUnwindTest | 12/12 | ✅ PASS | COLLECT aggregation and UNWIND clause |
+| **WithAndUnwindTest** | **12/12** | **✅ PASS** | **WITH clause and UNWIND with WITH** |
 | **PhysicalOperatorTest** | **8/8** | **✅ PASS** | **Physical operator unit tests** |
 | CypherOptimizerIntegrationTest | 7/7 | ✅ PASS | Cost-based optimizer integration |
 | AnchorSelectorTest | 11/11 | ✅ PASS | Anchor selection algorithm |
@@ -775,11 +855,15 @@ RETURN count(n), avg(n.age)
 | ExpandIntoRuleTest | 11/11 | ✅ PASS | ExpandInto bounded pattern optimization |
 | OrderByDebugTest | 2/2 | ✅ PASS | Debug tests |
 | ParserDebugTest | 2/2 | ✅ PASS | Parser tests |
-| **TOTAL** | **273/273** | **✅ 100%** 🎉 | **Phase 4 Complete** |
+| **TOTAL** | **285/285** | **✅ 100%** 🎉 | **Phase 4 Complete + WITH Clause** |
 
 **Phase 4 Improvements:**
 - +23 tests fixed (8 schema errors, 2 multiple MATCH, 3 named paths, 8 property constraints, 1 aggregation, 1 cross-type relationship)
 - From 250/273 (91.6%) → 273/273 (100%) 🎉
+
+**WITH Clause Addition (2026-01-13):**
+- +12 new tests for WITH clause and UNWIND with WITH
+- From 273/273 → 285/285 tests passing (100%) 🎉
 **Result:** All tests passing!
 
 ### Test Files
@@ -803,7 +887,8 @@ opencypher/src/test/java/com/arcadedb/opencypher/
 ├── OpenCypherTransactionTest.java           # Automatic transaction handling
 ├── OpenCypherPatternPredicateTest.java      # Pattern predicates in WHERE
 ├── OpenCypherGroupByTest.java               # Implicit GROUP BY with aggregations
-├── OpenCypherCollectUnwindTest.java         # COLLECT aggregation and UNWIND clause (NEW)
+├── OpenCypherCollectUnwindTest.java         # COLLECT aggregation and UNWIND clause
+├── WithAndUnwindTest.java                   # WITH clause and UNWIND with WITH (NEW)
 ├── OrderByDebugTest.java                    # Debug tests
 ├── ParserDebugTest.java                     # Parser tests
 └── optimizer/
@@ -852,17 +937,16 @@ CypherStatement → CypherExecutionPlanner → Execution Plan (Step Chain)
 - `SetStep` - SET clause (update properties) ✅
 - `DeleteStep` - DELETE clause (remove nodes/edges) ✅
 - `MergeStep` - MERGE clause (upsert) ✅
-- `AggregationStep` - Aggregation functions ✅ **NEW**
+- `AggregationStep` - Aggregation functions ✅
 - `ProjectReturnStep` - RETURN projection (with expression evaluation) ✅
-- `UnwindStep` - UNWIND clause (list expansion) ✅ **NEW**
+- `UnwindStep` - UNWIND clause (list expansion) ✅
+- `WithStep` - WITH clause (query chaining) ✅ **NEW**
 - `OrderByStep` - Result sorting
 - `SkipStep` - Skip N results
 - `LimitStep` - Limit N results
 
 **Missing Steps:**
-- `WithStep` - WITH clause (query chaining)
-- `OptionalMatchStep` - OPTIONAL MATCH
-- `GroupByStep` - GROUP BY aggregation grouping
+- None - All major execution steps implemented!
 
 ---
 
@@ -995,9 +1079,10 @@ We welcome contributions to the OpenCypher implementation!
 10. ✅ ~~String matching operators~~ - **COMPLETED** (STARTS WITH, ENDS WITH, CONTAINS)
 11. ✅ ~~Parenthesized boolean expressions~~ - **COMPLETED** (complex nested expressions)
 12. ✅ ~~GROUP BY aggregation grouping~~ - **COMPLETED** (implicit grouping)
-13. **Arithmetic expressions** - Support n.age * 2, n.value + 10, etc.
-14. **Nested function support** - Enable function composition
-15. **DISTINCT in RETURN** - Remove duplicate results
+13. ✅ ~~WITH clause~~ - **COMPLETED** (query chaining with projection, filtering, aggregation)
+14. **Arithmetic expressions** - Support n.age * 2, n.value + 10, etc.
+15. **Nested function support** - Enable function composition
+16. **DISTINCT in RETURN** - Remove duplicate results
 
 ### Getting Started:
 1. Review `CypherASTBuilder.java` - See what's parsed
@@ -1011,7 +1096,7 @@ We welcome contributions to the OpenCypher implementation!
 - Follow existing code style (see `CLAUDE.md`)
 - Use Low-Level Java optimizations
 - Minimize garbage collection pressure
-- All tests must pass (120/120)
+- All tests must pass (285/285)
 - Add tests for new features
 
 ---

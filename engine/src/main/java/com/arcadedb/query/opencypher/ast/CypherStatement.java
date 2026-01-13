@@ -129,4 +129,12 @@ public interface CypherStatement {
    * @return list of UNWIND clauses (may be empty)
    */
   List<UnwindClause> getUnwindClauses();
+
+  /**
+   * Returns the WITH clauses if present.
+   * WITH clauses enable query chaining by projecting and transforming results.
+   *
+   * @return list of WITH clauses (may be empty)
+   */
+  List<WithClause> getWithClauses();
 }

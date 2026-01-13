@@ -78,6 +78,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     DeleteClause deleteClause = null;
     MergeClause mergeClause = null;
     final List<UnwindClause> unwindClauses = new ArrayList<>();
+    final List<WithClause> withClauses = new ArrayList<>();
     WhereClause whereClause = null;
     ReturnClause returnClause = null;
     OrderByClause orderByClause = null;
@@ -100,6 +101,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         mergeClause = visitMergeClause(clauseCtx.mergeClause());
       } else if (clauseCtx.unwindClause() != null) {
         unwindClauses.add(visitUnwindClause(clauseCtx.unwindClause()));
+      } else if (clauseCtx.withClause() != null) {
+        withClauses.add(visitWithClause(clauseCtx.withClause()));
       } else if (clauseCtx.returnClause() != null) {
         // RETURN clause with embedded ORDER BY, SKIP, LIMIT
         final Cypher25Parser.ReturnBodyContext body = clauseCtx.returnClause().returnBody();
@@ -154,6 +157,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         deleteClause,
         mergeClause,
         unwindClauses,
+        withClauses,
         hasCreate,
         hasMerge,
         hasDelete
@@ -233,6 +237,52 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
 
     return new MergeClause(pathPattern, onCreateSet, onMatchSet);
+  }
+
+  @Override
+  public WithClause visitWithClause(final Cypher25Parser.WithClauseContext ctx) {
+    // Grammar: WITH returnBody whereClause?
+    final Cypher25Parser.ReturnBodyContext body = ctx.returnBody();
+
+    // Parse return items
+    final List<ReturnClause.ReturnItem> items = new ArrayList<>();
+    if (body.returnItems().TIMES() != null) {
+      // WITH *
+      items.add(new ReturnClause.ReturnItem(new VariableExpression("*"), "*"));
+    } else {
+      for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
+        final Expression expr = parseExpression(itemCtx.expression());
+        final String alias = itemCtx.variable() != null ? itemCtx.variable().getText() : null;
+        items.add(new ReturnClause.ReturnItem(expr, alias));
+      }
+    }
+
+    // Parse DISTINCT flag
+    final boolean distinct = body.DISTINCT() != null;
+
+    // Parse WHERE clause (applied after projection)
+    WhereClause whereClause = null;
+    if (ctx.whereClause() != null) {
+      whereClause = visitWhereClause(ctx.whereClause());
+    }
+
+    // Parse ORDER BY, SKIP, LIMIT from returnBody
+    OrderByClause orderByClause = null;
+    if (body.orderBy() != null) {
+      orderByClause = visitOrderBy(body.orderBy());
+    }
+
+    Integer skip = null;
+    if (body.skip() != null) {
+      skip = visitSkip(body.skip());
+    }
+
+    Integer limit = null;
+    if (body.limit() != null) {
+      limit = visitLimit(body.limit());
+    }
+
+    return new WithClause(items, distinct, whereClause, orderByClause, skip, limit);
   }
 
   @Override
