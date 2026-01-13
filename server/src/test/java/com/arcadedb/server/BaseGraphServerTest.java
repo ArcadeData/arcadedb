@@ -33,6 +33,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ha.HAServer;
+import com.arcadedb.server.ha.HATestTimeouts;
 import com.arcadedb.utility.FileUtils;
 import org.awaitility.Awaitility;
 import org.awaitility.core.ConditionTimeoutException;
@@ -705,6 +706,102 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     } catch (ConditionTimeoutException e) {
       throw new RuntimeException("No leader elected after 30 seconds", e);
     }
+  }
+
+  /**
+   * Waits for the entire cluster to stabilize after server operations.
+   *
+   * <p>This method performs a 3-phase stabilization check:
+   * <ol>
+   *   <li>Phase 1: Wait for all servers to be ONLINE
+   *   <li>Phase 2: Wait for all replication queues to drain
+   *   <li>Phase 3: Wait for all replicas to be connected to leader
+   * </ol>
+   *
+   * <p>Use this after server start/stop/restart operations or after data modifications
+   * to ensure the cluster is fully synchronized before making assertions.
+   *
+   * @param serverCount number of servers in the cluster
+   * @throws org.awaitility.core.ConditionTimeoutException if stabilization doesn't complete within timeout
+   */
+  protected void waitForClusterStable(final int serverCount) {
+    LogManager.instance().log(this, Level.FINE, "TEST: Waiting for cluster to stabilize (%d servers)...", serverCount);
+
+    // Phase 1: Wait for all servers to be ONLINE
+    Awaitility.await("all servers ONLINE")
+        .atMost(HATestTimeouts.CLUSTER_STABILIZATION_TIMEOUT)
+        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL)
+        .until(() -> {
+          for (int i = 0; i < serverCount; i++) {
+            final ArcadeDBServer server = getServer(i);
+            if (server.getStatus() != ArcadeDBServer.Status.ONLINE) {
+              return false;
+            }
+          }
+          return true;
+        });
+
+    // Phase 2: Wait for replication queues to drain
+    for (int i = 0; i < serverCount; i++) {
+      waitForReplicationIsCompleted(i);
+    }
+
+    // Phase 3: Wait for all replicas to be connected
+    Awaitility.await("all replicas connected")
+        .atMost(HATestTimeouts.REPLICA_RECONNECTION_TIMEOUT)
+        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL)
+        .until(() -> {
+          try {
+            return areAllReplicasAreConnected();
+          } catch (Exception e) {
+            return false;
+          }
+        });
+
+    LogManager.instance().log(this, Level.FINE, "TEST: Cluster stabilization complete");
+  }
+
+  /**
+   * Waits for a server to complete shutdown.
+   *
+   * <p>Ensures the server fully completes shutdown before proceeding. This prevents
+   * tests from restarting servers that are still shutting down.
+   *
+   * @param server the server that is shutting down
+   * @param serverId server index (for logging)
+   * @throws org.awaitility.core.ConditionTimeoutException if shutdown doesn't complete within timeout
+   */
+  protected void waitForServerShutdown(final ArcadeDBServer server, final int serverId) {
+    LogManager.instance().log(this, Level.FINE, "TEST: Waiting for server %d to complete shutdown...", serverId);
+
+    Awaitility.await("server shutdown")
+        .atMost(HATestTimeouts.SERVER_SHUTDOWN_TIMEOUT)
+        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL_LONG)
+        .until(() -> server.getStatus() != ArcadeDBServer.Status.SHUTTING_DOWN);
+
+    LogManager.instance().log(this, Level.FINE, "TEST: Server %d shutdown complete", serverId);
+  }
+
+  /**
+   * Waits for a server to complete startup and join the cluster.
+   *
+   * <p>Ensures the server fully completes startup and joins the cluster before
+   * proceeding. This prevents tests from running operations on servers that
+   * are still initializing.
+   *
+   * @param server the server that is starting
+   * @param serverId server index (for logging)
+   * @throws org.awaitility.core.ConditionTimeoutException if startup doesn't complete within timeout
+   */
+  protected void waitForServerStartup(final ArcadeDBServer server, final int serverId) {
+    LogManager.instance().log(this, Level.FINE, "TEST: Waiting for server %d to complete startup...", serverId);
+
+    Awaitility.await("server startup")
+        .atMost(HATestTimeouts.SERVER_STARTUP_TIMEOUT)
+        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL_LONG)
+        .until(() -> server.getStatus() == ArcadeDBServer.Status.ONLINE);
+
+    LogManager.instance().log(this, Level.FINE, "TEST: Server %d startup complete", serverId);
   }
 
 }
