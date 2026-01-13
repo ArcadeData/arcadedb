@@ -143,6 +143,43 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * Returns EXPLAIN output showing the query execution plan.
+   * Displays physical operators with cost and cardinality estimates.
+   *
+   * @return result set containing explain output
+   */
+  public ResultSet explain() {
+    final List<ResultInternal> results = new ArrayList<>();
+
+    // Generate explain output
+    final StringBuilder explainOutput = new StringBuilder();
+    explainOutput.append("OpenCypher Native Execution Plan\n");
+    explainOutput.append("=================================\n\n");
+
+    if (physicalPlan != null && physicalPlan.getRootOperator() != null) {
+      // Show optimized physical plan
+      explainOutput.append("Using Cost-Based Query Optimizer\n\n");
+      explainOutput.append("Physical Plan:\n");
+      explainOutput.append(physicalPlan.getRootOperator().explain(0));
+      explainOutput.append("\n");
+      explainOutput.append(String.format("Total Estimated Cost: %.2f\n", physicalPlan.getTotalEstimatedCost()));
+      explainOutput.append(String.format("Total Estimated Rows: %d\n", physicalPlan.getTotalEstimatedCardinality()));
+    } else {
+      // Show traditional execution path
+      explainOutput.append("Using Traditional Execution (Non-Optimized)\n\n");
+      explainOutput.append("Reason: Query pattern not yet supported by optimizer\n");
+      explainOutput.append("Execution will use step-by-step interpretation\n");
+    }
+
+    // Create result row
+    final ResultInternal result = new ResultInternal();
+    result.setProperty("plan", explainOutput.toString());
+    results.add(result);
+
+    return new IteratorResultSet(results.iterator());
+  }
+
+  /**
    * Builds execution steps using the optimized physical plan.
    * Phase 4: Integrates physical operators with execution steps.
    *

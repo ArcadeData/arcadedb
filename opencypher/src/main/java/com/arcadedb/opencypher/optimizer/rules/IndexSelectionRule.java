@@ -98,7 +98,8 @@ public class IndexSelectionRule implements OptimizationRule {
   public PhysicalOperator createAnchorOperator(final AnchorSelection anchor) {
     if (anchor.useIndex()) {
       // INDEX SEEK
-      final Object propertyValue = anchor.getNode().getProperties().get(anchor.getPropertyName());
+      // Get property value from AnchorSelection (supports both WHERE clause and inline properties)
+      final Object propertyValue = anchor.getPropertyValue();
       return new NodeIndexSeek(
           anchor.getVariable(),
           anchor.getNode().getFirstLabel(),

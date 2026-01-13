@@ -77,12 +77,16 @@ public class OpenCypherQueryEngine implements QueryEngine {
   @Override
   public ResultSet query(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
     try {
-      final CypherStatement statement = parser.parse(query);
+      // Check for EXPLAIN prefix
+      final boolean explain = query.trim().toUpperCase().startsWith("EXPLAIN ");
+      final String actualQuery = explain ? query.trim().substring(8).trim() : query;
+
+      final CypherStatement statement = parser.parse(actualQuery);
 
       if (!statement.isReadOnly())
         throw new CommandExecutionException("Query contains write operations. Use command() instead of query()");
 
-      return execute(statement, configuration, parameters);
+      return execute(statement, configuration, parameters, explain);
     } catch (final CommandExecutionException | CommandParsingException e) {
       throw e;
     } catch (final Exception e) {
@@ -98,8 +102,12 @@ public class OpenCypherQueryEngine implements QueryEngine {
   @Override
   public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
     try {
-      final CypherStatement statement = parser.parse(query);
-      return execute(statement, configuration, parameters);
+      // Check for EXPLAIN prefix
+      final boolean explain = query.trim().toUpperCase().startsWith("EXPLAIN ");
+      final String actualQuery = explain ? query.trim().substring(8).trim() : query;
+
+      final CypherStatement statement = parser.parse(actualQuery);
+      return execute(statement, configuration, parameters, explain);
     } catch (final CommandExecutionException | CommandParsingException e) {
       throw e;
     } catch (final Exception e) {
@@ -118,13 +126,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * @param statement     the parsed Cypher statement
    * @param configuration context configuration
    * @param parameters    query parameters
+   * @param explain       if true, return EXPLAIN output instead of executing
    * @return result set
    */
   private ResultSet execute(final CypherStatement statement, final ContextConfiguration configuration,
-      final Map<String, Object> parameters) {
+      final Map<String, Object> parameters, final boolean explain) {
     final CypherExecutionPlanner planner = new CypherExecutionPlanner(database, statement, parameters);
     final CypherExecutionPlan plan = planner.createExecutionPlan(configuration);
-    return plan.execute();
+    return explain ? plan.explain() : plan.execute();
   }
 
   /**

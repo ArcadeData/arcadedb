@@ -30,17 +30,25 @@ public class AnchorSelection {
   private final boolean useIndex;
   private final IndexStatistics index;
   private final String propertyName;
+  private final Object propertyValue;  // NEW: Value for index seek
   private final double estimatedCost;
   private final long estimatedCardinality;
 
   public AnchorSelection(final String variable, final LogicalNode node, final boolean useIndex,
                         final IndexStatistics index, final String propertyName,
                         final double estimatedCost, final long estimatedCardinality) {
+    this(variable, node, useIndex, index, propertyName, null, estimatedCost, estimatedCardinality);
+  }
+
+  public AnchorSelection(final String variable, final LogicalNode node, final boolean useIndex,
+                        final IndexStatistics index, final String propertyName, final Object propertyValue,
+                        final double estimatedCost, final long estimatedCardinality) {
     this.variable = variable;
     this.node = node;
     this.useIndex = useIndex;
     this.index = index;
     this.propertyName = propertyName;
+    this.propertyValue = propertyValue;
     this.estimatedCost = estimatedCost;
     this.estimatedCardinality = estimatedCardinality;
   }
@@ -78,6 +86,13 @@ public class AnchorSelection {
    */
   public String getPropertyName() {
     return propertyName;
+  }
+
+  /**
+   * Returns the property value for index seek (from WHERE clause or inline properties).
+   */
+  public Object getPropertyValue() {
+    return propertyValue;
   }
 
   /**

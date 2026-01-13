@@ -96,15 +96,26 @@ public class AnchorSelector {
     final TypeStatistics typeStats = statisticsProvider.getTypeStatistics(label);
     final long typeCount = typeStats != null ? typeStats.getRecordCount() : 1000; // Default estimate
 
-    // Check for equality predicates on this node's properties
+    // Check for equality predicates on this node's properties (inline properties)
     final Map<String, Object> properties = node.getProperties();
 
-    if (properties != null && !properties.isEmpty()) {
+    // ALSO check WHERE clause for equality predicates on indexed properties
+    final Map<String, Object> wherePredicates = extractEqualityPredicates(variable, plan);
+
+    // Merge inline properties with WHERE clause predicates
+    final Map<String, Object> allPredicates = new java.util.HashMap<>();
+    if (properties != null) {
+      allPredicates.putAll(properties);
+    }
+    allPredicates.putAll(wherePredicates);
+
+    if (!allPredicates.isEmpty()) {
       // Look for indexed properties with equality predicates
       final List<IndexStatistics> indexes = statisticsProvider.getIndexesForType(label);
 
-      for (final Map.Entry<String, Object> property : properties.entrySet()) {
+      for (final Map.Entry<String, Object> property : allPredicates.entrySet()) {
         final String propertyName = property.getKey();
+        final Object propertyValue = property.getValue();
 
         // Check if there's an index on this property
         final IndexStatistics indexStats = findIndexForProperty(indexes, propertyName);
@@ -121,6 +132,7 @@ public class AnchorSelector {
               true, // useIndex
               indexStats,
               propertyName,
+              propertyValue, // Pass the value from WHERE clause or inline properties
               cost,
               estimatedRows
           );
@@ -184,6 +196,85 @@ public class AnchorSelector {
     }
 
     return null;
+  }
+
+  /**
+   * Extracts equality predicates from WHERE clauses for a given variable.
+   * Example: WHERE p.id = 500 → {"id": 500}
+   *
+   * @param variable the variable name to search for
+   * @param plan     the logical plan containing WHERE clauses
+   * @return map of property names to their equality values
+   */
+  private Map<String, Object> extractEqualityPredicates(final String variable, final LogicalPlan plan) {
+    final Map<String, Object> predicates = new java.util.HashMap<>();
+
+    if (plan.getWhereFilters() == null || plan.getWhereFilters().isEmpty()) {
+      return predicates;
+    }
+
+    for (final com.arcadedb.opencypher.ast.WhereClause whereClause : plan.getWhereFilters()) {
+      final com.arcadedb.opencypher.ast.BooleanExpression condition = whereClause.getConditionExpression();
+      if (condition == null) {
+        continue;
+      }
+
+      // Check if it's a comparison expression
+      if (condition instanceof com.arcadedb.opencypher.ast.ComparisonExpression) {
+        final com.arcadedb.opencypher.ast.ComparisonExpression comparison =
+            (com.arcadedb.opencypher.ast.ComparisonExpression) condition;
+
+        // Only handle EQUALS comparisons
+        if (comparison.getOperator() != com.arcadedb.opencypher.ast.ComparisonExpression.Operator.EQUALS) {
+          continue;
+        }
+
+        // Check if left side is a property access on our variable
+        final com.arcadedb.opencypher.ast.Expression left = comparison.getLeft();
+        final com.arcadedb.opencypher.ast.Expression right = comparison.getRight();
+
+        if (left instanceof com.arcadedb.opencypher.ast.PropertyAccessExpression) {
+          final com.arcadedb.opencypher.ast.PropertyAccessExpression propAccess =
+              (com.arcadedb.opencypher.ast.PropertyAccessExpression) left;
+
+          if (propAccess.getVariableName().equals(variable)) {
+            // Extract the property name and value
+            final String propertyName = propAccess.getPropertyName();
+
+            // Try to extract constant value from right side
+            if (right instanceof com.arcadedb.opencypher.ast.LiteralExpression) {
+              final Object value = ((com.arcadedb.opencypher.ast.LiteralExpression) right).getValue();
+              predicates.put(propertyName, value);
+            } else if (right instanceof com.arcadedb.opencypher.ast.ParameterExpression) {
+              // For parameters, we'll mark it as having a predicate but value unknown
+              // The index can still be used at runtime
+              predicates.put(propertyName, null);
+            }
+          }
+        }
+
+        // Also check reverse: value = property (e.g., 500 = p.id)
+        if (right instanceof com.arcadedb.opencypher.ast.PropertyAccessExpression) {
+          final com.arcadedb.opencypher.ast.PropertyAccessExpression propAccess =
+              (com.arcadedb.opencypher.ast.PropertyAccessExpression) right;
+
+          if (propAccess.getVariableName().equals(variable)) {
+            final String propertyName = propAccess.getPropertyName();
+
+            if (left instanceof com.arcadedb.opencypher.ast.LiteralExpression) {
+              final Object value = ((com.arcadedb.opencypher.ast.LiteralExpression) left).getValue();
+              predicates.put(propertyName, value);
+            } else if (left instanceof com.arcadedb.opencypher.ast.ParameterExpression) {
+              predicates.put(propertyName, null);
+            }
+          }
+        }
+      }
+
+      // TODO: Handle logical expressions (AND/OR) to extract more predicates
+    }
+
+    return predicates;
   }
 
   /**

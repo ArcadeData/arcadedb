@@ -85,7 +85,8 @@ class IndexSelectionRuleTest {
 
     final LogicalNode node = new LogicalNode("p", Arrays.asList("Person"),
         Collections.singletonMap("id", 123));
-    final AnchorSelection anchor = new AnchorSelection("p", node, true, index, "id", 5.1, 1);
+    // Use new constructor that includes propertyValue
+    final AnchorSelection anchor = new AnchorSelection("p", node, true, index, "id", 123, 5.1, 1);
 
     // When: Create operator
     final PhysicalOperator operator = rule.createAnchorOperator(anchor);
