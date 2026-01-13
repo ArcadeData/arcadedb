@@ -77,7 +77,8 @@ public class CypherExecutionPlanner {
    * Currently conservative - only optimizes simple MATCH queries.
    *
    * Criteria:
-   * - Must have at least one MATCH clause
+   * - Must have exactly one MATCH clause (multiple MATCH not yet supported)
+   * - All nodes must have labels (no unlabeled nodes)
    * - Should not have complex features that aren't yet supported
    *
    * @return true if optimizer should be used
@@ -88,16 +89,38 @@ public class CypherExecutionPlanner {
       return false;
     }
 
+    // Phase 4: Only support single MATCH clause (multiple MATCH requires Cartesian product handling)
+    if (statement.getMatchClauses().size() > 1) {
+      return false; // Multiple MATCH clauses not yet fully integrated
+    }
+
     // For Phase 4: Start with simple queries only
     // Disable optimizer for queries with features not yet fully integrated:
     // - OPTIONAL MATCH (needs special handling)
     // - Complex write operations after MATCH
     // - Variable-length paths (already work but have known issues)
+    // - Unlabeled nodes (optimizer requires labels for physical operators)
 
-    // Check for OPTIONAL MATCH
+    // Check for OPTIONAL MATCH and unlabeled nodes
     for (final com.arcadedb.opencypher.ast.MatchClause match : statement.getMatchClauses()) {
       if (match.isOptional()) {
         return false; // Not yet supported in optimizer
+      }
+
+      // Check if all nodes have labels and no named path variables
+      if (match.hasPathPatterns()) {
+        for (final com.arcadedb.opencypher.ast.PathPattern path : match.getPathPatterns()) {
+          // Named path variables not yet supported (e.g., "p = (a)-[r]->(b)")
+          if (path.hasPathVariable()) {
+            return false;
+          }
+
+          for (final com.arcadedb.opencypher.ast.NodePattern node : path.getNodes()) {
+            if (!node.hasLabels()) {
+              return false; // Unlabeled nodes not supported yet
+            }
+          }
+        }
       }
     }
 
@@ -111,7 +134,7 @@ public class CypherExecutionPlanner {
       return false; // SET operations not yet fully integrated
     }
 
-    // Enable optimizer for read-only MATCH queries
+    // Enable optimizer for simple read-only single MATCH queries with all labeled nodes
     return true;
   }
 }
