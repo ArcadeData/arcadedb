@@ -109,24 +109,31 @@ public class CypherOptimizer {
     final PhysicalOperator anchorOperator = createAnchorOperator(anchor);
 
     // 5. Build expansion chain (ordered by cardinality)
-    // TODO: Implement in Phase 4 - will add ExpandAll/ExpandInto operators
-    //       For now, we just have the anchor operator
+    PhysicalOperator rootOperator = anchorOperator;
+    if (!logicalPlan.getRelationships().isEmpty()) {
+      rootOperator = buildExpansionChain(logicalPlan, anchor, anchorOperator);
+    }
 
     // 6. Apply ExpandInto optimization
-    // TODO: Implement in Phase 4 - will detect bounded patterns
-    //       and replace ExpandAll with ExpandInto operators
+    // ExpandInto is detected during expansion chain building (step 5)
+    // and applied automatically when both endpoints are bound
 
     // 7. Push down filters
-    // TODO: Implement in Phase 4 - will wrap operators with FilterOperator
-    //       where appropriate
+    if (!logicalPlan.getWhereFilters().isEmpty()) {
+      rootOperator = applyFilterPushdown(logicalPlan, rootOperator);
+    }
 
-    // 8. Build physical plan with root operator
+    // 8. Calculate total cost and cardinality
+    double totalCost = rootOperator.getEstimatedCost();
+    long totalCardinality = rootOperator.getEstimatedCardinality();
+
+    // 9. Build physical plan with complete operator tree
     final PhysicalPlan physicalPlan = new PhysicalPlan(
         logicalPlan,
         anchor,
-        anchorOperator,  // Root operator for now (just the anchor)
-        anchor.getEstimatedCost(),
-        anchor.getEstimatedCardinality()
+        rootOperator,
+        totalCost,
+        totalCardinality
     );
 
     return physicalPlan;
@@ -178,6 +185,170 @@ public class CypherOptimizer {
   private PhysicalOperator createAnchorOperator(final AnchorSelection anchor) {
     final IndexSelectionRule indexRule = (IndexSelectionRule) rules.get(0);
     return indexRule.createAnchorOperator(anchor);
+  }
+
+  /**
+   * Builds the expansion chain by ordering relationships and creating expand operators.
+   * Uses JoinOrderRule for ordering and ExpandIntoRule for optimization.
+   *
+   * @param logicalPlan    the logical plan
+   * @param anchor         the selected anchor
+   * @param anchorOperator the anchor operator to build upon
+   * @return root operator of the expansion chain
+   */
+  private PhysicalOperator buildExpansionChain(final LogicalPlan logicalPlan,
+                                                final AnchorSelection anchor,
+                                                final PhysicalOperator anchorOperator) {
+    // Get optimization rules
+    final JoinOrderRule joinOrderRule = (JoinOrderRule) rules.get(3);
+    final ExpandIntoRule expandIntoRule = (ExpandIntoRule) rules.get(2);
+
+    // Determine which variables are bound
+    final java.util.Set<String> boundVariables = expandIntoRule.determineBoundVariables(
+        logicalPlan, anchor.getVariable());
+
+    // Order relationships by estimated cardinality
+    final List<com.arcadedb.opencypher.optimizer.plan.LogicalRelationship> orderedRels =
+        joinOrderRule.orderRelationships(
+            logicalPlan.getRelationships(),
+            anchor.getVariable(),
+            boundVariables
+        );
+
+    // Build operator chain
+    PhysicalOperator currentOp = anchorOperator;
+
+    for (final com.arcadedb.opencypher.optimizer.plan.LogicalRelationship rel : orderedRels) {
+      // Check if we should use ExpandInto (both endpoints bound)
+      if (expandIntoRule.shouldUseExpandInto(rel, boundVariables)) {
+        // Use ExpandInto for bounded patterns
+        currentOp = createExpandIntoOperator(rel, currentOp, boundVariables);
+      } else {
+        // Use ExpandAll for unbounded patterns
+        currentOp = createExpandAllOperator(rel, currentOp);
+      }
+
+      // Update bound variables after expansion
+      boundVariables.add(rel.getSourceVariable());
+      boundVariables.add(rel.getTargetVariable());
+    }
+
+    return currentOp;
+  }
+
+  /**
+   * Creates an ExpandAll operator for relationship traversal.
+   *
+   * @param relationship the logical relationship
+   * @param input        the input operator
+   * @return ExpandAll operator
+   */
+  private PhysicalOperator createExpandAllOperator(
+      final com.arcadedb.opencypher.optimizer.plan.LogicalRelationship relationship,
+      final PhysicalOperator input) {
+    // Extract parameters from relationship
+    final String sourceVariable = relationship.getSourceVariable();
+    final String edgeVariable = relationship.getVariable();
+    final String targetVariable = relationship.getTargetVariable();
+    final com.arcadedb.opencypher.ast.Direction direction = relationship.getDirection();
+    final String[] edgeTypes = relationship.getTypes().toArray(new String[0]);
+
+    // Estimate cost and cardinality for this expansion
+    final long inputCardinality = input.getEstimatedCardinality();
+    final double avgDegree = 10.0; // TODO: Use statistics to estimate average degree
+    final long outputCardinality = inputCardinality * (long) avgDegree;
+    final double expansionCost = inputCardinality * avgDegree * costModel.EXPAND_COST_PER_ROW;
+    final double totalCost = input.getEstimatedCost() + expansionCost;
+
+    return new com.arcadedb.opencypher.executor.operators.ExpandAll(
+        input,
+        sourceVariable,
+        edgeVariable,
+        targetVariable,
+        direction,
+        edgeTypes,
+        totalCost,
+        outputCardinality
+    );
+  }
+
+  /**
+   * Creates an ExpandInto operator for bounded pattern checking.
+   *
+   * @param relationship    the logical relationship
+   * @param input           the input operator
+   * @param boundVariables  the currently bound variables
+   * @return ExpandInto operator
+   */
+  private PhysicalOperator createExpandIntoOperator(
+      final com.arcadedb.opencypher.optimizer.plan.LogicalRelationship relationship,
+      final PhysicalOperator input,
+      final java.util.Set<String> boundVariables) {
+    // Extract parameters from relationship
+    final String sourceVariable = relationship.getSourceVariable();
+    final String targetVariable = relationship.getTargetVariable();
+    final String edgeVariable = relationship.getVariable();
+    final com.arcadedb.opencypher.ast.Direction direction = relationship.getDirection();
+    final String[] edgeTypes = relationship.getTypes().toArray(new String[0]);
+
+    // Estimate cost and cardinality for ExpandInto
+    // ExpandInto is much cheaper than ExpandAll because it's just an existence check
+    final long inputCardinality = input.getEstimatedCardinality();
+    final double selectivity = 0.1; // Estimate 10% of input rows have matching connections
+    final long outputCardinality = (long) (inputCardinality * selectivity);
+    final double expandIntoCost = inputCardinality * 1.0; // O(1) per input row for existence check
+    final double totalCost = input.getEstimatedCost() + expandIntoCost;
+
+    return new com.arcadedb.opencypher.executor.operators.ExpandInto(
+        input,
+        sourceVariable,
+        targetVariable,
+        edgeVariable,
+        direction,
+        edgeTypes,
+        totalCost,
+        outputCardinality
+    );
+  }
+
+  /**
+   * Applies filter pushdown optimization by wrapping operators with FilterOperator.
+   *
+   * @param logicalPlan the logical plan
+   * @param rootOperator the root operator to wrap
+   * @return root operator with filters applied
+   */
+  private PhysicalOperator applyFilterPushdown(final LogicalPlan logicalPlan,
+                                                final PhysicalOperator rootOperator) {
+    // Wrap the root operator with a FilterOperator for each WHERE clause
+    // In a full implementation, we would analyze which filters can be pushed down
+    // to lower operators (closer to data sources) for better performance.
+    // For now, we apply all filters at the top level.
+
+    PhysicalOperator currentOp = rootOperator;
+
+    for (final com.arcadedb.opencypher.ast.WhereClause whereClause : logicalPlan.getWhereFilters()) {
+      final com.arcadedb.opencypher.ast.BooleanExpression filterExpression = whereClause.getConditionExpression();
+
+      if (filterExpression != null) {
+        // Estimate cost and cardinality for this filter
+        final long inputCardinality = currentOp.getEstimatedCardinality();
+        final double selectivity = 0.5; // Default selectivity estimate (50% pass through)
+        final long outputCardinality = (long) (inputCardinality * selectivity);
+        final double filterCost = inputCardinality * costModel.FILTER_COST_PER_ROW;
+        final double totalCost = currentOp.getEstimatedCost() + filterCost;
+
+        // Wrap with FilterOperator
+        currentOp = new com.arcadedb.opencypher.executor.operators.FilterOperator(
+            currentOp,
+            filterExpression,
+            totalCost,
+            outputCardinality
+        );
+      }
+    }
+
+    return currentOp;
   }
 
   /**

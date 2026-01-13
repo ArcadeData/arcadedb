@@ -18,7 +18,7 @@
  */
 package com.arcadedb.opencypher.executor.operators;
 
-import com.arcadedb.opencypher.ast.Expression;
+import com.arcadedb.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -40,9 +40,9 @@ import java.util.NoSuchElementException;
  * Cardinality: input_cardinality * selectivity
  */
 public class FilterOperator extends AbstractPhysicalOperator {
-  private final Expression predicate;
+  private final BooleanExpression predicate;
 
-  public FilterOperator(final PhysicalOperator child, final Expression predicate,
+  public FilterOperator(final PhysicalOperator child, final BooleanExpression predicate,
                        final double estimatedCost, final long estimatedCardinality) {
     super(child, estimatedCost, estimatedCardinality);
     this.predicate = predicate;
@@ -93,28 +93,13 @@ public class FilterOperator extends AbstractPhysicalOperator {
           final Result inputResult = inputResults.next();
 
           // Evaluate predicate on input row
-          final Object predicateValue = predicate.evaluate(inputResult, context);
+          final boolean predicateValue = predicate.evaluate(inputResult, context);
 
           // Pass through if predicate evaluates to true
-          if (isTrue(predicateValue)) {
+          if (predicateValue) {
             buffer.add(inputResult);
           }
         }
-      }
-
-      /**
-       * Checks if a value is considered true for filtering.
-       * Follows Cypher semantics: true is true, everything else is false.
-       */
-      private boolean isTrue(final Object value) {
-        if (value == null) {
-          return false;
-        }
-        if (value instanceof Boolean) {
-          return (Boolean) value;
-        }
-        // Non-boolean values are considered false
-        return false;
       }
 
       @Override
@@ -147,7 +132,7 @@ public class FilterOperator extends AbstractPhysicalOperator {
     return sb.toString();
   }
 
-  public Expression getPredicate() {
+  public BooleanExpression getPredicate() {
     return predicate;
   }
 }
