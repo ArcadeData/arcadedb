@@ -18,6 +18,8 @@
  */
 package com.arcadedb.opencypher.optimizer.plan;
 
+import com.arcadedb.opencypher.executor.operators.PhysicalOperator;
+
 /**
  * Physical execution plan.
  * Represents "how" the query will be executed - the optimized operator tree.
@@ -28,16 +30,21 @@ package com.arcadedb.opencypher.optimizer.plan;
 public class PhysicalPlan {
   private final LogicalPlan logicalPlan;
   private final AnchorSelection anchor;
+  private final PhysicalOperator rootOperator;
   private final double totalEstimatedCost;
   private final long totalEstimatedCardinality;
 
-  // TODO: Phase 2 will add rootOperator field when operators are implemented
-  // private final PhysicalOperator rootOperator;
+  public PhysicalPlan(final LogicalPlan logicalPlan, final AnchorSelection anchor,
+                     final double totalEstimatedCost, final long totalEstimatedCardinality) {
+    this(logicalPlan, anchor, null, totalEstimatedCost, totalEstimatedCardinality);
+  }
 
   public PhysicalPlan(final LogicalPlan logicalPlan, final AnchorSelection anchor,
+                     final PhysicalOperator rootOperator,
                      final double totalEstimatedCost, final long totalEstimatedCardinality) {
     this.logicalPlan = logicalPlan;
     this.anchor = anchor;
+    this.rootOperator = rootOperator;
     this.totalEstimatedCost = totalEstimatedCost;
     this.totalEstimatedCardinality = totalEstimatedCardinality;
   }
@@ -54,6 +61,13 @@ public class PhysicalPlan {
    */
   public AnchorSelection getAnchor() {
     return anchor;
+  }
+
+  /**
+   * Returns the root physical operator of the plan.
+   */
+  public PhysicalOperator getRootOperator() {
+    return rootOperator;
   }
 
   /**
@@ -79,12 +93,14 @@ public class PhysicalPlan {
     sb.append("Physical Plan:\n");
     sb.append("-------------\n");
     sb.append("Anchor: ").append(anchor).append("\n");
+
+    if (rootOperator != null) {
+      sb.append("\nOperator Tree:\n");
+      sb.append(rootOperator.explain(0));
+    }
+
     sb.append("\nEstimated Cost: ").append(String.format("%.2f", totalEstimatedCost)).append("\n");
     sb.append("Estimated Rows: ").append(totalEstimatedCardinality).append("\n");
-
-    // TODO: Phase 2 will add operator tree visualization
-    // sb.append("\nOperator Tree:\n");
-    // sb.append(rootOperator.explain(0));
 
     return sb.toString();
   }

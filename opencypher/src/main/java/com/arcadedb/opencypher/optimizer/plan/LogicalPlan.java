@@ -60,6 +60,31 @@ public class LogicalPlan {
   }
 
   /**
+   * Package-private constructor for testing.
+   * Allows tests to create LogicalPlan with pre-populated nodes.
+   *
+   * @param nodes nodes to include in the plan
+   */
+  LogicalPlan(final Map<String, LogicalNode> nodes) {
+    this.statement = null;
+    this.nodes = new HashMap<>(nodes);
+    this.relationships = new ArrayList<>();
+    this.whereFilters = new ArrayList<>();
+    this.returnClause = null;
+  }
+
+  /**
+   * Creates a LogicalPlan for testing purposes with pre-populated nodes.
+   * This factory method is intended for unit tests only.
+   *
+   * @param nodes nodes to include in the plan
+   * @return logical plan
+   */
+  public static LogicalPlan forTesting(final Map<String, LogicalNode> nodes) {
+    return new LogicalPlan(nodes);
+  }
+
+  /**
    * Extracts a logical plan from a Cypher AST.
    *
    * @param statement the Cypher statement
