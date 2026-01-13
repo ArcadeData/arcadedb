@@ -38,7 +38,7 @@ public class SimpleCypherStatement implements CypherStatement {
   private final SetClause setClause;
   private final DeleteClause deleteClause;
   private final MergeClause mergeClause;
-  private final UnwindClause unwindClause;
+  private final List<UnwindClause> unwindClauses;
   private final boolean hasCreate;
   private final boolean hasMerge;
   private final boolean hasDelete;
@@ -60,7 +60,7 @@ public class SimpleCypherStatement implements CypherStatement {
   public SimpleCypherStatement(final String originalQuery, final List<MatchClause> matchClauses,
       final WhereClause whereClause, final ReturnClause returnClause, final OrderByClause orderByClause,
       final Integer skip, final Integer limit, final CreateClause createClause, final SetClause setClause,
-      final DeleteClause deleteClause, final MergeClause mergeClause, final UnwindClause unwindClause,
+      final DeleteClause deleteClause, final MergeClause mergeClause, final List<UnwindClause> unwindClauses,
       final boolean hasCreate, final boolean hasMerge, final boolean hasDelete) {
     this.originalQuery = originalQuery;
     this.matchClauses = matchClauses != null ? matchClauses : new ArrayList<>();
@@ -73,7 +73,7 @@ public class SimpleCypherStatement implements CypherStatement {
     this.setClause = setClause;
     this.deleteClause = deleteClause;
     this.mergeClause = mergeClause;
-    this.unwindClause = unwindClause;
+    this.unwindClauses = unwindClauses != null ? unwindClauses : new ArrayList<>();
     this.hasCreate = hasCreate;
     this.hasMerge = hasMerge;
     this.hasDelete = hasDelete;
@@ -150,8 +150,8 @@ public class SimpleCypherStatement implements CypherStatement {
   }
 
   @Override
-  public UnwindClause getUnwindClause() {
-    return unwindClause;
+  public List<UnwindClause> getUnwindClauses() {
+    return unwindClauses;
   }
 
   public String getOriginalQuery() {

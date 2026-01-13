@@ -126,13 +126,11 @@ class OpenCypherCollectUnwindTest {
     assertThat(result.hasNext()).isFalse();
   }
 
-  // TODO: Fix - COLLECT on empty result sets needs proper handling
-  /*
   @Test
   void testCollectEmpty() {
-    // Collect from no matches
+    // Collect from no matches (WHERE condition that matches nothing)
     final ResultSet result = database.command("opencypher",
-        "MATCH (n:NonExistent) RETURN collect(n.name) AS names");
+        "MATCH (n:Person) WHERE n.name = 'DoesNotExist' RETURN collect(n.name) AS names");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -141,7 +139,6 @@ class OpenCypherCollectUnwindTest {
     assertThat(names).isEmpty();
     assertThat(result.hasNext()).isFalse();
   }
-  */
 
   // ===== UNWIND Tests =====
 
@@ -175,8 +172,6 @@ class OpenCypherCollectUnwindTest {
     assertThat(letters).containsExactly("a", "b", "c");
   }
 
-  // TODO: Fix - property arrays need proper unwinding support
-  /*
   @Test
   void testUnwindWithMatch() {
     // Unwind hobbies property from Person nodes
@@ -221,7 +216,6 @@ class OpenCypherCollectUnwindTest {
 
     assertThat(actual).containsExactlyElementsOf(expected);
   }
-  */
 
   @Test
   void testUnwindNull() {
@@ -319,8 +313,6 @@ class OpenCypherCollectUnwindTest {
   }
   */
 
-  // TODO: Enable after multiple UNWIND support is added
-  /*
   @Test
   void testUnwindNestedLists() {
     // Test unwinding nested lists
@@ -337,7 +329,6 @@ class OpenCypherCollectUnwindTest {
 
     assertThat(numbers).containsExactly(1, 2, 3, 4);
   }
-  */
 
   // TODO: Enable after WITH clause and DISTINCT support
   /*

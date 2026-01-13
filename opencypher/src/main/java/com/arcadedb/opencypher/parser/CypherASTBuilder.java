@@ -77,7 +77,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     SetClause setClause = null;
     DeleteClause deleteClause = null;
     MergeClause mergeClause = null;
-    UnwindClause unwindClause = null;
+    final List<UnwindClause> unwindClauses = new ArrayList<>();
     WhereClause whereClause = null;
     ReturnClause returnClause = null;
     OrderByClause orderByClause = null;
@@ -99,7 +99,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       } else if (clauseCtx.mergeClause() != null) {
         mergeClause = visitMergeClause(clauseCtx.mergeClause());
       } else if (clauseCtx.unwindClause() != null) {
-        unwindClause = visitUnwindClause(clauseCtx.unwindClause());
+        unwindClauses.add(visitUnwindClause(clauseCtx.unwindClause()));
       } else if (clauseCtx.returnClause() != null) {
         // RETURN clause with embedded ORDER BY, SKIP, LIMIT
         final Cypher25Parser.ReturnBodyContext body = clauseCtx.returnClause().returnBody();
@@ -153,7 +153,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         setClause,
         deleteClause,
         mergeClause,
-        unwindClause,
+        unwindClauses,
         hasCreate,
         hasMerge,
         hasDelete
@@ -790,15 +790,28 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   }
 
   private Object evaluateExpression(final Cypher25Parser.ExpressionContext ctx) {
+    // Check for list literals first
+    final Cypher25Parser.ListLiteralContext listCtx = findListLiteralRecursive(ctx);
+    if (listCtx != null) {
+      // Parse list literal into actual Java List
+      final List<Object> list = new ArrayList<>();
+      if (listCtx.expression() != null) {
+        for (final Cypher25Parser.ExpressionContext exprCtx : listCtx.expression()) {
+          list.add(evaluateExpression(exprCtx));
+        }
+      }
+      return list;
+    }
+
     // Simple expression evaluation
     final String text = ctx.getText();
 
-    // String literal
+    // String literal - strip quotes
     if (text.startsWith("'") && text.endsWith("'")) {
-      return text; // Keep quotes for later processing
+      return text.substring(1, text.length() - 1);
     }
     if (text.startsWith("\"") && text.endsWith("\"")) {
-      return text; // Keep quotes for later processing
+      return text.substring(1, text.length() - 1);
     }
 
     // Boolean

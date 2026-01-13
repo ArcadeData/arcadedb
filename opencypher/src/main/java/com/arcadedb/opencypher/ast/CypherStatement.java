@@ -124,9 +124,9 @@ public interface CypherStatement {
   MergeClause getMergeClause();
 
   /**
-   * Returns the UNWIND clause if present.
+   * Returns the UNWIND clauses if present.
    *
-   * @return UNWIND clause or null
+   * @return list of UNWIND clauses (may be empty)
    */
-  UnwindClause getUnwindClause();
+  List<UnwindClause> getUnwindClauses();
 }

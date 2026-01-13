@@ -1,8 +1,8 @@
 # OpenCypher Implementation Status
 
-**Last Updated:** 2026-01-12
-**Implementation Version:** Native ANTLR4-based Parser (Phase 8 + Functions + GROUP BY + Pattern Predicates + COLLECT + UNWIND)
-**Test Coverage:** 190/194 tests passing (98% - 4 skipped for unimplemented features)
+**Last Updated:** 2026-01-13
+**Implementation Version:** Native ANTLR4-based Parser (Phase 8 + Functions + GROUP BY + Pattern Predicates + COLLECT + UNWIND Complete)
+**Test Coverage:** 206/210 tests passing (98% - 4 skipped for unimplemented features)
 
 ---
 
@@ -157,11 +157,26 @@ UNWIND [] AS x RETURN x
 
 // ✅ Combine with MATCH
 MATCH (n:Person) UNWIND [1, 2, 3] AS x RETURN n.name, x
+
+// ✅ Unwind property arrays (arrays stored as node properties)
+MATCH (n:Person) WHERE n.name = 'Alice'
+UNWIND n.hobbies AS hobby
+RETURN n.name, hobby
+
+// ✅ Unwind across multiple nodes
+MATCH (n:Person)
+UNWIND n.hobbies AS hobby
+RETURN n.name, hobby
+ORDER BY n.name, hobby
+
+// ✅ Multiple UNWIND clauses (chained unwinding)
+UNWIND [[1, 2], [3, 4]] AS innerList
+UNWIND innerList AS num
+RETURN num
+// Returns: 1, 2, 3, 4
 ```
 
 **Limitations:**
-- ⚠️ Property array unwinding needs investigation (arrays stored as properties return string representations)
-- ❌ Multiple UNWIND clauses in single query not yet tested
 - ❌ UNWIND with WITH clause (WITH clause not implemented yet)
 
 ### CREATE Clause
@@ -238,6 +253,32 @@ RETURN abs(-42), sqrt(16)
 - ❌ List comprehensions: `RETURN [x IN list | x.name]`
 - ❌ CASE expressions
 - ❌ Arithmetic expressions: `RETURN n.age * 2`
+
+### COLLECT Aggregation
+```cypher
+// ✅ Collect values into a list
+MATCH (n:Person) RETURN collect(n.name) AS names
+
+// ✅ Collect with implicit GROUP BY
+MATCH (p:Person)-[:LIVES_IN]->(c:City)
+RETURN c.name AS city, collect(p.name) AS residents
+ORDER BY city
+
+// ✅ Collect numbers
+MATCH (n:Person) RETURN collect(n.age) AS ages
+
+// ✅ Collect from empty results (returns empty list)
+MATCH (n:Person) WHERE n.name = 'DoesNotExist'
+RETURN collect(n.name) AS names
+// Returns: []
+
+// ✅ Multiple aggregations
+MATCH (n:Person)
+RETURN count(n) AS total, collect(n.name) AS allNames, avg(n.age) AS avgAge
+```
+
+**Status:** ✅ **Fully Implemented** - COLLECT aggregation with implicit GROUP BY support
+**Test Coverage:** 4 tests in `OpenCypherCollectUnwindTest.java`
 
 ### ORDER BY, SKIP, LIMIT
 ```cypher
@@ -652,9 +693,11 @@ RETURN count(n), avg(n.age)
 | **OpenCypherVariableLengthPathTest** | **2/2** | **✅ PASS** | **Named paths for variable-length relationships** |
 | **OpenCypherTransactionTest** | **9/9** | **✅ PASS** | **Automatic transaction handling** |
 | **OpenCypherPatternPredicateTest** | **9/9** | **✅ PASS** | **Pattern predicates in WHERE clauses** |
+| **OpenCypherGroupByTest** | **5/5** | **✅ PASS** | **Implicit GROUP BY with aggregations** |
+| **OpenCypherCollectUnwindTest** | **12/12** | **✅ PASS** | **COLLECT aggregation and UNWIND clause** |
 | OrderByDebugTest | 2/2 | ✅ PASS | Debug tests |
 | ParserDebugTest | 2/2 | ✅ PASS | Parser tests |
-| **TOTAL** | **157/157** | **✅ 100%** | **All passing** |
+| **TOTAL** | **169/169** | **✅ 100%** | **All passing** |
 
 ### Test Files
 ```
@@ -675,7 +718,9 @@ opencypher/src/test/java/com/arcadedb/opencypher/
 ├── OpenCypherMatchEnhancementsTest.java     # Multiple MATCH, unlabeled patterns, named paths
 ├── OpenCypherVariableLengthPathTest.java    # Named paths for variable-length relationships
 ├── OpenCypherTransactionTest.java           # Automatic transaction handling
-├── OpenCypherPatternPredicateTest.java      # Pattern predicates in WHERE (NEW)
+├── OpenCypherPatternPredicateTest.java      # Pattern predicates in WHERE
+├── OpenCypherGroupByTest.java               # Implicit GROUP BY with aggregations
+├── OpenCypherCollectUnwindTest.java         # COLLECT aggregation and UNWIND clause (NEW)
 ├── OrderByDebugTest.java                    # Debug tests
 └── ParserDebugTest.java                     # Parser tests
 ```

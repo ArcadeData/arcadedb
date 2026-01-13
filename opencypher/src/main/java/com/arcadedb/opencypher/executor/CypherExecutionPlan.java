@@ -332,11 +332,11 @@ public class CypherExecutionPlan {
       currentStep = filterStep;
     }
 
-    // Step 2.5: UNWIND clause - expand lists into rows
-    if (statement.getUnwindClause() != null) {
+    // Step 2.5: UNWIND clauses - expand lists into rows (can be chained)
+    for (final com.arcadedb.opencypher.ast.UnwindClause unwindClause : statement.getUnwindClauses()) {
       final ExpressionEvaluator evaluator = new ExpressionEvaluator(functionFactory);
       final com.arcadedb.opencypher.executor.steps.UnwindStep unwindStep =
-          new com.arcadedb.opencypher.executor.steps.UnwindStep(statement.getUnwindClause(), context, evaluator);
+          new com.arcadedb.opencypher.executor.steps.UnwindStep(unwindClause, context, evaluator);
       if (currentStep != null) {
         unwindStep.setPrevious(currentStep);
       }
