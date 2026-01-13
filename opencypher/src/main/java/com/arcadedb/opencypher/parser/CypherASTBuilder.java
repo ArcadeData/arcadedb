@@ -901,6 +901,12 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    * Shared logic for parsing expressions from text.
    */
   private Expression parseExpressionText(final String text) {
+    // Check for parameter: $paramName or $1
+    if (text.startsWith("$")) {
+      final String parameterName = text.substring(1); // Remove the $ prefix
+      return new ParameterExpression(parameterName, text);
+    }
+
     // Try to parse as literal FIRST (before checking for dots)
     // This prevents string literals like 'A.*' from being parsed as property access
     final Object literalValue = tryParseLiteral(text);

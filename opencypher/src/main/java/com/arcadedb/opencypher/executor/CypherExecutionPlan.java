@@ -85,21 +85,21 @@ public class CypherExecutionPlan {
     // Execute the step chain
     final ResultSet resultSet = rootStep.syncPull(context, 100);
 
-    // IMPORTANT: For write operations without RETURN, we need to consume the ResultSet
-    // to force execution (since ResultSet is lazy). Otherwise operations won't execute
-    // until the ResultSet is consumed by the caller.
+    // IMPORTANT: For write operations, we need to materialize the ResultSet immediately
+    // to force execution (since ResultSet is lazy). This is crucial for CREATE/SET/DELETE/MERGE
+    // operations to actually execute, even when there's a RETURN clause.
     final boolean hasWriteOps = statement.getCreateClause() != null ||
                                  (statement.getSetClause() != null && !statement.getSetClause().isEmpty()) ||
                                  (statement.getDeleteClause() != null && !statement.getDeleteClause().isEmpty()) ||
                                  statement.getMergeClause() != null;
 
-    if (statement.getReturnClause() == null && hasWriteOps) {
-      // Consume the ResultSet to force write operation execution
+    if (hasWriteOps) {
+      // Materialize the ResultSet to force write operation execution
       final List<ResultInternal> materializedResults = new ArrayList<>();
       while (resultSet.hasNext()) {
         materializedResults.add((ResultInternal) resultSet.next());
       }
-      // Return the modified/created elements so they're available in the result
+      // Return the materialized results
       return new IteratorResultSet(materializedResults.iterator());
     }
 

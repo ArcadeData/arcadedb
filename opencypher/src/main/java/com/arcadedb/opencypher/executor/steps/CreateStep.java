@@ -18,7 +18,6 @@
  */
 package com.arcadedb.opencypher.executor.steps;
 
-import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
@@ -29,14 +28,9 @@ import com.arcadedb.opencypher.ast.CreateClause;
 import com.arcadedb.opencypher.ast.NodePattern;
 import com.arcadedb.opencypher.ast.PathPattern;
 import com.arcadedb.opencypher.ast.RelationshipPattern;
-import com.arcadedb.query.sql.executor.AbstractExecutionStep;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.*;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -273,7 +267,11 @@ public class CreateStep extends AbstractExecutionStep {
       // Handle string literals: remove quotes
       if (value instanceof String) {
         final String strValue = (String) value;
-        if (strValue.startsWith("'") && strValue.endsWith("'")) {
+        if (strValue.startsWith("$") && strValue.length() > 1) {
+          // Parameter reference, resolve from context
+          final String paramName = strValue.substring(1);
+          value = context.getInputParameters().get(paramName);
+        } else if (strValue.startsWith("'") && strValue.endsWith("'")) {
           value = strValue.substring(1, strValue.length() - 1);
         } else if (strValue.startsWith("\"") && strValue.endsWith("\"")) {
           value = strValue.substring(1, strValue.length() - 1);
