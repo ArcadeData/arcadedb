@@ -260,7 +260,7 @@ class CypherTest {
               "text: BatchEntry.text, index: BatchEntry.index, pages: BatchEntry.pages }) " +
               "return ID(n) as id";
 
-      final ResultSet result = graph.database.query("opencypher", originalQuery);
+      final ResultSet result = graph.database.query("cypher", originalQuery);
 
       // Empty array should return no results
       assertThat(result.hasNext()).isFalse();
