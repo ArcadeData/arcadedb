@@ -121,8 +121,9 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
     testLog("Done");
 
-    for (int i = 0; i < getServerCount(); i++)
-      waitForReplicationIsCompleted(i);
+    // Wait for cluster to stabilize before verification
+    // This ensures all servers are online, replication queues are empty, and replicas are connected
+    waitForClusterStable(getServerCount());
 
     assertThat(db.countType(VERTEX1_TYPE_NAME, true))
         .as("Check for vertex count for server" + 0)
