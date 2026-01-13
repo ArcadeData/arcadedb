@@ -212,7 +212,8 @@ public class CypherOptimizer {
         joinOrderRule.orderRelationships(
             logicalPlan.getRelationships(),
             anchor.getVariable(),
-            boundVariables
+            boundVariables,
+            logicalPlan
         );
 
     // Build operator chain

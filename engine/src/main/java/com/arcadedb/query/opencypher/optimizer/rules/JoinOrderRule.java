@@ -103,12 +103,14 @@ public class JoinOrderRule implements OptimizationRule {
    * @param relationships  list of relationships to order
    * @param anchorVar      starting variable
    * @param boundVariables initially bound variables
+   * @param logicalPlan    the logical plan (for node label lookup)
    * @return ordered list of relationships
    */
   public List<LogicalRelationship> orderRelationships(
       final List<LogicalRelationship> relationships,
       final String anchorVar,
-      final Set<String> boundVariables) {
+      final Set<String> boundVariables,
+      final LogicalPlan logicalPlan) {
 
     final List<LogicalRelationship> ordered = new ArrayList<>();
     final Set<String> bound = new HashSet<>(boundVariables);
@@ -130,7 +132,7 @@ public class JoinOrderRule implements OptimizationRule {
         }
 
         // Estimate cost of this expansion
-        final double cost = estimateExpansionCost(rel, sourceIsBound, targetIsBound);
+        final double cost = estimateExpansionCost(rel, sourceIsBound, targetIsBound, logicalPlan);
 
         if (cost < lowestCost) {
           lowestCost = cost;
@@ -162,12 +164,14 @@ public class JoinOrderRule implements OptimizationRule {
    * @param rel            the relationship to expand
    * @param sourceIsBound  whether source vertex is bound
    * @param targetIsBound  whether target vertex is bound
+   * @param logicalPlan    the logical plan (for node label lookup)
    * @return estimated cost
    */
   private double estimateExpansionCost(
       final LogicalRelationship rel,
       final boolean sourceIsBound,
-      final boolean targetIsBound) {
+      final boolean targetIsBound,
+      final LogicalPlan logicalPlan) {
 
     if (sourceIsBound && targetIsBound) {
       // Both bound - use ExpandInto (cheap)
@@ -176,7 +180,7 @@ public class JoinOrderRule implements OptimizationRule {
 
     // One endpoint bound - use ExpandAll
     // Cost depends on average degree
-    final double avgDegree = estimateAverageDegree(rel);
+    final double avgDegree = estimateAverageDegree(rel, logicalPlan);
 
     if (sourceIsBound) {
       // Expand from source
@@ -189,14 +193,36 @@ public class JoinOrderRule implements OptimizationRule {
 
   /**
    * Estimates the average degree (edge count) for a relationship type.
+   * Uses actual database statistics when available.
    *
-   * @param rel the relationship
+   * @param rel         the relationship
+   * @param logicalPlan the logical plan (for node label lookup)
    * @return estimated average degree
    */
-  private double estimateAverageDegree(final LogicalRelationship rel) {
-    // Simple heuristic: assume average degree of 10
-    // In a full implementation, this would use edge type statistics
-    return 10.0;
+  private double estimateAverageDegree(final LogicalRelationship rel, final LogicalPlan logicalPlan) {
+    // Get relationship type
+    final String relationshipType = rel.getFirstType();
+    if (relationshipType == null) {
+      // No type specified - use default heuristic
+      return 10.0;
+    }
+
+    // Get source and target node labels
+    String sourceLabel = null;
+    String targetLabel = null;
+
+    final LogicalNode sourceNode = logicalPlan.getNodes().get(rel.getSourceVariable());
+    if (sourceNode != null) {
+      sourceLabel = sourceNode.getFirstLabel();
+    }
+
+    final LogicalNode targetNode = logicalPlan.getNodes().get(rel.getTargetVariable());
+    if (targetNode != null) {
+      targetLabel = targetNode.getFirstLabel();
+    }
+
+    // Get actual average degree from statistics
+    return statisticsProvider.getAverageDegree(relationshipType, sourceLabel, targetLabel);
   }
 
   /**
