@@ -42,7 +42,6 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Properties;
 import java.util.Random;
-import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
@@ -51,6 +50,7 @@ import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.data.Offset.offset;
 
 public class PostgresWJdbcIT extends BaseGraphServerTest {
   @Override
@@ -500,28 +500,30 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
     if (type == Boolean.class) {
       return IntStream.range(0, PostgresWJdbcIT.DEFAULT_SIZE)
           .mapToObj(i -> RANDOM.nextBoolean())
-          .collect(Collectors.toList());
+          .toList();
     } else if (type == Double.class) {
       return IntStream.range(0, PostgresWJdbcIT.DEFAULT_SIZE)
           .mapToObj(i -> RANDOM.nextDouble() * 200 - 100)
-          .collect(Collectors.toList());
+          .toList();
+    } else if (type == Float.class) {
+      return IntStream.range(0, PostgresWJdbcIT.DEFAULT_SIZE)
+          .mapToObj(i -> RANDOM.nextFloat())
+          .toList();
     } else if (type == Integer.class) {
       return IntStream.range(0, PostgresWJdbcIT.DEFAULT_SIZE)
           .mapToObj(i -> RANDOM.nextInt(201) - 100)
-          .collect(Collectors.toList());
+          .toList();
     } else if (type == String.class) {
       return IntStream.range(0, PostgresWJdbcIT.DEFAULT_SIZE)
-          .mapToObj(i -> {
-            int length = RANDOM.nextInt(11) + 5; // 5 to 15
-            return generateRandomString(length);
-          })
-          .collect(Collectors.toList());
+          .mapToObj(i -> generateRandomString())
+          .toList();
     } else {
       throw new IllegalArgumentException("Unsupported type: " + type.getName());
     }
   }
 
-  private static String generateRandomString(int length) {
+  private static String generateRandomString() {
+    int length = RANDOM.nextInt(11) + 5; // 5 to 15
     String chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     StringBuilder sb = new StringBuilder();
     for (int i = 0; i < length; i++) {
@@ -532,8 +534,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @ParameterizedTest
-  //  @ValueSource(classes = { Boolean.class, Double.class, Integer.class, String.class })
-  @ValueSource(classes = {String.class})
+  @ValueSource(classes = { Boolean.class, Float.class, Integer.class, String.class })
   void returnArray(Class<?> typeToTest) throws Exception {
     try (var conn = getConnection()) {
       conn.setAutoCommit(true);
@@ -567,9 +568,9 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
               .isNotNull();
           // Check if all items are of the expected type
           for (Object item : dataValues) {
-            assertThat(item.getClass())//.isInstance(item)
+            assertThat(item.getClass().getTypeName())//.isInstance(item)
                 .as("For " + typeName + ": Not all items are of type " + typeName)
-                .isInstanceOf(typeToTest.getClass());
+                .isEqualTo(typeToTest.getTypeName());
           }
         }
       }
@@ -589,7 +590,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
 
       assertThat(rs.next()).isTrue();
       assertThat(rs.getString("name")).isEqualTo("TestItem");
-      assertThat(rs.getDouble("price")).isEqualTo(29.99);
+      assertThat(rs.getFloat("price")).isEqualTo(29.99f);
 
     }
   }
@@ -696,6 +697,81 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
           assertThat(rs.getString("text")).isEqualTo("chunk3");
           assertThat(rs.next()).isFalse();
         }
+      }
+    }
+  }
+
+  @Test
+  void floatArrayPropertyRoundTrip() throws SQLException, ClassNotFoundException {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("create vertex type `TEXT_EMBEDDING` if not exists;");
+        st.execute("create property TEXT_EMBEDDING.str if not exists STRING;");
+        st.execute("create property TEXT_EMBEDDING.embedding if not exists LIST;");
+
+        // Use explicit float casting to ensure values are stored as floats, not doubles
+        st.execute("INSERT INTO `TEXT_EMBEDDING` SET str = \"meow\", embedding = [0.1f, 0.2f, 0.3f]");
+        ResultSet resultSet = st.executeQuery("SELECT embedding FROM `TEXT_EMBEDDING` WHERE str = \"meow\"");
+
+        assertThat(resultSet.next()).isTrue();
+        Array embeddingArray = resultSet.getArray("embedding");
+        assertThat(embeddingArray).isNotNull();
+
+        Object[] embeddings = (Object[]) embeddingArray.getArray();
+        assertThat(embeddings).isNotNull();
+        assertThat(embeddings).hasSize(3);
+
+        // Verify all elements are Float instances (not Double)
+        for (Object item : embeddings) {
+          assertThat(item).isInstanceOf(Float.class);
+        }
+
+        // Verify the actual values
+        assertThat((Float) embeddings[0]).isEqualTo(0.1f, offset(0.0001f));
+        assertThat((Float) embeddings[1]).isEqualTo(0.2f, offset(0.0001f));
+        assertThat((Float) embeddings[2]).isEqualTo(0.3f, offset(0.0001f));
+      }
+    }
+  }
+
+  @Test
+  void arrayOfFloatsPropertyRoundTrip() throws SQLException, ClassNotFoundException {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("create vertex type `TEXT_EMBEDDING_2` if not exists;");
+        st.execute("create property TEXT_EMBEDDING_2.str if not exists STRING;");
+        st.execute("create property TEXT_EMBEDDING_2.embedding if not exists ARRAY_OF_FLOATS;");
+
+        // Test INSERT with RETURN - this matches the Python e2e test scenario
+        ResultSet resultSet = st.executeQuery("INSERT INTO `TEXT_EMBEDDING_2` SET str = \"meow\", embedding = [0.1,0.2,0.3] RETURN embedding");
+
+        assertThat(resultSet.next()).isTrue();
+        Array embeddingArray = resultSet.getArray("embedding");
+        assertThat(embeddingArray).isNotNull();
+
+        Object[] embeddings = (Object[]) embeddingArray.getArray();
+        assertThat(embeddings).isNotNull();
+        assertThat(embeddings).hasSize(3);
+
+        // Verify all elements are Float instances (not Double)
+        for (Object item : embeddings) {
+          assertThat(item).isInstanceOf(Float.class);
+        }
+
+        // Verify the actual values
+        assertThat((Float) embeddings[0]).isEqualTo(0.1f, offset(0.0001f));
+        assertThat((Float) embeddings[1]).isEqualTo(0.2f, offset(0.0001f));
+        assertThat((Float) embeddings[2]).isEqualTo(0.3f, offset(0.0001f));
+
+        // Also test regular SELECT query
+        resultSet = st.executeQuery("SELECT embedding FROM `TEXT_EMBEDDING_2` WHERE str = \"meow\"");
+        assertThat(resultSet.next()).isTrue();
+        embeddingArray = resultSet.getArray("embedding");
+        assertThat(embeddingArray).isNotNull();
+
+        embeddings = (Object[]) embeddingArray.getArray();
+        assertThat(embeddings).hasSize(3);
+        assertThat((Float) embeddings[0]).isEqualTo(0.1f, offset(0.0001f));
       }
     }
   }

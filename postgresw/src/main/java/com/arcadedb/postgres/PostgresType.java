@@ -57,6 +57,7 @@ public enum PostgresType {
   ARRAY_INT(1007, Collection.class, -1, value -> parseArrayFromString(value, Integer::parseInt)),
   ARRAY_CHAR(1003, Collection.class, -1, value -> parseArrayFromString(value, s -> s.charAt(0))),
   ARRAY_LONG(1016, Collection.class, -1, value -> parseArrayFromString(value, Long::parseLong)),
+  ARRAY_REAL(1021, Collection.class, -1, value -> parseArrayFromString(value, Float::parseFloat)),
   ARRAY_DOUBLE(1022, Collection.class, -1, value -> parseArrayFromString(value, Double::parseDouble)),
   ARRAY_TEXT(1009, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
   ARRAY_JSON(199, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
@@ -127,7 +128,9 @@ public enum PostgresType {
   public static PostgresType getTypeForValue(Object val) {
     if (val == null) {
       return PostgresType.VARCHAR;
-    } else if (val instanceof Double || val instanceof Float) {
+    } else if (val instanceof Float) {
+      return PostgresType.REAL;
+    } else if (val instanceof Double) {
       return PostgresType.DOUBLE;
     } else if (val instanceof Integer || val instanceof Short || val instanceof Byte) {
       return PostgresType.INTEGER;
@@ -181,6 +184,8 @@ public enum PostgresType {
         return PostgresType.ARRAY_LONG;
       } else if (val instanceof double[]) {
         return PostgresType.ARRAY_DOUBLE;
+      } else if (val instanceof float[]) {
+        return PostgresType.ARRAY_REAL;
       } else if (val instanceof boolean[]) {
         return PostgresType.ARRAY_BOOLEAN;
       } else if (val instanceof char[]) {
@@ -211,6 +216,10 @@ public enum PostgresType {
       serializedValue = "0";
     } else if (value instanceof Collection<?> collection) {
       // Handle array serialization
+      serializedValue = serializeArrayToString(collection, pgType);
+    } else if (value != null && value.getClass().isArray()) {
+      // Handle primitive arrays by converting them to Collections
+      Collection<?> collection = convertPrimitiveArrayToCollection(value);
       serializedValue = serializeArrayToString(collection, pgType);
     } else if (value instanceof JSONObject json) {
       serializedValue = json.toString();
@@ -253,8 +262,9 @@ public enum PostgresType {
         sb.append(",");
       }
       first = false;
-      if (element instanceof Double || element instanceof Float || element.getClass() == double.class
-          || element.getClass() == float.class) {
+      if (element instanceof Float || element.getClass() == float.class) {
+        sb.append(((Number) element).floatValue());
+      } else if (element instanceof Double || element.getClass() == double.class) {
         sb.append(((Number) element).doubleValue());
       } else if (element instanceof Number || element instanceof Boolean) {
         sb.append(element);
@@ -289,6 +299,69 @@ public enum PostgresType {
   }
 
   /**
+   * Converts a primitive array to a Collection for serialization.
+   * Handles all primitive array types: int[], long[], float[], double[], short[], boolean[], char[], byte[]
+   * and object arrays like String[].
+   */
+  private Collection<?> convertPrimitiveArrayToCollection(Object array) {
+    if (array instanceof int[] intArray) {
+      List<Integer> list = new ArrayList<>(intArray.length);
+      for (int val : intArray) {
+        list.add(val);
+      }
+      return list;
+    } else if (array instanceof long[] longArray) {
+      List<Long> list = new ArrayList<>(longArray.length);
+      for (long val : longArray) {
+        list.add(val);
+      }
+      return list;
+    } else if (array instanceof float[] floatArray) {
+      List<Float> list = new ArrayList<>(floatArray.length);
+      for (float val : floatArray) {
+        list.add(val);
+      }
+      return list;
+    } else if (array instanceof double[] doubleArray) {
+      List<Double> list = new ArrayList<>(doubleArray.length);
+      for (double val : doubleArray) {
+        list.add(val);
+      }
+      return list;
+    } else if (array instanceof short[] shortArray) {
+      List<Short> list = new ArrayList<>(shortArray.length);
+      for (short val : shortArray) {
+        list.add(val);
+      }
+      return list;
+    } else if (array instanceof boolean[] booleanArray) {
+      List<Boolean> list = new ArrayList<>(booleanArray.length);
+      for (boolean val : booleanArray) {
+        list.add(val);
+      }
+      return list;
+    } else if (array instanceof char[] charArray) {
+      List<Character> list = new ArrayList<>(charArray.length);
+      for (char val : charArray) {
+        list.add(val);
+      }
+      return list;
+    } else if (array instanceof byte[] byteArray) {
+      List<Byte> list = new ArrayList<>(byteArray.length);
+      for (byte val : byteArray) {
+        list.add(val);
+      }
+      return list;
+    } else if (array instanceof Object[] objectArray) {
+      // Handle object arrays like String[]
+      return Arrays.asList(objectArray);
+    } else {
+      // Fallback: should not happen, but return empty list
+      return new ArrayList<>();
+    }
+  }
+
+  /**
    * Determines the appropriate array type based on the element type.
    */
   public static PostgresType getArrayTypeForElementType(Object element) {
@@ -296,10 +369,11 @@ public enum PostgresType {
         element instanceof Short ||
         element instanceof Byte)
       return ARRAY_INT;
-    if (element instanceof Double ||
-        element instanceof Float ||
-        element.getClass() == double.class ||
+    if (element instanceof Float ||
         element.getClass() == float.class)
+      return ARRAY_REAL;
+    if (element instanceof Double ||
+        element.getClass() == double.class)
       return ARRAY_DOUBLE;
     if (element instanceof Long)
       return ARRAY_LONG;
@@ -384,7 +458,7 @@ public enum PostgresType {
         buffer.get(bytes);
         yield new JSONObject(new String(bytes));
       }
-      case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_TEXT, ARRAY_BOOLEAN, ARRAY_CHAR, ARRAY_JSON -> {
+      case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_REAL, ARRAY_TEXT, ARRAY_BOOLEAN, ARRAY_CHAR, ARRAY_JSON -> {
         // For binary format, would need to implement proper array binary deserialization
         // This is a simplified placeholder - proper implementation would need to handle
         // array dimensions and element deserialization according to PostgreSQL protocol
@@ -401,6 +475,7 @@ public enum PostgresType {
         this == ARRAY_CHAR ||
         this == ARRAY_LONG ||
         this == ARRAY_DOUBLE ||
+        this == ARRAY_REAL ||
         this == ARRAY_TEXT ||
         this == ARRAY_JSON ||
         this == ARRAY_BOOLEAN;
