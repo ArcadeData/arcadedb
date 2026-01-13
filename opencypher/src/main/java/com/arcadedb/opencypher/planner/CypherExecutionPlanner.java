@@ -107,7 +107,7 @@ public class CypherExecutionPlanner {
         return false; // Not yet supported in optimizer
       }
 
-      // Check if all nodes have labels and no named path variables
+      // Check if all nodes have labels, no named path variables, and no unsupported property constraints
       if (match.hasPathPatterns()) {
         for (final com.arcadedb.opencypher.ast.PathPattern path : match.getPathPatterns()) {
           // Named path variables not yet supported (e.g., "p = (a)-[r]->(b)")
@@ -118,6 +118,13 @@ public class CypherExecutionPlanner {
           for (final com.arcadedb.opencypher.ast.NodePattern node : path.getNodes()) {
             if (!node.hasLabels()) {
               return false; // Unlabeled nodes not supported yet
+            }
+
+            // Phase 4: Property constraints without indexes not yet supported
+            // The optimizer doesn't apply property filters when using NodeByLabelScan
+            // This will be fixed in Phase 5
+            if (node.hasProperties()) {
+              return false; // Property constraints not yet fully integrated
             }
           }
         }
@@ -132,6 +139,12 @@ public class CypherExecutionPlanner {
 
     if (statement.getSetClause() != null && !statement.getSetClause().isEmpty()) {
       return false; // SET operations not yet fully integrated
+    }
+
+    // Phase 4: Aggregation functions not yet fully integrated with optimizer
+    // The optimizer doesn't handle GROUP BY and aggregation properly yet
+    if (statement.getReturnClause() != null && statement.getReturnClause().hasAggregations()) {
+      return false; // Aggregation queries use traditional execution
     }
 
     // Enable optimizer for simple read-only single MATCH queries with all labeled nodes

@@ -225,7 +225,10 @@ public class CypherOptimizer {
         currentOp = createExpandIntoOperator(rel, currentOp, boundVariables);
       } else {
         // Use ExpandAll for unbounded patterns
-        currentOp = createExpandAllOperator(rel, currentOp);
+        currentOp = createExpandAllOperator(rel, currentOp, boundVariables);
+
+        // Add label filter for target vertex if required
+        currentOp = addTargetLabelFilter(logicalPlan, rel, currentOp);
       }
 
       // Update bound variables after expansion
@@ -238,20 +241,38 @@ public class CypherOptimizer {
 
   /**
    * Creates an ExpandAll operator for relationship traversal.
+   * Determines which variable is already bound and adjusts direction accordingly.
    *
-   * @param relationship the logical relationship
-   * @param input        the input operator
+   * @param relationship   the logical relationship
+   * @param input          the input operator
+   * @param boundVariables the currently bound variables
    * @return ExpandAll operator
    */
   private PhysicalOperator createExpandAllOperator(
       final com.arcadedb.opencypher.optimizer.plan.LogicalRelationship relationship,
-      final PhysicalOperator input) {
+      final PhysicalOperator input,
+      final java.util.Set<String> boundVariables) {
     // Extract parameters from relationship
-    final String sourceVariable = relationship.getSourceVariable();
+    String sourceVariable = relationship.getSourceVariable();
     final String edgeVariable = relationship.getVariable();
-    final String targetVariable = relationship.getTargetVariable();
-    final com.arcadedb.opencypher.ast.Direction direction = relationship.getDirection();
+    String targetVariable = relationship.getTargetVariable();
+    com.arcadedb.opencypher.ast.Direction direction = relationship.getDirection();
     final String[] edgeTypes = relationship.getTypes().toArray(new String[0]);
+
+    // Determine which variable is bound and adjust direction if needed
+    final boolean sourceIsBound = boundVariables.contains(sourceVariable);
+    final boolean targetIsBound = boundVariables.contains(targetVariable);
+
+    if (targetIsBound && !sourceIsBound) {
+      // Anchor is the target, need to reverse direction
+      // Swap source and target
+      final String temp = sourceVariable;
+      sourceVariable = targetVariable;
+      targetVariable = temp;
+
+      // Reverse direction
+      direction = reverseDirection(direction);
+    }
 
     // Estimate cost and cardinality for this expansion
     final long inputCardinality = input.getEstimatedCardinality();
@@ -270,6 +291,19 @@ public class CypherOptimizer {
         totalCost,
         outputCardinality
     );
+  }
+
+  /**
+   * Reverses a relationship direction.
+   * OUT → IN, IN → OUT, BOTH → BOTH
+   */
+  private com.arcadedb.opencypher.ast.Direction reverseDirection(
+      final com.arcadedb.opencypher.ast.Direction direction) {
+    return switch (direction) {
+      case OUT -> com.arcadedb.opencypher.ast.Direction.IN;
+      case IN -> com.arcadedb.opencypher.ast.Direction.OUT;
+      case BOTH -> com.arcadedb.opencypher.ast.Direction.BOTH;
+    };
   }
 
   /**
@@ -349,6 +383,73 @@ public class CypherOptimizer {
     }
 
     return currentOp;
+  }
+
+  /**
+   * Adds a label filter for the target vertex if the logical plan specifies a label.
+   * This ensures that after relationship expansion, we only keep vertices of the correct type.
+   *
+   * @param logicalPlan the logical plan
+   * @param rel         the logical relationship
+   * @param input       the input operator
+   * @return operator with label filter applied (or original if no filter needed)
+   */
+  private PhysicalOperator addTargetLabelFilter(final LogicalPlan logicalPlan,
+                                                 final com.arcadedb.opencypher.optimizer.plan.LogicalRelationship rel,
+                                                 final PhysicalOperator input) {
+    // Get the target variable
+    final String targetVariable = rel.getTargetVariable();
+
+    // Look up the LogicalNode for the target variable
+    final com.arcadedb.opencypher.optimizer.plan.LogicalNode targetNode =
+        logicalPlan.getNodes().get(targetVariable);
+
+    if (targetNode == null || !targetNode.hasLabels()) {
+      // No label to filter on, return input unchanged
+      return input;
+    }
+
+    // Get the first label (for now we only support single labels)
+    final String targetLabel = targetNode.getFirstLabel();
+
+    if (targetLabel == null) {
+      return input;
+    }
+
+    // Create a label filter expression: vertex.getTypeName() == targetLabel
+    // We create a custom BooleanExpression that checks the vertex type
+    final com.arcadedb.opencypher.ast.BooleanExpression labelFilter = new com.arcadedb.opencypher.ast.BooleanExpression() {
+      @Override
+      public boolean evaluate(final com.arcadedb.query.sql.executor.Result result,
+                              final com.arcadedb.query.sql.executor.CommandContext context) {
+        final Object vertexObj = result.getProperty(targetVariable);
+        if (vertexObj instanceof com.arcadedb.graph.Vertex) {
+          final com.arcadedb.graph.Vertex vertex = (com.arcadedb.graph.Vertex) vertexObj;
+          return targetLabel.equals(vertex.getTypeName());
+        }
+        return false;
+      }
+
+      @Override
+      public String getText() {
+        return "labels(" + targetVariable + ") = ['" + targetLabel + "']";
+      }
+    };
+
+    // Estimate cost and cardinality for this filter
+    final long inputCardinality = input.getEstimatedCardinality();
+    final double selectivity = 1.0; // Assume most expanded vertices match the type (optimistic)
+    final long outputCardinality = (long) (inputCardinality * selectivity);
+    final double filterCost = inputCardinality * costModel.FILTER_COST_PER_ROW;
+    final double totalCost = input.getEstimatedCost() + filterCost;
+
+    // Wrap with FilterOperator
+    return new com.arcadedb.opencypher.executor.operators.FilterOperator(
+        input,
+        labelFilter,
+        totalCost,
+        outputCardinality
+    );
   }
 
   /**
