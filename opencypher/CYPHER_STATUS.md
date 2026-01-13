@@ -653,15 +653,31 @@ RETURN count(n), avg(n.age)
 - [x] ✅ **Completed:** UNWIND clause (2026-01-12)
 - [x] ✅ **Completed:** COLLECT aggregation function (2026-01-12)
 
-### Phase 7: Optimization & Performance
-**Target:** Q4 2026
-**Focus:** Query optimization and performance tuning
+### Phase 7: Optimization & Performance (IN PROGRESS)
+**Target:** Q1-Q4 2026
+**Focus:** Cost-Based Query Optimizer inspired to the most advanced Cypher implementations
 
-- [ ] Query plan optimization
-- [ ] Index utilization
-- [ ] Join optimization
-- [ ] Parallel execution
-- [ ] Query caching
+**Status:** 🟡 **Phase 1 Complete** (Infrastructure - 2026-01-13)
+
+- [x] ✅ **Phase 1: Infrastructure** (2026-01-13)
+  - Statistics collection (TypeStatistics, IndexStatistics, StatisticsProvider)
+  - Cost model with selectivity heuristics
+  - Logical plan extraction from AST
+  - Physical plan representation
+  - 24 unit tests passing
+- [ ] **Phase 2: Physical Operators** (Target: 2026-01-20)
+  - NodeByLabelScan, NodeIndexSeek, ExpandAll, ExpandInto, NodeHashJoin
+  - Execution step wrappers
+- [ ] **Phase 3: Optimization Rules** (Target: 2026-01-27)
+  - Anchor selection algorithm
+  - Index selection, filter pushdown, join ordering, ExpandInto optimization
+- [ ] **Phase 4: Integration & Testing** (Target: 2026-02-03)
+  - Wire into CypherExecutionPlanner
+  - EXPLAIN support
+  - Performance benchmarks
+  - All 201 existing tests must pass
+
+**Expected Impact:** 10-100x speedup on complex queries with indexes
 
 ### Future Phases
 - UNION/UNION ALL
