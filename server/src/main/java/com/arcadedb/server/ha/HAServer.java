@@ -1354,6 +1354,18 @@ public class HAServer implements ServerPlugin {
     }
   }
 
+  /**
+   * Returns a map of replica names to their current status.
+   * Only available on leader servers.
+   */
+  public Map<String, Leader2ReplicaNetworkExecutor.STATUS> getReplicaStatuses() {
+    final Map<String, Leader2ReplicaNetworkExecutor.STATUS> statuses = new HashMap<>();
+    for (final var entry : replicaConnections.entrySet()) {
+      statuses.put(entry.getKey(), entry.getValue().getStatus());
+    }
+    return statuses;
+  }
+
   public int getConfiguredServers() {
     return configuredServers;
   }
