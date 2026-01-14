@@ -34,7 +34,7 @@ public interface EdgeSegment extends Record {
 
   boolean containsEdge(RID edgeRID);
 
-  boolean containsVertex(RID vertexRID, final int[] edgeBucketFilter);
+  RID getFirstEdgeConnectedToVertex(RID vertexRID, final int[] edgeBucketFilter);
 
   int removeEdge(RID edgeRID);
 

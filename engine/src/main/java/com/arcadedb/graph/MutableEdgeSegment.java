@@ -18,26 +18,21 @@
  */
 package com.arcadedb.graph;
 
-import com.arcadedb.database.BaseRecord;
-import com.arcadedb.database.Binary;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.RID;
-import com.arcadedb.database.RecordInternal;
+import com.arcadedb.database.*;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 
 public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, RecordInternal {
-  public static final byte RECORD_TYPE            = 3;
-  public static final int  CONTENT_START_POSITION =
-      Binary.BYTE_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + BinaryTypes.getTypeSize(BinaryTypes.TYPE_RID);
-  private final       RID  NULL_RID;
+  public static final byte RECORD_TYPE = 3;
+  public static final int CONTENT_START_POSITION =
+          Binary.BYTE_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + BinaryTypes.getTypeSize(BinaryTypes.TYPE_RID);
+  private final RID NULL_RID;
 
   private int bufferSize;
 
@@ -84,7 +79,6 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
    *
    * @param edgeRID
    * @param vertexRID
-   *
    * @return
    */
   @Override
@@ -102,7 +96,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
       buffer.move(CONTENT_START_POSITION, CONTENT_START_POSITION + ridSerializedSize, used - CONTENT_START_POSITION);
 
       buffer.putByteArray(CONTENT_START_POSITION, ridSerialized.getContent(), ridSerialized.getContentBeginOffset(),
-          ridSerializedSize);
+              ridSerializedSize);
 
       // UPDATE USED BYTES
       setUsed(used + ridSerializedSize);
@@ -140,10 +134,10 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   }
 
   @Override
-  public boolean containsVertex(final RID rid, final int[] edgeBucketFilter) {
+  public RID getFirstEdgeConnectedToVertex(final RID rid, final int[] edgeBucketFilter) {
     final int used = getUsed();
     if (used == 0)
-      return false;
+      return null;
 
     final int bucketId = rid.getBucketId();
     final long position = rid.getPosition();
@@ -152,7 +146,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
     while (buffer.position() < used) {
       final int currEdgeBucketId = (int) buffer.getNumber();
-      buffer.getNumber();
+      final long currEdgePositionInBucket = buffer.getNumber();
 
       final int currVertexBucketId = (int) buffer.getNumber();
       final long currVertexPosition = buffer.getNumber();
@@ -161,14 +155,14 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
           // FILTER BY EDGE BUCKETS
           for (int i = 0; i < edgeBucketFilter.length; i++) {
             if (currEdgeBucketId == edgeBucketFilter[i])
-              return true;
+              return new RID(database, currEdgeBucketId, currEdgePositionInBucket);
           }
         } else
-          return true;
+          return new RID(database, currEdgeBucketId, currEdgePositionInBucket);
       }
     }
 
-    return false;
+    return null;
   }
 
   @Override
@@ -181,10 +175,10 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
       buffer.position(CONTENT_START_POSITION);
       while (buffer.position() < used) {
         new JSONObject()
-            // EDGE RID
-            .put("edge", "#" + buffer.getNumber() + ":" + buffer.getNumber())
-            // VERTEX RID
-            .put("vertex", "#" + buffer.getNumber() + ":" + buffer.getNumber());
+                // EDGE RID
+                .put("edge", "#" + buffer.getNumber() + ":" + buffer.getNumber())
+                // VERTEX RID
+                .put("vertex", "#" + buffer.getNumber() + ":" + buffer.getNumber());
       }
 
       if (!entries.isEmpty())
@@ -362,7 +356,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   public RID getRID(final AtomicInteger currentPosition) {
     buffer.position(currentPosition.get());
     final RID next = (RID) database.getSerializer()
-        .deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null); // NEXT
+            .deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null); // NEXT
     currentPosition.set(buffer.position());
     return next;
   }
