@@ -30,13 +30,16 @@ import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ReplicationCallback;
 import com.arcadedb.utility.CodeUtils;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Timeout(value = 15, unit = TimeUnit.MINUTES)
 public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();
 
