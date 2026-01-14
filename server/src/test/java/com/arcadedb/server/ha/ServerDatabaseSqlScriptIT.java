@@ -51,16 +51,11 @@ public class ServerDatabaseSqlScriptIT extends BaseGraphServerTest {
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void executeSqlScript() {
-    // Ensure leader is elected and all replicas are fully connected before starting transaction
-    final ArcadeDBServer leader = getLeaderWithRetry();
-    assertThat(leader).isNotNull().as("Leader should be elected");
+    // Wait for cluster to be fully stable before executing SQL script
+    HATestHelpers.waitForClusterStable(getServers(), getServerCount() - 1);
 
-    // Give replicas time to fully initialize their message receiving threads
-    try {
-      Thread.sleep(2000); // 2 second grace period after cluster initialization
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-    }
+    final ArcadeDBServer leader = getLeader();
+    assertThat(leader).isNotNull().as("Leader should be elected");
 
     final Database db = leader.getDatabase(getDatabaseName());
 
@@ -68,17 +63,16 @@ public class ServerDatabaseSqlScriptIT extends BaseGraphServerTest {
     db.command("sql", "create vertex type Photos if not exists");
     db.command("sql", "create edge type Connected if not exists");
 
-    // Wait for schema DDL to replicate - only wait for leader since DDL is synchronous
-    if (leader.getHA().isLeader()) {
-      waitForReplicationIsCompleted(getServerNumber(leader.getServerName()));
-    }
-
-    // Give replicas time to process schema changes
-    try {
-      Thread.sleep(1000);
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-    }
+    // Wait for schema changes to propagate to all replicas
+    HATestHelpers.waitForSchemaAlignment(getServers(), servers -> {
+      for (ArcadeDBServer server : servers) {
+        final Database serverDb = server.getDatabase(getDatabaseName());
+        if (!serverDb.getSchema().existsType("Photos") || !serverDb.getSchema().existsType("Connected")) {
+          return false;
+        }
+      }
+      return true;
+    });
 
     try {
       db.transaction(() -> {
