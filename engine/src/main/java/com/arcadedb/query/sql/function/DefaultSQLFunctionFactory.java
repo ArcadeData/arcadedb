@@ -40,6 +40,7 @@ import com.arcadedb.query.sql.function.graph.SQLFunctionBoth;
 import com.arcadedb.query.sql.function.graph.SQLFunctionBothE;
 import com.arcadedb.query.sql.function.graph.SQLFunctionBothV;
 import com.arcadedb.query.sql.function.graph.SQLFunctionDijkstra;
+import com.arcadedb.query.sql.function.graph.SQLFunctionDuanSSSP;
 import com.arcadedb.query.sql.function.graph.SQLFunctionIn;
 import com.arcadedb.query.sql.function.graph.SQLFunctionInE;
 import com.arcadedb.query.sql.function.graph.SQLFunctionInV;
@@ -149,6 +150,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionBothE.NAME, SQLFunctionBothE.class);
     register(SQLFunctionBothV.NAME, SQLFunctionBothV.class);
     register(SQLFunctionDijkstra.NAME, SQLFunctionDijkstra.class);
+    register(SQLFunctionDuanSSSP.NAME, SQLFunctionDuanSSSP.class);
     register(SQLFunctionIn.NAME, SQLFunctionIn.class);
     register(SQLFunctionInE.NAME, SQLFunctionInE.class);
     register(SQLFunctionInV.NAME, SQLFunctionInV.class);
