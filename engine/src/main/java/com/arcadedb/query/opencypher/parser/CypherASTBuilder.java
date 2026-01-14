@@ -890,6 +890,30 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    * This is a helper for parsing lower-level expression contexts.
    */
   private Expression parseExpressionFromText(final org.antlr.v4.runtime.tree.ParseTree node) {
+    // Check for CASE expressions in the parse tree
+    final Cypher25Parser.CaseExpressionContext caseCtx = findCaseExpressionRecursive(node);
+    if (caseCtx != null) {
+      return parseCaseExpression(caseCtx);
+    }
+
+    final Cypher25Parser.ExtendedCaseExpressionContext extCaseCtx = findExtendedCaseExpressionRecursive(node);
+    if (extCaseCtx != null) {
+      return parseExtendedCaseExpression(extCaseCtx);
+    }
+
+    // Check for EXISTS expressions
+    final Cypher25Parser.ExistsExpressionContext existsCtx = findExistsExpressionRecursive(node);
+    if (existsCtx != null) {
+      return parseExistsExpression(existsCtx);
+    }
+
+    // Check for IS NULL / IS NOT NULL expressions
+    final Cypher25Parser.NullComparisonContext nullCtx = findNullComparisonRecursive(node);
+    if (nullCtx != null) {
+      return parseIsNullExpression(nullCtx);
+    }
+
+    // Fallback to text parsing
     final String text = node.getText();
     return parseExpressionText(text);
   }
@@ -990,6 +1014,23 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return new FunctionCallExpression("count", args, false);
     }
 
+    // Check for EXISTS expression
+    final Cypher25Parser.ExistsExpressionContext existsCtx = findExistsExpressionRecursive(ctx);
+    if (existsCtx != null) {
+      return parseExistsExpression(existsCtx);
+    }
+
+    // Check for CASE expressions (check both forms)
+    final Cypher25Parser.CaseExpressionContext caseCtx = findCaseExpressionRecursive(ctx);
+    if (caseCtx != null) {
+      return parseCaseExpression(caseCtx);
+    }
+
+    final Cypher25Parser.ExtendedCaseExpressionContext extCaseCtx = findExtendedCaseExpressionRecursive(ctx);
+    if (extCaseCtx != null) {
+      return parseExtendedCaseExpression(extCaseCtx);
+    }
+
     // Check for function invocations BEFORE list literals
     // (tail([1,2,3]) should be parsed as a function call, not as a list literal)
     final Cypher25Parser.FunctionInvocationContext funcCtx = findFunctionInvocationRecursive(ctx);
@@ -1001,6 +1042,18 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final Cypher25Parser.ListLiteralContext listCtx = findListLiteralRecursive(ctx);
     if (listCtx != null) {
       return parseListLiteral(listCtx);
+    }
+
+    // Check for IS NULL / IS NOT NULL expressions
+    final Cypher25Parser.NullComparisonContext nullCtx = findNullComparisonRecursive(ctx);
+    if (nullCtx != null) {
+      return parseIsNullExpression(nullCtx);
+    }
+
+    // Check for comparison expressions (for CASE WHEN clauses)
+    final Cypher25Parser.Expression8Context expr8Ctx = findExpression8Recursive(ctx);
+    if (expr8Ctx != null) {
+      return parseComparisonFromExpression8(expr8Ctx);
     }
 
     // Use the shared text parsing logic
@@ -1162,5 +1215,265 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
 
     return new FunctionCallExpression(functionName, arguments, distinct);
+  }
+
+  /**
+   * Recursively find EXISTS expression in the parse tree.
+   */
+  private Cypher25Parser.ExistsExpressionContext findExistsExpressionRecursive(
+      final org.antlr.v4.runtime.tree.ParseTree node) {
+    if (node == null) {
+      return null;
+    }
+
+    if (node instanceof Cypher25Parser.ExistsExpressionContext) {
+      return (Cypher25Parser.ExistsExpressionContext) node;
+    }
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.ExistsExpressionContext found = findExistsExpressionRecursive(node.getChild(i));
+      if (found != null) {
+        return found;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Parse an EXISTS expression.
+   * Examples: EXISTS { MATCH (n)-[:KNOWS]->(m) }, EXISTS { (n)-[:KNOWS]->() WHERE n.age > 18 }
+   */
+  private com.arcadedb.query.opencypher.ast.ExistsExpression parseExistsExpression(
+      final Cypher25Parser.ExistsExpressionContext ctx) {
+    // Extract the subquery text between { and }
+    // For now, we'll extract it as text and execute it as a separate query
+    final String fullText = ctx.getText();
+    final String text = fullText;
+
+    // Remove "EXISTS{" prefix and "}" suffix
+    String subquery = fullText.substring(7, fullText.length() - 1); // Remove "EXISTS{" and "}"
+
+    // If it's a pattern without MATCH, add MATCH prefix
+    if (!subquery.trim().toUpperCase().startsWith("MATCH")
+        && !subquery.trim().toUpperCase().startsWith("WITH")
+        && !subquery.trim().toUpperCase().startsWith("RETURN")) {
+      subquery = "MATCH " + subquery + " RETURN true";
+    }
+
+    return new com.arcadedb.query.opencypher.ast.ExistsExpression(subquery, text);
+  }
+
+  /**
+   * Recursively find CASE expression in the parse tree.
+   */
+  private Cypher25Parser.CaseExpressionContext findCaseExpressionRecursive(
+      final org.antlr.v4.runtime.tree.ParseTree node) {
+    if (node == null) {
+      return null;
+    }
+
+    if (node instanceof Cypher25Parser.CaseExpressionContext) {
+      return (Cypher25Parser.CaseExpressionContext) node;
+    }
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.CaseExpressionContext found = findCaseExpressionRecursive(node.getChild(i));
+      if (found != null) {
+        return found;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Recursively find extended CASE expression in the parse tree.
+   */
+  private Cypher25Parser.ExtendedCaseExpressionContext findExtendedCaseExpressionRecursive(
+      final org.antlr.v4.runtime.tree.ParseTree node) {
+    if (node == null) {
+      return null;
+    }
+
+    if (node instanceof Cypher25Parser.ExtendedCaseExpressionContext) {
+      return (Cypher25Parser.ExtendedCaseExpressionContext) node;
+    }
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.ExtendedCaseExpressionContext found = findExtendedCaseExpressionRecursive(node.getChild(i));
+      if (found != null) {
+        return found;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Parse a simple CASE expression (no case value).
+   * Example: CASE WHEN age < 18 THEN 'minor' WHEN age < 65 THEN 'adult' ELSE 'senior' END
+   */
+  private com.arcadedb.query.opencypher.ast.CaseExpression parseCaseExpression(
+      final Cypher25Parser.CaseExpressionContext ctx) {
+    final List<com.arcadedb.query.opencypher.ast.CaseAlternative> alternatives = new ArrayList<>();
+
+    // Parse each WHEN...THEN alternative
+    for (final Cypher25Parser.CaseAlternativeContext altCtx : ctx.caseAlternative()) {
+      final Expression whenExpr = parseExpression(altCtx.expression(0)); // First expression is WHEN
+      final Expression thenExpr = parseExpression(altCtx.expression(1)); // Second expression is THEN
+      alternatives.add(new com.arcadedb.query.opencypher.ast.CaseAlternative(whenExpr, thenExpr));
+    }
+
+    // Parse optional ELSE clause
+    Expression elseExpr = null;
+    if (ctx.expression() != null) {
+      elseExpr = parseExpression(ctx.expression());
+    }
+
+    return new com.arcadedb.query.opencypher.ast.CaseExpression(alternatives, elseExpr, ctx.getText());
+  }
+
+  /**
+   * Parse an extended CASE expression (with case value).
+   * Example: CASE status WHEN 'active' THEN 1 WHEN 'inactive' THEN 0 ELSE -1 END
+   */
+  private com.arcadedb.query.opencypher.ast.CaseExpression parseExtendedCaseExpression(
+      final Cypher25Parser.ExtendedCaseExpressionContext ctx) {
+    // Parse the case expression (the value being tested)
+    final Expression caseExpr = parseExpression(ctx.expression(0));
+
+    final List<com.arcadedb.query.opencypher.ast.CaseAlternative> alternatives = new ArrayList<>();
+
+    // Parse each WHEN...THEN alternative
+    for (final Cypher25Parser.ExtendedCaseAlternativeContext altCtx : ctx.extendedCaseAlternative()) {
+      // In extended form, WHEN contains value(s) to match against
+      // Use the first extendedWhen's text to create an expression
+      final String whenText = altCtx.extendedWhen(0).getText();
+      final Expression whenExpr = parseExpressionText(whenText);
+      final Expression thenExpr = parseExpression(altCtx.expression());
+      alternatives.add(new com.arcadedb.query.opencypher.ast.CaseAlternative(whenExpr, thenExpr));
+    }
+
+    // Parse optional ELSE clause
+    Expression elseExpr = null;
+    if (ctx.elseExp != null) {
+      elseExpr = parseExpression(ctx.elseExp);
+    }
+
+    return new com.arcadedb.query.opencypher.ast.CaseExpression(caseExpr, alternatives, elseExpr, ctx.getText());
+  }
+
+  /**
+   * Recursively find Expression8 context (handles comparison operators).
+   */
+  private Cypher25Parser.Expression8Context findExpression8Recursive(
+      final org.antlr.v4.runtime.tree.ParseTree node) {
+    if (node == null) {
+      return null;
+    }
+
+    if (node instanceof Cypher25Parser.Expression8Context) {
+      // Only return if it contains a comparison operator
+      final Cypher25Parser.Expression8Context expr8 = (Cypher25Parser.Expression8Context) node;
+      if (expr8.expression7().size() > 1) {
+        return expr8;
+      }
+    }
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.Expression8Context found = findExpression8Recursive(node.getChild(i));
+      if (found != null) {
+        return found;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Parse a comparison expression from Expression8Context.
+   * Handles: <, >, <=, >=, =, !=
+   */
+  private Expression parseComparisonFromExpression8(final Cypher25Parser.Expression8Context ctx) {
+    // Expression8 has multiple expression7 children with comparison operators between them
+    if (ctx.expression7().size() > 1) {
+      // Found a comparison, get the operator
+      for (int i = 1; i < ctx.getChildCount(); i++) {
+        if (ctx.getChild(i) instanceof org.antlr.v4.runtime.tree.TerminalNode) {
+          final org.antlr.v4.runtime.tree.TerminalNode terminal = (org.antlr.v4.runtime.tree.TerminalNode) ctx.getChild(i);
+          final int type = terminal.getSymbol().getType();
+
+          ComparisonExpression.Operator op = null;
+          if (type == Cypher25Parser.EQ) op = ComparisonExpression.Operator.EQUALS;
+          else if (type == Cypher25Parser.NEQ || type == Cypher25Parser.INVALID_NEQ)
+            op = ComparisonExpression.Operator.NOT_EQUALS;
+          else if (type == Cypher25Parser.LT) op = ComparisonExpression.Operator.LESS_THAN;
+          else if (type == Cypher25Parser.GT) op = ComparisonExpression.Operator.GREATER_THAN;
+          else if (type == Cypher25Parser.LE) op = ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+          else if (type == Cypher25Parser.GE) op = ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
+
+          if (op != null) {
+            final String leftText = ctx.expression7(0).getText();
+            final String rightText = ctx.expression7(1).getText();
+            final Expression left = parseExpressionText(leftText);
+            final Expression right = parseExpressionText(rightText);
+            final ComparisonExpression comparison = new ComparisonExpression(left, op, right);
+            // Wrap BooleanExpression in an Expression adapter
+            return new com.arcadedb.query.opencypher.ast.BooleanWrapperExpression(comparison);
+          }
+        }
+      }
+    }
+
+    // No comparison found, parse as text
+    return parseExpressionText(ctx.getText());
+  }
+
+  /**
+   * Recursively find NullComparison context (IS NULL / IS NOT NULL).
+   */
+  private Cypher25Parser.NullComparisonContext findNullComparisonRecursive(
+      final org.antlr.v4.runtime.tree.ParseTree node) {
+    if (node == null) {
+      return null;
+    }
+
+    if (node instanceof Cypher25Parser.NullComparisonContext) {
+      return (Cypher25Parser.NullComparisonContext) node;
+    }
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.NullComparisonContext found = findNullComparisonRecursive(node.getChild(i));
+      if (found != null) {
+        return found;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Parse IS NULL / IS NOT NULL expression and wrap it for use in Expression contexts.
+   */
+  private Expression parseIsNullExpression(final Cypher25Parser.NullComparisonContext ctx) {
+    // Get the parent expression7 context to find the left side
+    org.antlr.v4.runtime.tree.ParseTree parent = ctx.getParent();
+    if (parent instanceof Cypher25Parser.ComparisonExpression6Context) {
+      parent = parent.getParent(); // Get expression7
+    }
+
+    if (parent instanceof Cypher25Parser.Expression7Context) {
+      final Cypher25Parser.Expression7Context expr7 = (Cypher25Parser.Expression7Context) parent;
+      final String leftText = expr7.expression6().getText();
+      final Expression leftExpr = parseExpressionText(leftText);
+      final boolean isNot = ctx.NOT() != null;
+      final IsNullExpression isNullExpr = new IsNullExpression(leftExpr, isNot);
+      // Wrap BooleanExpression as Expression
+      return new com.arcadedb.query.opencypher.ast.BooleanWrapperExpression(isNullExpr);
+    }
+
+    // Fallback: parse as text
+    return parseExpressionText(ctx.getText());
   }
 }

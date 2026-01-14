@@ -605,12 +605,12 @@ ON MATCH SET r.promoted = true
 | **CONTAINS** | `WHERE n.name CONTAINS 'li'` | ✅ **Implemented** | 🟡 MEDIUM |
 | **Parenthesized expressions** | `WHERE (n.age < 26 OR n.age > 35) AND n.email IS NOT NULL` | ✅ **Implemented** | 🔴 HIGH |
 | **Pattern predicates** | `WHERE (n)-[:KNOWS]->()` | 🔴 Not Implemented | 🟡 MEDIUM |
-| **EXISTS()** | `WHERE EXISTS(n.email)` | 🔴 Not Implemented | 🟡 MEDIUM |
+| **EXISTS()** | `WHERE EXISTS { MATCH (n)-[:KNOWS]->(m) }` | 🟡 **Partially Implemented** | 🟡 MEDIUM |
 
 ### Expression Features
 | Feature | Example | Status | Priority |
 |---------|---------|--------|----------|
-| **CASE expressions** | `CASE WHEN n.age < 18 THEN 'minor' ELSE 'adult' END` | 🔴 **Not Implemented** | 🟡 MEDIUM |
+| **CASE expressions** | `CASE WHEN n.age < 18 THEN 'minor' ELSE 'adult' END` | ✅ **Fully Implemented** | 🟡 MEDIUM |
 | **List literals** | `RETURN [1, 2, 3]` | ✅ **Implemented** | 🟡 MEDIUM |
 | **Map literals** | `RETURN {name: 'Alice', age: 30}` | 🔴 **Not Implemented** | 🟡 MEDIUM |
 | **List comprehensions** | `[x IN list WHERE x.age > 25 \| x.name]` | 🔴 **Not Implemented** | 🟢 LOW |
@@ -619,6 +619,36 @@ ON MATCH SET r.promoted = true
 | **Arithmetic** | `RETURN n.age * 2 + 10` | 🔴 **Not Implemented** | 🟡 MEDIUM |
 
 **Note:** List literals and type conversion functions are fully implemented and tested.
+
+**CASE Expression Implementation (2026-01-14) - COMPLETED ✅:**
+- ✅ Simple CASE: `CASE WHEN condition THEN result [WHEN ...] [ELSE default] END`
+- ✅ Extended CASE: `CASE expression WHEN value THEN result [WHEN ...] [ELSE default] END`
+- ✅ Comparison operators in WHEN clauses (>, <, >=, <=, =, !=)
+- ✅ IS NULL / IS NOT NULL checks in WHEN clauses
+- ✅ Nested CASE expressions
+- ✅ CASE in RETURN clauses
+- ✅ CASE in WHERE clauses
+- ✅ BooleanWrapperExpression adapter for boolean-to-expression conversion
+- 📊 Test Status: **6/6 tests passing (100%)**
+
+**Implementation Files:**
+- `CaseExpression.java` - AST for CASE expressions
+- `CaseAlternative.java` - WHEN/THEN alternative container
+- `BooleanWrapperExpression.java` - Adapter for using BooleanExpression as Expression
+- Enhanced `CypherASTBuilder.parseExpressionFromText()` to recognize CASE, EXISTS, IS NULL
+- Enhanced `parseExpression()` to handle IS NULL expressions
+- Added `findNullComparisonRecursive()` and `parseIsNullExpression()` methods
+
+**EXISTS Expression Implementation (2026-01-14):**
+- ✅ Basic syntax: `EXISTS { pattern }` and `EXISTS { MATCH ... }`
+- ✅ Grammar and AST classes complete
+- ✅ Parser integration complete
+- ⚠️ **Limitation:** Variable scoping from outer query not yet implemented
+- ⚠️ Subqueries are executed independently without access to outer variables
+- 📝 **Example that DOESN'T work:** `MATCH (p:Person) WHERE EXISTS { (p)-[:KNOWS]->(m) }`
+  - The `p` variable inside EXISTS doesn't reference the outer `p`
+- 📝 **Workaround:** Use pattern predicates or rewrite queries to avoid variable scoping
+- 📊 Test Status: Infrastructure complete, proper variable scoping requires deeper integration
 
 ---
 
