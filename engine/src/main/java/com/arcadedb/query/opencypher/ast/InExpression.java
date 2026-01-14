@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -40,13 +41,47 @@ public class InExpression implements BooleanExpression {
 
   @Override
   public boolean evaluate(final Result result, final CommandContext context) {
-    final Object value = expression.evaluate(result, context);
+    final Object value;
 
-    // Check if value is in the list
-    boolean found = false;
+    // Use the shared expression evaluator from OpenCypherQueryEngine (stateless and thread-safe)
+    // Check if the expression is a function call to decide whether to use the evaluator
+    if (expression instanceof FunctionCallExpression) {
+      // Use ExpressionEvaluator to properly handle function calls
+      value = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(expression, result, context);
+    } else {
+      // Direct evaluation for simple expressions (optimization)
+      value = expression.evaluate(result, context);
+    }
+
+    // Build the list of values to check against
+    // This handles both list literals [1,2,3] and parameters $ids where the parameter is a list
+    final java.util.List<Object> valuesToCheck = new java.util.ArrayList<>();
+
     for (final Expression listItem : list) {
-      final Object listValue = listItem.evaluate(result, context);
-      if (valuesEqual(value, listValue)) {
+      final Object listValue;
+
+      // Similarly, check if list items are function calls
+      if (listItem instanceof FunctionCallExpression) {
+        listValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(listItem, result, context);
+      } else {
+        listValue = listItem.evaluate(result, context);
+      }
+
+      // If the evaluated value is itself a list/collection (e.g., from a parameter),
+      // expand it into individual values
+      if (listValue instanceof java.util.List) {
+        valuesToCheck.addAll((java.util.List<?>) listValue);
+      } else if (listValue instanceof java.util.Collection) {
+        valuesToCheck.addAll((java.util.Collection<?>) listValue);
+      } else {
+        valuesToCheck.add(listValue);
+      }
+    }
+
+    // Check if value is in the expanded list
+    boolean found = false;
+    for (final Object checkValue : valuesToCheck) {
+      if (valuesEqual(value, checkValue)) {
         found = true;
         break;
       }
