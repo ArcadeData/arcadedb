@@ -582,6 +582,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   public IndexMetadata getMetadata() {
-    return metadata;
+    // Return stored metadata if available, otherwise delegate to first underlying bucket index
+    if (metadata != null)
+      return metadata;
+    if (!indexesOnBuckets.isEmpty())
+      return getFirstUnderlyingIndex().getMetadata();
+    return null;
   }
 }
