@@ -2096,6 +2096,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
         throw new IllegalArgumentException(
                 "Query vector dimension " + queryVector.length + " does not match index dimension " + metadata.dimensions);
 
+      // Check if query vector is all zeros (would cause NaN with cosine similarity)
+      if (metadata.similarityFunction == VectorSimilarityFunction.COSINE) {
+        boolean isZeroVector = true;
+        for (final float v : queryVector) {
+          if (v != 0.0f) {
+            isZeroVector = false;
+            break;
+          }
+        }
+        if (isZeroVector)
+          throw new IllegalArgumentException(
+                  "Query vector cannot be a zero vector when using COSINE similarity (causes undefined similarity)");
+      }
+
       // Ensure graph is available (lazy-load from disk if needed, or build if not persisted)
       ensureGraphAvailable();
 
