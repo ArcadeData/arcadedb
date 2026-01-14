@@ -40,12 +40,60 @@ public class ExistsExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
-    // For now, execute the subquery and check if it returns any results
-    // Note: This is a simplified implementation. A more sophisticated version
-    // would need to handle variable scoping from outer query.
+    // Execute the subquery with access to variables from the outer query
+    // Variables from the outer query need to be bound to specific nodes/edges in the EXISTS pattern
 
     try {
-      final var resultSet = context.getDatabase().query("opencypher", subquery);
+      // Build parameter map and modify subquery to bind variables
+      final java.util.Map<String, Object> params = new java.util.HashMap<>();
+      String modifiedSubquery = subquery;
+
+      if (result != null) {
+        final java.util.List<String> whereConditions = new java.util.ArrayList<>();
+
+        // Extract variables from the result
+        for (final String propertyName : result.getPropertyNames()) {
+          final Object value = result.getProperty(propertyName);
+          params.put(propertyName, value);
+
+          // If it's a vertex or edge, add a WHERE condition to bind it using id()
+          if (value instanceof com.arcadedb.database.Identifiable) {
+            // Use id() function to compare by RID: id(varName) = 'rid'
+            final String rid = ((com.arcadedb.database.Identifiable) value).getIdentity().toString();
+            whereConditions.add("id(" + propertyName + ") = '" + rid + "'");
+          }
+        }
+
+        // Inject WHERE conditions into the subquery
+        if (!whereConditions.isEmpty()) {
+          final String conditionsStr = String.join(" AND ", whereConditions);
+
+          // Normalize the subquery by adding spaces around WHERE keyword if missing
+          // This handles cases like "WHEREc.name" -> "WHERE c.name"
+          modifiedSubquery = modifiedSubquery.replaceAll("(?i)WHERE(?=[A-Za-z])", "WHERE ");
+
+          final String whereClause = " WHERE " + conditionsStr;
+
+          // Find where to inject the WHERE clause
+          // If subquery already has WHERE, append with AND
+          // Otherwise, add before RETURN
+          if (modifiedSubquery.matches("(?i).*\\bWHERE\\b.*")) {
+            // WHERE clause exists, add conditions with AND
+            // Insert right after the WHERE keyword
+            modifiedSubquery = modifiedSubquery.replaceFirst("(?i)\\bWHERE\\s+",
+                java.util.regex.Matcher.quoteReplacement("WHERE " + conditionsStr + " AND "));
+          } else if (modifiedSubquery.matches("(?i).*\\bRETURN\\b.*")) {
+            modifiedSubquery = modifiedSubquery.replaceFirst("(?i)\\bRETURN\\b",
+                java.util.regex.Matcher.quoteReplacement(whereClause + " RETURN"));
+          } else {
+            // No RETURN clause, append WHERE at the end
+            modifiedSubquery = modifiedSubquery + whereClause;
+          }
+        }
+      }
+
+      // Execute the modified subquery with parameters
+      final var resultSet = context.getDatabase().query("opencypher", modifiedSubquery, params);
       final boolean exists = resultSet.hasNext();
       resultSet.close();
       return exists;

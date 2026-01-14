@@ -534,9 +534,32 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // expression7: expression6 comparisonExpression6?
     final Cypher25Parser.ComparisonExpression6Context compCtx = ctx.comparisonExpression6();
 
+    // Check if expression6 contains an EXISTS expression
+    // This handles cases like: WHERE EXISTS { (p)-[:WORKS_AT]->(:Company) }
+    final Cypher25Parser.Expression6Context expr6 = ctx.expression6();
+    final Cypher25Parser.ExistsExpressionContext existsExpr = findExistsExpressionRecursive(expr6);
+    if (existsExpr != null && compCtx == null) {
+      // Parse the EXISTS expression and wrap it as a boolean expression
+      final ExistsExpression exists = (ExistsExpression) parseExistsExpression(existsExpr);
+      // ExistsExpression implements Expression, we need to wrap it to return as BooleanExpression
+      // Create an adapter that evaluates the EXISTS expression as a boolean
+      return new BooleanExpression() {
+        @Override
+        public boolean evaluate(final com.arcadedb.query.sql.executor.Result result,
+                               final com.arcadedb.query.sql.executor.CommandContext context) {
+          final Object value = exists.evaluate(result, context);
+          return value instanceof Boolean && (Boolean) value;
+        }
+
+        @Override
+        public String getText() {
+          return exists.getText();
+        }
+      };
+    }
+
     // Check if expression6 contains a pattern expression (pattern predicate)
     // This handles cases like: WHERE (n)-[:KNOWS]->()
-    final Cypher25Parser.Expression6Context expr6 = ctx.expression6();
     final Cypher25Parser.PatternExpressionContext patternExpr = findPatternExpression(expr6);
     if (patternExpr != null && compCtx == null) {
       // Parse the pattern and create a pattern predicate expression
