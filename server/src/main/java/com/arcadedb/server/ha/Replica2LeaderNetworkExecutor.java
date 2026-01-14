@@ -424,6 +424,9 @@ public class Replica2LeaderNetworkExecutor extends Thread {
         server.getServer().lifecycleEvent(ReplicationCallback.Type.REPLICA_HOT_RESYNC, null);
       }
 
+      LogManager.instance().log(this, Level.INFO,
+          "Resync complete, sending ReplicaReadyRequest to leader '%s'",
+          getRemoteServerName());
       sendCommandToLeader(buffer, new ReplicaReadyRequest(), -1);
 
     } catch (final Exception e) {

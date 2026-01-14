@@ -27,6 +27,7 @@ import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.network.binary.ConnectionException;
 import com.arcadedb.server.ha.message.CommandForwardRequest;
 import com.arcadedb.server.ha.message.HACommand;
+import com.arcadedb.server.ha.message.ReplicaConnectFullResyncResponse;
 import com.arcadedb.server.ha.message.ReplicaConnectHotResyncResponse;
 import com.arcadedb.server.ha.message.TxForwardRequest;
 import com.arcadedb.utility.Callable;
@@ -326,8 +327,14 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
       sendMessage(buffer);
 
       if (response instanceof ReplicaConnectHotResyncResponse resyncResponse) {
+        LogManager.instance().log(this, Level.FINE,
+            "Hot resync response sent to '%s', setting ONLINE immediately", remoteServer);
         server.resendMessagesToReplica(resyncResponse.getMessageNumber(), remoteServer);
         server.setReplicaStatus(remoteServer, true);
+      } else if (response instanceof ReplicaConnectFullResyncResponse) {
+        LogManager.instance().log(this, Level.FINE,
+            "Full resync response sent to '%s', waiting for ReplicaReadyRequest before ONLINE",
+            remoteServer);
       }
     }
   }
