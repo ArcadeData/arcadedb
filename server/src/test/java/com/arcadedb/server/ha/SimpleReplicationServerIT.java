@@ -94,9 +94,10 @@ public class SimpleReplicationServerIT extends BaseGraphServerTest {
     // 3. Wait for cluster to stabilize - THIS IS THE KEY PHASE 1 PATTERN
     // This replaces Thread.sleep() with condition-based waiting:
     // - Phase 1: All servers are ONLINE
-    // - Phase 2: All replication queues are empty (data fully replicated)
+    // - Phase 2: Leader is elected and ready
     // - Phase 3: All replicas are connected to the leader
-    waitForClusterStable(getServerCount());
+    // Using HATestHelpers for consistent cluster stabilization across all tests
+    HATestHelpers.waitForClusterStable(getServers(), getServerCount() - 1);
 
     // 4. Verify replication on all servers
     // Expected: 1 vertex from setup + 10 new vertices = 11 total
