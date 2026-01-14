@@ -88,6 +88,7 @@ MATCH (n:Person) WHERE n.name = 'Alice' RETURN n
 
 // ✅ All comparison operators: =, !=, <, >, <=, >=
 MATCH (n:Person) WHERE n.age >= 25 AND n.age <= 40 RETURN n
+// Note: Range queries with LSM indexes use NodeIndexRangeScan for optimal performance ⚡
 
 // ✅ Logical operators: AND, OR, NOT
 MATCH (n:Person) WHERE n.age > 25 AND n.city = 'NYC' RETURN n
@@ -879,6 +880,10 @@ RETURN count(n), avg(n.age)
 **WITH Clause Addition (2026-01-13):**
 - +12 new tests for WITH clause and UNWIND with WITH
 - From 273/273 → 285/285 tests passing (100%) 🎉
+
+**Range Index Optimization Addition (2026-01-13):**
+- +9 new tests for range index queries with LSM indexes
+- From 285/285 → 294/294 tests passing (100%) 🎉
 **Result:** All tests passing!
 
 ### Test Files
@@ -903,15 +908,16 @@ opencypher/src/test/java/com/arcadedb/opencypher/
 ├── OpenCypherPatternPredicateTest.java      # Pattern predicates in WHERE
 ├── OpenCypherGroupByTest.java               # Implicit GROUP BY with aggregations
 ├── OpenCypherCollectUnwindTest.java         # COLLECT aggregation and UNWIND clause
-├── WithAndUnwindTest.java                   # WITH clause and UNWIND with WITH (NEW)
+├── WithAndUnwindTest.java                   # WITH clause and UNWIND with WITH
+├── CypherRangeIndexTest.java                # Range index optimization tests (NEW)
 ├── OrderByDebugTest.java                    # Debug tests
 ├── ParserDebugTest.java                     # Parser tests
 └── optimizer/
-    ├── CypherOptimizerIntegrationTest.java  # Optimizer integration tests (NEW)
-    ├── AnchorSelectorTest.java              # Anchor selection tests (NEW)
+    ├── CypherOptimizerIntegrationTest.java  # Optimizer integration tests
+    ├── AnchorSelectorTest.java              # Anchor selection tests
     └── rules/
-        ├── IndexSelectionRuleTest.java      # Index selection tests (NEW)
-        └── ExpandIntoRuleTest.java          # ExpandInto tests (NEW)
+        ├── IndexSelectionRuleTest.java      # Index selection tests
+        └── ExpandIntoRuleTest.java          # ExpandInto tests
 ```
 
 ---
