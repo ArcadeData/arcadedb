@@ -29,6 +29,7 @@ import com.arcadedb.server.http.handler.DeleteApiTokenHandler;
 import com.arcadedb.server.http.handler.DeleteGroupHandler;
 import com.arcadedb.server.http.handler.DeleteUserHandler;
 import com.arcadedb.server.http.handler.GetApiDocsHandler;
+import com.arcadedb.server.http.handler.GetClusterHealthHandler;
 import com.arcadedb.server.http.handler.GetClusterLeaderHandler;
 import com.arcadedb.server.http.handler.GetClusterStatusHandler;
 import com.arcadedb.server.http.handler.GetApiTokensHandler;
@@ -199,6 +200,7 @@ public class HttpServer implements ServerPlugin {
         .get("/ready", new GetReadyHandler(this))
         .get("/cluster/status", new GetClusterStatusHandler(this))
         .get("/cluster/leader", new GetClusterLeaderHandler(this))
+        .get("/cluster/health", new GetClusterHealthHandler(this))
         .get("/openapi.json", new GetOpenApiHandler(this))
         .get("/docs", new GetApiDocsHandler(this))
         .get("/server/api-tokens", new GetApiTokensHandler(this))
