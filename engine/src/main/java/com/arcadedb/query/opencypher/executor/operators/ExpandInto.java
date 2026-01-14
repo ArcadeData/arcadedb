@@ -18,8 +18,11 @@
  */
 package com.arcadedb.query.opencypher.executor.operators;
 
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -170,35 +173,30 @@ public class ExpandInto extends AbstractPhysicalOperator {
       /**
        * Helper method to find the actual edge between two vertices.
        * Only called when edge variable binding is required.
+       *
+       * Optimization: Uses GraphEngine.getFirstEdgeConnectedToVertex() which operates
+       * at the EdgeSegment level for maximum performance.
        */
       private Edge findEdge(final Vertex source, final Vertex target,
                            final Vertex.DIRECTION direction, final String edgeType) {
-        final Iterator<Edge> edges;
+        final DatabaseInternal database = (DatabaseInternal) source.getDatabase();
+        final VertexInternal sourceInternal = (VertexInternal) source;
+
+        // Build edge bucket filter if edge type is specified
+        final int[] edgeBucketFilter;
         if (edgeType != null) {
-          edges = source.getEdges(direction, edgeType).iterator();
+          edgeBucketFilter = database.getSchema().getType(edgeType).getBuckets(true).stream()
+                  .mapToInt(b -> b.getFileId()).toArray();
         } else {
-          edges = source.getEdges(direction).iterator();
+          edgeBucketFilter = null;
         }
 
-        while (edges.hasNext()) {
-          final Edge edge = edges.next();
-          final Vertex outVertex = edge.getOutVertex();
-          final Vertex inVertex = edge.getInVertex();
+        // Use GraphEngine API for optimal performance
+        final RID edgeRID = database.getGraphEngine()
+                .getFirstEdgeConnectedToVertex(sourceInternal, target, direction, edgeBucketFilter);
 
-          // Determine which vertex is the target based on direction
-          Vertex otherVertex;
-          if (direction == Vertex.DIRECTION.OUT) {
-            otherVertex = inVertex;
-          } else if (direction == Vertex.DIRECTION.IN) {
-            otherVertex = outVertex;
-          } else {
-            // BOTH - return the one that's not source
-            otherVertex = outVertex.getIdentity().equals(source.getIdentity()) ? inVertex : outVertex;
-          }
-
-          if (otherVertex.getIdentity().equals(target.getIdentity())) {
-            return edge;
-          }
+        if (edgeRID != null) {
+          return database.lookupByRID(edgeRID, true).asEdge();
         }
 
         return null;

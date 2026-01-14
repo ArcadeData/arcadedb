@@ -26,7 +26,10 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
 
-import java.util.*;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Set;
 
 /**
  * Linked list uses to manage edges in vertex. The edges are stored in reverse order from insertion. The last item is the first in the list.
@@ -34,9 +37,9 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class EdgeLinkedList {
-  private final Vertex           vertex;
+  private final Vertex vertex;
   private final Vertex.DIRECTION direction;
-  private       EdgeSegment      lastSegment;
+  private EdgeSegment lastSegment;
 
   public EdgeLinkedList(final Vertex vertex, final Vertex.DIRECTION direction, final EdgeSegment lastSegment) {
     this.vertex = vertex;
@@ -96,10 +99,30 @@ public class EdgeLinkedList {
     return array;
   }
 
+  public RID getFirstEdgeConnectedToVertex(final RID ridVertex, final int[] edgeBucketFilter) {
+    EdgeSegment current = lastSegment;
+    while (current != null) {
+      final RID edgeConnectedToVertex = current.getFirstEdgeConnectedToVertex(ridVertex, edgeBucketFilter);
+      if (edgeConnectedToVertex != null)
+        return edgeConnectedToVertex;
+
+      final EdgeSegment prev = current.getPrevious();
+      if (prev != null && prev.getIdentity().equals(current.getIdentity()))
+        // CURRENT POINT TO ITSELF, AVOID LOOPS
+        break;
+
+      current = prev;
+    }
+
+    return null;
+  }
+
+
   public boolean containsVertex(final RID rid, final int[] edgeBucketFilter) {
     EdgeSegment current = lastSegment;
     while (current != null) {
-      if (current.containsVertex(rid, edgeBucketFilter))
+      final RID edgeConnectedToVertex = current.getFirstEdgeConnectedToVertex(rid, edgeBucketFilter);
+      if (edgeConnectedToVertex != null)
         return true;
 
       final EdgeSegment prev = current.getPrevious();
@@ -117,8 +140,6 @@ public class EdgeLinkedList {
    * Counts the items in the linked list.
    *
    * @param edgeType Type of edge to filter for the counting. If it is null, any type is counted.
-   *
-   * @return
    */
   public long count(final String edgeType) {
     long total = 0;
