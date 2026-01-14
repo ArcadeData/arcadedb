@@ -28,6 +28,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
+@Timeout(value = 15, unit = TimeUnit.MINUTES)
 public class ReplicationServerQuorumMajority1ServerOutIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();
 
