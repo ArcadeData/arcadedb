@@ -988,6 +988,30 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return new LiteralExpression(literalValue, text);
     }
 
+    // Check for function call: functionName(args)
+    // This handles cases like ID(n), count(n), etc. in WHERE clauses
+    if (text.contains("(") && text.endsWith(")")) {
+      final int openParen = text.indexOf('(');
+      final String functionName = text.substring(0, openParen).trim();
+
+      // Make sure it's a valid function name (letters, numbers, underscores)
+      if (functionName.matches("[a-zA-Z_][a-zA-Z0-9_]*")) {
+        final String argsText = text.substring(openParen + 1, text.length() - 1).trim();
+        final List<Expression> args = new ArrayList<>();
+
+        if (!argsText.isEmpty()) {
+          // Parse arguments (simple split by comma - doesn't handle nested calls)
+          // For nested calls, we'd need the full parse tree
+          final String[] argParts = argsText.split(",");
+          for (final String argPart : argParts) {
+            args.add(parseExpressionText(argPart.trim()));
+          }
+        }
+
+        return new FunctionCallExpression(functionName, args, false);
+      }
+    }
+
     // Check for property access: variable.property
     if (text.contains(".") && !text.contains("(")) {
       final String[] parts = text.split("\\.", 2);

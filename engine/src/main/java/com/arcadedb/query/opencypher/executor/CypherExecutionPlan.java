@@ -59,13 +59,14 @@ public class CypherExecutionPlan {
   private final Map<String, Object> parameters;
   private final ContextConfiguration configuration;
   private final PhysicalPlan physicalPlan;
+  private final ExpressionEvaluator expressionEvaluator;
 
   /**
-   * Constructor for backward compatibility (without optimizer).
+   * Constructor for backward compatibility (without optimizer, without evaluator).
    */
   public CypherExecutionPlan(final DatabaseInternal database, final CypherStatement statement,
       final Map<String, Object> parameters, final ContextConfiguration configuration) {
-    this(database, statement, parameters, configuration, null);
+    this(database, statement, parameters, configuration, null, null);
   }
 
   /**
@@ -81,11 +82,28 @@ public class CypherExecutionPlan {
   public CypherExecutionPlan(final DatabaseInternal database, final CypherStatement statement,
       final Map<String, Object> parameters, final ContextConfiguration configuration,
       final PhysicalPlan physicalPlan) {
+    this(database, statement, parameters, configuration, physicalPlan, null);
+  }
+
+  /**
+   * Full constructor with physical plan and expression evaluator.
+   *
+   * @param database            database instance
+   * @param statement           parsed Cypher statement
+   * @param parameters          query parameters
+   * @param configuration       context configuration
+   * @param physicalPlan        optional optimized physical plan (null for non-optimized)
+   * @param expressionEvaluator shared expression evaluator (stateless and thread-safe)
+   */
+  public CypherExecutionPlan(final DatabaseInternal database, final CypherStatement statement,
+      final Map<String, Object> parameters, final ContextConfiguration configuration,
+      final PhysicalPlan physicalPlan, final ExpressionEvaluator expressionEvaluator) {
     this.database = database;
     this.statement = statement;
     this.parameters = parameters;
     this.configuration = configuration;
     this.physicalPlan = physicalPlan;
+    this.expressionEvaluator = expressionEvaluator;
   }
 
   /**
@@ -191,10 +209,8 @@ public class CypherExecutionPlan {
    * @return root execution step
    */
   private AbstractExecutionStep buildExecutionStepsWithOptimizer(final CommandContext context) {
-    // Initialize function factory for expression evaluation
-    final DefaultSQLFunctionFactory sqlFunctionFactory = new DefaultSQLFunctionFactory();
-    final CypherFunctionFactory functionFactory = new CypherFunctionFactory(sqlFunctionFactory);
-    final ExpressionEvaluator evaluator = new ExpressionEvaluator(functionFactory);
+    // Get function factory from evaluator for steps that need it
+    final CypherFunctionFactory functionFactory = expressionEvaluator != null ? expressionEvaluator.getFunctionFactory() : null;
 
     // Create a wrapper step that executes the physical operators
     AbstractExecutionStep currentStep = new AbstractExecutionStep(context) {
@@ -359,9 +375,8 @@ public class CypherExecutionPlan {
   private AbstractExecutionStep buildExecutionSteps(final CommandContext context) {
     AbstractExecutionStep currentStep = null;
 
-    // Initialize function factory for expression evaluation
-    final DefaultSQLFunctionFactory sqlFunctionFactory = new DefaultSQLFunctionFactory();
-    final CypherFunctionFactory functionFactory = new CypherFunctionFactory(sqlFunctionFactory);
+    // Get function factory from evaluator for steps that need it
+    final CypherFunctionFactory functionFactory = expressionEvaluator != null ? expressionEvaluator.getFunctionFactory() : null;
 
     // Special case: RETURN without MATCH (standalone expressions)
     // E.g., RETURN abs(-42), RETURN 1+1

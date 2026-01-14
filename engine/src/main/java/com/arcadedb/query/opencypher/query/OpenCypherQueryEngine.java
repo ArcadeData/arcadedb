@@ -26,8 +26,11 @@ import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.planner.CypherExecutionPlanner;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
+import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -38,6 +41,11 @@ import java.util.Map;
  */
 public class OpenCypherQueryEngine implements QueryEngine {
   public static final String ENGINE_NAME = "opencypher";
+
+  // Shared stateless components - thread-safe and reusable
+  private static final DefaultSQLFunctionFactory SQL_FUNCTION_FACTORY = new DefaultSQLFunctionFactory();
+  private static final CypherFunctionFactory CYPHER_FUNCTION_FACTORY = new CypherFunctionFactory(SQL_FUNCTION_FACTORY);
+  private static final ExpressionEvaluator EXPRESSION_EVALUATOR = new ExpressionEvaluator(CYPHER_FUNCTION_FACTORY);
 
   private final DatabaseInternal database;
   private final Cypher25AntlrParser parser;
@@ -131,9 +139,19 @@ public class OpenCypherQueryEngine implements QueryEngine {
    */
   private ResultSet execute(final CypherStatement statement, final ContextConfiguration configuration,
       final Map<String, Object> parameters, final boolean explain) {
-    final CypherExecutionPlanner planner = new CypherExecutionPlanner(database, statement, parameters);
+    final CypherExecutionPlanner planner = new CypherExecutionPlanner(database, statement, parameters, EXPRESSION_EVALUATOR);
     final CypherExecutionPlan plan = planner.createExecutionPlan(configuration);
     return explain ? plan.explain() : plan.execute();
+  }
+
+  /**
+   * Get the shared ExpressionEvaluator instance.
+   * This is used by other components that need access to the evaluator.
+   *
+   * @return the shared expression evaluator
+   */
+  public static ExpressionEvaluator getExpressionEvaluator() {
+    return EXPRESSION_EVALUATOR;
   }
 
   /**

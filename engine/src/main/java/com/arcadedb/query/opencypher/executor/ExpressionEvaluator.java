@@ -74,4 +74,14 @@ public class ExpressionEvaluator {
     // Execute function
     return executor.execute(args, context);
   }
+
+  /**
+   * Get the function factory used by this evaluator.
+   * This is needed by execution steps that create function-dependent steps.
+   *
+   * @return the function factory
+   */
+  public CypherFunctionFactory getFunctionFactory() {
+    return functionFactory;
+  }
 }

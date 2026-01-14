@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
+import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.optimizer.CypherOptimizer;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 
@@ -37,12 +38,14 @@ public class CypherExecutionPlanner {
   private final DatabaseInternal database;
   private final CypherStatement statement;
   private final Map<String, Object> parameters;
+  private final ExpressionEvaluator expressionEvaluator;
 
   public CypherExecutionPlanner(final DatabaseInternal database, final CypherStatement statement,
-      final Map<String, Object> parameters) {
+      final Map<String, Object> parameters, final ExpressionEvaluator expressionEvaluator) {
     this.database = database;
     this.statement = statement;
     this.parameters = parameters;
+    this.expressionEvaluator = expressionEvaluator;
   }
 
   /**
@@ -69,7 +72,7 @@ public class CypherExecutionPlanner {
       }
     }
 
-    return new CypherExecutionPlan(database, statement, parameters, configuration, physicalPlan);
+    return new CypherExecutionPlan(database, statement, parameters, configuration, physicalPlan, expressionEvaluator);
   }
 
   /**
