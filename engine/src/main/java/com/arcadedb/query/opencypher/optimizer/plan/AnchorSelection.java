@@ -18,37 +18,73 @@
  */
 package com.arcadedb.query.opencypher.optimizer.plan;
 
+import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.opencypher.optimizer.statistics.IndexStatistics;
+
+import java.util.List;
 
 /**
  * Result of anchor selection algorithm.
  * Identifies the best starting node for query execution.
+ *
+ * Supports three access patterns:
+ * 1. Full scan (no index)
+ * 2. Index seek (equality: property = value)
+ * 3. Index range scan (range: property > value1 AND property < value2)
  */
 public class AnchorSelection {
   private final String variable;
   private final LogicalNode node;
   private final boolean useIndex;
+  private final boolean isRangeScan;
   private final IndexStatistics index;
   private final String propertyName;
-  private final Object propertyValue;  // NEW: Value for index seek
+  private final Object propertyValue;  // For equality index seek
+  private final List<RangePredicate> rangePredicates;  // For range scan
   private final double estimatedCost;
   private final long estimatedCardinality;
 
+  // Constructor for full scan (no index)
+  public AnchorSelection(final String variable, final LogicalNode node,
+                        final double estimatedCost, final long estimatedCardinality) {
+    this(variable, node, false, null, null, null, null, estimatedCost, estimatedCardinality);
+  }
+
+  // Constructor for equality index seek
   public AnchorSelection(final String variable, final LogicalNode node, final boolean useIndex,
                         final IndexStatistics index, final String propertyName,
                         final double estimatedCost, final long estimatedCardinality) {
-    this(variable, node, useIndex, index, propertyName, null, estimatedCost, estimatedCardinality);
+    this(variable, node, useIndex, index, propertyName, null, null, estimatedCost, estimatedCardinality);
   }
 
+  // Constructor for equality index seek with value
   public AnchorSelection(final String variable, final LogicalNode node, final boolean useIndex,
                         final IndexStatistics index, final String propertyName, final Object propertyValue,
                         final double estimatedCost, final long estimatedCardinality) {
+    this(variable, node, useIndex, index, propertyName, propertyValue, null, estimatedCost, estimatedCardinality);
+  }
+
+  // Constructor for range index scan
+  public AnchorSelection(final String variable, final LogicalNode node,
+                        final IndexStatistics index, final String propertyName,
+                        final List<RangePredicate> rangePredicates,
+                        final double estimatedCost, final long estimatedCardinality) {
+    this(variable, node, true, index, propertyName, null, rangePredicates, estimatedCost, estimatedCardinality);
+  }
+
+  // Main constructor
+  private AnchorSelection(final String variable, final LogicalNode node, final boolean useIndex,
+                         final IndexStatistics index, final String propertyName, final Object propertyValue,
+                         final List<RangePredicate> rangePredicates,
+                         final double estimatedCost, final long estimatedCardinality) {
     this.variable = variable;
     this.node = node;
     this.useIndex = useIndex;
+    this.isRangeScan = rangePredicates != null && !rangePredicates.isEmpty();
     this.index = index;
     this.propertyName = propertyName;
     this.propertyValue = propertyValue;
+    this.rangePredicates = rangePredicates;
     this.estimatedCost = estimatedCost;
     this.estimatedCardinality = estimatedCardinality;
   }
@@ -96,6 +132,20 @@ public class AnchorSelection {
   }
 
   /**
+   * Returns true if this is a range scan (uses range predicates).
+   */
+  public boolean isRangeScan() {
+    return isRangeScan;
+  }
+
+  /**
+   * Returns the range predicates for range scan.
+   */
+  public List<RangePredicate> getRangePredicates() {
+    return rangePredicates;
+  }
+
+  /**
    * Returns the estimated cost of accessing this anchor.
    */
   public double getEstimatedCost() {
@@ -117,6 +167,11 @@ public class AnchorSelection {
     if (useIndex) {
       sb.append(", index=").append(index.getIndexName());
       sb.append(", property=").append(propertyName);
+      if (isRangeScan) {
+        sb.append(", rangeScan=").append(rangePredicates);
+      } else {
+        sb.append(", value=").append(propertyValue);
+      }
     }
     sb.append(", cost=").append(String.format("%.2f", estimatedCost));
     sb.append(", cardinality=").append(estimatedCardinality);

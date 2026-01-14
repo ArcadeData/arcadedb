@@ -85,6 +85,30 @@ public class CostModel {
   }
 
   /**
+   * Estimates the cost of an index range scan operation.
+   * Range scans typically return more rows than equality seeks.
+   *
+   * @param typeName the type name
+   * @param propertyName the property name
+   * @param selectivity estimated selectivity of the range predicate
+   * @return estimated cost
+   */
+  public double estimateIndexRangeScanCost(final String typeName, final String propertyName,
+                                           final double selectivity) {
+    final IndexStatistics index = statistics.findIndexForProperty(typeName, propertyName);
+    if (index == null) {
+      return Double.MAX_VALUE; // No index available
+    }
+
+    final long typeCardinality = statistics.getCardinality(typeName);
+    final long estimatedRows = (long) (typeCardinality * selectivity);
+
+    // Range scan has same fixed cost as seek, but typically returns more rows
+    // Cost formula: INDEX_SEEK_COST + (estimatedRows * INDEX_LOOKUP_COST_PER_ROW)
+    return INDEX_SEEK_COST + (estimatedRows * INDEX_LOOKUP_COST_PER_ROW);
+  }
+
+  /**
    * Estimates the cost of filtering rows.
    *
    * @param inputCardinality number of input rows

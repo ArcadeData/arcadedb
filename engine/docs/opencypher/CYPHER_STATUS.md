@@ -1,8 +1,8 @@
 # OpenCypher Implementation Status
 
 **Last Updated:** 2026-01-13
-**Implementation Version:** Native ANTLR4-based Parser (Phase 8 + Functions + GROUP BY + Pattern Predicates + COLLECT + UNWIND + WITH + Optimizer Phase 4 Complete + All Tests Fixed)
-**Test Coverage:** 285/285 tests passing (100% - All tests passing! 🎉✅)
+**Implementation Version:** Native ANTLR4-based Parser (Phase 8 + Functions + GROUP BY + Pattern Predicates + COLLECT + UNWIND + WITH + Optimizer Phase 4 Complete + Range Index Optimization + All Tests Fixed)
+**Test Coverage:** 294/294 tests passing (100% - All tests passing! 🎉✅)
 
 ---
 
@@ -787,6 +787,20 @@ RETURN count(n), avg(n.age)
 - ✅ Fixed cross-type relationship direction handling in ExpandAll operator
 - ✅ Comprehensive documentation (PHASE_4_COMPLETION.md)
 
+**Range Index Optimization (2026-01-13):**
+- ✅ **NodeIndexRangeScan** operator for range queries using LSM indexes
+- ✅ Range predicate extraction (>, <, >=, <=) from WHERE clauses
+- ✅ Cost-based selection between full scan and index range scan
+- ✅ Selectivity estimation: 30% for single bound, 20% for bounded ranges
+- ✅ Type-safe numeric comparisons (Integer/Long coercion)
+- ✅ Support for bounded ranges: `WHERE age >= 40 AND age <= 60`
+- ✅ Integration with RangeIndex.range() and RangeIndex.iterator() methods
+- ✅ 9 comprehensive tests in CypherRangeIndexTest
+- ✅ Significant performance improvement for selective range queries
+
+**Known Limitations:**
+- ⚠️ Parameterized range queries (`WHERE age > $minAge`) fall back to full scan + filter (parameter resolution at optimization time not yet implemented)
+
 ### Phase 5: Optimizer Coverage Expansion (Planned)
 **Target:** Q1-Q2 2026
 **Focus:** Expand optimizer to handle more query patterns
@@ -823,7 +837,7 @@ RETURN count(n), avg(n.age)
 
 ## 🧪 Test Coverage
 
-**Overall:** 285/285 tests passing (100%) 🎉 - All tests passing!
+**Overall:** 294/294 tests passing (100%) 🎉 - All tests passing!
 
 | Test Suite | Tests | Status | Coverage |
 |------------|-------|--------|----------|
@@ -847,15 +861,16 @@ RETURN count(n), avg(n.age)
 | OpenCypherPatternPredicateTest | 9/9 | ✅ PASS | Pattern predicates in WHERE clauses |
 | OpenCypherGroupByTest | 5/5 | ✅ PASS | Implicit GROUP BY with aggregations |
 | OpenCypherCollectUnwindTest | 12/12 | ✅ PASS | COLLECT aggregation and UNWIND clause |
-| **WithAndUnwindTest** | **12/12** | **✅ PASS** | **WITH clause and UNWIND with WITH** |
-| **PhysicalOperatorTest** | **8/8** | **✅ PASS** | **Physical operator unit tests** |
+| WithAndUnwindTest | 12/12 | ✅ PASS | WITH clause and UNWIND with WITH |
+| PhysicalOperatorTest | 8/8 | ✅ PASS | Physical operator unit tests |
 | CypherOptimizerIntegrationTest | 7/7 | ✅ PASS | Cost-based optimizer integration |
 | AnchorSelectorTest | 11/11 | ✅ PASS | Anchor selection algorithm |
 | IndexSelectionRuleTest | 11/11 | ✅ PASS | Index selection optimization |
 | ExpandIntoRuleTest | 11/11 | ✅ PASS | ExpandInto bounded pattern optimization |
+| **CypherRangeIndexTest** | **9/9** | **✅ PASS** | **Range index optimization with LSM indexes** |
 | OrderByDebugTest | 2/2 | ✅ PASS | Debug tests |
 | ParserDebugTest | 2/2 | ✅ PASS | Parser tests |
-| **TOTAL** | **285/285** | **✅ 100%** 🎉 | **Phase 4 Complete + WITH Clause** |
+| **TOTAL** | **294/294** | **✅ 100%** 🎉 | **Phase 4 Complete + Range Index Optimization** |
 
 **Phase 4 Improvements:**
 - +23 tests fixed (8 schema errors, 2 multiple MATCH, 3 named paths, 8 property constraints, 1 aggregation, 1 cross-type relationship)

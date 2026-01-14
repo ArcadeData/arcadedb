@@ -18,14 +18,19 @@
  */
 package com.arcadedb.query.opencypher.optimizer.rules;
 
+import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
+import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
+import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalPlan;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
+
+import java.util.List;
 
 /**
  * Optimization rule that decides between index seek and full table scan.
@@ -90,25 +95,58 @@ public class IndexSelectionRule implements OptimizationRule {
   }
 
   /**
-   * Decides whether to use index seek or full scan for a given anchor.
+   * Decides whether to use index seek, range scan, or full scan for a given anchor.
    *
    * @param anchor the selected anchor node
-   * @return physical operator (NodeIndexSeek or NodeByLabelScan)
+   * @return physical operator (NodeIndexSeek, NodeIndexRangeScan, or NodeByLabelScan)
    */
   public PhysicalOperator createAnchorOperator(final AnchorSelection anchor) {
     if (anchor.useIndex()) {
-      // INDEX SEEK
-      // Get property value from AnchorSelection (supports both WHERE clause and inline properties)
-      final Object propertyValue = anchor.getPropertyValue();
-      return new NodeIndexSeek(
-          anchor.getVariable(),
-          anchor.getNode().getFirstLabel(),
-          anchor.getPropertyName(),
-          propertyValue,
-          anchor.getIndex().getIndexName(),
-          anchor.getEstimatedCost(),
-          anchor.getEstimatedCardinality()
-      );
+      if (anchor.isRangeScan()) {
+        // RANGE SCAN
+        final List<RangePredicate> predicates = anchor.getRangePredicates();
+
+        // Extract lower and upper bounds from predicates
+        Object lowerBound = null;
+        boolean lowerInclusive = false;
+        Object upperBound = null;
+        boolean upperInclusive = false;
+
+        for (final RangePredicate predicate : predicates) {
+          if (predicate.isLowerBound()) {
+            lowerBound = predicate.getValue();
+            lowerInclusive = predicate.isInclusive();
+          } else if (predicate.isUpperBound()) {
+            upperBound = predicate.getValue();
+            upperInclusive = predicate.isInclusive();
+          }
+        }
+
+        return new NodeIndexRangeScan(
+            anchor.getVariable(),
+            anchor.getNode().getFirstLabel(),
+            anchor.getPropertyName(),
+            lowerBound,
+            lowerInclusive,
+            upperBound,
+            upperInclusive,
+            anchor.getIndex().getIndexName(),
+            anchor.getEstimatedCost(),
+            anchor.getEstimatedCardinality()
+        );
+      } else {
+        // INDEX SEEK (equality)
+        final Object propertyValue = anchor.getPropertyValue();
+        return new NodeIndexSeek(
+            anchor.getVariable(),
+            anchor.getNode().getFirstLabel(),
+            anchor.getPropertyName(),
+            propertyValue,
+            anchor.getIndex().getIndexName(),
+            anchor.getEstimatedCost(),
+            anchor.getEstimatedCardinality()
+        );
+      }
     } else {
       // FULL SCAN
       return new NodeByLabelScan(

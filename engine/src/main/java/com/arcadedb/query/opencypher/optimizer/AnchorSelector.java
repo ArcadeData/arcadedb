@@ -141,7 +141,7 @@ public class AnchorSelector {
 
       // FILTERED SCAN - ACCEPTABLE (no index available)
       // Use first property for selectivity estimation
-      final Map.Entry<String, Object> firstProperty = properties.entrySet().iterator().next();
+      final Map.Entry<String, Object> firstProperty = allPredicates.entrySet().iterator().next();
       final double selectivity = 0.1; // Assume 10% selectivity for equality without index
       final long estimatedRows = (long) (typeCount * selectivity);
       final double cost = costModel.estimateScanCost(label) * selectivity;
@@ -157,15 +157,72 @@ public class AnchorSelector {
       );
     }
 
+    // Check for range predicates (>, <, >=, <=) in WHERE clause
+    final Map<String, List<RangePredicate>> rangePredicates = extractRangePredicates(variable, plan);
+
+    if (!rangePredicates.isEmpty()) {
+      // Look for indexed properties with range predicates
+      final List<IndexStatistics> indexes = statisticsProvider.getIndexesForType(label);
+
+      for (final Map.Entry<String, List<RangePredicate>> rangeEntry : rangePredicates.entrySet()) {
+        final String propertyName = rangeEntry.getKey();
+        final List<RangePredicate> predicates = rangeEntry.getValue();
+
+        // Skip parameterized predicates for now (TODO: add runtime parameter resolution)
+        boolean hasParameters = false;
+        for (final RangePredicate pred : predicates) {
+          if (pred.isParameter()) {
+            hasParameters = true;
+            break;
+          }
+        }
+        if (hasParameters) {
+          continue;  // Skip range optimization for parameterized queries
+        }
+
+        // Check if there's an index on this property
+        final IndexStatistics indexStats = findIndexForProperty(indexes, propertyName);
+
+        if (indexStats != null) {
+          // INDEX RANGE SCAN - Good performance for range queries
+          // Estimate selectivity based on number of bounds
+          double selectivity = costModel.estimateRangeSelectivity(); // Default 0.3 (30%)
+
+          // Refine selectivity if we have both lower and upper bounds
+          boolean hasLower = false;
+          boolean hasUpper = false;
+          for (final RangePredicate pred : predicates) {
+            if (pred.isLowerBound()) hasLower = true;
+            if (pred.isUpperBound()) hasUpper = true;
+          }
+
+          // Both bounds → more selective
+          if (hasLower && hasUpper) {
+            selectivity = 0.2; // 20% for bounded range
+          }
+
+          final long estimatedRows = (long) (typeCount * selectivity);
+          final double cost = costModel.estimateIndexRangeScanCost(label, propertyName, selectivity);
+
+          return new AnchorSelection(
+              variable,
+              node,
+              indexStats,
+              propertyName,
+              predicates,
+              cost,
+              estimatedRows
+          );
+        }
+      }
+    }
+
     // FULL SCAN - FALLBACK (no predicates)
     final double cost = costModel.estimateScanCost(label);
 
     return new AnchorSelection(
         variable,
         node,
-        false, // useIndex = false
-        null, // no index
-        null, // no property filter
         cost,
         typeCount
     );
@@ -275,6 +332,142 @@ public class AnchorSelector {
     }
 
     return predicates;
+  }
+
+  /**
+   * Extract range predicates (<, >, <=, >=) from WHERE clauses that can be used for index range scans.
+   * Returns a map of property names to list of range predicates.
+   *
+   * Examples:
+   * - WHERE age > 18 AND age < 65  → {age: [RangePredicate(>, 18), RangePredicate(<, 65)]}
+   * - WHERE date >= $start         → {date: [RangePredicate(>=, $start)]}
+   */
+  private Map<String, List<RangePredicate>> extractRangePredicates(final String variable, final LogicalPlan plan) {
+    final Map<String, List<RangePredicate>> predicates = new java.util.HashMap<>();
+
+    if (plan.getWhereFilters() == null || plan.getWhereFilters().isEmpty()) {
+      return predicates;
+    }
+
+    for (final com.arcadedb.query.opencypher.ast.WhereClause whereClause : plan.getWhereFilters()) {
+      final com.arcadedb.query.opencypher.ast.BooleanExpression condition = whereClause.getConditionExpression();
+      if (condition == null) {
+        continue;
+      }
+
+      extractRangePredicatesFromExpression(variable, condition, predicates);
+    }
+
+    return predicates;
+  }
+
+  /**
+   * Recursively extract range predicates from a boolean expression.
+   * Handles AND/OR logic to find all range comparisons.
+   */
+  private void extractRangePredicatesFromExpression(final String variable,
+                                                     final com.arcadedb.query.opencypher.ast.BooleanExpression expression,
+                                                     final Map<String, List<RangePredicate>> predicates) {
+    // Handle comparison expressions
+    if (expression instanceof com.arcadedb.query.opencypher.ast.ComparisonExpression) {
+      final com.arcadedb.query.opencypher.ast.ComparisonExpression comparison =
+              (com.arcadedb.query.opencypher.ast.ComparisonExpression) expression;
+
+      // Only handle range operators: <, >, <=, >=
+      final com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator operator = comparison.getOperator();
+      if (operator != com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator.LESS_THAN &&
+          operator != com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator.GREATER_THAN &&
+          operator != com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL &&
+          operator != com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL) {
+        return;
+      }
+
+      final com.arcadedb.query.opencypher.ast.Expression left = comparison.getLeft();
+      final com.arcadedb.query.opencypher.ast.Expression right = comparison.getRight();
+
+      // Pattern: property < value  (e.g., age < 65)
+      if (left instanceof com.arcadedb.query.opencypher.ast.PropertyAccessExpression) {
+        final com.arcadedb.query.opencypher.ast.PropertyAccessExpression propAccess =
+                (com.arcadedb.query.opencypher.ast.PropertyAccessExpression) left;
+
+        if (propAccess.getVariableName().equals(variable)) {
+          final String propertyName = propAccess.getPropertyName();
+          Object value = null;
+          boolean isParameter = false;
+
+          if (right instanceof com.arcadedb.query.opencypher.ast.LiteralExpression) {
+            value = ((com.arcadedb.query.opencypher.ast.LiteralExpression) right).getValue();
+          } else if (right instanceof com.arcadedb.query.opencypher.ast.ParameterExpression) {
+            isParameter = true;
+          } else {
+            return; // Unsupported right side (function call, etc.)
+          }
+
+          final RangePredicate predicate = new RangePredicate(propertyName, operator, value, isParameter);
+          predicates.computeIfAbsent(propertyName, k -> new java.util.ArrayList<>()).add(predicate);
+        }
+      }
+
+      // Pattern: value > property  (e.g., 65 > age) - need to flip operator
+      if (right instanceof com.arcadedb.query.opencypher.ast.PropertyAccessExpression) {
+        final com.arcadedb.query.opencypher.ast.PropertyAccessExpression propAccess =
+                (com.arcadedb.query.opencypher.ast.PropertyAccessExpression) right;
+
+        if (propAccess.getVariableName().equals(variable)) {
+          final String propertyName = propAccess.getPropertyName();
+          Object value = null;
+          boolean isParameter = false;
+
+          if (left instanceof com.arcadedb.query.opencypher.ast.LiteralExpression) {
+            value = ((com.arcadedb.query.opencypher.ast.LiteralExpression) left).getValue();
+          } else if (left instanceof com.arcadedb.query.opencypher.ast.ParameterExpression) {
+            isParameter = true;
+          } else {
+            return; // Unsupported left side
+          }
+
+          // Flip the operator: 65 > age  becomes  age < 65
+          final com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator flippedOperator = flipOperator(operator);
+          final RangePredicate predicate = new RangePredicate(propertyName, flippedOperator, value, isParameter);
+          predicates.computeIfAbsent(propertyName, k -> new java.util.ArrayList<>()).add(predicate);
+        }
+      }
+    }
+
+    // Handle AND expressions - both sides may contain range predicates
+    if (expression instanceof com.arcadedb.query.opencypher.ast.LogicalExpression) {
+      final com.arcadedb.query.opencypher.ast.LogicalExpression logicalExpr =
+              (com.arcadedb.query.opencypher.ast.LogicalExpression) expression;
+
+      if (logicalExpr.getOperator() == com.arcadedb.query.opencypher.ast.LogicalExpression.Operator.AND) {
+        extractRangePredicatesFromExpression(variable, logicalExpr.getLeft(), predicates);
+        if (logicalExpr.getRight() != null) {
+          extractRangePredicatesFromExpression(variable, logicalExpr.getRight(), predicates);
+        }
+      }
+      // Note: OR expressions are NOT handled for range index scans
+      // WHERE age < 18 OR age > 65 cannot use a single range scan
+    }
+  }
+
+  /**
+   * Flip comparison operator when value and property are reversed.
+   * Examples: 65 > age becomes age < 65
+   */
+  private com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator flipOperator(
+          final com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator operator) {
+    switch (operator) {
+      case LESS_THAN:
+        return com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator.GREATER_THAN;
+      case GREATER_THAN:
+        return com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator.LESS_THAN;
+      case LESS_THAN_OR_EQUAL:
+        return com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
+      case GREATER_THAN_OR_EQUAL:
+        return com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+      default:
+        return operator;
+    }
   }
 
   /**
