@@ -50,7 +50,25 @@ import java.util.stream.Collectors;
 public class Leader2ReplicaNetworkExecutor extends Thread {
 
   public enum STATUS {
-    JOINING, OFFLINE, ONLINE
+    JOINING,      // Initial connection
+    OFFLINE,      // Disconnected
+    ONLINE,       // Healthy, processing messages
+    RECONNECTING, // Connection lost, attempting recovery
+    DRAINING,     // Shutdown requested
+    FAILED;       // Unrecoverable error
+
+    private static final java.util.Map<STATUS, java.util.Set<STATUS>> VALID_TRANSITIONS = java.util.Map.of(
+        JOINING, java.util.Set.of(ONLINE, FAILED, DRAINING, OFFLINE),
+        ONLINE, java.util.Set.of(RECONNECTING, DRAINING, OFFLINE, FAILED),
+        RECONNECTING, java.util.Set.of(ONLINE, FAILED, DRAINING, OFFLINE),
+        OFFLINE, java.util.Set.of(JOINING, ONLINE, DRAINING, FAILED),
+        DRAINING, java.util.Set.of(FAILED, OFFLINE),
+        FAILED, java.util.Set.of()
+    );
+
+    public boolean canTransitionTo(STATUS newStatus) {
+      return VALID_TRANSITIONS.getOrDefault(this, java.util.Set.of()).contains(newStatus);
+    }
   }
 
   private final    HAServer                                           server;
@@ -461,11 +479,21 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
       // NO STATUS CHANGE
       return;
 
+    // Validate state transition
+    final STATUS oldStatus = this.status;
+    if (!oldStatus.canTransitionTo(status)) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Invalid state transition: %s -> %s for replica '%s' (allowed anyway for backward compatibility)",
+          oldStatus, status, remoteServer);
+      // Allow anyway for backward compatibility, but log the warning
+    }
+
     executeInLock(new Callable<>() {
       @Override
       public Object call(final Object iArgument) {
         Leader2ReplicaNetworkExecutor.this.status = status;
-        LogManager.instance().log(this, Level.INFO, "Replica server '%s' is %s", remoteServer, status);
+        LogManager.instance().log(this, Level.FINE,
+            "Replica '%s' state: %s -> %s", remoteServer, oldStatus, status);
 
         Leader2ReplicaNetworkExecutor.this.leftOn = status == STATUS.OFFLINE ? 0 : System.currentTimeMillis();
 
