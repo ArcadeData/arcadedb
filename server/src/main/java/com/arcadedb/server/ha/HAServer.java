@@ -571,7 +571,13 @@ public class HAServer implements ServerPlugin {
       return;
     }
 
-    c.setStatus(online ? Leader2ReplicaNetworkExecutor.STATUS.ONLINE : Leader2ReplicaNetworkExecutor.STATUS.OFFLINE);
+    final Leader2ReplicaNetworkExecutor.STATUS oldStatus = c.getStatus();
+    final Leader2ReplicaNetworkExecutor.STATUS newStatus = online ? Leader2ReplicaNetworkExecutor.STATUS.ONLINE : Leader2ReplicaNetworkExecutor.STATUS.OFFLINE;
+    c.setStatus(newStatus);
+
+    LogManager.instance().log(this, Level.INFO,
+        "Replica '%s' status changed: %s -> %s (online replicas now: %d)",
+        remoteServerName, oldStatus, newStatus, getOnlineReplicas());
 
     try {
       server.lifecycleEvent(online ? ReplicationCallback.Type.REPLICA_ONLINE : ReplicationCallback.Type.REPLICA_OFFLINE,
@@ -1332,6 +1338,20 @@ public class HAServer implements ServerPlugin {
         total++;
     }
     return total;
+  }
+
+  /**
+   * Logs a summary of all replica statuses for debugging purposes.
+   */
+  public void logReplicaStatusSummary() {
+    LogManager.instance().log(this, Level.INFO,
+        "=== Replica Status Summary (total: %d, online: %d) ===",
+        replicaConnections.size(), getOnlineReplicas());
+
+    for (final var entry : replicaConnections.entrySet()) {
+      LogManager.instance().log(this, Level.INFO,
+          "  %s: %s", entry.getKey(), entry.getValue().getStatus());
+    }
   }
 
   public int getConfiguredServers() {
