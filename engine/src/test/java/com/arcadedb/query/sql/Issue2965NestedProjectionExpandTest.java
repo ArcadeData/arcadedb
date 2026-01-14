@@ -47,7 +47,6 @@ public class Issue2965NestedProjectionExpandTest extends TestHelper {
       var record = result.next();
       Object testValue = record.getProperty("test");
 
-      System.out.println("Result without expand: " + testValue);
       assertThat(testValue).isInstanceOf(List.class);
 
       @SuppressWarnings("unchecked")
@@ -67,7 +66,6 @@ public class Issue2965NestedProjectionExpandTest extends TestHelper {
       assertThat(result.hasNext()).isTrue();
 
       var record = result.next();
-      System.out.println("Result with expand (no nested projection): " + record.toJSON());
 
       assertThat((Object) record.getProperty("x")).isEqualTo(1);
       assertThat((Object) record.getProperty("y")).isEqualTo(2);
@@ -82,7 +80,6 @@ public class Issue2965NestedProjectionExpandTest extends TestHelper {
       assertThat(result.hasNext()).isTrue();
 
       var record = result.next();
-      System.out.println("Result with expand and nested projection: " + record.toJSON());
 
       // Should return a record with only 'x' property, not 'y'
       assertThat((Object) record.getProperty("x")).isEqualTo(1);
@@ -100,7 +97,6 @@ public class Issue2965NestedProjectionExpandTest extends TestHelper {
       int count = 0;
       while (result.hasNext()) {
         var record = result.next();
-        System.out.println("Record " + count + ": " + record.toJSON());
 
         assertThat(record.getPropertyNames().contains("x")).isTrue();
         assertThat(record.getPropertyNames().contains("y")).isFalse();
@@ -121,7 +117,6 @@ public class Issue2965NestedProjectionExpandTest extends TestHelper {
       int count = 0;
       while (result.hasNext()) {
         var record = result.next();
-        System.out.println("Record " + count + ": " + record.toJSON());
 
         assertThat(record.getPropertyNames().contains("a")).isTrue();
         assertThat(record.getPropertyNames().contains("c")).isTrue();
