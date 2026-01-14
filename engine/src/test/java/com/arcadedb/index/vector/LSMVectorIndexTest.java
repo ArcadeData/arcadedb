@@ -75,7 +75,8 @@ class LSMVectorIndexTest extends TestHelper {
             "dimensions" : 1024,
             "similarity" : "COSINE",
             "maxConnections" : 16,
-            "beamWidth" : 100
+            "beamWidth" : 100,
+            "addHierarchy": true
           }""");
     });
 
@@ -88,6 +89,7 @@ class LSMVectorIndexTest extends TestHelper {
     final LSMVectorIndex index = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
     assertThat(index.getDimensions()).as("Dimensions should be " + DIMENSIONS).isEqualTo(DIMENSIONS);
     assertThat(index.getSimilarityFunction().name()).as("Similarity should be COSINE").isEqualTo("COSINE");
+    assertThat(index.getMetadata().addHierarchy).as("addHierarchy should be true").isTrue();
 
     // Insert test data
     database.transaction(() -> {
@@ -145,6 +147,7 @@ class LSMVectorIndexTest extends TestHelper {
       builder.withSimilarity("EUCLIDEAN");
       builder.withMaxConnections(8);
       builder.withBeamWidth(50);
+      builder.withAddHierarchy(true);
       builder.create();
     });
 
