@@ -383,6 +383,8 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
         if (servers[i] != null && servers[i].getHA() != null && servers[i].getHA().isLeader()) {
           leaderAtTimeout = servers[i];
           lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
+          // Log detailed replica status summary for debugging
+          servers[i].getHA().logReplicaStatusSummary();
           break;
         }
       }
