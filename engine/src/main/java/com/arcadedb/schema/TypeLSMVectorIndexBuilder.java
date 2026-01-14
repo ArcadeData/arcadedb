@@ -171,7 +171,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    *
    * @param addHierarchy true to add hierarchy, false otherwise
    */
-  public TypeLSMVectorIndexBuilder withAddHierarchy(final Boolean addHierarchy) {
+  public TypeLSMVectorIndexBuilder withAddHierarchy(final boolean addHierarchy) {
     ((LSMVectorIndexMetadata) metadata).addHierarchy = addHierarchy;
     return this;
   }
