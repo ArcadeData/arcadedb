@@ -212,8 +212,8 @@ public class MergeStep extends AbstractExecutionStep {
       return false;
     }
 
-    // Try to find existing node
-    Vertex vertex = findNode(nodePattern);
+    // Try to find existing node (evaluate properties against current result context)
+    Vertex vertex = findNode(nodePattern, result);
 
     final boolean wasCreated;
     if (vertex != null) {
@@ -222,7 +222,7 @@ public class MergeStep extends AbstractExecutionStep {
       wasCreated = false;
     } else {
       // Node doesn't exist - create it
-      vertex = createVertex(nodePattern);
+      vertex = createVertex(nodePattern, result);
       result.setProperty(variable, vertex);
       wasCreated = true;
     }
@@ -257,11 +257,11 @@ public class MergeStep extends AbstractExecutionStep {
 
       // Try to find or create vertex if not already bound
       if (vertex == null) {
-        vertex = findNode(nodePattern);
+        vertex = findNode(nodePattern, result);
 
         if (vertex == null) {
           // Create vertex if not found
-          vertex = createVertex(nodePattern);
+          vertex = createVertex(nodePattern, result);
           anyCreated = true;
         }
 
@@ -280,11 +280,11 @@ public class MergeStep extends AbstractExecutionStep {
       final Vertex toVertex = vertices.get(i + 1);
 
       // Try to find existing relationship
-      Edge edge = findEdge(fromVertex, toVertex, relPattern);
+      Edge edge = findEdge(fromVertex, toVertex, relPattern, result);
 
       if (edge == null) {
         // Create relationship if not found
-        edge = createEdge(fromVertex, toVertex, relPattern);
+        edge = createEdge(fromVertex, toVertex, relPattern, result);
         anyCreated = true;
       }
 
@@ -300,9 +300,10 @@ public class MergeStep extends AbstractExecutionStep {
    * Finds a node matching the pattern.
    *
    * @param nodePattern node pattern to find
+   * @param result current result context for evaluating property expressions
    * @return matching vertex or null
    */
-  private Vertex findNode(final NodePattern nodePattern) {
+  private Vertex findNode(final NodePattern nodePattern, final Result result) {
     if (!nodePattern.hasLabels() || !nodePattern.hasProperties()) {
       // Can't match without label and properties
       return null;
@@ -312,12 +313,15 @@ public class MergeStep extends AbstractExecutionStep {
     @SuppressWarnings("unchecked")
     final Iterator<Identifiable> iterator = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
 
+    // Evaluate property expressions against current result context
+    final Map<String, Object> evaluatedProperties = evaluateProperties(nodePattern.getProperties(), result);
+
     // Find first vertex matching all properties
     while (iterator.hasNext()) {
       final Identifiable identifiable = iterator.next();
       if (identifiable instanceof Vertex) {
         final Vertex vertex = (Vertex) identifiable;
-        if (matchesProperties(vertex, nodePattern.getProperties())) {
+        if (matchesProperties(vertex, evaluatedProperties)) {
           return vertex;
         }
       }
@@ -332,9 +336,10 @@ public class MergeStep extends AbstractExecutionStep {
    * @param from source vertex
    * @param to   target vertex
    * @param relPattern relationship pattern
+   * @param result current result context for evaluating property expressions
    * @return matching edge or null
    */
-  private Edge findEdge(final Vertex from, final Vertex to, final RelationshipPattern relPattern) {
+  private Edge findEdge(final Vertex from, final Vertex to, final RelationshipPattern relPattern, final Result result) {
     if (!relPattern.hasTypes()) {
       return null;
     }
@@ -342,12 +347,17 @@ public class MergeStep extends AbstractExecutionStep {
     final String type = relPattern.getFirstType();
     final Iterator<Edge> edges = from.getEdges(Vertex.DIRECTION.OUT, type).iterator();
 
+    // Evaluate property expressions against current result context
+    final Map<String, Object> evaluatedProperties = relPattern.hasProperties()
+        ? evaluateProperties(relPattern.getProperties(), result)
+        : null;
+
     while (edges.hasNext()) {
       final Edge edge = edges.next();
       if (edge.getIn().equals(to)) {
         // Found edge to target vertex
-        if (relPattern.hasProperties()) {
-          if (matchesProperties(edge, relPattern.getProperties())) {
+        if (evaluatedProperties != null) {
+          if (matchesProperties(edge, evaluatedProperties)) {
             return edge;
           }
         } else {
@@ -391,13 +401,19 @@ public class MergeStep extends AbstractExecutionStep {
 
   /**
    * Creates a vertex from a node pattern.
+   *
+   * @param nodePattern node pattern to create
+   * @param result current result context for evaluating property expressions
+   * @return created vertex
    */
-  private Vertex createVertex(final NodePattern nodePattern) {
+  private Vertex createVertex(final NodePattern nodePattern, final Result result) {
     final String label = nodePattern.hasLabels() ? nodePattern.getFirstLabel() : "Vertex";
     final MutableVertex vertex = context.getDatabase().newVertex(label);
 
     if (nodePattern.hasProperties()) {
-      setProperties(vertex, nodePattern.getProperties());
+      // Evaluate property expressions against current result context
+      final Map<String, Object> evaluatedProperties = evaluateProperties(nodePattern.getProperties(), result);
+      setProperties(vertex, evaluatedProperties);
     }
 
     vertex.save();
@@ -406,13 +422,22 @@ public class MergeStep extends AbstractExecutionStep {
 
   /**
    * Creates an edge between two vertices.
+   *
+   * @param fromVertex source vertex
+   * @param toVertex target vertex
+   * @param relPattern relationship pattern
+   * @param result current result context for evaluating property expressions
+   * @return created edge
    */
-  private Edge createEdge(final Vertex fromVertex, final Vertex toVertex, final RelationshipPattern relPattern) {
+  private Edge createEdge(final Vertex fromVertex, final Vertex toVertex, final RelationshipPattern relPattern,
+                          final Result result) {
     final String type = relPattern.hasTypes() ? relPattern.getFirstType() : "EDGE";
     final MutableEdge edge = fromVertex.newEdge(type, toVertex);
 
     if (relPattern.hasProperties()) {
-      setProperties(edge, relPattern.getProperties());
+      // Evaluate property expressions against current result context
+      final Map<String, Object> evaluatedProperties = evaluateProperties(relPattern.getProperties(), result);
+      setProperties(edge, evaluatedProperties);
     }
 
     edge.save();
@@ -439,6 +464,60 @@ public class MergeStep extends AbstractExecutionStep {
 
       document.set(key, value);
     }
+  }
+
+  /**
+   * Evaluates property expressions against the current result context.
+   * This handles cases like: {subtype: BatchEntry.subtype, name: BatchEntry.name}
+   * where the property values are expressions that need to be evaluated.
+   *
+   * @param properties raw property map from the pattern
+   * @param result current result context containing variables
+   * @return evaluated property map with actual values
+   */
+  private Map<String, Object> evaluateProperties(final Map<String, Object> properties, final Result result) {
+    final Map<String, Object> evaluated = new java.util.HashMap<>();
+
+    for (final Map.Entry<String, Object> entry : properties.entrySet()) {
+      final String key = entry.getKey();
+      Object value = entry.getValue();
+
+      // If the value looks like a property access (e.g., "BatchEntry.subtype"),
+      // try to evaluate it against the current result context
+      if (value instanceof String) {
+        final String strValue = (String) value;
+
+        // Check if it's a property access pattern: variable.property
+        if (strValue.contains(".") && !strValue.startsWith("'") && !strValue.startsWith("\"")) {
+          final String[] parts = strValue.split("\\.", 2);
+          if (parts.length == 2) {
+            final String variable = parts[0];
+            final String property = parts[1];
+
+            // Try to get the variable from the result
+            final Object obj = result.getProperty(variable);
+            if (obj != null) {
+              // If it's a map (like unwound data), get the property
+              if (obj instanceof Map) {
+                value = ((Map<?, ?>) obj).get(property);
+              } else if (obj instanceof com.arcadedb.database.Document) {
+                value = ((com.arcadedb.database.Document) obj).get(property);
+              }
+            }
+          }
+        } else if (!strValue.startsWith("'") && !strValue.startsWith("\"")) {
+          // It might be a simple variable reference
+          final Object obj = result.getProperty(strValue);
+          if (obj != null) {
+            value = obj;
+          }
+        }
+      }
+
+      evaluated.put(key, value);
+    }
+
+    return evaluated;
   }
 
   /**

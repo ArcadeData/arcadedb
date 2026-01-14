@@ -29,6 +29,7 @@ import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.CreateStep;
 import com.arcadedb.query.opencypher.executor.steps.ExpandPathStep;
 import com.arcadedb.query.opencypher.executor.steps.FilterPropertiesStep;
+import com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchNodeStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchRelationshipStep;
 import com.arcadedb.query.opencypher.executor.steps.ProjectReturnStep;
@@ -364,6 +365,14 @@ public class CypherExecutionPlan {
           new com.arcadedb.query.opencypher.executor.steps.LimitStep(statement.getLimit(), context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
+    }
+
+    // Step 11: Final projection - filter to only requested RETURN properties
+    // This removes intermediate variables that were needed for ORDER BY but shouldn't be in the final result
+    if (statement.getReturnClause() != null && currentStep != null) {
+      final FinalProjectionStep finalProjectionStep = new FinalProjectionStep(statement.getReturnClause(), context);
+      finalProjectionStep.setPrevious(currentStep);
+      currentStep = finalProjectionStep;
     }
 
     return currentStep;
@@ -737,6 +746,14 @@ public class CypherExecutionPlan {
           statement.getLimit(), context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
+    }
+
+    // Step 11: Final projection - filter to only requested RETURN properties
+    // This removes intermediate variables that were needed for ORDER BY but shouldn't be in the final result
+    if (statement.getReturnClause() != null && currentStep != null) {
+      final FinalProjectionStep finalProjectionStep = new FinalProjectionStep(statement.getReturnClause(), context);
+      finalProjectionStep.setPrevious(currentStep);
+      currentStep = finalProjectionStep;
     }
 
     return currentStep;
