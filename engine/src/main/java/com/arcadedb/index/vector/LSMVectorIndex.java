@@ -1250,13 +1250,37 @@ public class LSMVectorIndex implements Index, IndexInternal {
           graphCallback.onGraphBuildProgress("persisting", 0, totalNodes, 0);
         }
 
-        // Start a dedicated transaction for graph persistence
+        // Start a dedicated transaction for graph persistence with chunked commits
+        long chunkSizeMB = getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.INDEX_BUILD_CHUNK_SIZE_MB);
+        if (chunkSizeMB <= 0) {
+          final long configuredChunkSize = chunkSizeMB;
+          chunkSizeMB = 50;
+          LogManager.instance().log(this, Level.WARNING,
+              "arcadedb.index.buildChunkSizeMB was %dMB during graph persistence; forcing fallback to 50MB", configuredChunkSize);
+        }
+
         final boolean startedTransaction = !getDatabase().isTransactionActive();
-        if (startedTransaction)
+        if (startedTransaction) {
           getDatabase().begin();
+          getDatabase().getTransaction().setUseWAL(false);
+        } else {
+          getDatabase().getTransaction().setUseWAL(false);
+        }
+
+        final ChunkCommitCallback chunkCallback = (bytesWritten) -> {
+          LogManager.instance().log(this, Level.INFO,
+              "Graph persistence chunk complete: %.1fMB written", bytesWritten / (1024.0 * 1024.0));
+
+          // Commit current transaction
+          getDatabase().commit();
+
+          // Start new transaction and disable WAL
+          getDatabase().begin();
+          getDatabase().getTransaction().setUseWAL(false);
+        };
 
         try {
-          graphFile.writeGraph(graphIndex, vectors);
+          graphFile.writeGraph(graphIndex, vectors, chunkSizeMB, chunkCallback);
 
           // Report persistence completion
           if (graphCallback != null) {
@@ -1268,6 +1292,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             getDatabase().commit();
             LogManager.instance().log(this, Level.FINE, "Vector graph persisted and committed for index: %s", indexName);
           } else {
+            getDatabase().commit();
             LogManager.instance()
                 .log(this, Level.FINE, "Vector graph persisted (transaction managed by caller) for index: %s", indexName);
           }
@@ -1290,10 +1315,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
               // Ignore rollback errors
             }
           }
-          LogManager.instance()
-              .log(this, Level.SEVERE, "PERSIST: Failed to persist graph for %s: %s - %s", indexName, e.getClass().getSimpleName(),
-                  e.getMessage());
-          e.printStackTrace();
+          LogManager.instance().log(this, Level.SEVERE,
+              "PERSIST: Failed to persist graph for %s (nodes=%d, storeVectorsInGraph=%b, txStatus=%s): %s - %s",
+              indexName,
+              totalNodes,
+              metadata.storeVectorsInGraph,
+              getDatabase().getTransaction().getStatus(),
+              e.getClass().getSimpleName(),
+              e.getMessage(),
+              e);
+          if (LogManager.instance().isDebugEnabled())
+            e.printStackTrace();
           // Don't throw - allow the index to continue working, just won't have persisted graph
         }
       } else {
@@ -3143,9 +3175,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (metadata.propertyNames == null || metadata.propertyNames.isEmpty())
       throw new IndexException("Cannot rebuild vector index '" + indexName + "' because property names are missing");
 
-    // Get chunk size from configuration (default 50MB)
-    final long chunkSizeMB = db.getConfiguration()
-        .getValueAsLong(GlobalConfiguration.INDEX_BUILD_CHUNK_SIZE_MB);
+    // Get chunk size from configuration (default 50MB). Guard against accidental 0/negative values to avoid huge single commits.
+    long chunkSizeMB = db.getConfiguration().getValueAsLong(GlobalConfiguration.INDEX_BUILD_CHUNK_SIZE_MB);
+    if (chunkSizeMB <= 0) {
+      final long configuredChunkSize = chunkSizeMB;
+      chunkSizeMB = 50;
+      LogManager.instance().log(this, Level.WARNING,
+        "arcadedb.index.buildChunkSizeMB was %dMB; forcing fallback to 50MB for graph persistence chunking", configuredChunkSize);
+    }
     final long chunkSizeBytes = chunkSizeMB * 1024 * 1024;
 
     LogManager.instance().log(this, Level.INFO,
@@ -3213,9 +3250,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     final DatabaseInternal db = getDatabase();
 
-    // Get chunk size from configuration (default 50MB)
-    final long chunkSizeMB = db.getConfiguration()
-        .getValueAsLong(GlobalConfiguration.INDEX_BUILD_CHUNK_SIZE_MB);
+    // Get chunk size from configuration (default 50MB). Guard against accidental 0/negative to ensure chunked graph persistence.
+    long chunkSizeMB = db.getConfiguration().getValueAsLong(GlobalConfiguration.INDEX_BUILD_CHUNK_SIZE_MB);
+    if (chunkSizeMB <= 0) {
+      final long configuredChunkSize = chunkSizeMB;
+      chunkSizeMB = 50;
+      LogManager.instance().log(this, Level.WARNING,
+        "arcadedb.index.buildChunkSizeMB was %dMB during graph persistence; forcing fallback to 50MB", configuredChunkSize);
+    }
 
     // Track if we started the transaction (for graph building)
     final boolean startedTransaction =
