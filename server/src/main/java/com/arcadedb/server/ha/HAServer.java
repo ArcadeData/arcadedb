@@ -565,7 +565,9 @@ public class HAServer implements ServerPlugin {
   public void setReplicaStatus(final String remoteServerName, final boolean online) {
     final Leader2ReplicaNetworkExecutor c = replicaConnections.get(remoteServerName);
     if (c == null) {
-      LogManager.instance().log(this, Level.SEVERE, "Replica '%s' was not registered", remoteServerName);
+      LogManager.instance().log(this, Level.SEVERE,
+          "Replica '%s' was not registered. Available replicas: %s",
+          remoteServerName, replicaConnections.keySet());
       return;
     }
 
